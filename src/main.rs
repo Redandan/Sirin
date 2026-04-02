@@ -144,7 +144,10 @@ async fn background_loop() {
 
 fn main() {
     // Load .env if present (non-fatal if missing)
-    let _ = dotenvy::dotenv();
+    match dotenvy::dotenv() {
+        Ok(path) => eprintln!("[main] Loaded .env from {:?}", path),
+        Err(e) => eprintln!("[main] .env not loaded: {e}"),
+    }
 
     // Shared task tracker exposed to Tauri commands.
     let tracker = persona::TaskTracker::new(task_log_path());

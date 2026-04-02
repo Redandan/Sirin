@@ -18,19 +18,110 @@
 
 use std::io::{self, Write};
 use std::{env, sync::Arc};
+use std::collections::HashMap;
 
 use chrono::Utc;
 use grammers_client::client::UpdatesConfiguration;
-use grammers_client::peer::Peer;
 use grammers_client::SignInError;
 use grammers_client::{Client, SenderPool};
 use grammers_client::update::Update;
 use grammers_session::storages::SqliteSession;
+use grammers_session::types::{PeerId, PeerKind};
+use serde::{Deserialize, Serialize};
 
 use crate::persona::{Persona, TaskEntry, TaskTracker};
 
 /// Maximum number of characters to include in a notification preview body.
 const NOTIFICATION_PREVIEW_LEN: usize = 120;
+const OLLAMA_BASE_URL: &str = "http://localhost:11434";
+const LM_STUDIO_BASE_URL: &str = "http://localhost:1234/v1";
+const DEFAULT_MODEL: &str = "llama3.2";
+
+#[derive(Debug, Clone, Copy)]
+enum ReplyLlmBackend {
+    Ollama,
+    LmStudio,
+}
+
+#[derive(Debug, Clone)]
+struct ReplyLlmConfig {
+    backend: ReplyLlmBackend,
+    base_url: String,
+    model: String,
+    api_key: Option<String>,
+}
+
+impl ReplyLlmConfig {
+    fn from_env() -> Self {
+        let provider = std::env::var("LLM_PROVIDER")
+            .unwrap_or_else(|_| "ollama".to_string())
+            .to_lowercase();
+
+        match provider.as_str() {
+            "lmstudio" | "lm_studio" | "openai" => Self {
+                backend: ReplyLlmBackend::LmStudio,
+                base_url: std::env::var("LM_STUDIO_BASE_URL")
+                    .or_else(|_| std::env::var("OPENAI_BASE_URL"))
+                    .unwrap_or_else(|_| LM_STUDIO_BASE_URL.to_string()),
+                model: std::env::var("LM_STUDIO_MODEL")
+                    .or_else(|_| std::env::var("OPENAI_MODEL"))
+                    .unwrap_or_else(|_| DEFAULT_MODEL.to_string()),
+                api_key: std::env::var("LM_STUDIO_API_KEY")
+                    .or_else(|_| std::env::var("OPENAI_API_KEY"))
+                    .ok()
+                    .filter(|v| !v.trim().is_empty()),
+            },
+            _ => Self {
+                backend: ReplyLlmBackend::Ollama,
+                base_url: std::env::var("OLLAMA_BASE_URL")
+                    .unwrap_or_else(|_| OLLAMA_BASE_URL.to_string()),
+                model: std::env::var("OLLAMA_MODEL")
+                    .unwrap_or_else(|_| DEFAULT_MODEL.to_string()),
+                api_key: None,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct OllamaRequest<'a> {
+    model: &'a str,
+    prompt: String,
+    stream: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaResponse {
+    response: String,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAiRequest<'a> {
+    model: &'a str,
+    messages: Vec<OpenAiMessage<'a>>,
+    stream: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAiMessage<'a> {
+    role: &'a str,
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiResponse {
+    choices: Vec<OpenAiChoice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiChoice {
+    message: OpenAiChoiceMessage,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiChoiceMessage {
+    content: String,
+}
 
 /// Resolve a persistent Telegram session path outside the workspace so
 /// runtime writes do not trigger Tauri's file watcher.
@@ -56,6 +147,10 @@ struct TelegramConfig {
     group_ids: Vec<i64>,
     /// Message to send to self on startup. None = disabled.
     startup_msg: Option<String>,
+    /// Optional username target for startup message (e.g. "myuser" or "@myuser").
+    startup_target: Option<String>,
+    /// Emit verbose Telegram update diagnostics.
+    debug_updates: bool,
 }
 
 impl TelegramConfig {
@@ -100,7 +195,10 @@ impl TelegramConfig {
                     Some(t.to_string())
                 }
             })
-            .unwrap_or_else(|| "已收到你的訊息，Sirin 正在分析，稍後回覆。".to_string());
+            .unwrap_or_else(|| {
+                "{ack_prefix} 我是{persona}，會用{voice}的語氣回覆你。{compliance}（估計收益 {profit} USD）"
+                    .to_string()
+            });
 
         let reply_private = env::var("TG_REPLY_PRIVATE")
             .ok()
@@ -110,7 +208,7 @@ impl TelegramConfig {
         let reply_groups = env::var("TG_REPLY_GROUPS")
             .ok()
             .map(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
-            .unwrap_or(true);
+            .unwrap_or(false);
 
         let group_ids: Vec<i64> = env::var("TG_GROUP_IDS")
             .unwrap_or_default()
@@ -125,10 +223,34 @@ impl TelegramConfig {
             })
             .collect();
 
-        let startup_msg = env::var("TG_STARTUP_MSG").ok().and_then(|v| {
-            let t = v.trim().to_string();
-            if t.is_empty() { None } else { Some(t) }
+        let startup_msg = match env::var("TG_STARTUP_MSG") {
+            Ok(v) => {
+                let t = v.trim().to_string();
+                if t.is_empty() {
+                    None
+                } else {
+                    Some(t)
+                }
+            }
+            // Default to enabled, so startup health is visible even without .env loading.
+            Err(_) => Some("Sirin started at {time}".to_string()),
+        };
+
+        let startup_target_raw = env::var("TG_STARTUP_TARGET");
+        eprintln!("[telegram] TG_STARTUP_TARGET env = {:?}", startup_target_raw);
+        let startup_target = startup_target_raw.ok().and_then(|v| {
+            let t = v.trim().trim_start_matches('@').to_string();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t)
+            }
         });
+
+        let debug_updates = env::var("TG_DEBUG_UPDATES")
+            .ok()
+            .map(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(true);
 
         Ok(Self {
             api_id,
@@ -140,6 +262,8 @@ impl TelegramConfig {
             reply_groups,
             group_ids,
             startup_msg,
+            startup_target,
+            debug_updates,
         })
     }
 }
@@ -218,6 +342,262 @@ fn estimate_profit(text: &str) -> f64 {
     })
 }
 
+/// Execute simple user commands from Telegram message text and return
+/// a human-readable execution report.
+fn execute_user_request(
+    text: &str,
+    tracker: &TaskTracker,
+    persona_name: &str,
+) -> Option<String> {
+    let normalized = text.trim();
+    if normalized.is_empty() {
+        return None;
+    }
+
+    let lower = normalized.to_lowercase();
+
+    // 1) Create a pending task from explicit user instruction.
+    if lower.starts_with("todo ")
+        || normalized.starts_with("待辦")
+        || normalized.starts_with("記錄任務")
+        || normalized.starts_with("幫我記錄")
+    {
+        let detail = normalized
+            .trim_start_matches("todo")
+            .trim_start_matches('：')
+            .trim_start_matches(':')
+            .trim();
+
+        let entry = TaskEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            event: "user_request".to_string(),
+            persona: persona_name.to_string(),
+            trigger_remote_ai: None,
+            estimated_profit_usd: None,
+            status: Some("PENDING".to_string()),
+            reason: Some(if detail.is_empty() {
+                normalized.to_string()
+            } else {
+                detail.to_string()
+            }),
+            action_tier: None,
+            high_priority: None,
+        };
+
+        return match tracker.record(&entry) {
+            Ok(_) => Some("執行結果：已幫你建立待辦，狀態為 PENDING。".to_string()),
+            Err(e) => Some(format!("執行結果：建立待辦失敗，原因：{e}")),
+        };
+    }
+
+    // 2) Query actionable tasks.
+    if normalized.contains("查詢待辦") || normalized.contains("列出待辦") || normalized.contains("看待辦") {
+        let entries = match tracker.read_last_n(100) {
+            Ok(v) => v,
+            Err(e) => return Some(format!("執行結果：讀取待辦失敗，原因：{e}")),
+        };
+
+        let actionable: Vec<&TaskEntry> = entries
+            .iter()
+            .filter(|e| matches!(e.status.as_deref(), Some("PENDING") | Some("FOLLOWING") | Some("FOLLOWUP_NEEDED")))
+            .collect();
+
+        if actionable.is_empty() {
+            return Some("執行結果：目前沒有待辦任務。".to_string());
+        }
+
+        let preview = actionable
+            .iter()
+            .take(3)
+            .map(|e| {
+                let status = e.status.as_deref().unwrap_or("?");
+                let reason = e.reason.as_deref().unwrap_or("(無描述)");
+                format!("- {status}: {reason}")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        return Some(format!(
+            "執行結果：目前共有 {} 筆待辦。\n{}",
+            actionable.len(),
+            preview
+        ));
+    }
+
+    // 3) Complete the latest pending task.
+    if normalized.contains("完成最新待辦") || normalized.contains("完成待辦") {
+        let entries = match tracker.read_last_n(200) {
+            Ok(v) => v,
+            Err(e) => return Some(format!("執行結果：讀取待辦失敗，原因：{e}")),
+        };
+
+        let target = entries
+            .iter()
+            .rev()
+            .find(|e| matches!(e.status.as_deref(), Some("PENDING") | Some("FOLLOWING") | Some("FOLLOWUP_NEEDED")));
+
+        if let Some(item) = target {
+            let mut updates = HashMap::new();
+            updates.insert(item.timestamp.clone(), "DONE".to_string());
+            return match tracker.update_statuses(&updates) {
+                Ok(_) => Some("執行結果：已將最新待辦標記為 DONE。".to_string()),
+                Err(e) => Some(format!("執行結果：更新待辦失敗，原因：{e}")),
+            };
+        }
+
+        return Some("執行結果：沒有可完成的待辦。".to_string());
+    }
+
+    None
+}
+
+fn contains_cjk(text: &str) -> bool {
+    text.chars().any(|ch| {
+        (ch >= '\u{4E00}' && ch <= '\u{9FFF}')
+            || (ch >= '\u{3400}' && ch <= '\u{4DBF}')
+            || (ch >= '\u{F900}' && ch <= '\u{FAFF}')
+    })
+}
+
+fn chinese_fallback_reply(
+    persona_name: &str,
+    voice: &str,
+    compliance: &str,
+    estimated_profit: f64,
+    execution_result: Option<&str>,
+) -> String {
+    let mut base = format!(
+        "收到你的訊息。我是{}，會用{}的語氣回覆你。{}（估計收益 {:.2} USD）",
+        persona_name, voice, compliance, estimated_profit
+    );
+
+    if let Some(result) = execution_result {
+        base.push_str(&format!("\n執行結果：{}", result));
+    }
+
+    base
+}
+
+fn build_ai_reply_prompt(
+    persona: Option<&Persona>,
+    user_text: &str,
+    estimated_profit: f64,
+    execution_result: Option<&str>,
+) -> String {
+    let persona_name = persona.map(|p| p.name()).unwrap_or("Sirin");
+    let (voice, compliance) = persona
+        .map(|p| {
+            (
+                p.response_style.voice.as_str(),
+                p.response_style.compliance_line.as_str(),
+            )
+        })
+        .unwrap_or(("natural, polite, professional", "Follow the user's request step by step."));
+
+    let execution_block = execution_result
+        .map(|v| format!("Execution result from internal action layer: {v}"))
+        .unwrap_or_else(|| "Execution result from internal action layer: no direct action executed.".to_string());
+
+    format!(
+        "You are {persona_name}.\n\
+Use this persona style: {voice}.\n\
+Core rule: {compliance}\n\
+Task: Reply to the latest user message naturally and helpfully.\n\
+Constraints:\n\
+- Keep response concise (1-3 sentences).\n\
+- Be polite and human-like.\n\
+- Reply in the same language as the user's message.\n\
+- If an internal action already ran, include a short result summary.\n\
+\n\
+User message: {user_text}\n\
+Estimated ROI score: {estimated_profit:.2}\n\
+{execution_block}\n\
+\n\
+Return only the final reply text."
+    )
+}
+
+async fn call_ollama_reply(
+    client: &reqwest::Client,
+    base_url: &str,
+    model: &str,
+    prompt: String,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let url = format!("{base_url}/api/generate");
+    let body = OllamaRequest {
+        model,
+        prompt,
+        stream: false,
+    };
+    let resp: OllamaResponse = client
+        .post(&url)
+        .json(&body)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    Ok(resp.response.trim().to_string())
+}
+
+async fn call_openai_reply(
+    client: &reqwest::Client,
+    base_url: &str,
+    model: &str,
+    api_key: Option<&str>,
+    prompt: String,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let base = base_url.trim_end_matches('/');
+    let url = format!("{base}/chat/completions");
+
+    let body = OpenAiRequest {
+        model,
+        messages: vec![OpenAiMessage {
+            role: "user",
+            content: prompt,
+        }],
+        stream: false,
+    };
+
+    let mut req = client.post(&url).json(&body);
+    if let Some(key) = api_key {
+        req = req.bearer_auth(key);
+    }
+
+    let resp: OpenAiResponse = req.send().await?.error_for_status()?.json().await?;
+    let content = resp
+        .choices
+        .first()
+        .map(|c| c.message.content.trim().to_string())
+        .unwrap_or_default();
+
+    Ok(content)
+}
+
+async fn generate_ai_reply(
+    client: &reqwest::Client,
+    llm: &ReplyLlmConfig,
+    persona: Option<&Persona>,
+    user_text: &str,
+    estimated_profit: f64,
+    execution_result: Option<&str>,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let prompt = build_ai_reply_prompt(persona, user_text, estimated_profit, execution_result);
+    match llm.backend {
+        ReplyLlmBackend::Ollama => call_ollama_reply(client, &llm.base_url, &llm.model, prompt).await,
+        ReplyLlmBackend::LmStudio => {
+            call_openai_reply(
+                client,
+                &llm.base_url,
+                &llm.model,
+                llm.api_key.as_deref(),
+                prompt,
+            )
+            .await
+        }
+    }
+}
+
 /// Send a macOS (or desktop) system notification.
 fn send_notification(title: &str, body: &str) {
     if let Err(e) = notify_rust::Notification::new()
@@ -243,6 +623,8 @@ pub async fn run_listener(
     tracker: TaskTracker,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let cfg = TelegramConfig::from_env()?;
+    let llm = ReplyLlmConfig::from_env();
+    let llm_client = reqwest::Client::new();
 
     let session_path = session_path();
     if let Some(parent) = session_path.parent() {
@@ -268,30 +650,82 @@ pub async fn run_listener(
         .stream_updates(
             updates,
             UpdatesConfiguration {
-                catch_up: true,
+                // Only handle fresh updates after startup to avoid bulk auto-replies.
+                catch_up: false,
                 ..Default::default()
             },
         )
         .await;
 
     eprintln!("[telegram] Connected to Telegram");
+    let backend_name = match llm.backend {
+        ReplyLlmBackend::Ollama => "ollama",
+        ReplyLlmBackend::LmStudio => "lmstudio",
+    };
+    eprintln!(
+        "[telegram] AI reply backend={} model='{}'",
+        backend_name, llm.model
+    );
+    if cfg.debug_updates {
+        eprintln!(
+            "[telegram] debug_updates=on, reply_private={}, reply_groups={}, auto_reply_enabled={}",
+            cfg.reply_private, cfg.reply_groups, cfg.auto_reply_enabled
+        );
+    }
+    let listener_started_at = Utc::now();
 
     // Send startup notification to self
     if let Some(ref msg) = cfg.startup_msg {
+        eprintln!("[telegram] TG_STARTUP_MSG is enabled");
         match client.get_me().await {
             Ok(me) => {
-                if let Some(peer_ref) = me.to_ref().await {
+                eprintln!(
+                    "[telegram] Authorized as id={}, username={:?}, name='{} {}'",
+                    me.id().bare_id(),
+                    me.username(),
+                    me.first_name().unwrap_or(""),
+                    me.last_name().unwrap_or("")
+                );
+                let target_peer_ref = if let Some(ref username) = cfg.startup_target {
+                    match client.resolve_username(username).await {
+                        Ok(Some(peer)) => peer.to_ref().await,
+                        Ok(None) => {
+                            eprintln!("[telegram] TG_STARTUP_TARGET '@{username}' not found");
+                            None
+                        }
+                        Err(e) => {
+                            eprintln!("[telegram] Failed to resolve TG_STARTUP_TARGET '@{username}': {e}");
+                            None
+                        }
+                    }
+                } else {
+                    me.to_ref().await
+                };
+
+                if let Some(peer_ref) = target_peer_ref {
                     let text = msg
                         .replace("{time}", &Utc::now().format("%Y-%m-%d %H:%M UTC").to_string());
                     if let Err(e) = client.send_message(peer_ref, text.as_str()).await {
                         eprintln!("[telegram] Failed to send startup message: {e}");
                     } else {
-                        eprintln!("[telegram] Startup message sent to self");
+                        if let Some(ref username) = cfg.startup_target {
+                            eprintln!("[telegram] Startup message sent to @{username}");
+                        } else {
+                            eprintln!("[telegram] Startup message sent to self");
+                        }
+                    }
+                } else {
+                    if cfg.startup_target.is_some() {
+                        eprintln!("[telegram] Could not resolve startup target peer_ref, startup message skipped");
+                    } else {
+                        eprintln!("[telegram] Could not resolve self peer_ref, startup message skipped");
                     }
                 }
             }
             Err(e) => eprintln!("[telegram] get_me failed: {e}"),
         }
+    } else {
+        eprintln!("[telegram] TG_STARTUP_MSG is not set, startup message disabled");
     }
 
     loop {
@@ -308,16 +742,44 @@ pub async fn run_listener(
             continue;
         };
 
+        if cfg.debug_updates {
+            eprintln!(
+                "[telegram] incoming: sender={:?}, peer={:?}, outgoing={}, date={}, text='{}'",
+                message.sender_id(),
+                message.peer_id(),
+                message.outgoing(),
+                message.date(),
+                message.text().chars().take(80).collect::<String>()
+            );
+        }
+
         if message.outgoing() {
+            if cfg.debug_updates {
+                eprintln!("[telegram] skip: outgoing message");
+            }
             continue;
         }
 
-        let is_private = matches!(message.peer(), Some(Peer::User(_)));
+        // Guard against self-chat feedback loops (e.g. startup message in Saved Messages).
+        if message.sender_id() == Some(PeerId::self_user()) {
+            if cfg.debug_updates {
+                eprintln!("[telegram] skip: sender is self_user");
+            }
+            continue;
+        }
+
+        let is_private = matches!(message.peer_id().kind(), PeerKind::User | PeerKind::UserSelf);
         if is_private && !cfg.reply_private {
+            if cfg.debug_updates {
+                eprintln!("[telegram] skip: private replies disabled");
+            }
             continue;
         }
 
         if !is_private && !cfg.reply_groups {
+            if cfg.debug_updates {
+                eprintln!("[telegram] skip: group replies disabled");
+            }
             continue;
         }
 
@@ -325,12 +787,30 @@ pub async fn run_listener(
         if !is_private && !cfg.group_ids.is_empty() {
             let peer_id = message.peer_id().bare_id();
             if !cfg.group_ids.contains(&peer_id) {
+                if cfg.debug_updates {
+                    eprintln!("[telegram] skip: group id {} not in TG_GROUP_IDS", peer_id);
+                }
                 continue;
             }
         }
 
+        // Ignore messages that predate current listener run.
+        if message.date() < listener_started_at {
+            if cfg.debug_updates {
+                eprintln!(
+                    "[telegram] skip: message older than listener start ({} < {})",
+                    message.date(),
+                    listener_started_at
+                );
+            }
+            continue;
+        }
+
         let text = message.text().to_owned();
         if text.is_empty() {
+            if cfg.debug_updates {
+                eprintln!("[telegram] skip: empty text message");
+            }
             continue;
         }
 
@@ -344,16 +824,64 @@ pub async fn run_listener(
             .unwrap_or(false);
 
         if cfg.auto_reply_enabled {
-            let reply = cfg
+            let (voice, ack_prefix, compliance) = persona
+                .as_ref()
+                .map(|p| {
+                    (
+                        p.response_style.voice.as_str(),
+                        p.response_style.ack_prefix.as_str(),
+                        p.response_style.compliance_line.as_str(),
+                    )
+                })
+                .unwrap_or(("自然、禮貌、專業", "已收到你的訊息。", "我會按照你的要求處理。"));
+
+            let execution_result = execute_user_request(&text, &tracker, persona_name);
+            let fallback_reply = cfg
                 .auto_reply_text
                 .replace("{persona}", persona_name)
-                .replace("{profit}", &format!("{estimated_profit:.2}"));
+                .replace("{profit}", &format!("{estimated_profit:.2}"))
+                .replace("{voice}", voice)
+                .replace("{ack_prefix}", ack_prefix)
+                .replace("{compliance}", compliance);
 
-            if let Err(e) = message.reply(reply).await {
+            let ai_reply = match generate_ai_reply(
+                &llm_client,
+                &llm,
+                persona.as_ref(),
+                &text,
+                estimated_profit,
+                execution_result.as_deref(),
+            )
+            .await
+            {
+                Ok(v) if !v.trim().is_empty() => v,
+                Ok(_) => fallback_reply.clone(),
+                Err(e) => {
+                    eprintln!("[telegram] AI reply generation failed, fallback to template: {e}");
+                    fallback_reply.clone()
+                }
+            };
+
+            let final_reply = if contains_cjk(&text) && !contains_cjk(&ai_reply) {
+                eprintln!("[telegram] AI reply language mismatch: forcing Chinese response");
+                chinese_fallback_reply(
+                    persona_name,
+                    voice,
+                    compliance,
+                    estimated_profit,
+                    execution_result.as_deref(),
+                )
+            } else {
+                ai_reply
+            };
+
+            if let Err(e) = message.reply(final_reply).await {
                 eprintln!("[telegram] Failed to auto-reply: {e}");
             } else {
-                eprintln!("[telegram] Auto-reply sent");
+                eprintln!("[telegram] Auto-reply sent (AI path)");
             }
+        } else if cfg.debug_updates {
+            eprintln!("[telegram] skip: auto-reply disabled by TG_AUTO_REPLY");
         }
 
         let entry = TaskEntry::ai_decision(persona_name, estimated_profit, triggered);

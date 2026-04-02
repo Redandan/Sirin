@@ -30,10 +30,32 @@ pub struct RoiThresholds {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct ResponseStyle {
+    #[serde(default = "default_voice")]
+    pub voice: String,
+    #[serde(default = "default_ack_prefix")]
+    pub ack_prefix: String,
+    #[serde(default = "default_compliance_line")]
+    pub compliance_line: String,
+}
+
+impl Default for ResponseStyle {
+    fn default() -> Self {
+        Self {
+            voice: default_voice(),
+            ack_prefix: default_ack_prefix(),
+            compliance_line: default_compliance_line(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct Persona {
     pub identity: Identity,
     pub objectives: Vec<String>,
     pub roi_thresholds: RoiThresholds,
+    #[serde(default)]
+    pub response_style: ResponseStyle,
     #[serde(default = "default_version")]
     pub version: String,
     #[serde(default)]
@@ -42,6 +64,18 @@ pub struct Persona {
 
 fn default_version() -> String {
     "1.0".to_string()
+}
+
+fn default_voice() -> String {
+    "自然、禮貌、專業".to_string()
+}
+
+fn default_ack_prefix() -> String {
+    "已收到你的訊息。".to_string()
+}
+
+fn default_compliance_line() -> String {
+    "我會按照你的要求處理。".to_string()
 }
 
 impl Persona {
