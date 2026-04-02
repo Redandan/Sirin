@@ -1,0 +1,12 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 0 0% 98%;
+  --foreground: 240 10% 10%;
+}
+
+body {
+  @apply bg-gray-50 text-gray-900 font-sans antialiased;
+}
