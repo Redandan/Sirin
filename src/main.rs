@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod persona;
+mod telegram;
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -71,6 +72,14 @@ fn main() {
 
             // Spawn the persistent background loop
             tokio::spawn(background_loop());
+
+            // Spawn the Telegram listener (non-fatal if credentials are absent)
+            let tg_tracker = persona::TaskTracker::new("data/tracking/task.jsonl");
+            tokio::spawn(async move {
+                if let Err(e) = telegram::run_listener(tg_tracker).await {
+                    eprintln!("[telegram] Listener exited: {e}");
+                }
+            });
 
             Ok(())
         })
