@@ -195,10 +195,7 @@ impl TelegramConfig {
                     Some(t.to_string())
                 }
             })
-            .unwrap_or_else(|| {
-                "{ack_prefix} 我是{persona}，會用{voice}的語氣回覆你。{compliance}（估計收益 {profit} USD）"
-                    .to_string()
-            });
+            .unwrap_or_else(|| "{ack_prefix} 我會先幫你處理這件事。".to_string());
 
         let reply_private = env::var("TG_REPLY_PRIVATE")
             .ok()
@@ -459,20 +456,15 @@ fn contains_cjk(text: &str) -> bool {
     })
 }
 
-fn chinese_fallback_reply(
-    persona_name: &str,
-    voice: &str,
-    compliance: &str,
-    estimated_profit: f64,
-    execution_result: Option<&str>,
-) -> String {
-    let mut base = format!(
-        "收到你的訊息。我是{}，會用{}的語氣回覆你。{}（估計收益 {:.2} USD）",
-        persona_name, voice, compliance, estimated_profit
-    );
+fn chinese_fallback_reply(user_text: &str, execution_result: Option<&str>) -> String {
+    let mut base = if user_text.trim().len() <= 12 {
+        "收到，我在這裡。你想先從哪一點開始？".to_string()
+    } else {
+        "收到，我理解你的需求了；我先幫你整理重點，接著給你可執行的下一步。".to_string()
+    };
 
     if let Some(result) = execution_result {
-        base.push_str(&format!("\n執行結果：{}", result));
+        base.push_str(&format!("\n{result}"));
     }
 
     base
@@ -483,6 +475,7 @@ fn build_ai_reply_prompt(
     user_text: &str,
     estimated_profit: f64,
     execution_result: Option<&str>,
+    force_traditional_chinese: bool,
 ) -> String {
     let persona_name = persona.map(|p| p.name()).unwrap_or("Sirin");
     let (voice, compliance) = persona
@@ -498,6 +491,12 @@ fn build_ai_reply_prompt(
         .map(|v| format!("Execution result from internal action layer: {v}"))
         .unwrap_or_else(|| "Execution result from internal action layer: no direct action executed.".to_string());
 
+    let language_override = if force_traditional_chinese {
+        "- Reply in Traditional Chinese only.\n"
+    } else {
+        ""
+    };
+
     format!(
         "You are {persona_name}.\n\
 Use this persona style: {voice}.\n\
@@ -507,6 +506,10 @@ Constraints:\n\
 - Keep response concise (1-3 sentences).\n\
 - Be polite and human-like.\n\
 - Reply in the same language as the user's message.\n\
+- Do not self-introduce unless the user asks who you are.\n\
+- Do not mention ROI/profit score unless the user explicitly asks for it.\n\
+- Avoid sounding like a system prompt or policy statement.\n\
+{language_override}
 - If an internal action already ran, include a short result summary.\n\
 \n\
 User message: {user_text}\n\
@@ -581,8 +584,15 @@ async fn generate_ai_reply(
     user_text: &str,
     estimated_profit: f64,
     execution_result: Option<&str>,
+    force_traditional_chinese: bool,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    let prompt = build_ai_reply_prompt(persona, user_text, estimated_profit, execution_result);
+    let prompt = build_ai_reply_prompt(
+        persona,
+        user_text,
+        estimated_profit,
+        execution_result,
+        force_traditional_chinese,
+    );
     match llm.backend {
         ReplyLlmBackend::Ollama => call_ollama_reply(client, &llm.base_url, &llm.model, prompt).await,
         ReplyLlmBackend::LmStudio => {
@@ -851,6 +861,7 @@ pub async fn run_listener(
                 &text,
                 estimated_profit,
                 execution_result.as_deref(),
+                false,
             )
             .await
             {
@@ -863,14 +874,21 @@ pub async fn run_listener(
             };
 
             let final_reply = if contains_cjk(&text) && !contains_cjk(&ai_reply) {
-                eprintln!("[telegram] AI reply language mismatch: forcing Chinese response");
-                chinese_fallback_reply(
-                    persona_name,
-                    voice,
-                    compliance,
+                eprintln!("[telegram] AI reply language mismatch: retrying with forced Traditional Chinese");
+                match generate_ai_reply(
+                    &llm_client,
+                    &llm,
+                    persona.as_ref(),
+                    &text,
                     estimated_profit,
                     execution_result.as_deref(),
+                    true,
                 )
+                .await
+                {
+                    Ok(v) if !v.trim().is_empty() && contains_cjk(&v) => v,
+                    Ok(_) | Err(_) => chinese_fallback_reply(&text, execution_result.as_deref()),
+                }
             } else {
                 ai_reply
             };
