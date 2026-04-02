@@ -1,3 +1,5 @@
 name: Sirin
 version: "1.0"
 description: "High-performance desktop AI agent"
+roi_thresholds:
+  min_trigger_usd: 5.0
