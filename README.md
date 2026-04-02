@@ -128,14 +128,16 @@ npx tauri build
 ```env
 TG_API_ID=
 TG_API_HASH=
+TG_PHONE=
 TG_GROUP_IDS=
 ```
 
 - `TG_API_ID`：Telegram App API ID
 - `TG_API_HASH`：Telegram App API hash
+- `TG_PHONE`：可選，使用者手機號碼（國際格式，例如 `+886...`）。若未設定，啟動時會在終端機提示輸入
 - `TG_GROUP_IDS`：要監聽的群組 ID，使用逗號分隔
 
-如果這些變數缺失，Telegram listener 會啟動失敗，但不一定會讓整個桌面應用直接退出。
+首次啟動若尚未授權，程式會走「使用者帳號登入」流程：送出驗證碼、輸入 code，若帳號有 2FA 會再要求密碼。成功後 session 會持久化，下次啟動通常不需重登。
 
 ### Ollama follow-up worker 可選
 

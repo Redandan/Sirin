@@ -16,9 +16,11 @@
 //! The Telegram session is stored in `data/sirin.session` so that re-runs do
 //! not require re-authentication.
 
+use std::io::{self, Write};
 use std::{env, sync::Arc};
 
 use grammers_client::client::UpdatesConfiguration;
+use grammers_client::SignInError;
 use grammers_client::{Client, SenderPool};
 use grammers_client::update::Update;
 use grammers_session::storages::SqliteSession;
@@ -28,13 +30,22 @@ use crate::persona::{Persona, TaskEntry, TaskTracker};
 /// Maximum number of characters to include in a notification preview body.
 const NOTIFICATION_PREVIEW_LEN: usize = 120;
 
-/// Path where the persistent Telegram session file is stored.
-const SESSION_PATH: &str = "data/sirin.session";
+/// Resolve a persistent Telegram session path outside the workspace so
+/// runtime writes do not trigger Tauri's file watcher.
+fn session_path() -> std::path::PathBuf {
+    if let Ok(local_app_data) = env::var("LOCALAPPDATA") {
+        return std::path::Path::new(&local_app_data)
+            .join("Sirin")
+            .join("sirin.session");
+    }
+
+    std::path::Path::new("data").join("sirin.session")
+}
 
 struct TelegramConfig {
     api_id: i32,
     api_hash: String,
-    bot_token: Option<String>,
+    phone: Option<String>,
     /// Group / channel IDs that Sirin should monitor.
     group_ids: Vec<i64>,
 }
@@ -52,7 +63,14 @@ impl TelegramConfig {
 
         let api_hash = env::var("TG_API_HASH")
             .map_err(|_| "TG_API_HASH not set in environment")?;
-        let bot_token = env::var("TG_BOT_TOKEN").ok().filter(|value| !value.trim().is_empty());
+        let phone = env::var("TG_PHONE").ok().and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
 
         let group_ids: Vec<i64> = env::var("TG_GROUP_IDS")
             .unwrap_or_default()
@@ -70,9 +88,53 @@ impl TelegramConfig {
         Ok(Self {
             api_id,
             api_hash,
-            bot_token,
+            phone,
             group_ids,
         })
+    }
+}
+
+fn prompt_input(prompt: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    print!("{prompt}");
+    io::stdout().flush()?;
+
+    let mut line = String::new();
+    io::stdin().read_line(&mut line)?;
+    Ok(line.trim().to_string())
+}
+
+async fn ensure_user_authorized(
+    client: &Client,
+    cfg: &TelegramConfig,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if client.is_authorized().await? {
+        return Ok(());
+    }
+
+    eprintln!("[telegram] Session not authorized, starting user sign-in flow...");
+
+    let phone = if let Some(phone) = cfg.phone.as_ref() {
+        phone.clone()
+    } else {
+        prompt_input("Enter Telegram phone number (international format, e.g. +886...): ")?
+    };
+
+    let login_token = client.request_login_code(&phone, &cfg.api_hash).await?;
+    let code = prompt_input("Enter Telegram login code: ")?;
+
+    match client.sign_in(&login_token, &code).await {
+        Ok(_) => {
+            eprintln!("[telegram] User sign-in succeeded");
+            Ok(())
+        }
+        Err(SignInError::PasswordRequired(password_token)) => {
+            let hint = password_token.hint().unwrap_or("none");
+            let password = prompt_input(&format!("Enter Telegram 2FA password (hint: {hint}): "))?;
+            client.check_password(password_token, password.trim()).await?;
+            eprintln!("[telegram] User sign-in with 2FA succeeded");
+            Ok(())
+        }
+        Err(err) => Err(format!("Telegram sign-in failed: {err}").into()),
     }
 }
 
@@ -132,8 +194,11 @@ pub async fn run_listener(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let cfg = TelegramConfig::from_env()?;
 
-    std::fs::create_dir_all("data")?;
-    let session = Arc::new(SqliteSession::open(SESSION_PATH).await?);
+    let session_path = session_path();
+    if let Some(parent) = session_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let session = Arc::new(SqliteSession::open(session_path).await?);
     let SenderPool {
         runner,
         updates,
@@ -142,15 +207,11 @@ pub async fn run_listener(
     let client = Client::new(handle.clone());
     let pool_task = tokio::spawn(runner.run());
 
-    if !client.is_authorized().await? {
-        if let Some(bot_token) = cfg.bot_token.as_deref() {
-            client.bot_sign_in(bot_token, &cfg.api_hash).await?;
-        } else {
-            eprintln!("[telegram] Session is not authorized; set TG_BOT_TOKEN or complete Telegram login separately");
-            handle.quit();
-            let _ = pool_task.await;
-            return Ok(());
-        }
+    if let Err(err) = ensure_user_authorized(&client, &cfg).await {
+        eprintln!("[telegram] {err}");
+        handle.quit();
+        let _ = pool_task.await;
+        return Ok(());
     }
 
     let mut updates = client

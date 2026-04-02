@@ -10,6 +10,19 @@ use tauri::{
     Emitter, Manager, WindowEvent,
 };
 
+fn task_log_path() -> std::path::PathBuf {
+    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+        return std::path::Path::new(&local_app_data)
+            .join("Sirin")
+            .join("tracking")
+            .join("task.jsonl");
+    }
+
+    std::path::Path::new("data")
+        .join("tracking")
+        .join("task.jsonl")
+}
+
 // ── Tauri commands ────────────────────────────────────────────────────────────
 
 /// Return the last 50 task entries from the log file.
@@ -64,7 +77,7 @@ fn approve_task(
 
 async fn background_loop() {
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
-    let tracker = persona::TaskTracker::new("data/tracking/task.jsonl");
+    let tracker = persona::TaskTracker::new(task_log_path());
 
     // Consume the first instant tick so the loop waits a full 60 seconds before its first execution
     interval.tick().await;
@@ -96,7 +109,7 @@ fn main() {
     let _ = dotenvy::dotenv();
 
     // Shared task tracker exposed to Tauri commands.
-    let tracker = persona::TaskTracker::new("data/tracking/task.jsonl");
+    let tracker = persona::TaskTracker::new(task_log_path());
 
     tauri::Builder::default()
         .manage(tracker.clone())
