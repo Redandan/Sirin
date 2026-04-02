@@ -1,0 +1,2 @@
+# This file keeps the data/tracking directory in version control.
+# The task.jsonl log file written here is intentionally excluded via .gitignore.

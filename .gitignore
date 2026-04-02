@@ -3,6 +3,7 @@
 .env.*
 *.session
 /data/auth/
+/data/tracking/task.jsonl
 
 # ── Build artifacts ───────────────────────────────────────────────────────────
 /target/
