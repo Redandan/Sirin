@@ -3,6 +3,7 @@
 mod persona;
 mod telegram;
 mod followup;
+mod memory;
 
 use tauri::{
     menu::{Menu, MenuItem},

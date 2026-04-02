@@ -20,6 +20,7 @@ use std::io::{self, Write};
 use std::{env, sync::Arc};
 
 use grammers_client::client::UpdatesConfiguration;
+use grammers_client::peer::Peer;
 use grammers_client::SignInError;
 use grammers_client::{Client, SenderPool};
 use grammers_client::update::Update;
@@ -46,6 +47,10 @@ struct TelegramConfig {
     api_id: i32,
     api_hash: String,
     phone: Option<String>,
+    auto_reply_enabled: bool,
+    auto_reply_text: String,
+    reply_private: bool,
+    reply_groups: bool,
     /// Group / channel IDs that Sirin should monitor.
     group_ids: Vec<i64>,
 }
@@ -72,6 +77,38 @@ impl TelegramConfig {
             }
         });
 
+        let auto_reply_enabled = env::var("TG_AUTO_REPLY")
+            .ok()
+            .map(|v| {
+                matches!(
+                    v.trim().to_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(false);
+
+        let auto_reply_text = env::var("TG_AUTO_REPLY_TEXT")
+            .ok()
+            .and_then(|v| {
+                let t = v.trim();
+                if t.is_empty() {
+                    None
+                } else {
+                    Some(t.to_string())
+                }
+            })
+            .unwrap_or_else(|| "已收到你的訊息，Sirin 正在分析，稍後回覆。".to_string());
+
+        let reply_private = env::var("TG_REPLY_PRIVATE")
+            .ok()
+            .map(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(true);
+
+        let reply_groups = env::var("TG_REPLY_GROUPS")
+            .ok()
+            .map(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(true);
+
         let group_ids: Vec<i64> = env::var("TG_GROUP_IDS")
             .unwrap_or_default()
             .split(',')
@@ -89,6 +126,10 @@ impl TelegramConfig {
             api_id,
             api_hash,
             phone,
+            auto_reply_enabled,
+            auto_reply_text,
+            reply_private,
+            reply_groups,
             group_ids,
         })
     }
@@ -244,7 +285,17 @@ pub async fn run_listener(
             continue;
         }
 
-        if !cfg.group_ids.is_empty() {
+        let is_private = matches!(message.peer(), Some(Peer::User(_)));
+        if is_private && !cfg.reply_private {
+            continue;
+        }
+
+        if !is_private && !cfg.reply_groups {
+            continue;
+        }
+
+        // TG_GROUP_IDS only applies to group/channel chats.
+        if !is_private && !cfg.group_ids.is_empty() {
             let peer_id = message.peer_id().bare_id();
             if !cfg.group_ids.contains(&peer_id) {
                 continue;
@@ -266,6 +317,19 @@ pub async fn run_listener(
 
         let estimated_profit = estimate_profit(&text);
         let triggered = persona.should_trigger_remote_ai(estimated_profit);
+
+        if cfg.auto_reply_enabled {
+            let reply = cfg
+                .auto_reply_text
+                .replace("{persona}", &persona.name)
+                .replace("{profit}", &format!("{estimated_profit:.2}"));
+
+            if let Err(e) = message.reply(reply).await {
+                eprintln!("[telegram] Failed to auto-reply: {e}");
+            } else {
+                eprintln!("[telegram] Auto-reply sent");
+            }
+        }
 
         let entry = TaskEntry::ai_decision(&persona.name, estimated_profit, triggered);
         if let Err(e) = tracker.record(&entry) {

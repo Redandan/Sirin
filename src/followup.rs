@@ -6,14 +6,9 @@
 //! 1. Reads the last [`TASK_LOOKBACK`] lines from `data/tracking/task.jsonl`.
 //! 2. Filters entries whose `status` is `"FOLLOWING"` or `"PENDING"`.
 //! 3. Builds a prompt from the active [`Persona`] objectives + the filtered
-//!    entries and sends it to a locally-running Ollama instance.
+//!    entries and sends it to a local LLM backend (Ollama or LM Studio).
 //! 4. If the model responds that a follow-up is needed, updates those entries'
 //!    status to `"FOLLOWUP_NEEDED"` in the JSONL file.
-//!
-//! ## Ollama
-//!
-//! Expects Ollama at `http://localhost:11434`.  The model is taken from the
-//! `OLLAMA_MODEL` environment variable and defaults to `"llama3.2"`.
 
 use std::collections::HashMap;
 
@@ -30,8 +25,65 @@ const WORKER_INTERVAL_SECS: u64 = 30 * 60;
 /// Default Ollama base URL.
 const OLLAMA_BASE_URL: &str = "http://localhost:11434";
 
+/// Default LM Studio (OpenAI-compatible) base URL.
+const LM_STUDIO_BASE_URL: &str = "http://localhost:1234/v1";
+
 /// Default model name when `OLLAMA_MODEL` is not set.
 const DEFAULT_MODEL: &str = "llama3.2";
+
+fn worker_interval_secs() -> u64 {
+    std::env::var("FOLLOWUP_INTERVAL_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(WORKER_INTERVAL_SECS)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LlmBackend {
+    Ollama,
+    LmStudio,
+}
+
+#[derive(Debug, Clone)]
+struct LlmConfig {
+    backend: LlmBackend,
+    base_url: String,
+    model: String,
+    api_key: Option<String>,
+}
+
+impl LlmConfig {
+    fn from_env() -> Self {
+        let provider = std::env::var("LLM_PROVIDER")
+            .unwrap_or_else(|_| "ollama".to_string())
+            .to_lowercase();
+
+        match provider.as_str() {
+            "lmstudio" | "lm_studio" | "openai" => Self {
+                backend: LlmBackend::LmStudio,
+                base_url: std::env::var("LM_STUDIO_BASE_URL")
+                    .or_else(|_| std::env::var("OPENAI_BASE_URL"))
+                    .unwrap_or_else(|_| LM_STUDIO_BASE_URL.to_string()),
+                model: std::env::var("LM_STUDIO_MODEL")
+                    .or_else(|_| std::env::var("OPENAI_MODEL"))
+                    .unwrap_or_else(|_| DEFAULT_MODEL.to_string()),
+                api_key: std::env::var("LM_STUDIO_API_KEY")
+                    .or_else(|_| std::env::var("OPENAI_API_KEY"))
+                    .ok()
+                    .filter(|v| !v.trim().is_empty()),
+            },
+            _ => Self {
+                backend: LlmBackend::Ollama,
+                base_url: std::env::var("OLLAMA_BASE_URL")
+                    .unwrap_or_else(|_| OLLAMA_BASE_URL.to_string()),
+                model: std::env::var("OLLAMA_MODEL")
+                    .unwrap_or_else(|_| DEFAULT_MODEL.to_string()),
+                api_key: None,
+            },
+        }
+    }
+}
 
 // ── Ollama API types ──────────────────────────────────────────────────────────
 
@@ -46,6 +98,36 @@ struct OllamaRequest<'a> {
 #[derive(Debug, Deserialize)]
 struct OllamaResponse {
     response: String,
+}
+
+// ── OpenAI-compatible API types (LM Studio) ─────────────────────────────────
+
+#[derive(Debug, Serialize)]
+struct OpenAiRequest<'a> {
+    model: &'a str,
+    messages: Vec<OpenAiMessage<'a>>,
+    stream: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct OpenAiMessage<'a> {
+    role: &'a str,
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiResponse {
+    choices: Vec<OpenAiChoice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiChoice {
+    message: OpenAiChoiceMessage,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiChoiceMessage {
+    content: String,
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -110,19 +192,52 @@ async fn call_ollama(
     Ok(resp.response.trim().to_owned())
 }
 
+async fn call_openai_compatible(
+    client: &reqwest::Client,
+    base_url: &str,
+    model: &str,
+    api_key: Option<&str>,
+    prompt: String,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let base = base_url.trim_end_matches('/');
+    let url = format!("{base}/chat/completions");
+
+    let body = OpenAiRequest {
+        model,
+        messages: vec![OpenAiMessage {
+            role: "user",
+            content: prompt,
+        }],
+        stream: false,
+    };
+
+    let mut req = client.post(&url).json(&body);
+    if let Some(key) = api_key {
+        req = req.bearer_auth(key);
+    }
+
+    let resp: OpenAiResponse = req.send().await?.error_for_status()?.json().await?;
+
+    let content = resp
+        .choices
+        .first()
+        .map(|c| c.message.content.trim().to_string())
+        .unwrap_or_default();
+
+    Ok(content)
+}
+
 // ── Worker ────────────────────────────────────────────────────────────────────
 
 /// Spawn the follow-up worker.  Runs on a [`WORKER_INTERVAL_SECS`]-second
 /// timer and never returns under normal operation.
 pub async fn run_worker(tracker: TaskTracker) {
     let client = reqwest::Client::new();
-    let ollama_url = std::env::var("OLLAMA_BASE_URL")
-        .unwrap_or_else(|_| OLLAMA_BASE_URL.to_string());
-    let model = std::env::var("OLLAMA_MODEL")
-        .unwrap_or_else(|_| DEFAULT_MODEL.to_string());
+    let llm = LlmConfig::from_env();
+    let interval_secs = worker_interval_secs();
 
     let mut interval =
-        tokio::time::interval(std::time::Duration::from_secs(WORKER_INTERVAL_SECS));
+        tokio::time::interval(std::time::Duration::from_secs(interval_secs));
 
     // Skip the first immediate tick so the app finishes initialising first.
     interval.tick().await;
@@ -130,7 +245,7 @@ pub async fn run_worker(tracker: TaskTracker) {
     loop {
         interval.tick().await;
 
-        if let Err(e) = run_once(&client, &ollama_url, &model, &tracker).await {
+        if let Err(e) = run_once(&client, &llm, &tracker).await {
             eprintln!("[followup] Worker error: {e}");
         }
     }
@@ -139,8 +254,7 @@ pub async fn run_worker(tracker: TaskTracker) {
 /// Execute one follow-up cycle and return any error encountered.
 async fn run_once(
     client: &reqwest::Client,
-    ollama_url: &str,
-    model: &str,
+    llm: &LlmConfig,
     tracker: &TaskTracker,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // 1. Load persona.
@@ -165,16 +279,34 @@ async fn run_once(
         return Ok(());
     }
 
+    let backend_name = match llm.backend {
+        LlmBackend::Ollama => "ollama",
+        LlmBackend::LmStudio => "lmstudio",
+    };
+
     eprintln!(
-        "[followup] Sending {} actionable task(s) to Ollama model '{model}'",
-        actionable.len()
+        "[followup] Sending {} actionable task(s) to {backend_name} model '{}'",
+        actionable.len(),
+        llm.model
     );
 
     // 4. Call local LLM.
     let prompt = build_prompt(&persona, &actionable);
-    let response = call_ollama(client, ollama_url, model, prompt).await?;
+    let response = match llm.backend {
+        LlmBackend::Ollama => call_ollama(client, &llm.base_url, &llm.model, prompt).await?,
+        LlmBackend::LmStudio => {
+            call_openai_compatible(
+                client,
+                &llm.base_url,
+                &llm.model,
+                llm.api_key.as_deref(),
+                prompt,
+            )
+            .await?
+        }
+    };
 
-    eprintln!("[followup] Ollama response: {response}");
+    eprintln!("[followup] LLM response: {response}");
 
     // 5. If follow-up is needed, mark all actionable entries.
     if response.contains("FOLLOWUP_NEEDED") {
