@@ -37,6 +37,17 @@ const OLLAMA_BASE_URL: &str = "http://localhost:11434";
 const LM_STUDIO_BASE_URL: &str = "http://localhost:1234/v1";
 const DEFAULT_MODEL: &str = "llama3.2";
 
+fn message_preview(text: &str, max_chars: usize) -> String {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut chars = normalized.chars();
+    let preview: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{preview}...")
+    } else {
+        preview
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 enum ReplyLlmBackend {
     Ollama,
@@ -369,6 +380,7 @@ fn execute_user_request(
             timestamp: Utc::now().to_rfc3339(),
             event: "user_request".to_string(),
             persona: persona_name.to_string(),
+            message_preview: Some(message_preview(normalized, 140)),
             trigger_remote_ai: None,
             estimated_profit_usd: None,
             status: Some("PENDING".to_string()),
@@ -893,16 +905,39 @@ pub async fn run_listener(
                 ai_reply
             };
 
-            if let Err(e) = message.reply(final_reply).await {
+            if is_private {
+                if let Some(peer_ref) = message.peer_ref().await {
+                    match client.send_message(peer_ref, final_reply.as_str()).await {
+                        Ok(_) => eprintln!("[telegram] Auto-reply sent (AI path, private direct message)"),
+                        Err(e) => {
+                            eprintln!("[telegram] Private direct send failed, fallback to reply: {e}");
+                            if let Err(reply_err) = message.reply(final_reply).await {
+                                eprintln!("[telegram] Failed to auto-reply: {reply_err}");
+                            } else {
+                                eprintln!("[telegram] Auto-reply sent (AI path, private reply fallback)");
+                            }
+                        }
+                    }
+                } else if let Err(reply_err) = message.reply(final_reply).await {
+                    eprintln!("[telegram] Private peer_ref missing and reply failed: {reply_err}");
+                } else {
+                    eprintln!("[telegram] Private peer_ref missing, sent via reply fallback");
+                }
+            } else if let Err(e) = message.reply(final_reply).await {
                 eprintln!("[telegram] Failed to auto-reply: {e}");
             } else {
-                eprintln!("[telegram] Auto-reply sent (AI path)");
+                eprintln!("[telegram] Auto-reply sent (AI path, group reply)");
             }
         } else if cfg.debug_updates {
             eprintln!("[telegram] skip: auto-reply disabled by TG_AUTO_REPLY");
         }
 
-        let entry = TaskEntry::ai_decision(persona_name, estimated_profit, triggered);
+        let entry = TaskEntry::ai_decision(
+            persona_name,
+            Some(message_preview(&text, 140)),
+            estimated_profit,
+            triggered,
+        );
         if let Err(e) = tracker.record(&entry) {
             eprintln!("[telegram] Failed to record task entry: {e}");
         }

@@ -33,7 +33,15 @@ fn task_log_path() -> std::path::PathBuf {
 fn read_tasks(
     state: tauri::State<'_, persona::TaskTracker>,
 ) -> Result<Vec<persona::TaskEntry>, String> {
-    state.read_last_n(50).map_err(|e| e.to_string())
+    state
+        .read_last_n(50)
+        .map(|entries| {
+            entries
+                .into_iter()
+                .filter(|entry| entry.event != "heartbeat")
+                .collect()
+        })
+        .map_err(|e| e.to_string())
 }
 
 /// Mark a task as approved (status → `"DONE"`) and record a `skill_executed`
@@ -51,6 +59,8 @@ fn approve_task(
     app: tauri::AppHandle,
     state: tauri::State<'_, persona::TaskTracker>,
 ) -> Result<(), String> {
+    let original_entry = state.find_by_timestamp(&timestamp).map_err(|e| e.to_string())?;
+
     // 1. Update the task status in the JSONL file.
     let mut updates = std::collections::HashMap::new();
     updates.insert(timestamp.clone(), "DONE".to_string());
@@ -62,6 +72,7 @@ fn approve_task(
         timestamp: chrono::Utc::now().to_rfc3339(),
         event: format!("skill_executed:{skill_name}"),
         persona: "Sirin".to_string(),
+        message_preview: original_entry.and_then(|entry| entry.message_preview),
         trigger_remote_ai: None,
         estimated_profit_usd: None,
         status: Some("DONE".to_string()),
@@ -82,14 +93,6 @@ fn approve_task(
 async fn background_loop() {
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
     let tracker = persona::TaskTracker::new(task_log_path());
-    // Use same LOCALAPPDATA path to avoid triggering Tauri's file watcher
-    let decision_tracker = tracker.clone();
-    let simulated_messages = [
-        ("Monitor Agora latency spikes from VIP channel", 8.0_f64),
-        ("General chatter, no immediate business action", 2.0_f64),
-        ("Maintain VIPs escalation requested by leadership", 40.0_f64),
-    ];
-    let mut index = 0_usize;
 
     // Consume the first instant tick so the loop waits a full 60 seconds before its first execution
     interval.tick().await;
@@ -110,32 +113,6 @@ async fn background_loop() {
         let entry = persona::TaskEntry::heartbeat(p.name());
         if let Err(e) = tracker.record(&entry) {
             eprintln!("[sirin] Failed to record task entry: {e}");
-        }
-
-        // Simulate one incoming Telegram message and run the Decision Engine.
-        let (msg_text, estimated_value) = simulated_messages[index % simulated_messages.len()];
-        index += 1;
-
-        let incoming = persona::IncomingMessage {
-            source: "telegram_simulated".to_string(),
-            msg: msg_text.to_string(),
-        };
-        let decision = persona::BehaviorEngine::evaluate(incoming, estimated_value, &p);
-
-        eprintln!(
-            "[decision] tier={:?}, high_priority={}, reason={}, draft={}",
-            decision.tier,
-            decision.high_priority,
-            decision.reason,
-            decision.draft
-        );
-
-        let decision_entry = persona::TaskEntry::behavior_decision(&p, estimated_value, &decision);
-        if let Err(e) = tracker.record(&decision_entry) {
-            eprintln!("[sirin] Failed to record decision entry: {e}");
-        }
-        if let Err(e) = decision_tracker.record(&decision_entry) {
-            eprintln!("[sirin] Failed to record decision entry to data/tracking/task.jsonl: {e}");
         }
     }
 }

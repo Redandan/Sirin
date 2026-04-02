@@ -218,6 +218,8 @@ pub struct TaskEntry {
     pub event: String,
     pub persona: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_preview: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub trigger_remote_ai: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub estimated_profit_usd: Option<f64>,
@@ -237,6 +239,7 @@ impl TaskEntry {
             timestamp: Utc::now().to_rfc3339(),
             event: "heartbeat".to_string(),
             persona: persona_name.to_string(),
+            message_preview: None,
             trigger_remote_ai: None,
             estimated_profit_usd: None,
             status: None,
@@ -246,11 +249,17 @@ impl TaskEntry {
         }
     }
 
-    pub fn ai_decision(persona_name: &str, estimated_profit: f64, triggered: bool) -> Self {
+    pub fn ai_decision(
+        persona_name: &str,
+        message_preview: Option<String>,
+        estimated_profit: f64,
+        triggered: bool,
+    ) -> Self {
         Self {
             timestamp: Utc::now().to_rfc3339(),
             event: "ai_decision".to_string(),
             persona: persona_name.to_string(),
+            message_preview,
             trigger_remote_ai: Some(triggered),
             estimated_profit_usd: Some(estimated_profit),
             status: if triggered { Some("PENDING".to_string()) } else { None },
@@ -275,6 +284,7 @@ impl TaskEntry {
             timestamp: Utc::now().to_rfc3339(),
             event: "behavior_decision".to_string(),
             persona: persona.name().to_string(),
+            message_preview: None,
             trigger_remote_ai: Some(matches!(decision.tier, ActionTier::Escalate)),
             estimated_profit_usd: Some(estimated_value),
             status,
@@ -377,6 +387,34 @@ impl TaskTracker {
 
         fs::rename(&tmp_path, &path)?;
         Ok(())
+    }
+
+    pub fn find_by_timestamp(
+        &self,
+        timestamp: &str,
+    ) -> Result<Option<TaskEntry>, Box<dyn std::error::Error + Send + Sync>> {
+        let path = self.path.lock().expect("TaskTracker mutex poisoned").clone();
+        if !path.exists() {
+            return Ok(None);
+        }
+
+        let file = fs::File::open(&path)?;
+        let reader = BufReader::new(file);
+
+        for line in reader.lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            if let Ok(entry) = serde_json::from_str::<TaskEntry>(&line) {
+                if entry.timestamp == timestamp {
+                    return Ok(Some(entry));
+                }
+            }
+        }
+
+        Ok(None)
     }
 }
 

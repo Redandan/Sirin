@@ -33,6 +33,7 @@ interface TaskEntry {
   timestamp: string;
   event: string;
   persona: string;
+  message_preview?: string;
   trigger_remote_ai?: boolean;
   estimated_profit_usd?: number;
   /** PENDING | FOLLOWING | FOLLOWUP_NEEDED | DONE */
@@ -61,15 +62,35 @@ function statusVariant(status?: string): StatusVariant {
 function statusLabel(status?: string): string {
   switch (status) {
     case "PENDING":
-      return "Pending";
+      return "待處理";
     case "FOLLOWING":
-      return "Following";
+      return "跟進中";
     case "FOLLOWUP_NEEDED":
-      return "Follow-up Needed";
+      return "需要跟進";
     case "DONE":
-      return "Done";
+      return "已完成";
     default:
       return status ?? "—";
+  }
+}
+
+function eventLabel(event: string): string {
+  switch (event) {
+    case "ai_decision":
+      return "AI 決策";
+    case "behavior_decision":
+      return "行為決策";
+    case "user_request":
+      return "使用者請求";
+    case "heartbeat":
+      return "心跳";
+    case "skill_executed:send_tg_reply":
+      return "已執行：發送 Telegram 回覆";
+    default:
+      if (event.startsWith("skill_executed:")) {
+        return `已執行：${event.replace("skill_executed:", "")}`;
+      }
+      return event;
   }
 }
 
@@ -122,19 +143,25 @@ function TaskCard({ entry, onApprove, approving }: TaskCardProps) {
         <div className="flex items-center gap-2 min-w-0">
           <StatusIcon status={entry.status} />
           <CardTitle className="truncate text-sm font-semibold">
-            {entry.event}
+            {eventLabel(entry.event)}
           </CardTitle>
         </div>
         <Badge variant={variant}>{statusLabel(entry.status)}</Badge>
       </CardHeader>
 
       <CardContent>
+        {entry.message_preview && (
+          <div className="mb-4 rounded-lg border border-slate-200/80 bg-slate-50 px-3 py-2 text-sm leading-6 text-slate-700 dark:border-slate-800 dark:bg-slate-900/70 dark:text-slate-200">
+            {entry.message_preview}
+          </div>
+        )}
+
         <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm text-slate-600 dark:text-slate-300">
           <span className="font-medium text-slate-400 dark:text-slate-500 uppercase tracking-wide text-[10px]">
             Persona
           </span>
           <span className="font-medium text-slate-400 dark:text-slate-500 uppercase tracking-wide text-[10px]">
-            Time
+            時間
           </span>
           <span className="truncate">{entry.persona}</span>
           <span className="truncate">{formatTimestamp(entry.timestamp)}</span>
@@ -142,15 +169,15 @@ function TaskCard({ entry, onApprove, approving }: TaskCardProps) {
           {entry.estimated_profit_usd !== undefined && (
             <>
               <span className="font-medium text-slate-400 dark:text-slate-500 uppercase tracking-wide text-[10px] mt-2">
-                Est. Profit
+                預估收益
               </span>
               <span className="font-medium text-slate-400 dark:text-slate-500 uppercase tracking-wide text-[10px] mt-2">
-                ROI Triggered
+                已觸發 ROI
               </span>
               <span className="font-semibold text-emerald-700 dark:text-emerald-300">
                 ${entry.estimated_profit_usd.toFixed(2)}
               </span>
-              <span>{entry.trigger_remote_ai ? "Yes" : "No"}</span>
+              <span>{entry.trigger_remote_ai ? "是" : "否"}</span>
             </>
           )}
         </div>
@@ -164,7 +191,7 @@ function TaskCard({ entry, onApprove, approving }: TaskCardProps) {
               className="gap-1.5"
             >
               <CheckCircle2 className="h-3.5 w-3.5" />
-              Quick Approve
+              快速核准
             </Button>
           </div>
         )}
@@ -257,7 +284,7 @@ export function TaskBoard() {
           <h1 className="text-2xl font-bold tracking-tight">Live Task Board</h1>
           {lastRefresh && (
             <p className="text-sm text-slate-400 dark:text-slate-500 mt-0.5">
-              Last refreshed {formatTimestamp(lastRefresh.toISOString())}
+              上次更新 {formatTimestamp(lastRefresh.toISOString())}
             </p>
           )}
         </div>
@@ -269,7 +296,7 @@ export function TaskBoard() {
             className="gap-1.5"
           >
             {theme === "dark" ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
-            {theme === "dark" ? "Light" : "Dark"}
+            {theme === "dark" ? "淺色" : "深色"}
           </Button>
           <Button
             variant="outline"
@@ -279,7 +306,7 @@ export function TaskBoard() {
             className="gap-1.5"
           >
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
-            Refresh
+            重新整理
           </Button>
         </div>
       </div>
@@ -307,7 +334,7 @@ export function TaskBoard() {
       {actionable.length > 0 && (
         <section className="space-y-3">
           <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400 dark:text-slate-500">
-            Needs Attention ({actionable.length})
+            待處理事項 ({actionable.length})
           </h2>
           {actionable.map((t) => (
             <TaskCard
@@ -324,7 +351,7 @@ export function TaskBoard() {
       {rest.length > 0 && (
         <section className="space-y-3">
           <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400 dark:text-slate-500">
-            Recent Activity ({rest.length})
+            最近活動 ({rest.length})
           </h2>
           {rest.map((t) => (
             <TaskCard
@@ -341,9 +368,9 @@ export function TaskBoard() {
       {!loading && tasks.length === 0 && (
         <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-300 py-16 text-slate-400 dark:border-slate-700 dark:text-slate-500">
           <Activity className="h-8 w-8 mb-3 opacity-40" />
-          <p className="text-sm font-medium">No tasks yet</p>
+          <p className="text-sm font-medium">目前沒有任務</p>
           <p className="text-xs mt-1">
-            Tasks appear here when Sirin processes signals.
+            Sirin 處理到需要展示的訊號後，會顯示在這裡。
           </p>
         </div>
       )}

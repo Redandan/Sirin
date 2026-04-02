@@ -358,6 +358,7 @@ mod tests {
             timestamp: "2024-01-01T00:00:00Z".into(),
             event: "ai_decision".into(),
             persona: "TestBot".into(),
+            message_preview: Some("Monitor Agora signal and respond".into()),
             trigger_remote_ai: Some(true),
             estimated_profit_usd: Some(10.0),
             status: Some("PENDING".into()),
