@@ -16,7 +16,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { RefreshCw, CheckCircle2, Clock, AlertCircle, Activity } from "lucide-react";
+import { RefreshCw, CheckCircle2, Clock, AlertCircle, Activity, Moon, Sun } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -117,7 +117,7 @@ function TaskCard({ entry, onApprove, approving }: TaskCardProps) {
   const variant = statusVariant(entry.status);
 
   return (
-    <Card className="transition-shadow hover:shadow-md">
+    <Card className="transition-shadow hover:shadow-md dark:hover:shadow-slate-950/40">
       <CardHeader className="flex-row items-start justify-between gap-3 space-y-0">
         <div className="flex items-center gap-2 min-w-0">
           <StatusIcon status={entry.status} />
@@ -129,11 +129,11 @@ function TaskCard({ entry, onApprove, approving }: TaskCardProps) {
       </CardHeader>
 
       <CardContent>
-        <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm text-gray-600">
-          <span className="font-medium text-gray-400 uppercase tracking-wide text-[10px]">
+        <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm text-slate-600 dark:text-slate-300">
+          <span className="font-medium text-slate-400 dark:text-slate-500 uppercase tracking-wide text-[10px]">
             Persona
           </span>
-          <span className="font-medium text-gray-400 uppercase tracking-wide text-[10px]">
+          <span className="font-medium text-slate-400 dark:text-slate-500 uppercase tracking-wide text-[10px]">
             Time
           </span>
           <span className="truncate">{entry.persona}</span>
@@ -141,13 +141,13 @@ function TaskCard({ entry, onApprove, approving }: TaskCardProps) {
 
           {entry.estimated_profit_usd !== undefined && (
             <>
-              <span className="font-medium text-gray-400 uppercase tracking-wide text-[10px] mt-2">
+              <span className="font-medium text-slate-400 dark:text-slate-500 uppercase tracking-wide text-[10px] mt-2">
                 Est. Profit
               </span>
-              <span className="font-medium text-gray-400 uppercase tracking-wide text-[10px] mt-2">
+              <span className="font-medium text-slate-400 dark:text-slate-500 uppercase tracking-wide text-[10px] mt-2">
                 ROI Triggered
               </span>
-              <span className="font-semibold text-green-700">
+              <span className="font-semibold text-emerald-700 dark:text-emerald-300">
                 ${entry.estimated_profit_usd.toFixed(2)}
               </span>
               <span>{entry.trigger_remote_ai ? "Yes" : "No"}</span>
@@ -183,7 +183,28 @@ export function TaskBoard() {
   const [error, setError] = useState<string | null>(null);
   const [approvingId, setApprovingId] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
+  const [theme, setTheme] = useState<"light" | "dark">("light");
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    const savedTheme = typeof window !== "undefined" ? localStorage.getItem("sirin-theme") : null;
+    const resolvedTheme =
+      savedTheme === "dark" || savedTheme === "light"
+        ? savedTheme
+        : window.matchMedia("(prefers-color-scheme: dark)").matches
+        ? "dark"
+        : "light";
+
+    document.documentElement.classList.toggle("dark", resolvedTheme === "dark");
+    setTheme(resolvedTheme);
+  }, []);
+
+  const toggleTheme = useCallback(() => {
+    const nextTheme = theme === "dark" ? "light" : "dark";
+    document.documentElement.classList.toggle("dark", nextTheme === "dark");
+    localStorage.setItem("sirin-theme", nextTheme);
+    setTheme(nextTheme);
+  }, [theme]);
 
   const fetchTasks = useCallback(async () => {
     try {
@@ -235,26 +256,37 @@ export function TaskBoard() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Live Task Board</h1>
           {lastRefresh && (
-            <p className="text-sm text-gray-400 mt-0.5">
+            <p className="text-sm text-slate-400 dark:text-slate-500 mt-0.5">
               Last refreshed {formatTimestamp(lastRefresh.toISOString())}
             </p>
           )}
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={fetchTasks}
-          disabled={loading}
-          className="gap-1.5"
-        >
-          <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
-          Refresh
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={toggleTheme}
+            className="gap-1.5"
+          >
+            {theme === "dark" ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
+            {theme === "dark" ? "Light" : "Dark"}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={fetchTasks}
+            disabled={loading}
+            className="gap-1.5"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+            Refresh
+          </Button>
+        </div>
       </div>
 
       {/* Error banner */}
       {error && (
-        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-300">
           {error}
         </div>
       )}
@@ -265,7 +297,7 @@ export function TaskBoard() {
           {[1, 2, 3].map((n) => (
             <div
               key={n}
-              className="h-28 rounded-xl border border-gray-200 bg-white animate-pulse"
+              className="h-28 rounded-xl border border-slate-200 bg-white animate-pulse dark:border-slate-800 dark:bg-slate-900"
             />
           ))}
         </div>
@@ -274,7 +306,7 @@ export function TaskBoard() {
       {/* Actionable tasks */}
       {actionable.length > 0 && (
         <section className="space-y-3">
-          <h2 className="text-xs font-semibold uppercase tracking-widest text-gray-400">
+          <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400 dark:text-slate-500">
             Needs Attention ({actionable.length})
           </h2>
           {actionable.map((t) => (
@@ -291,7 +323,7 @@ export function TaskBoard() {
       {/* Other tasks */}
       {rest.length > 0 && (
         <section className="space-y-3">
-          <h2 className="text-xs font-semibold uppercase tracking-widest text-gray-400">
+          <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400 dark:text-slate-500">
             Recent Activity ({rest.length})
           </h2>
           {rest.map((t) => (
@@ -307,7 +339,7 @@ export function TaskBoard() {
 
       {/* Empty state */}
       {!loading && tasks.length === 0 && (
-        <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-gray-300 py-16 text-gray-400">
+        <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-300 py-16 text-slate-400 dark:border-slate-700 dark:text-slate-500">
           <Activity className="h-8 w-8 mb-3 opacity-40" />
           <p className="text-sm font-medium">No tasks yet</p>
           <p className="text-xs mt-1">

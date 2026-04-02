@@ -7,6 +7,11 @@
   --foreground: 240 10% 10%;
 }
 
+.dark {
+  --background: 222 47% 7%;
+  --foreground: 210 20% 96%;
+}
+
 body {
-  @apply bg-gray-50 text-gray-900 font-sans antialiased;
+  @apply font-sans antialiased bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100 transition-colors;
 }
