@@ -7,7 +7,7 @@ mod followup;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    Manager, WindowEvent,
+    Emitter, Manager, WindowEvent,
 };
 
 // ── Tauri commands ────────────────────────────────────────────────────────────
@@ -101,7 +101,7 @@ fn main() {
     tauri::Builder::default()
         .manage(tracker.clone())
         .invoke_handler(tauri::generate_handler![read_tasks, approve_task])
-        .setup(|app| {
+        .setup(move |app| {
             // Build tray menu items
             let show_item =
                 MenuItem::with_id(app, "show", "Show Sirin", true, None::<&str>)?;
@@ -127,11 +127,11 @@ fn main() {
                 .build(app)?;
 
             // Spawn the persistent background loop
-            tokio::spawn(background_loop());
+            tauri::async_runtime::spawn(background_loop());
 
             // Spawn the Telegram listener (non-fatal if credentials are absent)
             let tg_tracker = tracker.clone();
-            tokio::spawn(async move {
+            tauri::async_runtime::spawn(async move {
                 if let Err(e) = telegram::run_listener(tg_tracker).await {
                     eprintln!("[telegram] Listener exited: {e}");
                 }
@@ -139,7 +139,7 @@ fn main() {
 
             // Spawn the follow-up worker (runs every 30 minutes)
             let fu_tracker = tracker.clone();
-            tokio::spawn(followup::run_worker(fu_tracker));
+            tauri::async_runtime::spawn(followup::run_worker(fu_tracker));
 
             Ok(())
         })

@@ -16,10 +16,12 @@
 //! The Telegram session is stored in `data/sirin.session` so that re-runs do
 //! not require re-authentication.
 
-use std::env;
+use std::{env, sync::Arc};
 
-use grammers_client::{Client, Config, InitParams, Update};
-use grammers_session::Session;
+use grammers_client::client::UpdatesConfiguration;
+use grammers_client::{Client, SenderPool};
+use grammers_client::update::Update;
+use grammers_session::storages::SqliteSession;
 
 use crate::persona::{Persona, TaskEntry, TaskTracker};
 
@@ -28,9 +30,11 @@ const NOTIFICATION_PREVIEW_LEN: usize = 120;
 
 /// Path where the persistent Telegram session file is stored.
 const SESSION_PATH: &str = "data/sirin.session";
+
 struct TelegramConfig {
     api_id: i32,
     api_hash: String,
+    bot_token: Option<String>,
     /// Group / channel IDs that Sirin should monitor.
     group_ids: Vec<i64>,
 }
@@ -48,6 +52,7 @@ impl TelegramConfig {
 
         let api_hash = env::var("TG_API_HASH")
             .map_err(|_| "TG_API_HASH not set in environment")?;
+        let bot_token = env::var("TG_BOT_TOKEN").ok().filter(|value| !value.trim().is_empty());
 
         let group_ids: Vec<i64> = env::var("TG_GROUP_IDS")
             .unwrap_or_default()
@@ -62,7 +67,12 @@ impl TelegramConfig {
             })
             .collect();
 
-        Ok(Self { api_id, api_hash, group_ids })
+        Ok(Self {
+            api_id,
+            api_hash,
+            bot_token,
+            group_ids,
+        })
     }
 }
 
@@ -122,25 +132,41 @@ pub async fn run_listener(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let cfg = TelegramConfig::from_env()?;
 
-    // Load or create the persistent session file.
     std::fs::create_dir_all("data")?;
-    let session = Session::load_file_or_create(SESSION_PATH)?;
+    let session = Arc::new(SqliteSession::open(SESSION_PATH).await?);
+    let SenderPool {
+        runner,
+        updates,
+        handle,
+    } = SenderPool::new(Arc::clone(&session), cfg.api_id);
+    let client = Client::new(handle.clone());
+    let pool_task = tokio::spawn(runner.run());
 
-    let client = Client::connect(Config {
-        session,
-        api_id: cfg.api_id,
-        api_hash: cfg.api_hash.clone(),
-        params: InitParams {
-            app_version: env!("CARGO_PKG_VERSION").to_string(),
-            ..Default::default()
-        },
-    })
-    .await?;
+    if !client.is_authorized().await? {
+        if let Some(bot_token) = cfg.bot_token.as_deref() {
+            client.bot_sign_in(bot_token, &cfg.api_hash).await?;
+        } else {
+            eprintln!("[telegram] Session is not authorized; set TG_BOT_TOKEN or complete Telegram login separately");
+            handle.quit();
+            let _ = pool_task.await;
+            return Ok(());
+        }
+    }
+
+    let mut updates = client
+        .stream_updates(
+            updates,
+            UpdatesConfiguration {
+                catch_up: true,
+                ..Default::default()
+            },
+        )
+        .await;
 
     eprintln!("[telegram] Connected to Telegram");
 
     loop {
-        let update = match client.next_update().await {
+        let update = match updates.next().await {
             Ok(u) => u,
             Err(e) => {
                 eprintln!("[telegram] Error receiving update: {e}");
@@ -153,15 +179,13 @@ pub async fn run_listener(
             continue;
         };
 
-        // Ignore messages that originate from Sirin itself.
         if message.outgoing() {
             continue;
         }
 
-        // Filter to only the configured groups (skip if list is empty ⇒ watch all).
         if !cfg.group_ids.is_empty() {
-            let chat_id = message.chat().id();
-            if !cfg.group_ids.contains(&chat_id) {
+            let peer_id = message.peer_id().bare_id();
+            if !cfg.group_ids.contains(&peer_id) {
                 continue;
             }
         }
@@ -171,7 +195,6 @@ pub async fn run_listener(
             continue;
         }
 
-        // Load the current persona (re-read each time so hot-config changes take effect).
         let persona = match Persona::load() {
             Ok(p) => p,
             Err(e) => {
@@ -183,7 +206,6 @@ pub async fn run_listener(
         let estimated_profit = estimate_profit(&text);
         let triggered = persona.should_trigger_remote_ai(estimated_profit);
 
-        // Record the decision to the tracking log.
         let entry = TaskEntry::ai_decision(&persona.name, estimated_profit, triggered);
         if let Err(e) = tracker.record(&entry) {
             eprintln!("[telegram] Failed to record task entry: {e}");
@@ -199,11 +221,6 @@ pub async fn run_listener(
                 "[telegram] ROI trigger fired (profit={estimated_profit:.2}, persona={})",
                 persona.name
             );
-        }
-
-        // Persist updated session state after each processed message.
-        if let Err(e) = client.session().save_to_file(SESSION_PATH) {
-            eprintln!("[telegram] Failed to save session: {e}");
         }
     }
 }
