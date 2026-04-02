@@ -13,7 +13,7 @@
 //! ## Ollama
 //!
 //! Expects Ollama at `http://localhost:11434`.  The model is taken from the
-//! `OLLAMA_MODEL` environment variable and defaults to `"llama3"`.
+//! `OLLAMA_MODEL` environment variable and defaults to `"llama3.2"`.
 
 use std::collections::HashMap;
 
