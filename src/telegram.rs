@@ -19,6 +19,7 @@
 use std::io::{self, Write};
 use std::{env, sync::Arc};
 
+use chrono::Utc;
 use grammers_client::client::UpdatesConfiguration;
 use grammers_client::peer::Peer;
 use grammers_client::SignInError;
@@ -53,6 +54,8 @@ struct TelegramConfig {
     reply_groups: bool,
     /// Group / channel IDs that Sirin should monitor.
     group_ids: Vec<i64>,
+    /// Message to send to self on startup. None = disabled.
+    startup_msg: Option<String>,
 }
 
 impl TelegramConfig {
@@ -122,6 +125,11 @@ impl TelegramConfig {
             })
             .collect();
 
+        let startup_msg = env::var("TG_STARTUP_MSG").ok().and_then(|v| {
+            let t = v.trim().to_string();
+            if t.is_empty() { None } else { Some(t) }
+        });
+
         Ok(Self {
             api_id,
             api_hash,
@@ -131,6 +139,7 @@ impl TelegramConfig {
             reply_private,
             reply_groups,
             group_ids,
+            startup_msg,
         })
     }
 }
@@ -267,6 +276,24 @@ pub async fn run_listener(
 
     eprintln!("[telegram] Connected to Telegram");
 
+    // Send startup notification to self
+    if let Some(ref msg) = cfg.startup_msg {
+        match client.get_me().await {
+            Ok(me) => {
+                if let Some(peer_ref) = me.to_ref().await {
+                    let text = msg
+                        .replace("{time}", &Utc::now().format("%Y-%m-%d %H:%M UTC").to_string());
+                    if let Err(e) = client.send_message(peer_ref, text.as_str()).await {
+                        eprintln!("[telegram] Failed to send startup message: {e}");
+                    } else {
+                        eprintln!("[telegram] Startup message sent to self");
+                    }
+                }
+            }
+            Err(e) => eprintln!("[telegram] get_me failed: {e}"),
+        }
+    }
+
     loop {
         let update = match updates.next().await {
             Ok(u) => u,
@@ -307,21 +334,19 @@ pub async fn run_listener(
             continue;
         }
 
-        let persona = match Persona::load() {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("[telegram] Could not load persona: {e}");
-                continue;
-            }
-        };
+        let persona = Persona::load().ok();
+        let persona_name = persona.as_ref().map(|p| p.name()).unwrap_or("Sirin");
 
         let estimated_profit = estimate_profit(&text);
-        let triggered = persona.should_trigger_remote_ai(estimated_profit);
+        let triggered = persona
+            .as_ref()
+            .map(|p| p.should_trigger_remote_ai(estimated_profit))
+            .unwrap_or(false);
 
         if cfg.auto_reply_enabled {
             let reply = cfg
                 .auto_reply_text
-                .replace("{persona}", &persona.name)
+                .replace("{persona}", persona_name)
                 .replace("{profit}", &format!("{estimated_profit:.2}"));
 
             if let Err(e) = message.reply(reply).await {
@@ -331,7 +356,7 @@ pub async fn run_listener(
             }
         }
 
-        let entry = TaskEntry::ai_decision(&persona.name, estimated_profit, triggered);
+        let entry = TaskEntry::ai_decision(persona_name, estimated_profit, triggered);
         if let Err(e) = tracker.record(&entry) {
             eprintln!("[telegram] Failed to record task entry: {e}");
         }
@@ -343,8 +368,7 @@ pub async fn run_listener(
                 &format!("Estimated profit: ${estimated_profit:.2}\n\n{preview}"),
             );
             eprintln!(
-                "[telegram] ROI trigger fired (profit={estimated_profit:.2}, persona={})",
-                persona.name
+                "[telegram] ROI trigger fired (profit={estimated_profit:.2}, persona={persona_name})",
             );
         }
     }

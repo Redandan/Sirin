@@ -136,7 +136,10 @@ struct OpenAiChoiceMessage {
 fn build_prompt(persona: &Persona, entries: &[&TaskEntry]) -> String {
     let objectives = format!(
         "Persona: {} (v{})\nDescription: {}\nROI threshold: ${:.2} USD",
-        persona.name, persona.version, persona.description, persona.roi_thresholds.min_trigger_usd
+        persona.name(),
+        persona.version,
+        persona.description,
+        persona.roi_thresholds.min_usd_to_call_remote_llm
     );
 
     let tasks: Vec<String> = entries
@@ -330,14 +333,21 @@ async fn run_once(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persona::{Persona, RoiThresholds, TaskEntry};
+    use crate::persona::{Identity, Persona, ProfessionalTone, RoiThresholds, TaskEntry};
 
     fn make_persona() -> Persona {
         Persona {
-            name: "TestBot".into(),
+            identity: Identity {
+                name: "TestBot".into(),
+                professional_tone: ProfessionalTone::Detailed,
+            },
+            objectives: vec!["Monitor Agora".into()],
             version: "1.0".into(),
             description: "Test trading agent".into(),
-            roi_thresholds: RoiThresholds { min_trigger_usd: 5.0 },
+            roi_thresholds: RoiThresholds {
+                min_usd_to_notify: 5.0,
+                min_usd_to_call_remote_llm: 25.0,
+            },
         }
     }
 
@@ -351,6 +361,9 @@ mod tests {
             trigger_remote_ai: Some(true),
             estimated_profit_usd: Some(10.0),
             status: Some("PENDING".into()),
+            reason: None,
+            action_tier: None,
+            high_priority: None,
         };
         let entries = vec![&entry];
         let prompt = build_prompt(&persona, &entries);
