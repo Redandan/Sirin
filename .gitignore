@@ -20,6 +20,9 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+# ── Tauri auto-generated schemas ──────────────────────────────────────────────
+/gen/
+
 # ── Tauri ─────────────────────────────────────────────────────────────────────
 src-tauri/target/
 src-tauri/WixTools/
