@@ -2,6 +2,7 @@
 
 mod persona;
 mod telegram;
+mod followup;
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -80,6 +81,10 @@ fn main() {
                     eprintln!("[telegram] Listener exited: {e}");
                 }
             });
+
+            // Spawn the follow-up worker (runs every 30 minutes)
+            let fu_tracker = persona::TaskTracker::new("data/tracking/task.jsonl");
+            tokio::spawn(followup::run_worker(fu_tracker));
 
             Ok(())
         })

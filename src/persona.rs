@@ -1,6 +1,6 @@
 use std::{
     fs::{self, OpenOptions},
-    io::Write,
+    io::{BufRead, BufReader, Write},
     path::PathBuf,
     sync::{Arc, Mutex},
 };
@@ -46,7 +46,7 @@ impl Persona {
 // ── Task log entry ────────────────────────────────────────────────────────────
 
 /// A single decision or activity record serialized as one JSON line.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct TaskEntry {
     /// RFC 3339 timestamp of when the entry was created.
     pub timestamp: String,
@@ -60,6 +60,9 @@ pub struct TaskEntry {
     /// Estimated profit that drove the decision, in USD.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub estimated_profit_usd: Option<f64>,
+    /// Workflow status for follow-up tracking (e.g. `"PENDING"`, `"FOLLOWING"`, `"FOLLOWUP_NEEDED"`, `"DONE"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
 }
 
 impl TaskEntry {
@@ -71,6 +74,7 @@ impl TaskEntry {
             persona: persona_name.to_string(),
             trigger_remote_ai: None,
             estimated_profit_usd: None,
+            status: None,
         }
     }
 
@@ -82,6 +86,7 @@ impl TaskEntry {
             persona: persona_name.to_string(),
             trigger_remote_ai: Some(triggered),
             estimated_profit_usd: Some(estimated_profit),
+            status: if triggered { Some("PENDING".to_string()) } else { None },
         }
     }
 }
@@ -122,6 +127,93 @@ impl TaskTracker {
             .append(true)
             .open(&*path)?;
         writeln!(file, "{line}")?;
+        Ok(())
+    }
+
+    /// Read and deserialize the last `n` lines of the log file.
+    ///
+    /// Uses a ring-buffer approach so only `n` lines are held in memory at a
+    /// time regardless of file size.  Lines that cannot be deserialized are
+    /// silently skipped.  Returns an empty `Vec` when the file does not exist.
+    pub fn read_last_n(&self, n: usize) -> Result<Vec<TaskEntry>, Box<dyn std::error::Error + Send + Sync>> {
+        let path = self.path.lock().expect("TaskTracker mutex poisoned").clone();
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let file = fs::File::open(&path)?;
+        let reader = BufReader::new(file);
+
+        // Ring-buffer: keep at most n raw lines.
+        let mut ring: std::collections::VecDeque<String> = std::collections::VecDeque::with_capacity(n);
+        for line in reader.lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            if ring.len() == n {
+                ring.pop_front();
+            }
+            ring.push_back(line);
+        }
+
+        let entries = ring
+            .iter()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect();
+        Ok(entries)
+    }
+
+    /// Rewrite the log file, replacing the `status` field of entries whose
+    /// `timestamp` matches a key in `updates`.
+    ///
+    /// Lines that cannot be parsed are preserved verbatim so no data is lost.
+    pub fn update_statuses(
+        &self,
+        updates: &std::collections::HashMap<String, String>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if updates.is_empty() {
+            return Ok(());
+        }
+        let path = self.path.lock().expect("TaskTracker mutex poisoned").clone();
+        if !path.exists() {
+            return Ok(());
+        }
+
+        // Read all existing lines.
+        let raw: Vec<String> = {
+            let file = fs::File::open(&path)?;
+            BufReader::new(file)
+                .lines()
+                .filter_map(|l| l.ok())
+                .collect()
+        };
+
+        // Rewrite with updated statuses where applicable.
+        let tmp_path = path.with_extension("jsonl.tmp");
+        {
+            let mut tmp = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&tmp_path)?;
+            for line in &raw {
+                if line.trim().is_empty() {
+                    writeln!(tmp, "{line}")?;
+                    continue;
+                }
+                if let Ok(mut entry) = serde_json::from_str::<TaskEntry>(line) {
+                    if let Some(new_status) = updates.get(&entry.timestamp) {
+                        entry.status = Some(new_status.clone());
+                        writeln!(tmp, "{}", serde_json::to_string(&entry)?)?;
+                        continue;
+                    }
+                }
+                writeln!(tmp, "{line}")?;
+            }
+        }
+
+        // Atomically replace original file with updated one.
+        fs::rename(&tmp_path, &path)?;
         Ok(())
     }
 }
