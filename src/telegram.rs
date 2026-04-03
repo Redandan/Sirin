@@ -31,6 +31,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::memory::{append_context, load_recent_context};
 use crate::persona::{Persona, TaskEntry, TaskTracker};
+use crate::researcher;
 use crate::skills::ddg_search;
 
 const OLLAMA_BASE_URL: &str = "http://localhost:11434";
@@ -469,6 +470,49 @@ fn should_search(text: &str) -> bool {
         || lower.contains("who")
 }
 
+/// Detect if a message is a research request.
+///
+/// Returns `Some((topic, url))` when the message starts with a research keyword.
+/// The URL is extracted from the message if present.
+fn detect_research_intent(text: &str) -> Option<(String, Option<String>)> {
+    let normalized = text.trim();
+    let lower = normalized.to_lowercase();
+
+    let is_research = lower.starts_with("調研")
+        || lower.starts_with("研究")
+        || lower.starts_with("幫我研究")
+        || lower.starts_with("幫我調研")
+        || lower.starts_with("幫我查一下")
+        || lower.starts_with("幫我查")
+        || lower.starts_with("深入研究")
+        || lower.starts_with("背景調研");
+
+    if !is_research {
+        return None;
+    }
+
+    // Extract URL using simple pattern matching.
+    let url = normalized
+        .split_whitespace()
+        .find(|token| token.starts_with("http://") || token.starts_with("https://"))
+        .map(|s| s.to_string());
+
+    // The topic is the full message text, trimmed of the keyword.
+    let topic = normalized
+        .trim_start_matches("幫我調研")
+        .trim_start_matches("幫我研究")
+        .trim_start_matches("幫我查一下")
+        .trim_start_matches("幫我查")
+        .trim_start_matches("深入研究")
+        .trim_start_matches("背景調研")
+        .trim_start_matches("調研")
+        .trim_start_matches("研究")
+        .trim()
+        .to_string();
+
+    Some((if topic.is_empty() { normalized.to_string() } else { topic }, url))
+}
+
 fn build_ai_reply_prompt(
     persona: Option<&Persona>,
     user_text: &str,
@@ -836,7 +880,25 @@ pub async fn run_listener(
                 })
                 .unwrap_or(("自然、禮貌、專業", "已收到你的訊息。", "我會按照你的要求處理。"));
 
-            let execution_result = execute_user_request(&text, &tracker, persona_name);
+            // Check for research intent before normal command dispatch.
+            let research_execution: Option<String> = if let Some((topic, url)) = detect_research_intent(&text) {
+                let topic_clone = topic.clone();
+                let url_clone = url.clone();
+                tokio::spawn(async move {
+                    let task = researcher::run_research(topic_clone, url_clone).await;
+                    eprintln!("[researcher] Background task '{}' completed with status={:?}", task.id, task.status);
+                });
+                let url_hint = url.map(|u| format!(" ({})", u)).unwrap_or_default();
+                Some(format!(
+                    "執行結果：已啟動背景調研任務「{}{}」，完成後結果將記錄在任務板。",
+                    topic, url_hint
+                ))
+            } else {
+                None
+            };
+
+            let execution_result = research_execution
+                .or_else(|| execute_user_request(&text, &tracker, persona_name));
             let fallback_reply = cfg
                 .auto_reply_text
                 .replace("{persona}", persona_name)
@@ -970,5 +1032,47 @@ pub async fn run_listener(
         if let Err(e) = tracker.record(&entry) {
             eprintln!("[telegram] Failed to record task entry: {e}");
         }
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn research_intent_url_extracted() {
+        let (topic, url) = detect_research_intent("調研 https://agoramarket.purrtechllc.com/").unwrap();
+        assert!(url.as_deref() == Some("https://agoramarket.purrtechllc.com/"), "url={url:?}");
+        assert!(topic.contains("agoramarket"), "topic={topic}");
+    }
+
+    #[test]
+    fn research_intent_topic_only() {
+        let (topic, url) = detect_research_intent("幫我研究 Rust async runtime 的工作原理").unwrap();
+        assert!(url.is_none());
+        assert!(topic.contains("Rust"), "topic={topic}");
+    }
+
+    #[test]
+    fn research_intent_not_triggered() {
+        assert!(detect_research_intent("你好嗎").is_none());
+        assert!(detect_research_intent("what is the weather?").is_none());
+    }
+
+    #[test]
+    fn research_intent_various_prefixes() {
+        assert!(detect_research_intent("幫我調研 某主題").is_some());
+        assert!(detect_research_intent("背景調研 https://example.com").is_some());
+        assert!(detect_research_intent("深入研究 某主題").is_some());
+    }
+
+    #[test]
+    fn should_search_triggers_on_question_words() {
+        assert!(should_search("什麼是 Rust？"));
+        assert!(should_search("how does async work?"));
+        assert!(should_search("why is the sky blue"));
+        assert!(!should_search("你好"));
     }
 }

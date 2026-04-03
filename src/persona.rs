@@ -427,6 +427,7 @@ mod tests {
                 min_usd_to_notify: 5.0,
                 min_usd_to_call_remote_llm: 25.0,
             },
+            response_style: ResponseStyle::default(),
             version: "1.0".to_string(),
             description: "test".to_string(),
         }

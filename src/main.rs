@@ -4,6 +4,7 @@ mod persona;
 mod telegram;
 mod followup;
 mod memory;
+mod researcher;
 mod skills;
 
 use tauri::{
@@ -119,6 +120,39 @@ fn clear_context() -> Result<(), String> {
     memory::clear_context().map_err(|e| e.to_string())
 }
 
+/// Start a background research task on a topic and optional URL.
+///
+/// Returns the new task ID immediately; the pipeline runs in the background.
+/// Called from the frontend via `invoke('start_research', { topic, url })`.
+#[tauri::command]
+async fn start_research(topic: String, url: Option<String>) -> Result<String, String> {
+    let task_id = format!("r-{}", chrono::Utc::now().timestamp_millis());
+    let id_clone = task_id.clone();
+    tokio::spawn(async move {
+        let task = researcher::run_research(topic, url).await;
+        eprintln!("[researcher] Task '{}' finished: {:?}", task.id, task.status);
+    });
+    Ok(id_clone)
+}
+
+/// Get the current status of a research task by ID.
+///
+/// Called from the frontend via `invoke('get_research_status', { id })`.
+#[tauri::command]
+fn get_research_status(id: String) -> Result<Option<researcher::ResearchTask>, String> {
+    researcher::get_research(&id)
+}
+
+/// List all research tasks, newest first.
+///
+/// Called from the frontend via `invoke('list_research_tasks')`.
+#[tauri::command]
+fn list_research_tasks() -> Result<Vec<researcher::ResearchTask>, String> {
+    let mut tasks = researcher::list_research()?;
+    tasks.reverse();
+    Ok(tasks)
+}
+
 // ── Persistent background loop (runs every 60 seconds) ───────────────────────
 
 async fn background_loop() {
@@ -162,7 +196,7 @@ fn main() {
 
     tauri::Builder::default()
         .manage(tracker.clone())
-        .invoke_handler(tauri::generate_handler![read_tasks, list_skills, approve_task, search_web, get_context, clear_context])
+        .invoke_handler(tauri::generate_handler![read_tasks, list_skills, approve_task, search_web, get_context, clear_context, start_research, get_research_status, list_research_tasks])
         .setup(move |app| {
             // Build tray menu items
             let show_item =

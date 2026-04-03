@@ -3,26 +3,37 @@
 /**
  * Live Task Board
  *
- * Polls the Rust backend every 5 seconds via `invoke('read_tasks')` to fetch
- * the latest 50 task entries, then renders them as macOS-style cards.
+ * Two sections:
+ *  1. Research Tasks — polls `list_research_tasks` and shows per-phase
+ *     progress for running pipelines, with expandable final reports.
+ *  2. Activity Feed   — polls `read_tasks` and shows the latest 50 events
+ *     with quick-approve for actionable items.
  *
- * The "Quick Approve" button calls `invoke('approve_task', { timestamp,
- * skill: 'send_tg_reply' })` which:
- *   1. Updates the task status to "DONE" in the JSONL log.
- *   2. Records a `skill_executed:send_tg_reply` log entry.
- *   3. Emits a `skill:send_tg_reply` Tauri event that the TG module can
- *      subscribe to for sending the actual reply.
+ * Poll interval adapts: 2 s when any research task is Running, else 5 s.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { RefreshCw, CheckCircle2, Clock, AlertCircle, Activity, Moon, Sun } from "lucide-react";
+import {
+  Activity,
+  AlertCircle,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  Clock,
+  FileText,
+  Loader2,
+  Microscope,
+  Moon,
+  RefreshCw,
+  Sun,
+  Zap,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
@@ -36,81 +47,42 @@ interface TaskEntry {
   message_preview?: string;
   trigger_remote_ai?: boolean;
   estimated_profit_usd?: number;
-  /** PENDING | FOLLOWING | FOLLOWUP_NEEDED | DONE */
   status?: string;
 }
 
+interface ResearchStep {
+  phase: string;
+  output: string;
+}
+
+interface ResearchTask {
+  id: string;
+  topic: string;
+  url?: string;
+  /** snake_case from Rust serde */
+  status: "running" | "done" | "failed";
+  steps: ResearchStep[];
+  final_report?: string;
+  started_at: string;
+  finished_at?: string;
+}
+
+// ── Research phase ordering ───────────────────────────────────────────────────
+
+const PIPELINE_PHASES: { key: string; label: string }[] = [
+  { key: "fetch",       label: "擷取頁面" },
+  { key: "overview",    label: "概覽分析" },
+  { key: "questions",   label: "生成問題" },
+  { key: "research_q1", label: "Q1 調研" },
+  { key: "research_q2", label: "Q2 調研" },
+  { key: "research_q3", label: "Q3 調研" },
+  { key: "research_q4", label: "Q4 調研" },
+  { key: "synthesis",   label: "合成報告" },
+];
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-type StatusVariant = "pending" | "following" | "followup" | "done" | "default";
-
-function statusVariant(status?: string): StatusVariant {
-  switch (status) {
-    case "PENDING":
-      return "pending";
-    case "FOLLOWING":
-      return "following";
-    case "FOLLOWUP_NEEDED":
-      return "followup";
-    case "DONE":
-      return "done";
-    default:
-      return "default";
-  }
-}
-
-function statusLabel(status?: string): string {
-  switch (status) {
-    case "PENDING":
-      return "待處理";
-    case "FOLLOWING":
-      return "跟進中";
-    case "FOLLOWUP_NEEDED":
-      return "需要跟進";
-    case "DONE":
-      return "已完成";
-    default:
-      return status ?? "—";
-  }
-}
-
-function eventLabel(event: string): string {
-  switch (event) {
-    case "ai_decision":
-      return "AI 決策";
-    case "behavior_decision":
-      return "行為決策";
-    case "user_request":
-      return "使用者請求";
-    case "heartbeat":
-      return "心跳";
-    case "skill_executed:send_tg_reply":
-      return "已執行：發送 Telegram 回覆";
-    default:
-      if (event.startsWith("skill_executed:")) {
-        return `已執行：${event.replace("skill_executed:", "")}`;
-      }
-      return event;
-  }
-}
-
-function StatusIcon({ status }: { status?: string }) {
-  const cls = "h-4 w-4 shrink-0";
-  switch (status) {
-    case "PENDING":
-      return <Clock className={`${cls} text-yellow-500`} />;
-    case "FOLLOWING":
-      return <Activity className={`${cls} text-blue-500`} />;
-    case "FOLLOWUP_NEEDED":
-      return <AlertCircle className={`${cls} text-red-500`} />;
-    case "DONE":
-      return <CheckCircle2 className={`${cls} text-green-500`} />;
-    default:
-      return null;
-  }
-}
-
-function formatTimestamp(ts: string): string {
+function formatTs(ts: string): string {
   try {
     return new Intl.DateTimeFormat(undefined, {
       dateStyle: "medium",
@@ -121,12 +93,191 @@ function formatTimestamp(ts: string): string {
   }
 }
 
-/** Returns true for statuses that can be actioned by the user. */
-function isActionable(status?: string): boolean {
+function elapsed(start: string, end?: string): string {
+  try {
+    const ms = (end ? new Date(end) : new Date()).getTime() - new Date(start).getTime();
+    if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+    return `${Math.round(ms / 60_000)}m`;
+  } catch {
+    return "";
+  }
+}
+
+type StatusVariant = "pending" | "following" | "followup" | "done" | "running" | "failed" | "default";
+
+function taskStatusVariant(status?: string): StatusVariant {
+  switch (status) {
+    case "PENDING":        return "pending";
+    case "FOLLOWING":      return "following";
+    case "FOLLOWUP_NEEDED": return "followup";
+    case "DONE":           return "done";
+    default:               return "default";
+  }
+}
+
+function taskStatusLabel(status?: string): string {
+  switch (status) {
+    case "PENDING":        return "待處理";
+    case "FOLLOWING":      return "跟進中";
+    case "FOLLOWUP_NEEDED": return "需要跟進";
+    case "DONE":           return "已完成";
+    default:               return status ?? "—";
+  }
+}
+
+function eventLabel(event: string): string {
+  if (event === "ai_decision")    return "AI 決策";
+  if (event === "user_request")   return "使用者請求";
+  if (event.startsWith("skill_executed:"))
+    return `已執行：${event.replace("skill_executed:", "")}`;
+  return event;
+}
+
+function isActionable(status?: string) {
   return status === "PENDING" || status === "FOLLOWING" || status === "FOLLOWUP_NEEDED";
 }
 
-// ── Task card ─────────────────────────────────────────────────────────────────
+function StatusIcon({ status }: { status?: string }) {
+  const cls = "h-4 w-4 shrink-0";
+  switch (status) {
+    case "PENDING":        return <Clock className={`${cls} text-yellow-500`} />;
+    case "FOLLOWING":      return <Activity className={`${cls} text-blue-500`} />;
+    case "FOLLOWUP_NEEDED": return <AlertCircle className={`${cls} text-red-500`} />;
+    case "DONE":           return <CheckCircle2 className={`${cls} text-green-500`} />;
+    default:               return null;
+  }
+}
+
+// ── Research: phase timeline ──────────────────────────────────────────────────
+
+function PhaseTimeline({ task }: { task: ResearchTask }) {
+  const completedKeys = new Set(task.steps.map((s) => s.phase));
+  const isRunning = task.status === "running";
+
+  // Determine which phases actually matter (skip fetch if no URL)
+  const phases = task.url
+    ? PIPELINE_PHASES
+    : PIPELINE_PHASES.filter((p) => p.key !== "fetch");
+
+  // The "current" phase is the first not yet completed (only meaningful when running)
+  const currentIdx = phases.findIndex((p) => !completedKeys.has(p.key));
+
+  return (
+    <div className="flex flex-wrap gap-1.5 mt-3">
+      {phases.map((phase, idx) => {
+        const done = completedKeys.has(phase.key);
+        const active = isRunning && idx === currentIdx;
+        return (
+          <span
+            key={phase.key}
+            className={[
+              "inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-medium transition-colors",
+              done
+                ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300"
+                : active
+                ? "bg-violet-100 text-violet-700 dark:bg-violet-500/20 dark:text-violet-300 ring-1 ring-violet-400/40"
+                : "bg-slate-100 text-slate-400 dark:bg-slate-800 dark:text-slate-500",
+            ].join(" ")}
+          >
+            {done && <CheckCircle2 className="h-2.5 w-2.5" />}
+            {active && <Loader2 className="h-2.5 w-2.5 animate-spin" />}
+            {phase.label}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Research card ─────────────────────────────────────────────────────────────
+
+function ResearchCard({ task }: { task: ResearchTask }) {
+  const [expanded, setExpanded] = useState(task.status === "running");
+
+  const statusBadge: StatusVariant =
+    task.status === "running" ? "running" :
+    task.status === "done"    ? "done" :
+    "failed";
+
+  const statusText =
+    task.status === "running" ? "調研中" :
+    task.status === "done"    ? "已完成" :
+    "失敗";
+
+  return (
+    <Card className={[
+      "transition-shadow",
+      task.status === "running"
+        ? "ring-1 ring-violet-400/30 shadow-md dark:shadow-violet-950/30"
+        : "hover:shadow-md dark:hover:shadow-slate-950/40",
+    ].join(" ")}>
+      <CardHeader className="flex-row items-start justify-between gap-3 space-y-0 pb-2">
+        <div className="flex items-center gap-2 min-w-0">
+          {task.status === "running"
+            ? <Loader2 className="h-4 w-4 shrink-0 text-violet-500 animate-spin" />
+            : task.status === "done"
+            ? <Microscope className="h-4 w-4 shrink-0 text-emerald-500" />
+            : <AlertCircle className="h-4 w-4 shrink-0 text-red-500" />}
+          <CardTitle className="text-sm font-semibold truncate">{task.topic}</CardTitle>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <Badge variant={statusBadge}>{statusText}</Badge>
+          <span className="text-[11px] text-slate-400 dark:text-slate-500 tabular-nums">
+            {elapsed(task.started_at, task.finished_at)}
+          </span>
+        </div>
+      </CardHeader>
+
+      <CardContent>
+        {task.url && (
+          <p className="text-xs text-slate-400 dark:text-slate-500 truncate mb-1">{task.url}</p>
+        )}
+
+        <PhaseTimeline task={task} />
+
+        {/* Latest step output preview */}
+        {task.steps.length > 0 && task.status === "running" && (
+          <div className="mt-2 rounded-md bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 px-3 py-2 text-xs text-slate-600 dark:text-slate-300 line-clamp-2">
+            <span className="text-slate-400 dark:text-slate-500 font-medium mr-1">
+              {task.steps[task.steps.length - 1].phase}:
+            </span>
+            {task.steps[task.steps.length - 1].output}
+          </div>
+        )}
+
+        {/* Final report (expandable) */}
+        {task.final_report && (
+          <div className="mt-3">
+            <button
+              onClick={() => setExpanded((v) => !v)}
+              className="flex items-center gap-1 text-xs font-medium text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition-colors"
+            >
+              <FileText className="h-3.5 w-3.5" />
+              查看完整報告
+              {expanded
+                ? <ChevronDown className="h-3 w-3" />
+                : <ChevronRight className="h-3 w-3" />}
+            </button>
+
+            {expanded && (
+              <div className="mt-2 max-h-72 overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 px-4 py-3 text-xs leading-6 text-slate-700 dark:text-slate-200 whitespace-pre-wrap">
+                {task.final_report}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Started time */}
+        <p className="mt-2 text-[10px] text-slate-300 dark:text-slate-600">
+          開始 {formatTs(task.started_at)}
+          {task.finished_at && ` · 完成 ${formatTs(task.finished_at)}`}
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ── Activity task card ────────────────────────────────────────────────────────
 
 interface TaskCardProps {
   entry: TaskEntry;
@@ -135,7 +286,7 @@ interface TaskCardProps {
 }
 
 function TaskCard({ entry, onApprove, approving }: TaskCardProps) {
-  const variant = statusVariant(entry.status);
+  const variant = taskStatusVariant(entry.status);
 
   return (
     <Card className="transition-shadow hover:shadow-md dark:hover:shadow-slate-950/40">
@@ -146,51 +297,32 @@ function TaskCard({ entry, onApprove, approving }: TaskCardProps) {
             {eventLabel(entry.event)}
           </CardTitle>
         </div>
-        <Badge variant={variant}>{statusLabel(entry.status)}</Badge>
+        <Badge variant={variant}>{taskStatusLabel(entry.status)}</Badge>
       </CardHeader>
 
       <CardContent>
         {entry.message_preview && (
-          <div className="mb-4 rounded-lg border border-slate-200/80 bg-slate-50 px-3 py-2 text-sm leading-6 text-slate-700 dark:border-slate-800 dark:bg-slate-900/70 dark:text-slate-200">
+          <div className="mb-3 rounded-lg border border-slate-200/80 bg-slate-50 px-3 py-2 text-sm leading-6 text-slate-700 dark:border-slate-800 dark:bg-slate-900/70 dark:text-slate-200">
             {entry.message_preview}
           </div>
         )}
 
-        <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm text-slate-600 dark:text-slate-300">
-          <span className="font-medium text-slate-400 dark:text-slate-500 uppercase tracking-wide text-[10px]">
-            Persona
-          </span>
-          <span className="font-medium text-slate-400 dark:text-slate-500 uppercase tracking-wide text-[10px]">
-            時間
-          </span>
-          <span className="truncate">{entry.persona}</span>
-          <span className="truncate">{formatTimestamp(entry.timestamp)}</span>
-
-          {entry.estimated_profit_usd !== undefined && (
-            <>
-              <span className="font-medium text-slate-400 dark:text-slate-500 uppercase tracking-wide text-[10px] mt-2">
-                預估收益
-              </span>
-              <span className="font-medium text-slate-400 dark:text-slate-500 uppercase tracking-wide text-[10px] mt-2">
-                已觸發 ROI
-              </span>
-              <span className="font-semibold text-emerald-700 dark:text-emerald-300">
-                ${entry.estimated_profit_usd.toFixed(2)}
-              </span>
-              <span>{entry.trigger_remote_ai ? "是" : "否"}</span>
-            </>
-          )}
+        <div className="flex items-center justify-between text-[11px] text-slate-400 dark:text-slate-500">
+          <span>{entry.persona}</span>
+          <span className="tabular-nums">{formatTs(entry.timestamp)}</span>
         </div>
 
         {isActionable(entry.status) && (
-          <div className="mt-4 flex justify-end">
+          <div className="mt-3 flex justify-end">
             <Button
               size="sm"
               onClick={() => onApprove(entry.timestamp)}
               disabled={approving}
               className="gap-1.5"
             >
-              <CheckCircle2 className="h-3.5 w-3.5" />
+              {approving
+                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                : <CheckCircle2 className="h-3.5 w-3.5" />}
               快速核准
             </Button>
           </div>
@@ -200,44 +332,79 @@ function TaskCard({ entry, onApprove, approving }: TaskCardProps) {
   );
 }
 
-// ── Task Board ────────────────────────────────────────────────────────────────
+// ── Live status bar ───────────────────────────────────────────────────────────
 
-const POLL_INTERVAL_MS = 5000;
+function StatusBar({ activeResearch, taskCount }: { activeResearch: number; taskCount: number }) {
+  return (
+    <div className="flex items-center gap-3 text-xs text-slate-500 dark:text-slate-400">
+      <span className="flex items-center gap-1.5">
+        <span className="relative flex h-2 w-2">
+          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+          <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+        </span>
+        在線
+      </span>
+      {activeResearch > 0 && (
+        <span className="flex items-center gap-1 text-violet-500 dark:text-violet-400 font-medium">
+          <Loader2 className="h-3 w-3 animate-spin" />
+          {activeResearch} 個調研任務進行中
+        </span>
+      )}
+      {taskCount > 0 && (
+        <span className="flex items-center gap-1">
+          <Zap className="h-3 w-3 text-amber-400" />
+          {taskCount} 待處理
+        </span>
+      )}
+    </div>
+  );
+}
+
+// ── Main board ────────────────────────────────────────────────────────────────
+
+const FAST_POLL_MS = 2000;
+const SLOW_POLL_MS = 5000;
 
 export function TaskBoard() {
-  const [tasks, setTasks] = useState<TaskEntry[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [approvingId, setApprovingId] = useState<string | null>(null);
-  const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
-  const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [tasks, setTasks]               = useState<TaskEntry[]>([]);
+  const [research, setResearch]         = useState<ResearchTask[]>([]);
+  const [loading, setLoading]           = useState(true);
+  const [error, setError]               = useState<string | null>(null);
+  const [approvingId, setApprovingId]   = useState<string | null>(null);
+  const [lastRefresh, setLastRefresh]   = useState<Date | null>(null);
+  const [theme, setTheme]               = useState<"light" | "dark">("light");
+  const [showAllResearch, setShowAllResearch] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // ── Theme ──────────────────────────────────────────────────────────────────
   useEffect(() => {
-    const savedTheme = typeof window !== "undefined" ? localStorage.getItem("sirin-theme") : null;
-    const resolvedTheme =
-      savedTheme === "dark" || savedTheme === "light"
-        ? savedTheme
+    const saved = typeof window !== "undefined" ? localStorage.getItem("sirin-theme") : null;
+    const resolved =
+      saved === "dark" || saved === "light"
+        ? saved
         : window.matchMedia("(prefers-color-scheme: dark)").matches
         ? "dark"
         : "light";
-
-    document.documentElement.classList.toggle("dark", resolvedTheme === "dark");
-    setTheme(resolvedTheme);
+    document.documentElement.classList.toggle("dark", resolved === "dark");
+    setTheme(resolved);
   }, []);
 
   const toggleTheme = useCallback(() => {
-    const nextTheme = theme === "dark" ? "light" : "dark";
-    document.documentElement.classList.toggle("dark", nextTheme === "dark");
-    localStorage.setItem("sirin-theme", nextTheme);
-    setTheme(nextTheme);
+    const next = theme === "dark" ? "light" : "dark";
+    document.documentElement.classList.toggle("dark", next === "dark");
+    localStorage.setItem("sirin-theme", next);
+    setTheme(next);
   }, [theme]);
 
-  const fetchTasks = useCallback(async () => {
+  // ── Data fetching ──────────────────────────────────────────────────────────
+  const fetchAll = useCallback(async () => {
     try {
-      const entries = await invoke<TaskEntry[]>("read_tasks");
-      // Show newest entries first.
+      const [entries, researchList] = await Promise.all([
+        invoke<TaskEntry[]>("read_tasks"),
+        invoke<ResearchTask[]>("list_research_tasks").catch(() => [] as ResearchTask[]),
+      ]);
       setTasks([...entries].reverse());
+      setResearch(researchList);
       setLastRefresh(new Date());
       setError(null);
     } catch (err) {
@@ -247,61 +414,73 @@ export function TaskBoard() {
     }
   }, []);
 
-  // Initial load + auto-refresh every 5 seconds.
+  // Adaptive polling: faster when research tasks are running
   useEffect(() => {
-    fetchTasks();
-    intervalRef.current = setInterval(fetchTasks, POLL_INTERVAL_MS);
+    const hasRunning = research.some((r) => r.status === "running");
+    const interval = hasRunning ? FAST_POLL_MS : SLOW_POLL_MS;
+
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    intervalRef.current = setInterval(fetchAll, interval);
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
-  }, [fetchTasks]);
+  }, [fetchAll, research]);
+
+  // Initial load
+  useEffect(() => {
+    fetchAll();
+  }, [fetchAll]);
 
   const handleApprove = useCallback(
     async (timestamp: string) => {
       setApprovingId(timestamp);
       try {
         await invoke("approve_task", { timestamp, skill: "send_tg_reply" });
-        // Immediately refresh so the updated status is visible.
-        await fetchTasks();
+        await fetchAll();
       } catch (err) {
         setError(String(err));
       } finally {
         setApprovingId(null);
       }
     },
-    [fetchTasks]
+    [fetchAll]
   );
 
-  // Split tasks into actionable and the rest.
-  const actionable = tasks.filter((t) => isActionable(t.status));
-  const rest = tasks.filter((t) => !isActionable(t.status));
+  // ── Derived data ───────────────────────────────────────────────────────────
+  const actionable       = tasks.filter((t) => isActionable(t.status));
+  const activityFeed     = tasks.filter((t) => !isActionable(t.status));
+  const activeResearch   = research.filter((r) => r.status === "running");
+  const completedResearch = research.filter((r) => r.status !== "running");
+  const visibleCompleted = showAllResearch ? completedResearch : completedResearch.slice(0, 3);
 
   return (
-    <div className="max-w-3xl mx-auto space-y-6">
-      {/* Header */}
+    <div className="max-w-4xl mx-auto space-y-6">
+
+      {/* ── Header ─────────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Live Task Board</h1>
-          {lastRefresh && (
-            <p className="text-sm text-slate-400 dark:text-slate-500 mt-0.5">
-              上次更新 {formatTimestamp(lastRefresh.toISOString())}
-            </p>
-          )}
+          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
+            Sirin
+            <span className="text-base font-normal text-slate-400 dark:text-slate-500">任務板</span>
+          </h1>
+          <StatusBar
+            activeResearch={activeResearch.length}
+            taskCount={actionable.length}
+          />
         </div>
         <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={toggleTheme}
-            className="gap-1.5"
-          >
+          {lastRefresh && (
+            <span className="text-[11px] text-slate-400 dark:text-slate-500 tabular-nums hidden sm:block">
+              {formatTs(lastRefresh.toISOString())} 更新
+            </span>
+          )}
+          <Button variant="outline" size="sm" onClick={toggleTheme} className="gap-1.5">
             {theme === "dark" ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
-            {theme === "dark" ? "淺色" : "深色"}
           </Button>
           <Button
             variant="outline"
             size="sm"
-            onClick={fetchTasks}
+            onClick={fetchAll}
             disabled={loading}
             className="gap-1.5"
           >
@@ -311,30 +490,44 @@ export function TaskBoard() {
         </div>
       </div>
 
-      {/* Error banner */}
+      {/* ── Error banner ───────────────────────────────────────────────────── */}
       {error && (
         <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-300">
           {error}
         </div>
       )}
 
-      {/* Loading skeleton */}
+      {/* ── Loading skeleton ────────────────────────────────────────────────── */}
       {loading && tasks.length === 0 && (
         <div className="space-y-3">
           {[1, 2, 3].map((n) => (
             <div
               key={n}
-              className="h-28 rounded-xl border border-slate-200 bg-white animate-pulse dark:border-slate-800 dark:bg-slate-900"
+              className="h-24 rounded-xl border border-slate-200 bg-white animate-pulse dark:border-slate-800 dark:bg-slate-900"
             />
           ))}
         </div>
       )}
 
-      {/* Actionable tasks */}
+      {/* ── Running research tasks (always visible) ─────────────────────────── */}
+      {activeResearch.length > 0 && (
+        <section className="space-y-3">
+          <h2 className="text-xs font-semibold uppercase tracking-widest text-violet-500 dark:text-violet-400 flex items-center gap-1.5">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            正在調研 ({activeResearch.length})
+          </h2>
+          {activeResearch.map((r) => (
+            <ResearchCard key={r.id} task={r} />
+          ))}
+        </section>
+      )}
+
+      {/* ── Actionable tasks ─────────────────────────────────────────────────── */}
       {actionable.length > 0 && (
         <section className="space-y-3">
-          <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400 dark:text-slate-500">
-            待處理事項 ({actionable.length})
+          <h2 className="text-xs font-semibold uppercase tracking-widest text-amber-500 dark:text-amber-400 flex items-center gap-1.5">
+            <Zap className="h-3.5 w-3.5" />
+            待處理 ({actionable.length})
           </h2>
           {actionable.map((t) => (
             <TaskCard
@@ -347,13 +540,37 @@ export function TaskBoard() {
         </section>
       )}
 
-      {/* Other tasks */}
-      {rest.length > 0 && (
+      {/* ── Completed research tasks ─────────────────────────────────────────── */}
+      {completedResearch.length > 0 && (
         <section className="space-y-3">
-          <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400 dark:text-slate-500">
-            最近活動 ({rest.length})
+          <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400 dark:text-slate-500 flex items-center gap-1.5">
+            <Microscope className="h-3.5 w-3.5" />
+            調研紀錄 ({completedResearch.length})
           </h2>
-          {rest.map((t) => (
+          {visibleCompleted.map((r) => (
+            <ResearchCard key={r.id} task={r} />
+          ))}
+          {completedResearch.length > 3 && (
+            <button
+              onClick={() => setShowAllResearch((v) => !v)}
+              className="w-full text-center text-xs text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300 py-1 transition-colors"
+            >
+              {showAllResearch
+                ? "收起"
+                : `顯示全部 ${completedResearch.length} 筆紀錄`}
+            </button>
+          )}
+        </section>
+      )}
+
+      {/* ── Activity feed ────────────────────────────────────────────────────── */}
+      {activityFeed.length > 0 && (
+        <section className="space-y-3">
+          <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400 dark:text-slate-500 flex items-center gap-1.5">
+            <Activity className="h-3.5 w-3.5" />
+            最近活動 ({activityFeed.length})
+          </h2>
+          {activityFeed.map((t) => (
             <TaskCard
               key={t.timestamp}
               entry={t}
@@ -364,13 +581,14 @@ export function TaskBoard() {
         </section>
       )}
 
-      {/* Empty state */}
-      {!loading && tasks.length === 0 && (
+      {/* ── Empty state ──────────────────────────────────────────────────────── */}
+      {!loading && tasks.length === 0 && research.length === 0 && (
         <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-300 py-16 text-slate-400 dark:border-slate-700 dark:text-slate-500">
           <Activity className="h-8 w-8 mb-3 opacity-40" />
           <p className="text-sm font-medium">目前沒有任務</p>
-          <p className="text-xs mt-1">
-            Sirin 處理到需要展示的訊號後，會顯示在這裡。
+          <p className="text-xs mt-1 text-center">
+            Sirin 處理 Telegram 訊息後會顯示在這裡。<br />
+            傳送「調研 &lt;網址&gt;」啟動背景調研任務。
           </p>
         </div>
       )}

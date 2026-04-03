@@ -12,6 +12,8 @@ const badgeVariants = cva(
         following: "bg-blue-100 text-blue-800 dark:bg-blue-500/20 dark:text-blue-300",
         followup: "bg-red-100 text-red-800 dark:bg-red-500/20 dark:text-red-300",
         done: "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300",
+        running: "bg-violet-100 text-violet-800 dark:bg-violet-500/20 dark:text-violet-300",
+        failed: "bg-red-100 text-red-800 dark:bg-red-500/20 dark:text-red-300",
       },
     },
     defaultVariants: {

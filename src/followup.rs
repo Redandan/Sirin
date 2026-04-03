@@ -333,7 +333,7 @@ async fn run_once(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persona::{Identity, Persona, ProfessionalTone, RoiThresholds, TaskEntry};
+    use crate::persona::{Identity, Persona, ProfessionalTone, ResponseStyle, RoiThresholds, TaskEntry};
 
     fn make_persona() -> Persona {
         Persona {
@@ -348,6 +348,7 @@ mod tests {
                 min_usd_to_notify: 5.0,
                 min_usd_to_call_remote_llm: 25.0,
             },
+            response_style: ResponseStyle::default(),
         }
     }
 
