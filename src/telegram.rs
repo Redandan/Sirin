@@ -439,6 +439,44 @@ fn contains_cjk(text: &str) -> bool {
     })
 }
 
+fn is_mixed_language_reply(text: &str) -> bool {
+    let mut cjk_count = 0usize;
+    let mut latin_count = 0usize;
+
+    for ch in text.chars() {
+        if (ch >= '\u{4E00}' && ch <= '\u{9FFF}')
+            || (ch >= '\u{3400}' && ch <= '\u{4DBF}')
+            || (ch >= '\u{F900}' && ch <= '\u{FAFF}')
+        {
+            cjk_count += 1;
+        } else if ch.is_ascii_alphabetic() {
+            latin_count += 1;
+        }
+    }
+
+    if cjk_count == 0 || latin_count == 0 {
+        return false;
+    }
+
+    let total = cjk_count + latin_count;
+    let latin_ratio = latin_count as f32 / total as f32;
+
+    // Treat as mixed when there are enough Latin letters to impact readability.
+    latin_count >= 8 && latin_ratio > 0.35
+}
+
+fn is_direct_answer_request(text: &str) -> bool {
+    let normalized = text.trim().to_lowercase();
+    normalized.contains("直接跟我說")
+        || normalized.contains("直接說")
+        || normalized.contains("直接講")
+        || normalized.contains("不要貼連結")
+        || normalized.contains("別貼連結")
+        || normalized.contains("不用連結")
+        || normalized.contains("just tell me")
+        || normalized.contains("no links")
+}
+
 fn chinese_fallback_reply(user_text: &str, execution_result: Option<&str>) -> String {
     let mut base = if user_text.trim().len() <= 12 {
         "收到，我在這裡。你想先從哪一點開始？".to_string()
@@ -519,6 +557,7 @@ fn build_ai_reply_prompt(
     execution_result: Option<&str>,
     search_context: Option<&str>,
     context_block: Option<&str>,
+    direct_answer_request: bool,
     force_traditional_chinese: bool,
 ) -> String {
     let persona_name = persona.map(|p| p.name()).unwrap_or("Sirin");
@@ -532,8 +571,8 @@ fn build_ai_reply_prompt(
         .unwrap_or(("natural, polite, professional", "Follow the user's request step by step."));
 
     let execution_block = execution_result
-        .map(|v| format!("Execution result from internal action layer: {v}"))
-        .unwrap_or_else(|| "Execution result from internal action layer: no direct action executed.".to_string());
+        .map(|v| format!("\nExecution result from internal action layer: {v}"))
+        .unwrap_or_default();
 
     let search_block = search_context
         .map(|v| format!("\nWeb search results (use as reference, do not quote verbatim):\n{v}"))
@@ -549,6 +588,14 @@ fn build_ai_reply_prompt(
         ""
     };
 
+    let direct_mode_constraints = if direct_answer_request {
+        "- The user asked for a direct answer: provide concrete steps immediately.\n\
+- Do not include external links unless the user explicitly asks for links.\n\
+"
+    } else {
+        ""
+    };
+
     format!(
         "You are {persona_name}.\n\
 Use this persona style: {voice}.\n\
@@ -558,9 +605,11 @@ Constraints:\n\
 - Keep response concise (1-3 sentences).\n\
 - Be polite and human-like.\n\
 - Reply in the same language as the user's message.\n\
+- Continue from the recent conversation context instead of restarting the topic.\n\
 - Do not self-introduce unless the user asks who you are.\n\
 - Avoid sounding like a system prompt or policy statement.\n\
 {language_override}
+{direct_mode_constraints}
 - If an internal action already ran, include a short result summary.\n\
 \n\
 User message: {user_text}\n\
@@ -635,6 +684,7 @@ async fn generate_ai_reply(
     execution_result: Option<&str>,
     search_context: Option<&str>,
     context_block: Option<&str>,
+    direct_answer_request: bool,
     force_traditional_chinese: bool,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let prompt = build_ai_reply_prompt(
@@ -643,6 +693,7 @@ async fn generate_ai_reply(
         execution_result,
         search_context,
         context_block,
+        direct_answer_request,
         force_traditional_chinese,
     );
     match llm.backend {
@@ -899,6 +950,7 @@ pub async fn run_listener(
 
             let execution_result = research_execution
                 .or_else(|| execute_user_request(&text, &tracker, persona_name));
+            let direct_answer_request = is_direct_answer_request(&text);
             let fallback_reply = cfg
                 .auto_reply_text
                 .replace("{persona}", persona_name)
@@ -924,7 +976,7 @@ pub async fn run_listener(
             };
 
             // Perform web search when the message looks like a question.
-            let search_context: Option<String> = if should_search(&text) {
+            let search_context: Option<String> = if !direct_answer_request && should_search(&text) {
                 let query = text.chars().take(100).collect::<String>();
                 eprintln!("[telegram] Searching web for: {query}");
                 match ddg_search(&query).await {
@@ -959,6 +1011,7 @@ pub async fn run_listener(
                 execution_result.as_deref(),
                 search_context.as_deref(),
                 context_block.as_deref(),
+                direct_answer_request,
                 false,
             )
             .await
@@ -971,8 +1024,10 @@ pub async fn run_listener(
                 }
             };
 
-            let final_reply = if contains_cjk(&text) && !contains_cjk(&ai_reply) {
-                eprintln!("[telegram] AI reply language mismatch: retrying with forced Traditional Chinese");
+            let final_reply = if contains_cjk(&text)
+                && (!contains_cjk(&ai_reply) || is_mixed_language_reply(&ai_reply))
+            {
+                eprintln!("[telegram] AI reply language mismatch/mixed output: retrying with forced Traditional Chinese");
                 match generate_ai_reply(
                     &llm_client,
                     &llm,
@@ -981,6 +1036,7 @@ pub async fn run_listener(
                     execution_result.as_deref(),
                     search_context.as_deref(),
                     context_block.as_deref(),
+                    direct_answer_request,
                     true,
                 )
                 .await
@@ -1074,5 +1130,19 @@ mod tests {
         assert!(should_search("how does async work?"));
         assert!(should_search("why is the sky blue"));
         assert!(!should_search("你好"));
+    }
+
+    #[test]
+    fn direct_answer_request_detected() {
+        assert!(is_direct_answer_request("你直接跟我說"));
+        assert!(is_direct_answer_request("直接講重點，不要貼連結"));
+        assert!(is_direct_answer_request("just tell me the steps, no links"));
+        assert!(!is_direct_answer_request("請幫我查一下這個主題"));
+    }
+
+    #[test]
+    fn mixed_language_reply_detection() {
+        assert!(is_mixed_language_reply("Sorry吧，我直接跟你說了，nothing 的發生。"));
+        assert!(!is_mixed_language_reply("我直接跟你說：先準備文件，再到網站提交 90 天報到。"));
     }
 }
