@@ -157,6 +157,9 @@ fn approve_task(
         timestamp: chrono::Utc::now().to_rfc3339(),
         event: format!("skill_executed:{skill_name}"),
         persona: "Sirin".to_string(),
+        correlation_id: original_entry
+            .as_ref()
+            .and_then(|entry| entry.correlation_id.clone()),
         message_preview: original_entry.and_then(|entry| entry.message_preview),
         trigger_remote_ai: None,
         estimated_profit_usd: None,
@@ -271,6 +274,24 @@ fn record_feedback(
         corrected_output.clone(),
     )?;
 
+    let feedback_log = persona::TaskEntry::system_event(
+        "Sirin",
+        "optimization_feedback_recorded",
+        Some(format!(
+            "interaction_id={} rating={} has_reason={} has_correction={}",
+            interaction_id,
+            rating,
+            reason.as_ref().is_some_and(|v| !v.trim().is_empty()),
+            corrected_output
+                .as_ref()
+                .is_some_and(|v| !v.trim().is_empty())
+        )),
+        Some("RECORDED"),
+        Some(format!("feedback_id={feedback_id}")),
+        Some(feedback_id.clone()),
+    );
+    state.record(&feedback_log).map_err(|e| e.to_string())?;
+
     // Negative feedback becomes a self-improvement task that the autonomous loop can pick up.
     if rating < 0 {
         let interaction = optimization::get_interaction(&interaction_id)?;
@@ -292,6 +313,7 @@ fn record_feedback(
             timestamp: chrono::Utc::now().to_rfc3339(),
             event: "self_improvement_request".to_string(),
             persona: "Sirin".to_string(),
+            correlation_id: Some(feedback_id.clone()),
             message_preview: Some(msg),
             trigger_remote_ai: None,
             estimated_profit_usd: Some(1.0),
@@ -302,6 +324,16 @@ fn record_feedback(
         };
 
         state.record(&entry).map_err(|e| e.to_string())?;
+
+        let request_log = persona::TaskEntry::system_event(
+            "Sirin",
+            "optimization_request_created",
+            entry.message_preview.clone(),
+            Some("PENDING"),
+            Some(format!("feedback_id={feedback_id}")),
+            Some(feedback_id.clone()),
+        );
+        state.record(&request_log).map_err(|e| e.to_string())?;
     }
 
     Ok(feedback_id)

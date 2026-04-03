@@ -17,6 +17,35 @@ use serde::{Deserialize, Serialize};
 use crate::persona::{Persona, TaskEntry, TaskTracker};
 use crate::researcher::{self, ResearchStatus};
 
+fn record_optimization_log(
+    tracker: &TaskTracker,
+    event: &str,
+    message_preview: Option<String>,
+    status: Option<&str>,
+    reason: Option<String>,
+    correlation_id: Option<String>,
+) {
+    let entry = TaskEntry::system_event(
+        "Sirin",
+        event,
+        message_preview,
+        status,
+        reason,
+        correlation_id,
+    );
+    let _ = tracker.record(&entry);
+}
+
+fn correlation_id_for(entry: &TaskEntry) -> Option<String> {
+    entry.correlation_id.clone().or_else(|| {
+        entry
+            .reason
+            .as_deref()
+            .and_then(|reason| reason.strip_prefix("feedback_id="))
+            .map(|value| value.to_string())
+    })
+}
+
 /// How many trailing log lines to inspect on each run.
 const TASK_LOOKBACK: usize = 50;
 
@@ -425,6 +454,14 @@ pub async fn run_worker(tracker: TaskTracker) {
 
         if let Err(e) = run_once(&client, &llm, &tracker).await {
             eprintln!("[followup] Worker error: {e}");
+            record_optimization_log(
+                &tracker,
+                "optimization_cycle_error",
+                Some(e.to_string()),
+                Some("FAILED"),
+                None,
+                None,
+            );
         }
     }
 }
@@ -459,6 +496,19 @@ async fn run_once(
             eprintln!(
                 "[followup] Autonomous queue is full (running={running_count}, max={max_concurrent})"
             );
+            record_optimization_log(
+                tracker,
+                "optimization_deferred",
+                Some(format!(
+                    "queue full running={} max_concurrent={} candidates={}",
+                    running_count,
+                    max_concurrent,
+                    candidates.len()
+                )),
+                Some("DEFERRED"),
+                None,
+                candidates.first().and_then(correlation_id_for),
+            );
             return Ok(());
         }
 
@@ -473,11 +523,22 @@ async fn run_once(
         for c in candidates.into_iter().take(schedule_cap) {
             if let Some((topic, url)) = derive_research_plan(&c) {
                 let source_ts = c.timestamp.clone();
+                let correlation_id = correlation_id_for(&c);
+
+                record_optimization_log(
+                    tracker,
+                    "optimization_candidate_selected",
+                    Some(format!("source={} topic={}", source_ts, topic)),
+                    Some("SELECTED"),
+                    Some(c.event.clone()),
+                    correlation_id.clone(),
+                );
 
                 let scheduled = TaskEntry {
                     timestamp: chrono::Utc::now().to_rfc3339(),
                     event: "autonomous_scheduled".to_string(),
                     persona: "Sirin".to_string(),
+                    correlation_id: correlation_id.clone(),
                     message_preview: Some(format!("source={source_ts} topic={topic}")),
                     trigger_remote_ai: None,
                     estimated_profit_usd: None,
@@ -504,6 +565,7 @@ async fn run_once(
                         timestamp: chrono::Utc::now().to_rfc3339(),
                         event: "autonomous_completed:research".to_string(),
                         persona: "Sirin".to_string(),
+                        correlation_id,
                         message_preview: Some(format!(
                             "source={} research_id={} status={:?}",
                             source_ts, task.id, task.status
@@ -542,6 +604,14 @@ async fn run_once(
 
     if actionable.is_empty() {
         eprintln!("[followup] No FOLLOWING/PENDING tasks found — skipping LLM call");
+        record_optimization_log(
+            tracker,
+            "optimization_cycle_idle",
+            Some("no actionable FOLLOWING/PENDING tasks".to_string()),
+            Some("IDLE"),
+            None,
+            None,
+        );
         return Ok(());
     }
 
@@ -582,6 +652,14 @@ async fn run_once(
             .collect();
 
         tracker.update_statuses(&updates)?;
+        record_optimization_log(
+            tracker,
+            "optimization_followup_marked",
+            Some(format!("marked {} task(s) FOLLOWUP_NEEDED", updates.len())),
+            Some("FOLLOWUP_NEEDED"),
+            None,
+            actionable.first().and_then(|entry| correlation_id_for(entry)),
+        );
         eprintln!(
             "[followup] Marked {} task(s) as FOLLOWUP_NEEDED",
             updates.len()
@@ -622,6 +700,7 @@ mod tests {
             timestamp: "2024-01-01T00:00:00Z".into(),
             event: "ai_decision".into(),
             persona: "TestBot".into(),
+            correlation_id: None,
             message_preview: Some("Monitor Agora signal and respond".into()),
             trigger_remote_ai: Some(true),
             estimated_profit_usd: Some(10.0),
@@ -652,6 +731,7 @@ mod tests {
             timestamp: "2024-01-01T00:00:00Z".into(),
             event: "user_request".into(),
             persona: "TestBot".into(),
+            correlation_id: None,
             message_preview: Some("請幫我調研 https://example.com 的產品定位".into()),
             trigger_remote_ai: None,
             estimated_profit_usd: None,
@@ -673,6 +753,7 @@ mod tests {
             timestamp: "2024-01-01T00:00:00Z".into(),
             event: "user_request".into(),
             persona: "TestBot".into(),
+            correlation_id: None,
             message_preview: Some("今天天氣不錯".into()),
             trigger_remote_ai: None,
             estimated_profit_usd: None,
@@ -691,6 +772,7 @@ mod tests {
             timestamp: "2024-01-01T00:00:00Z".into(),
             event: "user_request".into(),
             persona: "TestBot".into(),
+            correlation_id: None,
             message_preview: Some("請幫我調研這個主題".into()),
             trigger_remote_ai: None,
             estimated_profit_usd: Some(1.0),
@@ -704,6 +786,7 @@ mod tests {
             timestamp: "2024-01-01T00:00:01Z".into(),
             event: "user_request".into(),
             persona: "TestBot".into(),
+            correlation_id: None,
             message_preview: Some("請分析 https://example.com".into()),
             trigger_remote_ai: None,
             estimated_profit_usd: Some(10.0),
@@ -725,6 +808,7 @@ mod tests {
             timestamp: now.to_rfc3339(),
             event: "autonomous_scheduled".into(),
             persona: "Sirin".into(),
+            correlation_id: None,
             message_preview: None,
             trigger_remote_ai: None,
             estimated_profit_usd: None,
@@ -743,6 +827,7 @@ mod tests {
             timestamp: "2024-01-01T00:00:00Z".into(),
             event: "autonomous_completed:research".into(),
             persona: "Sirin".into(),
+            correlation_id: None,
             message_preview: None,
             trigger_remote_ai: None,
             estimated_profit_usd: None,

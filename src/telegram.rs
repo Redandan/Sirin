@@ -361,6 +361,7 @@ fn execute_user_request(
             timestamp: Utc::now().to_rfc3339(),
             event: "user_request".to_string(),
             persona: persona_name.to_string(),
+            correlation_id: None,
             message_preview: Some(message_preview(normalized, 140)),
             trigger_remote_ai: None,
             estimated_profit_usd: None,

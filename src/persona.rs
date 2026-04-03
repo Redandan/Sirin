@@ -213,6 +213,8 @@ pub struct TaskEntry {
     pub timestamp: String,
     pub event: String,
     pub persona: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message_preview: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -235,6 +237,7 @@ impl TaskEntry {
             timestamp: Utc::now().to_rfc3339(),
             event: "heartbeat".to_string(),
             persona: persona_name.to_string(),
+            correlation_id: None,
             message_preview: None,
             trigger_remote_ai: None,
             estimated_profit_usd: None,
@@ -253,6 +256,7 @@ impl TaskEntry {
             timestamp: Utc::now().to_rfc3339(),
             event: "ai_decision".to_string(),
             persona: persona_name.to_string(),
+            correlation_id: None,
             message_preview,
             trigger_remote_ai: None,
             estimated_profit_usd: None,
@@ -278,6 +282,7 @@ impl TaskEntry {
             timestamp: Utc::now().to_rfc3339(),
             event: "behavior_decision".to_string(),
             persona: persona.name().to_string(),
+            correlation_id: None,
             message_preview: None,
             trigger_remote_ai: Some(matches!(decision.tier, ActionTier::Escalate)),
             estimated_profit_usd: Some(estimated_value),
@@ -285,6 +290,29 @@ impl TaskEntry {
             reason: Some(decision.reason.clone()),
             action_tier: Some(decision.tier),
             high_priority: Some(decision.high_priority),
+        }
+    }
+
+    pub fn system_event(
+        persona_name: &str,
+        event: impl Into<String>,
+        message_preview: Option<String>,
+        status: Option<&str>,
+        reason: Option<String>,
+        correlation_id: Option<String>,
+    ) -> Self {
+        Self {
+            timestamp: Utc::now().to_rfc3339(),
+            event: event.into(),
+            persona: persona_name.to_string(),
+            correlation_id,
+            message_preview,
+            trigger_remote_ai: None,
+            estimated_profit_usd: None,
+            status: status.map(|s| s.to_string()),
+            reason,
+            action_tier: None,
+            high_priority: None,
         }
     }
 }
@@ -312,17 +340,42 @@ impl TaskTracker {
         Ok(())
     }
 
-    pub fn read_last_n(&self, n: usize) -> Result<Vec<TaskEntry>, Box<dyn std::error::Error + Send + Sync>> {
+    fn read_raw_lines_lossy(
+        &self,
+    ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
         let path = self.path.lock().expect("TaskTracker mutex poisoned").clone();
         if !path.exists() {
             return Ok(Vec::new());
         }
-        let file = fs::File::open(&path)?;
-        let reader = BufReader::new(file);
 
+        let file = fs::File::open(&path)?;
+        let mut reader = BufReader::new(file);
+        let mut lines = Vec::new();
+        let mut buf = Vec::new();
+
+        loop {
+            buf.clear();
+            let bytes = reader.read_until(b'\n', &mut buf)?;
+            if bytes == 0 {
+                break;
+            }
+
+            if matches!(buf.last(), Some(b'\n')) {
+                buf.pop();
+            }
+            if matches!(buf.last(), Some(b'\r')) {
+                buf.pop();
+            }
+
+            lines.push(String::from_utf8_lossy(&buf).into_owned());
+        }
+
+        Ok(lines)
+    }
+
+    pub fn read_last_n(&self, n: usize) -> Result<Vec<TaskEntry>, Box<dyn std::error::Error + Send + Sync>> {
         let mut ring: std::collections::VecDeque<String> = std::collections::VecDeque::with_capacity(n);
-        for line in reader.lines() {
-            let line = line?;
+        for line in self.read_raw_lines_lossy()? {
             if line.trim().is_empty() {
                 continue;
             }
@@ -351,10 +404,7 @@ impl TaskTracker {
             return Ok(());
         }
 
-        let raw: Vec<String> = {
-            let file = fs::File::open(&path)?;
-            BufReader::new(file).lines().filter_map(|l| l.ok()).collect()
-        };
+        let raw = self.read_raw_lines_lossy()?;
 
         let tmp_path = path.with_extension("jsonl.tmp");
         {
@@ -387,16 +437,7 @@ impl TaskTracker {
         &self,
         timestamp: &str,
     ) -> Result<Option<TaskEntry>, Box<dyn std::error::Error + Send + Sync>> {
-        let path = self.path.lock().expect("TaskTracker mutex poisoned").clone();
-        if !path.exists() {
-            return Ok(None);
-        }
-
-        let file = fs::File::open(&path)?;
-        let reader = BufReader::new(file);
-
-        for line in reader.lines() {
-            let line = line?;
+        for line in self.read_raw_lines_lossy()? {
             if line.trim().is_empty() {
                 continue;
             }
