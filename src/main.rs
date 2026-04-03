@@ -6,6 +6,7 @@ mod followup;
 mod memory;
 mod researcher;
 mod skills;
+mod logs;
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -44,6 +45,77 @@ fn read_tasks(
                 .collect()
         })
         .map_err(|e| e.to_string())
+}
+
+/// Return paginated task entries.
+///
+/// Called from the frontend via `invoke('read_tasks_paginated', { offset, limit })`.
+#[tauri::command]
+fn read_tasks_paginated(
+    offset: usize,
+    limit: usize,
+    state: tauri::State<'_, persona::TaskTracker>,
+) -> Result<serde_json::Value, String> {
+    let limit = limit.min(100); // Cap at 100 per request
+    let all_entries = state.read_last_n(1000).map_err(|e| e.to_string())?;
+    
+    let filtered: Vec<_> = all_entries
+        .into_iter()
+        .filter(|entry| entry.event != "heartbeat")
+        .collect();
+    
+    let total = filtered.len();
+    let start = offset.min(total);
+    let end = (offset + limit).min(total);
+    
+    let items: Vec<_> = filtered
+        .into_iter()
+        .skip(start)
+        .take(end.saturating_sub(start))
+        .collect();
+    
+    Ok(serde_json::json!({
+        "items": items,
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "has_more": end < total,
+    }))
+}
+
+/// Return system logs (structured logging entries).
+///
+/// Called from the frontend via `invoke('get_logs', { limit, offset, target, level })`.
+#[tauri::command]
+fn get_logs(
+    limit: usize,
+    offset: usize,
+    target: Option<String>,
+    level: Option<String>,
+    state: tauri::State<'_, logs::LogStore>,
+) -> Result<serde_json::Value, String> {
+    let limit = limit.min(200); // Cap at 200 per request
+    let target_opt = target.as_deref();
+    let level_opt = level.as_deref();
+    
+    let filtered = state.filter(target_opt, level_opt);
+    let total = filtered.len();
+    let start = offset.min(total);
+    let end = (offset + limit).min(total);
+    
+    let items: Vec<_> = filtered
+        .into_iter()
+        .skip(start)
+        .take(end.saturating_sub(start))
+        .collect();
+    
+    Ok(serde_json::json!({
+        "items": items,
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "has_more": end < total,
+    }))
 }
 
 /// Return the registered skills that can be dispatched by the backend.
@@ -193,10 +265,14 @@ fn main() {
 
     // Shared task tracker exposed to Tauri commands.
     let tracker = persona::TaskTracker::new(task_log_path());
+    
+    // Shared log store for structured logging.
+    let log_store = logs::LogStore::new();
 
     tauri::Builder::default()
         .manage(tracker.clone())
-        .invoke_handler(tauri::generate_handler![read_tasks, list_skills, approve_task, search_web, get_context, clear_context, start_research, get_research_status, list_research_tasks])
+        .manage(log_store.clone())
+        .invoke_handler(tauri::generate_handler![read_tasks, read_tasks_paginated, get_logs, list_skills, approve_task, search_web, get_context, clear_context, start_research, get_research_status, list_research_tasks])
         .setup(move |app| {
             // Build tray menu items
             let show_item =

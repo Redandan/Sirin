@@ -20,6 +20,9 @@ scraper = "0.19.0"
 lancedb = "0.27.2"
 arrow = "57.3.0"
 futures = "0.3.31"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "ansi"] }
+parking_lot = "0.12"
 
 [build-dependencies]
 tauri-build = { version = "2.5.6", features = [] }

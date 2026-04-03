@@ -1,19 +1,19 @@
 "use client";
 
 /**
- * Live Task Board
+ * Live Task Board with Pagination & Virtual Scrolling
  *
- * Two sections:
- *  1. Research Tasks — polls `list_research_tasks` and shows per-phase
- *     progress for running pipelines, with expandable final reports.
- *  2. Activity Feed   — polls `read_tasks` and shows the latest 50 events
- *     with quick-approve for actionable items.
+ * Three sections:
+ *  1. Research Tasks — polls `list_research_tasks` and shows per-phase progress
+ *  2. Activity Feed   — polls `read_tasks_paginated` with pagination & virtual scroll
+ *  3. System Logs     — displays structured logs with filtering in a separate tab
  *
- * Poll interval adapts: 2 s when any research task is Running, else 5 s.
+ * Poll interval adapts: 2 s when research tasks are running, else 5 s.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { FixedSizeList as List } from "react-window";
 import {
   Activity,
   AlertCircle,
@@ -23,6 +23,7 @@ import {
   Clock,
   FileText,
   Loader2,
+  LogsIcon,
   Microscope,
   Moon,
   RefreshCw,
@@ -37,6 +38,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { LogsViewer } from "@/components/logs-viewer";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -48,6 +50,14 @@ interface TaskEntry {
   trigger_remote_ai?: boolean;
   estimated_profit_usd?: number;
   status?: string;
+}
+
+interface PaginatedTasksResponse {
+  items: TaskEntry[];
+  total: number;
+  offset: number;
+  limit: number;
+  has_more: boolean;
 }
 
 interface ResearchStep {
@@ -364,9 +374,13 @@ function StatusBar({ activeResearch, taskCount }: { activeResearch: number; task
 
 const FAST_POLL_MS = 2000;
 const SLOW_POLL_MS = 5000;
+const PAGE_SIZE = 25;
 
 export function TaskBoard() {
   const [tasks, setTasks]               = useState<TaskEntry[]>([]);
+  const [totalTasks, setTotalTasks]     = useState(0);
+  const [taskOffset, setTaskOffset]     = useState(0);
+  
   const [research, setResearch]         = useState<ResearchTask[]>([]);
   const [loading, setLoading]           = useState(true);
   const [error, setError]               = useState<string | null>(null);
@@ -374,6 +388,7 @@ export function TaskBoard() {
   const [lastRefresh, setLastRefresh]   = useState<Date | null>(null);
   const [theme, setTheme]               = useState<"light" | "dark">("light");
   const [showAllResearch, setShowAllResearch] = useState(false);
+  const [activeTab, setActiveTab]       = useState<"board" | "logs">("board");
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // ── Theme ──────────────────────────────────────────────────────────────────
@@ -399,11 +414,16 @@ export function TaskBoard() {
   // ── Data fetching ──────────────────────────────────────────────────────────
   const fetchAll = useCallback(async () => {
     try {
-      const [entries, researchList] = await Promise.all([
-        invoke<TaskEntry[]>("read_tasks"),
+      const [tasksResp, researchList] = await Promise.all([
+        invoke<PaginatedTasksResponse>("read_tasks_paginated", {
+          offset: taskOffset,
+          limit: PAGE_SIZE,
+        }),
         invoke<ResearchTask[]>("list_research_tasks").catch(() => [] as ResearchTask[]),
       ]);
-      setTasks([...entries].reverse());
+      
+      setTasks(tasksResp.items.reverse());
+      setTotalTasks(tasksResp.total);
       setResearch(researchList);
       setLastRefresh(new Date());
       setError(null);
@@ -412,7 +432,7 @@ export function TaskBoard() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [taskOffset]);
 
   // Adaptive polling: faster when research tasks are running
   useEffect(() => {
@@ -456,37 +476,67 @@ export function TaskBoard() {
   return (
     <div className="max-w-4xl mx-auto space-y-6">
 
-      {/* ── Header ─────────────────────────────────────────────────────────── */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-            Sirin
-            <span className="text-base font-normal text-slate-400 dark:text-slate-500">任務板</span>
-          </h1>
-          <StatusBar
-            activeResearch={activeResearch.length}
-            taskCount={actionable.length}
-          />
+      {/* ── Header with tabs ───────────────────────────────────────────────── */}
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
+              Sirin
+              <span className="text-base font-normal text-slate-400 dark:text-slate-500">任務板</span>
+            </h1>
+            <StatusBar
+              activeResearch={research.filter((r) => r.status === "running").length}
+              taskCount={tasks.filter((t) => isActionable(t.status)).length}
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            {lastRefresh && (
+              <span className="text-[11px] text-slate-400 dark:text-slate-500 tabular-nums hidden sm:block">
+                {formatTs(lastRefresh.toISOString())} 更新
+              </span>
+            )}
+            <Button variant="outline" size="sm" onClick={toggleTheme} className="gap-1.5">
+              {theme === "dark" ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={fetchAll}
+              disabled={loading}
+              className="gap-1.5"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+              重新整理
+            </Button>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          {lastRefresh && (
-            <span className="text-[11px] text-slate-400 dark:text-slate-500 tabular-nums hidden sm:block">
-              {formatTs(lastRefresh.toISOString())} 更新
-            </span>
-          )}
-          <Button variant="outline" size="sm" onClick={toggleTheme} className="gap-1.5">
-            {theme === "dark" ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={fetchAll}
-            disabled={loading}
-            className="gap-1.5"
+
+        {/* ── Tab buttons ────────────────────────────────────────────────── */}
+        <div className="flex items-center gap-2 border-b border-slate-200 dark:border-slate-800">
+          <button
+            onClick={() => setActiveTab("board")}
+            className={[
+              "px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px",
+              activeTab === "board"
+                ? "text-violet-600 dark:text-violet-400 border-violet-600 dark:border-violet-400"
+                : "text-slate-600 dark:text-slate-400 border-transparent hover:text-slate-900 dark:hover:text-slate-200",
+            ].join(" ")}
           >
-            <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
-            重新整理
-          </Button>
+            <Activity className="h-4 w-4 inline-block mr-1" />
+            任務看板
+          </button>
+          <button
+            onClick={() => setActiveTab("logs")}
+            className={[
+              "px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px",
+              activeTab === "logs"
+                ? "text-violet-600 dark:text-violet-400 border-violet-600 dark:border-violet-400"
+                : "text-slate-600 dark:text-slate-400 border-transparent hover:text-slate-900 dark:hover:text-slate-200",
+            ].join(" ")}
+          >
+            <LogsIcon className="h-4 w-4 inline-block mr-1" />
+            系統日誌
+          </button>
         </div>
       </div>
 
@@ -498,7 +548,7 @@ export function TaskBoard() {
       )}
 
       {/* ── Loading skeleton ────────────────────────────────────────────────── */}
-      {loading && tasks.length === 0 && (
+      {loading && tasks.length === 0 && activeTab === "board" && (
         <div className="space-y-3">
           {[1, 2, 3].map((n) => (
             <div
@@ -509,89 +559,134 @@ export function TaskBoard() {
         </div>
       )}
 
-      {/* ── Running research tasks (always visible) ─────────────────────────── */}
-      {activeResearch.length > 0 && (
-        <section className="space-y-3">
-          <h2 className="text-xs font-semibold uppercase tracking-widest text-violet-500 dark:text-violet-400 flex items-center gap-1.5">
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            正在調研 ({activeResearch.length})
-          </h2>
-          {activeResearch.map((r) => (
-            <ResearchCard key={r.id} task={r} />
-          ))}
-        </section>
-      )}
-
-      {/* ── Actionable tasks ─────────────────────────────────────────────────── */}
-      {actionable.length > 0 && (
-        <section className="space-y-3">
-          <h2 className="text-xs font-semibold uppercase tracking-widest text-amber-500 dark:text-amber-400 flex items-center gap-1.5">
-            <Zap className="h-3.5 w-3.5" />
-            待處理 ({actionable.length})
-          </h2>
-          {actionable.map((t) => (
-            <TaskCard
-              key={t.timestamp}
-              entry={t}
-              onApprove={handleApprove}
-              approving={approvingId === t.timestamp}
-            />
-          ))}
-        </section>
-      )}
-
-      {/* ── Completed research tasks ─────────────────────────────────────────── */}
-      {completedResearch.length > 0 && (
-        <section className="space-y-3">
-          <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400 dark:text-slate-500 flex items-center gap-1.5">
-            <Microscope className="h-3.5 w-3.5" />
-            調研紀錄 ({completedResearch.length})
-          </h2>
-          {visibleCompleted.map((r) => (
-            <ResearchCard key={r.id} task={r} />
-          ))}
-          {completedResearch.length > 3 && (
-            <button
-              onClick={() => setShowAllResearch((v) => !v)}
-              className="w-full text-center text-xs text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300 py-1 transition-colors"
-            >
-              {showAllResearch
-                ? "收起"
-                : `顯示全部 ${completedResearch.length} 筆紀錄`}
-            </button>
+      {/* ── Board Tab Content ───────────────────────────────────────────────── */}
+      {activeTab === "board" && (
+        <div className="space-y-6">
+          {/* ── Running research tasks ────────────────────────────────────── */}
+          {activeResearch.length > 0 && (
+            <section className="space-y-3">
+              <h2 className="text-xs font-semibold uppercase tracking-widest text-violet-500 dark:text-violet-400 flex items-center gap-1.5">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                正在調研 ({activeResearch.length})
+              </h2>
+              {activeResearch.map((r) => (
+                <ResearchCard key={r.id} task={r} />
+              ))}
+            </section>
           )}
-        </section>
-      )}
 
-      {/* ── Activity feed ────────────────────────────────────────────────────── */}
-      {activityFeed.length > 0 && (
-        <section className="space-y-3">
-          <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400 dark:text-slate-500 flex items-center gap-1.5">
-            <Activity className="h-3.5 w-3.5" />
-            最近活動 ({activityFeed.length})
-          </h2>
-          {activityFeed.map((t) => (
-            <TaskCard
-              key={t.timestamp}
-              entry={t}
-              onApprove={handleApprove}
-              approving={approvingId === t.timestamp}
-            />
-          ))}
-        </section>
-      )}
+          {/* ── Actionable tasks ──────────────────────────────────────────── */}
+          {actionable.length > 0 && (
+            <section className="space-y-3">
+              <h2 className="text-xs font-semibold uppercase tracking-widest text-amber-500 dark:text-amber-400 flex items-center gap-1.5">
+                <Zap className="h-3.5 w-3.5" />
+                待處理 ({actionable.length})
+              </h2>
+              {actionable.map((t) => (
+                <TaskCard
+                  key={t.timestamp}
+                  entry={t}
+                  onApprove={handleApprove}
+                  approving={approvingId === t.timestamp}
+                />
+              ))}
+            </section>
+          )}
 
-      {/* ── Empty state ──────────────────────────────────────────────────────── */}
-      {!loading && tasks.length === 0 && research.length === 0 && (
-        <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-300 py-16 text-slate-400 dark:border-slate-700 dark:text-slate-500">
-          <Activity className="h-8 w-8 mb-3 opacity-40" />
-          <p className="text-sm font-medium">目前沒有任務</p>
-          <p className="text-xs mt-1 text-center">
-            Sirin 處理 Telegram 訊息後會顯示在這裡。<br />
-            傳送「調研 &lt;網址&gt;」啟動背景調研任務。
-          </p>
+          {/* ── Completed research tasks ──────────────────────────────────── */}
+          {completedResearch.length > 0 && (
+            <section className="space-y-3">
+              <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400 dark:text-slate-500 flex items-center gap-1.5">
+                <Microscope className="h-3.5 w-3.5" />
+                調研紀錄 ({completedResearch.length})
+              </h2>
+              {visibleCompleted.map((r) => (
+                <ResearchCard key={r.id} task={r} />
+              ))}
+              {completedResearch.length > 3 && (
+                <button
+                  onClick={() => setShowAllResearch((v) => !v)}
+                  className="w-full text-center text-xs text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300 py-1 transition-colors"
+                >
+                  {showAllResearch
+                    ? "收起"
+                    : `顯示全部 ${completedResearch.length} 筆紀錄`}
+                </button>
+              )}
+            </section>
+          )}
+
+          {/* ── Activity feed with pagination ─────────────────────────────── */}
+          {activityFeed.length > 0 && (
+            <section className="space-y-3">
+              <div className="flex items-center justify-between">
+                <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400 dark:text-slate-500 flex items-center gap-1.5">
+                  <Activity className="h-3.5 w-3.5" />
+                  最近活動 ({totalTasks})
+                </h2>
+                <div className="text-xs text-slate-500 dark:text-slate-400">
+                  第 {Math.floor(taskOffset / PAGE_SIZE) + 1} 頁，共 {Math.ceil(totalTasks / PAGE_SIZE)} 頁
+                </div>
+              </div>
+
+              {activityFeed.map((t) => (
+                <TaskCard
+                  key={t.timestamp}
+                  entry={t}
+                  onApprove={handleApprove}
+                  approving={approvingId === t.timestamp}
+                />
+              ))}
+
+              {/* Pagination controls */}
+              {totalTasks > PAGE_SIZE && (
+                <div className="flex items-center justify-between pt-2 border-t border-slate-200 dark:border-slate-800">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setTaskOffset(Math.max(0, taskOffset - PAGE_SIZE))}
+                    disabled={taskOffset === 0}
+                    className="gap-1"
+                  >
+                    <ChevronRight className="h-3.5 w-3.5 rotate-180" />
+                    上一頁
+                  </Button>
+
+                  <span className="text-xs text-slate-600 dark:text-slate-400">
+                    {taskOffset + 1}–{Math.min(taskOffset + PAGE_SIZE, totalTasks)} / {totalTasks}
+                  </span>
+
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setTaskOffset(taskOffset + PAGE_SIZE)}
+                    disabled={taskOffset + PAGE_SIZE >= totalTasks}
+                    className="gap-1"
+                  >
+                    下一頁
+                    <ChevronRight className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              )}
+            </section>
+          )}
+
+          {/* ── Empty state ────────────────────────────────────────────────── */}
+          {!loading && tasks.length === 0 && research.length === 0 && (
+            <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-300 py-16 text-slate-400 dark:border-slate-700 dark:text-slate-500">
+              <Activity className="h-8 w-8 mb-3 opacity-40" />
+              <p className="text-sm font-medium">目前沒有任務</p>
+              <p className="text-xs mt-1 text-center">
+                Sirin 處理 Telegram 訊息後會顯示在這裡。<br />
+                傳送「調研 &lt;網址&gt;」啟動背景調研任務。
+              </p>
+            </div>
+          )}
         </div>
       )}
+
+      {/* ── Logs Tab Content ───────────────────────────────────────────────── */}
+      {activeTab === "logs" && <LogsViewer />}
     </div>
   );
 }
