@@ -2,6 +2,11 @@
 
 Sirin 是一個以 Tauri 2 + Next.js 15 建成的桌面代理原型。前端提供 Live Task Board，後端以 Rust 負責背景工作、任務追蹤、Telegram 監聽與本機 LLM 回覆流程（Ollama / LM Studio）。
 
+## 文件導覽
+
+- [架構說明（Current Architecture）](docs/ARCHITECTURE.md)
+- [快速啟動（QUICKSTART）](docs/QUICKSTART.md)
+
 ## 目前已確認的狀態
 
 以下流程已在目前專案上驗證過：
