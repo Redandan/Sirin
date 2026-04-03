@@ -29,10 +29,10 @@ use grammers_session::storages::SqliteSession;
 use grammers_session::types::{PeerId, PeerKind};
 use serde::{Deserialize, Serialize};
 
+use crate::memory::{append_context, load_recent_context};
 use crate::persona::{Persona, TaskEntry, TaskTracker};
+use crate::skills::ddg_search;
 
-/// Maximum number of characters to include in a notification preview body.
-const NOTIFICATION_PREVIEW_LEN: usize = 120;
 const OLLAMA_BASE_URL: &str = "http://localhost:11434";
 const LM_STUDIO_BASE_URL: &str = "http://localhost:1234/v1";
 const DEFAULT_MODEL: &str = "llama3.2";
@@ -320,36 +320,6 @@ async fn ensure_user_authorized(
     }
 }
 
-/// Estimate the ROI potential of a Telegram message.
-///
-/// This is intentionally a simple heuristic — it assigns a nominal profit
-/// value based on the presence of trading-related keywords so the
-/// [`Persona::should_trigger_remote_ai`] gate can decide whether to escalate.
-///
-/// Replace or extend this logic with a real ML inference call when available.
-fn estimate_profit(text: &str) -> f64 {
-    let lower = text.to_lowercase();
-    let keywords: &[(&str, f64)] = &[
-        // Action words — direct buy/sell intent (moderate weight)
-        ("buy",       3.0),
-        ("sell",      3.0),
-        // Signal / alert words — explicit trading callout (higher weight)
-        ("signal",    4.0),
-        ("alert",     2.0),
-        ("breakout",  6.0),
-        // Sentiment / slang common in crypto trading groups
-        ("pump",      5.0),
-        ("moon",      5.0),
-        // Generic profit / trade references
-        ("profit",    4.0),
-        ("roi",       4.0),
-        ("trade",     3.0),
-    ];
-    keywords.iter().fold(0.0, |acc, (kw, score)| {
-        if lower.contains(kw) { acc + score } else { acc }
-    })
-}
-
 /// Execute simple user commands from Telegram message text and return
 /// a human-readable execution report.
 fn execute_user_request(
@@ -482,11 +452,29 @@ fn chinese_fallback_reply(user_text: &str, execution_result: Option<&str>) -> St
     base
 }
 
+fn should_search(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    text.contains('?')
+        || text.contains('？')
+        || lower.contains("什麼")
+        || lower.contains("如何")
+        || lower.contains("為什麼")
+        || lower.contains("怎麼")
+        || lower.contains("哪裡")
+        || lower.contains("what")
+        || lower.contains("how")
+        || lower.contains("why")
+        || lower.contains("when")
+        || lower.contains("where")
+        || lower.contains("who")
+}
+
 fn build_ai_reply_prompt(
     persona: Option<&Persona>,
     user_text: &str,
-    estimated_profit: f64,
     execution_result: Option<&str>,
+    search_context: Option<&str>,
+    context_block: Option<&str>,
     force_traditional_chinese: bool,
 ) -> String {
     let persona_name = persona.map(|p| p.name()).unwrap_or("Sirin");
@@ -502,6 +490,14 @@ fn build_ai_reply_prompt(
     let execution_block = execution_result
         .map(|v| format!("Execution result from internal action layer: {v}"))
         .unwrap_or_else(|| "Execution result from internal action layer: no direct action executed.".to_string());
+
+    let search_block = search_context
+        .map(|v| format!("\nWeb search results (use as reference, do not quote verbatim):\n{v}"))
+        .unwrap_or_default();
+
+    let history_block = context_block
+        .map(|v| format!("\nRecent conversation history:\n{v}"))
+        .unwrap_or_default();
 
     let language_override = if force_traditional_chinese {
         "- Reply in Traditional Chinese only.\n"
@@ -519,14 +515,12 @@ Constraints:\n\
 - Be polite and human-like.\n\
 - Reply in the same language as the user's message.\n\
 - Do not self-introduce unless the user asks who you are.\n\
-- Do not mention ROI/profit score unless the user explicitly asks for it.\n\
 - Avoid sounding like a system prompt or policy statement.\n\
 {language_override}
 - If an internal action already ran, include a short result summary.\n\
 \n\
 User message: {user_text}\n\
-Estimated ROI score: {estimated_profit:.2}\n\
-{execution_block}\n\
+{execution_block}{search_block}{history_block}\n\
 \n\
 Return only the final reply text."
     )
@@ -594,15 +588,17 @@ async fn generate_ai_reply(
     llm: &ReplyLlmConfig,
     persona: Option<&Persona>,
     user_text: &str,
-    estimated_profit: f64,
     execution_result: Option<&str>,
+    search_context: Option<&str>,
+    context_block: Option<&str>,
     force_traditional_chinese: bool,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let prompt = build_ai_reply_prompt(
         persona,
         user_text,
-        estimated_profit,
         execution_result,
+        search_context,
+        context_block,
         force_traditional_chinese,
     );
     match llm.backend {
@@ -617,17 +613,6 @@ async fn generate_ai_reply(
             )
             .await
         }
-    }
-}
-
-/// Send a macOS (or desktop) system notification.
-fn send_notification(title: &str, body: &str) {
-    if let Err(e) = notify_rust::Notification::new()
-        .summary(title)
-        .body(body)
-        .show()
-    {
-        eprintln!("[telegram] Failed to send notification: {e}");
     }
 }
 
@@ -839,12 +824,6 @@ pub async fn run_listener(
         let persona = Persona::load().ok();
         let persona_name = persona.as_ref().map(|p| p.name()).unwrap_or("Sirin");
 
-        let estimated_profit = estimate_profit(&text);
-        let triggered = persona
-            .as_ref()
-            .map(|p| p.should_trigger_remote_ai(estimated_profit))
-            .unwrap_or(false);
-
         if cfg.auto_reply_enabled {
             let (voice, ack_prefix, compliance) = persona
                 .as_ref()
@@ -861,18 +840,63 @@ pub async fn run_listener(
             let fallback_reply = cfg
                 .auto_reply_text
                 .replace("{persona}", persona_name)
-                .replace("{profit}", &format!("{estimated_profit:.2}"))
                 .replace("{voice}", voice)
                 .replace("{ack_prefix}", ack_prefix)
                 .replace("{compliance}", compliance);
+
+            // Load recent conversation context.
+            let context_block: Option<String> = match load_recent_context(5) {
+                Ok(entries) if !entries.is_empty() => {
+                    let formatted = entries
+                        .iter()
+                        .map(|e| format!("User: {}\nAssistant: {}", e.user_msg, e.assistant_reply))
+                        .collect::<Vec<_>>()
+                        .join("\n---\n");
+                    Some(formatted)
+                }
+                Ok(_) => None,
+                Err(e) => {
+                    eprintln!("[telegram] Failed to load context: {e}");
+                    None
+                }
+            };
+
+            // Perform web search when the message looks like a question.
+            let search_context: Option<String> = if should_search(&text) {
+                let query = text.chars().take(100).collect::<String>();
+                eprintln!("[telegram] Searching web for: {query}");
+                match ddg_search(&query).await {
+                    Ok(results) if !results.is_empty() => {
+                        let formatted = results
+                            .iter()
+                            .take(3)
+                            .map(|r| format!("- {}: {} ({})", r.title, r.snippet, r.url))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        eprintln!("[telegram] Web search returned {} result(s)", results.len().min(3));
+                        Some(formatted)
+                    }
+                    Ok(_) => {
+                        eprintln!("[telegram] Web search returned no results");
+                        None
+                    }
+                    Err(e) => {
+                        eprintln!("[telegram] Web search failed: {e}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
 
             let ai_reply = match generate_ai_reply(
                 &llm_client,
                 &llm,
                 persona.as_ref(),
                 &text,
-                estimated_profit,
                 execution_result.as_deref(),
+                search_context.as_deref(),
+                context_block.as_deref(),
                 false,
             )
             .await
@@ -892,8 +916,9 @@ pub async fn run_listener(
                     &llm,
                     persona.as_ref(),
                     &text,
-                    estimated_profit,
                     execution_result.as_deref(),
+                    search_context.as_deref(),
+                    context_block.as_deref(),
                     true,
                 )
                 .await
@@ -904,6 +929,8 @@ pub async fn run_listener(
             } else {
                 ai_reply
             };
+
+            let reply_for_context = final_reply.clone();
 
             if is_private {
                 if let Some(peer_ref) = message.peer_ref().await {
@@ -928,6 +955,10 @@ pub async fn run_listener(
             } else {
                 eprintln!("[telegram] Auto-reply sent (AI path, group reply)");
             }
+
+            if let Err(e) = append_context(&text, &reply_for_context) {
+                eprintln!("[telegram] Failed to save context: {e}");
+            }
         } else if cfg.debug_updates {
             eprintln!("[telegram] skip: auto-reply disabled by TG_AUTO_REPLY");
         }
@@ -935,22 +966,9 @@ pub async fn run_listener(
         let entry = TaskEntry::ai_decision(
             persona_name,
             Some(message_preview(&text, 140)),
-            estimated_profit,
-            triggered,
         );
         if let Err(e) = tracker.record(&entry) {
             eprintln!("[telegram] Failed to record task entry: {e}");
-        }
-
-        if triggered {
-            let preview: String = text.chars().take(NOTIFICATION_PREVIEW_LEN).collect();
-            send_notification(
-                "Sirin — High ROI Signal",
-                &format!("Estimated profit: ${estimated_profit:.2}\n\n{preview}"),
-            );
-            eprintln!(
-                "[telegram] ROI trigger fired (profit={estimated_profit:.2}, persona={persona_name})",
-            );
         }
     }
 }

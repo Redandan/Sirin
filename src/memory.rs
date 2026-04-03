@@ -1,11 +1,16 @@
+use std::collections::VecDeque;
+use std::fs::{self, OpenOptions};
+use std::io::{BufRead, BufReader, Write};
 use std::sync::Arc;
 
 use arrow::array::types::Float32Type;
 use arrow::array::{FixedSizeListArray, Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
+use chrono::Utc;
 use futures::TryStreamExt;
 use lancedb::query::{ExecutableQuery, QueryBase};
 use lancedb::{connect, Connection, Table};
+use serde::{Deserialize, Serialize};
 
 const MEMORY_DB_PATH: &str = "data/sirin_memory";
 const MEMORY_TABLE: &str = "task_memory";
@@ -148,4 +153,81 @@ pub async fn search_memory(
     hits.sort_by(|a, b| a.distance.total_cmp(&b.distance));
     hits.truncate(3);
     Ok(hits)
+}
+
+// ── Simple JSONL conversation context ─────────────────────────────────────────
+
+fn context_log_path() -> std::path::PathBuf {
+    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+        return std::path::Path::new(&local_app_data)
+            .join("Sirin")
+            .join("tracking")
+            .join("sirin_context.jsonl");
+    }
+    std::path::Path::new("data")
+        .join("tracking")
+        .join("sirin_context.jsonl")
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextEntry {
+    pub timestamp: String,
+    pub user_msg: String,
+    pub assistant_reply: String,
+}
+
+/// Append a conversation turn to the context log.
+pub fn append_context(
+    user_msg: &str,
+    assistant_reply: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let path = context_log_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let entry = ContextEntry {
+        timestamp: Utc::now().to_rfc3339(),
+        user_msg: user_msg.to_string(),
+        assistant_reply: assistant_reply.to_string(),
+    };
+    let line = serde_json::to_string(&entry)?;
+    let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
+    writeln!(file, "{line}")?;
+    Ok(())
+}
+
+/// Load the most recent `limit` context entries.
+pub fn load_recent_context(
+    limit: usize,
+) -> Result<Vec<ContextEntry>, Box<dyn std::error::Error + Send + Sync>> {
+    let path = context_log_path();
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let file = fs::File::open(&path)?;
+    let reader = BufReader::new(file);
+
+    let mut ring: VecDeque<ContextEntry> = VecDeque::with_capacity(limit);
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Ok(entry) = serde_json::from_str::<ContextEntry>(&line) {
+            if ring.len() == limit {
+                ring.pop_front();
+            }
+            ring.push_back(entry);
+        }
+    }
+    Ok(ring.into_iter().collect())
+}
+
+/// Truncate the context log (wipe all history).
+pub fn clear_context() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let path = context_log_path();
+    if path.exists() {
+        fs::write(&path, b"")?;
+    }
+    Ok(())
 }

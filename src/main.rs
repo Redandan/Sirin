@@ -103,6 +103,22 @@ async fn search_web(query: String) -> Result<Vec<skills::SearchResult>, String> 
     skills::ddg_search(&query).await
 }
 
+/// Return the most recent conversation context entries.
+///
+/// Called from the frontend via `invoke('get_context')`.
+#[tauri::command]
+fn get_context() -> Result<Vec<memory::ContextEntry>, String> {
+    memory::load_recent_context(20).map_err(|e| e.to_string())
+}
+
+/// Wipe all stored conversation context.
+///
+/// Called from the frontend via `invoke('clear_context')`.
+#[tauri::command]
+fn clear_context() -> Result<(), String> {
+    memory::clear_context().map_err(|e| e.to_string())
+}
+
 // ── Persistent background loop (runs every 60 seconds) ───────────────────────
 
 async fn background_loop() {
@@ -146,7 +162,7 @@ fn main() {
 
     tauri::Builder::default()
         .manage(tracker.clone())
-        .invoke_handler(tauri::generate_handler![read_tasks, list_skills, approve_task, search_web])
+        .invoke_handler(tauri::generate_handler![read_tasks, list_skills, approve_task, search_web, get_context, clear_context])
         .setup(move |app| {
             // Build tray menu items
             let show_item =

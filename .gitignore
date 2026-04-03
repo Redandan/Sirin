@@ -40,3 +40,4 @@ Thumbs.db
 # ── Explicitly track config YAML files (override any broad ignore rules) ──────
 !/config/
 !/config/*.yaml
+.claude/settings.local.json

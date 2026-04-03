@@ -89,10 +89,6 @@ impl Persona {
         &self.identity.name
     }
 
-    pub fn should_trigger_remote_ai(&self, estimated_profit: f64) -> bool {
-        estimated_profit > self.roi_thresholds.min_usd_to_call_remote_llm
-    }
-
     pub fn objective_match(&self, text: &str) -> Option<String> {
         let lower = text.to_lowercase();
         self.objectives
@@ -252,17 +248,15 @@ impl TaskEntry {
     pub fn ai_decision(
         persona_name: &str,
         message_preview: Option<String>,
-        estimated_profit: f64,
-        triggered: bool,
     ) -> Self {
         Self {
             timestamp: Utc::now().to_rfc3339(),
             event: "ai_decision".to_string(),
             persona: persona_name.to_string(),
             message_preview,
-            trigger_remote_ai: Some(triggered),
-            estimated_profit_usd: Some(estimated_profit),
-            status: if triggered { Some("PENDING".to_string()) } else { None },
+            trigger_remote_ai: None,
+            estimated_profit_usd: None,
+            status: None,
             reason: None,
             action_tier: None,
             high_priority: None,
