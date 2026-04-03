@@ -95,6 +95,14 @@ fn approve_task(
     Ok(())
 }
 
+/// Search the web via DuckDuckGo without an API key.
+///
+/// Called from the frontend via `invoke('search_web', { query })`.
+#[tauri::command]
+async fn search_web(query: String) -> Result<Vec<skills::SearchResult>, String> {
+    skills::ddg_search(&query).await
+}
+
 // ── Persistent background loop (runs every 60 seconds) ───────────────────────
 
 async fn background_loop() {
@@ -138,7 +146,7 @@ fn main() {
 
     tauri::Builder::default()
         .manage(tracker.clone())
-        .invoke_handler(tauri::generate_handler![read_tasks, list_skills, approve_task])
+        .invoke_handler(tauri::generate_handler![read_tasks, list_skills, approve_task, search_web])
         .setup(move |app| {
             // Build tray menu items
             let show_item =
