@@ -1,0 +1,32 @@
+{
+  "generated_at": "2026-04-03T05:51:34.703Z",
+  "case_count": 3,
+  "prediction_count": 3,
+  "missing_predictions": 0,
+  "weighted_accuracy": 1,
+  "latency_pass_rate": 1,
+  "pass_gate": true,
+  "details": [
+    {
+      "case_id": "intent-research-url",
+      "score": 1,
+      "weight": 2,
+      "has_prediction": true,
+      "latency_pass": true
+    },
+    {
+      "case_id": "intent-quick-answer",
+      "score": 1,
+      "weight": 1,
+      "has_prediction": true,
+      "latency_pass": true
+    },
+    {
+      "case_id": "telegram-reply-tone",
+      "score": 1,
+      "weight": 1,
+      "has_prediction": true,
+      "latency_pass": true
+    }
+  ]
+}

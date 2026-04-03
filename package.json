@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "eval:local": "node scripts/eval-local.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

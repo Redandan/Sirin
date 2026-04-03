@@ -39,6 +39,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { LogsViewer } from "@/components/logs-viewer";
+import { TelegramAuthCard } from "@/components/telegram-auth-card";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -546,6 +547,9 @@ export function TaskBoard() {
           {error}
         </div>
       )}
+
+      {/* ── Telegram auth/status card (hidden when connected) ──────────── */}
+      <TelegramAuthCard />
 
       {/* ── Loading skeleton ────────────────────────────────────────────────── */}
       {loading && tasks.length === 0 && activeTab === "board" && (

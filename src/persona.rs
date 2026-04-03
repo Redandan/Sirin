@@ -208,7 +208,7 @@ impl BehaviorEngine {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskEntry {
     pub timestamp: String,
     pub event: String,

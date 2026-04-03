@@ -16,7 +16,6 @@
 //! The Telegram session is stored in `data/sirin.session` so that re-runs do
 //! not require re-authentication.
 
-use std::io::{self, Write};
 use std::{env, sync::Arc};
 use std::collections::HashMap;
 
@@ -33,6 +32,7 @@ use crate::memory::{append_context, load_recent_context};
 use crate::persona::{Persona, TaskEntry, TaskTracker};
 use crate::researcher;
 use crate::skills::ddg_search;
+use crate::telegram_auth::TelegramAuthState;
 
 const OLLAMA_BASE_URL: &str = "http://localhost:11434";
 const LM_STUDIO_BASE_URL: &str = "http://localhost:1234/v1";
@@ -277,18 +277,21 @@ impl TelegramConfig {
     }
 }
 
-fn prompt_input(prompt: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    print!("{prompt}");
-    io::stdout().flush()?;
+/// Code + 2FA timeout: how long (seconds) we wait for the user to enter credentials via UI.
+const AUTH_INPUT_TIMEOUT_SECS: u64 = 300;
 
-    let mut line = String::new();
-    io::stdin().read_line(&mut line)?;
-    Ok(line.trim().to_string())
-}
-
+/// Non-blocking sign-in helper.
+///
+/// Instead of reading from stdin (which hangs in the Tauri GUI process), this
+/// function tells the frontend that credentials are needed via `TelegramAuthState`,
+/// then awaits a bounded-time channel receive.  If the user does not respond
+/// within `AUTH_INPUT_TIMEOUT_SECS` the function returns an error and the
+/// listener is retired; the retry loop in `run_listener_with_retry` will
+/// attempt again shortly.
 async fn ensure_user_authorized(
     client: &Client,
     cfg: &TelegramConfig,
+    auth: &TelegramAuthState,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if client.is_authorized().await? {
         return Ok(());
@@ -296,14 +299,17 @@ async fn ensure_user_authorized(
 
     eprintln!("[telegram] Session not authorized, starting user sign-in flow...");
 
-    let phone = if let Some(phone) = cfg.phone.as_ref() {
-        phone.clone()
-    } else {
-        prompt_input("Enter Telegram phone number (international format, e.g. +886...): ")?
-    };
+    let phone = cfg.phone.clone().ok_or_else(|| {
+        "TG_PHONE is not set; cannot start non-interactive sign-in (set TG_PHONE in .env)"
+    })?;
 
     let login_token = client.request_login_code(&phone, &cfg.api_hash).await?;
-    let code = prompt_input("Enter Telegram login code: ")?;
+    eprintln!("[telegram] Login code requested for {phone}; waiting for UI input (timeout {}s)", AUTH_INPUT_TIMEOUT_SECS);
+
+    let code = auth
+        .request_code(AUTH_INPUT_TIMEOUT_SECS)
+        .await
+        .ok_or("Timed out waiting for Telegram login code from UI")?;
 
     match client.sign_in(&login_token, &code).await {
         Ok(_) => {
@@ -311,8 +317,12 @@ async fn ensure_user_authorized(
             Ok(())
         }
         Err(SignInError::PasswordRequired(password_token)) => {
-            let hint = password_token.hint().unwrap_or("none");
-            let password = prompt_input(&format!("Enter Telegram 2FA password (hint: {hint}): "))?;
+            let hint = password_token.hint().unwrap_or("none").to_string();
+            eprintln!("[telegram] 2FA required (hint: {hint}); waiting for UI input");
+            let password = auth
+                .request_password(&hint, AUTH_INPUT_TIMEOUT_SECS)
+                .await
+                .ok_or("Timed out waiting for Telegram 2FA password from UI")?;
             client.check_password(password_token, password.trim()).await?;
             eprintln!("[telegram] User sign-in with 2FA succeeded");
             Ok(())
@@ -711,18 +721,10 @@ async fn generate_ai_reply(
     }
 }
 
-/// Connect to Telegram and listen for messages in the configured groups.
-///
-/// This function runs indefinitely.  Spawn it with [`tokio::spawn`] so it
-/// runs alongside the rest of the Sirin background tasks.
-///
-/// # Errors
-/// Returns early with an error if:
-/// - required environment variables are missing / malformed,
-/// - the Telegram connection cannot be established, or
-/// - an unrecoverable network error occurs.
-pub async fn run_listener(
-    tracker: TaskTracker,
+/// Inner listener — connects once, runs until an unrecoverable error.
+async fn run_listener_once(
+    tracker: &TaskTracker,
+    auth: &TelegramAuthState,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let cfg = TelegramConfig::from_env()?;
     let llm = ReplyLlmConfig::from_env();
@@ -741,7 +743,7 @@ pub async fn run_listener(
     let client = Client::new(handle.clone());
     let pool_task = tokio::spawn(runner.run());
 
-    if let Err(err) = ensure_user_authorized(&client, &cfg).await {
+    if let Err(err) = ensure_user_authorized(&client, &cfg, auth).await {
         eprintln!("[telegram] {err}");
         handle.quit();
         let _ = pool_task.await;
@@ -1088,6 +1090,44 @@ pub async fn run_listener(
         if let Err(e) = tracker.record(&entry) {
             eprintln!("[telegram] Failed to record task entry: {e}");
         }
+    }
+    Ok(())
+}
+
+/// Public entry-point: wraps `run_listener_once` with automatic retry so that
+/// a missing session, a failed sign-in, or a transient network error never
+/// blocks the application.
+///
+/// # Retry policy
+/// - On a clean exit (env vars missing / auth unavailable): wait 60 s before
+///   retrying so the user can update `.env` or enter credentials via the UI.
+/// - On a connection error: wait 30 s.
+/// - Maximum back-off is capped at 5 minutes.
+pub async fn run_listener(tracker: TaskTracker, auth: TelegramAuthState) {
+    let mut backoff_secs: u64 = 30;
+    let mut attempt: u32 = 0;
+
+    loop {
+        attempt += 1;
+        eprintln!("[telegram] Starting listener attempt #{attempt}");
+        auth.set_disconnected(format!("attempt #{attempt}"));
+
+        match run_listener_once(&tracker, &auth).await {
+            Ok(()) => {
+                // run_listener_once returned Ok when auth was unavailable or
+                // env vars were absent — wait before retrying.
+                eprintln!("[telegram] Listener exited cleanly; retrying in {backoff_secs}s");
+            }
+            Err(e) => {
+                eprintln!("[telegram] Listener error: {e}; retrying in {backoff_secs}s");
+                auth.set_error(e.to_string());
+            }
+        }
+
+        tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
+
+        // Exponential back-off capped at 5 minutes.
+        backoff_secs = (backoff_secs * 2).min(300);
     }
 }
 

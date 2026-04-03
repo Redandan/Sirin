@@ -14,6 +14,7 @@
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -242,7 +243,16 @@ fn research_log_path() -> PathBuf {
         .join("research.jsonl")
 }
 
+fn research_store_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
 pub fn save_research(task: &ResearchTask) -> Result<(), String> {
+    let _guard = research_store_lock()
+        .lock()
+        .map_err(|_| "research store lock poisoned".to_string())?;
+
     let path = research_log_path();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -294,6 +304,10 @@ pub fn save_research(task: &ResearchTask) -> Result<(), String> {
 }
 
 pub fn list_research() -> Result<Vec<ResearchTask>, String> {
+    let _guard = research_store_lock()
+        .lock()
+        .map_err(|_| "research store lock poisoned".to_string())?;
+
     let path = research_log_path();
     if !path.exists() {
         return Ok(Vec::new());

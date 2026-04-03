@@ -1,0 +1,3 @@
+{"case_id":"intent-research-url","output":"以下是調研重點與建議...","latency_ms":10200,"model":"llama3.2","prompt_version":"v1.0.0"}
+{"case_id":"intent-quick-answer","output":"摘要如下，兩個重點是...","latency_ms":5200,"model":"llama3.2","prompt_version":"v1.0.0"}
+{"case_id":"telegram-reply-tone","output":"專業且簡短回覆：已收到，稍後提供方案。","latency_ms":4100,"model":"llama3.2","prompt_version":"v1.0.0"}

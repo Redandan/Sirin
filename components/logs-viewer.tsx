@@ -44,6 +44,21 @@ interface LogsResponse {
   has_more: boolean;
 }
 
+interface AutonomousMetrics {
+  generated_at: string;
+  pending_tasks: number;
+  followup_needed_tasks: number;
+  running_research: number;
+  scheduled_last_hour: number;
+  completed_success_last_hour: number;
+  completed_failed_last_hour: number;
+  success_rate_last_hour: number;
+  max_concurrent: number;
+  max_per_cycle: number;
+  cooldown_secs: number;
+  max_retries: number;
+}
+
 const LOG_LEVELS = ["DEBUG", "INFO", "WARN", "ERROR"];
 
 function getLevelColor(level: string): string {
@@ -127,6 +142,7 @@ function LogRow({
 
 export function LogsViewer() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [metrics, setMetrics] = useState<AutonomousMetrics | null>(null);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
   const [limit, setLimit] = useState(50);
@@ -159,9 +175,24 @@ export function LogsViewer() {
     }
   }, [offset, limit, filterTarget, filterLevel]);
 
+  const fetchMetrics = useCallback(async () => {
+    try {
+      const data = await invoke<AutonomousMetrics>("read_autonomous_metrics");
+      setMetrics(data);
+    } catch {
+      // keep UI usable even if metrics are temporarily unavailable
+    }
+  }, []);
+
   useEffect(() => {
     fetchLogs();
-  }, [fetchLogs]);
+    fetchMetrics();
+  }, [fetchLogs, fetchMetrics]);
+
+  useEffect(() => {
+    const t = setInterval(fetchMetrics, 5000);
+    return () => clearInterval(t);
+  }, [fetchMetrics]);
 
   // Filter logs by search query
   const filteredLogs = useMemo(() => {
@@ -191,6 +222,45 @@ export function LogsViewer() {
           {total} 筆紀錄 · 第 {currentPage} / {totalPages} 頁
         </div>
       </div>
+
+      {/* ── Autonomous metrics ────────────────────────────────────────────── */}
+      {metrics && (
+        <Card className="border-slate-200 dark:border-slate-800">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">自主任務監控</CardTitle>
+          </CardHeader>
+          <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+            <div className="rounded-md bg-slate-50 dark:bg-slate-900/50 p-2">
+              <div className="text-slate-400">進行中研究</div>
+              <div className="text-lg font-semibold">{metrics.running_research}</div>
+            </div>
+            <div className="rounded-md bg-slate-50 dark:bg-slate-900/50 p-2">
+              <div className="text-slate-400">待處理</div>
+              <div className="text-lg font-semibold">{metrics.pending_tasks}</div>
+            </div>
+            <div className="rounded-md bg-slate-50 dark:bg-slate-900/50 p-2">
+              <div className="text-slate-400">需跟進</div>
+              <div className="text-lg font-semibold">{metrics.followup_needed_tasks}</div>
+            </div>
+            <div className="rounded-md bg-slate-50 dark:bg-slate-900/50 p-2">
+              <div className="text-slate-400">近一小時成功率</div>
+              <div className="text-lg font-semibold">
+                {(metrics.success_rate_last_hour * 100).toFixed(0)}%
+              </div>
+            </div>
+            <div className="rounded-md bg-slate-50 dark:bg-slate-900/50 p-2 col-span-2 md:col-span-4">
+              <div className="text-slate-400 mb-1">策略參數</div>
+              <div className="flex flex-wrap gap-2">
+                <Badge variant="default">max_concurrent={metrics.max_concurrent}</Badge>
+                <Badge variant="default">max_per_cycle={metrics.max_per_cycle}</Badge>
+                <Badge variant="default">cooldown={metrics.cooldown_secs}s</Badge>
+                <Badge variant="default">max_retries={metrics.max_retries}</Badge>
+                <Badge variant="default">近一小時派工={metrics.scheduled_last_hour}</Badge>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* ── Filters ───────────────────────────────────────────────────────── */}
       <Card className="bg-slate-50 dark:bg-slate-900/30 border-slate-200 dark:border-slate-800">

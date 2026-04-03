@@ -2,11 +2,13 @@
 
 mod persona;
 mod telegram;
+mod telegram_auth;
 mod followup;
 mod memory;
 mod researcher;
 mod skills;
 mod logs;
+mod optimization;
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -225,11 +227,139 @@ fn list_research_tasks() -> Result<Vec<researcher::ResearchTask>, String> {
     Ok(tasks)
 }
 
-// ── Persistent background loop (runs every 60 seconds) ───────────────────────
+/// Record one model interaction for local optimization flywheel.
+///
+/// Called from the frontend via `invoke('record_interaction', { ... })`.
+#[tauri::command]
+fn record_interaction(
+    source: String,
+    input: String,
+    output: String,
+    latency_ms: u64,
+    success: bool,
+    model: Option<String>,
+    prompt_version: Option<String>,
+    metadata: Option<serde_json::Value>,
+) -> Result<String, String> {
+    optimization::record_interaction(
+        source,
+        input,
+        output,
+        latency_ms,
+        success,
+        model,
+        prompt_version,
+        metadata,
+    )
+}
 
-async fn background_loop() {
+/// Record user feedback for a previous interaction.
+///
+/// Called from the frontend via `invoke('record_feedback', { ... })`.
+#[tauri::command]
+fn record_feedback(
+    interaction_id: String,
+    rating: i8,
+    reason: Option<String>,
+    corrected_output: Option<String>,
+    state: tauri::State<'_, persona::TaskTracker>,
+) -> Result<String, String> {
+    let feedback_id = optimization::record_feedback(
+        interaction_id.clone(),
+        rating,
+        reason.clone(),
+        corrected_output.clone(),
+    )?;
+
+    // Negative feedback becomes a self-improvement task that the autonomous loop can pick up.
+    if rating < 0 {
+        let interaction = optimization::get_interaction(&interaction_id)?;
+
+        let msg = if let Some(c) = corrected_output.as_ref().filter(|v| !v.trim().is_empty()) {
+            format!("自我優化任務: 針對回覆錯誤進行修正與調研。使用者修正版本: {c}")
+        } else if let Some(r) = reason.as_ref().filter(|v| !v.trim().is_empty()) {
+            format!("自我優化任務: 使用者負回饋原因: {r}")
+        } else if let Some(i) = interaction {
+            format!(
+                "自我優化任務: 重新研究並改進以下對話。input: {} output: {}",
+                i.input, i.output
+            )
+        } else {
+            "自我優化任務: 收到負回饋，請重新調研並改進輸出品質。".to_string()
+        };
+
+        let entry = persona::TaskEntry {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            event: "self_improvement_request".to_string(),
+            persona: "Sirin".to_string(),
+            message_preview: Some(msg),
+            trigger_remote_ai: None,
+            estimated_profit_usd: Some(1.0),
+            status: Some("PENDING".to_string()),
+            reason: Some(format!("feedback_id={feedback_id}")),
+            action_tier: None,
+            high_priority: Some(true),
+        };
+
+        state.record(&entry).map_err(|e| e.to_string())?;
+    }
+
+    Ok(feedback_id)
+}
+
+/// Return latest feedback entries for analysis dashboard.
+///
+/// Called from the frontend via `invoke('read_recent_feedback', { limit })`.
+#[tauri::command]
+fn read_recent_feedback(limit: usize) -> Result<Vec<optimization::FeedbackRecord>, String> {
+    optimization::read_recent_feedback(limit.min(200))
+}
+
+/// Return current autonomous worker metrics for monitoring dashboard.
+///
+/// Called from the frontend via `invoke('read_autonomous_metrics')`.
+#[tauri::command]
+fn read_autonomous_metrics() -> Result<optimization::AutonomousMetrics, String> {
+    optimization::read_autonomous_metrics()
+}
+
+/// Return the current Telegram auth/connection status.
+///
+/// Called from the frontend via `invoke('telegram_get_auth_status')`.
+#[tauri::command]
+fn telegram_get_auth_status(
+    state: tauri::State<'_, telegram_auth::TelegramAuthState>,
+) -> telegram_auth::TelegramStatus {
+    state.status()
+}
+
+/// Feed a login code entered by the user into the waiting Telegram sign-in flow.
+///
+/// Returns `true` when the code was accepted (a flow was waiting), `false`
+/// when no sign-in was pending.
+///
+/// Called from the frontend via `invoke('telegram_submit_auth_code', { code })`.
+#[tauri::command]
+fn telegram_submit_auth_code(
+    code: String,
+    state: tauri::State<'_, telegram_auth::TelegramAuthState>,
+) -> bool {
+    state.submit_code(code)
+}
+
+/// Feed a 2-FA password entered by the user into the waiting Telegram sign-in flow.
+///
+/// Called from the frontend via `invoke('telegram_submit_auth_password', { password })`.
+#[tauri::command]
+fn telegram_submit_auth_password(
+    password: String,
+    state: tauri::State<'_, telegram_auth::TelegramAuthState>,
+) -> bool {
+    state.submit_password(password)
+}
+
+async fn background_loop(tracker: persona::TaskTracker) {
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
-    let tracker = persona::TaskTracker::new(task_log_path());
 
     // Consume the first instant tick so the loop waits a full 60 seconds before its first execution
     interval.tick().await;
@@ -269,10 +399,40 @@ fn main() {
     // Shared log store for structured logging.
     let log_store = logs::LogStore::new();
 
+    // Shared Telegram auth state (non-blocking UI-driven login flow).
+    let tg_auth = telegram_auth::TelegramAuthState::new();
+
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .manage(tracker.clone())
         .manage(log_store.clone())
-        .invoke_handler(tauri::generate_handler![read_tasks, read_tasks_paginated, get_logs, list_skills, approve_task, search_web, get_context, clear_context, start_research, get_research_status, list_research_tasks])
+        .manage(tg_auth.clone())
+        .invoke_handler(tauri::generate_handler![
+            read_tasks,
+            read_tasks_paginated,
+            get_logs,
+            list_skills,
+            approve_task,
+            search_web,
+            get_context,
+            clear_context,
+            start_research,
+            get_research_status,
+            list_research_tasks,
+            record_interaction,
+            record_feedback,
+            read_recent_feedback,
+            read_autonomous_metrics,
+            telegram_get_auth_status,
+            telegram_submit_auth_code,
+            telegram_submit_auth_password
+        ])
         .setup(move |app| {
             // Build tray menu items
             let show_item =
@@ -298,15 +458,16 @@ fn main() {
                 })
                 .build(app)?;
 
-            // Spawn the persistent background loop
-            tauri::async_runtime::spawn(background_loop());
+            // Spawn the persistent background loop.
+            // Reuse the shared tracker so all task writes share the same mutex.
+            let bg_tracker = tracker.clone();
+            tauri::async_runtime::spawn(background_loop(bg_tracker));
 
-            // Spawn the Telegram listener (non-fatal if credentials are absent)
+            // Spawn the Telegram listener (non-blocking; retries automatically)
             let tg_tracker = tracker.clone();
+            let tg_auth_spawn = tg_auth.clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(e) = telegram::run_listener(tg_tracker).await {
-                    eprintln!("[telegram] Listener exited: {e}");
-                }
+                telegram::run_listener(tg_tracker, tg_auth_spawn).await;
             });
 
             // Spawn the follow-up worker (runs every 30 minutes)
