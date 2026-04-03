@@ -4,11 +4,12 @@ mod persona;
 mod telegram;
 mod followup;
 mod memory;
+mod skills;
 
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    Emitter, Manager, WindowEvent,
+    Manager, WindowEvent,
 };
 
 fn task_log_path() -> std::path::PathBuf {
@@ -44,6 +45,12 @@ fn read_tasks(
         .map_err(|e| e.to_string())
 }
 
+/// Return the registered skills that can be dispatched by the backend.
+#[tauri::command]
+fn list_skills() -> Result<Vec<skills::SkillDefinition>, String> {
+    Ok(skills::list_skills())
+}
+
 /// Mark a task as approved (status → `"DONE"`) and record a `skill_executed`
 /// log entry.
 ///
@@ -66,8 +73,11 @@ fn approve_task(
     updates.insert(timestamp.clone(), "DONE".to_string());
     state.update_statuses(&updates).map_err(|e| e.to_string())?;
 
-    // 2. Record the skill-execution event.
+    // 2. Execute skill through dispatcher.
     let skill_name = skill.as_deref().unwrap_or("send_tg_reply");
+    skills::execute_skill(&app, skill_name, &timestamp)?;
+
+    // 3. Record the skill-execution event.
     let entry = persona::TaskEntry {
         timestamp: chrono::Utc::now().to_rfc3339(),
         event: format!("skill_executed:{skill_name}"),
@@ -81,9 +91,6 @@ fn approve_task(
         high_priority: None,
     };
     state.record(&entry).map_err(|e| e.to_string())?;
-
-    // 3. Emit an event so background modules can react (e.g. TG sender).
-    let _ = app.emit(&format!("skill:{skill_name}"), &timestamp);
 
     Ok(())
 }
@@ -131,7 +138,7 @@ fn main() {
 
     tauri::Builder::default()
         .manage(tracker.clone())
-        .invoke_handler(tauri::generate_handler![read_tasks, approve_task])
+        .invoke_handler(tauri::generate_handler![read_tasks, list_skills, approve_task])
         .setup(move |app| {
             // Build tray menu items
             let show_item =
