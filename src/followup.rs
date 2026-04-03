@@ -542,14 +542,14 @@ async fn run_once(
                     message_preview: Some(format!("source={source_ts} topic={topic}")),
                     trigger_remote_ai: None,
                     estimated_profit_usd: None,
-                    status: Some("FOLLOWING".to_string()),
+                    status: Some("RUNNING".to_string()),
                     reason: Some(source_ts.clone()),
                     action_tier: None,
                     high_priority: None,
                 };
                 tracker.record(&scheduled)?;
 
-                updates.insert(source_ts.clone(), "FOLLOWING".to_string());
+                updates.insert(source_ts.clone(), "RUNNING".to_string());
 
                 let tracker_clone = tracker.clone();
                 tokio::spawn(async move {
@@ -644,26 +644,27 @@ async fn run_once(
 
     eprintln!("[followup] LLM response: {response}");
 
-    // 5. If follow-up is needed, mark all actionable entries.
+    // 5. If follow-up is needed, mark only the primary actionable entry.
+    // This avoids bulk-flipping unrelated tasks in the same cycle.
     if response.contains("FOLLOWUP_NEEDED") {
-        let updates: HashMap<String, String> = actionable
-            .iter()
-            .map(|e| (e.timestamp.clone(), "FOLLOWUP_NEEDED".to_string()))
-            .collect();
+        if let Some(primary) = actionable.first() {
+            let mut updates = HashMap::new();
+            updates.insert(primary.timestamp.clone(), "FOLLOWUP_NEEDED".to_string());
 
-        tracker.update_statuses(&updates)?;
-        record_optimization_log(
-            tracker,
-            "optimization_followup_marked",
-            Some(format!("marked {} task(s) FOLLOWUP_NEEDED", updates.len())),
-            Some("FOLLOWUP_NEEDED"),
-            None,
-            actionable.first().and_then(|entry| correlation_id_for(entry)),
-        );
-        eprintln!(
-            "[followup] Marked {} task(s) as FOLLOWUP_NEEDED",
-            updates.len()
-        );
+            tracker.update_statuses(&updates)?;
+            record_optimization_log(
+                tracker,
+                "optimization_followup_marked",
+                Some("marked 1 task FOLLOWUP_NEEDED".to_string()),
+                Some("FOLLOWUP_NEEDED"),
+                None,
+                correlation_id_for(primary),
+            );
+            eprintln!(
+                "[followup] Marked primary task {} as FOLLOWUP_NEEDED",
+                primary.timestamp
+            );
+        }
     }
 
     Ok(())

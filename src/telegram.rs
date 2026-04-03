@@ -280,6 +280,17 @@ impl TelegramConfig {
 /// Code + 2FA timeout: how long (seconds) we wait for the user to enter credentials via UI.
 const AUTH_INPUT_TIMEOUT_SECS: u64 = 300;
 
+/// Whether Telegram sign-in is required at startup.
+///
+/// Default is optional (`false`) so the desktop app can run without waiting
+/// for Telegram credentials. Set `TG_REQUIRE_LOGIN=1` to enforce login.
+fn require_login() -> bool {
+    env::var("TG_REQUIRE_LOGIN")
+        .ok()
+        .map(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
 /// Non-blocking sign-in helper.
 ///
 /// Instead of reading from stdin (which hangs in the Tauri GUI process), this
@@ -294,6 +305,14 @@ async fn ensure_user_authorized(
     auth: &TelegramAuthState,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if client.is_authorized().await? {
+        return Ok(());
+    }
+
+    if !require_login() {
+        auth.set_disconnected("telegram login optional; set TG_REQUIRE_LOGIN=1 to enable auth flow");
+        eprintln!(
+            "[telegram] Session not authorized; login is optional, skipping sign-in flow"
+        );
         return Ok(());
     }
 
@@ -751,6 +770,13 @@ async fn run_listener_once(
         return Ok(());
     }
 
+    if !client.is_authorized().await.unwrap_or(false) {
+        eprintln!("[telegram] Session remains unauthorized; skipping listener run");
+        handle.quit();
+        let _ = pool_task.await;
+        return Ok(());
+    }
+
     let mut updates = client
         .stream_updates(
             updates,
@@ -921,6 +947,7 @@ async fn run_listener_once(
 
         let persona = Persona::load().ok();
         let persona_name = persona.as_ref().map(|p| p.name()).unwrap_or("Sirin");
+        let mut should_record_ai_decision = false;
 
         if cfg.auto_reply_enabled {
             let (voice, ack_prefix, compliance) = persona
@@ -953,6 +980,7 @@ async fn run_listener_once(
 
             let execution_result = research_execution
                 .or_else(|| execute_user_request(&text, &tracker, persona_name));
+            should_record_ai_decision = execution_result.is_some();
             let direct_answer_request = is_direct_answer_request(&text);
             let fallback_reply = cfg
                 .auto_reply_text
@@ -1084,12 +1112,14 @@ async fn run_listener_once(
             eprintln!("[telegram] skip: auto-reply disabled by TG_AUTO_REPLY");
         }
 
-        let entry = TaskEntry::ai_decision(
-            persona_name,
-            Some(message_preview(&text, 140)),
-        );
-        if let Err(e) = tracker.record(&entry) {
-            eprintln!("[telegram] Failed to record task entry: {e}");
+        if should_record_ai_decision {
+            let entry = TaskEntry::ai_decision(
+                persona_name,
+                Some(message_preview(&text, 140)),
+            );
+            if let Err(e) = tracker.record(&entry) {
+                eprintln!("[telegram] Failed to record task entry: {e}");
+            }
         }
     }
     Ok(())
