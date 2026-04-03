@@ -16,6 +16,7 @@ grammers-client = "0.9.0"
 grammers-session = "0.9.0"
 notify-rust = "4.12.0"
 reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls"] }
+scraper = "0.19.0"
 lancedb = "0.27.2"
 arrow = "57.3.0"
 futures = "0.3.31"
