@@ -12,8 +12,7 @@
 
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
-
+use crate::llm::{call_prompt, LlmConfig};
 use crate::persona::{Persona, TaskEntry, TaskTracker};
 use crate::researcher::{self, ResearchStatus};
 
@@ -59,15 +58,6 @@ const AUTONOMOUS_MAX_PER_CYCLE: usize = 2;
 const AUTONOMOUS_COOLDOWN_SECS: i64 = 300;
 /// Max retry attempts for the same source task.
 const AUTONOMOUS_MAX_RETRIES: usize = 2;
-
-/// Default Ollama base URL.
-const OLLAMA_BASE_URL: &str = "http://localhost:11434";
-
-/// Default LM Studio (OpenAI-compatible) base URL.
-const LM_STUDIO_BASE_URL: &str = "http://localhost:1234/v1";
-
-/// Default model name when `OLLAMA_MODEL` is not set.
-const DEFAULT_MODEL: &str = "llama3.2";
 
 fn worker_interval_secs() -> u64 {
     std::env::var("FOLLOWUP_INTERVAL_SECS")
@@ -243,97 +233,6 @@ fn candidate_priority(entry: &TaskEntry) -> f64 {
     score
 }
 
-#[derive(Debug, Clone, Copy)]
-enum LlmBackend {
-    Ollama,
-    LmStudio,
-}
-
-#[derive(Debug, Clone)]
-struct LlmConfig {
-    backend: LlmBackend,
-    base_url: String,
-    model: String,
-    api_key: Option<String>,
-}
-
-impl LlmConfig {
-    fn from_env() -> Self {
-        let provider = std::env::var("LLM_PROVIDER")
-            .unwrap_or_else(|_| "ollama".to_string())
-            .to_lowercase();
-
-        match provider.as_str() {
-            "lmstudio" | "lm_studio" | "openai" => Self {
-                backend: LlmBackend::LmStudio,
-                base_url: std::env::var("LM_STUDIO_BASE_URL")
-                    .or_else(|_| std::env::var("OPENAI_BASE_URL"))
-                    .unwrap_or_else(|_| LM_STUDIO_BASE_URL.to_string()),
-                model: std::env::var("LM_STUDIO_MODEL")
-                    .or_else(|_| std::env::var("OPENAI_MODEL"))
-                    .unwrap_or_else(|_| DEFAULT_MODEL.to_string()),
-                api_key: std::env::var("LM_STUDIO_API_KEY")
-                    .or_else(|_| std::env::var("OPENAI_API_KEY"))
-                    .ok()
-                    .filter(|v| !v.trim().is_empty()),
-            },
-            _ => Self {
-                backend: LlmBackend::Ollama,
-                base_url: std::env::var("OLLAMA_BASE_URL")
-                    .unwrap_or_else(|_| OLLAMA_BASE_URL.to_string()),
-                model: std::env::var("OLLAMA_MODEL")
-                    .unwrap_or_else(|_| DEFAULT_MODEL.to_string()),
-                api_key: None,
-            },
-        }
-    }
-}
-
-// ── Ollama API types ──────────────────────────────────────────────────────────
-
-#[derive(Debug, Serialize)]
-struct OllamaRequest<'a> {
-    model: &'a str,
-    prompt: String,
-    /// Disable streaming so we get a single JSON response.
-    stream: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct OllamaResponse {
-    response: String,
-}
-
-// ── OpenAI-compatible API types (LM Studio) ─────────────────────────────────
-
-#[derive(Debug, Serialize)]
-struct OpenAiRequest<'a> {
-    model: &'a str,
-    messages: Vec<OpenAiMessage<'a>>,
-    stream: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-struct OpenAiMessage<'a> {
-    role: &'a str,
-    content: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenAiResponse {
-    choices: Vec<OpenAiChoice>,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenAiChoice {
-    message: OpenAiChoiceMessage,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenAiChoiceMessage {
-    content: String,
-}
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Build the prompt text sent to the local LLM.
@@ -379,65 +278,19 @@ Reply with only one of those two tokens and nothing else."#,
     )
 }
 
-/// Call the Ollama `/api/generate` endpoint and return the trimmed response text.
-async fn call_ollama(
-    client: &reqwest::Client,
-    base_url: &str,
-    model: &str,
-    prompt: String,
-) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    let url = format!("{base_url}/api/generate");
-    let body = OllamaRequest { model, prompt, stream: false };
-    let resp: OllamaResponse = client
-        .post(&url)
-        .json(&body)
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
-    Ok(resp.response.trim().to_owned())
-}
-
-async fn call_openai_compatible(
-    client: &reqwest::Client,
-    base_url: &str,
-    model: &str,
-    api_key: Option<&str>,
-    prompt: String,
-) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    let base = base_url.trim_end_matches('/');
-    let url = format!("{base}/chat/completions");
-
-    let body = OpenAiRequest {
-        model,
-        messages: vec![OpenAiMessage {
-            role: "user",
-            content: prompt,
-        }],
-        stream: false,
-    };
-
-    let mut req = client.post(&url).json(&body);
-    if let Some(key) = api_key {
-        req = req.bearer_auth(key);
-    }
-
-    let resp: OpenAiResponse = req.send().await?.error_for_status()?.json().await?;
-
-    let content = resp
-        .choices
-        .first()
-        .map(|c| c.message.content.trim().to_string())
-        .unwrap_or_default();
-
-    Ok(content)
-}
-
 // ── Worker ────────────────────────────────────────────────────────────────────
 
 /// Spawn the follow-up worker.  Runs on a [`WORKER_INTERVAL_SECS`]-second
 /// timer and never returns under normal operation.
+/// How many log entries to retain after each trim (configurable via env var).
+fn task_log_max_lines() -> usize {
+    std::env::var("TASK_LOG_MAX_LINES")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(2000)
+}
+
 pub async fn run_worker(tracker: TaskTracker) {
     let client = reqwest::Client::new();
     let llm = LlmConfig::from_env();
@@ -449,8 +302,11 @@ pub async fn run_worker(tracker: TaskTracker) {
     // Skip the first immediate tick so the app finishes initialising first.
     interval.tick().await;
 
+    let mut cycle: u32 = 0;
+
     loop {
         interval.tick().await;
+        cycle += 1;
 
         if let Err(e) = run_once(&client, &llm, &tracker).await {
             eprintln!("[followup] Worker error: {e}");
@@ -462,6 +318,16 @@ pub async fn run_worker(tracker: TaskTracker) {
                 None,
                 None,
             );
+        }
+
+        // Trim the task log every 10 cycles (~5 h at the default interval).
+        if cycle % 10 == 0 {
+            let max = task_log_max_lines();
+            match tracker.trim_to_max(max) {
+                Ok(0) => {}
+                Ok(n) => eprintln!("[followup] Task log trimmed: removed {n} old entries (max={max})"),
+                Err(e) => eprintln!("[followup] Task log trim failed: {e}"),
+            }
         }
     }
 }
@@ -615,32 +481,16 @@ async fn run_once(
         return Ok(());
     }
 
-    let backend_name = match llm.backend {
-        LlmBackend::Ollama => "ollama",
-        LlmBackend::LmStudio => "lmstudio",
-    };
-
     eprintln!(
-        "[followup] Sending {} actionable task(s) to {backend_name} model '{}'",
+        "[followup] Sending {} actionable task(s) to {} model '{}'",
         actionable.len(),
+        llm.backend_name(),
         llm.model
     );
 
     // 4. Call local LLM.
     let prompt = build_prompt(&persona, &actionable);
-    let response = match llm.backend {
-        LlmBackend::Ollama => call_ollama(client, &llm.base_url, &llm.model, prompt).await?,
-        LlmBackend::LmStudio => {
-            call_openai_compatible(
-                client,
-                &llm.base_url,
-                &llm.model,
-                llm.api_key.as_deref(),
-                prompt,
-            )
-            .await?
-        }
-    };
+    let response = call_prompt(client, llm, prompt).await?;
 
     eprintln!("[followup] LLM response: {response}");
 

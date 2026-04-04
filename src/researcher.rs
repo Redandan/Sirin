@@ -19,6 +19,7 @@ use std::sync::{Mutex, OnceLock};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
+use crate::llm::{call_prompt, LlmConfig};
 use crate::skills::ddg_search;
 
 // ── constants ─────────────────────────────────────────────────────────────────
@@ -27,135 +28,10 @@ const USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
      (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
-const OLLAMA_BASE_URL: &str = "http://localhost:11434";
-const LM_STUDIO_BASE_URL: &str = "http://localhost:1234/v1";
-const DEFAULT_MODEL: &str = "llama3.2";
-
 /// Max chars extracted from a fetched webpage.
 const MAX_PAGE_TEXT: usize = 4000;
 /// Max chars fed to LLM per context block.
 const MAX_CONTEXT: usize = 2000;
-
-// ── LLM plumbing (mirrors telegram.rs, kept local to avoid coupling) ──────────
-
-#[derive(Clone)]
-struct LlmConfig {
-    base_url: String,
-    model: String,
-    api_key: Option<String>,
-    is_openai: bool,
-}
-
-impl LlmConfig {
-    fn from_env() -> Self {
-        let provider = std::env::var("LLM_PROVIDER")
-            .unwrap_or_else(|_| "ollama".to_string())
-            .to_lowercase();
-
-        match provider.as_str() {
-            "lmstudio" | "lm_studio" | "openai" => Self {
-                base_url: std::env::var("LM_STUDIO_BASE_URL")
-                    .or_else(|_| std::env::var("OPENAI_BASE_URL"))
-                    .unwrap_or_else(|_| LM_STUDIO_BASE_URL.to_string()),
-                model: std::env::var("LM_STUDIO_MODEL")
-                    .or_else(|_| std::env::var("OPENAI_MODEL"))
-                    .unwrap_or_else(|_| DEFAULT_MODEL.to_string()),
-                api_key: std::env::var("LM_STUDIO_API_KEY")
-                    .or_else(|_| std::env::var("OPENAI_API_KEY"))
-                    .ok()
-                    .filter(|v| !v.trim().is_empty()),
-                is_openai: true,
-            },
-            _ => Self {
-                base_url: std::env::var("OLLAMA_BASE_URL")
-                    .unwrap_or_else(|_| OLLAMA_BASE_URL.to_string()),
-                model: std::env::var("OLLAMA_MODEL")
-                    .unwrap_or_else(|_| DEFAULT_MODEL.to_string()),
-                api_key: None,
-                is_openai: false,
-            },
-        }
-    }
-}
-
-#[derive(Serialize)]
-struct OllamaReq<'a> {
-    model: &'a str,
-    prompt: String,
-    stream: bool,
-}
-
-#[derive(Deserialize)]
-struct OllamaResp {
-    response: String,
-}
-
-#[derive(Serialize)]
-struct OpenAiReq<'a> {
-    model: &'a str,
-    messages: Vec<OpenAiMsg>,
-    stream: bool,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-struct OpenAiMsg {
-    role: String,
-    content: String,
-}
-
-#[derive(Deserialize)]
-struct OpenAiResp {
-    choices: Vec<OpenAiChoice>,
-}
-
-#[derive(Deserialize)]
-struct OpenAiChoice {
-    message: OpenAiMsg,
-}
-
-async fn call_llm(
-    http: &reqwest::Client,
-    cfg: &LlmConfig,
-    prompt: &str,
-) -> Result<String, String> {
-    if cfg.is_openai {
-        let url = format!("{}/chat/completions", cfg.base_url.trim_end_matches('/'));
-        let body = OpenAiReq {
-            model: &cfg.model,
-            messages: vec![OpenAiMsg { role: "user".into(), content: prompt.into() }],
-            stream: false,
-        };
-        let mut req = http.post(&url).json(&body);
-        if let Some(key) = &cfg.api_key {
-            req = req.bearer_auth(key);
-        }
-        let resp: OpenAiResp = req
-            .send()
-            .await
-            .map_err(|e| e.to_string())?
-            .error_for_status()
-            .map_err(|e| e.to_string())?
-            .json()
-            .await
-            .map_err(|e| e.to_string())?;
-        Ok(resp.choices.first().map(|c| c.message.content.trim().to_string()).unwrap_or_default())
-    } else {
-        let url = format!("{}/api/generate", cfg.base_url.trim_end_matches('/'));
-        let body = OllamaReq { model: &cfg.model, prompt: prompt.into(), stream: false };
-        let resp: OllamaResp = http
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?
-            .error_for_status()
-            .map_err(|e| e.to_string())?
-            .json()
-            .await
-            .map_err(|e| e.to_string())?;
-        Ok(resp.response.trim().to_string())
-    }
-}
 
 // ── Page fetching ─────────────────────────────────────────────────────────────
 
@@ -432,7 +308,7 @@ async fn pipeline(
          Provide your structured overview:"
     );
 
-    let overview = call_llm(http, llm, &overview_prompt).await?;
+    let overview = call_prompt(http, llm, &overview_prompt).await.map_err(|e| e.to_string())?;
     eprintln!("[researcher] Overview done ({} chars)", overview.len());
     task.steps.push(ResearchStep {
         phase: "overview".into(),
@@ -453,7 +329,7 @@ async fn pipeline(
          4 research questions:"
     );
 
-    let questions_raw = call_llm(http, llm, &questions_prompt).await?;
+    let questions_raw = call_prompt(http, llm, &questions_prompt).await.map_err(|e| e.to_string())?;
     let questions: Vec<String> = questions_raw
         .lines()
         .filter_map(|line| {
@@ -507,7 +383,7 @@ async fn pipeline(
              Answer:"
         );
 
-        let answer = call_llm(http, llm, &qa_prompt).await?;
+        let answer = call_prompt(http, llm, &qa_prompt).await.map_err(|e| e.to_string())?;
         eprintln!("[researcher] Q{} answered ({} chars)", i + 1, answer.len());
 
         let qa_summary = format!("Q: {question}\nA: {answer}");
@@ -547,7 +423,7 @@ async fn pipeline(
         url = task.url.as_deref().unwrap_or("N/A"),
     );
 
-    let report = call_llm(http, llm, &synthesis_prompt).await?;
+    let report = call_prompt(http, llm, &synthesis_prompt).await.map_err(|e| e.to_string())?;
     eprintln!("[researcher] Final report generated ({} chars)", report.len());
 
     task.steps.push(ResearchStep {

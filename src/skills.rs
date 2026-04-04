@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter};
 
 const USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
@@ -108,19 +107,14 @@ pub fn ensure_registered(skill_id: &str) -> Result<(), String> {
 }
 
 pub fn execute_skill(
-    app: &AppHandle,
     skill_id: &str,
     timestamp: &str,
 ) -> Result<SkillExecutionResult, String> {
     ensure_registered(skill_id)?;
-
-    let emitted_event = format!("skill:{skill_id}");
-    app.emit(&emitted_event, timestamp)
-        .map_err(|e| format!("Failed to emit skill event: {e}"))?;
-
+    eprintln!("[skills] Executing skill '{skill_id}' for task at {timestamp}");
     Ok(SkillExecutionResult {
         skill_id: skill_id.to_string(),
-        emitted_event,
+        emitted_event: format!("skill:{skill_id}"),
         accepted: true,
     })
 }

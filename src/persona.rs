@@ -451,6 +451,44 @@ impl TaskTracker {
 
         Ok(None)
     }
+
+    /// Keep only the newest `max_lines` entries, discarding the oldest.
+    ///
+    /// Returns the number of entries removed, or `0` if no trim was needed.
+    /// The file is rewritten atomically via a `.tmp` swap.
+    pub fn trim_to_max(
+        &self,
+        max_lines: usize,
+    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+        let all = self.read_raw_lines_lossy()?;
+        let non_empty: Vec<&str> = all
+            .iter()
+            .map(|l| l.as_str())
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+
+        if non_empty.len() <= max_lines {
+            return Ok(0);
+        }
+
+        let removed = non_empty.len() - max_lines;
+        let keep = &non_empty[removed..];
+
+        let path = self.path.lock().expect("TaskTracker mutex poisoned").clone();
+        let tmp_path = path.with_extension("jsonl.tmp");
+        {
+            let mut tmp = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&tmp_path)?;
+            for line in keep {
+                writeln!(tmp, "{line}")?;
+            }
+        }
+        fs::rename(&tmp_path, &path)?;
+        Ok(removed)
+    }
 }
 
 #[cfg(test)]

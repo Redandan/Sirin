@@ -5,8 +5,9 @@ edition = "2021"
 description = "A high-performance desktop AI agent with a macOS System Tray interface"
 
 [dependencies]
-tauri = { version = "2.10.3", features = ["tray-icon"] }
-tauri-plugin-single-instance = "2.0.1"
+eframe = { version = "0.31", features = ["default"] }
+egui = { version = "0.31", features = ["default"] }
+egui_extras = { version = "0.31", features = ["default"] }
 tokio = { version = "1.37.0", features = ["full"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.116"
@@ -26,7 +27,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "ansi"
 parking_lot = "0.12"
 
 [build-dependencies]
-tauri-build = { version = "2.5.6", features = [] }
 
 [profile.release]
 panic = "abort"
