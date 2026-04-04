@@ -9,7 +9,11 @@ use crate::telegram::language::{
     is_code_access_question, is_direct_answer_request, is_identity_question,
 };
 
-use super::{chat_agent::ChatRequest, planner_agent::{PlanIntent, PlannerRequest}, research_agent::ResearchRequest};
+use super::{
+    chat_agent::ChatRequest,
+    planner_agent::{IntentFamily, PlanIntent, PlannerRequest},
+    research_agent::ResearchRequest,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouterRequest {
@@ -65,17 +69,10 @@ impl Agent for RouterAgent {
                 || is_direct_answer_request(&request.user_text)
             {
                 RouteTarget::Chat
-            } else if plan
-                .as_ref()
-                .map(|p| should_prefer_chat_from_skills(&p.recommended_skills))
-                .unwrap_or(false)
-            {
-                RouteTarget::Chat
+            } else if let Some(plan) = plan.as_ref() {
+                route_target_from_plan(plan, &request.user_text)
             } else {
-                match plan.as_ref().map(|p| &p.intent) {
-                    Some(PlanIntent::Research) => RouteTarget::Research,
-                    _ => classify_route(&request.user_text),
-                }
+                classify_route(&request.user_text)
             };
             let route_name = match route {
                 RouteTarget::Chat => "chat",
@@ -103,6 +100,7 @@ impl Agent for RouterAgent {
                     Ok(json!({
                         "route": route,
                         "planner_summary": plan_summary,
+                        "intent_family": plan.as_ref().map(|p| p.intent_family.clone()).unwrap_or(IntentFamily::GeneralChat),
                         "recommended_skills": plan.as_ref().map(|p| p.recommended_skills.clone()).unwrap_or_default(),
                         "chat_request": {
                             "user_text": request.user_text,
@@ -121,6 +119,7 @@ impl Agent for RouterAgent {
                 RouteTarget::Chat => Ok(json!({
                     "route": route,
                     "planner_summary": plan_summary,
+                    "intent_family": plan.as_ref().map(|p| p.intent_family.clone()).unwrap_or(IntentFamily::GeneralChat),
                     "recommended_skills": plan.as_ref().map(|p| p.recommended_skills.clone()).unwrap_or_default(),
                     "chat_request": ChatRequest {
                         user_text: request.user_text,
@@ -161,6 +160,24 @@ fn should_prefer_chat_from_skills(skills: &[String]) -> bool {
                 | "architecture_consistency_check"
         )
     })
+}
+
+fn route_target_from_plan(plan: &super::planner_agent::WorkflowPlan, text: &str) -> RouteTarget {
+    match plan.intent_family {
+        IntentFamily::Research => RouteTarget::Research,
+        IntentFamily::Capability
+        | IntentFamily::LocalFile
+        | IntentFamily::ProjectOverview
+        | IntentFamily::SkillArchitecture
+        | IntentFamily::CodeAnalysis => RouteTarget::Chat,
+        IntentFamily::GeneralChat => {
+            if matches!(plan.intent, PlanIntent::Research) && !should_prefer_chat_from_skills(&plan.recommended_skills) {
+                RouteTarget::Research
+            } else {
+                classify_route(text)
+            }
+        }
+    }
 }
 
 pub fn classify_route(text: &str) -> RouteTarget {
@@ -224,6 +241,7 @@ mod tests {
         .expect("router should succeed");
 
         assert_eq!(output.get("route").and_then(Value::as_str), Some("chat"));
+        assert_eq!(output.get("intent_family").and_then(Value::as_str), Some("code_analysis"));
         let recommended = output
             .get("recommended_skills")
             .and_then(Value::as_array)
@@ -231,5 +249,24 @@ mod tests {
             .unwrap_or_default();
         assert!(recommended.iter().any(|skill| skill.as_str() == Some("code_change_planning")));
         assert!(recommended.iter().any(|skill| skill.as_str() == Some("grounded_fix")));
+    }
+
+    #[tokio::test]
+    async fn router_exposes_project_overview_intent_family() {
+        let output = run_router_via_adk(
+            RouterRequest {
+                user_text: "這個專案怎麼運作？".to_string(),
+                context_block: None,
+                peer_id: None,
+                fallback_reply: None,
+                execution_result: None,
+            },
+            None,
+        )
+        .await
+        .expect("router should succeed");
+
+        assert_eq!(output.get("route").and_then(Value::as_str), Some("chat"));
+        assert_eq!(output.get("intent_family").and_then(Value::as_str), Some("project_overview"));
     }
 }

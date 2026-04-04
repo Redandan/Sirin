@@ -44,6 +44,16 @@ pub struct ChatAgentResponse {
     pub trace: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GroundedIntent {
+    LocalFile(String),
+    ContextualFiles(Vec<String>),
+    CapabilityInventory,
+    SkillArchitecture,
+    ProjectOverview,
+    CodeAnalysis,
+}
+
 pub struct ChatAgent;
 
 impl Agent for ChatAgent {
@@ -342,7 +352,38 @@ fn recent_context_file_references(peer_id: Option<i64>) -> Vec<String> {
 
 fn looks_like_skill_query(user_text: &str) -> bool {
     let lower = user_text.to_lowercase();
-    lower.contains("skill") || lower.contains("skills.rs") || user_text.contains("技能")
+    lower.contains("skill")
+        || lower.contains("skills.rs")
+        || user_text.contains("技能")
+        || user_text.contains("能力目錄")
+}
+
+fn looks_like_capability_query(user_text: &str) -> bool {
+    let lower = user_text.to_lowercase();
+    let compact = lower.split_whitespace().collect::<String>();
+
+    [
+        "你能做什麼", "你可以做什麼", "你可以幫我做什麼", "你能幫我做什麼", "你會做什麼", "你會什麼",
+        "有什麼能力", "有哪些能力", "有什麼功能", "有哪些功能", "能幹嘛", "能做啥",
+        "whatcanyoudo", "howcanyouhelp", "capabilities", "abilities",
+    ]
+    .iter()
+    .any(|needle| compact.contains(needle))
+        || is_skill_inventory_request(user_text)
+}
+
+fn is_skill_inventory_request(user_text: &str) -> bool {
+    let lower = user_text.to_lowercase();
+    let compact = lower.split_whitespace().collect::<String>();
+    let asks_what = ["有哪些", "有什麼", "有什么", "哪些", "會什麼", "会什么", "what", "list"]
+        .iter()
+        .any(|needle| compact.contains(needle));
+    let mentions_skills = compact.contains("skill")
+        || compact.contains("skills")
+        || user_text.contains("技能")
+        || user_text.contains("能力");
+
+    mentions_skills && asks_what
 }
 
 fn looks_like_analysis_request(user_text: &str) -> bool {
@@ -362,6 +403,37 @@ fn push_unique_path(paths: &mut Vec<String>, path: &str) {
     }
 }
 
+fn classify_grounded_intent(user_text: &str, peer_id: Option<i64>) -> Option<GroundedIntent> {
+    if let Some(path) = extract_file_reference(user_text) {
+        return Some(GroundedIntent::LocalFile(path));
+    }
+
+    if is_contextual_file_explanation_request(user_text) {
+        let paths = recent_context_file_references(peer_id);
+        if !paths.is_empty() {
+            return Some(GroundedIntent::ContextualFiles(paths));
+        }
+    }
+
+    if looks_like_capability_query(user_text) {
+        return Some(GroundedIntent::CapabilityInventory);
+    }
+
+    if looks_like_skill_query(user_text) {
+        return Some(GroundedIntent::SkillArchitecture);
+    }
+
+    if looks_like_project_overview_query(user_text) {
+        return Some(GroundedIntent::ProjectOverview);
+    }
+
+    if looks_like_analysis_request(user_text) && looks_like_code_query(user_text) {
+        return Some(GroundedIntent::CodeAnalysis);
+    }
+
+    None
+}
+
 fn infer_focus_paths_from_query(user_text: &str, peer_id: Option<i64>) -> Vec<String> {
     let lower = user_text.to_lowercase();
     let mut paths = Vec::new();
@@ -376,7 +448,7 @@ fn infer_focus_paths_from_query(user_text: &str, peer_id: Option<i64>) -> Vec<St
         }
     }
 
-    if looks_like_skill_query(user_text) {
+    if looks_like_skill_query(user_text) || looks_like_capability_query(user_text) {
         for path in [
             "src/skills.rs",
             "src/agents/planner_agent.rs",
@@ -389,6 +461,17 @@ fn infer_focus_paths_from_query(user_text: &str, peer_id: Option<i64>) -> Vec<St
 
     if looks_like_project_overview_query(user_text) || lower.contains("怎麼運作") || lower.contains("如何運作") {
         for path in ["src/main.rs", "src/ui.rs", "src/llm.rs", "src/memory.rs"] {
+            push_unique_path(&mut paths, path);
+        }
+    }
+
+    if looks_like_analysis_request(user_text) && looks_like_code_query(user_text) {
+        for path in [
+            "src/agents/chat_agent.rs",
+            "src/agents/planner_agent.rs",
+            "src/memory.rs",
+            "src/ui.rs",
+        ] {
             push_unique_path(&mut paths, path);
         }
     }
@@ -417,7 +500,9 @@ fn build_analysis_focus_summary(user_text: &str, evidence_paths: &[String]) -> O
         return None;
     }
 
-    let focus = if looks_like_skill_query(user_text) {
+    let focus = if looks_like_capability_query(user_text) {
+        "分析這個 agent 的能力目錄、可用工具與適合的使用方式"
+    } else if looks_like_skill_query(user_text) {
         "分析這個專案裡 skill 的定義方式、能力目錄與 routing 用法"
     } else if looks_like_project_overview_query(user_text) {
         "分析專案架構與主要模組的分工"
@@ -632,6 +717,102 @@ fn format_contextual_file_explanation_reply(file_reports: &[String]) -> Option<S
     }
 }
 
+fn format_skill_catalog_reply(catalog: &Value) -> Option<String> {
+    let skills = catalog.as_array()?;
+    if skills.is_empty() {
+        return None;
+    }
+
+    let mut code_understanding = Vec::new();
+    let mut code_optimization = Vec::new();
+    let mut external = Vec::new();
+
+    for skill in skills {
+        let id = skill.get("id").and_then(Value::as_str).unwrap_or_default();
+        let category = skill
+            .get("category")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+
+        if id.is_empty() {
+            continue;
+        }
+
+        match category {
+            "code-understanding" | "context-retrieval" => code_understanding.push(format!("`{id}`")),
+            "code-optimization" => code_optimization.push(format!("`{id}`")),
+            _ => external.push(format!("`{id}`")),
+        }
+    }
+
+    let mut lines = vec!["我目前在 `src/skills.rs` 裡有這些可用 skill：".to_string()];
+    if !code_understanding.is_empty() {
+        lines.push(format!("- 理解 / 查詢程式碼：{}", code_understanding.join("、")));
+    }
+    if !code_optimization.is_empty() {
+        lines.push(format!("- 分析 / 修正 / 驗證：{}", code_optimization.join("、")));
+    }
+    if !external.is_empty() {
+        lines.push(format!("- 外部能力：{}", external.join("、")));
+    }
+
+    lines.push("如果你要，我可以直接示範其中一個，例如：`幫我看 src/main.rs`、`先分析再改`、`改完幫我測一下`。".to_string());
+    Some(lines.join("\n"))
+}
+
+fn format_skill_catalog_context(catalog: &Value) -> Option<String> {
+    let skills = catalog.as_array()?;
+    if skills.is_empty() {
+        return None;
+    }
+
+    let lines = skills
+        .iter()
+        .take(6)
+        .filter_map(|skill| {
+            let id = skill.get("id").and_then(Value::as_str)?;
+            let description = skill.get("description").and_then(Value::as_str).unwrap_or_default();
+            Some(format!("- {id}: {description}"))
+        })
+        .collect::<Vec<_>>();
+
+    if lines.is_empty() {
+        None
+    } else {
+        Some(format!("Relevant capability evidence from `skill_catalog`:\n{}", lines.join("\n")))
+    }
+}
+
+fn format_grounded_analysis_reply(user_text: &str, file_reports: &[String]) -> Option<String> {
+    if file_reports.is_empty() {
+        return None;
+    }
+
+    let lines = file_reports
+        .iter()
+        .take(4)
+        .filter_map(|report| summarize_file_report_line(report))
+        .collect::<Vec<_>>();
+
+    if lines.is_empty() {
+        return None;
+    }
+
+    let opener = if ["bug", "問題", "錯誤", "root cause", "修", "fix"]
+        .iter()
+        .any(|needle| user_text.to_lowercase().contains(needle))
+    {
+        "我先看了幾個相關模組，先把可能的問題範圍收斂如下："
+    } else {
+        "我先查看了幾個相關檔案，整理出的重點如下："
+    };
+
+    Some(format!(
+        "{opener}\n{}\n\n如果你要，我可以再沿著其中一個模組往下追，例如看呼叫鏈、資料流或 root cause。",
+        lines.join("\n")
+    ))
+}
+
 fn format_skill_analysis_reply(file_reports: &[String]) -> Option<String> {
     if file_reports.is_empty() {
         return None;
@@ -670,8 +851,10 @@ async fn maybe_build_direct_code_reply(
     ctx: &AgentContext,
     peer_id: Option<i64>,
 ) -> Option<ChatAgentResponse> {
-    if let Some(path) = extract_file_reference(user_text) {
-        match ctx
+    let intent = classify_grounded_intent(user_text, peer_id)?;
+
+    match intent {
+        GroundedIntent::LocalFile(path) => match ctx
             .call_tool("local_file_read", json!({ "path": path, "max_chars": 2200 }))
             .await
         {
@@ -706,55 +889,75 @@ async fn maybe_build_direct_code_reply(
                     Some(err),
                 );
             }
+        },
+        GroundedIntent::ContextualFiles(paths) => {
+            let reports = load_local_file_reports(ctx, user_text, &paths, 4, 1200).await;
+            if let Some(reply) = format_contextual_file_explanation_reply(&reports) {
+                ctx.record_system_event(
+                    "adk_chat_contextual_file_reply",
+                    Some(preview_text(user_text)),
+                    Some("DONE"),
+                    Some(format!("files={}", reports.len())),
+                );
+                let tools_used = ctx.tool_calls_snapshot();
+                return Some(ChatAgentResponse {
+                    reply,
+                    used_code_context: true,
+                    tools_used,
+                    trace: ctx.event_trace_snapshot(),
+                    ..Default::default()
+                });
+            }
         }
-    }
-
-    if is_contextual_file_explanation_request(user_text) {
-        let paths = recent_context_file_references(peer_id);
-        let reports = load_local_file_reports(ctx, user_text, &paths, 4, 1200).await;
-
-        if let Some(reply) = format_contextual_file_explanation_reply(&reports) {
-            ctx.record_system_event(
-                "adk_chat_contextual_file_reply",
-                Some(preview_text(user_text)),
-                Some("DONE"),
-                Some(format!("files={}", reports.len())),
-            );
-            let tools_used = ctx.tool_calls_snapshot();
-            return Some(ChatAgentResponse {
-                reply,
-                used_code_context: true,
-                tools_used,
-                trace: ctx.event_trace_snapshot(),
-                ..Default::default()
-            });
+        GroundedIntent::CapabilityInventory => match ctx.call_tool("skill_catalog", json!({ "query": user_text })).await {
+            Ok(catalog) => {
+                if let Some(reply) = format_skill_catalog_reply(&catalog) {
+                    ctx.record_system_event(
+                        "adk_chat_skill_catalog_reply",
+                        Some(preview_text(user_text)),
+                        Some("DONE"),
+                        Some(format!("count={}", catalog.as_array().map(|v| v.len()).unwrap_or(0))),
+                    );
+                    let tools_used = ctx.tool_calls_snapshot();
+                    return Some(ChatAgentResponse {
+                        reply,
+                        used_code_context: true,
+                        tools_used,
+                        trace: ctx.event_trace_snapshot(),
+                        ..Default::default()
+                    });
+                }
+            }
+            Err(err) => {
+                ctx.record_system_event(
+                    "adk_chat_skill_catalog_error",
+                    Some(preview_text(user_text)),
+                    Some("FOLLOWUP_NEEDED"),
+                    Some(err),
+                );
+            }
+        },
+        GroundedIntent::SkillArchitecture => {
+            let paths = infer_focus_paths_from_query(user_text, peer_id);
+            let reports = load_local_file_reports(ctx, user_text, &paths, 4, 1400).await;
+            if let Some(reply) = format_skill_analysis_reply(&reports) {
+                ctx.record_system_event(
+                    "adk_chat_skill_analysis_reply",
+                    Some(preview_text(user_text)),
+                    Some("DONE"),
+                    Some(format!("files={}", reports.len())),
+                );
+                let tools_used = ctx.tool_calls_snapshot();
+                return Some(ChatAgentResponse {
+                    reply,
+                    used_code_context: true,
+                    tools_used,
+                    trace: ctx.event_trace_snapshot(),
+                    ..Default::default()
+                });
+            }
         }
-    }
-
-    if looks_like_skill_query(user_text) {
-        let paths = infer_focus_paths_from_query(user_text, peer_id);
-        let reports = load_local_file_reports(ctx, user_text, &paths, 4, 1400).await;
-
-        if let Some(reply) = format_skill_analysis_reply(&reports) {
-            ctx.record_system_event(
-                "adk_chat_skill_analysis_reply",
-                Some(preview_text(user_text)),
-                Some("DONE"),
-                Some(format!("files={}", reports.len())),
-            );
-            let tools_used = ctx.tool_calls_snapshot();
-            return Some(ChatAgentResponse {
-                reply,
-                used_code_context: true,
-                tools_used,
-                trace: ctx.event_trace_snapshot(),
-                ..Default::default()
-            });
-        }
-    }
-
-    if looks_like_project_overview_query(user_text) {
-        match ctx.call_tool("project_overview", json!({ "limit": 8 })).await {
+        GroundedIntent::ProjectOverview => match ctx.call_tool("project_overview", json!({ "limit": 8 })).await {
             Ok(result) => {
                 let summary = result
                     .get("summary")
@@ -773,7 +976,6 @@ async fn maybe_build_direct_code_reply(
                     .unwrap_or_default();
 
                 let inspected_reports = load_local_file_reports(ctx, user_text, &files, 4, 1200).await;
-
                 if let Some(reply) = format_project_overview_reply(summary, &files, &inspected_reports) {
                     ctx.record_system_event(
                         "adk_chat_direct_project_overview",
@@ -798,6 +1000,26 @@ async fn maybe_build_direct_code_reply(
                     Some("FOLLOWUP_NEEDED"),
                     Some(err),
                 );
+            }
+        },
+        GroundedIntent::CodeAnalysis => {
+            let paths = infer_focus_paths_from_query(user_text, peer_id);
+            let reports = load_local_file_reports(ctx, user_text, &paths, 4, 1400).await;
+            if let Some(reply) = format_grounded_analysis_reply(user_text, &reports) {
+                ctx.record_system_event(
+                    "adk_chat_grounded_analysis_reply",
+                    Some(preview_text(user_text)),
+                    Some("DONE"),
+                    Some(format!("files={}", reports.len())),
+                );
+                let tools_used = ctx.tool_calls_snapshot();
+                return Some(ChatAgentResponse {
+                    reply,
+                    used_code_context: true,
+                    tools_used,
+                    trace: ctx.event_trace_snapshot(),
+                    ..Default::default()
+                });
             }
         }
     }
@@ -960,6 +1182,30 @@ async fn resolve_code_context(user_text: &str, ctx: &AgentContext) -> Option<Str
             "Grounded local evidence:\n{}",
             inferred_reports.join("\n\n===\n\n")
         ));
+    }
+
+    if looks_like_capability_query(user_text) || looks_like_skill_query(user_text) {
+        match ctx.call_tool("skill_catalog", json!({ "query": user_text })).await {
+            Ok(result) => {
+                if let Some(summary) = format_skill_catalog_context(&result) {
+                    ctx.record_system_event(
+                        "adk_chat_skill_catalog_loaded",
+                        Some(preview_text(user_text)),
+                        Some("RUNNING"),
+                        Some(format!("count={}", result.as_array().map(|v| v.len()).unwrap_or(0))),
+                    );
+                    blocks.push(summary);
+                }
+            }
+            Err(err) => {
+                ctx.record_system_event(
+                    "adk_chat_skill_catalog_error",
+                    Some(preview_text(user_text)),
+                    Some("FOLLOWUP_NEEDED"),
+                    Some(err),
+                );
+            }
+        }
     }
 
     if looks_like_project_overview_query(user_text) {
@@ -1496,6 +1742,41 @@ mod tests {
     }
 
     #[test]
+    fn detects_skill_inventory_requests() {
+        assert!(is_skill_inventory_request("你有哪些skill"));
+        assert!(is_skill_inventory_request("你有什麼技能？"));
+        assert!(!is_skill_inventory_request("分析 skill"));
+    }
+
+    #[test]
+    fn detects_capability_queries() {
+        assert!(looks_like_capability_query("你能做什麼？"));
+        assert!(looks_like_capability_query("你可以幫我做什麼"));
+        assert!(looks_like_capability_query("你有哪些 skill"));
+        assert!(!looks_like_capability_query("分析 src/main.rs"));
+    }
+
+    #[test]
+    fn classifies_grounded_intents() {
+        assert_eq!(
+            classify_grounded_intent("你可以幫我做什麼？", None),
+            Some(GroundedIntent::CapabilityInventory)
+        );
+        assert_eq!(
+            classify_grounded_intent("分析 skill", None),
+            Some(GroundedIntent::SkillArchitecture)
+        );
+        assert_eq!(
+            classify_grounded_intent("這個專案怎麼運作？", None),
+            Some(GroundedIntent::ProjectOverview)
+        );
+        assert_eq!(
+            classify_grounded_intent("幫我看 src/main.rs", None),
+            Some(GroundedIntent::LocalFile("src/main.rs".to_string()))
+        );
+    }
+
+    #[test]
     fn formats_direct_local_file_reply_with_excerpt() {
         let reply = format_local_file_reply(
             "File: src/main.rs\nKind: rust-source\nRole: App bootstrap\n\nExcerpt:\nfn main() {\n    println!(\"hi\");\n}"
@@ -1555,6 +1836,49 @@ mod tests {
         assert!(reply.contains("能力目錄"));
         assert!(reply.contains("`src/skills.rs`"));
         assert!(reply.contains("planner_agent.rs"));
+    }
+
+    #[test]
+    fn formats_skill_catalog_reply_with_actual_skill_ids() {
+        let reply = format_skill_catalog_reply(&json!([
+            {"id": "project_overview", "category": "code-understanding"},
+            {"id": "local_file_read", "category": "code-understanding"},
+            {"id": "grounded_fix", "category": "code-optimization"},
+            {"id": "web_search", "category": "external-research"}
+        ]))
+        .expect("should build a skill inventory reply");
+
+        assert!(reply.contains("`project_overview`"));
+        assert!(reply.contains("`grounded_fix`"));
+        assert!(reply.contains("`web_search`"));
+    }
+
+    #[test]
+    fn formats_skill_catalog_context_from_real_definitions() {
+        let summary = format_skill_catalog_context(&json!([
+            {"id": "project_overview", "description": "整理專案架構"},
+            {"id": "local_file_read", "description": "讀取真實本地檔案內容"}
+        ]))
+        .expect("should build skill catalog context");
+
+        assert!(summary.contains("Relevant capability evidence"));
+        assert!(summary.contains("project_overview"));
+        assert!(summary.contains("讀取真實本地檔案內容"));
+    }
+
+    #[test]
+    fn formats_generic_grounded_analysis_reply_from_reports() {
+        let reply = format_grounded_analysis_reply(
+            "先分析這段 code 的問題",
+            &[
+                "File: src/agents/chat_agent.rs\nKind: rust-source\nRole: chat agent 路由與回答整合。\n\nExcerpt:\nfn run() {}".to_string(),
+                "File: src/memory.rs\nKind: rust-source\nRole: 記憶與本地檔案索引模組。\n\nExcerpt:\npub fn search_codebase() {}".to_string(),
+            ],
+        )
+        .expect("should build a grounded analysis reply");
+
+        assert!(reply.contains("問題範圍") || reply.contains("整理出的重點"));
+        assert!(reply.contains("`src/agents/chat_agent.rs`"));
     }
 
     #[tokio::test]
@@ -1649,6 +1973,66 @@ mod tests {
         println!("skill reply:\n{}", response.reply);
         assert!(response.reply.contains("`src/skills.rs`"));
         assert!(response.reply.contains("能力目錄") || response.reply.contains("routing 提示"));
+        assert!(response.used_code_context);
+    }
+
+    #[tokio::test]
+    async fn end_to_end_skill_inventory_question_lists_available_skills() {
+        let response = run_chat_response_via_adk_with_tracker(
+            ChatRequest {
+                user_text: "你有哪些skill".to_string(),
+                execution_result: None,
+                context_block: None,
+                fallback_reply: None,
+                peer_id: Some(unique_peer_id()),
+            },
+            None,
+        )
+        .await;
+
+        println!("skill inventory reply:\n{}", response.reply);
+        assert!(response.reply.contains("`project_overview`"));
+        assert!(response.reply.contains("`local_file_read`"));
+        assert!(response.reply.contains("`grounded_fix`"));
+        assert!(response.used_code_context);
+    }
+
+    #[tokio::test]
+    async fn end_to_end_capability_question_lists_available_skills() {
+        let response = run_chat_response_via_adk_with_tracker(
+            ChatRequest {
+                user_text: "你可以幫我做什麼？".to_string(),
+                execution_result: None,
+                context_block: None,
+                fallback_reply: None,
+                peer_id: Some(unique_peer_id()),
+            },
+            None,
+        )
+        .await;
+
+        println!("capability reply:\n{}", response.reply);
+        assert!(response.reply.contains("`project_overview`"));
+        assert!(response.reply.contains("`code_change_planning`"));
+        assert!(response.used_code_context);
+    }
+
+    #[tokio::test]
+    async fn end_to_end_generic_code_analysis_returns_grounded_summary() {
+        let response = run_chat_response_via_adk_with_tracker(
+            ChatRequest {
+                user_text: "先分析 chat agent 的流程與可能問題".to_string(),
+                execution_result: None,
+                context_block: None,
+                fallback_reply: None,
+                peer_id: Some(unique_peer_id()),
+            },
+            None,
+        )
+        .await;
+
+        println!("generic analysis reply:\n{}", response.reply);
+        assert!(response.reply.contains("`src/agents/chat_agent.rs`") || response.reply.contains("`src/memory.rs`"));
         assert!(response.used_code_context);
     }
 }

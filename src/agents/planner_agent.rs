@@ -28,9 +28,24 @@ pub enum PlanIntent {
     Research,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum IntentFamily {
+    Capability,
+    LocalFile,
+    ProjectOverview,
+    SkillArchitecture,
+    CodeAnalysis,
+    Research,
+    #[default]
+    GeneralChat,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowPlan {
     pub intent: PlanIntent,
+    #[serde(default)]
+    pub intent_family: IntentFamily,
     pub steps: Vec<String>,
     #[serde(default)]
     pub should_start_research: bool,
@@ -56,29 +71,21 @@ impl Agent for PlannerAgent {
             let request: PlannerRequest = serde_json::from_value(input)
                 .map_err(|e| format!("Invalid planner request payload: {e}"))?;
 
-            let is_meta_request =
-                is_identity_question(&request.user_text) || is_code_access_question(&request.user_text);
             let recommended_skills = recommended_skill_ids(ctx, &request.user_text).await;
+            let family = classify_intent_family(&request.user_text, &recommended_skills);
 
-            // ── Deterministic meta-question handling first ───────────────────
-            let plan = if is_meta_request {
-                let p = WorkflowPlan {
-                    intent: PlanIntent::Answer,
-                    should_start_research: false,
-                    steps: vec![
-                        "answer the direct capability/identity question".to_string(),
-                        "offer to inspect a specific file or module next".to_string(),
-                    ],
-                    summary: "Direct capability/identity answer; no research workflow needed."
-                        .to_string(),
-                    recommended_skills: Vec::new(),
-                };
-                let p = apply_skill_hints(p, &recommended_skills);
+            let plan = if family != IntentFamily::GeneralChat {
+                let p = apply_skill_hints(build_family_plan(family.clone()), &recommended_skills);
                 ctx.record_system_event(
                     "adk_planner_plan_ready",
                     Some(preview_text(&request.user_text)),
                     Some("DONE"),
-                    Some(format!("intent={:?} source=meta_heuristic skills={}", p.intent, p.recommended_skills.join(","))),
+                    Some(format!(
+                        "intent={:?} family={:?} source=intent_family skills={}",
+                        p.intent,
+                        p.intent_family,
+                        p.recommended_skills.join(",")
+                    )),
                 );
                 p
             } else {
@@ -89,43 +96,27 @@ impl Agent for PlannerAgent {
                             "adk_planner_plan_ready",
                             Some(preview_text(&request.user_text)),
                             Some("DONE"),
-                            Some(format!("intent={:?} source=llm skills={}", p.intent, p.recommended_skills.join(","))),
+                            Some(format!(
+                                "intent={:?} family={:?} source=llm skills={}",
+                                p.intent,
+                                p.intent_family,
+                                p.recommended_skills.join(",")
+                            )),
                         );
                         p
                     }
-                    // ── Fallback: keyword heuristic ───────────────────────────────
                     None => {
-                        let has_research = detect_research_intent(&request.user_text).is_some();
-                        let intent = if has_research { PlanIntent::Research } else { PlanIntent::Answer };
-                        let mut steps = vec!["route request".to_string()];
-                        if has_research {
-                            steps.extend_from_slice(&[
-                                "launch background research".to_string(),
-                                "summarize research result".to_string(),
-                                "create follow-up task".to_string(),
-                                "prepare immediate acknowledgement".to_string(),
-                            ]);
-                        } else {
-                            steps.push("prepare direct answer".to_string());
-                        }
-                        steps.push("run chat response".to_string());
-                        let summary = match intent {
-                            PlanIntent::Research => "Need research workflow (heuristic fallback).".to_string(),
-                            PlanIntent::Answer => "Direct answer workflow (heuristic fallback).".to_string(),
-                        };
-                        let p = WorkflowPlan {
-                            should_start_research: matches!(intent, PlanIntent::Research),
-                            intent,
-                            steps,
-                            summary,
-                            recommended_skills: Vec::new(),
-                        };
-                        let p = apply_skill_hints(p, &recommended_skills);
+                        let p = apply_skill_hints(build_family_plan(IntentFamily::GeneralChat), &recommended_skills);
                         ctx.record_system_event(
                             "adk_planner_plan_ready",
                             Some(preview_text(&request.user_text)),
                             Some("DONE"),
-                            Some(format!("intent={:?} source=heuristic skills={}", p.intent, p.recommended_skills.join(","))),
+                            Some(format!(
+                                "intent={:?} family={:?} source=heuristic skills={}",
+                                p.intent,
+                                p.intent_family,
+                                p.recommended_skills.join(",")
+                            )),
                         );
                         p
                     }
@@ -153,6 +144,186 @@ async fn recommended_skill_ids(ctx: &AgentContext, user_text: &str) -> Vec<Strin
             .into_iter()
             .map(|skill| skill.id)
             .collect(),
+    }
+}
+
+fn looks_like_repo_file_reference(text: &str) -> bool {
+    text.split_whitespace().any(|token| {
+        let cleaned = token
+            .trim_matches(|c: char| matches!(c, '`' | '"' | '\'' | ',' | '，' | '。' | '?' | '？' | ':' | '：' | '(' | ')'))
+            .replace('\\', "/");
+
+        cleaned.starts_with("src/")
+            || cleaned.starts_with("app/")
+            || cleaned.starts_with("docs/")
+            || [".rs", ".toml", ".md", ".json", ".yaml", ".yml", ".ts", ".tsx"]
+                .iter()
+                .any(|suffix| cleaned.ends_with(suffix))
+    })
+}
+
+fn looks_like_project_overview_query(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    [
+        "專案", "项目", "項目", "架構", "architecture", "結構", "模組", "module",
+        "檔案", "files", "codebase", "怎麼運作", "如何運作",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn looks_like_skill_query(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    lower.contains("skill") || lower.contains("skills.rs") || text.contains("技能") || text.contains("能力目錄")
+}
+
+fn looks_like_capability_query(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let compact = lower.split_whitespace().collect::<String>();
+    let asks_what = ["有哪些", "有什麼", "有什么", "哪些", "會什麼", "会什么", "what", "list"]
+        .iter()
+        .any(|needle| compact.contains(needle));
+    let mentions_skills = compact.contains("skill") || compact.contains("skills") || text.contains("技能") || text.contains("能力");
+
+    [
+        "你能做什麼", "你可以做什麼", "你可以幫我做什麼", "你能幫我做什麼", "你會做什麼", "你會什麼",
+        "有什麼能力", "有哪些能力", "有什麼功能", "有哪些功能", "能幹嘛", "能做啥",
+        "whatcanyoudo", "howcanyouhelp", "capabilities", "abilities",
+    ]
+    .iter()
+    .any(|needle| compact.contains(needle))
+        || (asks_what && mentions_skills)
+}
+
+fn looks_like_analysis_request(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    ["分析", "解釋", "解释", "說明", "说明", "用途", "作用", "how", "why", "analyze", "explain"]
+        .iter()
+        .any(|needle| lower.contains(needle))
+}
+
+fn classify_intent_family(user_text: &str, recommended_skills: &[String]) -> IntentFamily {
+    if detect_research_intent(user_text).is_some() {
+        return IntentFamily::Research;
+    }
+
+    if is_identity_question(user_text) || is_code_access_question(user_text) || looks_like_capability_query(user_text) {
+        return IntentFamily::Capability;
+    }
+
+    if looks_like_repo_file_reference(user_text) {
+        return IntentFamily::LocalFile;
+    }
+
+    if looks_like_skill_query(user_text) {
+        return IntentFamily::SkillArchitecture;
+    }
+
+    if looks_like_project_overview_query(user_text) {
+        return IntentFamily::ProjectOverview;
+    }
+
+    if looks_like_analysis_request(user_text)
+        || recommended_skills.iter().any(|skill| {
+            matches!(
+                skill.as_str(),
+                "code_change_planning" | "symbol_trace" | "grounded_fix" | "test_selector" | "architecture_consistency_check"
+            )
+        })
+    {
+        return IntentFamily::CodeAnalysis;
+    }
+
+    IntentFamily::GeneralChat
+}
+
+fn build_family_plan(intent_family: IntentFamily) -> WorkflowPlan {
+    match intent_family {
+        IntentFamily::Capability => WorkflowPlan {
+            intent: PlanIntent::Answer,
+            intent_family,
+            steps: vec![
+                "answer the capability / identity question directly".to_string(),
+                "ground the answer in local skills or project context".to_string(),
+                "offer a concrete next file or module to inspect".to_string(),
+            ],
+            should_start_research: false,
+            summary: "Capability-style local answer workflow.".to_string(),
+            recommended_skills: Vec::new(),
+        },
+        IntentFamily::LocalFile => WorkflowPlan {
+            intent: PlanIntent::Answer,
+            intent_family,
+            steps: vec![
+                "read the referenced local file".to_string(),
+                "summarize its role and evidence".to_string(),
+                "offer a follow-up explanation path".to_string(),
+            ],
+            should_start_research: false,
+            summary: "Grounded local-file explanation workflow.".to_string(),
+            recommended_skills: Vec::new(),
+        },
+        IntentFamily::ProjectOverview => WorkflowPlan {
+            intent: PlanIntent::Answer,
+            intent_family,
+            steps: vec![
+                "inspect core project files".to_string(),
+                "summarize the architecture and module boundaries".to_string(),
+                "suggest the next module to inspect".to_string(),
+            ],
+            should_start_research: false,
+            summary: "Project-overview analysis workflow.".to_string(),
+            recommended_skills: Vec::new(),
+        },
+        IntentFamily::SkillArchitecture => WorkflowPlan {
+            intent: PlanIntent::Answer,
+            intent_family,
+            steps: vec![
+                "inspect skill catalog and related planner/router modules".to_string(),
+                "explain the capability model from local evidence".to_string(),
+                "offer a deeper dive into the relevant module".to_string(),
+            ],
+            should_start_research: false,
+            summary: "Skill-architecture explanation workflow.".to_string(),
+            recommended_skills: Vec::new(),
+        },
+        IntentFamily::CodeAnalysis => WorkflowPlan {
+            intent: PlanIntent::Answer,
+            intent_family,
+            steps: vec![
+                "inspect relevant local modules".to_string(),
+                "trace the likely data flow / symbol path".to_string(),
+                "summarize the grounded findings before proposing changes".to_string(),
+            ],
+            should_start_research: false,
+            summary: "Grounded code-analysis workflow.".to_string(),
+            recommended_skills: Vec::new(),
+        },
+        IntentFamily::Research => WorkflowPlan {
+            intent: PlanIntent::Research,
+            intent_family,
+            steps: vec![
+                "launch background research".to_string(),
+                "summarize research result".to_string(),
+                "create follow-up task".to_string(),
+                "prepare immediate acknowledgement".to_string(),
+            ],
+            should_start_research: true,
+            summary: "Need research workflow (intent-family).".to_string(),
+            recommended_skills: Vec::new(),
+        },
+        IntentFamily::GeneralChat => WorkflowPlan {
+            intent: PlanIntent::Answer,
+            intent_family,
+            steps: vec![
+                "route request".to_string(),
+                "prepare direct answer".to_string(),
+                "run chat response".to_string(),
+            ],
+            should_start_research: false,
+            summary: "Direct answer workflow (heuristic fallback).".to_string(),
+            recommended_skills: Vec::new(),
+        },
     }
 }
 
@@ -269,6 +440,7 @@ Output only the JSON object, no explanation."#,
         should_start_research: parsed.should_start_research
             || matches!(intent, PlanIntent::Research),
         intent,
+        intent_family: classify_intent_family(&request.user_text, recommended_skills),
         steps: if parsed.steps.is_empty() {
             vec!["route request".to_string(), "run chat response".to_string()]
         } else {
@@ -350,8 +522,9 @@ mod tests {
         .expect("planner should succeed");
 
         assert_eq!(plan.intent, PlanIntent::Answer);
+        assert_eq!(plan.intent_family, IntentFamily::Capability);
         assert!(!plan.should_start_research);
-        assert!(plan.steps.iter().any(|step| step.contains("direct capability/identity question")));
+        assert!(plan.steps.iter().any(|step| step.contains("capability / identity")));
     }
 
     #[tokio::test]
@@ -370,9 +543,30 @@ mod tests {
         .expect("planner should succeed");
 
         assert_eq!(plan.intent, PlanIntent::Answer);
+        assert_eq!(plan.intent_family, IntentFamily::CodeAnalysis);
         assert!(plan.recommended_skills.iter().any(|skill| skill == "code_change_planning"));
         assert!(plan.recommended_skills.iter().any(|skill| skill == "grounded_fix"));
         assert!(plan.steps.iter().any(|step| step.contains("safe change plan")));
         assert!(plan.steps.iter().any(|step| step.contains("targeted validation")));
+    }
+
+    #[tokio::test]
+    async fn planner_classifies_project_overview_family() {
+        let plan = run_planner_via_adk(
+            PlannerRequest {
+                user_text: "這個專案怎麼運作？".to_string(),
+                context_block: None,
+                peer_id: None,
+                fallback_reply: None,
+                execution_result: None,
+            },
+            None,
+        )
+        .await
+        .expect("planner should succeed");
+
+        assert_eq!(plan.intent, PlanIntent::Answer);
+        assert_eq!(plan.intent_family, IntentFamily::ProjectOverview);
+        assert!(plan.steps.iter().any(|step| step.contains("inspect core project files")));
     }
 }

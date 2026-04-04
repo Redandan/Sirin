@@ -40,6 +40,7 @@ struct ChatMessage {
 #[derive(Clone, Default)]
 struct AgentConsoleState {
     route: String,
+    intent_family: String,
     summary: String,
     steps: Vec<String>,
     recommended_skills: Vec<String>,
@@ -56,6 +57,9 @@ impl AgentConsoleState {
             format!("Route: {}", self.route),
         ];
 
+        if !self.intent_family.is_empty() {
+            lines.push(format!("Intent Family: {}", self.intent_family));
+        }
         if !self.summary.is_empty() {
             lines.push(format!("Summary: {}", self.summary));
         }
@@ -80,6 +84,33 @@ impl AgentConsoleState {
     }
 }
 
+fn chat_history_snapshot(messages: &[ChatMessage]) -> String {
+    if messages.is_empty() {
+        return "（目前沒有對話內容）".to_string();
+    }
+
+    messages
+        .iter()
+        .map(|msg| {
+            let speaker = match msg.role {
+                ChatRole::User => "你",
+                ChatRole::Assistant => "Sirin",
+            };
+            format!("{speaker}:\n{}", msg.text)
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n---\n\n")
+}
+
+fn build_console_log_bundle(console: &AgentConsoleState, messages: &[ChatMessage], log_lines: usize) -> String {
+    format!(
+        "=== Agent Console ===\n{}\n\n=== Chat History ===\n{}\n\n=== Recent Logs ===\n{}",
+        console.snapshot_text(),
+        chat_history_snapshot(messages),
+        log_buffer::snapshot_text(log_lines)
+    )
+}
+
 #[derive(Clone)]
 struct ChatUiUpdate {
     reply: String,
@@ -95,6 +126,7 @@ struct ChatUiUpdate {
 #[derive(Clone)]
 struct ChatPlanUpdate {
     route: String,
+    intent_family: String,
     summary: String,
     steps: Vec<String>,
     recommended_skills: Vec<String>,
@@ -261,6 +293,7 @@ impl eframe::App for SirinApp {
                 // Apply plan update whenever it arrives (first partial or final).
                 if let Some(plan) = update.plan {
                     self.agent_console.route = plan.route;
+                    self.agent_console.intent_family = plan.intent_family;
                     self.agent_console.summary = plan.summary;
                     self.agent_console.steps = plan.steps;
                     self.agent_console.recommended_skills = plan.recommended_skills;
@@ -667,6 +700,15 @@ impl SirinApp {
                 };
                 ui.colored_label(status_color, &self.agent_console.status);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("複製全部（Console + 對話 + Log）").clicked() {
+                        let bundle = build_console_log_bundle(&self.agent_console, &self.chat_messages, 250);
+                        ui.ctx().copy_text(bundle);
+                        self.agent_console.status = "已複製 Console + 對話 + Log".to_string();
+                    }
+                    if ui.small_button("複製對話").clicked() {
+                        ui.ctx().copy_text(chat_history_snapshot(&self.chat_messages));
+                        self.agent_console.status = "已複製對話內容".to_string();
+                    }
                     if ui.small_button("複製 Console + Log").clicked() {
                         let bundle = format!(
                             "=== Agent Console ===\n{}\n\n=== Recent Logs ===\n{}",
@@ -683,6 +725,9 @@ impl SirinApp {
                 });
             });
             ui.small(format!("Route: {}", self.agent_console.route));
+            if !self.agent_console.intent_family.is_empty() {
+                ui.small(format!("Intent Family: {}", self.agent_console.intent_family));
+            }
             if !self.agent_console.summary.is_empty() {
                 ui.label(&self.agent_console.summary);
             }
@@ -837,8 +882,10 @@ impl SirinApp {
                 self.agent_console.tools.clear();
                 self.agent_console.trace.clear();
                 self.agent_console.recommended_skills.clear();
+                self.agent_console.intent_family.clear();
                 if is_meta_request {
                     self.agent_console.route = "chat".to_string();
+                    self.agent_console.intent_family = "capability".to_string();
                     self.agent_console.summary = "直接回答身份 / 看碼能力問題，不啟動 research。".to_string();
                     self.agent_console.steps = vec![
                         "skip planner + router".to_string(),
@@ -856,6 +903,7 @@ impl SirinApp {
                     let plan_update = if is_meta_request {
                         ChatPlanUpdate {
                             route: "chat".to_string(),
+                            intent_family: "capability".to_string(),
                             summary: "Direct capability/identity answer; no research workflow needed.".to_string(),
                             steps: vec![
                                 "skip planner + router".to_string(),
@@ -883,12 +931,17 @@ impl SirinApp {
                                 crate::agents::planner_agent::PlanIntent::Research => "research".to_string(),
                                 crate::agents::planner_agent::PlanIntent::Answer => "chat".to_string(),
                             },
+                            intent_family: serde_json::to_value(&p.intent_family)
+                                .ok()
+                                .and_then(|v| v.as_str().map(|s| s.to_string()))
+                                .unwrap_or_else(|| "general_chat".to_string()),
                             summary: p.summary,
                             steps: p.steps,
                             recommended_skills: p.recommended_skills,
                         })
                         .unwrap_or_else(|| ChatPlanUpdate {
                             route: "chat".to_string(),
+                            intent_family: "general_chat".to_string(),
                             summary: "Planner unavailable; using direct router fallback.".to_string(),
                             steps: vec!["route request".to_string(), "run chat response".to_string()],
                             recommended_skills: Vec::new(),
