@@ -11,7 +11,14 @@ const USER_AGENT: &str =
      (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
 const LM_STUDIO_URL: &str = "http://localhost:1234/v1/chat/completions";
-const LM_STUDIO_MODEL: &str = "llama-3.2-3b-instruct-uncensored";
+const DEFAULT_LM_STUDIO_MODEL: &str = "llama-3.2-8x3b-moe-dark-champion-instruct-uncensored-abliterated-18.4b";
+
+fn lm_studio_model() -> String {
+    std::env::var("LM_STUDIO_MODEL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_LM_STUDIO_MODEL.to_string())
+}
 
 // ── LM Studio types ───────────────────────────────────────────────────────────
 
@@ -107,8 +114,9 @@ fn should_search(text: &str) -> bool {
 
 async fn call_llm(prompt: &str) -> String {
     let client = reqwest::Client::new();
+    let model = lm_studio_model();
     let body = ChatRequest {
-        model: LM_STUDIO_MODEL,
+        model: &model,
         messages: vec![ChatMessage { role: "user".into(), content: prompt.into() }],
         stream: false,
     };
