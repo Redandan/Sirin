@@ -114,6 +114,32 @@ pub fn default_tool_registry() -> ToolRegistry {
                 .map_err(|e| e.to_string())?;
             Ok(json!(results))
         })
+        .register_fn("project_overview", |input| async move {
+            let limit = limit_from_input(&input, 8);
+            let files = crate::memory::list_project_files(limit)
+                .map_err(|e| e.to_string())?;
+
+            Ok(json!({
+                "summary": "Sirin 是一個用 Rust 建構的本地 AI 助手專案，包含 egui 桌面 UI、Telegram 整合、ADK 風格 agent 流程、記憶 / 程式碼索引，以及本地 LLM 支援。",
+                "files": files,
+            }))
+        })
+        .register_fn("local_file_read", |input| async move {
+            let path = optional_string_field(&input, "path")
+                .or_else(|| optional_string_field(&input, "query"))
+                .ok_or_else(|| "Missing 'path' string".to_string())?;
+            let max_chars = input
+                .get("max_chars")
+                .and_then(Value::as_u64)
+                .map(|v| v as usize)
+                .unwrap_or(2400);
+            let content = crate::memory::inspect_project_file(&path, max_chars)
+                .map_err(|e| e.to_string())?;
+            Ok(json!({
+                "path": path,
+                "content": content,
+            }))
+        })
         .register_ctx_fn("task_recent", |ctx, input| {
             async move {
                 let limit = limit_from_input(&input, 20);
@@ -170,7 +196,13 @@ pub fn default_tool_registry() -> ToolRegistry {
             let task = crate::researcher::get_research(&id)?;
             serde_json::to_value(task).map_err(|e| e.to_string())
         })
-        .register_fn("skill_catalog", |_input| async move {
+        .register_fn("skill_catalog", |input| async move {
+            if let Some(query) = optional_string_field(&input, "query") {
+                let recommended = crate::skills::recommended_skills(&query);
+                if !recommended.is_empty() {
+                    return Ok(json!(recommended));
+                }
+            }
             Ok(json!(crate::skills::list_skills()))
         })
         .register_fn("skill_execute", |input| async move {
@@ -242,5 +274,6 @@ mod tests {
             .expect("skill catalog should be available");
 
         assert!(output.as_array().map(|items| !items.is_empty()).unwrap_or(false));
+        assert!(ctx.tools.names().iter().any(|name| name == "project_overview"));
     }
 }

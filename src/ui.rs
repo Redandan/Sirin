@@ -42,10 +42,42 @@ struct AgentConsoleState {
     route: String,
     summary: String,
     steps: Vec<String>,
+    recommended_skills: Vec<String>,
     tools: Vec<String>,
     trace: Vec<String>,
     latest_task_summary: String,
     status: String,
+}
+
+impl AgentConsoleState {
+    fn snapshot_text(&self) -> String {
+        let mut lines = vec![
+            format!("Status: {}", self.status),
+            format!("Route: {}", self.route),
+        ];
+
+        if !self.summary.is_empty() {
+            lines.push(format!("Summary: {}", self.summary));
+        }
+        if !self.steps.is_empty() {
+            lines.push(format!("Steps: {}", self.steps.join(" → ")));
+        }
+        if !self.recommended_skills.is_empty() {
+            lines.push(format!("Recommended Skills: {}", self.recommended_skills.join(", ")));
+        }
+        if !self.tools.is_empty() {
+            lines.push(format!("Tools: {}", self.tools.join(", ")));
+        }
+        if !self.trace.is_empty() {
+            lines.push("Trace:".to_string());
+            lines.extend(self.trace.iter().map(|item| format!("- {item}")));
+        }
+        if !self.latest_task_summary.is_empty() {
+            lines.push(format!("Latest Research Summary: {}", self.latest_task_summary));
+        }
+
+        lines.join("\n")
+    }
 }
 
 #[derive(Clone)]
@@ -65,6 +97,7 @@ struct ChatPlanUpdate {
     route: String,
     summary: String,
     steps: Vec<String>,
+    recommended_skills: Vec<String>,
 }
 
 // ── App state ─────────────────────────────────────────────────────────────────
@@ -230,6 +263,7 @@ impl eframe::App for SirinApp {
                     self.agent_console.route = plan.route;
                     self.agent_console.summary = plan.summary;
                     self.agent_console.steps = plan.steps;
+                    self.agent_console.recommended_skills = plan.recommended_skills;
                     self.agent_console.status = "Executing…".to_string();
                 }
 
@@ -318,7 +352,10 @@ impl eframe::App for SirinApp {
                         ui.strong("Log");
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.small_button("清除").clicked() {
-                                // No-op: buffer keeps history, just a UX hint
+                                log_buffer::clear();
+                            }
+                            if ui.small_button("複製全部").clicked() {
+                                ui.ctx().copy_text(log_buffer::snapshot_text(300));
                             }
                         });
                     });
@@ -629,6 +666,21 @@ impl SirinApp {
                     Color32::from_rgb(100, 220, 100)
                 };
                 ui.colored_label(status_color, &self.agent_console.status);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("複製 Console + Log").clicked() {
+                        let bundle = format!(
+                            "=== Agent Console ===\n{}\n\n=== Recent Logs ===\n{}",
+                            self.agent_console.snapshot_text(),
+                            log_buffer::snapshot_text(200)
+                        );
+                        ui.ctx().copy_text(bundle);
+                        self.agent_console.status = "已複製 Console + Log".to_string();
+                    }
+                    if ui.small_button("複製 Console").clicked() {
+                        ui.ctx().copy_text(self.agent_console.snapshot_text());
+                        self.agent_console.status = "已複製 Console".to_string();
+                    }
+                });
             });
             ui.small(format!("Route: {}", self.agent_console.route));
             if !self.agent_console.summary.is_empty() {
@@ -636,6 +688,9 @@ impl SirinApp {
             }
             if !self.agent_console.steps.is_empty() {
                 ui.small(format!("Steps: {}", self.agent_console.steps.join(" → ")));
+            }
+            if !self.agent_console.recommended_skills.is_empty() {
+                ui.small(format!("Recommended Skills: {}", self.agent_console.recommended_skills.join(", ")));
             }
             if !self.agent_console.tools.is_empty() {
                 ui.small(format!("Tools: {}", self.agent_console.tools.join(", ")));
@@ -751,6 +806,9 @@ impl SirinApp {
                 self.chat_pending = true;
 
                 // Build context from recent chat history (last 5 turns).
+                let is_meta_request = crate::telegram::language::is_identity_question(&user_text)
+                    || crate::telegram::language::is_code_access_question(&user_text);
+
                 let history: Vec<String> = self
                     .chat_messages
                     .windows(2)
@@ -767,7 +825,7 @@ impl SirinApp {
                     .into_iter()
                     .rev()
                     .collect();
-                let context_block = if history.is_empty() {
+                let context_block = if is_meta_request || history.is_empty() {
                     None
                 } else {
                     Some(history.join("\n---\n"))
@@ -776,76 +834,110 @@ impl SirinApp {
                 let tx = self.chat_tx.clone();
                 let rt = self.rt.clone();
                 // Set initial console state immediately (no block).
-                self.agent_console.route = "pending…".to_string();
-                self.agent_console.summary = String::new();
-                self.agent_console.steps.clear();
                 self.agent_console.tools.clear();
                 self.agent_console.trace.clear();
-                self.agent_console.status = "計畫中…".to_string();
+                self.agent_console.recommended_skills.clear();
+                if is_meta_request {
+                    self.agent_console.route = "chat".to_string();
+                    self.agent_console.summary = "直接回答身份 / 看碼能力問題，不啟動 research。".to_string();
+                    self.agent_console.steps = vec![
+                        "skip planner + router".to_string(),
+                        "reply with local identity/capability summary".to_string(),
+                    ];
+                    self.agent_console.status = "直接回覆中…".to_string();
+                } else {
+                    self.agent_console.route = "pending…".to_string();
+                    self.agent_console.summary = String::new();
+                    self.agent_console.steps.clear();
+                    self.agent_console.status = "計畫中…".to_string();
+                }
 
                 rt.spawn(async move {
-                    // Run planner asynchronously — no longer blocks the GUI thread.
-                    let plan = crate::agents::planner_agent::run_planner_via_adk(
-                        crate::agents::planner_agent::PlannerRequest {
-                            user_text: user_text.clone(),
-                            context_block: context_block.clone(),
-                            peer_id: Some(0),
-                            fallback_reply: None,
-                            execution_result: None,
-                        },
-                        None,
-                    )
-                    .await
-                    .ok();
+                    let plan_update = if is_meta_request {
+                        ChatPlanUpdate {
+                            route: "chat".to_string(),
+                            summary: "Direct capability/identity answer; no research workflow needed.".to_string(),
+                            steps: vec![
+                                "skip planner + router".to_string(),
+                                "reply with local identity/capability summary".to_string(),
+                            ],
+                            recommended_skills: Vec::new(),
+                        }
+                    } else {
+                        // Run planner asynchronously — no longer blocks the GUI thread.
+                        let plan = crate::agents::planner_agent::run_planner_via_adk(
+                            crate::agents::planner_agent::PlannerRequest {
+                                user_text: user_text.clone(),
+                                context_block: context_block.clone(),
+                                peer_id: Some(0),
+                                fallback_reply: None,
+                                execution_result: None,
+                            },
+                            None,
+                        )
+                        .await
+                        .ok();
 
-                    let plan_update = plan
-                        .map(|p| ChatPlanUpdate {
+                        plan.map(|p| ChatPlanUpdate {
                             route: match p.intent {
                                 crate::agents::planner_agent::PlanIntent::Research => "research".to_string(),
                                 crate::agents::planner_agent::PlanIntent::Answer => "chat".to_string(),
                             },
                             summary: p.summary,
                             steps: p.steps,
+                            recommended_skills: p.recommended_skills,
                         })
                         .unwrap_or_else(|| ChatPlanUpdate {
                             route: "chat".to_string(),
                             summary: "Planner unavailable; using direct router fallback.".to_string(),
                             steps: vec!["route request".to_string(), "run chat response".to_string()],
-                        });
+                            recommended_skills: Vec::new(),
+                        })
+                    };
 
-                    let routed = crate::agents::router_agent::run_router_via_adk(
-                        crate::agents::router_agent::RouterRequest {
+                    let request = if is_meta_request {
+                        crate::agents::chat_agent::ChatRequest {
                             user_text: user_text.clone(),
-                            context_block,
-                            peer_id: Some(0),
-                            fallback_reply: None,
                             execution_result: None,
-                        },
-                        None,
-                    )
-                    .await;
-
-                    let request = match routed {
-                        Ok(output) => {
-                            let chat_request = output.get("chat_request").cloned().unwrap_or_default();
-                            serde_json::from_value(chat_request)
-                                .unwrap_or(crate::agents::chat_agent::ChatRequest {
-                                    user_text: user_text.clone(),
-                                    execution_result: None,
-                                    context_block: None,
-                                    fallback_reply: None,
-                                    peer_id: Some(0),
-                                })
+                            context_block: None,
+                            fallback_reply: None,
+                            peer_id: Some(0),
                         }
-                        Err(err) => {
-                            let _ = tx.send(ChatUiUpdate {
-                                reply: format!("路由錯誤：{err}"),
-                                tools: vec![],
-                                trace: vec![],
-                                partial: false,
-                                plan: Some(plan_update),
-                            });
-                            return;
+                    } else {
+                        let routed = crate::agents::router_agent::run_router_via_adk(
+                            crate::agents::router_agent::RouterRequest {
+                                user_text: user_text.clone(),
+                                context_block,
+                                peer_id: Some(0),
+                                fallback_reply: None,
+                                execution_result: None,
+                            },
+                            None,
+                        )
+                        .await;
+
+                        match routed {
+                            Ok(output) => {
+                                let chat_request = output.get("chat_request").cloned().unwrap_or_default();
+                                serde_json::from_value(chat_request)
+                                    .unwrap_or(crate::agents::chat_agent::ChatRequest {
+                                        user_text: user_text.clone(),
+                                        execution_result: None,
+                                        context_block: None,
+                                        fallback_reply: None,
+                                        peer_id: Some(0),
+                                    })
+                            }
+                            Err(err) => {
+                                let _ = tx.send(ChatUiUpdate {
+                                    reply: format!("路由錯誤：{err}"),
+                                    tools: vec![],
+                                    trace: vec![],
+                                    partial: false,
+                                    plan: Some(plan_update),
+                                });
+                                return;
+                            }
                         }
                     };
 

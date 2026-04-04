@@ -6,6 +6,7 @@ use crate::adk::{Agent, AgentContext, AgentRuntime};
 use crate::llm::call_prompt;
 use crate::persona::TaskTracker;
 use crate::telegram::commands::detect_research_intent;
+use crate::telegram::language::{is_code_access_question, is_identity_question};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlannerRequest {
@@ -35,6 +36,8 @@ pub struct WorkflowPlan {
     pub should_start_research: bool,
     #[serde(default)]
     pub summary: String,
+    #[serde(default)]
+    pub recommended_skills: Vec<String>,
 }
 
 pub struct PlannerAgent;
@@ -53,50 +56,79 @@ impl Agent for PlannerAgent {
             let request: PlannerRequest = serde_json::from_value(input)
                 .map_err(|e| format!("Invalid planner request payload: {e}"))?;
 
-            // ── Try LLM-based planning first ──────────────────────────────────
-            let plan = match llm_plan(ctx, &request).await {
-                Some(p) => {
-                    ctx.record_system_event(
-                        "adk_planner_plan_ready",
-                        Some(preview_text(&request.user_text)),
-                        Some("DONE"),
-                        Some(format!("intent={:?} source=llm", p.intent)),
-                    );
-                    p
-                }
-                // ── Fallback: keyword heuristic ───────────────────────────────
-                None => {
-                    let has_research = detect_research_intent(&request.user_text).is_some();
-                    let intent = if has_research { PlanIntent::Research } else { PlanIntent::Answer };
-                    let mut steps = vec!["route request".to_string()];
-                    if has_research {
-                        steps.extend_from_slice(&[
-                            "launch background research".to_string(),
-                            "summarize research result".to_string(),
-                            "create follow-up task".to_string(),
-                            "prepare immediate acknowledgement".to_string(),
-                        ]);
-                    } else {
-                        steps.push("prepare direct answer".to_string());
+            let is_meta_request =
+                is_identity_question(&request.user_text) || is_code_access_question(&request.user_text);
+            let recommended_skills = recommended_skill_ids(ctx, &request.user_text).await;
+
+            // ── Deterministic meta-question handling first ───────────────────
+            let plan = if is_meta_request {
+                let p = WorkflowPlan {
+                    intent: PlanIntent::Answer,
+                    should_start_research: false,
+                    steps: vec![
+                        "answer the direct capability/identity question".to_string(),
+                        "offer to inspect a specific file or module next".to_string(),
+                    ],
+                    summary: "Direct capability/identity answer; no research workflow needed."
+                        .to_string(),
+                    recommended_skills: Vec::new(),
+                };
+                let p = apply_skill_hints(p, &recommended_skills);
+                ctx.record_system_event(
+                    "adk_planner_plan_ready",
+                    Some(preview_text(&request.user_text)),
+                    Some("DONE"),
+                    Some(format!("intent={:?} source=meta_heuristic skills={}", p.intent, p.recommended_skills.join(","))),
+                );
+                p
+            } else {
+                match llm_plan(ctx, &request, &recommended_skills).await {
+                    Some(p) => {
+                        let p = apply_skill_hints(p, &recommended_skills);
+                        ctx.record_system_event(
+                            "adk_planner_plan_ready",
+                            Some(preview_text(&request.user_text)),
+                            Some("DONE"),
+                            Some(format!("intent={:?} source=llm skills={}", p.intent, p.recommended_skills.join(","))),
+                        );
+                        p
                     }
-                    steps.push("run chat response".to_string());
-                    let summary = match intent {
-                        PlanIntent::Research => "Need research workflow (heuristic fallback).".to_string(),
-                        PlanIntent::Answer => "Direct answer workflow (heuristic fallback).".to_string(),
-                    };
-                    let p = WorkflowPlan {
-                        should_start_research: matches!(intent, PlanIntent::Research),
-                        intent,
-                        steps,
-                        summary,
-                    };
-                    ctx.record_system_event(
-                        "adk_planner_plan_ready",
-                        Some(preview_text(&request.user_text)),
-                        Some("DONE"),
-                        Some(format!("intent={:?} source=heuristic", p.intent)),
-                    );
-                    p
+                    // ── Fallback: keyword heuristic ───────────────────────────────
+                    None => {
+                        let has_research = detect_research_intent(&request.user_text).is_some();
+                        let intent = if has_research { PlanIntent::Research } else { PlanIntent::Answer };
+                        let mut steps = vec!["route request".to_string()];
+                        if has_research {
+                            steps.extend_from_slice(&[
+                                "launch background research".to_string(),
+                                "summarize research result".to_string(),
+                                "create follow-up task".to_string(),
+                                "prepare immediate acknowledgement".to_string(),
+                            ]);
+                        } else {
+                            steps.push("prepare direct answer".to_string());
+                        }
+                        steps.push("run chat response".to_string());
+                        let summary = match intent {
+                            PlanIntent::Research => "Need research workflow (heuristic fallback).".to_string(),
+                            PlanIntent::Answer => "Direct answer workflow (heuristic fallback).".to_string(),
+                        };
+                        let p = WorkflowPlan {
+                            should_start_research: matches!(intent, PlanIntent::Research),
+                            intent,
+                            steps,
+                            summary,
+                            recommended_skills: Vec::new(),
+                        };
+                        let p = apply_skill_hints(p, &recommended_skills);
+                        ctx.record_system_event(
+                            "adk_planner_plan_ready",
+                            Some(preview_text(&request.user_text)),
+                            Some("DONE"),
+                            Some(format!("intent={:?} source=heuristic skills={}", p.intent, p.recommended_skills.join(","))),
+                        );
+                        p
+                    }
                 }
             };
 
@@ -108,17 +140,83 @@ impl Agent for PlannerAgent {
 
 /// Ask the LLM to classify the user message and return a structured plan.
 /// Returns `None` on LLM error or unparseable output so the caller can fall back.
-async fn llm_plan(ctx: &AgentContext, request: &PlannerRequest) -> Option<WorkflowPlan> {
+async fn recommended_skill_ids(ctx: &AgentContext, user_text: &str) -> Vec<String> {
+    match ctx.call_tool("skill_catalog", json!({ "query": user_text })).await {
+        Ok(value) => value
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|item| item.get("id").and_then(Value::as_str))
+            .map(|id| id.to_string())
+            .collect(),
+        Err(_) => crate::skills::recommended_skills(user_text)
+            .into_iter()
+            .map(|skill| skill.id)
+            .collect(),
+    }
+}
+
+fn push_step_if_missing(steps: &mut Vec<String>, step: &str) {
+    if !steps.iter().any(|item| item == step) {
+        steps.push(step.to_string());
+    }
+}
+
+fn apply_skill_hints(mut plan: WorkflowPlan, recommended_skills: &[String]) -> WorkflowPlan {
+    plan.recommended_skills = recommended_skills.to_vec();
+
+    if recommended_skills.iter().any(|skill| skill == "project_overview") {
+        push_step_if_missing(&mut plan.steps, "inspect core project files");
+    }
+    if recommended_skills.iter().any(|skill| skill == "local_file_read") {
+        push_step_if_missing(&mut plan.steps, "read the referenced local file");
+    }
+    if recommended_skills.iter().any(|skill| skill == "codebase_search" || skill == "symbol_trace") {
+        push_step_if_missing(&mut plan.steps, "trace affected symbols/modules");
+    }
+    if recommended_skills.iter().any(|skill| skill == "code_change_planning") {
+        push_step_if_missing(&mut plan.steps, "outline a safe change plan before editing");
+    }
+    if recommended_skills.iter().any(|skill| skill == "grounded_fix") {
+        push_step_if_missing(&mut plan.steps, "identify root cause from local code context");
+    }
+    if recommended_skills.iter().any(|skill| skill == "test_selector") {
+        push_step_if_missing(&mut plan.steps, "run targeted validation after changes");
+    }
+    if recommended_skills.iter().any(|skill| skill == "architecture_consistency_check") {
+        push_step_if_missing(&mut plan.steps, "check architecture consistency after the change");
+    }
+
+    if !plan.recommended_skills.is_empty() {
+        let skill_list = plan.recommended_skills.join(", ");
+        if plan.summary.is_empty() {
+            plan.summary = format!("Recommended skills: {skill_list}");
+        } else {
+            plan.summary = format!("{} Recommended skills: {}.", plan.summary.trim_end_matches('.'), skill_list);
+        }
+    }
+
+    plan
+}
+
+/// Ask the LLM to classify the user message and return a structured plan.
+/// Returns `None` on LLM error or unparseable output so the caller can fall back.
+async fn llm_plan(ctx: &AgentContext, request: &PlannerRequest, recommended_skills: &[String]) -> Option<WorkflowPlan> {
     let context_hint = request
         .context_block
         .as_deref()
         .map(|c| format!("\nRecent context:\n{c}"))
         .unwrap_or_default();
+    let skill_hint = if recommended_skills.is_empty() {
+        String::new()
+    } else {
+        format!("\nRelevant local capabilities for this request: {}", recommended_skills.join(", "))
+    };
 
     let prompt = format!(
         r#"You are a planning assistant. Classify the user's message and output ONLY valid JSON.
 
-User message: "{msg}"{context_hint}
+User message: "{msg}"{context_hint}{skill_hint}
 
 JSON schema (fill every field):
 {{
@@ -130,7 +228,9 @@ JSON schema (fill every field):
 
 Rules:
 - Use "research" when the user wants an investigation, analysis, or information about a URL/topic.
-- Use "answer" for greetings, simple questions, or direct instructions.
+- Use "answer" for greetings, simple questions, direct instructions, identity questions, or questions about whether you can inspect the local code/project files.
+- If the relevant local capabilities include `project_overview`, `local_file_read`, `codebase_search`, `grounded_fix`, `symbol_trace`, or `test_selector`, prefer "answer" because the request can be handled locally inside this repo.
+- Never classify `你是誰` or `能看到當前代碼嗎` style questions as research.
 - steps must be an ordered list of 2-5 concrete actions.
 
 Output only the JSON object, no explanation."#,
@@ -179,6 +279,7 @@ Output only the JSON object, no explanation."#,
         } else {
             parsed.summary
         },
+        recommended_skills: Vec::new(),
     })
 }
 
@@ -231,5 +332,47 @@ mod tests {
         assert!(plan.should_start_research);
         assert!(plan.steps.iter().any(|step| step.contains("summarize research result")));
         assert!(plan.steps.iter().any(|step| step.contains("create follow-up task")));
+    }
+
+    #[tokio::test]
+    async fn planner_keeps_meta_questions_as_answer() {
+        let plan = run_planner_via_adk(
+            PlannerRequest {
+                user_text: "能看到當前代碼嗎".to_string(),
+                context_block: None,
+                peer_id: None,
+                fallback_reply: None,
+                execution_result: None,
+            },
+            None,
+        )
+        .await
+        .expect("planner should succeed");
+
+        assert_eq!(plan.intent, PlanIntent::Answer);
+        assert!(!plan.should_start_research);
+        assert!(plan.steps.iter().any(|step| step.contains("direct capability/identity question")));
+    }
+
+    #[tokio::test]
+    async fn planner_uses_skill_recommendations_for_local_optimization_requests() {
+        let plan = run_planner_via_adk(
+            PlannerRequest {
+                user_text: "先分析再改，幫我安全優化這段 code 並跑測試".to_string(),
+                context_block: None,
+                peer_id: None,
+                fallback_reply: None,
+                execution_result: None,
+            },
+            None,
+        )
+        .await
+        .expect("planner should succeed");
+
+        assert_eq!(plan.intent, PlanIntent::Answer);
+        assert!(plan.recommended_skills.iter().any(|skill| skill == "code_change_planning"));
+        assert!(plan.recommended_skills.iter().any(|skill| skill == "grounded_fix"));
+        assert!(plan.steps.iter().any(|step| step.contains("safe change plan")));
+        assert!(plan.steps.iter().any(|step| step.contains("targeted validation")));
     }
 }

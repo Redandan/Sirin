@@ -268,9 +268,22 @@ fn collect_codebase_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result
     Ok(())
 }
 
+fn is_summary_noise(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.is_empty()
+        || trimmed.starts_with("#![")
+        || trimmed.starts_with("#[")
+        || trimmed.starts_with("use ")
+        || trimmed.starts_with("pub use ")
+        || trimmed.starts_with("mod ")
+        || trimmed.starts_with("pub mod ")
+        || trimmed.starts_with("extern crate ")
+}
+
 fn first_meaningful_line(text: &str) -> String {
     text.lines()
         .map(str::trim)
+        .filter(|line| !is_summary_noise(line))
         .map(|line| {
             line.trim_start_matches("//!")
                 .trim_start_matches("///")
@@ -335,16 +348,61 @@ fn extract_symbols(path: &Path, text: &str) -> Vec<String> {
 }
 
 fn relative_display(path: &Path, root: &Path) -> String {
-    path.strip_prefix(root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .replace('\\', "/")
+    let canonical_root = fs::canonicalize(root).ok();
+    let canonical_path = fs::canonicalize(path).ok();
+
+    let display_path = canonical_path
+        .as_deref()
+        .zip(canonical_root.as_deref())
+        .and_then(|(path, root)| path.strip_prefix(root).ok().map(Path::to_path_buf))
+        .or_else(|| path.strip_prefix(root).ok().map(Path::to_path_buf))
+        .unwrap_or_else(|| path.to_path_buf());
+
+    let display = display_path.to_string_lossy().replace('\\', "/");
+    display.strip_prefix("//?/").unwrap_or(&display).to_string()
+}
+
+fn role_hint_for_path(rel: &str) -> Option<&'static str> {
+    let rel = rel.replace('\\', "/");
+
+    match rel.as_str() {
+        "build.rs" => Some("Cargo 建置腳本，負責編譯期設定或資源處理。"),
+        "Cargo.toml" => Some("Rust 專案清單，定義套件資訊、依賴與建置設定。"),
+        "README.md" => Some("專案總覽與快速使用說明。"),
+        "tauri.conf.json" => Some("桌面應用封裝與執行設定。"),
+        "src/main.rs" => Some("應用程式入口，負責啟動 UI、agents、Telegram 與背景工作。"),
+        "src/ui.rs" => Some("egui/eframe 桌面介面，負責聊天、任務板、日誌與 Telegram 授權 UI。"),
+        "src/llm.rs" => Some("LLM 抽象層，負責連接 Ollama 與 OpenAI 相容後端（如 LM Studio）。"),
+        "src/memory.rs" => Some("記憶與程式碼索引模組，負責本地檔案檢索、上下文與搜尋。"),
+        "src/researcher.rs" => Some("調研任務管理與研究報告流程。"),
+        "src/persona.rs" => Some("Persona 與行為規則設定。"),
+        "src/skills.rs" => Some("技能與搜尋能力整合層。"),
+        "src/log_buffer.rs" => Some("執行日誌緩衝與快照工具。"),
+        "src/followup.rs" => Some("後續追蹤與待辦處理流程。"),
+        "src/agents/chat_agent.rs" => Some("聊天 agent，負責整合本地檔案與程式碼內容來回答問題。"),
+        "src/agents/planner_agent.rs" => Some("planner agent，先判斷使用者意圖與可能的步驟。"),
+        "src/agents/router_agent.rs" => Some("router agent，決定要走 chat、research 或 follow-up 路線。"),
+        "src/agents/research_agent.rs" => Some("research agent，負責調研、摘要與結果記錄。"),
+        "src/agents/followup_agent.rs" => Some("follow-up agent，背景處理待辦與後續任務。"),
+        "docs/ARCHITECTURE.md" => Some("架構設計說明文件。"),
+        "docs/QUICKSTART.md" => Some("快速上手與執行說明。"),
+        _ if rel.starts_with("src/adk/") => Some("ADK 執行框架元件，負責 context、tools、runner 與 agent runtime。"),
+        _ if rel.starts_with("src/telegram/") => Some("Telegram 整合模組，處理 listener、回覆、語言與驗證。"),
+        _ if rel.starts_with("docs/") => Some("專案文件，用來說明架構、路線圖或使用方式。"),
+        _ => None,
+    }
+}
+
+fn summarize_file_role(_path: &Path, rel: &str, text: &str) -> String {
+    role_hint_for_path(rel)
+        .map(str::to_string)
+        .unwrap_or_else(|| first_meaningful_line(text))
 }
 
 fn build_codebase_entry(root: &Path, path: &Path, text: &str) -> CodebaseEntry {
     let rel = relative_display(path, root);
     let symbols = extract_symbols(path, text);
-    let summary = first_meaningful_line(text);
+    let summary = summarize_file_role(path, &rel, text);
     let excerpt: String = text.chars().take(1600).collect();
     let symbol_block = if symbols.is_empty() {
         "(no symbols extracted)".to_string()
@@ -415,6 +473,160 @@ pub fn ensure_codebase_index() -> Result<usize, Box<dyn std::error::Error + Send
     } else {
         Ok(0)
     }
+}
+
+fn project_file_priority(path: &str) -> i32 {
+    let path = path.to_lowercase();
+    let mut score = 0;
+
+    if path == "cargo.toml" {
+        score += 240;
+    }
+    if path == "readme.md" {
+        score += 220;
+    }
+    if path == "tauri.conf.json" {
+        score += 200;
+    }
+    if path == "docs/architecture.md" {
+        score += 190;
+    }
+    if path == "src/main.rs" {
+        score += 230;
+    }
+    if path == "src/ui.rs" {
+        score += 225;
+    }
+    if path == "src/memory.rs" || path == "src/llm.rs" {
+        score += 210;
+    }
+    if path.starts_with("src/agents/") {
+        score += 180;
+    }
+    if path.starts_with("src/adk/") {
+        score += 170;
+    }
+    if path.starts_with("src/telegram/") {
+        score += 160;
+    }
+    if path.starts_with("src/") {
+        score += 140;
+    }
+    if path.starts_with("app/") {
+        score += 120;
+    }
+    if path.starts_with("docs/") {
+        score += 110;
+    }
+    if path.starts_with("config/") {
+        score += 80;
+    }
+    if path.starts_with("tests/") {
+        score += 40;
+    }
+    if path.starts_with('.') {
+        score -= 160;
+    }
+    if path.starts_with(".claude/") || path.starts_with(".github/") {
+        score -= 180;
+    }
+
+    score
+}
+
+pub fn list_project_files(
+    limit: usize,
+) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+    let Some(root) = find_project_root() else {
+        return Ok(Vec::new());
+    };
+
+    let mut files = Vec::new();
+    collect_codebase_files(&root, &mut files)?;
+
+    let mut rel_files: Vec<String> = files
+        .into_iter()
+        .map(|path| relative_display(&path, &root))
+        .collect();
+
+    rel_files.sort_by(|a, b| {
+        project_file_priority(b)
+            .cmp(&project_file_priority(a))
+            .then_with(|| a.cmp(b))
+    });
+    rel_files.dedup();
+
+    Ok(rel_files.into_iter().take(limit).collect())
+}
+
+fn normalize_path_hint(path_hint: &str) -> String {
+    path_hint
+        .trim()
+        .trim_matches(|c| matches!(c, '`' | '"' | '\''))
+        .trim_matches(|c: char| matches!(c, ',' | '，' | '。' | '?' | '？' | ':' | '：' | '(' | ')'))
+        .replace('\\', "/")
+}
+
+fn resolve_project_file_path(root: &Path, path_hint: &str) -> Option<PathBuf> {
+    let normalized = normalize_path_hint(path_hint);
+    if normalized.is_empty() {
+        return None;
+    }
+
+    let root_canonical = fs::canonicalize(root).ok().unwrap_or_else(|| root.to_path_buf());
+    let direct = PathBuf::from(&normalized);
+    let candidate = if direct.is_absolute() {
+        direct
+    } else {
+        root.join(&normalized)
+    };
+
+    if candidate.is_file() {
+        let canonical = fs::canonicalize(&candidate).ok().unwrap_or(candidate.clone());
+        if canonical.starts_with(&root_canonical) {
+            return Some(candidate);
+        }
+    }
+
+    let mut files = Vec::new();
+    collect_codebase_files(root, &mut files).ok()?;
+    let normalized_lower = normalized.to_lowercase();
+
+    files.into_iter().find(|path| {
+        let rel = relative_display(path, root).to_lowercase();
+        let name = path
+            .file_name()
+            .and_then(|v| v.to_str())
+            .unwrap_or_default()
+            .to_lowercase();
+        rel == normalized_lower || rel.ends_with(&normalized_lower) || name == normalized_lower
+    })
+}
+
+pub fn inspect_project_file(
+    path_hint: &str,
+    max_chars: usize,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let Some(root) = find_project_root() else {
+        return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "project root not found").into());
+    };
+
+    let path = resolve_project_file_path(&root, path_hint).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("could not resolve local project file: {path_hint}"),
+        )
+    })?;
+
+    let text = fs::read_to_string(&path)?;
+    let rel = relative_display(&path, &root);
+    let summary = summarize_file_role(&path, &rel, &text);
+    let excerpt: String = text.chars().take(max_chars.clamp(400, 4000)).collect();
+
+    Ok(format!(
+        "File: {rel}\nKind: {}\nRole: {summary}\n\nExcerpt:\n{excerpt}",
+        code_file_kind(&path)
+    ))
 }
 
 pub fn search_codebase(
@@ -591,6 +803,35 @@ mod tests {
         assert!(looks_like_code_query("幫我分析這個專案架構"));
         assert!(looks_like_code_query("memory.rs 的 append_context 在哪裡"));
         assert!(!looks_like_code_query("你好嗎"));
+    }
+
+    #[test]
+    fn can_inspect_local_project_file() {
+        let excerpt = inspect_project_file("src/main.rs", 600)
+            .expect("should read a real project file from the local workspace");
+        assert!(excerpt.contains("File: src/main.rs"));
+        assert!(excerpt.contains("Role: 應用程式入口"));
+        assert!(excerpt.contains("Excerpt:"));
+    }
+
+    #[test]
+    fn skips_rust_attributes_when_deriving_summary() {
+        let summary = first_meaningful_line("#![cfg_attr(not(debug_assertions), windows_subsystem = \"windows\")]\n//! App bootstrap\nmod ui;");
+        assert_eq!(summary, "App bootstrap");
+    }
+
+    #[test]
+    fn known_files_use_human_friendly_role_hints() {
+        assert_eq!(
+            summarize_file_role(Path::new("src/main.rs"), "src/main.rs", "#![cfg_attr(...)]\nfn main() {}"),
+            "應用程式入口，負責啟動 UI、agents、Telegram 與背景工作。"
+        );
+    }
+
+    #[test]
+    fn prioritizes_core_project_files_over_hidden_command_docs() {
+        assert!(project_file_priority("src/main.rs") > project_file_priority(".claude/commands/build-check.md"));
+        assert!(project_file_priority("Cargo.toml") > project_file_priority(".claude/commands/build-check.md"));
     }
 
     #[test]

@@ -49,7 +49,7 @@ pub fn build_ai_reply_prompt(
         .unwrap_or_default();
 
     let language_override = if force_traditional_chinese {
-        "- Reply in Traditional Chinese only.\n"
+        "- Reply in Traditional Chinese only.\n- Use Traditional Chinese characters, not Simplified Chinese.\n"
     } else {
         ""
     };
@@ -68,10 +68,17 @@ Use this persona style: {voice}.\n\
 Core rule: {compliance}\n\
 Task: Reply to the latest user message naturally and helpfully.\n\
 Constraints:\n\
-- Keep response concise (1-3 sentences).\n\
+- Keep response concise, but allow 3-6 sentences or a short bullet list when explaining code.\n\
 - Be polite and human-like.\n\
 - Reply in the same language as the user's message.\n\
-- Continue from the recent conversation context instead of restarting the topic.\n\
+- Always prioritise the latest user message over earlier chat history.\n\
+- Use recent conversation context only when it is still relevant to the latest user message.\n\
+- If the user asks who you are, answer clearly that you are {persona_name}, the local AI assistant for this project.\n\
+- If the user asks whether you can inspect this app's code, answer yes: you can read and analyze the local project codebase and relevant files.\n\
+- For local code questions, first synthesise the concrete evidence from the provided files/modules, then answer.\n\
+- When project code context includes `Analysis focus`, `Grounded local evidence`, `File:`, or `Excerpt:`, explicitly cite the relevant file path and answer from that local content instead of giving a generic reply.\n\
+- If the available local code context is insufficient, say which file you inspected and what is still missing.\n\
+- Never mention internal tool tags or hidden reasoning such as [SEARCH], [MEMORY], or [CODE].\n\
 - Do not self-introduce unless the user asks who you are.\n\
 - Avoid sounding like a system prompt or policy statement.\n\
 {language_override}
@@ -112,4 +119,29 @@ pub async fn generate_ai_reply(
         force_traditional_chinese,
     );
     call_prompt(client, llm, prompt).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_ai_reply_prompt;
+
+    #[test]
+    fn prompt_includes_identity_and_code_rules() {
+        let prompt = build_ai_reply_prompt(
+            None,
+            "你是誰？你能看到這個專案的程式碼嗎？",
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            true,
+        );
+
+        assert!(prompt.contains("If the user asks who you are"));
+        assert!(prompt.contains("If the user asks whether you can inspect this app's code"));
+        assert!(prompt.contains("explicitly cite the relevant file path"));
+        assert!(prompt.contains("Traditional Chinese"));
+    }
 }
