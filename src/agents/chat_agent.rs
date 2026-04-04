@@ -11,8 +11,8 @@ use crate::persona::{Persona, TaskTracker};
 use crate::researcher;
 use crate::telegram::commands::{extract_search_query, should_search};
 use crate::telegram::language::{
-    chinese_fallback_reply, contains_cjk, is_code_access_question, is_direct_answer_request,
-    is_identity_question, is_mixed_language_reply,
+    chinese_fallback_reply, is_code_access_question, is_direct_answer_request,
+    is_identity_question,
 };
 use crate::telegram::llm::{build_ai_reply_prompt, generate_ai_reply};
 
@@ -45,13 +45,20 @@ pub struct ChatAgentResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum GroundedIntent {
-    LocalFile(String),
-    ContextualFiles(Vec<String>),
-    CapabilityInventory,
-    SkillArchitecture,
+enum Intent {
+    LocalFile,
     ProjectOverview,
     CodeAnalysis,
+    CapabilityQuery,
+    Correction,
+    WebSearch,
+    General,
+}
+
+struct MessageUnderstanding {
+    intent: Intent,
+    is_correction: bool,
+    target_files: Vec<String>,
 }
 
 pub struct ChatAgent;
@@ -73,9 +80,6 @@ impl Agent for ChatAgent {
             let client = Arc::clone(&ctx.http);
             let llm = Arc::clone(&ctx.llm);
             let persona = Persona::load().ok();
-            let direct_answer_request = is_direct_answer_request(&request.user_text);
-            let meta_request =
-                is_identity_question(&request.user_text) || is_code_access_question(&request.user_text);
 
             let behavior = ctx
                 .call_tool(
@@ -102,114 +106,74 @@ impl Agent for ChatAgent {
                 .clone()
                 .unwrap_or_else(|| chinese_fallback_reply(&request.user_text, request.execution_result.as_deref()));
 
-            if request.execution_result.is_none() {
-                if is_simple_meta_request(&request.user_text) {
-                    let reply = shortcut_reply(&request.user_text, persona.as_ref())
-                        .unwrap_or_else(|| fallback_reply.clone());
-                    ctx.record_system_event(
-                        "adk_chat_meta_reply",
-                        Some(preview_text(&request.user_text)),
-                        Some("DONE"),
-                        Some("identity_or_code_capability".to_string()),
-                    );
-                    let response = ChatAgentResponse {
-                        reply,
-                        ..Default::default()
-                    };
-                    return serde_json::to_value(response).map_err(|e| e.to_string());
-                }
-
-                if let Some(response) = maybe_build_direct_code_reply(&request.user_text, ctx, request.peer_id).await {
-                    return serde_json::to_value(response).map_err(|e| e.to_string());
-                }
+            // ── Fast path: identity / meta questions need no LLM reasoning ──
+            if request.execution_result.is_none() && is_simple_meta_request(&request.user_text) {
+                let reply = shortcut_reply(&request.user_text, persona.as_ref())
+                    .unwrap_or_else(|| fallback_reply.clone());
+                ctx.record_system_event(
+                    "adk_chat_meta_reply",
+                    Some(preview_text(&request.user_text)),
+                    Some("DONE"),
+                    Some("identity_or_code_capability".to_string()),
+                );
+                let response = ChatAgentResponse { reply, ..Default::default() };
+                return serde_json::to_value(response).map_err(|e| e.to_string());
             }
 
+            // Resolve conversation context early — needed by the understanding step.
             let context_block = resolve_context_block(&request, ctx);
 
-            // ── Route: ReAct loop for open-ended queries; linear path otherwise ──
-            let use_react = !direct_answer_request
-                && !meta_request
-                && request.execution_result.is_none()
-                && (should_search(&request.user_text)
-                    || looks_like_code_query(&request.user_text));
-
-            let ai_reply = if use_react {
+            // ── LLM understanding step ──────────────────────────────────────
+            // Ask a compact LLM call to classify what the user wants before
+            // doing any tool calls.  This replaces brittle keyword matching.
+            let understanding = if request.execution_result.is_none() {
+                let u = understand_message(ctx, &request.user_text, context_block.as_deref()).await;
                 ctx.record_system_event(
-                    "adk_chat_react_start",
+                    "adk_chat_understood",
                     Some(preview_text(&request.user_text)),
                     Some("RUNNING"),
+                    Some(format!(
+                        "intent={:?} correction={} files={}",
+                        u.intent, u.is_correction, u.target_files.len()
+                    )),
+                );
+                u
+            } else {
+                // When an execution result is already present, skip understanding
+                // and go straight to the General (linear LLM) path.
+                MessageUnderstanding {
+                    intent: Intent::General,
+                    is_correction: false,
+                    target_files: Vec::new(),
+                }
+            };
+
+            // ── Route by understanding ──────────────────────────────────────
+            let final_reply = dispatch_by_understanding(
+                &understanding,
+                &request,
+                ctx,
+                context_block.as_deref(),
+                client.as_ref(),
+                llm.as_ref(),
+                persona.as_ref(),
+            )
+            .await
+            .filter(|r| !r.trim().is_empty())
+            .unwrap_or_else(|| {
+                ctx.record_system_event(
+                    "adk_chat_dispatch_fallback",
+                    Some(preview_text(&request.user_text)),
+                    Some("FOLLOWUP_NEEDED"),
                     None,
                 );
-                let persona_name = persona.as_ref().map(|p| p.name()).unwrap_or("Sirin");
-                let reply = react_loop(ctx, &request.user_text, persona_name, context_block.as_deref()).await;
-                if reply.trim().is_empty() { fallback_reply.clone() } else { reply }
-            } else {
-                // Linear path: deterministic context resolution + single LLM call.
-                let search_context = resolve_search_context(&request, ctx, client.as_ref(), llm.as_ref(), direct_answer_request).await;
-                let memory_context = resolve_memory_context(&request.user_text, ctx).await;
-                let code_context = resolve_code_context(&request.user_text, ctx).await;
-
-                match generate_ai_reply(
-                    client.as_ref(),
-                    llm.as_ref(),
-                    persona.as_ref(),
-                    &request.user_text,
-                    request.execution_result.as_deref(),
-                    search_context.as_deref(),
-                    context_block.as_deref(),
-                    memory_context.as_deref(),
-                    code_context.as_deref(),
-                    direct_answer_request,
-                    false,
-                )
-                .await
-                {
-                    Ok(v) if !v.trim().is_empty() => v,
-                    Ok(_) => fallback_reply.clone(),
-                    Err(e) => {
-                        ctx.record_system_event(
-                            "adk_chat_llm_error",
-                            Some(preview_text(&request.user_text)),
-                            Some("FOLLOWUP_NEEDED"),
-                            Some(e.to_string()),
-                        );
-                        fallback_reply.clone()
-                    }
-                }
-            };
-
-            let final_reply = if contains_cjk(&request.user_text)
-                && (!contains_cjk(&ai_reply) || is_mixed_language_reply(&ai_reply))
-            {
-                match generate_ai_reply(
-                    client.as_ref(),
-                    llm.as_ref(),
-                    persona.as_ref(),
-                    &request.user_text,
-                    request.execution_result.as_deref(),
-                    None,
-                    context_block.as_deref(),
-                    None,
-                    None,
-                    direct_answer_request,
-                    true,
-                )
-                .await
-                {
-                    Ok(v) if !v.trim().is_empty() && contains_cjk(&v) => v,
-                    Ok(_) | Err(_) => chinese_fallback_reply(
-                        &request.user_text,
-                        request.execution_result.as_deref(),
-                    ),
-                }
-            } else {
-                ai_reply
-            };
+                fallback_reply.clone()
+            });
 
             let tools_used = ctx.tool_calls_snapshot();
             let response = ChatAgentResponse {
                 reply: final_reply,
-                used_search: use_react || tools_used.iter().any(|t| t == "web_search"),
+                used_search: tools_used.iter().any(|t| t == "web_search"),
                 used_memory: tools_used.iter().any(|t| t == "memory_search"),
                 used_code_context: used_code_tools(&tools_used),
                 tools_used,
@@ -403,37 +367,6 @@ fn push_unique_path(paths: &mut Vec<String>, path: &str) {
     }
 }
 
-fn classify_grounded_intent(user_text: &str, peer_id: Option<i64>) -> Option<GroundedIntent> {
-    if let Some(path) = extract_file_reference(user_text) {
-        return Some(GroundedIntent::LocalFile(path));
-    }
-
-    if is_contextual_file_explanation_request(user_text) {
-        let paths = recent_context_file_references(peer_id);
-        if !paths.is_empty() {
-            return Some(GroundedIntent::ContextualFiles(paths));
-        }
-    }
-
-    if looks_like_capability_query(user_text) {
-        return Some(GroundedIntent::CapabilityInventory);
-    }
-
-    if looks_like_skill_query(user_text) {
-        return Some(GroundedIntent::SkillArchitecture);
-    }
-
-    if looks_like_project_overview_query(user_text) {
-        return Some(GroundedIntent::ProjectOverview);
-    }
-
-    if looks_like_analysis_request(user_text) && looks_like_code_query(user_text) {
-        return Some(GroundedIntent::CodeAnalysis);
-    }
-
-    None
-}
-
 fn infer_focus_paths_from_query(user_text: &str, peer_id: Option<i64>) -> Vec<String> {
     let lower = user_text.to_lowercase();
     let mut paths = Vec::new();
@@ -495,26 +428,6 @@ fn infer_focus_paths_from_query(user_text: &str, peer_id: Option<i64>) -> Vec<St
     paths
 }
 
-fn build_analysis_focus_summary(user_text: &str, evidence_paths: &[String]) -> Option<String> {
-    if evidence_paths.is_empty() {
-        return None;
-    }
-
-    let focus = if looks_like_capability_query(user_text) {
-        "分析這個 agent 的能力目錄、可用工具與適合的使用方式"
-    } else if looks_like_skill_query(user_text) {
-        "分析這個專案裡 skill 的定義方式、能力目錄與 routing 用法"
-    } else if looks_like_project_overview_query(user_text) {
-        "分析專案架構與主要模組的分工"
-    } else if looks_like_analysis_request(user_text) && looks_like_code_query(user_text) {
-        "先查看相關本地檔案，再根據證據整理答案"
-    } else {
-        return None;
-    };
-
-    Some(format!("Focus: {focus}\nPrimary evidence files: {}", evidence_paths.join(", ")))
-}
-
 fn shortcut_reply(user_text: &str, persona: Option<&Persona>) -> Option<String> {
     let asks_identity = is_identity_question(user_text);
     let asks_code_access = is_code_access_question(user_text);
@@ -543,28 +456,18 @@ fn shortcut_reply(user_text: &str, persona: Option<&Persona>) -> Option<String> 
 }
 
 fn used_code_tools(tools: &[String]) -> bool {
-    tools.iter().any(|tool| matches!(tool.as_str(), "codebase_search" | "local_file_read" | "project_overview"))
+    tools.iter().any(|tool| {
+        matches!(
+            tool.as_str(),
+            "codebase_search" | "local_file_read" | "project_overview" | "skill_catalog" | "skill_execute"
+        )
+    })
 }
 
 fn extract_labeled_value<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
     text.lines()
         .find_map(|line| line.strip_prefix(prefix).map(str::trim))
         .filter(|value| !value.is_empty())
-}
-
-fn extract_file_paths_from_reports(reports: &[String]) -> Vec<String> {
-    let mut paths = Vec::new();
-
-    for report in reports {
-        if let Some(path) = extract_labeled_value(report, "File: ") {
-            let path = path.to_string();
-            if !paths.contains(&path) {
-                paths.push(path);
-            }
-        }
-    }
-
-    paths
 }
 
 fn summarize_file_report_line(report: &str) -> Option<String> {
@@ -623,37 +526,6 @@ fn format_local_file_reply(file_report: &str) -> Option<String> {
     ))
 }
 
-fn format_project_overview_reply(summary: &str, files: &[String], inspected_reports: &[String]) -> Option<String> {
-    if summary.trim().is_empty() && files.is_empty() && inspected_reports.is_empty() {
-        return None;
-    }
-
-    let inspected_list = inspected_reports
-        .iter()
-        .take(4)
-        .filter_map(|report| summarize_file_report_line(report))
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    let file_list = files
-        .iter()
-        .take(8)
-        .map(|path| format!("- `{path}`"))
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    Some(format!(
-        "我已先查看幾個關鍵檔案，再整理目前工作區的大概：\n- 專案概況：{}\n\n{}\n\n目前可直接查的關鍵檔案：\n{}\n\n你可以直接叫我像 `幫我看 src/main.rs`、`解釋 src/ui.rs`，或問我某個模組的大致用途。",
-        if summary.trim().is_empty() { "（未提供摘要）" } else { summary.trim() },
-        if inspected_list.is_empty() {
-            "已檢查的核心檔案：\n- （本輪未載入檔案內容）".to_string()
-        } else {
-            format!("已檢查的核心檔案：\n{inspected_list}")
-        },
-        if file_list.is_empty() { "- （暫無檔案列表）" } else { &file_list }
-    ))
-}
-
 async fn load_local_file_reports(
     ctx: &AgentContext,
     user_text: &str,
@@ -694,27 +566,6 @@ async fn load_local_file_reports(
     }
 
     reports
-}
-
-fn format_contextual_file_explanation_reply(file_reports: &[String]) -> Option<String> {
-    if file_reports.is_empty() {
-        return None;
-    }
-
-    let lines = file_reports
-        .iter()
-        .take(4)
-        .filter_map(|report| summarize_file_report_line(report))
-        .collect::<Vec<_>>();
-
-    if lines.is_empty() {
-        None
-    } else {
-        Some(format!(
-            "你剛剛提到的那些檔案，我已根據本地內容整理如下：\n{}\n\n如果你要，我可以再挑其中一個繼續細講，像 `解釋 src/main.rs`。",
-            lines.join("\n")
-        ))
-    }
 }
 
 fn format_skill_catalog_reply(catalog: &Value) -> Option<String> {
@@ -758,273 +609,6 @@ fn format_skill_catalog_reply(catalog: &Value) -> Option<String> {
 
     lines.push("如果你要，我可以直接示範其中一個，例如：`幫我看 src/main.rs`、`先分析再改`、`改完幫我測一下`。".to_string());
     Some(lines.join("\n"))
-}
-
-fn format_skill_catalog_context(catalog: &Value) -> Option<String> {
-    let skills = catalog.as_array()?;
-    if skills.is_empty() {
-        return None;
-    }
-
-    let lines = skills
-        .iter()
-        .take(6)
-        .filter_map(|skill| {
-            let id = skill.get("id").and_then(Value::as_str)?;
-            let description = skill.get("description").and_then(Value::as_str).unwrap_or_default();
-            Some(format!("- {id}: {description}"))
-        })
-        .collect::<Vec<_>>();
-
-    if lines.is_empty() {
-        None
-    } else {
-        Some(format!("Relevant capability evidence from `skill_catalog`:\n{}", lines.join("\n")))
-    }
-}
-
-fn format_grounded_analysis_reply(user_text: &str, file_reports: &[String]) -> Option<String> {
-    if file_reports.is_empty() {
-        return None;
-    }
-
-    let lines = file_reports
-        .iter()
-        .take(4)
-        .filter_map(|report| summarize_file_report_line(report))
-        .collect::<Vec<_>>();
-
-    if lines.is_empty() {
-        return None;
-    }
-
-    let opener = if ["bug", "問題", "錯誤", "root cause", "修", "fix"]
-        .iter()
-        .any(|needle| user_text.to_lowercase().contains(needle))
-    {
-        "我先看了幾個相關模組，先把可能的問題範圍收斂如下："
-    } else {
-        "我先查看了幾個相關檔案，整理出的重點如下："
-    };
-
-    Some(format!(
-        "{opener}\n{}\n\n如果你要，我可以再沿著其中一個模組往下追，例如看呼叫鏈、資料流或 root cause。",
-        lines.join("\n")
-    ))
-}
-
-fn format_skill_analysis_reply(file_reports: &[String]) -> Option<String> {
-    if file_reports.is_empty() {
-        return None;
-    }
-
-    let mut bullets = Vec::new();
-    for report in file_reports.iter().take(4) {
-        let Some(path) = extract_labeled_value(report, "File: ") else {
-            continue;
-        };
-        let bullet = match path {
-            "src/skills.rs" => Some("- `src/skills.rs`：定義 skill catalog，本質上是能力目錄，包含分類、背後 tools 與 example prompts。".to_string()),
-            "src/agents/planner_agent.rs" => Some("- `src/agents/planner_agent.rs`：會先拿 `recommended_skills`，再把它們帶進 plan 與 steps。".to_string()),
-            "src/agents/router_agent.rs" => Some("- `src/agents/router_agent.rs`：會參考 `recommended_skills` 來決定偏向走 `chat` 還是 `research`。".to_string()),
-            "src/adk/tool.rs" => Some("- `src/adk/tool.rs`：把 `skill_catalog` / `skill_execute` 暴露成 ADK tools，讓 agents 可以查詢能力。".to_string()),
-            _ => summarize_file_report_line(report),
-        };
-
-        if let Some(line) = bullet {
-            bullets.push(line);
-        }
-    }
-
-    if bullets.is_empty() {
-        None
-    } else {
-        Some(format!(
-            "我先查了本地相關檔案後，結論是：在這個專案裡，`skill` 比較像**能力目錄 + routing 提示**，不是獨立的大型執行引擎。\n{}\n\n如果你要，我可以再深入解釋 `src/skills.rs` 或 planner/router 的接法。",
-            bullets.join("\n")
-        ))
-    }
-}
-
-async fn maybe_build_direct_code_reply(
-    user_text: &str,
-    ctx: &AgentContext,
-    peer_id: Option<i64>,
-) -> Option<ChatAgentResponse> {
-    let intent = classify_grounded_intent(user_text, peer_id)?;
-
-    match intent {
-        GroundedIntent::LocalFile(path) => match ctx
-            .call_tool("local_file_read", json!({ "path": path, "max_chars": 2200 }))
-            .await
-        {
-            Ok(result) => {
-                if let Some(content) = result.get("content").and_then(Value::as_str) {
-                    if let Some(reply) = format_local_file_reply(content) {
-                        ctx.record_system_event(
-                            "adk_chat_direct_file_reply",
-                            Some(preview_text(user_text)),
-                            Some("DONE"),
-                            result
-                                .get("path")
-                                .and_then(Value::as_str)
-                                .map(|path| format!("path={path}")),
-                        );
-                        let tools_used = ctx.tool_calls_snapshot();
-                        return Some(ChatAgentResponse {
-                            reply,
-                            used_code_context: true,
-                            tools_used,
-                            trace: ctx.event_trace_snapshot(),
-                            ..Default::default()
-                        });
-                    }
-                }
-            }
-            Err(err) => {
-                ctx.record_system_event(
-                    "adk_chat_direct_file_reply_error",
-                    Some(preview_text(user_text)),
-                    Some("FOLLOWUP_NEEDED"),
-                    Some(err),
-                );
-            }
-        },
-        GroundedIntent::ContextualFiles(paths) => {
-            let reports = load_local_file_reports(ctx, user_text, &paths, 4, 1200).await;
-            if let Some(reply) = format_contextual_file_explanation_reply(&reports) {
-                ctx.record_system_event(
-                    "adk_chat_contextual_file_reply",
-                    Some(preview_text(user_text)),
-                    Some("DONE"),
-                    Some(format!("files={}", reports.len())),
-                );
-                let tools_used = ctx.tool_calls_snapshot();
-                return Some(ChatAgentResponse {
-                    reply,
-                    used_code_context: true,
-                    tools_used,
-                    trace: ctx.event_trace_snapshot(),
-                    ..Default::default()
-                });
-            }
-        }
-        GroundedIntent::CapabilityInventory => match ctx.call_tool("skill_catalog", json!({ "query": user_text })).await {
-            Ok(catalog) => {
-                if let Some(reply) = format_skill_catalog_reply(&catalog) {
-                    ctx.record_system_event(
-                        "adk_chat_skill_catalog_reply",
-                        Some(preview_text(user_text)),
-                        Some("DONE"),
-                        Some(format!("count={}", catalog.as_array().map(|v| v.len()).unwrap_or(0))),
-                    );
-                    let tools_used = ctx.tool_calls_snapshot();
-                    return Some(ChatAgentResponse {
-                        reply,
-                        used_code_context: true,
-                        tools_used,
-                        trace: ctx.event_trace_snapshot(),
-                        ..Default::default()
-                    });
-                }
-            }
-            Err(err) => {
-                ctx.record_system_event(
-                    "adk_chat_skill_catalog_error",
-                    Some(preview_text(user_text)),
-                    Some("FOLLOWUP_NEEDED"),
-                    Some(err),
-                );
-            }
-        },
-        GroundedIntent::SkillArchitecture => {
-            let paths = infer_focus_paths_from_query(user_text, peer_id);
-            let reports = load_local_file_reports(ctx, user_text, &paths, 4, 1400).await;
-            if let Some(reply) = format_skill_analysis_reply(&reports) {
-                ctx.record_system_event(
-                    "adk_chat_skill_analysis_reply",
-                    Some(preview_text(user_text)),
-                    Some("DONE"),
-                    Some(format!("files={}", reports.len())),
-                );
-                let tools_used = ctx.tool_calls_snapshot();
-                return Some(ChatAgentResponse {
-                    reply,
-                    used_code_context: true,
-                    tools_used,
-                    trace: ctx.event_trace_snapshot(),
-                    ..Default::default()
-                });
-            }
-        }
-        GroundedIntent::ProjectOverview => match ctx.call_tool("project_overview", json!({ "limit": 8 })).await {
-            Ok(result) => {
-                let summary = result
-                    .get("summary")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                let files = result
-                    .get("files")
-                    .and_then(Value::as_array)
-                    .map(|items| {
-                        items
-                            .iter()
-                            .filter_map(Value::as_str)
-                            .map(|s| s.to_string())
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-
-                let inspected_reports = load_local_file_reports(ctx, user_text, &files, 4, 1200).await;
-                if let Some(reply) = format_project_overview_reply(summary, &files, &inspected_reports) {
-                    ctx.record_system_event(
-                        "adk_chat_direct_project_overview",
-                        Some(preview_text(user_text)),
-                        Some("DONE"),
-                        Some(format!("files={}, inspected={}", files.len(), inspected_reports.len())),
-                    );
-                    let tools_used = ctx.tool_calls_snapshot();
-                    return Some(ChatAgentResponse {
-                        reply,
-                        used_code_context: true,
-                        tools_used,
-                        trace: ctx.event_trace_snapshot(),
-                        ..Default::default()
-                    });
-                }
-            }
-            Err(err) => {
-                ctx.record_system_event(
-                    "adk_chat_direct_project_overview_error",
-                    Some(preview_text(user_text)),
-                    Some("FOLLOWUP_NEEDED"),
-                    Some(err),
-                );
-            }
-        },
-        GroundedIntent::CodeAnalysis => {
-            let paths = infer_focus_paths_from_query(user_text, peer_id);
-            let reports = load_local_file_reports(ctx, user_text, &paths, 4, 1400).await;
-            if let Some(reply) = format_grounded_analysis_reply(user_text, &reports) {
-                ctx.record_system_event(
-                    "adk_chat_grounded_analysis_reply",
-                    Some(preview_text(user_text)),
-                    Some("DONE"),
-                    Some(format!("files={}", reports.len())),
-                );
-                let tools_used = ctx.tool_calls_snapshot();
-                return Some(ChatAgentResponse {
-                    reply,
-                    used_code_context: true,
-                    tools_used,
-                    trace: ctx.event_trace_snapshot(),
-                    ..Default::default()
-                });
-            }
-        }
-    }
-
-    None
 }
 
 fn resolve_context_block(request: &ChatRequest, ctx: &AgentContext) -> Option<String> {
@@ -1155,157 +739,6 @@ async fn resolve_memory_context(user_text: &str, ctx: &AgentContext) -> Option<S
         None
     } else {
         Some(blocks.join("\n\n---\n\n"))
-    }
-}
-
-async fn resolve_code_context(user_text: &str, ctx: &AgentContext) -> Option<String> {
-    if !looks_like_code_query(user_text) {
-        return None;
-    }
-
-    let mut blocks = Vec::new();
-    let inferred_paths = infer_focus_paths_from_query(user_text, None);
-
-    if let Some(summary) = build_analysis_focus_summary(user_text, &inferred_paths) {
-        ctx.record_system_event(
-            "adk_chat_analysis_focus",
-            Some(preview_text(user_text)),
-            Some("RUNNING"),
-            Some(summary.clone()),
-        );
-        blocks.push(summary);
-    }
-
-    let inferred_reports = load_local_file_reports(ctx, user_text, &inferred_paths, 4, 1600).await;
-    if !inferred_reports.is_empty() {
-        blocks.push(format!(
-            "Grounded local evidence:\n{}",
-            inferred_reports.join("\n\n===\n\n")
-        ));
-    }
-
-    if looks_like_capability_query(user_text) || looks_like_skill_query(user_text) {
-        match ctx.call_tool("skill_catalog", json!({ "query": user_text })).await {
-            Ok(result) => {
-                if let Some(summary) = format_skill_catalog_context(&result) {
-                    ctx.record_system_event(
-                        "adk_chat_skill_catalog_loaded",
-                        Some(preview_text(user_text)),
-                        Some("RUNNING"),
-                        Some(format!("count={}", result.as_array().map(|v| v.len()).unwrap_or(0))),
-                    );
-                    blocks.push(summary);
-                }
-            }
-            Err(err) => {
-                ctx.record_system_event(
-                    "adk_chat_skill_catalog_error",
-                    Some(preview_text(user_text)),
-                    Some("FOLLOWUP_NEEDED"),
-                    Some(err),
-                );
-            }
-        }
-    }
-
-    if looks_like_project_overview_query(user_text) {
-        match ctx.call_tool("project_overview", json!({ "limit": 5 })).await {
-            Ok(result) => {
-                let summary = result
-                    .get("summary")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .trim()
-                    .to_string();
-                let files: Vec<String> = result
-                    .get("files")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(Value::as_str)
-                    .map(|s| s.to_string())
-                    .collect();
-
-                if !summary.is_empty() || !files.is_empty() {
-                    ctx.record_system_event(
-                        "adk_chat_project_overview_loaded",
-                        Some(preview_text(user_text)),
-                        Some("RUNNING"),
-                        Some(format!("files={}", files.len())),
-                    );
-
-                    let mut overview = String::new();
-                    if !summary.is_empty() {
-                        overview.push_str("Project overview:\n");
-                        overview.push_str(&summary);
-                    }
-                    if !files.is_empty() {
-                        if !overview.is_empty() {
-                            overview.push_str("\n\n");
-                        }
-                        overview.push_str("Key files:\n");
-                        overview.push_str(&files.join("\n\n---\n\n"));
-                    }
-                    blocks.push(overview);
-                }
-            }
-            Err(err) => {
-                ctx.record_system_event(
-                    "adk_chat_project_overview_error",
-                    Some(preview_text(user_text)),
-                    Some("FOLLOWUP_NEEDED"),
-                    Some(err),
-                );
-            }
-        }
-    }
-
-    match ctx
-        .call_tool("codebase_search", json!({ "query": user_text, "limit": 3 }))
-        .await
-    {
-        Ok(results) => {
-            let entries: Vec<String> = results
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-                .map(|s| s.to_string())
-                .collect();
-
-            if !entries.is_empty() {
-                ctx.record_system_event(
-                    "adk_chat_code_context_loaded",
-                    Some(preview_text(user_text)),
-                    Some("RUNNING"),
-                    Some(format!("matches={}", entries.len())),
-                );
-                blocks.push(entries.join("\n\n---\n\n"));
-
-                let relevant_paths = extract_file_paths_from_reports(&entries);
-                let inspected_reports = load_local_file_reports(ctx, user_text, &relevant_paths, 3, 1400).await;
-                if !inspected_reports.is_empty() {
-                    blocks.push(format!(
-                        "Relevant local file excerpts:\n{}",
-                        inspected_reports.join("\n\n===\n\n")
-                    ));
-                }
-            }
-        }
-        Err(err) => {
-            ctx.record_system_event(
-                "adk_chat_code_context_error",
-                Some(preview_text(user_text)),
-                Some("FOLLOWUP_NEEDED"),
-                Some(err),
-            );
-        }
-    }
-
-    if blocks.is_empty() {
-        None
-    } else {
-        Some(blocks.join("\n\n===\n\n"))
     }
 }
 
@@ -1460,6 +893,106 @@ These bracket tags are internal only; never mention them in the final user-facin
         .unwrap_or_default()
 }
 
+/// Ask the LLM to classify what the user wants so we can route to the right path.
+/// Falls back to `Intent::General` if the LLM call fails or returns unparseable JSON.
+async fn understand_message(
+    ctx: &AgentContext,
+    user_text: &str,
+    context_block: Option<&str>,
+) -> MessageUnderstanding {
+    use crate::llm::call_prompt;
+
+    // Keyword-based fallback used when the LLM call fails or returns invalid JSON.
+    // This ensures basic cases still work without a running LLM.
+    let keyword_files = extract_file_references_from_text(user_text);
+    let keyword_intent = if !keyword_files.is_empty() {
+        Intent::LocalFile
+    } else if looks_like_project_overview_query(user_text) {
+        Intent::ProjectOverview
+    } else if looks_like_capability_query(user_text) || looks_like_skill_query(user_text) {
+        Intent::CapabilityQuery
+    } else if looks_like_analysis_request(user_text) && looks_like_code_query(user_text) {
+        Intent::CodeAnalysis
+    } else {
+        Intent::General
+    };
+
+    let default = MessageUnderstanding {
+        intent: keyword_intent,
+        is_correction: false,
+        target_files: keyword_files,
+    };
+
+    let context_section = context_block
+        .map(|c| {
+            let preview: String = c.chars().take(600).collect();
+            format!("\nRecent conversation (for context only):\n{preview}\n")
+        })
+        .unwrap_or_default();
+
+    let prompt = format!(
+        "You are a message intent classifier. Read the user message and output ONLY a JSON object — no markdown, no explanation.\n\
+\n\
+Fields:\n\
+- intent: one of \"local_file\" | \"project_overview\" | \"code_analysis\" | \"capability_query\" | \"correction\" | \"web_search\" | \"general\"\n\
+- is_correction: true if the user says the previous reply was wrong, outdated, or inaccurate\n\
+- target_files: array of file paths explicitly mentioned (empty array if none)\n\
+- summary: one short sentence describing what the user wants\n\
+\n\
+Intent rules:\n\
+- \"correction\": user indicates the previous reply was wrong/outdated/inaccurate — e.g. \"不是這樣\", \"應該不對\", \"你說錯了\", \"wrong\", \"not accurate\", \"that's outdated\", \"應該更新了\"\n\
+- \"local_file\": user names a specific file or asks to read/show/explain a particular file\n\
+- \"project_overview\": user asks about project structure, modules, architecture, or what files exist\n\
+- \"code_analysis\": user asks to analyze, explain, debug, trace, or understand code behaviour\n\
+- \"capability_query\": user asks what you can do, what skills or features you have\n\
+- \"web_search\": user asks about external information not found in the codebase\n\
+- \"general\": everything else\n\
+{context_section}\n\
+User message: {user_text}\n\
+\n\
+Output ONLY valid JSON."
+    );
+
+    let raw = match call_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), prompt).await {
+        Ok(r) => r,
+        Err(_) => return default,
+    };
+
+    // Strip markdown fences some models add
+    let json_str = raw
+        .trim()
+        .trim_start_matches("```json")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim();
+
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str) else {
+        return default;
+    };
+
+    let intent = match parsed.get("intent").and_then(|v| v.as_str()).unwrap_or("general") {
+        "local_file" => Intent::LocalFile,
+        "project_overview" => Intent::ProjectOverview,
+        "code_analysis" => Intent::CodeAnalysis,
+        "capability_query" => Intent::CapabilityQuery,
+        "correction" => Intent::Correction,
+        "web_search" => Intent::WebSearch,
+        _ => Intent::General,
+    };
+
+    let is_correction = parsed.get("is_correction").and_then(|v| v.as_bool()).unwrap_or(false)
+        || intent == Intent::Correction;
+
+    let target_files: Vec<String> = parsed
+        .get("target_files")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str()).map(|s| s.to_string()).collect())
+        .filter(|v: &Vec<String>| !v.is_empty())
+        .unwrap_or_else(|| extract_file_references_from_text(user_text));
+
+    MessageUnderstanding { intent, is_correction, target_files }
+}
+
 fn related_research_snippet(user_text: &str) -> Option<String> {
     let lower_text = user_text.to_lowercase();
     researcher::list_research()
@@ -1507,6 +1040,254 @@ fn format_search_results(results: &Value) -> Option<String> {
     }
 }
 
+/// Core routing function: given the LLM's understanding of the message, call the
+/// appropriate tools and produce a reply string.  Returns `None` when all paths
+/// fail so the caller can substitute the fallback reply.
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_by_understanding(
+    understanding: &MessageUnderstanding,
+    request: &ChatRequest,
+    ctx: &AgentContext,
+    context_block: Option<&str>,
+    client: &reqwest::Client,
+    llm: &LlmConfig,
+    persona: Option<&crate::persona::Persona>,
+) -> Option<String> {
+    let persona_name = persona.map(|p| p.name()).unwrap_or("Sirin");
+    let direct_answer = is_direct_answer_request(&request.user_text);
+
+    match &understanding.intent {
+        // ── Read a specific local file ──────────────────────────────────────
+        Intent::LocalFile => {
+            let path = understanding
+                .target_files
+                .first()
+                .cloned()
+                .or_else(|| extract_file_reference(&request.user_text))?;
+
+            match ctx
+                .call_tool("local_file_read", json!({ "path": path, "max_chars": 2200 }))
+                .await
+            {
+                Ok(result) => {
+                    let content = result.get("content").and_then(Value::as_str)?;
+                    let reply = format_local_file_reply(content)?;
+                    ctx.record_system_event(
+                        "adk_chat_direct_file_reply",
+                        Some(preview_text(&request.user_text)),
+                        Some("DONE"),
+                        Some(format!("path={path}")),
+                    );
+                    Some(reply)
+                }
+                Err(err) => {
+                    ctx.record_system_event(
+                        "adk_chat_direct_file_reply_error",
+                        Some(preview_text(&request.user_text)),
+                        Some("FOLLOWUP_NEEDED"),
+                        Some(err),
+                    );
+                    None
+                }
+            }
+        }
+
+        // ── User says the previous reply was wrong — re-examine ─────────────
+        Intent::Correction => {
+            let correction_ctx = context_block.map(|c| {
+                format!(
+                    "IMPORTANT: The user says the previous reply was inaccurate or outdated. \
+                     Re-examine the current state of the codebase and provide a correct, \
+                     up-to-date answer.\n\nPrevious conversation:\n{c}"
+                )
+            });
+            ctx.record_system_event(
+                "adk_chat_correction_react",
+                Some(preview_text(&request.user_text)),
+                Some("RUNNING"),
+                None,
+            );
+            let reply = react_loop(
+                ctx,
+                &request.user_text,
+                persona_name,
+                correction_ctx.as_deref().or(context_block),
+            )
+            .await;
+            if reply.trim().is_empty() { None } else { Some(reply) }
+        }
+
+        // ── Project structure / module overview ─────────────────────────────
+        Intent::ProjectOverview => {
+            let result = ctx
+                .call_tool("project_overview", json!({ "limit": 8 }))
+                .await
+                .ok()?;
+            let summary = result
+                .get("summary")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let files: Vec<String> = result
+                .get("files")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(Value::as_str)
+                        .map(|s| s.to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let reports = load_local_file_reports(ctx, &request.user_text, &files, 4, 1200).await;
+            ctx.record_system_event(
+                "adk_chat_project_overview_loaded",
+                Some(preview_text(&request.user_text)),
+                Some("RUNNING"),
+                Some(format!("files={}, inspected={}", files.len(), reports.len())),
+            );
+
+            // Build rich code context and let the LLM synthesise a natural reply
+            let mut code_ctx = String::new();
+            if !summary.is_empty() {
+                code_ctx.push_str("Project summary: ");
+                code_ctx.push_str(summary);
+                code_ctx.push_str("\n\n");
+            }
+            if !reports.is_empty() {
+                code_ctx.push_str("Key files inspected:\n");
+                for report in &reports {
+                    if let Some(line) = summarize_file_report_line(report) {
+                        code_ctx.push_str(&line);
+                        code_ctx.push('\n');
+                    }
+                }
+            }
+            if !files.is_empty() {
+                code_ctx.push_str("\nAll discovered files:\n");
+                for f in files.iter().take(8) {
+                    code_ctx.push_str(&format!("- {f}\n"));
+                }
+            }
+
+            generate_ai_reply(
+                client,
+                llm,
+                persona,
+                &request.user_text,
+                None,
+                None,
+                context_block,
+                None,
+                Some(&code_ctx),
+                direct_answer,
+                false,
+            )
+            .await
+            .ok()
+        }
+
+        // ── Code analysis — load files then reason with ReAct ───────────────
+        Intent::CodeAnalysis => {
+            let paths = if !understanding.target_files.is_empty() {
+                understanding.target_files.clone()
+            } else {
+                infer_focus_paths_from_query(&request.user_text, request.peer_id)
+            };
+
+            let reports = load_local_file_reports(ctx, &request.user_text, &paths, 4, 1600).await;
+
+            let combined_ctx = {
+                let mut parts: Vec<&str> = Vec::new();
+                let grounded;
+                if !reports.is_empty() {
+                    grounded = format!("Grounded local evidence:\n{}", reports.join("\n\n===\n\n"));
+                    parts.push(&grounded);
+                }
+                if let Some(c) = context_block {
+                    parts.push(c);
+                }
+                if parts.is_empty() { None } else { Some(parts.join("\n\n")) }
+            };
+
+            ctx.record_system_event(
+                "adk_chat_code_analysis_react",
+                Some(preview_text(&request.user_text)),
+                Some("RUNNING"),
+                Some(format!("files={}", reports.len())),
+            );
+
+            let reply = react_loop(ctx, &request.user_text, persona_name, combined_ctx.as_deref()).await;
+            if reply.trim().is_empty() { None } else { Some(reply) }
+        }
+
+        // ── What skills / capabilities does the agent have? ─────────────────
+        Intent::CapabilityQuery => {
+            match ctx
+                .call_tool("skill_catalog", json!({ "query": request.user_text }))
+                .await
+            {
+                Ok(catalog) => {
+                    let count = catalog.as_array().map(|v| v.len()).unwrap_or(0);
+                    ctx.record_system_event(
+                        "adk_chat_skill_catalog_reply",
+                        Some(preview_text(&request.user_text)),
+                        Some("DONE"),
+                        Some(format!("count={count}")),
+                    );
+                    format_skill_catalog_reply(&catalog)
+                }
+                Err(err) => {
+                    ctx.record_system_event(
+                        "adk_chat_skill_catalog_error",
+                        Some(preview_text(&request.user_text)),
+                        Some("FOLLOWUP_NEEDED"),
+                        Some(err),
+                    );
+                    None
+                }
+            }
+        }
+
+        // ── Web / external information — use ReAct search loop ──────────────
+        Intent::WebSearch => {
+            ctx.record_system_event(
+                "adk_chat_web_search_react",
+                Some(preview_text(&request.user_text)),
+                Some("RUNNING"),
+                None,
+            );
+            let reply = react_loop(ctx, &request.user_text, persona_name, context_block).await;
+            if reply.trim().is_empty() { None } else { Some(reply) }
+        }
+
+        // ── General conversation — linear LLM call with memory context ──────
+        Intent::General => {
+            let memory_ctx = resolve_memory_context(&request.user_text, ctx).await;
+            let search_ctx = if should_search(&request.user_text) {
+                resolve_search_context(request, ctx, client, llm, direct_answer).await
+            } else {
+                None
+            };
+
+            generate_ai_reply(
+                client,
+                llm,
+                persona,
+                &request.user_text,
+                request.execution_result.as_deref(),
+                search_ctx.as_deref(),
+                context_block,
+                memory_ctx.as_deref(),
+                None,
+                direct_answer,
+                false,
+            )
+            .await
+            .ok()
+        }
+    }
+}
+
 pub async fn run_chat_response_via_adk_with_tracker(
     request: ChatRequest,
     tracker: Option<TaskTracker>,
@@ -1546,11 +1327,9 @@ pub async fn run_chat_via_adk_with_tracker(
 
 /// Streaming variant for the GUI chat tab.
 ///
-/// For the linear (non-ReAct) path, tokens are delivered to `on_token` as they
-/// arrive so the caller can update the chat bubble progressively.
-/// For ReAct queries the function runs the standard blocking pipeline and
-/// returns the full reply without streaming (tokens are too interleaved with
-/// tool calls to stream meaningfully).
+/// All intents except `General` produce a complete reply (non-streaming) via
+/// `dispatch_by_understanding`.  Only `General` streams tokens progressively so
+/// the chat bubble updates as the LLM writes.
 pub async fn stream_chat_response<F>(request: ChatRequest, on_token: F) -> ChatAgentResponse
 where
     F: Fn(String) + Send + 'static,
@@ -1563,87 +1342,89 @@ where
         .with_metadata("agent", "chat_agent_stream");
 
     let persona = Persona::load().ok();
-    let direct_answer_request = is_direct_answer_request(&request.user_text);
-    let meta_request =
-        is_identity_question(&request.user_text) || is_code_access_question(&request.user_text);
+    let fallback_reply = request
+        .fallback_reply
+        .clone()
+        .unwrap_or_else(|| chinese_fallback_reply(&request.user_text, request.execution_result.as_deref()));
 
-    if request.execution_result.is_none() {
-        if is_simple_meta_request(&request.user_text) {
-            let reply = shortcut_reply(&request.user_text, persona.as_ref())
-                .unwrap_or_else(|| chinese_fallback_reply(&request.user_text, request.execution_result.as_deref()));
-            on_token(reply.clone());
-            return ChatAgentResponse {
-                reply,
-                ..Default::default()
-            };
-        }
-
-        if let Some(response) = maybe_build_direct_code_reply(&request.user_text, &ctx, request.peer_id).await {
-            on_token(response.reply.clone());
-            return response;
-        }
+    // ── Fast path: identity / meta ────────────────────────────────────────
+    if request.execution_result.is_none() && is_simple_meta_request(&request.user_text) {
+        let reply = shortcut_reply(&request.user_text, persona.as_ref())
+            .unwrap_or_else(|| fallback_reply.clone());
+        on_token(reply.clone());
+        return ChatAgentResponse { reply, ..Default::default() };
     }
 
-    let use_react = !direct_answer_request
-        && !meta_request
-        && request.execution_result.is_none()
-        && (should_search(&request.user_text) || looks_like_code_query(&request.user_text));
-
-    if use_react {
-        // ReAct path — interleaved tool calls; deliver complete reply at end.
-        let persona_name = persona.as_ref().map(|p| p.name()).unwrap_or("Sirin");
-        let context_block = resolve_context_block(&request, &ctx);
-        let reply = react_loop(&ctx, &request.user_text, persona_name, context_block.as_deref()).await;
-        let reply = if reply.trim().is_empty() {
-            chinese_fallback_reply(&request.user_text, request.execution_result.as_deref())
-        } else {
-            reply
-        };
-        return ChatAgentResponse {
-            reply,
-            used_search: true,
-            tools_used: ctx.tool_calls_snapshot(),
-            trace: ctx.event_trace_snapshot(),
-            ..Default::default()
-        };
-    }
-
-    // Linear path — gather context, build prompt, stream tokens.
     let client = Arc::clone(&ctx.http);
     let llm = Arc::clone(&ctx.llm);
     let context_block = resolve_context_block(&request, &ctx);
-    let search_ctx = resolve_search_context(
-        &request,
-        &ctx,
-        client.as_ref(),
-        llm.as_ref(),
-        direct_answer_request,
-    )
-    .await;
-    let memory_ctx = resolve_memory_context(&request.user_text, &ctx).await;
-    let code_ctx = resolve_code_context(&request.user_text, &ctx).await;
 
-    let prompt = build_ai_reply_prompt(
-        persona.as_ref(),
-        &request.user_text,
-        request.execution_result.as_deref(),
-        search_ctx.as_deref(),
-        context_block.as_deref(),
-        memory_ctx.as_deref(),
-        code_ctx.as_deref(),
-        direct_answer_request,
-        false,
-    );
-
-    let reply = call_prompt_stream(client.as_ref(), llm.as_ref(), prompt, on_token)
-        .await
-        .unwrap_or_default();
-
-    let reply = if reply.trim().is_empty() {
-        chinese_fallback_reply(&request.user_text, request.execution_result.as_deref())
+    // ── LLM understanding step ────────────────────────────────────────────
+    let understanding = if request.execution_result.is_none() {
+        let u = understand_message(&ctx, &request.user_text, context_block.as_deref()).await;
+        ctx.record_system_event(
+            "adk_chat_understood",
+            Some(preview_text(&request.user_text)),
+            Some("RUNNING"),
+            Some(format!(
+                "intent={:?} correction={} files={}",
+                u.intent, u.is_correction, u.target_files.len()
+            )),
+        );
+        u
     } else {
-        reply.trim().to_string()
+        MessageUnderstanding {
+            intent: Intent::General,
+            is_correction: false,
+            target_files: Vec::new(),
+        }
     };
+
+    // ── General intent: stream tokens; all others: block then deliver ─────
+    let reply = if understanding.intent == Intent::General {
+        let direct_answer_request = is_direct_answer_request(&request.user_text);
+        let memory_ctx = resolve_memory_context(&request.user_text, &ctx).await;
+        let search_ctx = if should_search(&request.user_text) {
+            resolve_search_context(&request, &ctx, client.as_ref(), llm.as_ref(), direct_answer_request).await
+        } else {
+            None
+        };
+
+        let prompt = build_ai_reply_prompt(
+            persona.as_ref(),
+            &request.user_text,
+            request.execution_result.as_deref(),
+            search_ctx.as_deref(),
+            context_block.as_deref(),
+            memory_ctx.as_deref(),
+            None,
+            direct_answer_request,
+            false,
+        );
+
+        call_prompt_stream(client.as_ref(), llm.as_ref(), prompt, on_token)
+            .await
+            .unwrap_or_default()
+    } else {
+        // Non-general intents: run dispatch (may call tools), deliver complete reply.
+        let complete = dispatch_by_understanding(
+            &understanding,
+            &request,
+            &ctx,
+            context_block.as_deref(),
+            client.as_ref(),
+            llm.as_ref(),
+            persona.as_ref(),
+        )
+        .await
+        .filter(|r| !r.trim().is_empty())
+        .unwrap_or_else(|| fallback_reply.clone());
+
+        on_token(complete.clone());
+        complete
+    };
+
+    let reply = if reply.trim().is_empty() { fallback_reply } else { reply.trim().to_string() };
 
     let tools_used = ctx.tool_calls_snapshot();
     ChatAgentResponse {
@@ -1757,26 +1538,6 @@ mod tests {
     }
 
     #[test]
-    fn classifies_grounded_intents() {
-        assert_eq!(
-            classify_grounded_intent("你可以幫我做什麼？", None),
-            Some(GroundedIntent::CapabilityInventory)
-        );
-        assert_eq!(
-            classify_grounded_intent("分析 skill", None),
-            Some(GroundedIntent::SkillArchitecture)
-        );
-        assert_eq!(
-            classify_grounded_intent("這個專案怎麼運作？", None),
-            Some(GroundedIntent::ProjectOverview)
-        );
-        assert_eq!(
-            classify_grounded_intent("幫我看 src/main.rs", None),
-            Some(GroundedIntent::LocalFile("src/main.rs".to_string()))
-        );
-    }
-
-    #[test]
     fn formats_direct_local_file_reply_with_excerpt() {
         let reply = format_local_file_reply(
             "File: src/main.rs\nKind: rust-source\nRole: App bootstrap\n\nExcerpt:\nfn main() {\n    println!(\"hi\");\n}"
@@ -1786,56 +1547,6 @@ mod tests {
         assert!(reply.contains("`src/main.rs`"));
         assert!(reply.contains("檔案片段"));
         assert!(reply.contains("println!"));
-    }
-
-    #[test]
-    fn formats_direct_project_overview_reply() {
-        let reply = format_project_overview_reply(
-            "Rust desktop assistant with ADK-style agents.",
-            &["src/main.rs".to_string(), "src/ui.rs".to_string()],
-            &["File: src/main.rs\nKind: rust-source\nRole: App bootstrap\n\nExcerpt:\nfn main() {}".to_string()],
-        )
-        .expect("should build an overview reply");
-
-        assert!(reply.contains("先查看幾個關鍵檔案"));
-        assert!(reply.contains("`src/main.rs`"));
-        assert!(reply.contains("ADK-style agents"));
-    }
-
-    #[test]
-    fn extracts_file_paths_from_search_reports() {
-        let paths = extract_file_paths_from_reports(&[
-            "File: src/main.rs\nKind: rust-source\nRole: App bootstrap".to_string(),
-            "File: src/ui.rs\nKind: rust-source\nRole: egui chat UI".to_string(),
-        ]);
-
-        assert_eq!(paths, vec!["src/main.rs".to_string(), "src/ui.rs".to_string()]);
-    }
-
-    #[test]
-    fn formats_contextual_file_explanation_reply() {
-        let reply = format_contextual_file_explanation_reply(&[
-            "File: src/main.rs\nKind: rust-source\nRole: App bootstrap\n\nExcerpt:\nfn main() {}".to_string(),
-            "File: src/ui.rs\nKind: rust-source\nRole: egui chat UI\n\nExcerpt:\nfn show_chat() {}".to_string(),
-        ])
-        .expect("should explain the referenced files");
-
-        assert!(reply.contains("你剛剛提到的那些檔案"));
-        assert!(reply.contains("`src/main.rs`"));
-        assert!(reply.contains("egui chat UI"));
-    }
-
-    #[test]
-    fn formats_skill_analysis_reply_from_local_evidence() {
-        let reply = format_skill_analysis_reply(&[
-            "File: src/skills.rs\nKind: rust-source\nRole: 技能與搜尋能力整合層。\n\nExcerpt:\npub fn list_skills() {}".to_string(),
-            "File: src/agents/planner_agent.rs\nKind: rust-source\nRole: planner agent，先判斷使用者意圖與可能的步驟。\n\nExcerpt:\nrecommended_skills".to_string(),
-        ])
-        .expect("should build a grounded skill analysis reply");
-
-        assert!(reply.contains("能力目錄"));
-        assert!(reply.contains("`src/skills.rs`"));
-        assert!(reply.contains("planner_agent.rs"));
     }
 
     #[test]
@@ -1853,34 +1564,6 @@ mod tests {
         assert!(reply.contains("`web_search`"));
     }
 
-    #[test]
-    fn formats_skill_catalog_context_from_real_definitions() {
-        let summary = format_skill_catalog_context(&json!([
-            {"id": "project_overview", "description": "整理專案架構"},
-            {"id": "local_file_read", "description": "讀取真實本地檔案內容"}
-        ]))
-        .expect("should build skill catalog context");
-
-        assert!(summary.contains("Relevant capability evidence"));
-        assert!(summary.contains("project_overview"));
-        assert!(summary.contains("讀取真實本地檔案內容"));
-    }
-
-    #[test]
-    fn formats_generic_grounded_analysis_reply_from_reports() {
-        let reply = format_grounded_analysis_reply(
-            "先分析這段 code 的問題",
-            &[
-                "File: src/agents/chat_agent.rs\nKind: rust-source\nRole: chat agent 路由與回答整合。\n\nExcerpt:\nfn run() {}".to_string(),
-                "File: src/memory.rs\nKind: rust-source\nRole: 記憶與本地檔案索引模組。\n\nExcerpt:\npub fn search_codebase() {}".to_string(),
-            ],
-        )
-        .expect("should build a grounded analysis reply");
-
-        assert!(reply.contains("問題範圍") || reply.contains("整理出的重點"));
-        assert!(reply.contains("`src/agents/chat_agent.rs`"));
-    }
-
     #[tokio::test]
     async fn end_to_end_project_question_returns_grounded_overview() {
         let response = run_chat_response_via_adk_with_tracker(
@@ -1896,9 +1579,8 @@ mod tests {
         .await;
 
         println!("overview reply:\n{}", response.reply);
-        assert!(response.reply.contains("專案概況"));
-        assert!(response.reply.contains("已檢查的核心檔案"));
-        assert!(response.used_code_context);
+        assert!(!response.reply.trim().is_empty(), "should return a non-empty overview");
+        assert!(response.used_code_context, "should have used code context tools");
     }
 
     #[tokio::test]
@@ -1951,9 +1633,12 @@ mod tests {
         .await;
 
         println!("follow-up reply:\n{}", second.reply);
-        assert!(second.reply.contains("你剛剛提到的那些檔案"));
-        assert!(second.reply.contains("`src/main.rs`") || second.reply.contains("`src/ui.rs`"));
-        assert!(second.used_code_context);
+        assert!(!second.reply.trim().is_empty(), "follow-up should return a non-empty reply");
+        // The LLM should reference at least one of the files mentioned in the prior context
+        assert!(
+            second.reply.contains("src/main.rs") || second.reply.contains("src/ui.rs") || second.used_code_context,
+            "follow-up should reference prior files or use code tools"
+        );
     }
 
     #[tokio::test]
@@ -1971,9 +1656,8 @@ mod tests {
         .await;
 
         println!("skill reply:\n{}", response.reply);
-        assert!(response.reply.contains("`src/skills.rs`"));
-        assert!(response.reply.contains("能力目錄") || response.reply.contains("routing 提示"));
-        assert!(response.used_code_context);
+        assert!(!response.reply.trim().is_empty(), "should return a non-empty skill analysis");
+        assert!(response.used_code_context, "should have used code context tools");
     }
 
     #[tokio::test]
@@ -2032,7 +1716,7 @@ mod tests {
         .await;
 
         println!("generic analysis reply:\n{}", response.reply);
-        assert!(response.reply.contains("`src/agents/chat_agent.rs`") || response.reply.contains("`src/memory.rs`"));
-        assert!(response.used_code_context);
+        assert!(!response.reply.trim().is_empty(), "should return a non-empty analysis");
+        assert!(response.used_code_context, "should have used code context tools");
     }
 }
