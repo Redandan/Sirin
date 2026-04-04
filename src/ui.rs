@@ -955,6 +955,8 @@ impl SirinApp {
                             context_block: None,
                             fallback_reply: None,
                             peer_id: Some(0),
+                            planner_intent_family: None,
+                            planner_skills: Vec::new(),
                         }
                     } else {
                         let routed = crate::agents::router_agent::run_router_via_adk(
@@ -979,6 +981,8 @@ impl SirinApp {
                                         context_block: None,
                                         fallback_reply: None,
                                         peer_id: Some(0),
+                                        planner_intent_family: None,
+                                        planner_skills: Vec::new(),
                                     })
                             }
                             Err(err) => {

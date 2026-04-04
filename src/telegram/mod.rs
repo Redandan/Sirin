@@ -365,6 +365,8 @@ async fn run_listener_once(
                         context_block: None,
                         fallback_reply: Some(reply_plan.fallback_reply),
                         peer_id: peer_bare_id,
+                        planner_intent_family: None,
+                        planner_skills: Vec::new(),
                     },
                     Some(tracker.clone()),
                 )

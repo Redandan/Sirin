@@ -11,7 +11,7 @@ use crate::persona::{Persona, TaskTracker};
 use crate::researcher;
 use crate::telegram::commands::{extract_search_query, should_search};
 use crate::telegram::language::{
-    chinese_fallback_reply, is_code_access_question, is_direct_answer_request,
+    chinese_fallback_reply, contains_cjk, is_code_access_question, is_direct_answer_request,
     is_identity_question,
 };
 use crate::telegram::llm::{build_ai_reply_prompt, generate_ai_reply};
@@ -27,6 +27,13 @@ pub struct ChatRequest {
     pub fallback_reply: Option<String>,
     #[serde(default)]
     pub peer_id: Option<i64>,
+    /// Intent family string forwarded by the Router from the Planner (snake_case).
+    /// Used to skip the LLM understanding step when the Planner already classified the intent.
+    #[serde(default)]
+    pub planner_intent_family: Option<String>,
+    /// Recommended skill IDs forwarded by the Router from the Planner.
+    #[serde(default)]
+    pub planner_skills: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -127,7 +134,7 @@ impl Agent for ChatAgent {
             // Ask a compact LLM call to classify what the user wants before
             // doing any tool calls.  This replaces brittle keyword matching.
             let understanding = if request.execution_result.is_none() {
-                let u = understand_message(ctx, &request.user_text, context_block.as_deref()).await;
+                let u = understand_message(ctx, &request.user_text, context_block.as_deref(), request.planner_intent_family.as_deref()).await;
                 ctx.record_system_event(
                     "adk_chat_understood",
                     Some(preview_text(&request.user_text)),
@@ -194,6 +201,42 @@ fn preview_text(text: &str) -> String {
     } else {
         head
     }
+}
+
+/// Returns true when the user just wants to *view* a file (no specific question
+/// about its contents), so a formatted excerpt is the right answer.
+/// Returns false when the user is asking *about* something in the file — e.g.
+/// "src/main.rs 裡的 main 函數做了什麼？" — in which case the LLM should read
+/// the file and answer the question directly.
+fn is_file_view_request(user_text: &str) -> bool {
+    let lower = user_text.trim().to_lowercase();
+
+    // Presence of any question / analysis word means the user wants an answer,
+    // not just a file dump.
+    let has_question = [
+        "什麼", "是啥", "怎麼", "如何", "為什麼", "哪裡", "問題", "分析", "解釋", "說明",
+        "用途", "作用", "幹嘛", "做什麼", "怎樣", "有沒有", "會不會",
+        "what", "how", "why", "where", "explain", "analyze", "describe", "problem", "issue",
+    ]
+    .iter()
+    .any(|q| lower.contains(q));
+
+    if has_question {
+        return false;
+    }
+
+    // Explicit "show / read" verbs with no question → view request.
+    let compact: String = lower.split_whitespace().collect::<String>();
+    compact.starts_with("幫我看")
+        || compact.starts_with("看一下")
+        || compact.starts_with("看看")
+        || compact.starts_with("讀取")
+        || compact.starts_with("show")
+        || compact.starts_with("read")
+        || compact.starts_with("open")
+        || compact.starts_with("cat")
+        // Bare "看 src/..." — just the verb followed immediately by a path
+        || (lower.trim_start().starts_with("看 ") && !has_question)
 }
 
 fn is_simple_meta_request(user_text: &str) -> bool {
@@ -398,17 +441,6 @@ fn infer_focus_paths_from_query(user_text: &str, peer_id: Option<i64>) -> Vec<St
         }
     }
 
-    if looks_like_analysis_request(user_text) && looks_like_code_query(user_text) {
-        for path in [
-            "src/agents/chat_agent.rs",
-            "src/agents/planner_agent.rs",
-            "src/memory.rs",
-            "src/ui.rs",
-        ] {
-            push_unique_path(&mut paths, path);
-        }
-    }
-
     if lower.contains("planner") {
         push_unique_path(&mut paths, "src/agents/planner_agent.rs");
     }
@@ -437,19 +469,33 @@ fn shortcut_reply(user_text: &str, persona: Option<&Persona>) -> Option<String> 
     }
 
     let persona_name = persona.map(|p| p.name()).unwrap_or("Sirin");
+    let use_chinese = contains_cjk(user_text);
     let mut parts = Vec::new();
 
     if asks_identity {
-        parts.push(format!(
-            "我是 {persona_name}，你的本地 AI 助手，會協助聊天、研究、任務追蹤，並分析這個專案。"
-        ));
+        if use_chinese {
+            parts.push(format!(
+                "我是 {persona_name}，你的本地 AI 助手，會協助聊天、研究、任務追蹤，並分析這個專案。"
+            ));
+        } else {
+            parts.push(format!(
+                "I'm {persona_name}, your local AI assistant. I help with chat, research, task tracking, and analysing this project's codebase."
+            ));
+        }
     }
 
     if asks_code_access {
-        parts.push(
-            "可以，我能真的查本地專案的程式碼與檔案。你可以直接說像 `幫我看 src/main.rs`、`解釋 src/ui.rs`、`這個專案是什麼架構`，我會根據實際檔案內容回覆，不只是模板答案。"
-                .to_string(),
-        );
+        if use_chinese {
+            parts.push(
+                "可以，我能真的查本地專案的程式碼與檔案。你可以直接說像 `幫我看 src/main.rs`、`解釋 src/ui.rs`、`這個專案是什麼架構`，我會根據實際檔案內容回覆，不只是模板答案。"
+                    .to_string(),
+            );
+        } else {
+            parts.push(
+                "Yes — I can read and analyse the actual local project files. Try: `show me src/main.rs`, `explain src/ui.rs`, or `what's the project architecture?`. I reply from real file content, not templates."
+                    .to_string(),
+            );
+        }
     }
 
     Some(parts.join(" "))
@@ -568,46 +614,62 @@ async fn load_local_file_reports(
     reports
 }
 
-fn format_skill_catalog_reply(catalog: &Value) -> Option<String> {
+/// Map a raw category string from skills.rs to a user-friendly display label.
+/// Unknown categories fall through with their raw name, so new categories in
+/// skills.rs automatically appear in the reply without any code change here.
+fn category_display_label(category: &str) -> &str {
+    match category {
+        "code-understanding" | "context-retrieval" => "理解 / 查詢程式碼",
+        "code-optimization" => "分析 / 修正 / 驗證",
+        "external-research" | "external" => "外部能力",
+        other => other,
+    }
+}
+
+fn format_skill_catalog_reply(catalog: &Value, user_text: &str) -> Option<String> {
     let skills = catalog.as_array()?;
     if skills.is_empty() {
         return None;
     }
 
-    let mut code_understanding = Vec::new();
-    let mut code_optimization = Vec::new();
-    let mut external = Vec::new();
+    // Group skill IDs by their actual category value (dynamic — no hardcoded enum).
+    // BTreeMap keeps groups in a stable alphabetical order.
+    let mut groups: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
 
     for skill in skills {
         let id = skill.get("id").and_then(Value::as_str).unwrap_or_default();
-        let category = skill
-            .get("category")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-
         if id.is_empty() {
             continue;
         }
-
-        match category {
-            "code-understanding" | "context-retrieval" => code_understanding.push(format!("`{id}`")),
-            "code-optimization" => code_optimization.push(format!("`{id}`")),
-            _ => external.push(format!("`{id}`")),
-        }
+        let category = skill
+            .get("category")
+            .and_then(Value::as_str)
+            .unwrap_or("other")
+            .to_string();
+        groups.entry(category).or_default().push(format!("`{id}`"));
     }
 
-    let mut lines = vec!["我目前在 `src/skills.rs` 裡有這些可用 skill：".to_string()];
-    if !code_understanding.is_empty() {
-        lines.push(format!("- 理解 / 查詢程式碼：{}", code_understanding.join("、")));
-    }
-    if !code_optimization.is_empty() {
-        lines.push(format!("- 分析 / 修正 / 驗證：{}", code_optimization.join("、")));
-    }
-    if !external.is_empty() {
-        lines.push(format!("- 外部能力：{}", external.join("、")));
-    }
+    let use_chinese = contains_cjk(user_text);
+    let sep = if use_chinese { "、" } else { ", " };
 
-    lines.push("如果你要，我可以直接示範其中一個，例如：`幫我看 src/main.rs`、`先分析再改`、`改完幫我測一下`。".to_string());
+    let (header, footer) = if use_chinese {
+        (
+            "我目前在 `src/skills.rs` 裡有這些可用 skill：".to_string(),
+            "如果你要，我可以直接示範其中一個，例如：`幫我看 src/main.rs`、`先分析再改`、`改完幫我測一下`。".to_string(),
+        )
+    } else {
+        (
+            "Here are the available skills defined in `src/skills.rs`:".to_string(),
+            "I can demonstrate any of these — try: `show me src/main.rs`, `analyse then fix`, or `run tests after changes`.".to_string(),
+        )
+    };
+
+    let mut lines = vec![header];
+    for (category, ids) in &groups {
+        lines.push(format!("- {}: {}", category_display_label(category), ids.join(sep)));
+    }
+    lines.push(footer);
     Some(lines.join("\n"))
 }
 
@@ -884,26 +946,37 @@ These bracket tags are internal only; never mention them in the final user-facin
         "{history}\nSystem: You have used all available tool turns. \
          Provide a final [ANSWER] now based on what you know.\n"
     );
-    call_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), final_prompt)
+    let final_raw = call_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), final_prompt)
         .await
-        .unwrap_or_default()
+        .unwrap_or_default();
+    // Use [ANSWER] tag if present; otherwise use the whole response rather than
+    // returning an empty string that silently falls through to the fallback reply.
+    final_raw
         .lines()
         .find(|l| l.trim().starts_with("[ANSWER]"))
         .and_then(|l| l.trim().strip_prefix("[ANSWER]").map(|s| s.trim().to_string()))
-        .unwrap_or_default()
+        .unwrap_or_else(|| final_raw.trim().to_string())
 }
 
 /// Ask the LLM to classify what the user wants so we can route to the right path.
-/// Falls back to `Intent::General` if the LLM call fails or returns unparseable JSON.
+///
+/// Fast paths (no LLM call):
+///   1. Keyword classification gives a confident non-General result → use it directly.
+///   2. Planner already forwarded a non-general intent_family → trust it.
+///
+/// Only falls through to a real LLM call for ambiguous `General` messages where
+/// neither keywords nor the Planner produced a clear classification.
 async fn understand_message(
     ctx: &AgentContext,
     user_text: &str,
     context_block: Option<&str>,
+    planner_intent: Option<&str>,
 ) -> MessageUnderstanding {
     use crate::llm::call_prompt;
 
-    // Keyword-based fallback used when the LLM call fails or returns invalid JSON.
-    // This ensures basic cases still work without a running LLM.
+    // ── Fast path 1: keyword classification ──────────────────────────────
+    // Exact token matches are cheaper and reliable for structured inputs like
+    // file paths or capability phrases.  Only fall through to LLM for General.
     let keyword_files = extract_file_references_from_text(user_text);
     let keyword_intent = if !keyword_files.is_empty() {
         Intent::LocalFile
@@ -917,10 +990,40 @@ async fn understand_message(
         Intent::General
     };
 
+    if keyword_intent != Intent::General {
+        return MessageUnderstanding {
+            intent: keyword_intent,
+            is_correction: false,
+            target_files: keyword_files,
+        };
+    }
+
+    // ── Fast path 2: planner forwarded a non-general family ──────────────
+    // The Planner already ran an LLM classification; re-use it instead of
+    // paying for another LLM round-trip.
+    if let Some(family) = planner_intent {
+        let mapped = match family {
+            "local_file" => Some(Intent::LocalFile),
+            "project_overview" => Some(Intent::ProjectOverview),
+            "code_analysis" | "skill_architecture" => Some(Intent::CodeAnalysis),
+            "capability" => Some(Intent::CapabilityQuery),
+            "research" => Some(Intent::WebSearch),
+            _ => None,
+        };
+        if let Some(intent) = mapped {
+            return MessageUnderstanding {
+                intent,
+                is_correction: false,
+                target_files: Vec::new(),
+            };
+        }
+    }
+
+    // ── Keyword fallback for LLM failure ─────────────────────────────────
     let default = MessageUnderstanding {
-        intent: keyword_intent,
+        intent: Intent::General,
         is_correction: false,
-        target_files: keyword_files,
+        target_files: Vec::new(),
     };
 
     let context_section = context_block
@@ -1058,6 +1161,11 @@ async fn dispatch_by_understanding(
 
     match &understanding.intent {
         // ── Read a specific local file ──────────────────────────────────────
+        //
+        // Two sub-cases:
+        //  • View request ("幫我看 src/main.rs") → formatted excerpt template.
+        //  • Question about the file ("src/main.rs 裡的 main 函數做了什麼？")
+        //    → pass file contents to LLM so it can actually answer the question.
         Intent::LocalFile => {
             let path = understanding
                 .target_files
@@ -1071,14 +1179,46 @@ async fn dispatch_by_understanding(
             {
                 Ok(result) => {
                     let content = result.get("content").and_then(Value::as_str)?;
-                    let reply = format_local_file_reply(content)?;
-                    ctx.record_system_event(
-                        "adk_chat_direct_file_reply",
-                        Some(preview_text(&request.user_text)),
-                        Some("DONE"),
-                        Some(format!("path={path}")),
-                    );
-                    Some(reply)
+
+                    if is_file_view_request(&request.user_text) {
+                        // User just wants to see the file — use the concise template.
+                        let reply = format_local_file_reply(content)?;
+                        ctx.record_system_event(
+                            "adk_chat_direct_file_reply",
+                            Some(preview_text(&request.user_text)),
+                            Some("DONE"),
+                            Some(format!("path={path}")),
+                        );
+                        Some(reply)
+                    } else {
+                        // User has a specific question — let LLM answer using the file.
+                        let excerpt = extract_excerpt_block(content).unwrap_or(content);
+                        let fence = code_fence_language(&path);
+                        let code_ctx =
+                            format!("Contents of `{path}`:\n```{fence}\n{excerpt}\n```");
+                        ctx.record_system_event(
+                            "adk_chat_file_question_llm",
+                            Some(preview_text(&request.user_text)),
+                            Some("RUNNING"),
+                            Some(format!("path={path}")),
+                        );
+                        generate_ai_reply(
+                            client,
+                            llm,
+                            persona,
+                            &request.user_text,
+                            None,
+                            None,
+                            context_block,
+                            None,
+                            Some(&code_ctx),
+                            direct_answer,
+                            false,
+                        )
+                        .await
+                        .ok()
+                        .or_else(|| format_local_file_reply(content))
+                    }
                 }
                 Err(err) => {
                     ctx.record_system_event(
@@ -1169,6 +1309,7 @@ async fn dispatch_by_understanding(
                 }
             }
 
+            let memory_ctx = resolve_memory_context(&request.user_text, ctx).await;
             generate_ai_reply(
                 client,
                 llm,
@@ -1177,7 +1318,7 @@ async fn dispatch_by_understanding(
                 None,
                 None,
                 context_block,
-                None,
+                memory_ctx.as_deref(),
                 Some(&code_ctx),
                 direct_answer,
                 false,
@@ -1196,6 +1337,7 @@ async fn dispatch_by_understanding(
 
             let reports = load_local_file_reports(ctx, &request.user_text, &paths, 4, 1600).await;
 
+            let memory_ctx = resolve_memory_context(&request.user_text, ctx).await;
             let combined_ctx = {
                 let mut parts: Vec<&str> = Vec::new();
                 let grounded;
@@ -1205,6 +1347,9 @@ async fn dispatch_by_understanding(
                 }
                 if let Some(c) = context_block {
                     parts.push(c);
+                }
+                if let Some(ref m) = memory_ctx {
+                    parts.push(m);
                 }
                 if parts.is_empty() { None } else { Some(parts.join("\n\n")) }
             };
@@ -1221,6 +1366,12 @@ async fn dispatch_by_understanding(
         }
 
         // ── What skills / capabilities does the agent have? ─────────────────
+        //
+        // If the user asked for an explicit skill list ("你有啥skill"), use the
+        // fixed template which is clear and concise.
+        // For any other capability question ("你能幹嘛", "你是幹什麼的") pass the
+        // catalog to the LLM so it can explain in natural language suited to the
+        // question being asked.
         Intent::CapabilityQuery => {
             match ctx
                 .call_tool("skill_catalog", json!({ "query": request.user_text }))
@@ -1234,7 +1385,44 @@ async fn dispatch_by_understanding(
                         Some("DONE"),
                         Some(format!("count={count}")),
                     );
-                    format_skill_catalog_reply(&catalog)
+
+                    // Explicit skill-list request → use the concise template.
+                    if is_skill_inventory_request(&request.user_text) {
+                        format_skill_catalog_reply(&catalog, &request.user_text)
+                    } else {
+                        // General capability / identity question → let LLM synthesise.
+                        let skill_lines: Vec<String> = catalog
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|s| {
+                                let id = s.get("id").and_then(|v| v.as_str())?;
+                                let desc = s.get("description").and_then(|v| v.as_str()).unwrap_or("");
+                                Some(format!("- {id}: {desc}"))
+                            })
+                            .collect();
+                        let catalog_ctx = format!(
+                            "Available skills and capabilities:\n{}",
+                            skill_lines.join("\n")
+                        );
+                        generate_ai_reply(
+                            client,
+                            llm,
+                            persona,
+                            &request.user_text,
+                            None,
+                            None,
+                            context_block,
+                            None,
+                            Some(&catalog_ctx),
+                            direct_answer,
+                            false,
+                        )
+                        .await
+                        .ok()
+                        // Graceful degradation: if LLM is unavailable, fall back to the template.
+                        .or_else(|| format_skill_catalog_reply(&catalog, &request.user_text))
+                    }
                 }
                 Err(err) => {
                     ctx.record_system_event(
@@ -1361,7 +1549,7 @@ where
 
     // ── LLM understanding step ────────────────────────────────────────────
     let understanding = if request.execution_result.is_none() {
-        let u = understand_message(&ctx, &request.user_text, context_block.as_deref()).await;
+        let u = understand_message(&ctx, &request.user_text, context_block.as_deref(), request.planner_intent_family.as_deref()).await;
         ctx.record_system_event(
             "adk_chat_understood",
             Some(preview_text(&request.user_text)),
@@ -1556,7 +1744,7 @@ mod tests {
             {"id": "local_file_read", "category": "code-understanding"},
             {"id": "grounded_fix", "category": "code-optimization"},
             {"id": "web_search", "category": "external-research"}
-        ]))
+        ]), "有哪些 skills？")
         .expect("should build a skill inventory reply");
 
         assert!(reply.contains("`project_overview`"));
@@ -1573,6 +1761,8 @@ mod tests {
                 context_block: None,
                 fallback_reply: None,
                 peer_id: Some(unique_peer_id()),
+                planner_intent_family: None,
+                planner_skills: Vec::new(),
             },
             None,
         )
@@ -1592,6 +1782,8 @@ mod tests {
                 context_block: None,
                 fallback_reply: None,
                 peer_id: Some(unique_peer_id()),
+                planner_intent_family: None,
+                planner_skills: Vec::new(),
             },
             None,
         )
@@ -1613,6 +1805,8 @@ mod tests {
                 context_block: None,
                 fallback_reply: None,
                 peer_id,
+                planner_intent_family: None,
+                planner_skills: Vec::new(),
             },
             None,
         )
@@ -1627,6 +1821,8 @@ mod tests {
                 context_block: None,
                 fallback_reply: None,
                 peer_id,
+                planner_intent_family: None,
+                planner_skills: Vec::new(),
             },
             None,
         )
@@ -1650,6 +1846,8 @@ mod tests {
                 context_block: None,
                 fallback_reply: None,
                 peer_id: Some(unique_peer_id()),
+                planner_intent_family: None,
+                planner_skills: Vec::new(),
             },
             None,
         )
@@ -1669,6 +1867,8 @@ mod tests {
                 context_block: None,
                 fallback_reply: None,
                 peer_id: Some(unique_peer_id()),
+                planner_intent_family: None,
+                planner_skills: Vec::new(),
             },
             None,
         )
@@ -1690,15 +1890,16 @@ mod tests {
                 context_block: None,
                 fallback_reply: None,
                 peer_id: Some(unique_peer_id()),
+                planner_intent_family: None,
+                planner_skills: Vec::new(),
             },
             None,
         )
         .await;
 
         println!("capability reply:\n{}", response.reply);
-        assert!(response.reply.contains("`project_overview`"));
-        assert!(response.reply.contains("`code_change_planning`"));
-        assert!(response.used_code_context);
+        assert!(!response.reply.trim().is_empty(), "should return a non-empty capability reply");
+        assert!(response.used_code_context, "should have used skill_catalog or code tools");
     }
 
     #[tokio::test]
@@ -1710,6 +1911,8 @@ mod tests {
                 context_block: None,
                 fallback_reply: None,
                 peer_id: Some(unique_peer_id()),
+                planner_intent_family: None,
+                planner_skills: Vec::new(),
             },
             None,
         )

@@ -93,6 +93,14 @@ impl Agent for RouterAgent {
                 Some(format!("route={route_name}; {plan_summary}; skills={skill_summary}")),
             );
 
+            let planner_family_str = plan
+                .as_ref()
+                .map(|p| intent_family_as_str(&p.intent_family).to_string());
+            let planner_skills = plan
+                .as_ref()
+                .map(|p| p.recommended_skills.clone())
+                .unwrap_or_default();
+
             match route {
                 RouteTarget::Research => {
                     let (topic, url) = detect_research_intent(&request.user_text)
@@ -101,17 +109,22 @@ impl Agent for RouterAgent {
                         "route": route,
                         "planner_summary": plan_summary,
                         "intent_family": plan.as_ref().map(|p| p.intent_family.clone()).unwrap_or(IntentFamily::GeneralChat),
-                        "recommended_skills": plan.as_ref().map(|p| p.recommended_skills.clone()).unwrap_or_default(),
+                        "recommended_skills": &planner_skills,
                         "chat_request": {
                             "user_text": request.user_text,
+                            // Language-neutral execution result — the LLM in chat_agent will
+                            // render this in the same language as the user's message.
                             "execution_result": Some(format!(
-                                "執行結果：已啟動背景調研任務「{}{}」，完成後結果將記錄在任務板。",
+                                "Background research task launched: \"{}{}\". \
+                                 Results will be recorded in the task board upon completion.",
                                 topic,
-                                url.as_ref().map(|v| format!(" ({v})")).unwrap_or_default()
+                                url.as_ref().map(|v| format!(" ({})", v)).unwrap_or_default()
                             )),
                             "context_block": request.context_block,
                             "fallback_reply": request.fallback_reply,
                             "peer_id": request.peer_id,
+                            "planner_intent_family": planner_family_str,
+                            "planner_skills": &planner_skills,
                         },
                         "research_request": ResearchRequest { topic, url }
                     }))
@@ -120,18 +133,32 @@ impl Agent for RouterAgent {
                     "route": route,
                     "planner_summary": plan_summary,
                     "intent_family": plan.as_ref().map(|p| p.intent_family.clone()).unwrap_or(IntentFamily::GeneralChat),
-                    "recommended_skills": plan.as_ref().map(|p| p.recommended_skills.clone()).unwrap_or_default(),
+                    "recommended_skills": &planner_skills,
                     "chat_request": ChatRequest {
                         user_text: request.user_text,
                         execution_result: request.execution_result,
                         context_block: request.context_block,
                         fallback_reply: request.fallback_reply,
                         peer_id: request.peer_id,
+                        planner_intent_family: planner_family_str,
+                        planner_skills,
                     }
                 })),
             }
         }
         .boxed()
+    }
+}
+
+fn intent_family_as_str(family: &IntentFamily) -> &'static str {
+    match family {
+        IntentFamily::Capability => "capability",
+        IntentFamily::LocalFile => "local_file",
+        IntentFamily::ProjectOverview => "project_overview",
+        IntentFamily::SkillArchitecture => "skill_architecture",
+        IntentFamily::CodeAnalysis => "code_analysis",
+        IntentFamily::Research => "research",
+        IntentFamily::GeneralChat => "general_chat",
     }
 }
 
