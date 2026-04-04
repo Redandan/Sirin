@@ -238,43 +238,45 @@ fn candidate_priority(entry: &TaskEntry) -> f64 {
 /// Build the prompt text sent to the local LLM.
 fn build_prompt(persona: &Persona, entries: &[&TaskEntry]) -> String {
     let objectives = format!(
-        "Persona: {} (v{})\nDescription: {}\nROI threshold: ${:.2} USD",
+        "Persona: {} (v{})\nDescription: {}\nObjectives: {}",
         persona.name(),
         persona.version,
         persona.description,
-        persona.roi_thresholds.min_usd_to_call_remote_llm
+        persona.objectives.join("; "),
     );
 
     let tasks: Vec<String> = entries
         .iter()
         .map(|e| {
             format!(
-                "- [{}] event={} status={} profit={:.2}",
+                "- [{}] event={} status={} content={}",
                 e.timestamp,
                 e.event,
                 e.status.as_deref().unwrap_or("?"),
-                e.estimated_profit_usd.unwrap_or(0.0),
+                e.message_preview.as_deref().unwrap_or("(no content)"),
             )
         })
         .collect();
 
     format!(
-        r#"You are an assistant reviewing pending tasks for an AI trading agent.
+        r#"You are a follow-up assistant for {persona}, an AI personal agent.
 
 {objectives}
 
-The following tasks are currently in PENDING or FOLLOWING state and may require a follow-up action:
+The following user tasks are currently in PENDING or FOLLOWING state:
 
-{}
+{task_list}
 
-Based on the persona objectives above, decide whether any of these tasks need immediate follow-up attention.
+Decide whether any of these tasks need immediate follow-up action (e.g. the user is waiting for a result, a deadline is approaching, or a research task is stalled).
 
 Reply with exactly one of:
 - "FOLLOWUP_NEEDED" — if at least one task requires immediate follow-up.
-- "NO_FOLLOWUP" — if none of the tasks require immediate attention.
+- "NO_FOLLOWUP" — if none of the tasks require attention right now.
 
 Reply with only one of those two tokens and nothing else."#,
-        tasks.join("\n")
+        persona = persona.name(),
+        objectives = objectives,
+        task_list = tasks.join("\n"),
     )
 }
 

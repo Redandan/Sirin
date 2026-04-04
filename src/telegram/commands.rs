@@ -19,6 +19,36 @@ pub fn message_preview(text: &str, max_chars: usize) -> String {
     }
 }
 
+/// Use the local LLM to extract a concise search query from a natural-language message.
+///
+/// Falls back to the raw text (truncated) if the LLM call fails.
+pub async fn extract_search_query(
+    client: &reqwest::Client,
+    llm: &crate::llm::LlmConfig,
+    text: &str,
+) -> String {
+    let prompt = format!(
+        "Extract a concise web search query (at most 8 words) from the user message below.\n\
+Return only the search query text. No explanation, no quotes, no punctuation at the end.\n\
+\n\
+User message: {text}\n\
+\n\
+Search query:"
+    );
+
+    match crate::llm::call_prompt(client, llm, prompt).await {
+        Ok(q) => {
+            let cleaned = q.trim().trim_matches('"').trim_matches('\'').trim().to_string();
+            if cleaned.is_empty() {
+                text.chars().take(100).collect()
+            } else {
+                cleaned
+            }
+        }
+        Err(_) => text.chars().take(100).collect(),
+    }
+}
+
 /// Returns `true` when the message looks like a question that could benefit
 /// from a web search.
 pub fn should_search(text: &str) -> bool {

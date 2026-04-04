@@ -37,7 +37,7 @@ use crate::researcher;
 use crate::skills::ddg_search;
 use crate::telegram_auth::TelegramAuthState;
 
-use commands::{detect_research_intent, execute_user_request, message_preview, should_search};
+use commands::{detect_research_intent, execute_user_request, extract_search_query, message_preview, should_search};
 use config::{require_login, session_path, TelegramConfig, AUTH_INPUT_TIMEOUT_SECS};
 use language::{chinese_fallback_reply, contains_cjk, is_direct_answer_request, is_mixed_language_reply};
 use llm::generate_ai_reply;
@@ -309,6 +309,7 @@ async fn run_listener_once(
 
         let persona = Persona::load().ok();
         let persona_name = persona.as_ref().map(|p| p.name()).unwrap_or("Sirin");
+        let peer_bare_id = Some(message.peer_id().bare_id());
         let mut should_record_ai_decision = false;
 
         if cfg.auto_reply_enabled {
@@ -367,8 +368,8 @@ async fn run_listener_once(
                 .replace("{ack_prefix}", ack_prefix)
                 .replace("{compliance}", compliance);
 
-            // Load recent conversation context.
-            let context_block: Option<String> = match load_recent_context(5) {
+            // Load recent conversation context (per-peer, not global).
+            let context_block: Option<String> = match load_recent_context(5, peer_bare_id) {
                 Ok(entries) if !entries.is_empty() => {
                     let formatted = entries
                         .iter()
@@ -386,7 +387,7 @@ async fn run_listener_once(
 
             // Perform web search when the message looks like a question.
             let search_context: Option<String> = if !direct_answer_request && should_search(&text) {
-                let query = text.chars().take(100).collect::<String>();
+                let query = extract_search_query(&llm_client, &llm, &text).await;
                 eprintln!("[telegram] Searching web for: {query}");
                 match ddg_search(&query).await {
                     Ok(results) if !results.is_empty() => {
@@ -512,7 +513,7 @@ async fn run_listener_once(
                 eprintln!("[telegram] Auto-reply sent (AI path, group reply)");
             }
 
-            if let Err(e) = append_context(&text, &reply_for_context) {
+            if let Err(e) = append_context(&text, &reply_for_context, peer_bare_id) {
                 eprintln!("[telegram] Failed to save context: {e}");
             }
         } else if cfg.debug_updates {

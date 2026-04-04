@@ -157,16 +157,20 @@ pub async fn search_memory(
 
 // ── Simple JSONL conversation context ─────────────────────────────────────────
 
-fn context_log_path() -> std::path::PathBuf {
+fn context_log_path(peer_id: Option<i64>) -> std::path::PathBuf {
+    let filename = match peer_id {
+        Some(id) => format!("sirin_context_{id}.jsonl"),
+        None => "sirin_context.jsonl".to_string(),
+    };
     if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
         return std::path::Path::new(&local_app_data)
             .join("Sirin")
             .join("tracking")
-            .join("sirin_context.jsonl");
+            .join(&filename);
     }
     std::path::Path::new("data")
         .join("tracking")
-        .join("sirin_context.jsonl")
+        .join(&filename)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,12 +180,13 @@ pub struct ContextEntry {
     pub assistant_reply: String,
 }
 
-/// Append a conversation turn to the context log.
+/// Append a conversation turn to the context log for a specific peer.
 pub fn append_context(
     user_msg: &str,
     assistant_reply: &str,
+    peer_id: Option<i64>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let path = context_log_path();
+    let path = context_log_path(peer_id);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -196,11 +201,12 @@ pub fn append_context(
     Ok(())
 }
 
-/// Load the most recent `limit` context entries.
+/// Load the most recent `limit` context entries for a specific peer.
 pub fn load_recent_context(
     limit: usize,
+    peer_id: Option<i64>,
 ) -> Result<Vec<ContextEntry>, Box<dyn std::error::Error + Send + Sync>> {
-    let path = context_log_path();
+    let path = context_log_path(peer_id);
     if !path.exists() {
         return Ok(Vec::new());
     }
@@ -223,9 +229,9 @@ pub fn load_recent_context(
     Ok(ring.into_iter().collect())
 }
 
-/// Truncate the context log (wipe all history).
-pub fn clear_context() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let path = context_log_path();
+/// Truncate the context log for a specific peer (wipe all history).
+pub fn clear_context(peer_id: Option<i64>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let path = context_log_path(peer_id);
     if path.exists() {
         fs::write(&path, b"")?;
     }
