@@ -12,6 +12,7 @@ Sirin 是一個純 Rust 桌面 AI 代理。後端 Tokio 背景任務處理 Teleg
 
 - **GUI**：egui / eframe（原生 Rust，無瀏覽器）
 - **後端**：Rust + Tokio（非同步背景任務）
+- **Agent Runtime**：ADK-RUST 風格 `Agent / Context / Tool / Runner` 分層（`src/adk/`, `src/agents/`），已支援 `research → summarize → task` 多步驟 workflow
 - **Telegram**：grammers-client（MTProto）
 - **LLM**：Ollama 或 LM Studio（本機模型）
 - **記憶**：JSONL 全文索引（`memory_store` / `memory_search`，零外部依賴）
@@ -83,9 +84,11 @@ TASK_LOG_MAX_LINES=2000        # task.jsonl 上限行數
 | 路徑 | 說明 |
 |------|------|
 | `src/main.rs` | 程式入口，啟動 Tokio runtime 與 egui 視窗 |
+| `src/adk/` | ADK-RUST 核心：`Agent`、`Context`、`ToolRegistry`、`AgentRuntime` |
+| `src/agents/` | Sirin 的 agent 實作（目前已接上 planner / router / chat / research / follow-up） |
 | `src/ui.rs` | egui App（四個 tab：任務板、調研、Telegram、對話）|
 | `src/log_buffer.rs` | 全域 log 環形緩衝，供 GUI 底部 Log 面板讀取 |
-| `src/telegram/` | Telegram listener、AI 回覆、語言修正 |
+| `src/telegram/` | Telegram listener、handler/reply 分層、AI 回覆、語言修正 |
 | `src/followup.rs` | LLM follow-up worker |
 | `src/researcher.rs` | 多階段背景調研 pipeline |
 | `src/llm.rs` | 共用 LLM 呼叫層（Ollama / LM Studio）|

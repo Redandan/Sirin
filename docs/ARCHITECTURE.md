@@ -6,22 +6,38 @@
 
 Sirin 是一個**單一 Rust binary**，整合 egui 原生 GUI 與 Tokio 非同步後端。沒有 WebView、沒有 Node.js、沒有 IPC 序列化層。
 
+目前已加入 **ADK-RUST 風格的 agent layer**，把舊有流程逐步收斂到：
+- `src/adk/`：`Agent` / `AgentContext` / `ToolRegistry` / `AgentRuntime`
+- `src/agents/`：具體 agent（目前 `planner_agent`、`router_agent`、`chat_agent`、`research_agent`、`followup_agent`）
+- 舊模組如 `researcher.rs`、`followup.rs` 先保留，作為被 agent 封裝的執行引擎
+
 ```
-┌─────────────────────────────────────────────┐
-│               sirin.exe（單一進程）           │
-│                                             │
-│  ┌──────────────┐   直接呼叫   ┌──────────┐ │
-│  │  egui GUI    │ ←─────────→ │  共享狀態 │ │
-│  │  (主執行緒)   │             │  Arc/Mutex│ │
-│  └──────────────┘             └──────────┘ │
-│                                     ↑       │
-│  ┌──────────────────────────────────┘       │
-│  │  Tokio 背景任務（spawn）                  │
-│  │  - telegram::run_listener                │
-│  │  - followup::run_worker                  │
-│  │  - background_loop（heartbeat）          │
-│  └──────────────────────────────────────────│
-└─────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│                    sirin.exe（單一進程）                  │
+│                                                          │
+│  ┌──────────────┐      ┌──────────────────────────────┐  │
+│  │ UI / Telegram│ ───→ │ ADK Runtime                  │  │
+│  │ adapters      │      │ - AgentRuntime              │  │
+│  └──────────────┘      │ - AgentContext              │  │
+│                         │ - ToolRegistry              │  │
+│                         └──────────────┬──────────────┘  │
+│                                        │                 │
+│                         ┌──────────────▼──────────────┐  │
+│                         │ Agents                      │  │
+│                         │ - planner_agent             │  │
+│                         │ - router_agent              │  │
+│                         │ - chat_agent                │  │
+│                         │ - research_agent            │  │
+│                         │ - followup_agent            │  │
+│                         └──────────────┬──────────────┘  │
+│                                        │                 │
+│  ┌─────────────────────────────────────▼──────────────┐  │
+│  │ Legacy execution modules                           │  │
+│  │ - researcher::run_research                         │  │
+│  │ - followup::run_worker                             │  │
+│  │ - llm / memory / skills / persona / telegram       │  │
+│  └────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────┘
 ```
 
 ## 2. 執行緒模型
@@ -58,11 +74,13 @@ Chat tab 透過 `std::sync::mpsc` channel 從 Tokio 任務接收 LLM 回覆。
 - telegram、researcher、followup 模組均使用 `sirin_log!` 取代 `eprintln!`
 
 ### `src/telegram/`
-拆分為四個子模組：
+目前已拆分為較清楚的子模組：
 
 | 子模組 | 內容 |
 |--------|------|
-| `mod.rs` | 連線、授權流程、主訊息迴圈 |
+| `mod.rs` | 連線、授權流程、主 listener loop |
+| `handler.rs` | 訊息規劃：研究意圖、指令執行、fallback reply plan |
+| `reply.rs` | 回覆送出、startup message、context/task 記錄 |
 | `llm.rs` | Prompt 建構、AI 回覆生成 |
 | `commands.rs` | 指令解析（任務建立、調研意圖偵測、LLM 搜尋 query 提取）|
 | `language.rs` | CJK 偵測、混語判斷、中文保底回覆 |
@@ -151,9 +169,12 @@ Chat tab 透過 `std::sync::mpsc` channel 從 Tokio 任務接收 LLM 回覆。
 ### 調研任務閉環
 ```
 使用者發「調研 <主題>」
+  → PlannerAgent 產生 workflow plan
+  → RouterAgent 路由到 ResearchAgent
   → spawn researcher::run_research（背景）
   → 立即回覆「已啟動調研任務」
-  → 研究完成後 → 透過 Telegram 回報摘要
+  → 研究完成後 → 產生摘要並寫入 task log（`research_summary_ready`）
+  → 透過 Telegram 回報摘要
   → 後續對話可引用研究結果
 ```
 

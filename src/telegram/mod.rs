@@ -16,10 +16,12 @@
 //! The Telegram session is stored in `data/sirin.session` so that re-runs do
 //! not require re-authentication.
 
-mod commands;
+pub(crate) mod commands;
 mod config;
-mod language;
-mod llm;
+mod handler;
+pub(crate) mod language;
+pub(crate) mod llm;
+mod reply;
 
 use std::sync::Arc;
 
@@ -31,20 +33,13 @@ use grammers_client::update::Update;
 use grammers_session::storages::SqliteSession;
 use grammers_session::types::{PeerId, PeerKind};
 
-use crate::memory::{
-    append_context, ensure_codebase_index, load_recent_context, looks_like_code_query,
-    memory_search, search_codebase,
-};
+use crate::memory::ensure_codebase_index;
 use crate::sirin_log;
-use crate::persona::{Persona, TaskEntry, TaskTracker};
+use crate::persona::{Persona, TaskTracker};
 use crate::researcher;
-use crate::skills::ddg_search;
 use crate::telegram_auth::TelegramAuthState;
 
-use commands::{detect_research_intent, execute_user_request, extract_search_query, message_preview, should_search};
 use config::{require_login, session_path, TelegramConfig, AUTH_INPUT_TIMEOUT_SECS};
-use language::{chinese_fallback_reply, contains_cjk, is_direct_answer_request, is_mixed_language_reply};
-use llm::generate_ai_reply;
 use crate::llm::LlmConfig;
 
 // ── Auth helper ───────────────────────────────────────────────────────────────
@@ -117,7 +112,6 @@ async fn run_listener_once(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let cfg = TelegramConfig::from_env()?;
     let llm = LlmConfig::from_env();
-    let llm_client = reqwest::Client::new();
 
     if let Err(e) = ensure_codebase_index() {
         sirin_log!("[telegram] Codebase index refresh skipped: {e}");
@@ -162,6 +156,7 @@ async fn run_listener_once(
         .await;
 
     sirin_log!("[telegram] Connected to Telegram");
+    auth.set_connected();
     let backend_name = llm.backend_name();
     sirin_log!(
         "[telegram] AI reply backend={} model='{}'",
@@ -175,59 +170,7 @@ async fn run_listener_once(
     }
     let listener_started_at = Utc::now();
 
-    // Send startup notification to self
-    if let Some(ref msg) = cfg.startup_msg {
-        sirin_log!("[telegram] TG_STARTUP_MSG is enabled");
-        match client.get_me().await {
-            Ok(me) => {
-                sirin_log!(
-                    "[telegram] Authorized as id={}, username={:?}, name='{} {}'",
-                    me.id().bare_id(),
-                    me.username(),
-                    me.first_name().unwrap_or(""),
-                    me.last_name().unwrap_or("")
-                );
-                let target_peer_ref = if let Some(ref username) = cfg.startup_target {
-                    match client.resolve_username(username).await {
-                        Ok(Some(peer)) => peer.to_ref().await,
-                        Ok(None) => {
-                            sirin_log!("[telegram] TG_STARTUP_TARGET '@{username}' not found");
-                            None
-                        }
-                        Err(e) => {
-                            sirin_log!("[telegram] Failed to resolve TG_STARTUP_TARGET '@{username}': {e}");
-                            None
-                        }
-                    }
-                } else {
-                    me.to_ref().await
-                };
-
-                if let Some(peer_ref) = target_peer_ref {
-                    let text = msg
-                        .replace("{time}", &Utc::now().format("%Y-%m-%d %H:%M UTC").to_string());
-                    if let Err(e) = client.send_message(peer_ref, text.as_str()).await {
-                        sirin_log!("[telegram] Failed to send startup message: {e}");
-                    } else {
-                        if let Some(ref username) = cfg.startup_target {
-                            sirin_log!("[telegram] Startup message sent to @{username}");
-                        } else {
-                            sirin_log!("[telegram] Startup message sent to self");
-                        }
-                    }
-                } else {
-                    if cfg.startup_target.is_some() {
-                        sirin_log!("[telegram] Could not resolve startup target peer_ref, startup message skipped");
-                    } else {
-                        sirin_log!("[telegram] Could not resolve self peer_ref, startup message skipped");
-                    }
-                }
-            }
-            Err(e) => sirin_log!("[telegram] get_me failed: {e}"),
-        }
-    } else {
-        sirin_log!("[telegram] TG_STARTUP_MSG is not set, startup message disabled");
-    }
+    reply::send_startup_message(&client, &cfg).await;
 
     loop {
         let update = match updates.next().await {
@@ -332,251 +275,72 @@ async fn run_listener_once(
                 })
                 .unwrap_or(("自然、禮貌、專業", "已收到你的訊息。", "我會按照你的要求處理。"));
 
-            // Check for research intent before normal command dispatch.
-            let research_execution: Option<String> = if let Some((topic, url)) = detect_research_intent(&text) {
-                let topic_clone = topic.clone();
-                let url_clone = url.clone();
-                // Capture peer and a new client handle so the background task can
-                // notify the user when research completes.
-                let notify_peer = message.peer_ref().await;
-                let notify_handle = handle.clone();
-                tokio::spawn(async move {
-                    let task = researcher::run_research(topic_clone, url_clone).await;
-                    sirin_log!("[researcher] Background task '{}' completed with status={:?}", task.id, task.status);
-                    if task.status == researcher::ResearchStatus::Done {
-                        if let (Some(ref report), Some(peer)) = (&task.final_report, notify_peer) {
-                            let summary: String = report.chars().take(500).collect();
-                            let msg = format!("✅ 調研完成：{}\n\n{}", task.topic, summary);
-                            let notify_client = Client::new(notify_handle);
-                            if let Err(e) = notify_client.send_message(peer, msg.as_str()).await {
-                                sirin_log!("[researcher] Failed to notify user of completion: {e}");
-                            } else {
-                                sirin_log!("[researcher] Research completion notified to user");
-                            }
-                        }
-                    }
-                });
-                let url_hint = url.map(|u| format!(" ({})", u)).unwrap_or_default();
-                Some(format!(
-                    "執行結果：已啟動背景調研任務「{}{}」，完成後結果將記錄在任務板。",
-                    topic, url_hint
-                ))
-            } else {
-                None
-            };
-
-            let execution_result = research_execution
-                .or_else(|| execute_user_request(&text, &tracker, persona_name));
-            should_record_ai_decision = execution_result.is_some();
-            let direct_answer_request = is_direct_answer_request(&text);
-            let fallback_reply = cfg
-                .auto_reply_text
-                .replace("{persona}", persona_name)
-                .replace("{voice}", voice)
-                .replace("{ack_prefix}", ack_prefix)
-                .replace("{compliance}", compliance);
-
-            // Load recent conversation context (per-peer, not global).
-            let context_block: Option<String> = match load_recent_context(5, peer_bare_id) {
-                Ok(entries) if !entries.is_empty() => {
-                    let formatted = entries
-                        .iter()
-                        .map(|e| format!("User: {}\nAssistant: {}", e.user_msg, e.assistant_reply))
-                        .collect::<Vec<_>>()
-                        .join("\n---\n");
-                    Some(formatted)
-                }
-                Ok(_) => None,
-                Err(e) => {
-                    sirin_log!("[telegram] Failed to load context: {e}");
-                    None
-                }
-            };
-
-            // Perform web search when the message looks like a question.
-            let search_context: Option<String> = if !direct_answer_request && should_search(&text) {
-                let query = extract_search_query(&llm_client, &llm, &text).await;
-                sirin_log!("[telegram] Searching web for: {query}");
-                match ddg_search(&query).await {
-                    Ok(results) if !results.is_empty() => {
-                        let formatted = results
-                            .iter()
-                            .take(3)
-                            .map(|r| format!("- {}: {} ({})", r.title, r.snippet, r.url))
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        sirin_log!("[telegram] Web search returned {} result(s)", results.len().min(3));
-                        Some(formatted)
-                    }
-                    Ok(_) => {
-                        sirin_log!("[telegram] Web search returned no results");
-                        None
-                    }
-                    Err(e) => {
-                        sirin_log!("[telegram] Web search failed: {e}");
-                        None
-                    }
-                }
-            } else {
-                None
-            };
-
-            // Inject relevant past research / memory into the reply prompt.
-            let memory_context: Option<String> = {
-                let mut blocks = Vec::new();
-
-                match memory_search(&text, 2) {
-                    Ok(matches) if !matches.is_empty() => {
-                        blocks.push(matches.join("\n\n---\n\n"));
-                    }
-                    Ok(_) => {}
-                    Err(e) => sirin_log!("[telegram] Memory search failed: {e}"),
-                }
-
-                let lower_text = text.to_lowercase();
-                match researcher::list_research() {
-                    Ok(tasks) => {
-                        if let Some(report) = tasks
-                            .into_iter()
-                            .filter(|t| t.status == researcher::ResearchStatus::Done)
-                            .filter(|t| {
-                                t.topic
-                                    .to_lowercase()
-                                    .split_whitespace()
-                                    .filter(|w| w.len() > 2)
-                                    .any(|word| lower_text.contains(word))
-                            })
-                            .filter_map(|t| t.final_report)
-                            .next()
-                        {
-                            let snippet: String = report.chars().take(600).collect();
-                            blocks.push(format!("Recent related research:\n{snippet}"));
-                        }
-                    }
-                    Err(e) => {
-                        sirin_log!("[telegram] Failed to load research memory: {e}");
-                    }
-                }
-
-                if blocks.is_empty() {
-                    None
-                } else {
-                    Some(blocks.join("\n\n---\n\n"))
-                }
-            };
-            if memory_context.is_some() {
-                sirin_log!("[telegram] Injecting memory context into reply prompt");
-            }
-
-            let code_context: Option<String> = if looks_like_code_query(&text) {
-                match search_codebase(&text, 3) {
-                    Ok(matches) if !matches.is_empty() => Some(matches.join("\n\n---\n\n")),
-                    Ok(_) => None,
-                    Err(e) => {
-                        sirin_log!("[telegram] Codebase search failed: {e}");
-                        None
-                    }
-                }
-            } else {
-                None
-            };
-            if code_context.is_some() {
-                sirin_log!("[telegram] Injecting project codebase context into reply prompt");
-            }
-
-            let ai_reply = match generate_ai_reply(
-                &llm_client,
-                &llm,
-                persona.as_ref(),
+            let reply_plan = handler::prepare_reply_plan(
                 &text,
-                execution_result.as_deref(),
-                search_context.as_deref(),
-                context_block.as_deref(),
-                memory_context.as_deref(),
-                code_context.as_deref(),
-                direct_answer_request,
-                false,
-            )
-            .await
-            {
-                Ok(v) if !v.trim().is_empty() => v,
-                Ok(_) => fallback_reply.clone(),
-                Err(e) => {
-                    sirin_log!("[telegram] AI reply generation failed, fallback to template: {e}");
-                    fallback_reply.clone()
-                }
-            };
-
-            let final_reply = if contains_cjk(&text)
-                && (!contains_cjk(&ai_reply) || is_mixed_language_reply(&ai_reply))
-            {
-                sirin_log!("[telegram] AI reply language mismatch/mixed output: retrying with forced Traditional Chinese");
-                match generate_ai_reply(
-                    &llm_client,
-                    &llm,
-                    persona.as_ref(),
-                    &text,
-                    execution_result.as_deref(),
-                    search_context.as_deref(),
-                    context_block.as_deref(),
-                    memory_context.as_deref(),
-                    code_context.as_deref(),
-                    direct_answer_request,
-                    true,
-                )
-                .await
-                {
-                    Ok(v) if !v.trim().is_empty() && contains_cjk(&v) => v,
-                    Ok(_) | Err(_) => chinese_fallback_reply(&text, execution_result.as_deref()),
-                }
-            } else {
-                ai_reply
-            };
-
-            let reply_for_context = final_reply.clone();
-
-            if is_private {
-                if let Some(peer_ref) = message.peer_ref().await {
-                    match client.send_message(peer_ref, final_reply.as_str()).await {
-                        Ok(_) => sirin_log!("[telegram] Auto-reply sent (AI path, private direct message)"),
-                        Err(e) => {
-                            sirin_log!("[telegram] Private direct send failed, fallback to reply: {e}");
-                            if let Err(reply_err) = message.reply(final_reply).await {
-                                sirin_log!("[telegram] Failed to auto-reply: {reply_err}");
-                            } else {
-                                sirin_log!("[telegram] Auto-reply sent (AI path, private reply fallback)");
+                persona_name,
+                voice,
+                ack_prefix,
+                compliance,
+                tracker,
+                &cfg,
+                |topic, url| {
+                    let adk_tracker = tracker.clone();
+                    let notify_handle = handle.clone();
+                    let notify_peer_fut = message.peer_ref();
+                    async move {
+                        let notify_peer = notify_peer_fut.await;
+                        tokio::spawn(async move {
+                            let task = crate::agents::research_agent::run_research_via_adk_with_tracker(
+                                topic,
+                                url,
+                                Some(adk_tracker),
+                            )
+                            .await;
+                            sirin_log!("[researcher] Background task '{}' completed with status={:?}", task.id, task.status);
+                            if task.status == researcher::ResearchStatus::Done {
+                                if let (Some(ref report), Some(peer)) = (&task.final_report, notify_peer) {
+                                    let summary: String = report.chars().take(500).collect();
+                                    let msg = format!("✅ 調研完成：{}\n\n{}", task.topic, summary);
+                                    let notify_client = Client::new(notify_handle);
+                                    if let Err(e) = notify_client.send_message(peer, msg.as_str()).await {
+                                        sirin_log!("[researcher] Failed to notify user of completion: {e}");
+                                    } else {
+                                        sirin_log!("[researcher] Research completion notified to user");
+                                    }
+                                }
                             }
-                        }
+                        });
                     }
-                } else if let Err(reply_err) = message.reply(final_reply).await {
-                    sirin_log!("[telegram] Private peer_ref missing and reply failed: {reply_err}");
-                } else {
-                    sirin_log!("[telegram] Private peer_ref missing, sent via reply fallback");
-                }
-            } else if let Err(e) = message.reply(final_reply).await {
-                sirin_log!("[telegram] Failed to auto-reply: {e}");
-            } else {
-                sirin_log!("[telegram] Auto-reply sent (AI path, group reply)");
-            }
+                },
+            )
+            .await;
+            should_record_ai_decision = reply_plan.should_record_ai_decision;
 
-            if let Err(e) = append_context(&text, &reply_for_context, peer_bare_id) {
-                sirin_log!("[telegram] Failed to save context: {e}");
-            }
+            let final_reply = crate::agents::chat_agent::run_chat_via_adk_with_tracker(
+                crate::agents::chat_agent::ChatRequest {
+                    user_text: text.clone(),
+                    execution_result: reply_plan.execution_result.clone(),
+                    context_block: None,
+                    fallback_reply: Some(reply_plan.fallback_reply),
+                    peer_id: peer_bare_id,
+                },
+                Some(tracker.clone()),
+            )
+            .await;
+
+            reply::send_final_reply(&client, &message, is_private, final_reply.as_str()).await;
+            reply::persist_reply_context(&text, &final_reply, peer_bare_id);
         } else if cfg.debug_updates {
             sirin_log!("[telegram] skip: auto-reply disabled by TG_AUTO_REPLY");
         }
 
-        if should_record_ai_decision {
-            let entry = TaskEntry::ai_decision(
-                persona_name,
-                Some(message_preview(&text, 140)),
-            );
-            if let Err(e) = tracker.record(&entry) {
-                sirin_log!("[telegram] Failed to record task entry: {e}");
-            }
-        }
+        reply::record_ai_decision_if_needed(
+            tracker,
+            persona_name,
+            &text,
+            should_record_ai_decision,
+        );
     }
-    Ok(())
 }
 
 /// Public entry-point: wraps `run_listener_once` with automatic retry so that

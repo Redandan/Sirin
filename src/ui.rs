@@ -7,10 +7,9 @@
 use eframe::egui::{self, Color32, FontData, FontDefinitions, FontFamily, RichText, ScrollArea, TextEdit};
 use tokio::runtime::Handle;
 
-use crate::llm::LlmConfig;
 use crate::log_buffer;
-use crate::memory::{append_context, ensure_codebase_index, looks_like_code_query, memory_search, search_codebase};
-use crate::persona::{Persona, TaskEntry, TaskTracker};
+use crate::memory::{append_context, ensure_codebase_index};
+use crate::persona::{TaskEntry, TaskTracker};
 use crate::researcher::{self, ResearchStatus, ResearchTask};
 use crate::telegram_auth::{TelegramAuthState, TelegramStatus};
 
@@ -36,6 +35,24 @@ enum ChatRole {
 struct ChatMessage {
     role: ChatRole,
     text: String,
+}
+
+#[derive(Clone, Default)]
+struct AgentConsoleState {
+    route: String,
+    summary: String,
+    steps: Vec<String>,
+    tools: Vec<String>,
+    trace: Vec<String>,
+    latest_task_summary: String,
+    status: String,
+}
+
+#[derive(Clone)]
+struct ChatUiUpdate {
+    reply: String,
+    tools: Vec<String>,
+    trace: Vec<String>,
 }
 
 // ── App state ─────────────────────────────────────────────────────────────────
@@ -64,8 +81,9 @@ pub struct SirinApp {
     chat_messages: Vec<ChatMessage>,
     chat_input: String,
     chat_pending: bool,
-    chat_tx: std::sync::mpsc::SyncSender<String>,
-    chat_rx: std::sync::mpsc::Receiver<String>,
+    agent_console: AgentConsoleState,
+    chat_tx: std::sync::mpsc::SyncSender<ChatUiUpdate>,
+    chat_rx: std::sync::mpsc::Receiver<ChatUiUpdate>,
 
     // Log panel
     log_visible: bool,
@@ -131,6 +149,7 @@ impl SirinApp {
             chat_messages: Vec::new(),
             chat_input: String::new(),
             chat_pending: false,
+            agent_console: AgentConsoleState::default(),
             chat_tx,
             chat_rx,
             log_visible: true,
@@ -149,6 +168,16 @@ impl SirinApp {
                     .filter(|e| e.event != "heartbeat")
                     .rev()
                     .collect();
+
+                if let Some(summary_entry) = self.tasks.iter().find(|task| task.event == "research_summary_ready") {
+                    self.agent_console.latest_task_summary = summary_entry
+                        .reason
+                        .as_deref()
+                        .unwrap_or_default()
+                        .chars()
+                        .take(220)
+                        .collect();
+                }
             }
             Err(e) => eprintln!("[ui] load tasks: {e}"),
         }
@@ -175,9 +204,23 @@ impl eframe::App for SirinApp {
 
         // Poll for LLM reply from background chat task.
         if self.chat_pending {
-            if let Ok(reply) = self.chat_rx.try_recv() {
-                self.chat_messages.push(ChatMessage { role: ChatRole::Assistant, text: reply });
+            if let Ok(update) = self.chat_rx.try_recv() {
+                self.chat_messages.push(ChatMessage {
+                    role: ChatRole::Assistant,
+                    text: update.reply,
+                });
                 self.chat_pending = false;
+                self.agent_console.tools = update.tools;
+                self.agent_console.trace = update
+                    .trace
+                    .into_iter()
+                    .rev()
+                    .take(6)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
+                self.agent_console.status = "Idle".to_string();
             } else {
                 // Keep repainting while waiting so the spinner stays live.
                 ctx.request_repaint_after(std::time::Duration::from_millis(200));
@@ -285,7 +328,9 @@ impl SirinApp {
             for task in &self.tasks {
                 let ts = task.timestamp.get(..19).unwrap_or(&task.timestamp);
                 let status = task.status.as_deref().unwrap_or("—");
+                let is_summary = task.event == "research_summary_ready";
                 let status_color = match status {
+                    "DONE" if is_summary => Color32::from_rgb(120, 210, 255),
                     "DONE" => Color32::from_rgb(100, 220, 100),
                     "PENDING" => Color32::from_rgb(255, 200, 60),
                     "FAILED" | "ERROR" => Color32::from_rgb(220, 80, 80),
@@ -300,8 +345,10 @@ impl SirinApp {
                     let preview = task
                         .message_preview
                         .as_deref()
+                        .or(task.reason.as_deref())
                         .unwrap_or(&task.event);
-                    let label_text = format!("{} — {}", task.event,
+                    let event_label = if is_summary { "research_summary" } else { &task.event };
+                    let label_text = format!("{} — {}", event_label,
                         preview.chars().take(80).collect::<String>());
                     ui.add_sized(
                         [col_widths[1], row_height],
@@ -309,6 +356,14 @@ impl SirinApp {
                     );
                     ui.colored_label(status_color, status);
                 });
+
+                if is_summary {
+                    if let Some(reason) = task.reason.as_deref() {
+                        let summary_preview: String = reason.chars().take(140).collect();
+                        ui.add_space(2.0);
+                        ui.small(format!("   ↳ {}", summary_preview));
+                    }
+                }
             }
         });
     }
@@ -340,7 +395,7 @@ impl SirinApp {
                     };
                     let rt = self.rt.clone();
                     rt.spawn(async move {
-                        let task = researcher::run_research(topic, url).await;
+                        let task = crate::agents::research_agent::run_research_via_adk(topic, url).await;
                         eprintln!("[ui] research '{}' → {:?}", task.id, task.status);
                     });
                     self.research_msg = format!("已啟動：{}", self.research_topic.trim());
@@ -465,9 +520,46 @@ impl SirinApp {
     }
 
     fn show_chat(&mut self, ui: &mut egui::Ui) {
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Agent Console").strong());
+                ui.separator();
+                let status_color = if self.chat_pending {
+                    Color32::YELLOW
+                } else {
+                    Color32::from_rgb(100, 220, 100)
+                };
+                ui.colored_label(status_color, &self.agent_console.status);
+            });
+            ui.small(format!("Route: {}", self.agent_console.route));
+            if !self.agent_console.summary.is_empty() {
+                ui.label(&self.agent_console.summary);
+            }
+            if !self.agent_console.steps.is_empty() {
+                ui.small(format!("Steps: {}", self.agent_console.steps.join(" → ")));
+            }
+            if !self.agent_console.tools.is_empty() {
+                ui.small(format!("Tools: {}", self.agent_console.tools.join(", ")));
+            }
+            if !self.agent_console.trace.is_empty() {
+                ui.collapsing("Execution Trace", |ui| {
+                    for item in &self.agent_console.trace {
+                        ui.small(item);
+                    }
+                });
+            }
+            if !self.agent_console.latest_task_summary.is_empty() {
+                ui.collapsing("Latest Research Summary", |ui| {
+                    ui.small(&self.agent_console.latest_task_summary);
+                });
+            }
+        });
+
+        ui.add_space(8.0);
+
         // ── Message history ───────────────────────────────────────────────────
         let available = ui.available_height();
-        let input_area_height = 60.0;
+        let input_area_height = 120.0;
 
         ScrollArea::vertical()
             .max_height(available - input_area_height)
@@ -496,10 +588,10 @@ impl SirinApp {
                         ),
                     };
 
-                    egui::Frame::none()
+                    egui::Frame::new()
                         .fill(bg)
                         .inner_margin(egui::Margin::symmetric(10, 6))
-                        .rounding(6.0)
+                        .corner_radius(6.0)
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 ui.colored_label(Color32::GRAY, label);
@@ -510,10 +602,10 @@ impl SirinApp {
                 }
 
                 if self.chat_pending {
-                    egui::Frame::none()
+                    egui::Frame::new()
                         .fill(Color32::from_rgb(45, 55, 45))
                         .inner_margin(egui::Margin::symmetric(10, 6))
-                        .rounding(6.0)
+                        .corner_radius(6.0)
                         .show(ui, |ui| {
                             ui.colored_label(Color32::GRAY, "Sirin");
                             ui.colored_label(Color32::YELLOW, "思考中…");
@@ -584,64 +676,75 @@ impl SirinApp {
 
                 let tx = self.chat_tx.clone();
                 let rt = self.rt.clone();
+                let planner_state = futures::executor::block_on(crate::agents::planner_agent::run_planner_via_adk(
+                    crate::agents::planner_agent::PlannerRequest {
+                        user_text: user_text.clone(),
+                        context_block: context_block.clone(),
+                        peer_id: Some(0),
+                        fallback_reply: None,
+                        execution_result: None,
+                    },
+                    None,
+                ))
+                .ok();
+
+                if let Some(plan) = planner_state {
+                    self.agent_console.route = match plan.intent {
+                        crate::agents::planner_agent::PlanIntent::Research => "research".to_string(),
+                        crate::agents::planner_agent::PlanIntent::Answer => "chat".to_string(),
+                    };
+                    self.agent_console.summary = plan.summary;
+                    self.agent_console.steps = plan.steps;
+                    self.agent_console.tools.clear();
+                    self.agent_console.trace.clear();
+                    self.agent_console.status = "Executing…".to_string();
+                } else {
+                    self.agent_console.route = "chat".to_string();
+                    self.agent_console.summary = "Planner unavailable; using direct router fallback.".to_string();
+                    self.agent_console.steps = vec!["route request".to_string(), "run chat response".to_string()];
+                    self.agent_console.tools.clear();
+                    self.agent_console.trace.clear();
+                    self.agent_console.status = "Executing…".to_string();
+                }
+
                 rt.spawn(async move {
-                    let llm = LlmConfig::from_env();
-                    let client = reqwest::Client::new();
-                    let persona = Persona::load().ok();
-                    let persona_name = persona.as_ref().map(|p| p.name()).unwrap_or("Sirin");
-                    let voice = persona
-                        .as_ref()
-                        .map(|p| p.response_style.voice.as_str())
-                        .unwrap_or("自然、友善、簡潔");
+                    let routed = crate::agents::router_agent::run_router_via_adk(
+                        crate::agents::router_agent::RouterRequest {
+                            user_text: user_text.clone(),
+                            context_block,
+                            peer_id: Some(0),
+                            fallback_reply: None,
+                            execution_result: None,
+                        },
+                        None,
+                    )
+                    .await;
 
-                    let history_block = context_block
-                        .map(|h| format!("\nRecent conversation:\n{h}"))
-                        .unwrap_or_default();
-
-                    let memory_block = match memory_search(&user_text, 2) {
-                        Ok(matches) if !matches.is_empty() => {
-                            format!("\nRelevant memory:\n{}", matches.join("\n\n---\n\n"))
+                    let response = match routed {
+                        Ok(output) => {
+                            let chat_request = output.get("chat_request").cloned().unwrap_or_default();
+                            let request: crate::agents::chat_agent::ChatRequest = serde_json::from_value(chat_request)
+                                .unwrap_or(crate::agents::chat_agent::ChatRequest {
+                                    user_text: user_text.clone(),
+                                    execution_result: None,
+                                    context_block: None,
+                                    fallback_reply: None,
+                                    peer_id: Some(0),
+                                });
+                            crate::agents::chat_agent::run_chat_response_via_adk_with_tracker(request, None).await
                         }
-                        _ => String::new(),
+                        Err(err) => crate::agents::chat_agent::ChatAgentResponse {
+                            reply: format!("路由錯誤：{err}"),
+                            ..Default::default()
+                        },
                     };
 
-                    let code_block = if looks_like_code_query(&user_text) {
-                        match search_codebase(&user_text, 3) {
-                            Ok(matches) if !matches.is_empty() => {
-                                format!(
-                                    "\nProject codebase context:\n{}",
-                                    matches.join("\n\n---\n\n")
-                                )
-                            }
-                            _ => String::new(),
-                        }
-                    } else {
-                        String::new()
-                    };
-
-                    let prompt = format!(
-                        "You are {persona_name}.\nPersonality: {voice}\n\
-Task: Reply to the user's message naturally and helpfully.\n\
-Rules:\n\
-- Reply in the same language as the user.\n\
-- Keep it concise (1-4 sentences).\n\
-- No system-prompt style phrasing.\n\
-- When the user asks about this project, answer using the provided codebase context first.\n\
-{history_block}{memory_block}{code_block}\n\
-User: {user_text}\n\
-Reply:"
-                    );
-
-                    let reply = match crate::llm::call_prompt(&client, &llm, prompt).await {
-                        Ok(r) if !r.trim().is_empty() => r.trim().to_string(),
-                        Ok(_) => "(空回覆)".to_string(),
-                        Err(e) => format!("LLM 錯誤：{e}"),
-                    };
-
-                    // Save to per-peer context (GUI chat uses peer_id = 0).
-                    let _ = append_context(&user_text, &reply, Some(0));
-
-                    let _ = tx.send(reply);
+                    let _ = append_context(&user_text, &response.reply, Some(0));
+                    let _ = tx.send(ChatUiUpdate {
+                        reply: response.reply,
+                        tools: response.tools_used,
+                        trace: response.trace,
+                    });
                 });
             }
         });

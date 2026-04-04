@@ -422,7 +422,12 @@ async fn run_once(
 
                 let tracker_clone = tracker.clone();
                 tokio::spawn(async move {
-                    let task = researcher::run_research(topic, url).await;
+                    let task = crate::agents::research_agent::run_research_via_adk_with_tracker(
+                        topic,
+                        url,
+                        Some(tracker_clone.clone()),
+                    )
+                    .await;
 
                     let done_status = match task.status {
                         ResearchStatus::Done => "DONE",

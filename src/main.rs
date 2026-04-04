@@ -3,6 +3,8 @@
 mod followup;
 mod llm;
 mod log_buffer;
+mod adk;
+mod agents;
 mod memory;
 mod persona;
 mod researcher;
@@ -72,7 +74,9 @@ fn main() {
             telegram::run_listener(tg_tracker, tg_auth_spawn).await;
         });
 
-        rt.spawn(followup::run_worker(tracker.clone()));
+        rt.spawn(agents::followup_agent::run_followup_worker_via_adk(
+            tracker.clone(),
+        ));
     }
 
     // Keep the runtime alive by storing it; drop order matters on Windows.
