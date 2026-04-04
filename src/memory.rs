@@ -1,161 +1,154 @@
-use std::collections::VecDeque;
+//! Persistent memory for Sirin.
+//!
+//! Two layers:
+//!
+//! 1. **Full-text memory store** (`memory_store` / `memory_search`)
+//!    Append-only JSONL index at `data/memory/index.jsonl`.
+//!    Search uses TF-IDF-style term scoring — no external embedding model needed.
+//!
+//! 2. **Conversation context** (`append_context` / `load_recent_context`)
+//!    Per-peer JSONL ring-log of recent user↔assistant turns.
+
+use std::collections::{HashMap, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
-use std::sync::Arc;
 
-use arrow::array::types::Float32Type;
-use arrow::array::{FixedSizeListArray, Int64Array, RecordBatch, StringArray};
-use arrow::datatypes::{DataType, Field, Schema};
 use chrono::Utc;
-use futures::TryStreamExt;
-use lancedb::query::{ExecutableQuery, QueryBase};
-use lancedb::{connect, Connection, Table};
 use serde::{Deserialize, Serialize};
 
-const MEMORY_DB_PATH: &str = "data/sirin_memory";
-const MEMORY_TABLE: &str = "task_memory";
+// ── Memory store ──────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
-pub struct MemoryHit {
-    pub text: String,
-    pub distance: f32,
-}
-
-fn schema_for_dimension(dimension: i32) -> Arc<Schema> {
-    Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("text", DataType::Utf8, false),
-        Field::new(
-            "vector",
-            DataType::FixedSizeList(
-                Arc::new(Field::new("item", DataType::Float32, true)),
-                dimension,
-            ),
-            false,
-        ),
-    ]))
-}
-
-fn make_batch(
-    text: &str,
-    vector: &[f32],
-) -> Result<RecordBatch, Box<dyn std::error::Error + Send + Sync>> {
-    let dim = vector.len() as i32;
-    let schema = schema_for_dimension(dim);
-    let id = chrono::Utc::now().timestamp_micros();
-
-    let vector_array = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
-        [Some(vector.iter().copied().map(Some).collect::<Vec<_>>())],
-        dim,
-    );
-
-    let batch = RecordBatch::try_new(
-        schema,
-        vec![
-            Arc::new(Int64Array::from(vec![id])),
-            Arc::new(StringArray::from(vec![text])),
-            Arc::new(vector_array),
-        ],
-    )?;
-
-    Ok(batch)
-}
-
-async fn open_db() -> Result<Connection, Box<dyn std::error::Error + Send + Sync>> {
-    Ok(connect(MEMORY_DB_PATH).execute().await?)
-}
-
-async fn open_or_create_table(
-    db: &Connection,
-    dimension: i32,
-) -> Result<Table, Box<dyn std::error::Error + Send + Sync>> {
-    let names = db.table_names().execute().await?;
-    if names.iter().any(|name| name == MEMORY_TABLE) {
-        return Ok(db.open_table(MEMORY_TABLE).execute().await?);
+fn memory_index_path() -> std::path::PathBuf {
+    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+        return std::path::Path::new(&local_app_data)
+            .join("Sirin")
+            .join("memory")
+            .join("index.jsonl");
     }
-
-    let schema = schema_for_dimension(dimension);
-    Ok(db.create_empty_table(MEMORY_TABLE, schema).execute().await?)
+    std::path::Path::new("data").join("memory").join("index.jsonl")
 }
 
-pub async fn add_to_memory(
-    text: &str,
-    vector: Vec<f32>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MemoryEntry {
+    timestamp: String,
+    source: String, // "research" | "conversation" | "manual"
+    text: String,
+}
+
+/// Persist a text snippet to the memory index.
+pub fn memory_store(text: &str, source: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if text.trim().is_empty() {
-        return Err("text must not be empty".into());
+        return Ok(());
     }
-    if vector.is_empty() {
-        return Err("vector must not be empty".into());
+    let path = memory_index_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
     }
-
-    let db = open_db().await?;
-    let table = open_or_create_table(&db, vector.len() as i32).await?;
-    let batch = make_batch(text, &vector)?;
-
-    table.add(batch).execute().await?;
+    let entry = MemoryEntry {
+        timestamp: Utc::now().to_rfc3339(),
+        source: source.to_string(),
+        text: text.to_string(),
+    };
+    let line = serde_json::to_string(&entry)?;
+    let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
+    writeln!(file, "{line}")?;
     Ok(())
 }
 
-pub async fn search_memory(
-    query_vector: Vec<f32>,
-) -> Result<Vec<MemoryHit>, Box<dyn std::error::Error + Send + Sync>> {
-    if query_vector.is_empty() {
-        return Err("query_vector must not be empty".into());
-    }
-
-    let db = open_db().await?;
-    let names = db.table_names().execute().await?;
-    if !names.iter().any(|name| name == MEMORY_TABLE) {
+/// Search the memory index using simple TF-IDF term scoring.
+/// Returns up to `limit` most relevant snippets, best-match first.
+pub fn memory_search(query: &str, limit: usize) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+    let path = memory_index_path();
+    if !path.exists() {
         return Ok(Vec::new());
     }
 
-    let table = db.open_table(MEMORY_TABLE).execute().await?;
-    let batches = table
-        .query()
-        .nearest_to(query_vector.as_slice())?
-        .limit(3)
-        .execute()
-        .await?
-        .try_collect::<Vec<RecordBatch>>()
-        .await?;
+    let query_terms: Vec<String> = tokenize(query);
+    if query_terms.is_empty() {
+        return Ok(Vec::new());
+    }
 
-    let mut hits = Vec::new();
+    let file = fs::File::open(&path)?;
+    let reader = BufReader::new(file);
 
-    for batch in batches {
-        let Some(text_col) = batch.column_by_name("text") else {
+    let mut scored: Vec<(f64, String)> = Vec::new();
+
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(entry) = serde_json::from_str::<MemoryEntry>(&line) else {
             continue;
         };
-        let Some(texts) = text_col.as_any().downcast_ref::<StringArray>() else {
-            continue;
-        };
-
-        let distance_col = batch.column_by_name("_distance");
-
-        for row in 0..batch.num_rows() {
-            let text = texts.value(row).to_string();
-            let distance = if let Some(col) = distance_col {
-                if let Some(values) = col.as_any().downcast_ref::<arrow::array::Float32Array>() {
-                    values.value(row)
-                } else if let Some(values) = col.as_any().downcast_ref::<arrow::array::Float64Array>() {
-                    values.value(row) as f32
-                } else {
-                    0.0
-                }
-            } else {
-                0.0
-            };
-
-            hits.push(MemoryHit { text, distance });
+        let score = score_entry(&entry.text, &query_terms);
+        if score > 0.0 {
+            scored.push((score, entry.text));
         }
     }
 
-    hits.sort_by(|a, b| a.distance.total_cmp(&b.distance));
-    hits.truncate(3);
-    Ok(hits)
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(scored.into_iter().take(limit).map(|(_, t)| t).collect())
 }
 
-// ── Simple JSONL conversation context ─────────────────────────────────────────
+/// Tokenize text into lowercase words (CJK chars split individually).
+fn tokenize(text: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut word = String::new();
+
+    for ch in text.chars() {
+        if ch.is_alphanumeric() {
+            if is_cjk(ch) {
+                // Flush pending ASCII word first.
+                if !word.is_empty() {
+                    tokens.push(word.to_lowercase());
+                    word.clear();
+                }
+                tokens.push(ch.to_string());
+            } else {
+                word.push(ch);
+            }
+        } else {
+            if !word.is_empty() {
+                tokens.push(word.to_lowercase());
+                word.clear();
+            }
+        }
+    }
+    if !word.is_empty() {
+        tokens.push(word.to_lowercase());
+    }
+    tokens
+}
+
+fn is_cjk(c: char) -> bool {
+    matches!(c as u32,
+        0x4E00..=0x9FFF   // CJK Unified Ideographs
+        | 0x3400..=0x4DBF // CJK Extension A
+        | 0xF900..=0xFAFF // CJK Compatibility Ideographs
+        | 0x3040..=0x309F // Hiragana
+        | 0x30A0..=0x30FF // Katakana
+    )
+}
+
+/// Simple TF score: sum of (term_frequency_in_doc) for each query term.
+fn score_entry(text: &str, query_terms: &[String]) -> f64 {
+    let doc_tokens = tokenize(text);
+    let doc_len = doc_tokens.len().max(1) as f64;
+
+    // Build term frequency map.
+    let mut tf: HashMap<&str, usize> = HashMap::new();
+    for t in &doc_tokens {
+        *tf.entry(t.as_str()).or_insert(0) += 1;
+    }
+
+    query_terms
+        .iter()
+        .map(|q| tf.get(q.as_str()).copied().unwrap_or(0) as f64 / doc_len)
+        .sum()
+}
+
+// ── Conversation context (per-peer) ──────────────────────────────────────────
 
 fn context_log_path(peer_id: Option<i64>) -> std::path::PathBuf {
     let filename = match peer_id {
@@ -180,7 +173,7 @@ pub struct ContextEntry {
     pub assistant_reply: String,
 }
 
-/// Append a conversation turn to the context log for a specific peer.
+/// Append a conversation turn to the per-peer context log.
 pub fn append_context(
     user_msg: &str,
     assistant_reply: &str,
@@ -229,11 +222,39 @@ pub fn load_recent_context(
     Ok(ring.into_iter().collect())
 }
 
-/// Truncate the context log for a specific peer (wipe all history).
-pub fn clear_context(peer_id: Option<i64>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let path = context_log_path(peer_id);
-    if path.exists() {
-        fs::write(&path, b"")?;
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tokenize_ascii() {
+        let tokens = tokenize("Hello world Rust");
+        assert_eq!(tokens, vec!["hello", "world", "rust"]);
     }
-    Ok(())
+
+    #[test]
+    fn tokenize_cjk() {
+        let tokens = tokenize("Rust 語言");
+        assert!(tokens.contains(&"rust".to_string()));
+        assert!(tokens.contains(&"語".to_string()));
+        assert!(tokens.contains(&"言".to_string()));
+    }
+
+    #[test]
+    fn score_matches_relevant() {
+        let doc = "Rust async runtime uses tokio for scheduling";
+        let terms = tokenize("rust async");
+        let score = score_entry(doc, &terms);
+        assert!(score > 0.0, "should match");
+    }
+
+    #[test]
+    fn score_zero_for_irrelevant() {
+        let doc = "今天天氣很好";
+        let terms = tokenize("rust async");
+        let score = score_entry(doc, &terms);
+        assert_eq!(score, 0.0);
+    }
 }

@@ -2,12 +2,11 @@
 name = "sirin"
 version = "0.1.0"
 edition = "2021"
-description = "A high-performance desktop AI agent with a macOS System Tray interface"
+description = "A pure-Rust desktop AI agent (egui + Tokio)"
 
 [dependencies]
 eframe = { version = "0.31", features = ["default"] }
 egui = { version = "0.31", features = ["default"] }
-egui_extras = { version = "0.31", features = ["default"] }
 tokio = { version = "1.37.0", features = ["full"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.116"
@@ -16,14 +15,9 @@ dotenvy = "0.15.7"
 chrono = { version = "0.4.38", features = ["serde"] }
 grammers-client = "0.9.0"
 grammers-session = "0.9.0"
-notify-rust = "4.12.0"
 reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls", "query"] }
 scraper = "0.19.0"
-lancedb = "0.27.2"
-arrow = "57.3.0"
 futures = "0.3.31"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "ansi"] }
 parking_lot = "0.12"
 
 [build-dependencies]

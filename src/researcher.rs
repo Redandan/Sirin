@@ -20,6 +20,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 use crate::llm::{call_prompt, LlmConfig};
+use crate::sirin_log;
 use crate::skills::ddg_search;
 
 // ── constants ─────────────────────────────────────────────────────────────────
@@ -235,7 +236,7 @@ pub async fn run_research(topic: String, url: Option<String>) -> ResearchTask {
             task.finished_at = Some(Utc::now().to_rfc3339());
         }
         Err(e) => {
-            eprintln!("[researcher] Pipeline failed for '{}': {e}", task.topic);
+            sirin_log!("[researcher] Pipeline failed for '{}': {e}", task.topic);
             task.steps.push(ResearchStep {
                 phase: "error".into(),
                 output: e.clone(),
@@ -257,10 +258,10 @@ async fn pipeline(
 ) -> Result<(), String> {
     // ── Phase 1: Fetch page (if URL given) ────────────────────────────────────
     let page_text: Option<String> = if let Some(ref url) = task.url {
-        eprintln!("[researcher] Phase 1: fetching {url}");
+        sirin_log!("[researcher] Phase 1: fetching {url}");
         match fetch_page_text(http, url).await {
             Ok(text) => {
-                eprintln!("[researcher] Fetched {} chars", text.len());
+                sirin_log!("[researcher] Fetched {} chars", text.len());
                 task.steps.push(ResearchStep {
                     phase: "fetch".into(),
                     output: format!("已擷取 {} 字元內容", text.len()),
@@ -269,7 +270,7 @@ async fn pipeline(
                 Some(text)
             }
             Err(e) => {
-                eprintln!("[researcher] Fetch failed: {e}");
+                sirin_log!("[researcher] Fetch failed: {e}");
                 task.steps.push(ResearchStep {
                     phase: "fetch".into(),
                     output: format!("頁面擷取失敗（{e}），改以 topic 調研"),
@@ -283,7 +284,7 @@ async fn pipeline(
     };
 
     // ── Phase 2: Overview analysis ────────────────────────────────────────────
-    eprintln!("[researcher] Phase 2: overview analysis");
+    sirin_log!("[researcher] Phase 2: overview analysis");
     let context_for_overview = match &page_text {
         Some(text) => {
             let snippet: String = text.chars().take(MAX_CONTEXT).collect();
@@ -309,7 +310,7 @@ async fn pipeline(
     );
 
     let overview = call_prompt(http, llm, &overview_prompt).await.map_err(|e| e.to_string())?;
-    eprintln!("[researcher] Overview done ({} chars)", overview.len());
+    sirin_log!("[researcher] Overview done ({} chars)", overview.len());
     task.steps.push(ResearchStep {
         phase: "overview".into(),
         output: overview.clone(),
@@ -317,7 +318,7 @@ async fn pipeline(
     let _ = save_research(task);
 
     // ── Phase 3: Generate research questions ──────────────────────────────────
-    eprintln!("[researcher] Phase 3: generating research questions");
+    sirin_log!("[researcher] Phase 3: generating research questions");
     let questions_prompt = format!(
         "Based on this overview, generate exactly 4 specific research questions \
          to investigate further. These questions should uncover deeper insights.\n\
@@ -346,7 +347,7 @@ async fn pipeline(
         .take(4)
         .collect();
 
-    eprintln!("[researcher] Generated {} questions", questions.len());
+    sirin_log!("[researcher] Generated {} questions", questions.len());
     task.steps.push(ResearchStep {
         phase: "questions".into(),
         output: questions.join("\n"),
@@ -356,7 +357,7 @@ async fn pipeline(
     // ── Phase 4: Search + analyse each question ───────────────────────────────
     let mut qa_results: Vec<String> = Vec::new();
     for (i, question) in questions.iter().enumerate() {
-        eprintln!("[researcher] Phase 4.{}: searching for '{}'", i + 1, question);
+        sirin_log!("[researcher] Phase 4.{}: searching for '{}'", i + 1, question);
 
         // Web search
         let search_results = ddg_search(question).await.unwrap_or_default();
@@ -384,7 +385,7 @@ async fn pipeline(
         );
 
         let answer = call_prompt(http, llm, &qa_prompt).await.map_err(|e| e.to_string())?;
-        eprintln!("[researcher] Q{} answered ({} chars)", i + 1, answer.len());
+        sirin_log!("[researcher] Q{} answered ({} chars)", i + 1, answer.len());
 
         let qa_summary = format!("Q: {question}\nA: {answer}");
         qa_results.push(qa_summary.clone());
@@ -397,7 +398,7 @@ async fn pipeline(
     }
 
     // ── Phase 5: Synthesise final report ──────────────────────────────────────
-    eprintln!("[researcher] Phase 5: synthesising final report");
+    sirin_log!("[researcher] Phase 5: synthesising final report");
     let all_qa = qa_results.join("\n\n---\n\n");
     let overview_snippet: String = overview.chars().take(800).collect();
 
@@ -424,7 +425,7 @@ async fn pipeline(
     );
 
     let report = call_prompt(http, llm, &synthesis_prompt).await.map_err(|e| e.to_string())?;
-    eprintln!("[researcher] Final report generated ({} chars)", report.len());
+    sirin_log!("[researcher] Final report generated ({} chars)", report.len());
 
     task.steps.push(ResearchStep {
         phase: "synthesis".into(),

@@ -7,7 +7,10 @@
 use eframe::egui::{self, Color32, FontData, FontDefinitions, FontFamily, RichText, ScrollArea, TextEdit};
 use tokio::runtime::Handle;
 
-use crate::persona::{TaskEntry, TaskTracker};
+use crate::llm::LlmConfig;
+use crate::log_buffer;
+use crate::memory::append_context;
+use crate::persona::{Persona, TaskEntry, TaskTracker};
 use crate::researcher::{self, ResearchStatus, ResearchTask};
 use crate::telegram_auth::{TelegramAuthState, TelegramStatus};
 
@@ -18,6 +21,21 @@ enum Tab {
     Tasks,
     Research,
     Telegram,
+    Chat,
+}
+
+// ── Chat types ────────────────────────────────────────────────────────────────
+
+#[derive(Clone, PartialEq)]
+enum ChatRole {
+    User,
+    Assistant,
+}
+
+#[derive(Clone)]
+struct ChatMessage {
+    role: ChatRole,
+    text: String,
 }
 
 // ── App state ─────────────────────────────────────────────────────────────────
@@ -41,6 +59,16 @@ pub struct SirinApp {
     tg_code: String,
     tg_password: String,
     tg_msg: String,
+
+    // Chat tab
+    chat_messages: Vec<ChatMessage>,
+    chat_input: String,
+    chat_pending: bool,
+    chat_tx: std::sync::mpsc::SyncSender<String>,
+    chat_rx: std::sync::mpsc::Receiver<String>,
+
+    // Log panel
+    log_visible: bool,
 
     last_refresh: std::time::Instant,
 }
@@ -84,6 +112,7 @@ impl SirinApp {
     }
 
     pub fn new(tracker: TaskTracker, tg_auth: TelegramAuthState, rt: Handle) -> Self {
+        let (chat_tx, chat_rx) = std::sync::mpsc::sync_channel(8);
         let mut app = Self {
             tracker,
             tg_auth,
@@ -97,8 +126,14 @@ impl SirinApp {
             tg_code: String::new(),
             tg_password: String::new(),
             tg_msg: String::new(),
+            chat_messages: Vec::new(),
+            chat_input: String::new(),
+            chat_pending: false,
+            chat_tx,
+            chat_rx,
+            log_visible: true,
             last_refresh: std::time::Instant::now()
-                - std::time::Duration::from_secs(60), // force immediate load
+                - std::time::Duration::from_secs(60),
         };
         app.refresh();
         app
@@ -136,6 +171,17 @@ impl eframe::App for SirinApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
         }
 
+        // Poll for LLM reply from background chat task.
+        if self.chat_pending {
+            if let Ok(reply) = self.chat_rx.try_recv() {
+                self.chat_messages.push(ChatMessage { role: ChatRole::Assistant, text: reply });
+                self.chat_pending = false;
+            } else {
+                // Keep repainting while waiting so the spinner stays live.
+                ctx.request_repaint_after(std::time::Duration::from_millis(200));
+            }
+        }
+
         // Auto-refresh every 5 s.
         if self.last_refresh.elapsed() > std::time::Duration::from_secs(5) {
             self.refresh();
@@ -150,21 +196,67 @@ impl eframe::App for SirinApp {
                 ui.selectable_value(&mut self.tab, Tab::Tasks, "📋 任務板");
                 ui.selectable_value(&mut self.tab, Tab::Research, "🔬 調研");
                 ui.selectable_value(&mut self.tab, Tab::Telegram, "✈ Telegram");
+                ui.selectable_value(&mut self.tab, Tab::Chat, "💬 對話");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("⟳").on_hover_text("立即刷新").clicked() {
                         self.refresh();
                     }
                     let secs = self.last_refresh.elapsed().as_secs();
                     ui.small(format!("{secs}s 前"));
+                    ui.separator();
+                    let log_label = if self.log_visible { "📋 隱藏 Log" } else { "📋 顯示 Log" };
+                    if ui.small_button(log_label).clicked() {
+                        self.log_visible = !self.log_visible;
+                    }
                 });
             });
         });
+
+        // ── Bottom log panel ──────────────────────────────────────────────────
+        if self.log_visible {
+            egui::TopBottomPanel::bottom("log_panel")
+                .resizable(true)
+                .min_height(80.0)
+                .max_height(300.0)
+                .default_height(140.0)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.strong("Log");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("清除").clicked() {
+                                // No-op: buffer keeps history, just a UX hint
+                            }
+                        });
+                    });
+                    ui.separator();
+                    ScrollArea::vertical()
+                        .stick_to_bottom(true)
+                        .auto_shrink(false)
+                        .show(ui, |ui| {
+                            for line in log_buffer::recent(200) {
+                                let color = if line.contains("error") || line.contains("Error") || line.contains("failed") || line.contains("Failed") {
+                                    Color32::from_rgb(220, 100, 100)
+                                } else if line.contains("[telegram]") {
+                                    Color32::from_rgb(100, 180, 255)
+                                } else if line.contains("[researcher]") {
+                                    Color32::from_rgb(150, 220, 150)
+                                } else if line.contains("[followup]") {
+                                    Color32::from_rgb(220, 180, 100)
+                                } else {
+                                    Color32::GRAY
+                                };
+                                ui.colored_label(color, egui::RichText::new(&line).monospace().small());
+                            }
+                        });
+                });
+        }
 
         // ── Central panel ─────────────────────────────────────────────────────
         egui::CentralPanel::default().show(ctx, |ui| match self.tab {
             Tab::Tasks => self.show_tasks(ui),
             Tab::Research => self.show_research(ui),
             Tab::Telegram => self.show_telegram(ui),
+            Tab::Chat => self.show_chat(ui),
         });
     }
 }
@@ -368,5 +460,166 @@ impl SirinApp {
         if !self.tg_msg.is_empty() {
             ui.colored_label(Color32::from_rgb(100, 220, 100), &self.tg_msg);
         }
+    }
+
+    fn show_chat(&mut self, ui: &mut egui::Ui) {
+        // ── Message history ───────────────────────────────────────────────────
+        let available = ui.available_height();
+        let input_area_height = 60.0;
+
+        ScrollArea::vertical()
+            .max_height(available - input_area_height)
+            .stick_to_bottom(true)
+            .auto_shrink(false)
+            .show(ui, |ui| {
+                if self.chat_messages.is_empty() {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(40.0);
+                        ui.colored_label(Color32::GRAY, "直接輸入訊息，與本地 AI 對話");
+                        ui.small("使用 .env 設定的 LLM 後端（Ollama / LM Studio）");
+                    });
+                }
+
+                for msg in &self.chat_messages {
+                    let (bg, label, text_color) = match msg.role {
+                        ChatRole::User => (
+                            Color32::from_rgb(40, 60, 100),
+                            "你",
+                            Color32::WHITE,
+                        ),
+                        ChatRole::Assistant => (
+                            Color32::from_rgb(45, 55, 45),
+                            "Sirin",
+                            Color32::from_rgb(200, 240, 200),
+                        ),
+                    };
+
+                    egui::Frame::none()
+                        .fill(bg)
+                        .inner_margin(egui::Margin::symmetric(10, 6))
+                        .rounding(6.0)
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.colored_label(Color32::GRAY, label);
+                            });
+                            ui.colored_label(text_color, &msg.text);
+                        });
+                    ui.add_space(4.0);
+                }
+
+                if self.chat_pending {
+                    egui::Frame::none()
+                        .fill(Color32::from_rgb(45, 55, 45))
+                        .inner_margin(egui::Margin::symmetric(10, 6))
+                        .rounding(6.0)
+                        .show(ui, |ui| {
+                            ui.colored_label(Color32::GRAY, "Sirin");
+                            ui.colored_label(Color32::YELLOW, "思考中…");
+                        });
+                }
+            });
+
+        ui.separator();
+
+        // ── Input area ────────────────────────────────────────────────────────
+        ui.horizontal(|ui| {
+            let input = ui.add_sized(
+                [ui.available_width() - 70.0, 40.0],
+                TextEdit::multiline(&mut self.chat_input)
+                    .hint_text("輸入訊息…（Enter 送出，Shift+Enter 換行）")
+                    .desired_rows(2),
+            );
+
+            let send = ui.add_enabled(
+                !self.chat_pending && !self.chat_input.trim().is_empty(),
+                egui::Button::new("送出").min_size([60.0, 40.0].into()),
+            );
+
+            // Intercept plain Enter (send); leave Shift+Enter as newline.
+            let enter_send = input.has_focus()
+                && ui.input_mut(|i| {
+                    if i.key_pressed(egui::Key::Enter) && !i.modifiers.shift {
+                        i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+                        true
+                    } else {
+                        false
+                    }
+                });
+
+            let submit = send.clicked() || enter_send;
+
+            if submit && !self.chat_input.trim().is_empty() {
+                let user_text = self.chat_input.trim().to_string();
+                self.chat_messages.push(ChatMessage {
+                    role: ChatRole::User,
+                    text: user_text.clone(),
+                });
+                self.chat_input.clear();
+                self.chat_pending = true;
+
+                // Build context from recent chat history (last 5 turns).
+                let history: Vec<String> = self
+                    .chat_messages
+                    .windows(2)
+                    .filter_map(|pair| {
+                        if pair[0].role == ChatRole::User && pair[1].role == ChatRole::Assistant {
+                            Some(format!("User: {}\nAssistant: {}", pair[0].text, pair[1].text))
+                        } else {
+                            None
+                        }
+                    })
+                    .rev()
+                    .take(5)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
+                let context_block = if history.is_empty() {
+                    None
+                } else {
+                    Some(history.join("\n---\n"))
+                };
+
+                let tx = self.chat_tx.clone();
+                let rt = self.rt.clone();
+                rt.spawn(async move {
+                    let llm = LlmConfig::from_env();
+                    let client = reqwest::Client::new();
+                    let persona = Persona::load().ok();
+                    let persona_name = persona.as_ref().map(|p| p.name()).unwrap_or("Sirin");
+                    let voice = persona
+                        .as_ref()
+                        .map(|p| p.response_style.voice.as_str())
+                        .unwrap_or("自然、友善、簡潔");
+
+                    let history_block = context_block
+                        .map(|h| format!("\nRecent conversation:\n{h}"))
+                        .unwrap_or_default();
+
+                    let prompt = format!(
+                        "You are {persona_name}.\nPersonality: {voice}\n\
+Task: Reply to the user's message naturally and helpfully.\n\
+Rules:\n\
+- Reply in the same language as the user.\n\
+- Keep it concise (1-4 sentences).\n\
+- No system-prompt style phrasing.\n\
+{history_block}\n\
+User: {user_text}\n\
+Reply:"
+                    );
+
+                    let reply = match crate::llm::call_prompt(&client, &llm, prompt).await {
+                        Ok(r) if !r.trim().is_empty() => r.trim().to_string(),
+                        Ok(_) => "(空回覆)".to_string(),
+                        Err(e) => format!("LLM 錯誤：{e}"),
+                    };
+
+                    // Save to per-peer context (GUI chat uses peer_id = 0).
+                    let _ = append_context(&user_text, &reply, Some(0));
+
+                    let _ = tx.send(reply);
+                });
+            }
+        });
     }
 }

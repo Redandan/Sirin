@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use crate::llm::{call_prompt, LlmConfig};
 use crate::persona::{Persona, TaskEntry, TaskTracker};
 use crate::researcher::{self, ResearchStatus};
+use crate::sirin_log;
 
 fn record_optimization_log(
     tracker: &TaskTracker,
@@ -311,7 +312,7 @@ pub async fn run_worker(tracker: TaskTracker) {
         cycle += 1;
 
         if let Err(e) = run_once(&client, &llm, &tracker).await {
-            eprintln!("[followup] Worker error: {e}");
+            sirin_log!("[followup] Worker error: {e}");
             record_optimization_log(
                 &tracker,
                 "optimization_cycle_error",
@@ -327,8 +328,8 @@ pub async fn run_worker(tracker: TaskTracker) {
             let max = task_log_max_lines();
             match tracker.trim_to_max(max) {
                 Ok(0) => {}
-                Ok(n) => eprintln!("[followup] Task log trimmed: removed {n} old entries (max={max})"),
-                Err(e) => eprintln!("[followup] Task log trim failed: {e}"),
+                Ok(n) => sirin_log!("[followup] Task log trimmed: removed {n} old entries (max={max})"),
+                Err(e) => sirin_log!("[followup] Task log trim failed: {e}"),
             }
         }
     }
@@ -361,7 +362,7 @@ async fn run_once(
         let schedule_cap = slots.min(per_cycle);
 
         if schedule_cap == 0 {
-            eprintln!(
+            sirin_log!(
                 "[followup] Autonomous queue is full (running={running_count}, max={max_concurrent})"
             );
             record_optimization_log(
@@ -380,7 +381,7 @@ async fn run_once(
             return Ok(());
         }
 
-        eprintln!(
+        sirin_log!(
             "[followup] Self-assigning up to {} of {} candidate task(s) for autonomous research",
             schedule_cap,
             candidates.len()
@@ -471,7 +472,7 @@ async fn run_once(
         .collect();
 
     if actionable.is_empty() {
-        eprintln!("[followup] No FOLLOWING/PENDING tasks found — skipping LLM call");
+        sirin_log!("[followup] No FOLLOWING/PENDING tasks found — skipping LLM call");
         record_optimization_log(
             tracker,
             "optimization_cycle_idle",
@@ -483,7 +484,7 @@ async fn run_once(
         return Ok(());
     }
 
-    eprintln!(
+    sirin_log!(
         "[followup] Sending {} actionable task(s) to {} model '{}'",
         actionable.len(),
         llm.backend_name(),
@@ -494,7 +495,7 @@ async fn run_once(
     let prompt = build_prompt(&persona, &actionable);
     let response = call_prompt(client, llm, prompt).await?;
 
-    eprintln!("[followup] LLM response: {response}");
+    sirin_log!("[followup] LLM response: {response}");
 
     // 5. If follow-up is needed, mark only the primary actionable entry.
     // This avoids bulk-flipping unrelated tasks in the same cycle.
@@ -512,7 +513,7 @@ async fn run_once(
                 None,
                 correlation_id_for(primary),
             );
-            eprintln!(
+            sirin_log!(
                 "[followup] Marked primary task {} as FOLLOWUP_NEEDED",
                 primary.timestamp
             );

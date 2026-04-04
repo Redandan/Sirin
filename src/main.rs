@@ -2,6 +2,7 @@
 
 mod followup;
 mod llm;
+mod log_buffer;
 mod memory;
 mod persona;
 mod researcher;

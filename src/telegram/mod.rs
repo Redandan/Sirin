@@ -32,6 +32,7 @@ use grammers_session::storages::SqliteSession;
 use grammers_session::types::{PeerId, PeerKind};
 
 use crate::memory::{append_context, load_recent_context};
+use crate::sirin_log;
 use crate::persona::{Persona, TaskEntry, TaskTracker};
 use crate::researcher;
 use crate::skills::ddg_search;
@@ -64,20 +65,20 @@ async fn ensure_user_authorized(
 
     if !require_login() {
         auth.set_disconnected("telegram login optional; set TG_REQUIRE_LOGIN=1 to enable auth flow");
-        eprintln!(
+        sirin_log!(
             "[telegram] Session not authorized; login is optional, skipping sign-in flow"
         );
         return Ok(());
     }
 
-    eprintln!("[telegram] Session not authorized, starting user sign-in flow...");
+    sirin_log!("[telegram] Session not authorized, starting user sign-in flow...");
 
     let phone = cfg.phone.clone().ok_or_else(|| {
         "TG_PHONE is not set; cannot start non-interactive sign-in (set TG_PHONE in .env)"
     })?;
 
     let login_token = client.request_login_code(&phone, &cfg.api_hash).await?;
-    eprintln!("[telegram] Login code requested for {phone}; waiting for UI input (timeout {}s)", AUTH_INPUT_TIMEOUT_SECS);
+    sirin_log!("[telegram] Login code requested for {phone}; waiting for UI input (timeout {}s)", AUTH_INPUT_TIMEOUT_SECS);
 
     let code = auth
         .request_code(AUTH_INPUT_TIMEOUT_SECS)
@@ -86,18 +87,18 @@ async fn ensure_user_authorized(
 
     match client.sign_in(&login_token, &code).await {
         Ok(_) => {
-            eprintln!("[telegram] User sign-in succeeded");
+            sirin_log!("[telegram] User sign-in succeeded");
             Ok(())
         }
         Err(SignInError::PasswordRequired(password_token)) => {
             let hint = password_token.hint().unwrap_or("none").to_string();
-            eprintln!("[telegram] 2FA required (hint: {hint}); waiting for UI input");
+            sirin_log!("[telegram] 2FA required (hint: {hint}); waiting for UI input");
             let password = auth
                 .request_password(&hint, AUTH_INPUT_TIMEOUT_SECS)
                 .await
                 .ok_or("Timed out waiting for Telegram 2FA password from UI")?;
             client.check_password(password_token, password.trim()).await?;
-            eprintln!("[telegram] User sign-in with 2FA succeeded");
+            sirin_log!("[telegram] User sign-in with 2FA succeeded");
             Ok(())
         }
         Err(err) => Err(format!("Telegram sign-in failed: {err}").into()),
@@ -129,14 +130,14 @@ async fn run_listener_once(
     let pool_task = tokio::spawn(runner.run());
 
     if let Err(err) = ensure_user_authorized(&client, &cfg, auth).await {
-        eprintln!("[telegram] {err}");
+        sirin_log!("[telegram] {err}");
         handle.quit();
         let _ = pool_task.await;
         return Ok(());
     }
 
     if !client.is_authorized().await.unwrap_or(false) {
-        eprintln!("[telegram] Session remains unauthorized; skipping listener run");
+        sirin_log!("[telegram] Session remains unauthorized; skipping listener run");
         handle.quit();
         let _ = pool_task.await;
         return Ok(());
@@ -153,14 +154,14 @@ async fn run_listener_once(
         )
         .await;
 
-    eprintln!("[telegram] Connected to Telegram");
+    sirin_log!("[telegram] Connected to Telegram");
     let backend_name = llm.backend_name();
-    eprintln!(
+    sirin_log!(
         "[telegram] AI reply backend={} model='{}'",
         backend_name, llm.model
     );
     if cfg.debug_updates {
-        eprintln!(
+        sirin_log!(
             "[telegram] debug_updates=on, reply_private={}, reply_groups={}, auto_reply_enabled={}",
             cfg.reply_private, cfg.reply_groups, cfg.auto_reply_enabled
         );
@@ -169,10 +170,10 @@ async fn run_listener_once(
 
     // Send startup notification to self
     if let Some(ref msg) = cfg.startup_msg {
-        eprintln!("[telegram] TG_STARTUP_MSG is enabled");
+        sirin_log!("[telegram] TG_STARTUP_MSG is enabled");
         match client.get_me().await {
             Ok(me) => {
-                eprintln!(
+                sirin_log!(
                     "[telegram] Authorized as id={}, username={:?}, name='{} {}'",
                     me.id().bare_id(),
                     me.username(),
@@ -183,11 +184,11 @@ async fn run_listener_once(
                     match client.resolve_username(username).await {
                         Ok(Some(peer)) => peer.to_ref().await,
                         Ok(None) => {
-                            eprintln!("[telegram] TG_STARTUP_TARGET '@{username}' not found");
+                            sirin_log!("[telegram] TG_STARTUP_TARGET '@{username}' not found");
                             None
                         }
                         Err(e) => {
-                            eprintln!("[telegram] Failed to resolve TG_STARTUP_TARGET '@{username}': {e}");
+                            sirin_log!("[telegram] Failed to resolve TG_STARTUP_TARGET '@{username}': {e}");
                             None
                         }
                     }
@@ -199,33 +200,33 @@ async fn run_listener_once(
                     let text = msg
                         .replace("{time}", &Utc::now().format("%Y-%m-%d %H:%M UTC").to_string());
                     if let Err(e) = client.send_message(peer_ref, text.as_str()).await {
-                        eprintln!("[telegram] Failed to send startup message: {e}");
+                        sirin_log!("[telegram] Failed to send startup message: {e}");
                     } else {
                         if let Some(ref username) = cfg.startup_target {
-                            eprintln!("[telegram] Startup message sent to @{username}");
+                            sirin_log!("[telegram] Startup message sent to @{username}");
                         } else {
-                            eprintln!("[telegram] Startup message sent to self");
+                            sirin_log!("[telegram] Startup message sent to self");
                         }
                     }
                 } else {
                     if cfg.startup_target.is_some() {
-                        eprintln!("[telegram] Could not resolve startup target peer_ref, startup message skipped");
+                        sirin_log!("[telegram] Could not resolve startup target peer_ref, startup message skipped");
                     } else {
-                        eprintln!("[telegram] Could not resolve self peer_ref, startup message skipped");
+                        sirin_log!("[telegram] Could not resolve self peer_ref, startup message skipped");
                     }
                 }
             }
-            Err(e) => eprintln!("[telegram] get_me failed: {e}"),
+            Err(e) => sirin_log!("[telegram] get_me failed: {e}"),
         }
     } else {
-        eprintln!("[telegram] TG_STARTUP_MSG is not set, startup message disabled");
+        sirin_log!("[telegram] TG_STARTUP_MSG is not set, startup message disabled");
     }
 
     loop {
         let update = match updates.next().await {
             Ok(u) => u,
             Err(e) => {
-                eprintln!("[telegram] Error receiving update: {e}");
+                sirin_log!("[telegram] Error receiving update: {e}");
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 continue;
             }
@@ -236,7 +237,7 @@ async fn run_listener_once(
         };
 
         if cfg.debug_updates {
-            eprintln!(
+            sirin_log!(
                 "[telegram] incoming: sender={:?}, peer={:?}, outgoing={}, date={}, text='{}'",
                 message.sender_id(),
                 message.peer_id(),
@@ -248,7 +249,7 @@ async fn run_listener_once(
 
         if message.outgoing() {
             if cfg.debug_updates {
-                eprintln!("[telegram] skip: outgoing message");
+                sirin_log!("[telegram] skip: outgoing message");
             }
             continue;
         }
@@ -256,7 +257,7 @@ async fn run_listener_once(
         // Guard against self-chat feedback loops (e.g. startup message in Saved Messages).
         if message.sender_id() == Some(PeerId::self_user()) {
             if cfg.debug_updates {
-                eprintln!("[telegram] skip: sender is self_user");
+                sirin_log!("[telegram] skip: sender is self_user");
             }
             continue;
         }
@@ -264,14 +265,14 @@ async fn run_listener_once(
         let is_private = matches!(message.peer_id().kind(), PeerKind::User | PeerKind::UserSelf);
         if is_private && !cfg.reply_private {
             if cfg.debug_updates {
-                eprintln!("[telegram] skip: private replies disabled");
+                sirin_log!("[telegram] skip: private replies disabled");
             }
             continue;
         }
 
         if !is_private && !cfg.reply_groups {
             if cfg.debug_updates {
-                eprintln!("[telegram] skip: group replies disabled");
+                sirin_log!("[telegram] skip: group replies disabled");
             }
             continue;
         }
@@ -281,7 +282,7 @@ async fn run_listener_once(
             let peer_id = message.peer_id().bare_id();
             if !cfg.group_ids.contains(&peer_id) {
                 if cfg.debug_updates {
-                    eprintln!("[telegram] skip: group id {} not in TG_GROUP_IDS", peer_id);
+                    sirin_log!("[telegram] skip: group id {} not in TG_GROUP_IDS", peer_id);
                 }
                 continue;
             }
@@ -290,7 +291,7 @@ async fn run_listener_once(
         // Ignore messages that predate current listener run.
         if message.date() < listener_started_at {
             if cfg.debug_updates {
-                eprintln!(
+                sirin_log!(
                     "[telegram] skip: message older than listener start ({} < {})",
                     message.date(),
                     listener_started_at
@@ -302,7 +303,7 @@ async fn run_listener_once(
         let text = message.text().to_owned();
         if text.is_empty() {
             if cfg.debug_updates {
-                eprintln!("[telegram] skip: empty text message");
+                sirin_log!("[telegram] skip: empty text message");
             }
             continue;
         }
@@ -334,16 +335,16 @@ async fn run_listener_once(
                 let notify_handle = handle.clone();
                 tokio::spawn(async move {
                     let task = researcher::run_research(topic_clone, url_clone).await;
-                    eprintln!("[researcher] Background task '{}' completed with status={:?}", task.id, task.status);
+                    sirin_log!("[researcher] Background task '{}' completed with status={:?}", task.id, task.status);
                     if task.status == researcher::ResearchStatus::Done {
                         if let (Some(ref report), Some(peer)) = (&task.final_report, notify_peer) {
                             let summary: String = report.chars().take(500).collect();
                             let msg = format!("✅ 調研完成：{}\n\n{}", task.topic, summary);
                             let notify_client = Client::new(notify_handle);
                             if let Err(e) = notify_client.send_message(peer, msg.as_str()).await {
-                                eprintln!("[researcher] Failed to notify user of completion: {e}");
+                                sirin_log!("[researcher] Failed to notify user of completion: {e}");
                             } else {
-                                eprintln!("[researcher] Research completion notified to user");
+                                sirin_log!("[researcher] Research completion notified to user");
                             }
                         }
                     }
@@ -380,7 +381,7 @@ async fn run_listener_once(
                 }
                 Ok(_) => None,
                 Err(e) => {
-                    eprintln!("[telegram] Failed to load context: {e}");
+                    sirin_log!("[telegram] Failed to load context: {e}");
                     None
                 }
             };
@@ -388,7 +389,7 @@ async fn run_listener_once(
             // Perform web search when the message looks like a question.
             let search_context: Option<String> = if !direct_answer_request && should_search(&text) {
                 let query = extract_search_query(&llm_client, &llm, &text).await;
-                eprintln!("[telegram] Searching web for: {query}");
+                sirin_log!("[telegram] Searching web for: {query}");
                 match ddg_search(&query).await {
                     Ok(results) if !results.is_empty() => {
                         let formatted = results
@@ -397,15 +398,15 @@ async fn run_listener_once(
                             .map(|r| format!("- {}: {} ({})", r.title, r.snippet, r.url))
                             .collect::<Vec<_>>()
                             .join("\n");
-                        eprintln!("[telegram] Web search returned {} result(s)", results.len().min(3));
+                        sirin_log!("[telegram] Web search returned {} result(s)", results.len().min(3));
                         Some(formatted)
                     }
                     Ok(_) => {
-                        eprintln!("[telegram] Web search returned no results");
+                        sirin_log!("[telegram] Web search returned no results");
                         None
                     }
                     Err(e) => {
-                        eprintln!("[telegram] Web search failed: {e}");
+                        sirin_log!("[telegram] Web search failed: {e}");
                         None
                     }
                 }
@@ -431,13 +432,13 @@ async fn run_listener_once(
                         .next()
                         .map(|r| r.chars().take(600).collect()),
                     Err(e) => {
-                        eprintln!("[telegram] Failed to load research memory: {e}");
+                        sirin_log!("[telegram] Failed to load research memory: {e}");
                         None
                     }
                 }
             };
             if memory_context.is_some() {
-                eprintln!("[telegram] Injecting past research context into reply prompt");
+                sirin_log!("[telegram] Injecting past research context into reply prompt");
             }
 
             let ai_reply = match generate_ai_reply(
@@ -457,7 +458,7 @@ async fn run_listener_once(
                 Ok(v) if !v.trim().is_empty() => v,
                 Ok(_) => fallback_reply.clone(),
                 Err(e) => {
-                    eprintln!("[telegram] AI reply generation failed, fallback to template: {e}");
+                    sirin_log!("[telegram] AI reply generation failed, fallback to template: {e}");
                     fallback_reply.clone()
                 }
             };
@@ -465,7 +466,7 @@ async fn run_listener_once(
             let final_reply = if contains_cjk(&text)
                 && (!contains_cjk(&ai_reply) || is_mixed_language_reply(&ai_reply))
             {
-                eprintln!("[telegram] AI reply language mismatch/mixed output: retrying with forced Traditional Chinese");
+                sirin_log!("[telegram] AI reply language mismatch/mixed output: retrying with forced Traditional Chinese");
                 match generate_ai_reply(
                     &llm_client,
                     &llm,
@@ -492,32 +493,32 @@ async fn run_listener_once(
             if is_private {
                 if let Some(peer_ref) = message.peer_ref().await {
                     match client.send_message(peer_ref, final_reply.as_str()).await {
-                        Ok(_) => eprintln!("[telegram] Auto-reply sent (AI path, private direct message)"),
+                        Ok(_) => sirin_log!("[telegram] Auto-reply sent (AI path, private direct message)"),
                         Err(e) => {
-                            eprintln!("[telegram] Private direct send failed, fallback to reply: {e}");
+                            sirin_log!("[telegram] Private direct send failed, fallback to reply: {e}");
                             if let Err(reply_err) = message.reply(final_reply).await {
-                                eprintln!("[telegram] Failed to auto-reply: {reply_err}");
+                                sirin_log!("[telegram] Failed to auto-reply: {reply_err}");
                             } else {
-                                eprintln!("[telegram] Auto-reply sent (AI path, private reply fallback)");
+                                sirin_log!("[telegram] Auto-reply sent (AI path, private reply fallback)");
                             }
                         }
                     }
                 } else if let Err(reply_err) = message.reply(final_reply).await {
-                    eprintln!("[telegram] Private peer_ref missing and reply failed: {reply_err}");
+                    sirin_log!("[telegram] Private peer_ref missing and reply failed: {reply_err}");
                 } else {
-                    eprintln!("[telegram] Private peer_ref missing, sent via reply fallback");
+                    sirin_log!("[telegram] Private peer_ref missing, sent via reply fallback");
                 }
             } else if let Err(e) = message.reply(final_reply).await {
-                eprintln!("[telegram] Failed to auto-reply: {e}");
+                sirin_log!("[telegram] Failed to auto-reply: {e}");
             } else {
-                eprintln!("[telegram] Auto-reply sent (AI path, group reply)");
+                sirin_log!("[telegram] Auto-reply sent (AI path, group reply)");
             }
 
             if let Err(e) = append_context(&text, &reply_for_context, peer_bare_id) {
-                eprintln!("[telegram] Failed to save context: {e}");
+                sirin_log!("[telegram] Failed to save context: {e}");
             }
         } else if cfg.debug_updates {
-            eprintln!("[telegram] skip: auto-reply disabled by TG_AUTO_REPLY");
+            sirin_log!("[telegram] skip: auto-reply disabled by TG_AUTO_REPLY");
         }
 
         if should_record_ai_decision {
@@ -526,7 +527,7 @@ async fn run_listener_once(
                 Some(message_preview(&text, 140)),
             );
             if let Err(e) = tracker.record(&entry) {
-                eprintln!("[telegram] Failed to record task entry: {e}");
+                sirin_log!("[telegram] Failed to record task entry: {e}");
             }
         }
     }
@@ -548,17 +549,17 @@ pub async fn run_listener(tracker: TaskTracker, auth: TelegramAuthState) {
 
     loop {
         attempt += 1;
-        eprintln!("[telegram] Starting listener attempt #{attempt}");
+        sirin_log!("[telegram] Starting listener attempt #{attempt}");
         auth.set_disconnected(format!("attempt #{attempt}"));
 
         match run_listener_once(&tracker, &auth).await {
             Ok(()) => {
                 // run_listener_once returned Ok when auth was unavailable or
                 // env vars were absent — wait before retrying.
-                eprintln!("[telegram] Listener exited cleanly; retrying in {backoff_secs}s");
+                sirin_log!("[telegram] Listener exited cleanly; retrying in {backoff_secs}s");
             }
             Err(e) => {
-                eprintln!("[telegram] Listener error: {e}; retrying in {backoff_secs}s");
+                sirin_log!("[telegram] Listener error: {e}; retrying in {backoff_secs}s");
                 auth.set_error(e.to_string());
             }
         }
