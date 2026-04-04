@@ -11,7 +11,7 @@
 use serde::{Deserialize, Serialize};
 
 const LM_STUDIO_URL: &str = "http://localhost:1234/v1/chat/completions";
-const DEFAULT_LM_STUDIO_MODEL: &str = "llama-3.2-8x3b-moe-dark-champion-instruct-uncensored-abliterated-18.4b";
+const DEFAULT_LM_STUDIO_MODEL: &str = "gemma-4-e4b-it";
 const USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
      (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";

@@ -37,6 +37,17 @@ const MAX_CONTEXT: usize = 2000;
 
 // ── Page fetching ─────────────────────────────────────────────────────────────
 
+/// Returns a cached `Selector` for page content extraction (compiled once per process).
+fn page_content_selector() -> &'static scraper::Selector {
+    static SEL: OnceLock<scraper::Selector> = OnceLock::new();
+    SEL.get_or_init(|| {
+        scraper::Selector::parse(
+            "body p, body h1, body h2, body h3, body li, body span, body div",
+        )
+        .unwrap()
+    })
+}
+
 /// Fetch a URL and extract readable text from the HTML body.
 async fn fetch_page_text(
     http: &reqwest::Client,
@@ -55,8 +66,7 @@ async fn fetch_page_text(
     let doc = scraper::Html::parse_document(&html);
 
     // Remove script / style elements from consideration by only selecting body text nodes.
-    let sel = scraper::Selector::parse("body p, body h1, body h2, body h3, body li, body span, body div")
-        .unwrap();
+    let sel = page_content_selector();
 
     let mut parts: Vec<String> = Vec::new();
     for el in doc.select(&sel) {
@@ -355,48 +365,76 @@ async fn pipeline(
     });
     let _ = save_research(task);
 
-    // ── Phase 4: Search + analyse each question ───────────────────────────────
+    // ── Phase 4: Search + analyse each question (parallel) ───────────────────
+    sirin_log!(
+        "[researcher] Phase 4: running {} questions in parallel",
+        questions.len()
+    );
+
+    let qa_futures: Vec<_> = questions
+        .iter()
+        .enumerate()
+        .map(|(i, question)| {
+            let http = http.clone();
+            let llm = llm.clone();
+            let question = question.clone();
+            async move {
+                sirin_log!("[researcher] Phase 4.{}: searching for '{}'", i + 1, question);
+                let search_results = ddg_search(&question).await.unwrap_or_default();
+                let search_block = if search_results.is_empty() {
+                    "（無搜尋結果）".to_string()
+                } else {
+                    search_results
+                        .iter()
+                        .take(3)
+                        .map(|r| format!("- {}: {} ({})", r.title, r.snippet, r.url))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+                let qa_prompt = format!(
+                    "Research question: {question}\n\
+                     \n\
+                     Web search results:\n{search_block}\n\
+                     \n\
+                     Based on the search results, provide a concise answer to the research question.\n\
+                     Respond in Traditional Chinese. 3-5 sentences max.\n\
+                     \n\
+                     Answer:"
+                );
+                let answer = call_prompt(&http, &llm, &qa_prompt)
+                    .await
+                    .map_err(|e: Box<dyn std::error::Error + Send + Sync>| e.to_string())?;
+                sirin_log!("[researcher] Q{} answered ({} chars)", i + 1, answer.len());
+                Ok::<(usize, String, String), String>((i, question, answer))
+            }
+        })
+        .collect();
+
+    let qa_outcomes = futures::future::join_all(qa_futures).await;
+
+    // Collect results in original order; propagate first hard error if all fail.
     let mut qa_results: Vec<String> = Vec::new();
-    for (i, question) in questions.iter().enumerate() {
-        sirin_log!("[researcher] Phase 4.{}: searching for '{}'", i + 1, question);
-
-        // Web search
-        let search_results = ddg_search(question).await.unwrap_or_default();
-        let search_block = if search_results.is_empty() {
-            "（無搜尋結果）".to_string()
-        } else {
-            search_results
-                .iter()
-                .take(3)
-                .map(|r| format!("- {}: {} ({})", r.title, r.snippet, r.url))
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
-
-        // LLM analysis of this question
-        let qa_prompt = format!(
-            "Research question: {question}\n\
-             \n\
-             Web search results:\n{search_block}\n\
-             \n\
-             Based on the search results, provide a concise answer to the research question.\n\
-             Respond in Traditional Chinese. 3-5 sentences max.\n\
-             \n\
-             Answer:"
-        );
-
-        let answer = call_prompt(http, llm, &qa_prompt).await.map_err(|e| e.to_string())?;
-        sirin_log!("[researcher] Q{} answered ({} chars)", i + 1, answer.len());
-
-        let qa_summary = format!("Q: {question}\nA: {answer}");
-        qa_results.push(qa_summary.clone());
-
-        task.steps.push(ResearchStep {
-            phase: format!("research_q{}", i + 1),
-            output: qa_summary,
-        });
-        let _ = save_research(task);
+    let mut any_success = false;
+    for outcome in qa_outcomes {
+        match outcome {
+            Ok((i, question, answer)) => {
+                any_success = true;
+                let qa_summary = format!("Q: {question}\nA: {answer}");
+                qa_results.push(qa_summary.clone());
+                task.steps.push(ResearchStep {
+                    phase: format!("research_q{}", i + 1),
+                    output: qa_summary,
+                });
+            }
+            Err(e) => {
+                sirin_log!("[researcher] A question failed (skipping): {e}");
+            }
+        }
     }
+    if !any_success && !questions.is_empty() {
+        return Err("All parallel research questions failed".to_string());
+    }
+    let _ = save_research(task);
 
     // ── Phase 5: Synthesise final report ──────────────────────────────────────
     sirin_log!("[researcher] Phase 5: synthesising final report");

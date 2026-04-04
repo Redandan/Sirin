@@ -16,8 +16,10 @@ use std::collections::{HashMap, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use chrono::Utc;
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
 // ── Memory store ──────────────────────────────────────────────────────────────
@@ -39,60 +41,94 @@ struct MemoryEntry {
     text: String,
 }
 
+// ── In-memory cache ───────────────────────────────────────────────────────────
+
+/// Global in-process cache of all memory entries.
+/// `None` means not yet loaded from disk; `Some(vec)` is the live index.
+fn memory_entry_cache() -> &'static RwLock<Option<Vec<MemoryEntry>>> {
+    static CACHE: OnceLock<RwLock<Option<Vec<MemoryEntry>>>> = OnceLock::new();
+    CACHE.get_or_init(|| RwLock::new(None))
+}
+
+/// Ensure the cache is populated from disk (no-op if already loaded).
+fn ensure_cache_loaded() {
+    // Fast path: already loaded.
+    if memory_entry_cache().read().is_some() {
+        return;
+    }
+    // Slow path: acquire write lock and load.
+    let mut guard = memory_entry_cache().write();
+    if guard.is_some() {
+        return; // Another thread beat us.
+    }
+    let path = memory_index_path();
+    let entries: Vec<MemoryEntry> = if path.exists() {
+        fs::File::open(&path)
+            .ok()
+            .map(|f| {
+                BufReader::new(f)
+                    .lines()
+                    .filter_map(|l| l.ok())
+                    .filter(|l| !l.trim().is_empty())
+                    .filter_map(|l| serde_json::from_str::<MemoryEntry>(&l).ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    *guard = Some(entries);
+}
+
 /// Persist a text snippet to the memory index.
 pub fn memory_store(text: &str, source: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if text.trim().is_empty() {
         return Ok(());
-    }
-    let path = memory_index_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
     }
     let entry = MemoryEntry {
         timestamp: Utc::now().to_rfc3339(),
         source: source.to_string(),
         text: text.to_string(),
     };
+    // Write to disk first.
+    let path = memory_index_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
     let line = serde_json::to_string(&entry)?;
     let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
     writeln!(file, "{line}")?;
+    // Keep cache in sync if it is already loaded.
+    let mut guard = memory_entry_cache().write();
+    if let Some(ref mut entries) = *guard {
+        entries.push(entry);
+    }
     Ok(())
 }
 
 /// Search the memory index using simple TF-IDF term scoring.
-/// Returns up to `limit` most relevant snippets, best-match first.
+/// Results come from the in-process cache (loaded from disk on first call).
 pub fn memory_search(query: &str, limit: usize) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
-    let path = memory_index_path();
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-
     let query_terms: Vec<String> = tokenize(query);
     if query_terms.is_empty() {
         return Ok(Vec::new());
     }
 
-    let file = fs::File::open(&path)?;
-    let reader = BufReader::new(file);
+    ensure_cache_loaded();
 
-    let mut scored: Vec<(f64, String)> = Vec::new();
+    let guard = memory_entry_cache().read();
+    let entries = guard.as_deref().unwrap_or(&[]);
 
-    for line in reader.lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let Ok(entry) = serde_json::from_str::<MemoryEntry>(&line) else {
-            continue;
-        };
-        let score = score_entry(&entry.text, &query_terms);
-        if score > 0.0 {
-            scored.push((score, entry.text));
-        }
-    }
+    let mut scored: Vec<(f64, &str)> = entries
+        .iter()
+        .filter_map(|e| {
+            let s = score_entry(&e.text, &query_terms);
+            if s > 0.0 { Some((s, e.text.as_str())) } else { None }
+        })
+        .collect();
 
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    Ok(scored.into_iter().take(limit).map(|(_, t)| t).collect())
+    Ok(scored.into_iter().take(limit).map(|(_, t)| t.to_owned()).collect())
 }
 
 /// Tokenize text into lowercase words (CJK chars split individually).

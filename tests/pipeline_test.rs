@@ -11,7 +11,7 @@ const USER_AGENT: &str =
      (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
 const LM_STUDIO_URL: &str = "http://localhost:1234/v1/chat/completions";
-const DEFAULT_LM_STUDIO_MODEL: &str = "llama-3.2-8x3b-moe-dark-champion-instruct-uncensored-abliterated-18.4b";
+const DEFAULT_LM_STUDIO_MODEL: &str = "gemma-4-e4b-it";
 
 fn lm_studio_model() -> String {
     std::env::var("LM_STUDIO_MODEL")
