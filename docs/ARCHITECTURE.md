@@ -1,171 +1,143 @@
-# Sirin 架構說明（Current Architecture）
+# Sirin 架構說明
 
-本文件描述目前 `Sirin` 專案「已經存在且可對應到程式碼」的架構，不含未落地的目標設計。
+本文件描述目前程式碼實際對應的架構。
 
 ## 1. 系統總覽
 
-Sirin 是一個 **Tauri 2 桌面殼 + Next.js UI + Rust 背景服務** 的混合式本機代理。
+Sirin 是一個**單一 Rust binary**，整合 egui 原生 GUI 與 Tokio 非同步後端。沒有 WebView、沒有 Node.js、沒有 IPC 序列化層。
 
-- UI 層：Next.js 任務看板（Task Board）
-- 應用層：Tauri commands 作為前後端橋接
-- 背景層：Telegram listener、Follow-up worker、Research pipeline
-- 儲存層：JSONL 日誌 + LanceDB 向量記憶（本機）
+```
+┌─────────────────────────────────────────────┐
+│               sirin.exe（單一進程）           │
+│                                             │
+│  ┌──────────────┐   直接呼叫   ┌──────────┐ │
+│  │  egui GUI    │ ←─────────→ │  共享狀態 │ │
+│  │  (主執行緒)   │             │  Arc/Mutex│ │
+│  └──────────────┘             └──────────┘ │
+│                                     ↑       │
+│  ┌──────────────────────────────────┘       │
+│  │  Tokio 背景任務（spawn）                  │
+│  │  - telegram::run_listener                │
+│  │  - followup::run_worker                  │
+│  │  - background_loop（heartbeat）          │
+│  └──────────────────────────────────────────│
+└─────────────────────────────────────────────┘
+```
 
-## 2. 執行拓樸
+## 2. 執行緒模型
 
-### 2.1 前端
+| 執行緒 | 負責 |
+|--------|------|
+| 主執行緒 | eframe 事件迴圈（egui 渲染） |
+| Tokio worker pool | Telegram listener、follow-up worker、research pipeline |
 
-- 入口：`app/page.tsx`
-- 核心元件：`components/task-board.tsx`
-- 前端以 `@tauri-apps/api/core` 的 `invoke()` 呼叫 Rust commands。
-
-### 2.2 Tauri Host（Rust）
-
-- 入口：`src/main.rs`
-- 啟動時註冊 command：
-  - `read_tasks`
-  - `list_skills`
-  - `approve_task`
-  - `search_web`
-  - `get_context`
-  - `clear_context`
-  - `start_research`
-  - `get_research_status`
-  - `list_research_tasks`
-- 啟動後常駐背景任務：
-  - `background_loop()`（每 60 秒 heartbeat）
-  - `telegram::run_listener(...)`
-  - `followup::run_worker(...)`
-
-### 2.3 UI 與桌面殼連線
-
-- Tauri dev：`tauri.conf.json`
-  - `devUrl = http://localhost:3000`
-  - `beforeDevCommand = npm run dev`
-- Tauri build：
-  - `beforeBuildCommand = npm run build`
-  - `frontendDist = dist`
-- Next.js 設定：`next.config.mjs`
-  - `output = export`
-  - `distDir = dist`
+egui 的 `update()` 每 5 秒從 JSONL 檔案讀取最新狀態並重繪，無需跨執行緒 channel。
 
 ## 3. 模組責任
 
-### 3.1 `src/persona.rs`
+### `src/main.rs`
+- 載入 `.env`
+- 建立共享狀態（`TaskTracker`、`TelegramAuthState`）
+- 建立 `tokio::runtime::Runtime`，spawn 背景任務
+- 呼叫 `eframe::run_native`（接管主執行緒）
 
-- 載入 `config/persona.yaml`
-- 定義 persona 身分、目標、ROI 閥值、回覆語氣
-- 提供 `BehaviorEngine` 判斷 Action Tier：
-  - `Ignore`
-  - `LocalProcess`
-  - `Escalate`
-- 提供 `TaskTracker` 對 `task.jsonl` 讀寫與狀態更新
+### `src/ui.rs`
+- egui App，三個 tab：
+  - **任務板**：讀取最近 200 筆 `task.jsonl`，顯示事件 / 狀態
+  - **調研**：啟動新調研、顯示 `research.jsonl` 歷史
+  - **Telegram**：顯示連線狀態，CodeRequired / PasswordRequired 時顯示輸入框
+- 每 5 秒自動刷新，關閉視窗改為最小化（背景持續運行）
 
-### 3.2 `src/telegram.rs`
+### `src/telegram/`
+拆分為四個子模組：
 
-- 透過 `grammers` 連線 Telegram（MTProto）
-- 解析 `.env`（`TG_*`）控制監聽、回覆策略、啟動訊息
-- 內建訊息處理能力：
-  - 建立待辦（PENDING）
-  - 查詢待辦
-  - 完成最新待辦
-  - 偵測調研意圖（例如「調研 ...」）
-- AI 回覆後端：
-  - `LLM_PROVIDER=ollama`（`/api/generate`）
-  - `LLM_PROVIDER=lmstudio`（OpenAI-compatible `/chat/completions`）
-- 具備對話 context 附帶與中英文修正策略（必要時強制繁中）
+| 子模組 | 內容 |
+|--------|------|
+| `mod.rs` | 連線、授權流程、主訊息迴圈 |
+| `llm.rs` | Prompt 建構、AI 回覆生成 |
+| `commands.rs` | 指令解析（任務建立、調研意圖偵測）|
+| `language.rs` | CJK 偵測、混語判斷、中文保底回覆 |
+| `config.rs` | `TelegramConfig` 與 `.env` 解析 |
 
-### 3.3 `src/followup.rs`
+**回覆策略（三層）：**
+1. LLM 生成 1-3 句自然回覆（同語言）
+2. 若使用者用中文但 AI 回非中文 → 強制繁中重試
+3. 仍失敗 → 中文保底句型
 
-- 週期性掃描最近任務（預設每 30 分鐘）
-- 針對 `PENDING` / `FOLLOWING` 建 prompt 丟本機 LLM
-- 若模型回應 `FOLLOWUP_NEEDED`，將對應任務狀態改為 `FOLLOWUP_NEEDED`
-- 週期可由 `FOLLOWUP_INTERVAL_SECS` 覆蓋
+**調研閉環（新）：**
+- 偵測「調研/研究」意圖 → 背景 spawn `researcher::run_research`
+- 完成後透過同一 Telegram 連線回報摘要給原發訊者
+- 相關研究結果（keyword match）會注入後續回覆的 prompt
 
-### 3.4 `src/researcher.rs`
+### `src/followup.rs`
+- 週期性（預設 30 分鐘）掃描近期 `PENDING` 任務
+- 透過本機 LLM 判斷是否需跟進
+- 每 10 個週期自動 trim `task.jsonl`（上限由 `TASK_LOG_MAX_LINES` 控制）
 
-- 背景調研 pipeline（多階段）
-  1. fetch URL 內容（可選）
-  2. overview
-  3. 產生 4 個研究問題
-  4. 每題做 DDG 搜尋與 LLM 回答
-  5. synthesis 最終報告
-- 任務狀態持久化於 `research.jsonl`
-- 前端可透過 command 輪詢進度與最終報告
+### `src/researcher.rs`
+多階段背景調研 pipeline：
+1. Fetch URL 頁面內容（可選）
+2. LLM overview 分析
+3. 生成 4 個研究問題
+4. 每題 DDG 搜尋 + LLM 解答
+5. Synthesis 最終報告
 
-### 3.5 `src/skills.rs`
+任務狀態持久化至 `research.jsonl`；GUI 每 5 秒讀取最新狀態。
 
-- 提供零金鑰 DDG 搜尋能力 `ddg_search`
-- 註冊可執行技能清單
-- `approve_task` 後以 Tauri event 發送 `skill:<id>`
+### `src/llm.rs`
+共用 LLM 呼叫層：
+- `LlmBackend` enum：`Ollama` | `LmStudio`
+- `LlmConfig::from_env()` 解析 `.env`
+- `call_prompt(client, llm, prompt)` 統一入口
 
-### 3.6 `src/memory.rs`
+### `src/memory.rs`
+- LanceDB 本地向量記憶：`add_to_memory` / `search_memory`（目前為保留能力，尚未串入主流程）
+- JSONL 對話 context：`append_context` / `load_recent_context`
 
-- LanceDB 本地向量記憶：
-  - `add_to_memory`
-  - `search_memory`
-- JSONL 對話上下文：
-  - `append_context`
-  - `load_recent_context`
-  - `clear_context`
+### `src/persona.rs`
+- `Persona`：載入 `config/persona.yaml`
+- `TaskTracker`：`task.jsonl` 讀寫、狀態更新、`trim_to_max`
 
-## 4. 資料儲存與路徑策略
+### `src/skills.rs`
+- `ddg_search`：零金鑰 DuckDuckGo 搜尋
+- `execute_skill`：skill 執行（目前無事件廣播，直接回傳結果）
 
-優先使用 `%LOCALAPPDATA%/Sirin/...`；若環境不可得則 fallback 到工作目錄 `data/...`。
+## 4. 資料儲存
 
-- Task log：`tracking/task.jsonl`
-- Research log：`tracking/research.jsonl`
-- Conversation context：`tracking/sirin_context.jsonl`
-- Telegram session：`sirin.session`
-- 向量記憶：`data/sirin_memory`（LanceDB）
+優先使用 `%LOCALAPPDATA%/Sirin/tracking/`；fallback 到工作目錄 `data/tracking/`。
 
-## 5. 關鍵資料流
+| 檔案 | 說明 |
+|------|------|
+| `task.jsonl` | 任務追蹤（append-only，定期 trim）|
+| `research.jsonl` | 調研任務與報告 |
+| `sirin_context.jsonl` | 對話 context（最近 N 輪）|
+| `sirin.session` | Telegram MTProto session |
+| `data/sirin_memory` | LanceDB 向量記憶 |
 
-### 5.1 UI Task Board 資料流
+## 5. 主要資料流
 
-1. 前端定期呼叫：`read_tasks` + `list_research_tasks`
-2. Rust 回傳最新資料
-3. 前端依狀態分區顯示（待處理、調研中、活動流）
-4. 若按「快速核准」，呼叫 `approve_task`
-5. Rust 更新狀態為 `DONE` 並觸發 skill event
+### Telegram 訊息處理
+```
+收到訊息
+  → 解析指令 / 調研意圖 / 一般對話
+  → 載入對話 context + web search（可選）
+  → 載入相關研究結果（keyword match）
+  → LLM 生成回覆
+  → 語言修正（必要時）
+  → 發送回覆 + 記錄 context
+```
 
-### 5.2 Telegram 訊息資料流
+### 調研任務閉環
+```
+使用者發「調研 <主題>」
+  → spawn researcher::run_research（背景）
+  → 立即回覆「已啟動調研任務」
+  → 研究完成後 → 透過 Telegram 回報摘要
+  → 後續對話可引用研究結果
+```
 
-1. listener 收到訊息
-2. 解析是否為指令/待辦/調研請求
-3. 必要時寫入 `task.jsonl` 或建立 research 任務
-4. 透過 LLM 生成回覆（含 context 與可選 web search 摘要）
-5. 回覆發送至 Telegram
+## 6. 已知限制
 
-### 5.3 Follow-up 資料流
-
-1. worker 讀最近 N 筆任務
-2. 過濾 `PENDING/FOLLOWING`
-3. LLM 判斷是否需跟進
-4. 回寫任務狀態
-
-## 6. 執行緒與非同步模型
-
-- Rust runtime：Tokio
-- 長時任務（listener/worker/research）以 `spawn` 背景執行
-- Tauri command 以同步/非同步函式混合提供
-- UI 輪詢採 adaptive interval（調研進行中 2 秒，否則 5 秒）
-
-## 7. 已知邊界與限制（現況）
-
-- 純瀏覽器跑 Next.js 時，涉及 `invoke()` 的互動功能不等同桌面模式。
-- Telegram / LLM 功能依賴 `.env` 與本機模型服務狀態。
-- `skills` 目前為有限集合，事件驅動能力已建立但仍偏輕量。
-
-## 8. 主要檔案索引
-
-- `src/main.rs`：應用入口、command 註冊、背景任務啟動
-- `src/persona.rs`：persona 與 task tracker
-- `src/telegram.rs`：Telegram listener 與回覆策略
-- `src/followup.rs`：跟進判斷 worker
-- `src/researcher.rs`：背景調研 pipeline
-- `src/memory.rs`：向量記憶與 context log
-- `src/skills.rs`：skill registry 與 web search
-- `components/task-board.tsx`：任務看板 UI
-- `config/persona.yaml`：persona 設定
-- `tauri.conf.json`：Tauri build/dev 串接設定
+- LanceDB 向量記憶尚未串入回覆流程（用 keyword match 替代）
+- skills 為輕量實作，無 event bus
+- egui 無系統托盤（tray），關閉視窗改為最小化

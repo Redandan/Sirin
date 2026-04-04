@@ -1,130 +1,97 @@
 # Sirin QUICKSTART
 
-這份文件提供最短路徑，讓你在本機快速把 Sirin 跑起來。
-
 ## 1. 前置需求
 
-### 必要
+| 必要 | 說明 |
+|------|------|
+| Rust toolchain | `rustup` 安裝，確認 `cargo --version` 可用 |
+| Microsoft C++ Build Tools | Windows 編譯 Rust 必要 |
+| 本機 LLM 服務 | Ollama 或 LM Studio（任一即可）|
 
-- Node.js 20+
-- npm
+Node.js / npm 不再需要。
 
-### 若要跑桌面版（建議）
+## 2. 設定 `.env`
 
-- Rust toolchain（含 `cargo`）
-- Tauri CLI（`cargo tauri` 或 `npx tauri`）
-- Windows: Microsoft C++ Build Tools、WebView2 Runtime
-
-## 2. 安裝
-
-在專案根目錄執行：
-
-```powershell
-npm install
-```
-
-## 3. 最快驗證路徑
-
-### 路徑 A：先確認前端可啟動
-
-```powershell
-npm run dev
-```
-
-開啟 `http://localhost:3000`。
-
-注意：這只驗證 Next.js；涉及 `invoke()` 的桌面互動仍需 Tauri 模式。
-
-### 路徑 B：跑完整桌面版（推薦）
-
-若已有 `cargo tauri`：
-
-```powershell
-cargo tauri dev
-```
-
-若使用 npm 本地 CLI：
-
-```powershell
-npx tauri dev
-```
-
-## 4. 最小 `.env` 範例
-
-若你要啟用 Telegram 與本機 LLM，請在專案根目錄建立 `.env`：
+在專案根目錄建立 `.env`（可複製下方範例）：
 
 ```env
-TG_API_ID=
-TG_API_HASH=
-TG_PHONE=
-TG_GROUP_IDS=
+# Telegram
+TG_API_ID=your_api_id
+TG_API_HASH=your_api_hash
+TG_PHONE=+886...
 TG_AUTO_REPLY=true
 TG_REPLY_PRIVATE=true
-TG_REPLY_GROUPS=true
+TG_REQUIRE_LOGIN=1
 
-LLM_PROVIDER=ollama
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=llama3.2
-```
-
-如果改用 LM Studio：
-
-```env
+# LM Studio（推薦）
 LLM_PROVIDER=lmstudio
 LM_STUDIO_BASE_URL=http://localhost:1234/v1
-LM_STUDIO_MODEL=local-model-name
-# LM_STUDIO_API_KEY=optional
+LM_STUDIO_MODEL=llama-3.2-3b-instruct-uncensored
+
+# 或改用 Ollama
+# LLM_PROVIDER=ollama
+# OLLAMA_BASE_URL=http://localhost:11434
+# OLLAMA_MODEL=llama3.2
 ```
 
-## 5. 基本操作驗收
+沒有 `.env` 也可以啟動，但 Telegram 與 LLM 功能會停用。
 
-啟動後可快速驗證下列流程：
-
-1. UI 任務板可顯示並定期更新。
-2. Telegram 收到訊息後，`task.jsonl` 有新紀錄。
-3. 在 Telegram 輸入「調研 <主題或URL>」，任務板可看到 research 任務。
-4. 點選「快速核准」可將可行動任務更新為 `DONE`。
-
-## 6. 產出建置
-
-### 前端匯出
+## 3. 啟動
 
 ```powershell
-npm run build
+cargo run
 ```
 
-輸出到 `dist/`（由 `next.config.mjs` 設定）。
+首次執行會下載並編譯依賴，需要幾分鐘。之後的啟動很快。
 
-### 打包桌面應用
+### Release 版本
 
 ```powershell
-cargo tauri build
+cargo build --release
+.\target\release\sirin.exe
 ```
 
-或：
+## 4. 首次 Telegram 登入
 
-```powershell
-npx tauri build
+1. 啟動後切換到 **Telegram** tab
+2. 狀態顯示「需要驗證碼」時，輸入手機收到的 code
+3. 若帳號有 2FA，再輸入密碼
+4. 成功後 session 持久化，下次啟動自動連線
+
+## 5. 基本驗收
+
+| 功能 | 驗證方式 |
+|------|----------|
+| GUI 正常顯示 | 啟動後三個 tab 可切換，中文不亂碼 |
+| Telegram 連線 | Telegram tab 顯示「已連線」|
+| 任務記錄 | 傳訊息給自己，任務板出現新紀錄 |
+| 調研 | 發「調研 Rust async runtime」，調研 tab 出現進行中任務 |
+| LLM 回覆 | 私訊帳號，收到 AI 自動回覆 |
+
+## 6. 調整人格
+
+編輯 `config/persona.yaml`：
+
+```yaml
+identity:
+  name: Sirin
+response_style:
+  voice: 自然、簡潔、像真人朋友
+  ack_prefix: 收到
+  compliance_line: 我會按照你說的做
 ```
 
-## 7. 常見問題（快速排查）
+改完後重啟即生效（每次回覆時重新載入）。
 
-### `cargo` 或 `cargo tauri` 找不到
+## 7. 常見問題
 
-先確認 Rust toolchain 與 Tauri CLI 已安裝並可在 PATH 使用。
+**中文顯示為方框**
+egui 字型載入失敗。確認 `C:/Windows/Fonts/msjh.ttc`（微軟正黑體）或 `msyh.ttc`（微軟雅黑）存在。
 
-### 前端可開但按鈕/互動失效
+**Telegram 沒有自動回覆**
+- 確認 `.env` 的 `TG_AUTO_REPLY=true` 與 `TG_REPLY_PRIVATE=true`
+- 確認 LLM 服務正在執行（LM Studio server 已啟動）
+- 查看終端機 stderr 是否有 `[telegram]` 錯誤訊息
 
-這通常是瀏覽器模式沒有 Tauri IPC。請改用 `cargo tauri dev` 或 `npx tauri dev`。
-
-### Telegram 無回覆
-
-- 檢查 `.env` 是否完整（`TG_API_ID`、`TG_API_HASH`、`TG_GROUP_IDS`）
-- 檢查首次登入驗證流程是否完成
-- 檢查 `LLM_PROVIDER` 對應的本機模型服務是否真的在執行
-
-## 8. 你下一步可能會做的事
-
-- 調整 `config/persona.yaml` 的語氣與目標
-- 將 `FOLLOWUP_INTERVAL_SECS` 調短做壓測
-- 增加更多 `skills` 並在 `approve_task` 串接
+**`cargo build` 失敗**
+確認已安裝 Microsoft C++ Build Tools，並且 Rust toolchain 是最新版（`rustup update`）。
