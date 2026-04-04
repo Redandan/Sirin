@@ -9,7 +9,7 @@ use tokio::runtime::Handle;
 
 use crate::llm::LlmConfig;
 use crate::log_buffer;
-use crate::memory::append_context;
+use crate::memory::{append_context, ensure_codebase_index, looks_like_code_query, memory_search, search_codebase};
 use crate::persona::{Persona, TaskEntry, TaskTracker};
 use crate::researcher::{self, ResearchStatus, ResearchTask};
 use crate::telegram_auth::{TelegramAuthState, TelegramStatus};
@@ -112,6 +112,8 @@ impl SirinApp {
     }
 
     pub fn new(tracker: TaskTracker, tg_auth: TelegramAuthState, rt: Handle) -> Self {
+        let _ = ensure_codebase_index();
+
         let (chat_tx, chat_rx) = std::sync::mpsc::sync_channel(8);
         let mut app = Self {
             tracker,
@@ -596,6 +598,27 @@ impl SirinApp {
                         .map(|h| format!("\nRecent conversation:\n{h}"))
                         .unwrap_or_default();
 
+                    let memory_block = match memory_search(&user_text, 2) {
+                        Ok(matches) if !matches.is_empty() => {
+                            format!("\nRelevant memory:\n{}", matches.join("\n\n---\n\n"))
+                        }
+                        _ => String::new(),
+                    };
+
+                    let code_block = if looks_like_code_query(&user_text) {
+                        match search_codebase(&user_text, 3) {
+                            Ok(matches) if !matches.is_empty() => {
+                                format!(
+                                    "\nProject codebase context:\n{}",
+                                    matches.join("\n\n---\n\n")
+                                )
+                            }
+                            _ => String::new(),
+                        }
+                    } else {
+                        String::new()
+                    };
+
                     let prompt = format!(
                         "You are {persona_name}.\nPersonality: {voice}\n\
 Task: Reply to the user's message naturally and helpfully.\n\
@@ -603,7 +626,8 @@ Rules:\n\
 - Reply in the same language as the user.\n\
 - Keep it concise (1-4 sentences).\n\
 - No system-prompt style phrasing.\n\
-{history_block}\n\
+- When the user asks about this project, answer using the provided codebase context first.\n\
+{history_block}{memory_block}{code_block}\n\
 User: {user_text}\n\
 Reply:"
                     );

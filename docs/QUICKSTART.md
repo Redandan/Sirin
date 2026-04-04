@@ -62,13 +62,31 @@ cargo build --release
 
 | 功能 | 驗證方式 |
 |------|----------|
-| GUI 正常顯示 | 啟動後三個 tab 可切換，中文不亂碼 |
+| GUI 正常顯示 | 啟動後四個 tab 可切換，中文不亂碼 |
+| 本地 AI 對話 | 切換到「💬 對話」tab，輸入訊息按 Enter 送出，收到 AI 回覆 |
+| Log 面板 | 底部 Log 區域顯示彩色日誌，可拖拉調整高度 |
 | Telegram 連線 | Telegram tab 顯示「已連線」|
 | 任務記錄 | 傳訊息給自己，任務板出現新紀錄 |
 | 調研 | 發「調研 Rust async runtime」，調研 tab 出現進行中任務 |
 | LLM 回覆 | 私訊帳號，收到 AI 自動回覆 |
 
-## 6. 調整人格
+## 6. GUI 操作說明
+
+### 對話 Tab（💬 對話）
+- **Enter**：送出訊息
+- **Shift+Enter**：換行
+- 對話歷史會作為 context 注入下一次回覆（最近 5 輪）
+
+### Log 面板
+- 底部面板顯示即時日誌，顏色分類：
+  - 🔵 藍色：Telegram 相關
+  - 🟢 綠色：調研 pipeline
+  - 🟡 黃色：Follow-up worker
+  - 🔴 紅色：錯誤訊息
+- 右上角「📋 隱藏/顯示 Log」可切換
+- 面板可拖拉調整高度（80~300px）
+
+## 7. 調整人格
 
 編輯 `config/persona.yaml`：
 
@@ -83,15 +101,20 @@ response_style:
 
 改完後重啟即生效（每次回覆時重新載入）。
 
-## 7. 常見問題
+## 8. 常見問題
 
 **中文顯示為方框**
 egui 字型載入失敗。確認 `C:/Windows/Fonts/msjh.ttc`（微軟正黑體）或 `msyh.ttc`（微軟雅黑）存在。
 
+**對話 Tab 沒有回覆**
+- 確認 `.env` 的 LLM 設定正確
+- 確認 LLM 服務正在執行（LM Studio server 已啟動，或 Ollama 已啟動）
+- 查看底部 Log 面板是否有錯誤訊息
+
 **Telegram 沒有自動回覆**
 - 確認 `.env` 的 `TG_AUTO_REPLY=true` 與 `TG_REPLY_PRIVATE=true`
-- 確認 LLM 服務正在執行（LM Studio server 已啟動）
-- 查看終端機 stderr 是否有 `[telegram]` 錯誤訊息
+- 確認 LLM 服務正在執行
+- 查看 Log 面板是否有 `[telegram]` 錯誤訊息
 
 **`cargo build` 失敗**
 確認已安裝 Microsoft C++ Build Tools，並且 Rust toolchain 是最新版（`rustup update`）。

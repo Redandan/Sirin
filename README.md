@@ -6,6 +6,7 @@ Sirin 是一個純 Rust 桌面 AI 代理。後端 Tokio 背景任務處理 Teleg
 
 - [架構說明](docs/ARCHITECTURE.md)
 - [快速啟動](docs/QUICKSTART.md)
+- [開發路線圖](docs/ROADMAP.md)
 
 ## 技術組成
 
@@ -13,7 +14,8 @@ Sirin 是一個純 Rust 桌面 AI 代理。後端 Tokio 背景任務處理 Teleg
 - **後端**：Rust + Tokio（非同步背景任務）
 - **Telegram**：grammers-client（MTProto）
 - **LLM**：Ollama 或 LM Studio（本機模型）
-- **儲存**：JSONL append-only log + LanceDB 向量記憶（本機）
+- **記憶**：JSONL 全文索引（`memory_store` / `memory_search`，零外部依賴）
+- **對話 context**：per-peer JSONL ring-log
 
 ## 前置需求
 
@@ -26,12 +28,6 @@ Windows 上需要 Microsoft C++ Build Tools。
 
 ```powershell
 cargo run
-```
-
-開發模式（含編譯輸出）：
-
-```powershell
-cargo run 2>&1
 ```
 
 Release 版本：
@@ -87,12 +83,12 @@ TASK_LOG_MAX_LINES=2000        # task.jsonl 上限行數
 | 路徑 | 說明 |
 |------|------|
 | `src/main.rs` | 程式入口，啟動 Tokio runtime 與 egui 視窗 |
-| `src/ui.rs` | egui App（三個 tab：任務板、調研、Telegram）|
+| `src/ui.rs` | egui App（四個 tab：任務板、調研、Telegram、對話）|
+| `src/log_buffer.rs` | 全域 log 環形緩衝，供 GUI 底部 Log 面板讀取 |
 | `src/telegram/` | Telegram listener、AI 回覆、語言修正 |
 | `src/followup.rs` | LLM follow-up worker |
 | `src/researcher.rs` | 多階段背景調研 pipeline |
 | `src/llm.rs` | 共用 LLM 呼叫層（Ollama / LM Studio）|
-| `src/memory.rs` | LanceDB 向量記憶 + JSONL 對話 context |
+| `src/memory.rs` | 全文記憶索引 + per-peer 對話 context |
 | `src/persona.rs` | Persona 載入與 TaskTracker |
 | `config/persona.yaml` | 人格設定 |
-| `data/tracking/task.jsonl` | 任務追蹤紀錄 |

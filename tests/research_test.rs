@@ -212,7 +212,7 @@ async fn research_full_pipeline() {
         print!("      Q{} searching... ", i + 1);
         let results = ddg_search(question).await;
         let search_block = if results.is_empty() {
-            "（無結果）".to_string()
+            "（外部搜尋暫時不可用，請基於既有知識回答並標示可能不完整）".to_string()
         } else {
             results.iter().take(3)
                 .map(|r| format!("- {}: {} ({})", r.title, r.snippet, r.url))

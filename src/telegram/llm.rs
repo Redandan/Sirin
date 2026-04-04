@@ -14,6 +14,7 @@ pub fn build_ai_reply_prompt(
     search_context: Option<&str>,
     context_block: Option<&str>,
     memory_context: Option<&str>,
+    code_context: Option<&str>,
     direct_answer_request: bool,
     force_traditional_chinese: bool,
 ) -> String {
@@ -41,6 +42,10 @@ pub fn build_ai_reply_prompt(
 
     let memory_block = memory_context
         .map(|v| format!("\nPast research findings (reference only, summarise if relevant):\n{v}"))
+        .unwrap_or_default();
+
+    let code_block = code_context
+        .map(|v| format!("\nProject codebase context (use when the user asks about this app or its implementation):\n{v}"))
         .unwrap_or_default();
 
     let language_override = if force_traditional_chinese {
@@ -74,7 +79,7 @@ Constraints:\n\
 - If an internal action already ran, include a short result summary.\n\
 \n\
 User message: {user_text}\n\
-{execution_block}{search_block}{history_block}{memory_block}\n\
+{execution_block}{search_block}{history_block}{memory_block}{code_block}\n\
 \n\
 Return only the final reply text."
     )
@@ -91,6 +96,7 @@ pub async fn generate_ai_reply(
     search_context: Option<&str>,
     context_block: Option<&str>,
     memory_context: Option<&str>,
+    code_context: Option<&str>,
     direct_answer_request: bool,
     force_traditional_chinese: bool,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
@@ -101,6 +107,7 @@ pub async fn generate_ai_reply(
         search_context,
         context_block,
         memory_context,
+        code_context,
         direct_answer_request,
         force_traditional_chinese,
     );

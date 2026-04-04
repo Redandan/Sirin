@@ -20,6 +20,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 use crate::llm::{call_prompt, LlmConfig};
+use crate::memory::memory_store;
 use crate::sirin_log;
 use crate::skills::ddg_search;
 
@@ -431,6 +432,15 @@ async fn pipeline(
         phase: "synthesis".into(),
         output: format!("報告已生成 ({} chars)", report.len()),
     });
+
+    let memory_snippet: String = report.chars().take(2000).collect();
+    if let Err(e) = memory_store(
+        &format!("Research topic: {}\n\n{}", task.topic, memory_snippet),
+        "research",
+    ) {
+        sirin_log!("[researcher] Failed to persist research memory: {e}");
+    }
+
     task.final_report = Some(report);
     let _ = save_research(task);
 

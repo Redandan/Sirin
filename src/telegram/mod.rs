@@ -31,7 +31,10 @@ use grammers_client::update::Update;
 use grammers_session::storages::SqliteSession;
 use grammers_session::types::{PeerId, PeerKind};
 
-use crate::memory::{append_context, load_recent_context};
+use crate::memory::{
+    append_context, ensure_codebase_index, load_recent_context, looks_like_code_query,
+    memory_search, search_codebase,
+};
 use crate::sirin_log;
 use crate::persona::{Persona, TaskEntry, TaskTracker};
 use crate::researcher;
@@ -115,6 +118,10 @@ async fn run_listener_once(
     let cfg = TelegramConfig::from_env()?;
     let llm = LlmConfig::from_env();
     let llm_client = reqwest::Client::new();
+
+    if let Err(e) = ensure_codebase_index() {
+        sirin_log!("[telegram] Codebase index refresh skipped: {e}");
+    }
 
     let session_path = session_path();
     if let Some(parent) = session_path.parent() {
@@ -414,31 +421,67 @@ async fn run_listener_once(
                 None
             };
 
-            // Inject relevant past research into the reply prompt (keyword match).
+            // Inject relevant past research / memory into the reply prompt.
             let memory_context: Option<String> = {
+                let mut blocks = Vec::new();
+
+                match memory_search(&text, 2) {
+                    Ok(matches) if !matches.is_empty() => {
+                        blocks.push(matches.join("\n\n---\n\n"));
+                    }
+                    Ok(_) => {}
+                    Err(e) => sirin_log!("[telegram] Memory search failed: {e}"),
+                }
+
                 let lower_text = text.to_lowercase();
                 match researcher::list_research() {
-                    Ok(tasks) => tasks
-                        .into_iter()
-                        .filter(|t| t.status == researcher::ResearchStatus::Done)
-                        .filter(|t| {
-                            t.topic
-                                .to_lowercase()
-                                .split_whitespace()
-                                .filter(|w| w.len() > 2)
-                                .any(|word| lower_text.contains(word))
-                        })
-                        .filter_map(|t| t.final_report)
-                        .next()
-                        .map(|r| r.chars().take(600).collect()),
+                    Ok(tasks) => {
+                        if let Some(report) = tasks
+                            .into_iter()
+                            .filter(|t| t.status == researcher::ResearchStatus::Done)
+                            .filter(|t| {
+                                t.topic
+                                    .to_lowercase()
+                                    .split_whitespace()
+                                    .filter(|w| w.len() > 2)
+                                    .any(|word| lower_text.contains(word))
+                            })
+                            .filter_map(|t| t.final_report)
+                            .next()
+                        {
+                            let snippet: String = report.chars().take(600).collect();
+                            blocks.push(format!("Recent related research:\n{snippet}"));
+                        }
+                    }
                     Err(e) => {
                         sirin_log!("[telegram] Failed to load research memory: {e}");
-                        None
                     }
+                }
+
+                if blocks.is_empty() {
+                    None
+                } else {
+                    Some(blocks.join("\n\n---\n\n"))
                 }
             };
             if memory_context.is_some() {
-                sirin_log!("[telegram] Injecting past research context into reply prompt");
+                sirin_log!("[telegram] Injecting memory context into reply prompt");
+            }
+
+            let code_context: Option<String> = if looks_like_code_query(&text) {
+                match search_codebase(&text, 3) {
+                    Ok(matches) if !matches.is_empty() => Some(matches.join("\n\n---\n\n")),
+                    Ok(_) => None,
+                    Err(e) => {
+                        sirin_log!("[telegram] Codebase search failed: {e}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            if code_context.is_some() {
+                sirin_log!("[telegram] Injecting project codebase context into reply prompt");
             }
 
             let ai_reply = match generate_ai_reply(
@@ -450,6 +493,7 @@ async fn run_listener_once(
                 search_context.as_deref(),
                 context_block.as_deref(),
                 memory_context.as_deref(),
+                code_context.as_deref(),
                 direct_answer_request,
                 false,
             )
@@ -476,6 +520,7 @@ async fn run_listener_once(
                     search_context.as_deref(),
                     context_block.as_deref(),
                     memory_context.as_deref(),
+                    code_context.as_deref(),
                     direct_answer_request,
                     true,
                 )

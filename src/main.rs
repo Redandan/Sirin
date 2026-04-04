@@ -47,6 +47,12 @@ fn main() {
         Err(e) => eprintln!("[main] .env not loaded: {e}"),
     }
 
+    match memory::ensure_codebase_index() {
+        Ok(count) if count > 0 => eprintln!("[main] Refreshed codebase index ({count} files)"),
+        Ok(_) => {}
+        Err(e) => eprintln!("[main] Codebase index refresh skipped: {e}"),
+    }
+
     // Shared state
     let tracker = TaskTracker::new(task_log_path());
     let tg_auth = TelegramAuthState::new();
