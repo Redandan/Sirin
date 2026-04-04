@@ -12,8 +12,8 @@
 
 use std::collections::HashMap;
 
-use crate::llm::{call_prompt, LlmConfig};
-use crate::persona::{Persona, TaskEntry, TaskTracker};
+use crate::events;
+use crate::persona::{TaskEntry, TaskTracker};
 use crate::researcher::{self, ResearchStatus};
 use crate::sirin_log;
 
@@ -236,49 +236,26 @@ fn candidate_priority(entry: &TaskEntry) -> f64 {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Build the prompt text sent to the local LLM.
-fn build_prompt(persona: &Persona, entries: &[&TaskEntry]) -> String {
-    let objectives = format!(
-        "Persona: {} (v{})\nDescription: {}\nObjectives: {}",
-        persona.name(),
-        persona.version,
-        persona.description,
-        persona.objectives.join("; "),
-    );
+/// Rule-based decision: does any actionable task need follow-up right now?
+///
+/// Rules (OR-combined):
+/// 1. Already explicitly marked `FOLLOWUP_NEEDED`.
+/// 2. Stale `PENDING` task — no update for more than `STALE_PENDING_SECS`.
+/// 3. `high_priority` flag is set.
+const STALE_PENDING_SECS: i64 = 3600; // 1 h
 
-    let tasks: Vec<String> = entries
-        .iter()
-        .map(|e| {
-            format!(
-                "- [{}] event={} status={} content={}",
-                e.timestamp,
-                e.event,
-                e.status.as_deref().unwrap_or("?"),
-                e.message_preview.as_deref().unwrap_or("(no content)"),
-            )
-        })
-        .collect();
+fn should_followup_now(actionable: &[&TaskEntry]) -> bool {
+    actionable.iter().any(|e| {
+        e.status.as_deref() == Some("FOLLOWUP_NEEDED")
+            || e.high_priority == Some(true)
+            || (e.status.as_deref() == Some("PENDING") && is_stale(e, STALE_PENDING_SECS))
+    })
+}
 
-    format!(
-        r#"You are a follow-up assistant for {persona}, an AI personal agent.
-
-{objectives}
-
-The following user tasks are currently in PENDING or FOLLOWING state:
-
-{task_list}
-
-Decide whether any of these tasks need immediate follow-up action (e.g. the user is waiting for a result, a deadline is approaching, or a research task is stalled).
-
-Reply with exactly one of:
-- "FOLLOWUP_NEEDED" — if at least one task requires immediate follow-up.
-- "NO_FOLLOWUP" — if none of the tasks require attention right now.
-
-Reply with only one of those two tokens and nothing else."#,
-        persona = persona.name(),
-        objectives = objectives,
-        task_list = tasks.join("\n"),
-    )
+fn is_stale(entry: &TaskEntry, max_age_secs: i64) -> bool {
+    parse_ts(&entry.timestamp)
+        .map(|ts| (chrono::Utc::now() - ts).num_seconds() > max_age_secs)
+        .unwrap_or(false)
 }
 
 // ── Worker ────────────────────────────────────────────────────────────────────
@@ -295,12 +272,13 @@ fn task_log_max_lines() -> usize {
 }
 
 pub async fn run_worker(tracker: TaskTracker) {
-    let client = reqwest::Client::new();
-    let llm = LlmConfig::from_env();
     let interval_secs = worker_interval_secs();
 
     let mut interval =
         tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+
+    // Subscribe to the event bus so we react immediately to ResearchCompleted.
+    let mut event_rx = events::subscribe();
 
     // Skip the first immediate tick so the app finishes initialising first.
     interval.tick().await;
@@ -308,10 +286,35 @@ pub async fn run_worker(tracker: TaskTracker) {
     let mut cycle: u32 = 0;
 
     loop {
-        interval.tick().await;
+        // Wait for either a timed tick OR an event that warrants an early cycle.
+        let triggered_by_event = tokio::select! {
+            _ = interval.tick() => false,
+            event = event_rx.recv() => {
+                match event {
+                    Ok(events::AgentEvent::ResearchCompleted { topic, task_id, success }) => {
+                        sirin_log!(
+                            "[followup] Event-driven cycle: ResearchCompleted topic={topic} id={task_id} ok={success}"
+                        );
+                        true
+                    }
+                    Ok(events::AgentEvent::FollowupTriggered { source_timestamp }) => {
+                        sirin_log!(
+                            "[followup] Event-driven cycle: FollowupTriggered ts={source_timestamp}"
+                        );
+                        true
+                    }
+                    _ => false,
+                }
+            }
+        };
+
         cycle += 1;
 
-        if let Err(e) = run_once(&client, &llm, &tracker).await {
+        if triggered_by_event {
+            sirin_log!("[followup] Running event-triggered cycle #{cycle}");
+        }
+
+        if let Err(e) = run_once(&tracker).await {
             sirin_log!("[followup] Worker error: {e}");
             record_optimization_log(
                 &tracker,
@@ -337,14 +340,9 @@ pub async fn run_worker(tracker: TaskTracker) {
 
 /// Execute one follow-up cycle and return any error encountered.
 async fn run_once(
-    client: &reqwest::Client,
-    llm: &LlmConfig,
     tracker: &TaskTracker,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // 1. Load persona.
-    let persona = Persona::load()?;
-
-    // 2. Read last N log entries.
+    // 1. Read last N log entries.
     let entries = tracker.read_last_n(TASK_LOOKBACK)?;
 
     // 2.5 If tasks are already marked follow-up/pending and look like research,
@@ -454,8 +452,15 @@ async fn run_once(
 
                     let _ = tracker_clone.record(&completion);
                     let mut final_updates = HashMap::new();
-                    final_updates.insert(source_ts, done_status);
+                    final_updates.insert(source_ts, done_status.clone());
                     let _ = tracker_clone.update_statuses(&final_updates);
+
+                    // Notify event bus so other agents react immediately.
+                    events::publish(events::AgentEvent::ResearchCompleted {
+                        topic: task.topic.clone(),
+                        task_id: task.id.clone(),
+                        success: done_status == "DONE",
+                    });
                 });
             }
         }
@@ -489,22 +494,10 @@ async fn run_once(
         return Ok(());
     }
 
-    sirin_log!(
-        "[followup] Sending {} actionable task(s) to {} model '{}'",
-        actionable.len(),
-        llm.backend_name(),
-        llm.model
-    );
+    sirin_log!("[followup] Evaluating {} actionable task(s) with rule-based logic", actionable.len());
 
-    // 4. Call local LLM.
-    let prompt = build_prompt(&persona, &actionable);
-    let response = call_prompt(client, llm, prompt).await?;
-
-    sirin_log!("[followup] LLM response: {response}");
-
-    // 5. If follow-up is needed, mark only the primary actionable entry.
-    // This avoids bulk-flipping unrelated tasks in the same cycle.
-    if response.contains("FOLLOWUP_NEEDED") {
+    // 4. Rule-based follow-up decision (no LLM needed for binary classify).
+    if should_followup_now(&actionable) {
         if let Some(primary) = actionable.first() {
             let mut updates = HashMap::new();
             updates.insert(primary.timestamp.clone(), "FOLLOWUP_NEEDED".to_string());
@@ -513,16 +506,20 @@ async fn run_once(
             record_optimization_log(
                 tracker,
                 "optimization_followup_marked",
-                Some("marked 1 task FOLLOWUP_NEEDED".to_string()),
+                Some("marked 1 task FOLLOWUP_NEEDED (rule-based)".to_string()),
                 Some("FOLLOWUP_NEEDED"),
                 None,
                 correlation_id_for(primary),
             );
-            sirin_log!(
-                "[followup] Marked primary task {} as FOLLOWUP_NEEDED",
-                primary.timestamp
-            );
+            sirin_log!("[followup] Marked task {} as FOLLOWUP_NEEDED (rule)", primary.timestamp);
+
+            // Notify subscribers via event bus.
+            events::publish(events::AgentEvent::FollowupTriggered {
+                source_timestamp: primary.timestamp.clone(),
+            });
         }
+    } else {
+        sirin_log!("[followup] Rules: no immediate follow-up needed this cycle");
     }
 
     Ok(())
@@ -533,28 +530,11 @@ async fn run_once(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persona::{Identity, Persona, ProfessionalTone, ResponseStyle, RoiThresholds, TaskEntry};
-
-    fn make_persona() -> Persona {
-        Persona {
-            identity: Identity {
-                name: "TestBot".into(),
-                professional_tone: ProfessionalTone::Detailed,
-            },
-            objectives: vec!["Monitor Agora".into()],
-            version: "1.0".into(),
-            description: "Test trading agent".into(),
-            roi_thresholds: RoiThresholds {
-                min_usd_to_notify: 5.0,
-                min_usd_to_call_remote_llm: 25.0,
-            },
-            response_style: ResponseStyle::default(),
-        }
-    }
+    use crate::persona::TaskEntry;
 
     #[test]
     fn prompt_contains_persona_and_tasks() {
-        let persona = make_persona();
+        // Replaced build_prompt with rule-based should_followup_now.
         let entry = TaskEntry {
             timestamp: "2024-01-01T00:00:00Z".into(),
             event: "ai_decision".into(),
@@ -563,25 +543,19 @@ mod tests {
             message_preview: Some("Monitor Agora signal and respond".into()),
             trigger_remote_ai: Some(true),
             estimated_profit_usd: Some(10.0),
-            status: Some("PENDING".into()),
+            status: Some("FOLLOWUP_NEEDED".into()),
             reason: None,
             action_tier: None,
             high_priority: None,
         };
-        let entries = vec![&entry];
-        let prompt = build_prompt(&persona, &entries);
-        assert!(prompt.contains("TestBot"));
-        assert!(prompt.contains("PENDING"));
-        assert!(prompt.contains("FOLLOWUP_NEEDED"));
-        assert!(prompt.contains("NO_FOLLOWUP"));
+        // A FOLLOWUP_NEEDED entry must trigger.
+        assert!(should_followup_now(&[&entry]));
     }
 
     #[test]
     fn prompt_contains_persona_even_with_no_entries() {
-        let persona = make_persona();
-        let prompt = build_prompt(&persona, &[]);
-        // Prompt is still well-formed; the tasks section is just blank.
-        assert!(prompt.contains("TestBot"));
+        // No actionable entries → no followup.
+        assert!(!should_followup_now(&[]));
     }
 
     #[test]

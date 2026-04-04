@@ -53,6 +53,18 @@ struct ChatUiUpdate {
     reply: String,
     tools: Vec<String>,
     trace: Vec<String>,
+    /// If true, this is a streaming partial — update the last assistant bubble
+    /// in-place instead of pushing a new message.
+    partial: bool,
+    /// If Some, apply planner result to agent_console before the reply arrives.
+    plan: Option<ChatPlanUpdate>,
+}
+
+#[derive(Clone)]
+struct ChatPlanUpdate {
+    route: String,
+    summary: String,
+    steps: Vec<String>,
 }
 
 // ── App state ─────────────────────────────────────────────────────────────────
@@ -71,6 +83,7 @@ pub struct SirinApp {
     research_topic: String,
     research_url: String,
     research_msg: String,
+    pending_objectives: Option<Vec<String>>,
 
     // Telegram tab
     tg_code: String,
@@ -143,6 +156,7 @@ impl SirinApp {
             research_topic: String::new(),
             research_url: String::new(),
             research_msg: String::new(),
+            pending_objectives: None,
             tg_code: String::new(),
             tg_password: String::new(),
             tg_msg: String::new(),
@@ -188,6 +202,10 @@ impl SirinApp {
             }
             Err(e) => eprintln!("[ui] load research: {e}"),
         }
+        // Pick up any pending persona objective proposal from the researcher.
+        if let Some(proposed) = researcher::take_pending_objectives() {
+            self.pending_objectives = Some(proposed);
+        }
         self.last_refresh = std::time::Instant::now();
     }
 }
@@ -204,26 +222,57 @@ impl eframe::App for SirinApp {
 
         // Poll for LLM reply from background chat task.
         if self.chat_pending {
-            if let Ok(update) = self.chat_rx.try_recv() {
-                self.chat_messages.push(ChatMessage {
-                    role: ChatRole::Assistant,
-                    text: update.reply,
-                });
+            // Drain all pending updates this frame (may receive multiple partials).
+            let mut got_final = false;
+            while let Ok(update) = self.chat_rx.try_recv() {
+                // Apply plan update whenever it arrives (first partial or final).
+                if let Some(plan) = update.plan {
+                    self.agent_console.route = plan.route;
+                    self.agent_console.summary = plan.summary;
+                    self.agent_console.steps = plan.steps;
+                    self.agent_console.status = "Executing…".to_string();
+                }
+
+                // Update the chat bubble (partial: in-place; final: complete).
+                let bubble_text = update.reply.clone();
+                if !bubble_text.is_empty() {
+                    if let Some(last) = self.chat_messages.last_mut() {
+                        if last.role == ChatRole::Assistant {
+                            last.text = bubble_text;
+                        } else {
+                            self.chat_messages.push(ChatMessage {
+                                role: ChatRole::Assistant,
+                                text: bubble_text,
+                            });
+                        }
+                    } else {
+                        self.chat_messages.push(ChatMessage {
+                            role: ChatRole::Assistant,
+                            text: bubble_text,
+                        });
+                    }
+                }
+
+                if !update.partial {
+                    self.agent_console.tools = update.tools;
+                    self.agent_console.trace = update
+                        .trace
+                        .into_iter()
+                        .rev()
+                        .take(6)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect();
+                    self.agent_console.status = "Idle".to_string();
+                    got_final = true;
+                }
+            }
+            if got_final {
                 self.chat_pending = false;
-                self.agent_console.tools = update.tools;
-                self.agent_console.trace = update
-                    .trace
-                    .into_iter()
-                    .rev()
-                    .take(6)
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .collect();
-                self.agent_console.status = "Idle".to_string();
             } else {
-                // Keep repainting while waiting so the spinner stays live.
-                ctx.request_repaint_after(std::time::Duration::from_millis(200));
+                // Keep repainting frequently while streaming.
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
             }
         }
 
@@ -369,6 +418,56 @@ impl SirinApp {
     }
 
     fn show_research(&mut self, ui: &mut egui::Ui) {
+        // ── Persona safety gate ────────────────────────────────────────────────
+        if let Some(proposed) = self.pending_objectives.clone() {
+            egui::Frame::group(ui.style())
+                .fill(Color32::from_rgb(40, 35, 15))
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new("⚠ AI 提議更新 Persona 目標（需您確認）")
+                            .color(Color32::YELLOW)
+                            .strong(),
+                    );
+                    for (i, obj) in proposed.iter().enumerate() {
+                        ui.label(format!("  {}. {}", i + 1, obj));
+                    }
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button(RichText::new("✅ 套用").color(Color32::from_rgb(100, 220, 100)))
+                            .clicked()
+                        {
+                            match crate::persona::Persona::load() {
+                                Ok(mut p) => {
+                                    p.objectives = proposed.clone();
+                                    match p.save() {
+                                        Ok(()) => {
+                                            self.research_msg =
+                                                "Persona 目標已更新".to_string();
+                                        }
+                                        Err(e) => {
+                                            self.research_msg =
+                                                format!("儲存失敗: {e}");
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    self.research_msg = format!("載入 Persona 失敗: {e}");
+                                }
+                            }
+                            self.pending_objectives = None;
+                        }
+                        if ui
+                            .button(RichText::new("❌ 拒絕").color(Color32::from_rgb(220, 80, 80)))
+                            .clicked()
+                        {
+                            self.pending_objectives = None;
+                            self.research_msg = "已拒絕 AI 目標提議".to_string();
+                        }
+                    });
+                });
+            ui.separator();
+        }
+
         // ── New research form ──────────────────────────────────────────────────
         egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.label(RichText::new("新調研任務").strong());
@@ -676,38 +775,44 @@ impl SirinApp {
 
                 let tx = self.chat_tx.clone();
                 let rt = self.rt.clone();
-                let planner_state = futures::executor::block_on(crate::agents::planner_agent::run_planner_via_adk(
-                    crate::agents::planner_agent::PlannerRequest {
-                        user_text: user_text.clone(),
-                        context_block: context_block.clone(),
-                        peer_id: Some(0),
-                        fallback_reply: None,
-                        execution_result: None,
-                    },
-                    None,
-                ))
-                .ok();
-
-                if let Some(plan) = planner_state {
-                    self.agent_console.route = match plan.intent {
-                        crate::agents::planner_agent::PlanIntent::Research => "research".to_string(),
-                        crate::agents::planner_agent::PlanIntent::Answer => "chat".to_string(),
-                    };
-                    self.agent_console.summary = plan.summary;
-                    self.agent_console.steps = plan.steps;
-                    self.agent_console.tools.clear();
-                    self.agent_console.trace.clear();
-                    self.agent_console.status = "Executing…".to_string();
-                } else {
-                    self.agent_console.route = "chat".to_string();
-                    self.agent_console.summary = "Planner unavailable; using direct router fallback.".to_string();
-                    self.agent_console.steps = vec!["route request".to_string(), "run chat response".to_string()];
-                    self.agent_console.tools.clear();
-                    self.agent_console.trace.clear();
-                    self.agent_console.status = "Executing…".to_string();
-                }
+                // Set initial console state immediately (no block).
+                self.agent_console.route = "pending…".to_string();
+                self.agent_console.summary = String::new();
+                self.agent_console.steps.clear();
+                self.agent_console.tools.clear();
+                self.agent_console.trace.clear();
+                self.agent_console.status = "計畫中…".to_string();
 
                 rt.spawn(async move {
+                    // Run planner asynchronously — no longer blocks the GUI thread.
+                    let plan = crate::agents::planner_agent::run_planner_via_adk(
+                        crate::agents::planner_agent::PlannerRequest {
+                            user_text: user_text.clone(),
+                            context_block: context_block.clone(),
+                            peer_id: Some(0),
+                            fallback_reply: None,
+                            execution_result: None,
+                        },
+                        None,
+                    )
+                    .await
+                    .ok();
+
+                    let plan_update = plan
+                        .map(|p| ChatPlanUpdate {
+                            route: match p.intent {
+                                crate::agents::planner_agent::PlanIntent::Research => "research".to_string(),
+                                crate::agents::planner_agent::PlanIntent::Answer => "chat".to_string(),
+                            },
+                            summary: p.summary,
+                            steps: p.steps,
+                        })
+                        .unwrap_or_else(|| ChatPlanUpdate {
+                            route: "chat".to_string(),
+                            summary: "Planner unavailable; using direct router fallback.".to_string(),
+                            steps: vec!["route request".to_string(), "run chat response".to_string()],
+                        });
+
                     let routed = crate::agents::router_agent::run_router_via_adk(
                         crate::agents::router_agent::RouterRequest {
                             user_text: user_text.clone(),
@@ -720,30 +825,76 @@ impl SirinApp {
                     )
                     .await;
 
-                    let response = match routed {
+                    let request = match routed {
                         Ok(output) => {
                             let chat_request = output.get("chat_request").cloned().unwrap_or_default();
-                            let request: crate::agents::chat_agent::ChatRequest = serde_json::from_value(chat_request)
+                            serde_json::from_value(chat_request)
                                 .unwrap_or(crate::agents::chat_agent::ChatRequest {
                                     user_text: user_text.clone(),
                                     execution_result: None,
                                     context_block: None,
                                     fallback_reply: None,
                                     peer_id: Some(0),
-                                });
-                            crate::agents::chat_agent::run_chat_response_via_adk_with_tracker(request, None).await
+                                })
                         }
-                        Err(err) => crate::agents::chat_agent::ChatAgentResponse {
-                            reply: format!("路由錯誤：{err}"),
-                            ..Default::default()
-                        },
+                        Err(err) => {
+                            let _ = tx.send(ChatUiUpdate {
+                                reply: format!("路由錯誤：{err}"),
+                                tools: vec![],
+                                trace: vec![],
+                                partial: false,
+                                plan: Some(plan_update),
+                            });
+                            return;
+                        }
                     };
 
+                    // Stream tokens; each token fires a partial bubble update.
+                    // Send plan_update with the first partial so agent_console updates.
+                    let tx_partial = tx.clone();
+                    let accumulated =
+                        std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+                    let acc_clone = std::sync::Arc::clone(&accumulated);
+                    let plan_sent = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let plan_sent_clone = std::sync::Arc::clone(&plan_sent);
+                    let plan_update_clone = plan_update.clone();
+
+                    let response = crate::agents::chat_agent::stream_chat_response(
+                        request,
+                        move |token| {
+                            if let Ok(mut acc) = acc_clone.lock() {
+                                acc.push_str(&token);
+                                let preview = format!("{} ▍", acc.trim_end());
+                                let plan = if !plan_sent_clone.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                                    Some(plan_update_clone.clone())
+                                } else {
+                                    None
+                                };
+                                let _ = tx_partial.try_send(ChatUiUpdate {
+                                    reply: preview,
+                                    tools: vec![],
+                                    trace: vec![],
+                                    partial: true,
+                                    plan,
+                                });
+                            }
+                        },
+                    )
+                    .await;
+
                     let _ = append_context(&user_text, &response.reply, Some(0));
+                    // Send plan_update with final if it was never sent via streaming.
+                    let final_plan = if !plan_sent.load(std::sync::atomic::Ordering::Relaxed) {
+                        Some(plan_update)
+                    } else {
+                        None
+                    };
                     let _ = tx.send(ChatUiUpdate {
                         reply: response.reply,
                         tools: response.tools_used,
                         trace: response.trace,
+                        partial: false,
+                        plan: final_plan,
                     });
                 });
             }

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use futures::FutureExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -11,7 +13,7 @@ use crate::telegram::commands::{extract_search_query, should_search};
 use crate::telegram::language::{
     chinese_fallback_reply, contains_cjk, is_direct_answer_request, is_mixed_language_reply,
 };
-use crate::telegram::llm::generate_ai_reply;
+use crate::telegram::llm::{build_ai_reply_prompt, generate_ai_reply};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatRequest {
@@ -57,8 +59,8 @@ impl Agent for ChatAgent {
             let request: ChatRequest = serde_json::from_value(input)
                 .map_err(|e| format!("Invalid chat request payload: {e}"))?;
 
-            let client = reqwest::Client::new();
-            let llm = LlmConfig::from_env();
+            let client = Arc::clone(&ctx.http);
+            let llm = Arc::clone(&ctx.llm);
             let persona = Persona::load().ok();
             let direct_answer_request = is_direct_answer_request(&request.user_text);
 
@@ -88,44 +90,32 @@ impl Agent for ChatAgent {
                 .unwrap_or_else(|| chinese_fallback_reply(&request.user_text, request.execution_result.as_deref()));
 
             let context_block = resolve_context_block(&request, ctx);
-            let search_context = resolve_search_context(&request, ctx, &client, &llm, direct_answer_request).await;
-            let memory_context = resolve_memory_context(&request.user_text, ctx).await;
-            let code_context = resolve_code_context(&request.user_text, ctx).await;
 
-            let ai_reply = match generate_ai_reply(
-                &client,
-                &llm,
-                persona.as_ref(),
-                &request.user_text,
-                request.execution_result.as_deref(),
-                search_context.as_deref(),
-                context_block.as_deref(),
-                memory_context.as_deref(),
-                code_context.as_deref(),
-                direct_answer_request,
-                false,
-            )
-            .await
-            {
-                Ok(v) if !v.trim().is_empty() => v,
-                Ok(_) => fallback_reply.clone(),
-                Err(e) => {
-                    ctx.record_system_event(
-                        "adk_chat_llm_error",
-                        Some(preview_text(&request.user_text)),
-                        Some("FOLLOWUP_NEEDED"),
-                        Some(e.to_string()),
-                    );
-                    fallback_reply.clone()
-                }
-            };
+            // ── Route: ReAct loop for open-ended queries; linear path otherwise ──
+            let use_react = !direct_answer_request
+                && request.execution_result.is_none()
+                && (should_search(&request.user_text)
+                    || looks_like_code_query(&request.user_text));
 
-            let final_reply = if contains_cjk(&request.user_text)
-                && (!contains_cjk(&ai_reply) || is_mixed_language_reply(&ai_reply))
-            {
+            let ai_reply = if use_react {
+                ctx.record_system_event(
+                    "adk_chat_react_start",
+                    Some(preview_text(&request.user_text)),
+                    Some("RUNNING"),
+                    None,
+                );
+                let persona_name = persona.as_ref().map(|p| p.name()).unwrap_or("Sirin");
+                let reply = react_loop(ctx, &request.user_text, persona_name, context_block.as_deref()).await;
+                if reply.trim().is_empty() { fallback_reply.clone() } else { reply }
+            } else {
+                // Linear path: deterministic context resolution + single LLM call.
+                let search_context = resolve_search_context(&request, ctx, client.as_ref(), llm.as_ref(), direct_answer_request).await;
+                let memory_context = resolve_memory_context(&request.user_text, ctx).await;
+                let code_context = resolve_code_context(&request.user_text, ctx).await;
+
                 match generate_ai_reply(
-                    &client,
-                    &llm,
+                    client.as_ref(),
+                    llm.as_ref(),
                     persona.as_ref(),
                     &request.user_text,
                     request.execution_result.as_deref(),
@@ -133,6 +123,38 @@ impl Agent for ChatAgent {
                     context_block.as_deref(),
                     memory_context.as_deref(),
                     code_context.as_deref(),
+                    direct_answer_request,
+                    false,
+                )
+                .await
+                {
+                    Ok(v) if !v.trim().is_empty() => v,
+                    Ok(_) => fallback_reply.clone(),
+                    Err(e) => {
+                        ctx.record_system_event(
+                            "adk_chat_llm_error",
+                            Some(preview_text(&request.user_text)),
+                            Some("FOLLOWUP_NEEDED"),
+                            Some(e.to_string()),
+                        );
+                        fallback_reply.clone()
+                    }
+                }
+            };
+
+            let final_reply = if contains_cjk(&request.user_text)
+                && (!contains_cjk(&ai_reply) || is_mixed_language_reply(&ai_reply))
+            {
+                match generate_ai_reply(
+                    client.as_ref(),
+                    llm.as_ref(),
+                    persona.as_ref(),
+                    &request.user_text,
+                    request.execution_result.as_deref(),
+                    None,
+                    context_block.as_deref(),
+                    None,
+                    None,
                     direct_answer_request,
                     true,
                 )
@@ -150,9 +172,9 @@ impl Agent for ChatAgent {
 
             let response = ChatAgentResponse {
                 reply: final_reply,
-                used_search: search_context.is_some(),
-                used_memory: memory_context.is_some(),
-                used_code_context: code_context.is_some(),
+                used_search: use_react || ctx.tool_calls_snapshot().iter().any(|t| t == "web_search"),
+                used_memory: ctx.tool_calls_snapshot().iter().any(|t| t == "memory_search"),
+                used_code_context: ctx.tool_calls_snapshot().iter().any(|t| t == "codebase_search"),
                 tools_used: ctx.tool_calls_snapshot(),
                 trace: ctx.event_trace_snapshot(),
             };
@@ -342,6 +364,156 @@ async fn resolve_code_context(user_text: &str, ctx: &AgentContext) -> Option<Str
     }
 }
 
+// ── ReAct tool-use loop ──────────────────────────────���────────────────────────
+
+/// Maximum number of tool-call iterations before forcing a final answer.
+const REACT_MAX_TURNS: usize = 3;
+
+/// Run a ReAct loop: the LLM decides which tools to call, we execute them and
+/// feed results back until it produces a `[ANSWER]` tag or `REACT_MAX_TURNS`
+/// is reached.
+///
+/// Bracket protocol (works with most local models):
+/// ```
+/// [SEARCH] query text        → calls web_search
+/// [MEMORY] query text        → calls memory_search
+/// [CODE]   query text        → calls codebase_search
+/// [ANSWER] final reply text  → stops and returns the text
+/// ```
+/// Any response that contains none of the above tags is treated as a final answer.
+pub async fn react_loop(
+    ctx: &AgentContext,
+    user_text: &str,
+    persona_name: &str,
+    initial_context: Option<&str>,
+) -> String {
+    use crate::llm::call_prompt;
+
+    let tool_instructions = "\
+You are an AI assistant. You can use these tools before answering:\n\
+  [SEARCH] <query>  — search the web\n\
+  [MEMORY] <query>  — recall past knowledge\n\
+  [CODE]   <query>  — search this project's source code\n\
+\n\
+When you have enough information, reply with:\n\
+  [ANSWER] <your response to the user>\n\
+\n\
+Use at most one tool per turn. If no tool is needed, go straight to [ANSWER].";
+
+    let context_block = initial_context
+        .map(|c| format!("\nContext:\n{c}\n"))
+        .unwrap_or_default();
+
+    // Conversation accumulated across iterations.
+    let mut history = format!(
+        "System: You are {persona_name}. {tool_instructions}{context_block}\n\nUser: {user_text}\n"
+    );
+
+    for _turn in 0..REACT_MAX_TURNS {
+        let raw = match call_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), history.clone()).await {
+            Ok(r) => r,
+            Err(_) => break,
+        };
+
+        // ── Parse the first recognised tag ─────────���─────────────────────────
+        let mut tool_name: Option<&str> = None;
+        let mut tool_query = String::new();
+        let mut final_answer: Option<String> = None;
+
+        for line in raw.lines() {
+            let trimmed = line.trim();
+            if let Some(q) = trimmed.strip_prefix("[SEARCH]") {
+                tool_name = Some("web_search");
+                tool_query = q.trim().to_string();
+                break;
+            } else if let Some(q) = trimmed.strip_prefix("[MEMORY]") {
+                tool_name = Some("memory_search");
+                tool_query = q.trim().to_string();
+                break;
+            } else if let Some(q) = trimmed.strip_prefix("[CODE]") {
+                tool_name = Some("codebase_search");
+                tool_query = q.trim().to_string();
+                break;
+            } else if let Some(ans) = trimmed.strip_prefix("[ANSWER]") {
+                final_answer = Some(ans.trim().to_string());
+                break;
+            }
+        }
+
+        // ── Final answer ─────────────────────────��───────────────────────���────
+        if let Some(ans) = final_answer {
+            ctx.record_system_event(
+                "adk_react_final_answer",
+                Some(user_text.chars().take(60).collect()),
+                Some("DONE"),
+                None,
+            );
+            return ans;
+        }
+
+        // ── No recognised tag → treat whole response as answer ────────────────
+        let Some(tool) = tool_name else {
+            ctx.record_system_event(
+                "adk_react_untagged_answer",
+                Some(user_text.chars().take(60).collect()),
+                Some("DONE"),
+                None,
+            );
+            return raw;
+        };
+
+        // ── Execute tool ──────────────────────────────────────────────────────
+        ctx.record_system_event(
+            "adk_react_tool_call",
+            Some(user_text.chars().take(60).collect()),
+            Some("RUNNING"),
+            Some(format!("tool={tool} query={}", &tool_query.chars().take(60).collect::<String>())),
+        );
+
+        let tool_result = ctx
+            .call_tool(tool, serde_json::json!({ "query": tool_query, "limit": 3 }))
+            .await
+            .unwrap_or_else(|_| serde_json::Value::String("(no results)".into()));
+
+        let result_text = match &tool_result {
+            serde_json::Value::Array(arr) => arr
+                .iter()
+                .filter_map(|v| {
+                    if let serde_json::Value::Object(m) = v {
+                        let title = m.get("title").and_then(|t| t.as_str()).unwrap_or("");
+                        let snippet = m.get("snippet").and_then(|s| s.as_str()).unwrap_or("");
+                        Some(format!("- {title}: {snippet}"))
+                    } else {
+                        v.as_str().map(|s| format!("- {s}"))
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+
+        // Append tool result to history and continue.
+        history.push_str(&format!(
+            "\nAssistant (tool call): [{tool_name_upper}] {tool_query}\nTool result:\n{result_text}\n",
+            tool_name_upper = tool.to_uppercase(),
+        ));
+    }
+
+    // Exhausted turns — ask for final answer without tools.
+    let final_prompt = format!(
+        "{history}\nSystem: You have used all available tool turns. \
+         Provide a final [ANSWER] now based on what you know.\n"
+    );
+    call_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), final_prompt)
+        .await
+        .unwrap_or_default()
+        .lines()
+        .find(|l| l.trim().starts_with("[ANSWER]"))
+        .and_then(|l| l.trim().strip_prefix("[ANSWER]").map(|s| s.trim().to_string()))
+        .unwrap_or_default()
+}
+
 fn related_research_snippet(user_text: &str) -> Option<String> {
     let lower_text = user_text.to_lowercase();
     researcher::list_research()
@@ -424,6 +596,96 @@ pub async fn run_chat_via_adk_with_tracker(
     run_chat_response_via_adk_with_tracker(request, tracker)
         .await
         .reply
+}
+
+/// Streaming variant for the GUI chat tab.
+///
+/// For the linear (non-ReAct) path, tokens are delivered to `on_token` as they
+/// arrive so the caller can update the chat bubble progressively.
+/// For ReAct queries the function runs the standard blocking pipeline and
+/// returns the full reply without streaming (tokens are too interleaved with
+/// tool calls to stream meaningfully).
+pub async fn stream_chat_response<F>(request: ChatRequest, on_token: F) -> ChatAgentResponse
+where
+    F: Fn(String) + Send + 'static,
+{
+    use crate::llm::call_prompt_stream;
+
+    let runtime = AgentRuntime::default();
+    let ctx = runtime
+        .context("chat_stream")
+        .with_metadata("agent", "chat_agent_stream");
+
+    let persona = Persona::load().ok();
+    let direct_answer_request = is_direct_answer_request(&request.user_text);
+    let use_react = !direct_answer_request
+        && request.execution_result.is_none()
+        && (should_search(&request.user_text) || looks_like_code_query(&request.user_text));
+
+    if use_react {
+        // ReAct path — interleaved tool calls; deliver complete reply at end.
+        let persona_name = persona.as_ref().map(|p| p.name()).unwrap_or("Sirin");
+        let context_block = resolve_context_block(&request, &ctx);
+        let reply = react_loop(&ctx, &request.user_text, persona_name, context_block.as_deref()).await;
+        let reply = if reply.trim().is_empty() {
+            chinese_fallback_reply(&request.user_text, request.execution_result.as_deref())
+        } else {
+            reply
+        };
+        return ChatAgentResponse {
+            reply,
+            used_search: true,
+            tools_used: ctx.tool_calls_snapshot(),
+            trace: ctx.event_trace_snapshot(),
+            ..Default::default()
+        };
+    }
+
+    // Linear path — gather context, build prompt, stream tokens.
+    let client = Arc::clone(&ctx.http);
+    let llm = Arc::clone(&ctx.llm);
+    let context_block = resolve_context_block(&request, &ctx);
+    let search_ctx = resolve_search_context(
+        &request,
+        &ctx,
+        client.as_ref(),
+        llm.as_ref(),
+        direct_answer_request,
+    )
+    .await;
+    let memory_ctx = resolve_memory_context(&request.user_text, &ctx).await;
+    let code_ctx = resolve_code_context(&request.user_text, &ctx).await;
+
+    let prompt = build_ai_reply_prompt(
+        persona.as_ref(),
+        &request.user_text,
+        request.execution_result.as_deref(),
+        search_ctx.as_deref(),
+        context_block.as_deref(),
+        memory_ctx.as_deref(),
+        code_ctx.as_deref(),
+        direct_answer_request,
+        false,
+    );
+
+    let reply = call_prompt_stream(client.as_ref(), llm.as_ref(), prompt, on_token)
+        .await
+        .unwrap_or_default();
+
+    let reply = if reply.trim().is_empty() {
+        chinese_fallback_reply(&request.user_text, request.execution_result.as_deref())
+    } else {
+        reply.trim().to_string()
+    };
+
+    ChatAgentResponse {
+        reply,
+        used_search: ctx.tool_calls_snapshot().iter().any(|t| t == "web_search"),
+        used_memory: ctx.tool_calls_snapshot().iter().any(|t| t == "memory_search"),
+        used_code_context: ctx.tool_calls_snapshot().iter().any(|t| t == "codebase_search"),
+        tools_used: ctx.tool_calls_snapshot(),
+        trace: ctx.event_trace_snapshot(),
+    }
 }
 
 #[cfg(test)]

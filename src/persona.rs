@@ -9,7 +9,7 @@ use std::{
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProfessionalTone {
     Brief,
@@ -17,19 +17,19 @@ pub enum ProfessionalTone {
     Casual,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Identity {
     pub name: String,
     pub professional_tone: ProfessionalTone,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoiThresholds {
     pub min_usd_to_notify: f64,
     pub min_usd_to_call_remote_llm: f64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResponseStyle {
     #[serde(default = "default_voice")]
     pub voice: String,
@@ -49,7 +49,7 @@ impl Default for ResponseStyle {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Persona {
     pub identity: Identity,
     pub objectives: Vec<String>,
@@ -83,6 +83,13 @@ impl Persona {
         let content = fs::read_to_string("config/persona.yaml")?;
         let persona = serde_yaml::from_str(&content)?;
         Ok(persona)
+    }
+
+    /// Persist the current Persona state back to `config/persona.yaml`.
+    pub fn save(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let yaml = serde_yaml::to_string(self)?;
+        fs::write("config/persona.yaml", yaml)?;
+        Ok(())
     }
 
     pub fn name(&self) -> &str {

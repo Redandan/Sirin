@@ -7,6 +7,7 @@ use chrono::Utc;
 use serde_json::Value;
 
 use crate::adk::tool::ToolRegistry;
+use crate::llm::LlmConfig;
 use crate::persona::{TaskEntry, TaskTracker};
 use crate::sirin_log;
 
@@ -16,12 +17,18 @@ struct ExecutionTrace {
     events: Vec<String>,
 }
 
+use crate::llm::{shared_http, shared_llm};
+
 #[derive(Clone)]
 pub struct AgentContext {
     pub request_id: String,
     pub source: String,
     pub tools: ToolRegistry,
     pub metadata: HashMap<String, String>,
+    /// Process-wide shared HTTP client (cheap to clone — internally Arc).
+    pub http: Arc<reqwest::Client>,
+    /// Process-wide LLM configuration read once from environment.
+    pub llm: Arc<LlmConfig>,
     tracker: Option<TaskTracker>,
     trace: Arc<Mutex<ExecutionTrace>>,
 }
@@ -33,6 +40,8 @@ impl AgentContext {
             source: source.into(),
             tools,
             metadata: HashMap::new(),
+            http: shared_http(),
+            llm: shared_llm(),
             tracker: None,
             trace: Arc::new(Mutex::new(ExecutionTrace::default())),
         }

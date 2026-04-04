@@ -40,7 +40,6 @@ use crate::researcher;
 use crate::telegram_auth::TelegramAuthState;
 
 use config::{require_login, session_path, TelegramConfig, AUTH_INPUT_TIMEOUT_SECS};
-use crate::llm::LlmConfig;
 
 // ── Auth helper ───────────────────────────────────────────────────────────────
 
@@ -111,7 +110,8 @@ async fn run_listener_once(
     auth: &TelegramAuthState,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let cfg = TelegramConfig::from_env()?;
-    let llm = LlmConfig::from_env();
+    let llm = crate::llm::shared_llm();
+    let http = crate::llm::shared_http();
 
     if let Err(e) = ensure_codebase_index() {
         sirin_log!("[telegram] Codebase index refresh skipped: {e}");
@@ -316,19 +316,63 @@ async fn run_listener_once(
             .await;
             should_record_ai_decision = reply_plan.should_record_ai_decision;
 
-            let final_reply = crate::agents::chat_agent::run_chat_via_adk_with_tracker(
-                crate::agents::chat_agent::ChatRequest {
-                    user_text: text.clone(),
-                    execution_result: reply_plan.execution_result.clone(),
-                    context_block: None,
-                    fallback_reply: Some(reply_plan.fallback_reply),
-                    peer_id: peer_bare_id,
-                },
-                Some(tracker.clone()),
-            )
-            .await;
+            // ── Choose streaming vs. ADK path ─────────────────────────────────
+            // Streaming path: simple direct queries with no research action.
+            // ADK path: research intents or queries needing ReAct tool use.
+            let use_streaming = reply_plan.execution_result.is_none()
+                && !crate::telegram::commands::detect_research_intent(&text).is_some();
 
-            reply::send_final_reply(&client, &message, is_private, final_reply.as_str()).await;
+            let final_reply = if use_streaming {
+                // Build prompt and stream tokens back to Telegram.
+                let persona = Persona::load().ok();
+                let recent_ctx = crate::memory::load_recent_context(5, peer_bare_id)
+                    .ok()
+                    .filter(|v| !v.is_empty())
+                    .map(|entries| {
+                        entries.iter()
+                            .map(|e| format!("User: {}\nAssistant: {}", e.user_msg, e.assistant_reply))
+                            .collect::<Vec<_>>()
+                            .join("\n---\n")
+                    });
+                let search_ctx = if crate::telegram::commands::should_search(&text) {
+                    let query = crate::telegram::commands::extract_search_query(http.as_ref(), llm.as_ref(), &text).await;
+                    crate::skills::ddg_search(&query).await.ok()
+                        .filter(|r| !r.is_empty())
+                        .map(|r| r.iter().take(3)
+                            .map(|sr| format!("- {}: {} ({})", sr.title, sr.snippet, sr.url))
+                            .collect::<Vec<_>>().join("\n"))
+                } else { None };
+
+                let prompt = crate::telegram::llm::build_ai_reply_prompt(
+                    persona.as_ref(),
+                    &text,
+                    None,
+                    search_ctx.as_deref(),
+                    recent_ctx.as_deref(),
+                    None,
+                    None,
+                    false,
+                    false,
+                );
+
+                reply::send_streaming_reply(&client, &message, is_private, prompt, llm.as_ref(), http.as_ref()).await
+            } else {
+                // ADK path: research intents and complex queries.
+                let reply = crate::agents::chat_agent::run_chat_via_adk_with_tracker(
+                    crate::agents::chat_agent::ChatRequest {
+                        user_text: text.clone(),
+                        execution_result: reply_plan.execution_result.clone(),
+                        context_block: None,
+                        fallback_reply: Some(reply_plan.fallback_reply),
+                        peer_id: peer_bare_id,
+                    },
+                    Some(tracker.clone()),
+                )
+                .await;
+                reply::send_final_reply(&client, &message, is_private, reply.as_str()).await;
+                reply
+            };
+
             reply::persist_reply_context(&text, &final_reply, peer_bare_id);
         } else if cfg.debug_updates {
             sirin_log!("[telegram] skip: auto-reply disabled by TG_AUTO_REPLY");

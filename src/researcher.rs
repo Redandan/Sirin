@@ -16,11 +16,34 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
+// ── Persona safety gate ────────────────────────────────────────────────────────
+
+/// Proposed objective update waiting for user confirmation in the UI.
+/// `maybe_reflect_on_objectives` stores here instead of writing directly.
+fn pending_objectives_slot() -> &'static Mutex<Option<Vec<String>>> {
+    static SLOT: OnceLock<Mutex<Option<Vec<String>>>> = OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(None))
+}
+
+/// Take the pending objectives out of the slot (returns `None` if nothing pending).
+/// Called by the UI on each refresh cycle.
+pub fn take_pending_objectives() -> Option<Vec<String>> {
+    pending_objectives_slot().lock().ok()?.take()
+}
+
+fn store_pending_objectives(objectives: Vec<String>) {
+    if let Ok(mut guard) = pending_objectives_slot().lock() {
+        *guard = Some(objectives);
+    }
+}
+
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
+use crate::events;
 use crate::llm::{call_prompt, LlmConfig};
 use crate::memory::memory_store;
+use crate::persona::Persona;
 use crate::sirin_log;
 use crate::skills::ddg_search;
 
@@ -215,6 +238,18 @@ pub fn get_research(id: &str) -> Result<Option<ResearchTask>, String> {
 
 // ── Pipeline ──────────────────────────────────────────────────────────────────
 
+/// Scraping-optimized HTTP client: custom User-Agent + 60 s timeout.
+fn scraping_http() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .user_agent(USER_AGENT)
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .expect("Failed to build researcher HTTP client")
+    })
+}
+
 /// Run the full research pipeline and return the completed task.
 ///
 /// This is designed to be spawned as a background tokio task.
@@ -233,12 +268,9 @@ pub async fn run_research(topic: String, url: Option<String>) -> ResearchTask {
 
     let _ = save_research(&task);
 
-    let http = reqwest::Client::builder()
-        .user_agent(USER_AGENT)
-        .timeout(std::time::Duration::from_secs(60))
-        .build()
-        .expect("Failed to build HTTP client");
-    let llm = LlmConfig::from_env();
+    let http = scraping_http();
+    let llm_arc = crate::llm::shared_llm();
+    let llm = llm_arc.as_ref();
 
     // Run the pipeline; on any hard failure record it and return.
     match pipeline(&http, &llm, &mut task).await {
@@ -259,7 +291,115 @@ pub async fn run_research(topic: String, url: Option<String>) -> ResearchTask {
     }
 
     let _ = save_research(&task);
+
+    // Publish completion event so other agents react immediately.
+    events::publish(events::AgentEvent::ResearchCompleted {
+        topic: task.topic.clone(),
+        task_id: task.id.clone(),
+        success: task.status == ResearchStatus::Done,
+    });
+
+    // Every 5th successful research task, reflect on persona objectives.
+    if task.status == ResearchStatus::Done {
+        let done_count = list_research()
+            .unwrap_or_default()
+            .iter()
+            .filter(|t| t.status == ResearchStatus::Done)
+            .count();
+        if done_count % 5 == 0 {
+            maybe_reflect_on_objectives(
+                crate::llm::shared_http().as_ref(),
+                crate::llm::shared_llm().as_ref(),
+                &task,
+            ).await;
+        }
+    }
+
     task
+}
+
+/// After every 5th completed research, ask the LLM whether the persona's
+/// objectives should be updated, and write the result back to persona.yaml.
+async fn maybe_reflect_on_objectives(
+    http: &reqwest::Client,
+    llm: &LlmConfig,
+    task: &ResearchTask,
+) {
+    let persona = match Persona::load() {
+        Ok(p) => p,
+        Err(e) => {
+            sirin_log!("[researcher] Persona load failed during reflection: {e}");
+            return;
+        }
+    };
+
+    let report_snippet: String = task
+        .final_report
+        .as_deref()
+        .unwrap_or("")
+        .chars()
+        .take(800)
+        .collect();
+
+    let prompt = format!(
+        r#"You are reviewing an AI agent's objectives after completing a research task.
+
+Current objectives:
+{objectives}
+
+Latest research topic: {topic}
+Research summary:
+{report}
+
+Should any objective be added, removed, or refined based on this research?
+Reply with a JSON array of updated objectives (same language as original).
+Keep it to 2-5 concise objectives. If no change is needed, return the original list.
+
+Output ONLY the JSON array, e.g.: ["Objective 1", "Objective 2"]"#,
+        objectives = persona.objectives.join("\n- "),
+        topic = task.topic,
+        report = report_snippet,
+    );
+
+    let raw = match call_prompt(http, llm, prompt).await {
+        Ok(r) => r,
+        Err(e) => {
+            sirin_log!("[researcher] Reflection LLM call failed: {e}");
+            return;
+        }
+    };
+
+    // Extract JSON array from response.
+    let start = match raw.find('[') {
+        Some(i) => i,
+        None => return,
+    };
+    let end = match raw.rfind(']') {
+        Some(i) => i + 1,
+        None => return,
+    };
+
+    let new_objectives: Vec<String> = match serde_json::from_str(&raw[start..end]) {
+        Ok(v) => v,
+        Err(e) => {
+            sirin_log!("[researcher] Failed to parse reflection JSON: {e}");
+            return;
+        }
+    };
+
+    if new_objectives.is_empty() || new_objectives == persona.objectives {
+        return;
+    }
+
+    // Store for UI review instead of writing directly.
+    sirin_log!(
+        "[researcher] Proposed objective update ready for review: {:?}",
+        new_objectives
+    );
+    store_pending_objectives(new_objectives.clone());
+    events::publish(events::AgentEvent::PersonaUpdated {
+        new_objectives,
+    });
 }
 
 async fn pipeline(

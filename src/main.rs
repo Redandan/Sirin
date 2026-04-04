@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod events;
 mod followup;
 mod llm;
 mod log_buffer;
