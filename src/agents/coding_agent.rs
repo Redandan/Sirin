@@ -414,14 +414,25 @@ struct ReactStep {
     final_answer: Option<String>,
 }
 
-fn parse_react_step(raw: &str) -> ReactStep {
-    // Strip markdown code fences if present.
-    let cleaned = raw
+fn extract_json_body(raw: &str) -> &str {
+    // Strip markdown code fences first.
+    let s = raw
         .trim()
         .trim_start_matches("```json")
         .trim_start_matches("```")
         .trim_end_matches("```")
         .trim();
+    // Then extract the outermost { … } so any preamble/postamble text is ignored.
+    if let (Some(start), Some(end)) = (s.find('{'), s.rfind('}')) {
+        if start <= end {
+            return &s[start..=end];
+        }
+    }
+    s
+}
+
+fn parse_react_step(raw: &str) -> ReactStep {
+    let cleaned = extract_json_body(raw);
 
     if let Ok(v) = serde_json::from_str::<Value>(cleaned) {
         let thought = v
@@ -629,5 +640,31 @@ mod tests {
         let raw = "```json\n{\"thought\":\"t\",\"action\":\"DONE\",\"action_input\":{}}\n```";
         let step = parse_react_step(raw);
         assert_eq!(step.action, "DONE");
+    }
+
+    /// LLM 在最後幾個 iter 常在 JSON 前加中文說明句，例如：
+    /// "我已完成所有步驟：\n{ ... }"
+    /// 這個測試確保 extract_json_body 能正確切出 JSON。
+    #[test]
+    fn parse_react_step_json_with_preamble_text() {
+        let raw = "我已經成功完成了所有步驟：\n\
+                   {\"thought\":\"done\",\"action\":\"DONE\",\"action_input\":{},\
+                   \"final_answer\":\"分析完成：Sirin 是一個純 Rust AI Agent。\"}";
+        let step = parse_react_step(raw);
+        assert_eq!(step.action, "DONE");
+        assert!(
+            step.final_answer.as_deref().unwrap_or("").contains("Sirin"),
+            "final_answer should contain the summary, got: {:?}",
+            step.final_answer
+        );
+    }
+
+    /// JSON 後面附有後置文字時也應正確解析。
+    #[test]
+    fn parse_react_step_json_with_postamble_text() {
+        let raw = "{\"thought\":\"t\",\"action\":\"local_file_read\",\
+                   \"action_input\":{\"path\":\"src/main.rs\"}}\n以上是我的回應。";
+        let step = parse_react_step(raw);
+        assert_eq!(step.action, "local_file_read");
     }
 }
