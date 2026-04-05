@@ -16,6 +16,8 @@ use super::{
     research_agent::ResearchRequest,
 };
 
+use crate::memory::load_recent_context;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouterRequest {
     pub user_text: String,
@@ -35,6 +37,9 @@ pub enum RouteTarget {
     Chat,
     Research,
     Coding,
+    /// Route to ChatAgent but with the large/powerful model.
+    /// Used when the planner detects deep reasoning or multi-step analysis skills.
+    LargeModel,
 }
 
 pub struct RouterAgent;
@@ -93,7 +98,8 @@ impl Agent for RouterAgent {
                 RouteTarget::Chat => "chat",
                 RouteTarget::Research => "research",
                 RouteTarget::Coding => "coding",
-            };
+                RouteTarget::LargeModel => "large_model",
+};
             let plan_summary = plan
                 .as_ref()
                 .map(|p| p.summary.clone())
@@ -153,6 +159,12 @@ impl Agent for RouterAgent {
                     } else {
                         request.user_text.clone()
                     };
+                    // Inject recent conversation memory so the coding agent has
+                    // awareness of what the user was just discussing.
+                    let context_block = load_recent_context(5, request.peer_id)
+                        .ok()
+                        .filter(|v| !v.is_empty())
+                        .map(|entries| format_context_block(&entries));
                     Ok(json!({
                         "route": route,
                         "planner_summary": plan_summary,
@@ -162,6 +174,7 @@ impl Agent for RouterAgent {
                             task,
                             max_iterations: None,
                             dry_run: false,
+                            context_block,
                         }
                     }))
                 }
@@ -178,6 +191,23 @@ impl Agent for RouterAgent {
                         peer_id: request.peer_id,
                         planner_intent_family: planner_family_str,
                         planner_skills,
+                        use_large_model: false,
+                    }
+                })),
+                RouteTarget::LargeModel => Ok(json!({
+                    "route": route,
+                    "planner_summary": plan_summary,
+                    "intent_family": plan.as_ref().map(|p| p.intent_family.clone()).unwrap_or(IntentFamily::GeneralChat),
+                    "recommended_skills": &planner_skills,
+                    "chat_request": ChatRequest {
+                        user_text: request.user_text,
+                        execution_result: request.execution_result,
+                        context_block: request.context_block,
+                        fallback_reply: request.fallback_reply,
+                        peer_id: request.peer_id,
+                        planner_intent_family: planner_family_str,
+                        planner_skills,
+                        use_large_model: true,
                     }
                 })),
             }
@@ -225,7 +255,35 @@ fn should_prefer_chat_from_skills(skills: &[String]) -> bool {
     })
 }
 
+fn format_context_block(entries: &[crate::memory::ContextEntry]) -> String {
+    entries
+        .iter()
+        .map(|e| format!("User: {}\nAssistant: {}", e.user_msg, e.assistant_reply))
+        .collect::<Vec<_>>()
+        .join("\n---\n")
+}
+
+/// Skills that indicate the request benefits from the large/powerful model.
+const LARGE_MODEL_SKILLS: &[&str] = &[
+    "deep_reasoning",
+    "multi_step_plan",
+    "cross_module_analysis",
+    "architecture_design",
+    "security_audit",
+];
+
+/// Returns `true` when the planner recommends skills that benefit from a
+/// large/powerful model (deep multi-step reasoning, cross-module analysis).
+fn should_use_large_model_from_skills(skills: &[String]) -> bool {
+    skills.iter().any(|skill| LARGE_MODEL_SKILLS.contains(&skill.as_str()))
+}
+
 fn route_target_from_plan(plan: &super::planner_agent::WorkflowPlan, text: &str) -> RouteTarget {
+    // Deep-reasoning skills always escalate to the large model regardless of family.
+    if should_use_large_model_from_skills(&plan.recommended_skills) {
+        return RouteTarget::LargeModel;
+    }
+
     match plan.intent_family {
         IntentFamily::Research => RouteTarget::Research,
         // LocalFile / CodeAnalysis: could be read-only Q&A *or* a write task.

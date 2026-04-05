@@ -10,10 +10,13 @@
 //! |---------------------|--------------------------------|---------------------------------|
 //! | `LLM_PROVIDER`      | `ollama`                       | `ollama` or `lmstudio`/`openai` |
 //! | `OLLAMA_BASE_URL`   | `http://localhost:11434`       | Ollama server address           |
-//! | `OLLAMA_MODEL`      | `llama3.2`                     | Model name                      |
+//! | `OLLAMA_MODEL`      | `llama3.2`                     | Main model name                 |
 //! | `LM_STUDIO_BASE_URL`| `http://localhost:1234/v1`     | LM Studio / OpenAI endpoint     |
-//! | `LM_STUDIO_MODEL`   | `llama3.2`                     | Model name                      |
+//! | `LM_STUDIO_MODEL`   | `llama3.2`                     | Main model name                 |
 //! | `LM_STUDIO_API_KEY` | *(empty)*                      | Optional Bearer token           |
+//! | `ROUTER_MODEL`      | *(falls back to main model)*   | Small model for Router/Planner; kept resident in Ollama via `keep_alive=-1` |
+//! | `CODING_MODEL`      | *(falls back to main model)*   | Dedicated model for CodingAgent |
+//! | `LARGE_MODEL`       | *(falls back to main model)*   | Large model for deep reasoning  |
 
 use std::sync::{Arc, OnceLock};
 
@@ -58,6 +61,15 @@ pub struct LlmConfig {
     /// Falls back to `model` when not set.
     /// Set via `CODING_MODEL` environment variable.
     pub coding_model: Option<String>,
+    /// Optional small/fast model for routing and planning (e.g. `tinyllama`, `phi3-mini`).
+    /// Kept resident in Ollama via `keep_alive: -1`.
+    /// Falls back to `model` when not set.
+    /// Set via `ROUTER_MODEL` environment variable.
+    pub router_model: Option<String>,
+    /// Optional large/powerful model for complex reasoning tasks (e.g. `llama3:70b`).
+    /// Falls back to `model` when not set.
+    /// Set via `LARGE_MODEL` environment variable.
+    pub large_model: Option<String>,
 }
 
 impl LlmConfig {
@@ -68,6 +80,14 @@ impl LlmConfig {
             .to_lowercase();
 
         let coding_model = std::env::var("CODING_MODEL")
+            .ok()
+            .filter(|v| !v.trim().is_empty());
+
+        let router_model = std::env::var("ROUTER_MODEL")
+            .ok()
+            .filter(|v| !v.trim().is_empty());
+
+        let large_model = std::env::var("LARGE_MODEL")
             .ok()
             .filter(|v| !v.trim().is_empty());
 
@@ -85,6 +105,8 @@ impl LlmConfig {
                     .ok()
                     .filter(|v| !v.trim().is_empty()),
                 coding_model,
+                router_model,
+                large_model,
             },
             _ => Self {
                 backend: LlmBackend::Ollama,
@@ -94,6 +116,8 @@ impl LlmConfig {
                     .unwrap_or_else(|_| DEFAULT_MODEL.to_string()),
                 api_key: None,
                 coding_model,
+                router_model,
+                large_model,
             },
         }
     }
@@ -110,6 +134,18 @@ impl LlmConfig {
     /// Falls back to the general `model` if `CODING_MODEL` is not set.
     pub fn effective_coding_model(&self) -> &str {
         self.coding_model.as_deref().unwrap_or(&self.model)
+    }
+
+    /// The model name to use for routing and planning (small/fast model).
+    /// Falls back to the general `model` if `ROUTER_MODEL` is not set.
+    pub fn effective_router_model(&self) -> &str {
+        self.router_model.as_deref().unwrap_or(&self.model)
+    }
+
+    /// The model name to use for complex reasoning tasks (large model).
+    /// Falls back to the general `model` if `LARGE_MODEL` is not set.
+    pub fn effective_large_model(&self) -> &str {
+        self.large_model.as_deref().unwrap_or(&self.model)
     }
 }
 
@@ -172,6 +208,13 @@ struct OllamaRequest<'a> {
     model: &'a str,
     prompt: String,
     stream: bool,
+    /// Controls how long Ollama keeps the model loaded after the request.
+    /// Use `json!(-1)` to keep the model resident permanently (ideal for the
+    /// small routing model), or a duration string like `"5m"` to unload it
+    /// after a period of inactivity.  `None` uses the Ollama server default.
+    /// Ignored by LM Studio / OpenAI-compatible backends.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    keep_alive: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -240,9 +283,10 @@ async fn call_ollama(
     base_url: &str,
     model: &str,
     prompt: String,
+    keep_alive: Option<serde_json::Value>,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let url = format!("{}/api/generate", base_url.trim_end_matches('/'));
-    let body = OllamaRequest { model, prompt, stream: false };
+    let body = OllamaRequest { model, prompt, stream: false, keep_alive };
     let resp: OllamaResponse = client
         .post(&url)
         .json(&body)
@@ -299,7 +343,7 @@ pub async fn call_prompt(
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let prompt = prompt.into();
     match llm.backend {
-        LlmBackend::Ollama => call_ollama(client, &llm.base_url, &llm.model, prompt).await,
+        LlmBackend::Ollama => call_ollama(client, &llm.base_url, &llm.model, prompt, None).await,
         LlmBackend::LmStudio => {
             call_openai(client, &llm.base_url, &llm.model, llm.api_key.as_deref(), prompt).await
         }
@@ -315,7 +359,44 @@ pub async fn call_coding_prompt(
     let prompt = prompt.into();
     let model = llm.effective_coding_model();
     match llm.backend {
-        LlmBackend::Ollama => call_ollama(client, &llm.base_url, model, prompt).await,
+        LlmBackend::Ollama => call_ollama(client, &llm.base_url, model, prompt, None).await,
+        LlmBackend::LmStudio => {
+            call_openai(client, &llm.base_url, model, llm.api_key.as_deref(), prompt).await
+        }
+    }
+}
+
+/// Like [`call_prompt`] but uses the router/planner model when configured.
+///
+/// On Ollama, sets `keep_alive: -1` to keep the small routing model resident
+/// in VRAM between calls, eliminating the model-load overhead on every request.
+pub async fn call_router_prompt(
+    client: &reqwest::Client,
+    llm: &LlmConfig,
+    prompt: impl Into<String>,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let prompt = prompt.into();
+    let model = llm.effective_router_model();
+    match llm.backend {
+        LlmBackend::Ollama => {
+            call_ollama(client, &llm.base_url, model, prompt, Some(serde_json::json!(-1))).await
+        }
+        LlmBackend::LmStudio => {
+            call_openai(client, &llm.base_url, model, llm.api_key.as_deref(), prompt).await
+        }
+    }
+}
+
+/// Like [`call_prompt`] but uses the large/powerful model when configured.
+pub async fn call_large_prompt(
+    client: &reqwest::Client,
+    llm: &LlmConfig,
+    prompt: impl Into<String>,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let prompt = prompt.into();
+    let model = llm.effective_large_model();
+    match llm.backend {
+        LlmBackend::Ollama => call_ollama(client, &llm.base_url, model, prompt, None).await,
         LlmBackend::LmStudio => {
             call_openai(client, &llm.base_url, model, llm.api_key.as_deref(), prompt).await
         }
@@ -375,7 +456,7 @@ pub async fn call_prompt_messages(
                 .map(|m| format!("{}: {}", m.role.as_str().to_uppercase(), m.content))
                 .collect::<Vec<_>>()
                 .join("\n\n");
-            call_ollama(client, &llm.base_url, &llm.model, prompt).await
+            call_ollama(client, &llm.base_url, &llm.model, prompt, None).await
         }
         LlmBackend::LmStudio => {
             let openai_msgs: Vec<OpenAiMessage> = messages
@@ -401,7 +482,7 @@ where
     F: Fn(String) + Send,
 {
     let url = format!("{}/api/generate", base_url.trim_end_matches('/'));
-    let body = OllamaRequest { model, prompt, stream: true };
+    let body = OllamaRequest { model, prompt, stream: true, keep_alive: None };
     let resp = client.post(&url).json(&body).send().await?.error_for_status()?;
 
     let mut stream = resp.bytes_stream();
