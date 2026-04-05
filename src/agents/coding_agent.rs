@@ -119,6 +119,19 @@ async fn run_react_loop(
     let plan = make_plan(ctx, &request.task, &project_ctx).await;
     sirin_log!("[coding_agent] plan ready ({} chars)", plan.len());
 
+    // ── Step 2.5: git stash baseline (rollback anchor) ───────────────────────
+    // Record the current HEAD so we can restore it if the task leaves the
+    // codebase in a broken state.
+    let baseline_commit = if !dry_run {
+        ctx.call_tool("shell_exec", json!({ "command": "git rev-parse HEAD" }))
+            .await
+            .ok()
+            .and_then(|v| v.get("stdout").and_then(Value::as_str).map(|s| s.trim().to_string()))
+            .filter(|s| !s.is_empty())
+    } else {
+        None
+    };
+
     // ── Step 3: ReAct loop ────────────────────────────────────────────────────
     let mut history: Vec<HistoryEntry> = Vec::new();
     let mut files_modified: Vec<String> = Vec::new();
@@ -130,21 +143,36 @@ async fn run_react_loop(
     const MAX_PATCH_ERRORS: u32 = 2;
     let write_tools = ["file_write", "file_patch", "plan_execute"];
 
-    // Only pass the most recent N history entries to the LLM to avoid blowing
-    // up the context window on long tasks.
+    // Sliding window: only pass recent N entries to the LLM.
+    // file_read entries are "pinned" and never evicted — they carry the source
+    // context the LLM needs to produce correct old_str for file_patch.
     const HISTORY_WINDOW: usize = 6;
 
     for iteration in 0..max_iter {
-        let history_window = if history.len() > HISTORY_WINDOW {
-            &history[history.len() - HISTORY_WINDOW..]
-        } else {
-            &history[..]
+        // Build history window: always keep file_read entries + recent N others.
+        let history_window: Vec<&HistoryEntry> = {
+            let pinned: Vec<&HistoryEntry> = history
+                .iter()
+                .filter(|h| h.action == "local_file_read")
+                .collect();
+            let recent: Vec<&HistoryEntry> = history
+                .iter()
+                .filter(|h| h.action != "local_file_read")
+                .rev()
+                .take(HISTORY_WINDOW)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            // Merge: pinned first, then recent (dedup by pointer not needed — they're disjoint)
+            pinned.into_iter().chain(recent).collect()
         };
+
         let prompt = build_react_prompt(
             &request.task,
             &project_ctx,
             &plan,
-            history_window,
+            &history_window,
             &tool_list,
             dry_run,
         );
@@ -175,6 +203,7 @@ async fn run_react_loop(
                 action: "DONE".to_string(),
                 action_input: json!({}),
                 observation: "Task complete.".to_string(),
+                pinned: false,
             });
             break;
         }
@@ -207,6 +236,7 @@ async fn run_react_loop(
             step.action_input.clone()
         };
 
+        let is_file_read = step.action == "local_file_read";
         let observation = match ctx.call_tool(&step.action, tool_input).await {
             Ok(v) => {
                 // Track which files were written.
@@ -231,7 +261,13 @@ async fn run_react_loop(
                         }
                     }
                 }
-                format_tool_output(&v)
+                // file_read observations get a larger budget so the LLM sees enough
+                // context to construct accurate old_str for file_patch.
+                if is_file_read {
+                    format_tool_output_large(&v)
+                } else {
+                    format_tool_output(&v)
+                }
             }
             Err(e) => format!("ERROR: {e}"),
         };
@@ -242,6 +278,7 @@ async fn run_react_loop(
             action: step.action,
             action_input: step.action_input,
             observation: observation.clone(),
+            pinned: is_file_read,
         });
 
         // Track consecutive patch errors for safety circuit breaker.
@@ -255,12 +292,97 @@ async fn run_react_loop(
         }
     }
 
-    // ── Step 4: verification ──────────────────────────────────────────────────
-    let (verified, verification_output) = if !dry_run && config.allowed_commands
-        .iter()
-        .any(|cmd| cmd == "cargo check")
-    {
-        verify_build(ctx).await
+    // ── Step 4: verification + auto-fix loop ─────────────────────────────────
+    let can_verify = !dry_run && config.allowed_commands.iter().any(|cmd| cmd == "cargo check");
+    let (verified, verification_output) = if can_verify {
+        let (mut ok, mut out) = verify_build(ctx).await;
+
+        // If verification fails, re-enter the ReAct loop up to 3 times to fix
+        // the compilation errors before giving up.
+        const MAX_FIX_ATTEMPTS: u32 = 3;
+        let mut fix_attempt = 0u32;
+        while !ok && fix_attempt < MAX_FIX_ATTEMPTS {
+            fix_attempt += 1;
+            let err_output = out.clone().unwrap_or_default();
+            sirin_log!(
+                "[coding_agent] cargo check failed (attempt {fix_attempt}/{MAX_FIX_ATTEMPTS}), re-entering ReAct to fix"
+            );
+            ctx.record_system_event(
+                format!("adk_coding_fix_attempt_{fix_attempt}"),
+                Some("cargo check failed".to_string()),
+                Some("RUNNING"),
+                Some(preview_text(&err_output)),
+            );
+
+            // Inject the compiler error as context and run one fix iteration.
+            let fix_task = format!(
+                "cargo check failed with the following errors. Fix them without changing behaviour:\n\n{}",
+                err_output.chars().take(1200).collect::<String>()
+            );
+            let fix_plan = "1. Read the failing file(s)\n2. Apply file_patch to fix the error\n3. DONE".to_string();
+            let fix_tool_list = describe_tools();
+
+            // Re-run up to 4 ReAct iterations to apply the fix.
+            for fix_iter in 0..4usize {
+                let prompt = build_react_prompt(
+                    &fix_task,
+                    &project_ctx,
+                    &fix_plan,
+                    &[],
+                    &fix_tool_list,
+                    false,
+                );
+                let raw = match call_coding_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), prompt).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        sirin_log!("[coding_agent] fix iter {fix_iter} LLM error: {e}");
+                        break;
+                    }
+                };
+                let step = parse_react_step(&raw);
+                if step.action == "DONE" { break; }
+                let obs = match ctx.call_tool(&step.action, step.action_input).await {
+                    Ok(v) => format_tool_output(&v),
+                    Err(e) => format!("ERROR: {e}"),
+                };
+                sirin_log!("[coding_agent] fix iter {fix_iter} action={} obs={}", step.action, preview_text(&obs));
+            }
+
+            (ok, out) = verify_build(ctx).await;
+        }
+
+        // If still broken after all fix attempts, rollback to baseline.
+        if !ok {
+            if let Some(ref commit) = baseline_commit {
+                sirin_log!("[coding_agent] ROLLBACK: restoring to {commit}");
+                let _ = ctx.call_tool(
+                    "shell_exec",
+                    json!({ "command": format!("git checkout {commit} -- .") }),
+                ).await;
+                ctx.record_system_event(
+                    "adk_coding_rollback",
+                    Some(commit.clone()),
+                    Some("ROLLBACK"),
+                    Some("cargo check still failing after fix attempts — changes reverted".to_string()),
+                );
+                let rollback_msg = format!(
+                    "⚠️ cargo check 仍失敗，已自動還原到 commit {}。請檢查任務描述後重試。",
+                    &commit[..8.min(commit.len())]
+                );
+                return Ok(CodingAgentResponse {
+                    outcome: rollback_msg,
+                    files_modified: vec![],
+                    iterations_used: history.iter().filter(|h| h.action != "DONE").count(),
+                    diff: None,
+                    verified: false,
+                    verification_output: out,
+                    trace: vec![],
+                    dry_run,
+                });
+            }
+        }
+
+        (ok, out)
     } else {
         (false, None)
     };
@@ -380,7 +502,7 @@ fn build_react_prompt(
     task: &str,
     project_ctx: &str,
     plan: &str,
-    history: &[HistoryEntry],
+    history: &[&HistoryEntry],
     tool_list: &str,
     dry_run: bool,
 ) -> String {
@@ -539,6 +661,9 @@ struct HistoryEntry {
     action: String,
     action_input: Value,
     observation: String,
+    /// Pinned entries (e.g. file_read) are always included in the history
+    /// window regardless of how many iterations have passed.
+    pinned: bool,
 }
 
 // ── Formatting helpers ────────────────────────────────────────────────────────
@@ -555,6 +680,25 @@ fn format_tool_output(v: &Value) -> String {
         other => {
             let s = serde_json::to_string_pretty(other).unwrap_or_default();
             s.chars().take(800).collect()
+        }
+    }
+}
+
+/// Like `format_tool_output` but with a larger budget (2000 chars) for file_read
+/// observations, so the LLM sees enough source context to construct accurate
+/// `old_str` for `file_patch`.
+fn format_tool_output_large(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.chars().take(2000).collect(),
+        Value::Array(arr) => arr
+            .iter()
+            .take(20)
+            .map(|item| item.as_str().unwrap_or(&item.to_string()).chars().take(200).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        other => {
+            let s = serde_json::to_string_pretty(other).unwrap_or_default();
+            s.chars().take(2000).collect()
         }
     }
 }
