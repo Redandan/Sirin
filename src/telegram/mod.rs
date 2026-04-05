@@ -276,6 +276,7 @@ async fn run_listener_once(
 
             let reply_plan = handler::prepare_reply_plan(
                 &text,
+                peer_bare_id.map(|id| id as i64),
                 persona_name,
                 voice,
                 ack_prefix,

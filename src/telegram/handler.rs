@@ -22,6 +22,7 @@ pub struct ReplyPlan {
 
 pub async fn prepare_reply_plan<F, Fut>(
     text: &str,
+    peer_id: Option<i64>,
     persona_name: &str,
     voice: &str,
     ack_prefix: &str,
@@ -38,7 +39,7 @@ where
         crate::agents::router_agent::RouterRequest {
             user_text: text.to_string(),
             context_block: None,
-            peer_id: None,
+            peer_id,
             fallback_reply: None,
             execution_result: None,
         },

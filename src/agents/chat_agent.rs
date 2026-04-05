@@ -1051,7 +1051,31 @@ async fn understand_message(
 ) -> MessageUnderstanding {
     use crate::llm::call_prompt;
 
-    // ── Fast path 1: keyword classification ──────────────────────────────
+    // ── Fast path 1: Planner already classified the intent ───────────────
+    // The Planner ran a dedicated LLM call; trust it over keyword heuristics.
+    // Keyword matching only runs when the Planner is absent or returned General.
+    if let Some(family) = planner_intent {
+        let mapped = match family {
+            "local_file" => Some(Intent::LocalFile),
+            "project_overview" => Some(Intent::ProjectOverview),
+            "code_analysis" | "skill_architecture" => Some(Intent::CodeAnalysis),
+            "capability" => Some(Intent::CapabilityQuery),
+            "research" => Some(Intent::WebSearch),
+            _ => None,
+        };
+        if let Some(intent) = mapped {
+            // Still extract any explicit file references from the text so
+            // the Chat Agent can read the right file even when Planner wins.
+            let files = extract_file_references_from_text(user_text);
+            return MessageUnderstanding {
+                intent,
+                is_correction: false,
+                target_files: files,
+            };
+        }
+    }
+
+    // ── Fast path 2: keyword classification ──────────────────────────────
     // Exact token matches are cheaper and reliable for structured inputs like
     // file paths or capability phrases.  Only fall through to LLM for General.
     let keyword_files = extract_file_references_from_text(user_text);
@@ -1073,27 +1097,6 @@ async fn understand_message(
             is_correction: false,
             target_files: keyword_files,
         };
-    }
-
-    // ── Fast path 2: planner forwarded a non-general family ──────────────
-    // The Planner already ran an LLM classification; re-use it instead of
-    // paying for another LLM round-trip.
-    if let Some(family) = planner_intent {
-        let mapped = match family {
-            "local_file" => Some(Intent::LocalFile),
-            "project_overview" => Some(Intent::ProjectOverview),
-            "code_analysis" | "skill_architecture" => Some(Intent::CodeAnalysis),
-            "capability" => Some(Intent::CapabilityQuery),
-            "research" => Some(Intent::WebSearch),
-            _ => None,
-        };
-        if let Some(intent) = mapped {
-            return MessageUnderstanding {
-                intent,
-                is_correction: false,
-                target_files: Vec::new(),
-            };
-        }
     }
 
     // ── Keyword fallback for LLM failure ─────────────────────────────────
@@ -1566,7 +1569,10 @@ pub async fn run_chat_response_via_adk_with_tracker(
         .clone()
         .unwrap_or_else(|| chinese_fallback_reply(&request.user_text, request.execution_result.as_deref()));
 
-    let runtime = AgentRuntime::default();
+    // Chat Agent uses a read-only registry — write tools (file_write, file_patch,
+    // plan_execute, shell_exec) are intentionally excluded so the LLM cannot
+    // accidentally or maliciously modify files through this agent.
+    let runtime = AgentRuntime::new(crate::adk::tool::read_only_tool_registry());
     let ctx = runtime
         .context("chat_request")
         .with_optional_tracker(tracker)

@@ -23,6 +23,16 @@ impl ToolRegistry {
         Self::default()
     }
 
+    /// Return a new registry that excludes the named tools.
+    /// Used to build per-agent scoped registries (e.g. read-only for Chat/Planner).
+    pub fn without(self, names: &[&str]) -> Self {
+        let mut handlers = (*self.handlers).clone();
+        for name in names {
+            handlers.remove(*name);
+        }
+        Self { handlers: Arc::new(handlers) }
+    }
+
     pub fn register_fn<F, Fut>(self, name: impl Into<String>, handler: F) -> Self
     where
         F: Fn(Value) -> Fut + Send + Sync + 'static,
@@ -92,7 +102,8 @@ fn required_string_field(input: &Value, key: &str) -> Result<String, String> {
     optional_string_field(input, key).ok_or_else(|| format!("Missing '{key}' string"))
 }
 
-pub fn default_tool_registry() -> ToolRegistry {
+/// Build the full registry (called once, result is cached).
+fn build_full_registry() -> ToolRegistry {
     ToolRegistry::new()
         .register_fn("web_search", |input| async move {
             let query = query_from_input(&input)?;
@@ -594,6 +605,27 @@ pub fn default_tool_registry() -> ToolRegistry {
             let log = String::from_utf8_lossy(&out.stdout).to_string();
             Ok(json!({ "log": log }))
         })
+}
+
+/// Full registry (write tools included). Cached process-wide — cheap to clone.
+pub fn default_tool_registry() -> ToolRegistry {
+    use std::sync::OnceLock;
+    static REGISTRY: OnceLock<ToolRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(build_full_registry).clone()
+}
+
+/// Read-only registry — excludes file_write, file_patch, plan_execute, shell_exec.
+/// Used by Chat Agent and Planner Agent so write tools are never accessible
+/// from those agents regardless of what the LLM requests.
+pub fn read_only_tool_registry() -> ToolRegistry {
+    use std::sync::OnceLock;
+    static REGISTRY: OnceLock<ToolRegistry> = OnceLock::new();
+    REGISTRY
+        .get_or_init(|| {
+            build_full_registry()
+                .without(&["file_write", "file_patch", "plan_execute", "shell_exec"])
+        })
+        .clone()
 }
 
 // ── Coding tool helpers ───────────────────────────────────────────────────────

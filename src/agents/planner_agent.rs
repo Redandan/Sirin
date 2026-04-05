@@ -469,7 +469,7 @@ pub async fn run_planner_via_adk(
     request: PlannerRequest,
     tracker: Option<TaskTracker>,
 ) -> Result<WorkflowPlan, String> {
-    let runtime = AgentRuntime::default();
+    let runtime = AgentRuntime::new(crate::adk::tool::read_only_tool_registry());
     let ctx = runtime
         .context("planner_request")
         .with_optional_tracker(tracker)

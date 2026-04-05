@@ -933,4 +933,46 @@ mod tests {
         assert!(symbols.contains(&"run_listener".to_string()));
         assert!(symbols.contains(&"helper".to_string()));
     }
+
+    // ── inspect_project_file_range tests ─────────────────────────────────────
+
+    #[test]
+    fn range_read_returns_numbered_lines() {
+        let result = inspect_project_file_range("src/main.rs", Some(1), Some(3), 4000);
+        let content = result.expect("should find src/main.rs");
+        // Output must include line numbers in "  N | ..." format.
+        assert!(content.contains("    1 |"), "line 1 should be numbered: {content}");
+        assert!(content.contains("    2 |") || content.contains("    3 |"), "line 2 or 3 should appear");
+        // Lines after the range should not be present (file has > 3 lines).
+        let excerpt_start = content.find("Excerpt:").expect("should have Excerpt section");
+        let excerpt = &content[excerpt_start..];
+        assert!(!excerpt.contains("    4 |"), "line 4 should be outside range");
+    }
+
+    #[test]
+    fn range_read_full_file_no_line_numbers() {
+        let result = inspect_project_file_range("src/main.rs", None, None, 4000);
+        let content = result.expect("should find src/main.rs");
+        // Full-file mode does not add line number prefixes.
+        assert!(!content.contains("    1 |"), "full-file mode should not number lines");
+        assert!(content.contains("Excerpt:"), "should have Excerpt section");
+    }
+
+    #[test]
+    fn range_read_start_beyond_eof_returns_empty_excerpt() {
+        let result = inspect_project_file_range("src/main.rs", Some(99999), None, 4000);
+        let content = result.expect("should find src/main.rs even with out-of-range start");
+        let excerpt_start = content.find("Excerpt:").expect("should have Excerpt section");
+        let excerpt = &content[excerpt_start + "Excerpt:".len()..].trim().to_string();
+        // Excerpt should be empty or very short (no matching lines).
+        assert!(excerpt.len() < 20, "excerpt should be empty for out-of-range start: '{excerpt}'");
+    }
+
+    #[test]
+    fn range_note_included_in_output() {
+        let result = inspect_project_file_range("src/main.rs", Some(1), Some(5), 4000);
+        let content = result.expect("should find src/main.rs");
+        // The header line should mention the range.
+        assert!(content.contains("lines 1"), "range note should appear in header: {content}");
+    }
 }

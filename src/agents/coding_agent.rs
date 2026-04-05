@@ -649,6 +649,10 @@ fn describe_tools() -> String {
         .join("\n")
 }
 
+/// Soft character limit for a single ReAct prompt.  LM Studio at 32K context ≈
+/// 128K chars (4 chars/token estimate).  We leave headroom for the LLM output.
+const MAX_PROMPT_CHARS: usize = 20_000;
+
 fn build_react_prompt(
     task: &str,
     project_ctx: &str,
@@ -683,6 +687,14 @@ report what would change.\n"
         format!("\n## Previous steps\n{}\n", entries.join("\n---\n"))
     };
 
+    // Token budget: estimate static sections and trim project_ctx if necessary
+    // so the full prompt stays under MAX_PROMPT_CHARS.  Keeps the LLM from
+    // receiving a truncated prompt silently when context is large.
+    let static_budget = task.len() + plan.len() + tool_list.len()
+        + history_block.len() + 800 /* boilerplate */;
+    let ctx_budget = MAX_PROMPT_CHARS.saturating_sub(static_budget);
+    let project_ctx_trimmed: String = project_ctx.chars().take(ctx_budget.max(400)).collect();
+
     format!(
         r#"You are Sirin, a local AI Coding Agent.
 {dry_run_note}
@@ -693,7 +705,7 @@ report what would change.\n"
 {plan}
 
 ## Project context
-{project_ctx}
+{project_ctx_trimmed}
 {history_block}
 ## Available tools
 {tool_list}

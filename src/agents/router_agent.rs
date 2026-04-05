@@ -53,24 +53,30 @@ impl Agent for RouterAgent {
             let request: RouterRequest = serde_json::from_value(input)
                 .map_err(|e| format!("Invalid router request payload: {e}"))?;
 
-            let plan = super::planner_agent::run_planner_via_adk(
-                PlannerRequest {
-                    user_text: request.user_text.clone(),
-                    context_block: request.context_block.clone(),
-                    peer_id: request.peer_id,
-                    fallback_reply: request.fallback_reply.clone(),
-                    execution_result: request.execution_result.clone(),
-                },
-                ctx.tracker().cloned(),
-            )
-            .await
-            .ok();
-
-            let route = if is_identity_question(&request.user_text)
+            // Fast path: identity / capability / direct-answer questions never
+            // need the Planner — skip the LLM call entirely.
+            let is_shortcut = is_identity_question(&request.user_text)
                 || is_code_access_question(&request.user_text)
-                || is_direct_answer_request(&request.user_text)
-            {
-                // Hard-coded identity / capability shortcut — always chat.
+                || is_direct_answer_request(&request.user_text);
+
+            let plan = if is_shortcut {
+                None
+            } else {
+                super::planner_agent::run_planner_via_adk(
+                    PlannerRequest {
+                        user_text: request.user_text.clone(),
+                        context_block: request.context_block.clone(),
+                        peer_id: request.peer_id,
+                        fallback_reply: request.fallback_reply.clone(),
+                        execution_result: request.execution_result.clone(),
+                    },
+                    ctx.tracker().cloned(),
+                )
+                .await
+                .ok()
+            };
+
+            let route = if is_shortcut {
                 RouteTarget::Chat
             } else if let Some(plan) = plan.as_ref() {
                 // Planner (LLM) result takes priority — respect semantic intent.
