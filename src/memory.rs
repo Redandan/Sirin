@@ -422,7 +422,7 @@ fn build_codebase_entry(root: &Path, path: &Path, text: &str) -> CodebaseEntry {
     }
 }
 
-pub fn refresh_codebase_index() -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+fn refresh_codebase_index_inner() -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
     let Some(root) = find_project_root() else {
         return Ok(0);
     };
@@ -456,6 +456,16 @@ pub fn refresh_codebase_index() -> Result<usize, Box<dyn std::error::Error + Sen
     }
 
     Ok(indexed)
+}
+
+/// Rebuild the codebase index *and* the call graph in one pass so they stay
+/// in sync.  Called after every `file_write` and `file_patch`.
+pub fn refresh_codebase_index() -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+    let result = refresh_codebase_index_inner();
+    // Invalidate and rebuild the call graph; failures are non-fatal.
+    crate::code_graph::invalidate_cache();
+    let _ = crate::code_graph::refresh_call_graph();
+    result
 }
 
 pub fn ensure_codebase_index() -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
@@ -647,7 +657,7 @@ pub fn search_codebase(
 
     let file = fs::File::open(&path)?;
     let reader = BufReader::new(file);
-    let mut scored: Vec<(f64, String)> = Vec::new();
+    let mut scored: Vec<(f64, String, Vec<String>)> = Vec::new();
 
     for line in reader.lines() {
         let line = line?;
@@ -668,12 +678,51 @@ pub fn search_codebase(
                 "File: {}\nKind: {}\nRole: {}\nSymbols: {}",
                 entry.path, entry.kind, entry.summary, symbols
             );
-            scored.push((score, formatted));
+            scored.push((score, formatted, entry.symbols));
         }
     }
 
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    Ok(scored.into_iter().take(limit).map(|(_, t)| t).collect())
+
+    let results: Vec<String> = scored
+        .into_iter()
+        .take(limit)
+        .enumerate()
+        .map(|(rank, (_, mut text, symbols))| {
+            // For the top result, append 1-hop call graph context for each
+            // extracted symbol so the LLM immediately sees callers / callees.
+            if rank == 0 && !symbols.is_empty() {
+                let mut graph_lines: Vec<String> = Vec::new();
+                for sym in symbols.iter().take(4) {
+                    if let Ok(cg) = crate::code_graph::query_call_graph(sym, 1) {
+                        let has_info = cg.defined_in.is_some()
+                            || !cg.callers.is_empty()
+                            || !cg.callees.is_empty();
+                        if has_info {
+                            let mut parts = Vec::new();
+                            if let Some(loc) = &cg.defined_in {
+                                parts.push(format!("defined at {loc}"));
+                            }
+                            if !cg.callers.is_empty() {
+                                parts.push(format!("called by: {}", cg.callers.join(", ")));
+                            }
+                            if !cg.callees.is_empty() {
+                                parts.push(format!("calls: {}", cg.callees.join(", ")));
+                            }
+                            graph_lines.push(format!("  {sym}: {}", parts.join(" | ")));
+                        }
+                    }
+                }
+                if !graph_lines.is_empty() {
+                    text.push_str("\nCall graph:\n");
+                    text.push_str(&graph_lines.join("\n"));
+                }
+            }
+            text
+        })
+        .collect();
+
+    Ok(results)
 }
 
 pub fn looks_like_code_query(text: &str) -> bool {

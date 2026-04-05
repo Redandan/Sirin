@@ -396,6 +396,138 @@ pub fn default_tool_registry() -> ToolRegistry {
             ranked.truncate(limit);
             Ok(json!(ranked))
         })
+        // ── file_patch: surgical hunk-based edits ────────────────────────────
+        .register_fn("file_patch", |input| async move {
+            let path = required_string_field(&input, "path")?;
+            let hunks = input
+                .get("hunks")
+                .and_then(Value::as_array)
+                .ok_or_else(|| "Missing 'hunks' array".to_string())?
+                .clone();
+            let dry_run = input.get("dry_run").and_then(Value::as_bool).unwrap_or(false);
+
+            let safe_path = safe_project_path(&path)?;
+
+            let original = std::fs::read_to_string(&safe_path)
+                .map_err(|e| format!("Cannot read '{}': {e}", safe_path.display()))?;
+
+            let mut content = original;
+
+            for (i, hunk) in hunks.iter().enumerate() {
+                let old_str = hunk
+                    .get("old_str")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| format!("Hunk {i}: missing 'old_str'"))?;
+                let new_str = hunk
+                    .get("new_str")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| format!("Hunk {i}: missing 'new_str'"))?;
+
+                if !content.contains(old_str) {
+                    return Err(format!(
+                        "Hunk {i}: 'old_str' not found in '{}'. Patch aborted — no changes written.",
+                        safe_path.display()
+                    ));
+                }
+                // Replace only the first occurrence so hunks are order-independent.
+                content = content.replacen(old_str, new_str, 1);
+            }
+
+            let hunks_applied = hunks.len();
+
+            if dry_run {
+                return Ok(json!({
+                    "dry_run": true,
+                    "path": safe_path.display().to_string(),
+                    "hunks_applied": hunks_applied,
+                    "message": "Dry run — file not written. Set dry_run=false to apply.",
+                }));
+            }
+
+            let bytes = content.len();
+            std::fs::write(&safe_path, &content)
+                .map_err(|e| format!("Write failed: {e}"))?;
+            let _ = crate::memory::refresh_codebase_index();
+            Ok(json!({
+                "path": safe_path.display().to_string(),
+                "hunks_applied": hunks_applied,
+                "bytes_written": bytes,
+            }))
+        })
+        // ── plan_execute: run multiple tool steps in sequence ─────────────────
+        .register_ctx_fn("plan_execute", |ctx, input| {
+            async move {
+                let steps = input
+                    .get("steps")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| "Missing 'steps' array".to_string())?
+                    .clone();
+
+                let total = steps.len();
+                let mut results: Vec<Value> = Vec::with_capacity(total);
+
+                for (i, step) in steps.iter().enumerate() {
+                    let tool = step
+                        .get("tool")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| format!("Step {i}: missing 'tool'"))?
+                        .to_string();
+                    let step_input = step.get("input").cloned().unwrap_or(json!({}));
+
+                    match ctx.call_tool(&tool, step_input).await {
+                        Ok(result) => {
+                            results.push(json!({
+                                "step": i,
+                                "tool": tool,
+                                "success": true,
+                                "result": result,
+                            }));
+                        }
+                        Err(e) => {
+                            results.push(json!({
+                                "step": i,
+                                "tool": tool,
+                                "success": false,
+                                "error": e,
+                            }));
+                            return Ok(json!({
+                                "steps_attempted": i + 1,
+                                "steps_total": total,
+                                "all_succeeded": false,
+                                "aborted_at_step": i,
+                                "results": results,
+                            }));
+                        }
+                    }
+                }
+
+                Ok(json!({
+                    "steps_attempted": total,
+                    "steps_total": total,
+                    "all_succeeded": true,
+                    "results": results,
+                }))
+            }
+            .boxed()
+        })
+        // ── call_graph_query: look up callers and callees ─────────────────────
+        .register_fn("call_graph_query", |input| async move {
+            let symbol = required_string_field(&input, "symbol")?;
+            let hops = input
+                .get("hops")
+                .and_then(Value::as_u64)
+                .map(|v| v as usize)
+                .unwrap_or(1)
+                .min(3);
+            let result = crate::code_graph::query_call_graph(&symbol, hops)
+                .map_err(|e| e.to_string())?;
+            Ok(json!({
+                "symbol": symbol,
+                "defined_in": result.defined_in,
+                "callers": result.callers,
+                "callees": result.callees,
+            }))
+        })
         .register_fn("git_status", |_input| async move {
             let out = std::process::Command::new("git")
                 .args(["status", "--short"])

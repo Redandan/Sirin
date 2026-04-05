@@ -179,10 +179,24 @@ async fn run_react_loop(
         let observation = match ctx.call_tool(&step.action, tool_input).await {
             Ok(v) => {
                 // Track which files were written.
-                if step.action == "file_write" {
+                if step.action == "file_write" || step.action == "file_patch" {
                     if let Some(path) = v.get("path").and_then(Value::as_str) {
                         if !files_modified.contains(&path.to_string()) {
                             files_modified.push(path.to_string());
+                        }
+                    }
+                }
+                // Track files touched via plan_execute steps.
+                if step.action == "plan_execute" {
+                    if let Some(results) = v.get("results").and_then(Value::as_array) {
+                        for r in results {
+                            if let Some(result) = r.get("result") {
+                                if let Some(path) = result.get("path").and_then(Value::as_str) {
+                                    if !files_modified.contains(&path.to_string()) {
+                                        files_modified.push(path.to_string());
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -303,11 +317,14 @@ fn describe_tools() -> String {
     let tools = [
         ("file_list", r#"{"path":"dir","max_depth":3}"#, "List files in a directory."),
         ("local_file_read", r#"{"path":"src/foo.rs"}"#, "Read a file's content."),
-        ("file_write", r#"{"path":"src/foo.rs","content":"..."}"#, "Write content to a file."),
+        ("file_write", r#"{"path":"src/foo.rs","content":"..."}"#, "Write full content to a file (use only when replacing the entire file)."),
+        ("file_patch", r#"{"path":"src/foo.rs","hunks":[{"old_str":"fn foo() {","new_str":"fn foo() -> i32 {"}]}"#, "Apply surgical hunk-based edits. Fails atomically if any old_str is not found. Prefer over file_write for partial changes."),
         ("file_diff", r#"{"path":null}"#, "Show git diff of uncommitted changes."),
         ("shell_exec", r#"{"command":"cargo check"}"#, "Run a whitelisted shell command."),
         ("codebase_search", r#"{"query":"...","limit":5}"#, "Search codebase for relevant code."),
         ("symbol_search", r#"{"query":"function_name"}"#, "Search for a symbol by name."),
+        ("call_graph_query", r#"{"symbol":"my_fn","hops":1}"#, "Look up callers and callees of a symbol in the call graph."),
+        ("plan_execute", r#"{"steps":[{"tool":"file_patch","input":{...}},{"tool":"shell_exec","input":{"command":"cargo check"}}]}"#, "Execute multiple tool steps in sequence. Stops on first failure. Use to batch multi-file changes in one action."),
         ("git_status", r#"{}"#, "Show git status."),
         ("git_log", r#"{"limit":5}"#, "Show recent git commits."),
         ("memory_search", r#"{"query":"...","limit":3}"#, "Search past memories."),
@@ -369,6 +386,12 @@ action_input. Files will NOT be written to disk; the agent will report what woul
 
 ## Instructions
 Decide the next single action to take.
+
+**Tool preferences:**
+- Prefer `file_patch` over `file_write` whenever you are making partial changes to an existing file. `file_patch` is surgical and safe — it fails atomically if the context doesn't match, preventing accidental corruption.
+- Use `plan_execute` when the task requires changes to multiple files — batch all the `file_patch` (and optionally a final `shell_exec`) calls into one `plan_execute` action to complete the work in a single step.
+- Use `call_graph_query` to understand callers and callees before modifying a function.
+
 Respond with ONLY valid JSON in this exact format (no markdown fences):
 {{
   "thought": "your reasoning about what to do next",
