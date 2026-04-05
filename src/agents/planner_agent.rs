@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::adk::{Agent, AgentContext, AgentRuntime};
-use crate::llm::call_prompt;
+use crate::llm::call_router_prompt;
 use crate::persona::TaskTracker;
 use crate::telegram::commands::detect_research_intent;
 use crate::telegram::language::{is_code_access_question, is_identity_question};
@@ -409,7 +409,7 @@ Output only the JSON object, no explanation."#,
         context_hint = context_hint,
     );
 
-    let raw = call_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), prompt)
+    let raw = call_router_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), prompt)
         .await
         .ok()?;
 

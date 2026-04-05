@@ -333,6 +333,7 @@ async fn run_listener_once(
                     peer_id: peer_bare_id,
                     planner_intent_family: None,
                     planner_skills: Vec::new(),
+                    use_large_model: false,
                 });
 
             // Side-command results (todo creation, task queries) take priority

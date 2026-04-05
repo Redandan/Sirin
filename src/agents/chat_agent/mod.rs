@@ -51,6 +51,10 @@ pub struct ChatRequest {
     /// Recommended skill IDs forwarded by the Router from the Planner.
     #[serde(default)]
     pub planner_skills: Vec<String>,
+    /// When true, the chat agent uses the `large_model` from `LlmConfig` instead
+    /// of the default model.  Set by the Router when deep reasoning is needed.
+    #[serde(default)]
+    pub use_large_model: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -87,7 +91,14 @@ impl Agent for ChatAgent {
                 .map_err(|e| format!("Invalid chat request payload: {e}"))?;
 
             let client = Arc::clone(&ctx.http);
-            let llm = Arc::clone(&ctx.llm);
+            let llm_arc = Arc::clone(&ctx.llm);
+            // When use_large_model is requested, use the process-wide large-model
+            // config (cached; avoids cloning on every request).
+            let llm: Arc<crate::llm::LlmConfig> = if request.use_large_model {
+                crate::llm::shared_large_llm()
+            } else {
+                llm_arc
+            };
             let persona = Persona::load().ok();
 
             let behavior = ctx
@@ -550,6 +561,7 @@ mod tests {
                 peer_id: Some(unique_peer_id()),
                 planner_intent_family: None,
                 planner_skills: Vec::new(),
+                use_large_model: false,
             },
             None,
         )
@@ -571,6 +583,7 @@ mod tests {
                 peer_id: Some(unique_peer_id()),
                 planner_intent_family: None,
                 planner_skills: Vec::new(),
+                use_large_model: false,
             },
             None,
         )
@@ -594,6 +607,7 @@ mod tests {
                 peer_id,
                 planner_intent_family: None,
                 planner_skills: Vec::new(),
+                use_large_model: false,
             },
             None,
         )
@@ -610,6 +624,7 @@ mod tests {
                 peer_id,
                 planner_intent_family: None,
                 planner_skills: Vec::new(),
+                use_large_model: false,
             },
             None,
         )
@@ -634,6 +649,7 @@ mod tests {
                 peer_id: Some(unique_peer_id()),
                 planner_intent_family: None,
                 planner_skills: Vec::new(),
+                use_large_model: false,
             },
             None,
         )
@@ -655,6 +671,7 @@ mod tests {
                 peer_id: Some(unique_peer_id()),
                 planner_intent_family: None,
                 planner_skills: Vec::new(),
+                use_large_model: false,
             },
             None,
         )
@@ -678,6 +695,7 @@ mod tests {
                 peer_id: Some(unique_peer_id()),
                 planner_intent_family: None,
                 planner_skills: Vec::new(),
+                use_large_model: false,
             },
             None,
         )
@@ -699,6 +717,7 @@ mod tests {
                 peer_id: Some(unique_peer_id()),
                 planner_intent_family: None,
                 planner_skills: Vec::new(),
+                use_large_model: false,
             },
             None,
         )

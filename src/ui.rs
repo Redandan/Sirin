@@ -1093,7 +1093,7 @@ TG_DEBUG_UPDATES=false";
                                     }),
                                 });
                                 let resp = crate::agents::coding_agent::run_coding_via_adk(
-                                    task_clone, false, None,
+                                    task_clone, false, None, None,
                                 )
                                 .await;
                                 let _ = coding_tx.try_send(CodingUiUpdate {
@@ -1119,7 +1119,7 @@ TG_DEBUG_UPDATES=false";
                             };
                             rt.spawn(async move {
                                 let resp = crate::agents::coding_agent::run_coding_via_adk(
-                                    task_clone, true, None,
+                                    task_clone, true, None, None,
                                 )
                                 .await;
                                 let _ = coding_tx.try_send(CodingUiUpdate {
@@ -1316,7 +1316,7 @@ TG_DEBUG_UPDATES=false";
                     }),
                 });
                 let result = tokio::task::spawn(
-                    crate::agents::coding_agent::run_coding_via_adk(task, false, None),
+                    crate::agents::coding_agent::run_coding_via_adk(task, false, None, None),
                 )
                 .await;
                 match result {
@@ -1515,6 +1515,7 @@ TG_DEBUG_UPDATES=false";
                                 peer_id: Some(0),
                                 planner_intent_family: None,
                                 planner_skills: Vec::new(),
+                                use_large_model: false,
                             };
                             run_chat_and_send(request, plan_update, user_text_spawn, tx).await;
                             return;
@@ -1580,6 +1581,7 @@ TG_DEBUG_UPDATES=false";
                                         task: user_text_spawn.clone(),
                                         max_iterations: None,
                                         dry_run: false,
+                                        context_block: None,
                                     });
 
                             let _ = coding_tx.try_send(CodingUiUpdate {
@@ -1591,6 +1593,7 @@ TG_DEBUG_UPDATES=false";
                                 coding_request.task,
                                 coding_request.dry_run,
                                 None,
+                                coding_request.context_block,
                             )
                             .await;
 
@@ -1613,6 +1616,7 @@ TG_DEBUG_UPDATES=false";
                                     peer_id: Some(0),
                                     planner_intent_family: None,
                                     planner_skills: Vec::new(),
+                                    use_large_model: false,
                                 });
                             run_chat_and_send(request, plan_update, user_text_spawn, tx).await;
                         }

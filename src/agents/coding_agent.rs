@@ -35,6 +35,10 @@ pub struct CodingRequest {
     /// to disk.  The agent still produces the intended diff as output.
     #[serde(default)]
     pub dry_run: bool,
+    /// Optional conversation context injected by the Router (recent memory turns).
+    /// Appended to the project context so the agent is aware of prior discussion.
+    #[serde(default)]
+    pub context_block: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -121,6 +125,17 @@ async fn run_react_loop(
     if let Some(hint) = ctx.context_hint() {
         project_ctx.push_str("\n\n## Recent conversation context\n");
         project_ctx.push_str(hint);
+    }
+
+    // Append router-injected memory context when provided.
+    // This is the conversation history the Router fetched from SQLite memory
+    // before dispatching, giving the agent cross-turn awareness without an
+    // additional database query.
+    if let Some(block) = &request.context_block {
+        if !block.trim().is_empty() {
+            project_ctx.push_str("\n\n## Conversation memory (router-injected)\n");
+            project_ctx.push_str(block);
+        }
     }
 
     // ── Step 2: planning call ─────────────────────────────────────────────────
@@ -944,6 +959,7 @@ pub async fn run_coding_via_adk(
     task: String,
     dry_run: bool,
     tracker: Option<TaskTracker>,
+    context_block: Option<String>,
 ) -> CodingAgentResponse {
     // Load recent conversation context (UI session, peer_id=None).
     let context_hint = load_recent_context(5, None)
@@ -964,7 +980,7 @@ pub async fn run_coding_via_adk(
         .with_context_hint(context_hint)
         .with_metadata("agent", "coding_agent");
 
-    let input = json!(CodingRequest { task: task.clone(), max_iterations: None, dry_run });
+    let input = json!(CodingRequest { task: task.clone(), max_iterations: None, dry_run, context_block });
     let response = match runtime.run(&CodingAgent, ctx, input).await {
         Ok(v) => serde_json::from_value(v).unwrap_or_else(|_| CodingAgentResponse {
             outcome: "Completed (response parse error)".to_string(),

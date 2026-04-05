@@ -10,10 +10,13 @@
 //! |---------------------|--------------------------------|---------------------------------|
 //! | `LLM_PROVIDER`      | `ollama`                       | `ollama` or `lmstudio`/`openai` |
 //! | `OLLAMA_BASE_URL`   | `http://localhost:11434`       | Ollama server address           |
-//! | `OLLAMA_MODEL`      | `llama3.2`                     | Model name                      |
+//! | `OLLAMA_MODEL`      | `llama3.2`                     | Main model name                 |
 //! | `LM_STUDIO_BASE_URL`| `http://localhost:1234/v1`     | LM Studio / OpenAI endpoint     |
-//! | `LM_STUDIO_MODEL`   | `llama3.2`                     | Model name                      |
+//! | `LM_STUDIO_MODEL`   | `llama3.2`                     | Main model name                 |
 //! | `LM_STUDIO_API_KEY` | *(empty)*                      | Optional Bearer token           |
+//! | `ROUTER_MODEL`      | *(falls back to main model)*   | Small model for Router/Planner; kept resident in Ollama via `keep_alive=-1` |
+//! | `CODING_MODEL`      | *(falls back to main model)*   | Dedicated model for CodingAgent |
+//! | `LARGE_MODEL`       | *(falls back to main model)*   | Large model for deep reasoning  |
 
 use std::sync::{Arc, OnceLock};
 
@@ -30,10 +33,44 @@ pub(crate) fn shared_http() -> Arc<reqwest::Client> {
     Arc::clone(HTTP.get_or_init(|| Arc::new(reqwest::Client::new())))
 }
 
-/// Returns the process-wide LLM config (read from env once).
+static SHARED_LLM: OnceLock<Arc<LlmConfig>> = OnceLock::new();
+
+/// Returns the process-wide LLM config.
+///
+/// If [`init_shared_llm`] was called before the first use, returns the
+/// probed/validated config.  Otherwise falls back to `LlmConfig::from_env()`.
 pub(crate) fn shared_llm() -> Arc<LlmConfig> {
-    static LLM: OnceLock<Arc<LlmConfig>> = OnceLock::new();
-    Arc::clone(LLM.get_or_init(|| Arc::new(LlmConfig::from_env())))
+    Arc::clone(SHARED_LLM.get_or_init(|| Arc::new(LlmConfig::from_env())))
+}
+
+/// Prime the process-wide LLM singleton with a probed config.
+///
+/// Must be called **before** the first call to [`shared_llm`].  A second call
+/// is a no-op because the underlying `OnceLock` is already set.
+pub(crate) fn init_shared_llm(config: LlmConfig) {
+    let _ = SHARED_LLM.set(Arc::new(config));
+}
+
+/// Returns a pre-configured `Arc<LlmConfig>` whose `model` field is already
+/// set to the effective large model.  Cached process-wide so the clone happens
+/// at most once.
+///
+/// Used by `ChatAgent` when `use_large_model = true` to avoid cloning the config
+/// on every request.
+pub(crate) fn shared_large_llm() -> Arc<LlmConfig> {
+    static LARGE: OnceLock<Arc<LlmConfig>> = OnceLock::new();
+    Arc::clone(LARGE.get_or_init(|| {
+        let base = shared_llm();
+        let large_model = base.effective_large_model().to_string();
+        if large_model == base.model {
+            // No dedicated large model configured — reuse the same Arc.
+            Arc::clone(&base)
+        } else {
+            let mut cfg = (*base).clone();
+            cfg.model = large_model;
+            Arc::new(cfg)
+        }
+    }))
 }
 const LM_STUDIO_BASE_URL: &str = "http://localhost:1234/v1";
 const DEFAULT_MODEL: &str = "llama3.2";
@@ -58,6 +95,15 @@ pub struct LlmConfig {
     /// Falls back to `model` when not set.
     /// Set via `CODING_MODEL` environment variable.
     pub coding_model: Option<String>,
+    /// Optional small/fast model for routing and planning (e.g. `tinyllama`, `phi3-mini`).
+    /// Kept resident in Ollama via `keep_alive: -1`.
+    /// Falls back to `model` when not set.
+    /// Set via `ROUTER_MODEL` environment variable.
+    pub router_model: Option<String>,
+    /// Optional large/powerful model for complex reasoning tasks (e.g. `llama3:70b`).
+    /// Falls back to `model` when not set.
+    /// Set via `LARGE_MODEL` environment variable.
+    pub large_model: Option<String>,
 }
 
 impl LlmConfig {
@@ -68,6 +114,14 @@ impl LlmConfig {
             .to_lowercase();
 
         let coding_model = std::env::var("CODING_MODEL")
+            .ok()
+            .filter(|v| !v.trim().is_empty());
+
+        let router_model = std::env::var("ROUTER_MODEL")
+            .ok()
+            .filter(|v| !v.trim().is_empty());
+
+        let large_model = std::env::var("LARGE_MODEL")
             .ok()
             .filter(|v| !v.trim().is_empty());
 
@@ -85,6 +139,8 @@ impl LlmConfig {
                     .ok()
                     .filter(|v| !v.trim().is_empty()),
                 coding_model,
+                router_model,
+                large_model,
             },
             _ => Self {
                 backend: LlmBackend::Ollama,
@@ -94,6 +150,8 @@ impl LlmConfig {
                     .unwrap_or_else(|_| DEFAULT_MODEL.to_string()),
                 api_key: None,
                 coding_model,
+                router_model,
+                large_model,
             },
         }
     }
@@ -110,6 +168,18 @@ impl LlmConfig {
     /// Falls back to the general `model` if `CODING_MODEL` is not set.
     pub fn effective_coding_model(&self) -> &str {
         self.coding_model.as_deref().unwrap_or(&self.model)
+    }
+
+    /// The model name to use for routing and planning (small/fast model).
+    /// Falls back to the general `model` if `ROUTER_MODEL` is not set.
+    pub fn effective_router_model(&self) -> &str {
+        self.router_model.as_deref().unwrap_or(&self.model)
+    }
+
+    /// The model name to use for complex reasoning tasks (large model).
+    /// Falls back to the general `model` if `LARGE_MODEL` is not set.
+    pub fn effective_large_model(&self) -> &str {
+        self.large_model.as_deref().unwrap_or(&self.model)
     }
 }
 
@@ -172,6 +242,13 @@ struct OllamaRequest<'a> {
     model: &'a str,
     prompt: String,
     stream: bool,
+    /// Controls how long Ollama keeps the model loaded after the request.
+    /// Use `json!(-1)` to keep the model resident permanently (ideal for the
+    /// small routing model), or a duration string like `"5m"` to unload it
+    /// after a period of inactivity.  `None` uses the Ollama server default.
+    /// Ignored by LM Studio / OpenAI-compatible backends.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    keep_alive: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -240,9 +317,10 @@ async fn call_ollama(
     base_url: &str,
     model: &str,
     prompt: String,
+    keep_alive: Option<serde_json::Value>,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let url = format!("{}/api/generate", base_url.trim_end_matches('/'));
-    let body = OllamaRequest { model, prompt, stream: false };
+    let body = OllamaRequest { model, prompt, stream: false, keep_alive };
     let resp: OllamaResponse = client
         .post(&url)
         .json(&body)
@@ -299,7 +377,7 @@ pub async fn call_prompt(
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let prompt = prompt.into();
     match llm.backend {
-        LlmBackend::Ollama => call_ollama(client, &llm.base_url, &llm.model, prompt).await,
+        LlmBackend::Ollama => call_ollama(client, &llm.base_url, &llm.model, prompt, None).await,
         LlmBackend::LmStudio => {
             call_openai(client, &llm.base_url, &llm.model, llm.api_key.as_deref(), prompt).await
         }
@@ -315,7 +393,44 @@ pub async fn call_coding_prompt(
     let prompt = prompt.into();
     let model = llm.effective_coding_model();
     match llm.backend {
-        LlmBackend::Ollama => call_ollama(client, &llm.base_url, model, prompt).await,
+        LlmBackend::Ollama => call_ollama(client, &llm.base_url, model, prompt, None).await,
+        LlmBackend::LmStudio => {
+            call_openai(client, &llm.base_url, model, llm.api_key.as_deref(), prompt).await
+        }
+    }
+}
+
+/// Like [`call_prompt`] but uses the router/planner model when configured.
+///
+/// On Ollama, sets `keep_alive: -1` to keep the small routing model resident
+/// in VRAM between calls, eliminating the model-load overhead on every request.
+pub async fn call_router_prompt(
+    client: &reqwest::Client,
+    llm: &LlmConfig,
+    prompt: impl Into<String>,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let prompt = prompt.into();
+    let model = llm.effective_router_model();
+    match llm.backend {
+        LlmBackend::Ollama => {
+            call_ollama(client, &llm.base_url, model, prompt, Some(serde_json::json!(-1))).await
+        }
+        LlmBackend::LmStudio => {
+            call_openai(client, &llm.base_url, model, llm.api_key.as_deref(), prompt).await
+        }
+    }
+}
+
+/// Like [`call_prompt`] but uses the large/powerful model when configured.
+pub async fn call_large_prompt(
+    client: &reqwest::Client,
+    llm: &LlmConfig,
+    prompt: impl Into<String>,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let prompt = prompt.into();
+    let model = llm.effective_large_model();
+    match llm.backend {
+        LlmBackend::Ollama => call_ollama(client, &llm.base_url, model, prompt, None).await,
         LlmBackend::LmStudio => {
             call_openai(client, &llm.base_url, model, llm.api_key.as_deref(), prompt).await
         }
@@ -375,7 +490,7 @@ pub async fn call_prompt_messages(
                 .map(|m| format!("{}: {}", m.role.as_str().to_uppercase(), m.content))
                 .collect::<Vec<_>>()
                 .join("\n\n");
-            call_ollama(client, &llm.base_url, &llm.model, prompt).await
+            call_ollama(client, &llm.base_url, &llm.model, prompt, None).await
         }
         LlmBackend::LmStudio => {
             let openai_msgs: Vec<OpenAiMessage> = messages
@@ -401,7 +516,7 @@ where
     F: Fn(String) + Send,
 {
     let url = format!("{}/api/generate", base_url.trim_end_matches('/'));
-    let body = OllamaRequest { model, prompt, stream: true };
+    let body = OllamaRequest { model, prompt, stream: true, keep_alive: None };
     let resp = client.post(&url).json(&body).send().await?.error_for_status()?;
 
     let mut stream = resp.bytes_stream();
@@ -485,4 +600,577 @@ where
     }
 
     Ok(full.trim().to_string())
+}
+
+// ── Environment probe ─────────────────────────────────────────────────────────
+
+/// Lightweight model descriptor returned by the backend's tag/model-list endpoint.
+#[derive(Debug, Clone)]
+pub struct ModelInfo {
+    /// Canonical model name as returned by the backend (may include tag, e.g. `llama3.2:latest`).
+    pub name: String,
+    /// Model size in bytes (`0` when the backend does not report it).
+    pub size_bytes: u64,
+}
+
+impl ModelInfo {
+    /// Name without its tag suffix (e.g., `:latest`, `:13b`, `:q4_0`) — used for matching.
+    pub fn base_name(&self) -> &str {
+        self.name.split(':').next().unwrap_or(&self.name)
+    }
+
+    fn name_contains_any(&self, patterns: &[&str]) -> bool {
+        let lower = self.name.to_lowercase();
+        patterns.iter().any(|p| lower.contains(p))
+    }
+}
+
+// ── Deserialization for /api/tags (Ollama) ────────────────────────────────────
+
+#[derive(Deserialize)]
+struct OllamaTagsResponse {
+    models: Vec<OllamaTagEntry>,
+}
+
+#[derive(Deserialize)]
+struct OllamaTagEntry {
+    name: String,
+    #[serde(default)]
+    size: u64,
+}
+
+// ── Deserialization for GET /v1/models (LM Studio / OpenAI) ──────────────────
+
+#[derive(Deserialize)]
+struct OpenAiModelsResponse {
+    data: Vec<OpenAiModelEntry>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiModelEntry {
+    id: String,
+}
+
+// ── Model listing ─────────────────────────────────────────────────────────────
+
+/// Query the Ollama `/api/tags` endpoint and return the available model list.
+/// Returns an empty `Vec` (non-fatal) on any network or parse error.
+async fn list_ollama_models(
+    client: &reqwest::Client,
+    base_url: &str,
+) -> Vec<ModelInfo> {
+    let url = format!("{}/api/tags", base_url.trim_end_matches('/'));
+    match client
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => {
+            resp.json::<OllamaTagsResponse>()
+                .await
+                .map(|r| {
+                    r.models
+                        .into_iter()
+                        .map(|e| ModelInfo { name: e.name, size_bytes: e.size })
+                        .collect()
+                })
+                .unwrap_or_default()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Query the LM Studio `/v1/models` endpoint and return the available model list.
+/// Returns an empty `Vec` (non-fatal) on any network or parse error.
+async fn list_lmstudio_models(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: Option<&str>,
+) -> Vec<ModelInfo> {
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let mut req = client
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(5));
+    if let Some(key) = api_key {
+        req = req.bearer_auth(key);
+    }
+    match req.send().await {
+        Ok(resp) if resp.status().is_success() => {
+            resp.json::<OpenAiModelsResponse>()
+                .await
+                .map(|r| {
+                    r.data
+                        .into_iter()
+                        .map(|e| ModelInfo { name: e.id, size_bytes: 0 })
+                        .collect()
+                })
+                .unwrap_or_default()
+        }
+        _ => Vec::new(),
+    }
+}
+
+
+// ── Model capability classification ──────────────────────────────────────────
+
+/// Functional capability of an LLM model.
+///
+/// A single model may have more than one capability (e.g. a vision-capable
+/// coder has both `Vision` and `Code`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ModelCapability {
+    /// Small/fast model (heuristically < 4 GB or a named mini variant).
+    /// Best suited to the router/planner role to keep the main model free.
+    Fast,
+    /// General conversational capability.  Present on all generative models.
+    Chat,
+    /// Specialised for code generation, analysis, and editing.
+    Code,
+    /// Large/powerful model (heuristically ≥ 20 GB or a known large-parameter
+    /// name).  Best for deep multi-step reasoning.
+    Large,
+    /// Multimodal model that accepts image input in addition to text.
+    Vision,
+    /// Embedding-only model; not suitable for text generation.
+    Embedding,
+}
+
+/// A model from the backend together with its inferred capabilities.
+#[derive(Debug, Clone)]
+pub struct ClassifiedModel {
+    pub info: ModelInfo,
+    pub capabilities: Vec<ModelCapability>,
+}
+
+impl ClassifiedModel {
+    /// Returns `true` if this model has the given capability.
+    pub fn has(&self, cap: &ModelCapability) -> bool {
+        self.capabilities.contains(cap)
+    }
+}
+
+/// Classify a model's capabilities using name patterns and size heuristics.
+///
+/// Classification order:
+/// 1. Embedding-only → [`ModelCapability::Embedding`] only (not generative, stop here).
+/// 2. Multimodal/vision names → [`ModelCapability::Vision`].
+/// 3. Code-specialised names → [`ModelCapability::Code`].
+/// 4. Large by name or size ≥ 20 GB → [`ModelCapability::Large`].
+/// 5. Fast by name or size < 4 GB (non-embedding) → [`ModelCapability::Fast`].
+/// 6. All generative models → [`ModelCapability::Chat`].
+pub fn classify_model_capabilities(model: &ModelInfo) -> Vec<ModelCapability> {
+    let name = model.name.to_lowercase();
+    let mut caps = Vec::new();
+
+    // ── Embedding-only ────────────────────────────────────────────────────────
+    // These models cannot generate text; skip all other capability checks.
+    // `bge-` covers the entire BGE family (bge-small, bge-large, bge-m3, etc.)
+    // which are embedding/retrieval models not intended for text generation.
+    let is_embedding = name.contains("embed")
+        || name.contains("nomic")
+        || name.contains("all-minilm")
+        || name.contains("bge-")
+        || name.starts_with("e5-");
+    if is_embedding {
+        caps.push(ModelCapability::Embedding);
+        return caps;
+    }
+
+    // ── Vision / multimodal ───────────────────────────────────────────────────
+    if name.contains("vision")
+        || name.contains("llava")
+        || name.contains("bakllava")
+        || name.contains("moondream")
+        || name.contains("minicpm-v")
+        || name.contains("qwen-vl")
+        || name.contains("internvl")
+        || name.contains("cogvlm")
+    {
+        caps.push(ModelCapability::Vision);
+    }
+
+    // ── Code-specialised ──────────────────────────────────────────────────────
+    // Note: `"coder"` is excluded when the name also contains `"decoder"` because
+    // "decoder" is a substring of architectures like "decoder-only" and also
+    // because "decoder" itself contains the letters c-o-d-e-r as a suffix.
+    if name.contains("qwen2.5-coder")
+        || name.contains("qwen2.5coder")
+        || name.contains("codellama")
+        || name.contains("starcoder")
+        || name.contains("deepseek-coder")
+        || name.contains("devstral")
+        || (name.contains("coder") && !name.contains("decoder"))
+        || name.contains("code-")
+    {
+        caps.push(ModelCapability::Code);
+    }
+
+    // ── Large model ───────────────────────────────────────────────────────────
+    const LARGE_BYTES: u64 = 20 * 1_073_741_824; // 20 GB
+    let large_by_name = [
+        ":70b", "-70b", ":72b", "-72b", ":65b", "-65b",
+        ":34b", "-34b", ":32b", "-32b",
+        "mixtral", "opus",
+    ]
+    .iter()
+    .any(|p| name.contains(p));
+    let large_by_size = model.size_bytes > 0 && model.size_bytes >= LARGE_BYTES;
+    if large_by_name || large_by_size {
+        caps.push(ModelCapability::Large);
+    }
+
+    // ── Fast / small ──────────────────────────────────────────────────────────
+    const FAST_BYTES: u64 = 4 * 1_073_741_824; // 4 GB
+    let fast_by_name = name.contains("tinyllama")
+        || name.contains("phi3-mini")
+        || name.contains("phi-3-mini")
+        || name.contains("phi3:mini")
+        || name.contains("qwen:0.5")
+        || name.contains("qwen:1.5")
+        || name.contains("qwen2:0.5")
+        || name.contains("qwen2:1.5")
+        || name.contains("smollm")
+        || name.contains("gemma:2b")
+        || name.contains("tinydolphin");
+    let fast_by_size = model.size_bytes > 0 && model.size_bytes < FAST_BYTES;
+    if fast_by_name || fast_by_size {
+        caps.push(ModelCapability::Fast);
+    }
+
+    // ── Chat (all generative models) ─────────────────────────────────────────
+    caps.push(ModelCapability::Chat);
+
+    caps
+}
+
+// ── Agent fleet ───────────────────────────────────────────────────────────────
+
+/// The set of agents Sirin can run, derived from the models available at startup.
+///
+/// Built by [`probe_and_build_fleet`] and stored process-wide via
+/// [`init_agent_fleet`] / [`shared_fleet`].
+#[derive(Debug, Clone)]
+pub struct AgentFleet {
+    pub backend: LlmBackend,
+    pub base_url: String,
+    pub api_key: Option<String>,
+    /// General-purpose chat model — always present.
+    pub chat_model: String,
+    /// Fast/small model dedicated to routing and planning.
+    /// `None` means the chat model handles routing too.
+    pub router_model: Option<String>,
+    /// Code-specialised model.
+    /// `None` means the chat model handles coding too.
+    pub coding_model: Option<String>,
+    /// Large/powerful model for deep reasoning.
+    /// `None` means the chat model handles large tasks too.
+    pub large_model: Option<String>,
+    /// Every discovered model with its inferred capabilities.
+    pub classified_models: Vec<ClassifiedModel>,
+}
+
+impl AgentFleet {
+    /// Returns `true` when a dedicated fast router/planner model is available.
+    pub fn has_fast_router(&self) -> bool { self.router_model.is_some() }
+    /// Returns `true` when a dedicated code model is available.
+    pub fn has_dedicated_coder(&self) -> bool { self.coding_model.is_some() }
+    /// Returns `true` when a dedicated large model is available.
+    pub fn has_large_model(&self) -> bool { self.large_model.is_some() }
+
+    /// Returns `true` when at least one available model has the given capability.
+    pub fn has_capability(&self, cap: &ModelCapability) -> bool {
+        self.classified_models.iter().any(|m| m.has(cap))
+    }
+
+    /// Convert to the [`LlmConfig`] consumed by all LLM call functions.
+    pub fn to_llm_config(&self) -> LlmConfig {
+        LlmConfig {
+            backend: self.backend,
+            base_url: self.base_url.clone(),
+            model: self.chat_model.clone(),
+            api_key: self.api_key.clone(),
+            router_model: self.router_model.clone(),
+            coding_model: self.coding_model.clone(),
+            large_model: self.large_model.clone(),
+        }
+    }
+
+    /// Write a human-readable fleet summary to stderr.
+    pub fn log_summary(&self) {
+        eprintln!("[fleet] Agent fleet configured:");
+        eprintln!("  chat   → {} (general conversation)", self.chat_model);
+        eprintln!("  router → {}", self.router_model.as_deref().unwrap_or("(uses chat model)"));
+        eprintln!("  coder  → {}", self.coding_model.as_deref().unwrap_or("(uses chat model)"));
+        eprintln!("  large  → {}", self.large_model.as_deref().unwrap_or("(uses chat model)"));
+
+        if self.has_capability(&ModelCapability::Vision) {
+            let names: Vec<&str> = self.classified_models.iter()
+                .filter(|m| m.has(&ModelCapability::Vision))
+                .map(|m| m.info.name.as_str())
+                .collect();
+            eprintln!("  vision → {} (multimodal — image input capable)", names.join(", "));
+        }
+        if self.has_capability(&ModelCapability::Embedding) {
+            let names: Vec<&str> = self.classified_models.iter()
+                .filter(|m| m.has(&ModelCapability::Embedding))
+                .map(|m| m.info.name.as_str())
+                .collect();
+            eprintln!("  embed  → {} (vector embeddings)", names.join(", "));
+        }
+    }
+}
+
+static SHARED_FLEET: OnceLock<Arc<AgentFleet>> = OnceLock::new();
+
+/// Returns the process-wide agent fleet.
+///
+/// If [`init_agent_fleet`] has not been called, a minimal fleet built from
+/// `LlmConfig::from_env()` is returned (no classified models).
+pub(crate) fn shared_fleet() -> Arc<AgentFleet> {
+    Arc::clone(SHARED_FLEET.get_or_init(|| {
+        let cfg = LlmConfig::from_env();
+        Arc::new(AgentFleet {
+            backend: cfg.backend,
+            base_url: cfg.base_url,
+            api_key: cfg.api_key,
+            chat_model: cfg.model,
+            router_model: cfg.router_model,
+            coding_model: cfg.coding_model,
+            large_model: cfg.large_model,
+            classified_models: Vec::new(),
+        })
+    }))
+}
+
+/// Prime the process-wide fleet singleton.
+///
+/// Must be called **before** the first call to [`shared_fleet`].  A second call
+/// is a no-op because the underlying `OnceLock` is already set.
+pub(crate) fn init_agent_fleet(fleet: AgentFleet) {
+    let _ = SHARED_FLEET.set(Arc::new(fleet));
+}
+
+// ── Capability-aware role selection ──────────────────────────────────────────
+
+/// Pick the best model for a given role from all classified models.
+///
+/// - [`ModelCapability::Fast`] → smallest by byte size (lowest latency).
+/// - [`ModelCapability::Code`] → name-priority order (most specialised first).
+/// - [`ModelCapability::Large`] → largest by byte size (most capable).
+/// - Other capabilities → first matching model.
+///
+/// Models that equal `exclude` (the main chat model) are skipped so the router/
+/// coding/large slots are always distinct from the main model.
+fn best_for_role(
+    classified: &[ClassifiedModel],
+    cap: &ModelCapability,
+    exclude: &str,
+) -> Option<String> {
+    let candidates: Vec<&ClassifiedModel> = classified
+        .iter()
+        .filter(|m| m.has(cap) && m.info.name != exclude && m.info.base_name() != exclude)
+        .collect();
+
+    if candidates.is_empty() {
+        return None;
+    }
+
+    match cap {
+        ModelCapability::Fast => candidates
+            .iter()
+            .filter(|m| m.info.size_bytes > 0)
+            .min_by_key(|m| m.info.size_bytes)
+            .or_else(|| candidates.first())
+            .map(|m| m.info.name.clone()),
+
+        ModelCapability::Code => {
+            let priority = [
+                "qwen2.5-coder", "qwen2.5coder", "deepseek-coder", "devstral",
+                "codellama", "starcoder", "coder", "code-",
+            ];
+            priority
+                .iter()
+                .find_map(|p| {
+                    candidates
+                        .iter()
+                        .find(|m| m.info.name.to_lowercase().contains(p))
+                        .map(|m| m.info.name.clone())
+                })
+                .or_else(|| candidates.first().map(|m| m.info.name.clone()))
+        }
+
+        ModelCapability::Large => candidates
+            .iter()
+            .filter(|m| m.info.size_bytes > 0)
+            .max_by_key(|m| m.info.size_bytes)
+            .map(|m| m.info.name.clone()),
+
+        _ => candidates.first().map(|m| m.info.name.clone()),
+    }
+}
+
+/// Returns `true` when `name` matches any classified model (exact or base-name).
+fn is_model_available(name: &str, classified: &[ClassifiedModel]) -> bool {
+    let lower = name.to_lowercase();
+    let base = lower.split(':').next().unwrap_or(&lower);
+    classified.iter().any(|m| {
+        let mn = m.info.name.to_lowercase();
+        let mb = m.info.base_name().to_lowercase();
+        mn == lower || mb == lower || mn == base || mb == base
+    })
+}
+
+/// Resolve a single role slot from the fleet:
+/// - Env var set and model is available → keep.
+/// - Env var set but model absent → warn, clear (falls back to chat model).
+/// - Env var not set → auto-detect via `best_for_role`.
+fn assign_fleet_role(
+    role: &str,
+    env_value: Option<String>,
+    classified: &[ClassifiedModel],
+    cap: &ModelCapability,
+    chat_model: &str,
+) -> Option<String> {
+    match env_value {
+        Some(ref name) if !name.is_empty() => {
+            if is_model_available(name, classified) {
+                Some(name.clone())
+            } else {
+                eprintln!(
+                    "[fleet] WARNING: {role} model '{name}' not found — \
+                     falling back to chat model '{chat_model}'"
+                );
+                None
+            }
+        }
+        _ => best_for_role(classified, cap, chat_model),
+    }
+}
+
+// ── Public probe entry points ─────────────────────────────────────────────────
+
+/// Probe the configured LLM backend at startup, classify every available model
+/// by its capabilities, and build an [`AgentFleet`] describing which agents
+/// Sirin will run.
+///
+/// ## Role assignment priority
+/// 1. Env var set **and** model confirmed present → use as-is.
+/// 2. Env var set **but** model absent → warn + clear (falls back to chat model).
+/// 3. Env var not set → auto-detect using [`best_for_role`].
+///
+/// Non-fatal: on any network error, returns a minimal fleet from env vars only.
+pub async fn probe_and_build_fleet(client: &reqwest::Client) -> AgentFleet {
+    let baseline = LlmConfig::from_env();
+
+    let raw_models: Vec<ModelInfo> = match baseline.backend {
+        LlmBackend::Ollama => list_ollama_models(client, &baseline.base_url).await,
+        LlmBackend::LmStudio => {
+            list_lmstudio_models(client, &baseline.base_url, baseline.api_key.as_deref()).await
+        }
+    };
+
+    if raw_models.is_empty() {
+        eprintln!(
+            "[fleet] {} at '{}' returned no models — using env-only config",
+            baseline.backend_name(),
+            baseline.base_url,
+        );
+        return AgentFleet {
+            backend: baseline.backend,
+            base_url: baseline.base_url,
+            api_key: baseline.api_key,
+            chat_model: baseline.model,
+            router_model: baseline.router_model,
+            coding_model: baseline.coding_model,
+            large_model: baseline.large_model,
+            classified_models: Vec::new(),
+        };
+    }
+
+    // Classify every model.
+    let classified: Vec<ClassifiedModel> = raw_models
+        .into_iter()
+        .map(|info| {
+            let capabilities = classify_model_capabilities(&info);
+            ClassifiedModel { info, capabilities }
+        })
+        .collect();
+
+    // Log the discovered catalogue.
+    eprintln!(
+        "[fleet] {} model(s) found on {} ({})",
+        classified.len(),
+        baseline.backend_name(),
+        baseline.base_url,
+    );
+    for cm in &classified {
+        let size_str = if cm.info.size_bytes > 0 {
+            format!(" [{:.1} GB]", cm.info.size_bytes as f64 / 1_073_741_824.0)
+        } else {
+            String::new()
+        };
+        let cap_labels: Vec<&str> = cm.capabilities.iter().map(|c| match c {
+            ModelCapability::Fast      => "fast",
+            ModelCapability::Chat      => "chat",
+            ModelCapability::Code      => "code",
+            ModelCapability::Large     => "large",
+            ModelCapability::Vision    => "vision",
+            ModelCapability::Embedding => "embed",
+        }).collect();
+        eprintln!("  • {}{} [{}]", cm.info.name, size_str, cap_labels.join(","));
+    }
+
+    // Validate / pick the main chat model.
+    let chat_model = if is_model_available(&baseline.model, &classified) {
+        baseline.model.clone()
+    } else {
+        let fallback = classified
+            .iter()
+            .find(|m| m.has(&ModelCapability::Chat))
+            .or_else(|| classified.first())
+            .map(|m| m.info.name.clone())
+            .unwrap_or(baseline.model.clone());
+        if fallback != baseline.model {
+            eprintln!(
+                "[fleet] WARNING: main model '{}' not found — \
+                 using first available Chat model '{fallback}'",
+                baseline.model
+            );
+        }
+        fallback
+    };
+
+    // Assign router / coding / large roles.
+    let router_model = assign_fleet_role(
+        "router", baseline.router_model, &classified,
+        &ModelCapability::Fast, &chat_model,
+    );
+    let coding_model = assign_fleet_role(
+        "coding", baseline.coding_model, &classified,
+        &ModelCapability::Code, &chat_model,
+    );
+    let large_model = assign_fleet_role(
+        "large", baseline.large_model, &classified,
+        &ModelCapability::Large, &chat_model,
+    );
+
+    AgentFleet {
+        backend: baseline.backend,
+        base_url: baseline.base_url,
+        api_key: baseline.api_key,
+        chat_model,
+        router_model,
+        coding_model,
+        large_model,
+        classified_models: classified,
+    }
+}
+
+/// Probe the backend and return a plain [`LlmConfig`].
+///
+/// This is a convenience wrapper around [`probe_and_build_fleet`] for callers
+/// that only need the config and not the full fleet.
+pub async fn probe_and_configure(client: &reqwest::Client) -> LlmConfig {
+    probe_and_build_fleet(client).await.to_llm_config()
 }
