@@ -18,6 +18,7 @@ use serde_json::{json, Value};
 
 use crate::adk::{Agent, AgentContext, AgentRuntime};
 use crate::llm::call_coding_prompt;
+use crate::memory::load_recent_context;
 use crate::persona::{CodingAgentConfig, Persona, TaskTracker};
 use crate::sirin_log;
 
@@ -113,7 +114,14 @@ async fn run_react_loop(
     );
 
     // ── Step 1: gather project context ────────────────────────────────────────
-    let project_ctx = gather_project_context(ctx, &request.task).await;
+    let mut project_ctx = gather_project_context(ctx, &request.task).await;
+
+    // Append recent conversation context if available so the agent has
+    // awareness of what the user was just discussing.
+    if let Some(hint) = ctx.context_hint() {
+        project_ctx.push_str("\n\n## Recent conversation context\n");
+        project_ctx.push_str(hint);
+    }
 
     // ── Step 2: planning call ─────────────────────────────────────────────────
     let plan = make_plan(ctx, &request.task, &project_ctx).await;
@@ -937,10 +945,23 @@ pub async fn run_coding_via_adk(
     dry_run: bool,
     tracker: Option<TaskTracker>,
 ) -> CodingAgentResponse {
+    // Load recent conversation context (UI session, peer_id=None).
+    let context_hint = load_recent_context(5, None)
+        .ok()
+        .filter(|v| !v.is_empty())
+        .map(|entries| {
+            entries
+                .iter()
+                .map(|e| format!("User: {}\nAssistant: {}", e.user_msg, e.assistant_reply))
+                .collect::<Vec<_>>()
+                .join("\n---\n")
+        });
+
     let runtime = AgentRuntime::default();
     let ctx = runtime
         .context("coding_request")
         .with_optional_tracker(tracker)
+        .with_context_hint(context_hint)
         .with_metadata("agent", "coding_agent");
 
     let input = json!(CodingRequest { task: task.clone(), max_iterations: None, dry_run });

@@ -1533,6 +1533,15 @@ async fn dispatch_by_understanding(
                 Some("RUNNING"),
                 None,
             );
+            // When the planner explicitly classified this as "research" (deep
+            // investigation), also fire a ResearchRequested event so the UI
+            // Research tab can auto-trigger a full research run.
+            if request.planner_intent_family.as_deref() == Some("research") {
+                crate::events::publish(crate::events::AgentEvent::ResearchRequested {
+                    topic: request.user_text.clone(),
+                    url: None,
+                });
+            }
             let reply = react_loop(ctx, &request.user_text, persona_name, context_block).await;
             if reply.trim().is_empty() { None } else { Some(reply) }
         }

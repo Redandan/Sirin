@@ -6,7 +6,9 @@
 
 use eframe::egui::{self, Color32, FontData, FontDefinitions, FontFamily, RichText, ScrollArea, TextEdit};
 use tokio::runtime::Handle;
+use tokio::sync::broadcast;
 
+use crate::events::AgentEvent;
 use crate::log_buffer;
 use crate::memory::ensure_codebase_index;
 use crate::persona::{TaskEntry, TaskTracker};
@@ -247,6 +249,9 @@ pub struct SirinApp {
     log_visible: bool,
 
     last_refresh: std::time::Instant,
+
+    /// Subscriber for the process-wide agent event bus.  Drained every frame.
+    event_rx: broadcast::Receiver<AgentEvent>,
 }
 
 impl SirinApp {
@@ -322,6 +327,7 @@ impl SirinApp {
             log_visible: true,
             last_refresh: std::time::Instant::now()
                 - std::time::Duration::from_secs(60),
+            event_rx: crate::events::subscribe(),
         };
         app.refresh();
         app
@@ -478,6 +484,34 @@ impl eframe::App for SirinApp {
             self.refresh();
         }
         ctx.request_repaint_after(std::time::Duration::from_secs(5));
+
+        // Drain agent-event-bus messages (non-blocking).
+        loop {
+            match self.event_rx.try_recv() {
+                Ok(AgentEvent::ResearchRequested { topic, url }) => {
+                    // Auto-fill the Research tab form and kick off the research run.
+                    self.tab = Tab::Research;
+                    self.research_topic = topic.clone();
+                    if let Some(ref u) = url {
+                        self.research_url = u.clone();
+                    }
+                    let rt = self.rt.clone();
+                    rt.spawn(async move {
+                        let task = crate::agents::research_agent::run_research_via_adk(
+                            topic, url,
+                        )
+                        .await;
+                        eprintln!("[ui] auto-research '{}' → {:?}", task.id, task.status);
+                    });
+                    self.research_msg = format!("自動啟動調研：{}", self.research_topic.trim());
+                    self.research_topic.clear();
+                    self.research_url.clear();
+                }
+                Ok(_) => {} // other events — ignored in UI for now
+                Err(broadcast::error::TryRecvError::Lagged(_)) => {} // skip lagged events
+                Err(_) => break, // Empty or Closed
+            }
+        }
 
         // ── Top panel (tabs + refresh) ────────────────────────────────────────
         egui::TopBottomPanel::top("tabs").show(ctx, |ui| {
