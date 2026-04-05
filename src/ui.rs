@@ -8,7 +8,7 @@ use eframe::egui::{self, Color32, FontData, FontDefinitions, FontFamily, RichTex
 use tokio::runtime::Handle;
 
 use crate::log_buffer;
-use crate::memory::{append_context, ensure_codebase_index};
+use crate::memory::ensure_codebase_index;
 use crate::persona::{TaskEntry, TaskTracker};
 use crate::researcher::{self, ResearchStatus, ResearchTask};
 use crate::telegram_auth::{TelegramAuthState, TelegramStatus};
@@ -84,6 +84,51 @@ impl AgentConsoleState {
     }
 }
 
+#[derive(Clone, Default)]
+struct CodingConsoleState {
+    status: String,
+    task: String,
+    trace: Vec<String>,
+    files_modified: Vec<String>,
+    diff: Option<String>,
+    verified: bool,
+    verification_output: Option<String>,
+    dry_run: bool,
+    outcome: String,
+}
+
+impl CodingConsoleState {
+    fn snapshot_text(&self) -> String {
+        let mut lines = vec![
+            format!("Status: {}", self.status),
+            format!("Task: {}", self.task),
+        ];
+        if self.dry_run {
+            lines.push("Mode: DRY-RUN (files NOT written)".to_string());
+        }
+        if !self.files_modified.is_empty() {
+            lines.push(format!("Files modified: {}", self.files_modified.join(", ")));
+        }
+        if !self.outcome.is_empty() {
+            lines.push(format!("Outcome: {}", self.outcome));
+        }
+        if self.verified {
+            lines.push("✅ cargo check: passed".to_string());
+        }
+        if let Some(ref vout) = self.verification_output {
+            lines.push(format!("Verification: {}", vout.chars().take(200).collect::<String>()));
+        }
+        if !self.trace.is_empty() {
+            lines.push("Trace:".to_string());
+            lines.extend(self.trace.iter().map(|s| format!("  {s}")));
+        }
+        if let Some(ref diff) = self.diff {
+            lines.push(format!("Diff preview:\n{}", diff.chars().take(400).collect::<String>()));
+        }
+        lines.join("\n")
+    }
+}
+
 fn chat_history_snapshot(messages: &[ChatMessage]) -> String {
     if messages.is_empty() {
         return "（目前沒有對話內容）".to_string();
@@ -132,6 +177,14 @@ struct ChatPlanUpdate {
     recommended_skills: Vec<String>,
 }
 
+#[derive(Clone)]
+struct CodingUiUpdate {
+    /// Final coding agent response (None while still running).
+    response: Option<crate::agents::coding_agent::CodingAgentResponse>,
+    /// Partial status message shown while the agent is running.
+    status_msg: String,
+}
+
 // ── App state ─────────────────────────────────────────────────────────────────
 
 pub struct SirinApp {
@@ -162,6 +215,14 @@ pub struct SirinApp {
     agent_console: AgentConsoleState,
     chat_tx: std::sync::mpsc::SyncSender<ChatUiUpdate>,
     chat_rx: std::sync::mpsc::Receiver<ChatUiUpdate>,
+
+    // Coding Console
+    coding_console: CodingConsoleState,
+    coding_tx: std::sync::mpsc::SyncSender<CodingUiUpdate>,
+    coding_rx: std::sync::mpsc::Receiver<CodingUiUpdate>,
+    /// When true, show a confirmation dialog before running the coding agent
+    /// (because auto_approve_writes = false in persona config).
+    pending_coding_confirmation: Option<String>,
 
     // Log panel
     log_visible: bool,
@@ -211,6 +272,7 @@ impl SirinApp {
         let _ = ensure_codebase_index();
 
         let (chat_tx, chat_rx) = std::sync::mpsc::sync_channel(8);
+        let (coding_tx, coding_rx) = std::sync::mpsc::sync_channel(4);
         let mut app = Self {
             tracker,
             tg_auth,
@@ -231,6 +293,10 @@ impl SirinApp {
             agent_console: AgentConsoleState::default(),
             chat_tx,
             chat_rx,
+            coding_console: CodingConsoleState::default(),
+            coding_tx,
+            coding_rx,
+            pending_coding_confirmation: None,
             log_visible: true,
             last_refresh: std::time::Instant::now()
                 - std::time::Duration::from_secs(60),
@@ -341,6 +407,44 @@ impl eframe::App for SirinApp {
                 // Keep repainting frequently while streaming.
                 ctx.request_repaint_after(std::time::Duration::from_millis(100));
             }
+        }
+
+        // Poll for coding agent result from background task.
+        while let Ok(update) = self.coding_rx.try_recv() {
+            self.coding_console.status = update.status_msg.clone();
+            if let Some(resp) = update.response {
+                self.coding_console.outcome = resp.outcome.clone();
+                self.coding_console.files_modified = resp.files_modified.clone();
+                self.coding_console.trace = resp.trace.clone();
+                self.coding_console.diff = resp.diff.clone();
+                self.coding_console.verified = resp.verified;
+                self.coding_console.verification_output = resp.verification_output.clone();
+                self.coding_console.dry_run = resp.dry_run;
+                self.coding_console.status = if resp.verified {
+                    "✅ 完成（已驗證）".to_string()
+                } else {
+                    "完成".to_string()
+                };
+                // Push the outcome as an assistant message in the chat.
+                let summary = format!(
+                    "**[Coding Agent]** {}\n\n{}{}",
+                    resp.outcome,
+                    if resp.files_modified.is_empty() { String::new() }
+                        else { format!("📁 已修改：{}\n", resp.files_modified.join(", ")) },
+                    if resp.dry_run { "（Dry-run 模式：檔案未寫入）" } else { "" }
+                );
+                if let Some(last) = self.chat_messages.last_mut() {
+                    if last.role == ChatRole::Assistant {
+                        last.text = summary;
+                    } else {
+                        self.chat_messages.push(ChatMessage { role: ChatRole::Assistant, text: summary });
+                    }
+                } else {
+                    self.chat_messages.push(ChatMessage { role: ChatRole::Assistant, text: summary });
+                }
+                self.chat_pending = false;
+            }
+            ctx.request_repaint();
         }
 
         // Auto-refresh every 5 s.
@@ -754,6 +858,151 @@ impl SirinApp {
             }
         });
 
+        // ── Coding Console (shown when a coding task is active or recent) ─────
+        if !self.coding_console.task.is_empty() {
+            ui.add_space(4.0);
+            egui::Frame::group(ui.style())
+                .fill(Color32::from_rgb(20, 30, 40))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("⚙ Coding Console").strong().color(Color32::from_rgb(100, 200, 255)));
+                        ui.separator();
+                        let status_color = if self.coding_console.status.contains("完成") || self.coding_console.status.contains("✅") {
+                            Color32::from_rgb(100, 220, 100)
+                        } else if self.coding_console.status.contains("錯誤") || self.coding_console.status.contains("Error") {
+                            Color32::from_rgb(220, 80, 80)
+                        } else {
+                            Color32::YELLOW
+                        };
+                        ui.colored_label(status_color, &self.coding_console.status);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("複製 Coding Console").clicked() {
+                                ui.ctx().copy_text(self.coding_console.snapshot_text());
+                            }
+                        });
+                    });
+
+                    if !self.coding_console.task.is_empty() {
+                        ui.small(format!("Task: {}", self.coding_console.task.chars().take(80).collect::<String>()));
+                    }
+                    if self.coding_console.dry_run {
+                        ui.colored_label(Color32::from_rgb(255, 200, 60), "⚠ Dry-run 模式：檔案未實際寫入");
+                    }
+                    if !self.coding_console.files_modified.is_empty() {
+                        ui.small(format!("📁 Files: {}", self.coding_console.files_modified.join(", ")));
+                    }
+                    if self.coding_console.verified {
+                        ui.colored_label(Color32::from_rgb(100, 220, 100), "✅ cargo check passed");
+                    }
+                    if !self.coding_console.trace.is_empty() {
+                        ui.collapsing(format!("ReAct Trace ({} steps)", self.coding_console.trace.len()), |ui| {
+                            ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
+                                for step in &self.coding_console.trace {
+                                    egui::Frame::new()
+                                        .fill(Color32::from_rgb(25, 35, 45))
+                                        .inner_margin(egui::Margin::symmetric(6, 4))
+                                        .corner_radius(4.0)
+                                        .show(ui, |ui| {
+                                            ui.small(step);
+                                        });
+                                    ui.add_space(2.0);
+                                }
+                            });
+                        });
+                    }
+                    if let Some(ref diff) = self.coding_console.diff {
+                        if !diff.trim().is_empty() {
+                            ui.collapsing("📝 Git Diff", |ui| {
+                                ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+                                    let preview: String = diff.chars().take(2000).collect();
+                                    ui.add(
+                                        TextEdit::multiline(&mut preview.as_str())
+                                            .code_editor()
+                                            .desired_rows(8)
+                                            .desired_width(f32::INFINITY),
+                                    );
+                                });
+                            });
+                        }
+                    }
+                    if let Some(ref vout) = self.coding_console.verification_output {
+                        if !vout.trim().is_empty() {
+                            ui.collapsing("🔍 Verification Output", |ui| {
+                                ui.small(vout.chars().take(400).collect::<String>());
+                            });
+                        }
+                    }
+                });
+        }
+
+        // ── Coding pre-flight confirmation dialog ─────────────────────────────
+        if let Some(ref pending_task) = self.pending_coding_confirmation.clone() {
+            ui.add_space(4.0);
+            egui::Frame::group(ui.style())
+                .fill(Color32::from_rgb(40, 30, 10))
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new("⚠ Coding Agent 需要寫入檔案權限")
+                            .color(Color32::YELLOW)
+                            .strong(),
+                    );
+                    ui.small("任務：");
+                    ui.small(pending_task.chars().take(100).collect::<String>());
+                    ui.small("config/persona.yaml 中 auto_approve_writes = false，請確認是否允許 AI 寫入檔案。");
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button(RichText::new("✅ 允許寫入").color(Color32::from_rgb(100, 220, 100)))
+                            .clicked()
+                        {
+                            // Trigger the confirmed coding task.
+                            self.chat_input = pending_task.clone();
+                            self.pending_coding_confirmation = None;
+                            // Temporarily set auto_approve to true by confirming here:
+                            // We'll spawn the agent with dry_run=false via the normal submit path.
+                            // (We clear pending_coding_confirmation so the guard is bypassed.)
+                        }
+                        if ui
+                            .button(RichText::new("👁 僅讀取（Dry-run）").color(Color32::from_rgb(100, 180, 255)))
+                            .clicked()
+                        {
+                            // Run in dry-run mode — set the input back and force dry_run flag.
+                            let task_clone = pending_task.clone();
+                            self.pending_coding_confirmation = None;
+                            let coding_tx = self.coding_tx.clone();
+                            let rt = self.rt.clone();
+                            self.chat_pending = true;
+                            self.coding_console = CodingConsoleState {
+                                status: "Dry-run 執行中…".to_string(),
+                                task: task_clone.clone(),
+                                ..Default::default()
+                            };
+                            rt.spawn(async move {
+                                let resp = crate::agents::coding_agent::run_coding_via_adk(
+                                    task_clone, true, None,
+                                )
+                                .await;
+                                let _ = coding_tx.try_send(CodingUiUpdate {
+                                    response: Some(resp),
+                                    status_msg: "Dry-run 完成".to_string(),
+                                });
+                            });
+                        }
+                        if ui
+                            .button(RichText::new("❌ 取消").color(Color32::from_rgb(220, 80, 80)))
+                            .clicked()
+                        {
+                            self.pending_coding_confirmation = None;
+                            // Remove the pending user message bubble.
+                            if let Some(last) = self.chat_messages.last() {
+                                if last.role == ChatRole::User {
+                                    self.chat_messages.pop();
+                                }
+                            }
+                        }
+                    });
+                });
+        }
+
         ui.add_space(8.0);
 
         // ── Message history ───────────────────────────────────────────────────
@@ -843,125 +1092,155 @@ impl SirinApp {
 
             if submit && !self.chat_input.trim().is_empty() {
                 let user_text = self.chat_input.trim().to_string();
-                self.chat_messages.push(ChatMessage {
-                    role: ChatRole::User,
-                    text: user_text.clone(),
-                });
-                self.chat_input.clear();
-                self.chat_pending = true;
 
-                // Build context from recent chat history (last 5 turns).
-                let is_meta_request = crate::telegram::language::is_identity_question(&user_text)
-                    || crate::telegram::language::is_code_access_question(&user_text);
+                // Check if this looks like a coding request that needs pre-flight confirmation.
+                let is_coding_hint = crate::agents::router_agent::is_coding_request(&user_text);
+                let needs_confirm = is_coding_hint
+                    && crate::persona::Persona::load()
+                        .map(|p| !p.coding_agent.auto_approve_writes)
+                        .unwrap_or(false);
 
-                let history: Vec<String> = self
-                    .chat_messages
-                    .windows(2)
-                    .filter_map(|pair| {
-                        if pair[0].role == ChatRole::User && pair[1].role == ChatRole::Assistant {
-                            Some(format!("User: {}\nAssistant: {}", pair[0].text, pair[1].text))
-                        } else {
-                            None
-                        }
-                    })
-                    .rev()
-                    .take(5)
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .collect();
-                let context_block = if is_meta_request || history.is_empty() {
-                    None
+                if needs_confirm && self.pending_coding_confirmation.is_none() {
+                    // Show confirmation dialog — don't submit yet.
+                    self.pending_coding_confirmation = Some(user_text);
+                    // Push a pending indicator message so the user knows we saw the input.
+                    self.chat_messages.push(ChatMessage {
+                        role: ChatRole::User,
+                        text: self.pending_coding_confirmation.as_deref().unwrap_or("").to_string(),
+                    });
+                    self.chat_input.clear();
                 } else {
-                    Some(history.join("\n---\n"))
-                };
+                    // Normal submit path (or confirmed coding request).
+                    // If we came from the confirmation dialog, pending_coding_confirmation was
+                    // already cleared by the "Allow" button handler — use user_text directly.
+                    let confirmed_user_text = user_text.clone();
 
-                let tx = self.chat_tx.clone();
-                let rt = self.rt.clone();
-                // Set initial console state immediately (no block).
-                self.agent_console.tools.clear();
-                self.agent_console.trace.clear();
-                self.agent_console.recommended_skills.clear();
-                self.agent_console.intent_family.clear();
-                if is_meta_request {
-                    self.agent_console.route = "chat".to_string();
-                    self.agent_console.intent_family = "capability".to_string();
-                    self.agent_console.summary = "直接回答身份 / 看碼能力問題，不啟動 research。".to_string();
-                    self.agent_console.steps = vec![
-                        "skip planner + router".to_string(),
-                        "reply with local identity/capability summary".to_string(),
-                    ];
-                    self.agent_console.status = "直接回覆中…".to_string();
-                } else {
-                    self.agent_console.route = "pending…".to_string();
-                    self.agent_console.summary = String::new();
-                    self.agent_console.steps.clear();
-                    self.agent_console.status = "計畫中…".to_string();
-                }
-
-                rt.spawn(async move {
-                    let plan_update = if is_meta_request {
-                        ChatPlanUpdate {
-                            route: "chat".to_string(),
-                            intent_family: "capability".to_string(),
-                            summary: "Direct capability/identity answer; no research workflow needed.".to_string(),
-                            steps: vec![
-                                "skip planner + router".to_string(),
-                                "reply with local identity/capability summary".to_string(),
-                            ],
-                            recommended_skills: Vec::new(),
-                        }
-                    } else {
-                        // Run planner asynchronously — no longer blocks the GUI thread.
-                        let plan = crate::agents::planner_agent::run_planner_via_adk(
-                            crate::agents::planner_agent::PlannerRequest {
-                                user_text: user_text.clone(),
-                                context_block: context_block.clone(),
-                                peer_id: Some(0),
-                                fallback_reply: None,
-                                execution_result: None,
-                            },
-                            None,
-                        )
-                        .await
-                        .ok();
-
-                        plan.map(|p| ChatPlanUpdate {
-                            route: match p.intent {
-                                crate::agents::planner_agent::PlanIntent::Research => "research".to_string(),
-                                crate::agents::planner_agent::PlanIntent::Answer => "chat".to_string(),
-                            },
-                            intent_family: serde_json::to_value(&p.intent_family)
-                                .ok()
-                                .and_then(|v| v.as_str().map(|s| s.to_string()))
-                                .unwrap_or_else(|| "general_chat".to_string()),
-                            summary: p.summary,
-                            steps: p.steps,
-                            recommended_skills: p.recommended_skills,
-                        })
-                        .unwrap_or_else(|| ChatPlanUpdate {
-                            route: "chat".to_string(),
-                            intent_family: "general_chat".to_string(),
-                            summary: "Planner unavailable; using direct router fallback.".to_string(),
-                            steps: vec!["route request".to_string(), "run chat response".to_string()],
-                            recommended_skills: Vec::new(),
-                        })
+                    self.chat_messages.push(ChatMessage {
+                        role: ChatRole::User,
+                        text: confirmed_user_text.clone(),
+                    });
+                    self.chat_input.clear();
+                    self.chat_pending = true;
+                    self.coding_console = CodingConsoleState {
+                        status: "計畫中…".to_string(),
+                        task: confirmed_user_text.clone(),
+                        ..Default::default()
                     };
 
-                    let request = if is_meta_request {
-                        crate::agents::chat_agent::ChatRequest {
-                            user_text: user_text.clone(),
-                            execution_result: None,
-                            context_block: None,
-                            fallback_reply: None,
-                            peer_id: Some(0),
-                            planner_intent_family: None,
-                            planner_skills: Vec::new(),
-                        }
+                    let is_meta_request = crate::telegram::language::is_identity_question(&confirmed_user_text)
+                        || crate::telegram::language::is_code_access_question(&confirmed_user_text);
+
+                    let history: Vec<String> = self
+                        .chat_messages
+                        .windows(2)
+                        .filter_map(|pair| {
+                            if pair[0].role == ChatRole::User && pair[1].role == ChatRole::Assistant {
+                                Some(format!("User: {}\nAssistant: {}", pair[0].text, pair[1].text))
+                            } else {
+                                None
+                            }
+                        })
+                        .rev()
+                        .take(5)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect();
+                    let context_block = if is_meta_request || history.is_empty() {
+                        None
                     } else {
+                        Some(history.join("\n---\n"))
+                    };
+
+                    let tx = self.chat_tx.clone();
+                    let coding_tx = self.coding_tx.clone();
+                    let rt = self.rt.clone();
+                    self.agent_console.tools.clear();
+                    self.agent_console.trace.clear();
+                    self.agent_console.recommended_skills.clear();
+                    self.agent_console.intent_family.clear();
+                    if is_meta_request {
+                        self.agent_console.route = "chat".to_string();
+                        self.agent_console.intent_family = "capability".to_string();
+                        self.agent_console.summary = "直接回答身份 / 看碼能力問題，不啟動 research。".to_string();
+                        self.agent_console.steps = vec![
+                            "skip planner + router".to_string(),
+                            "reply with local identity/capability summary".to_string(),
+                        ];
+                        self.agent_console.status = "直接回覆中…".to_string();
+                    } else {
+                        self.agent_console.route = "pending…".to_string();
+                        self.agent_console.summary = String::new();
+                        self.agent_console.steps.clear();
+                        self.agent_console.status = "計畫中…".to_string();
+                    }
+
+                    let user_text_spawn = confirmed_user_text.clone();
+                    rt.spawn(async move {
+                        let plan_update = if is_meta_request {
+                            ChatPlanUpdate {
+                                route: "chat".to_string(),
+                                intent_family: "capability".to_string(),
+                                summary: "Direct capability/identity answer; no research workflow needed.".to_string(),
+                                steps: vec![
+                                    "skip planner + router".to_string(),
+                                    "reply with local identity/capability summary".to_string(),
+                                ],
+                                recommended_skills: Vec::new(),
+                            }
+                        } else {
+                            let plan = crate::agents::planner_agent::run_planner_via_adk(
+                                crate::agents::planner_agent::PlannerRequest {
+                                    user_text: user_text_spawn.clone(),
+                                    context_block: context_block.clone(),
+                                    peer_id: Some(0),
+                                    fallback_reply: None,
+                                    execution_result: None,
+                                },
+                                None,
+                            )
+                            .await
+                            .ok();
+
+                            plan.map(|p| ChatPlanUpdate {
+                                route: match p.intent {
+                                    crate::agents::planner_agent::PlanIntent::Research => "research".to_string(),
+                                    crate::agents::planner_agent::PlanIntent::Answer => "chat".to_string(),
+                                },
+                                intent_family: serde_json::to_value(&p.intent_family)
+                                    .ok()
+                                    .and_then(|v| v.as_str().map(|s| s.to_string()))
+                                    .unwrap_or_else(|| "general_chat".to_string()),
+                                summary: p.summary,
+                                steps: p.steps,
+                                recommended_skills: p.recommended_skills,
+                            })
+                            .unwrap_or_else(|| ChatPlanUpdate {
+                                route: "chat".to_string(),
+                                intent_family: "general_chat".to_string(),
+                                summary: "Planner unavailable; using direct router fallback.".to_string(),
+                                steps: vec!["route request".to_string(), "run chat response".to_string()],
+                                recommended_skills: Vec::new(),
+                            })
+                        };
+
+                        if is_meta_request {
+                            let request = crate::agents::chat_agent::ChatRequest {
+                                user_text: user_text_spawn.clone(),
+                                execution_result: None,
+                                context_block: None,
+                                fallback_reply: None,
+                                peer_id: Some(0),
+                                planner_intent_family: None,
+                                planner_skills: Vec::new(),
+                            };
+                            run_chat_and_send(request, plan_update, user_text_spawn, tx).await;
+                            return;
+                        }
+
                         let routed = crate::agents::router_agent::run_router_via_adk(
                             crate::agents::router_agent::RouterRequest {
-                                user_text: user_text.clone(),
+                                user_text: user_text_spawn.clone(),
                                 context_block,
                                 peer_id: Some(0),
                                 fallback_reply: None,
@@ -971,20 +1250,8 @@ impl SirinApp {
                         )
                         .await;
 
-                        match routed {
-                            Ok(output) => {
-                                let chat_request = output.get("chat_request").cloned().unwrap_or_default();
-                                serde_json::from_value(chat_request)
-                                    .unwrap_or(crate::agents::chat_agent::ChatRequest {
-                                        user_text: user_text.clone(),
-                                        execution_result: None,
-                                        context_block: None,
-                                        fallback_reply: None,
-                                        peer_id: Some(0),
-                                        planner_intent_family: None,
-                                        planner_skills: Vec::new(),
-                                    })
-                            }
+                        let output = match routed {
+                            Ok(o) => o,
                             Err(err) => {
                                 let _ = tx.send(ChatUiUpdate {
                                     reply: format!("路由錯誤：{err}"),
@@ -995,58 +1262,132 @@ impl SirinApp {
                                 });
                                 return;
                             }
-                        }
-                    };
+                        };
 
-                    // Stream tokens; each token fires a partial bubble update.
-                    // Send plan_update with the first partial so agent_console updates.
-                    let tx_partial = tx.clone();
-                    let accumulated =
-                        std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-                    let acc_clone = std::sync::Arc::clone(&accumulated);
-                    let plan_sent = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                    let plan_sent_clone = std::sync::Arc::clone(&plan_sent);
-                    let plan_update_clone = plan_update.clone();
+                        let route = output
+                            .get("route")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("chat");
 
-                    let response = crate::agents::chat_agent::stream_chat_response(
-                        request,
-                        move |token| {
-                            if let Ok(mut acc) = acc_clone.lock() {
-                                acc.push_str(&token);
-                                let preview = format!("{} ▍", acc.trim_end());
-                                let plan = if !plan_sent_clone.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                                    Some(plan_update_clone.clone())
-                                } else {
-                                    None
-                                };
-                                let _ = tx_partial.try_send(ChatUiUpdate {
-                                    reply: preview,
-                                    tools: vec![],
-                                    trace: vec![],
-                                    partial: true,
-                                    plan,
+                        if route == "coding" {
+                            // ── Coding agent path ─────────────────────────────
+                            let _ = tx.send(ChatUiUpdate {
+                                reply: "⚙ Coding Agent 啟動中…".to_string(),
+                                tools: vec![],
+                                trace: vec![],
+                                partial: true,
+                                plan: Some(ChatPlanUpdate {
+                                    route: "coding".to_string(),
+                                    intent_family: "code_modification".to_string(),
+                                    summary: "Running local AI Coding Agent (ReAct loop)…".to_string(),
+                                    steps: vec![
+                                        "gather context".to_string(),
+                                        "plan".to_string(),
+                                        "ReAct loop".to_string(),
+                                        "verify".to_string(),
+                                    ],
+                                    recommended_skills: vec!["coding_agent".to_string()],
+                                }),
+                            });
+
+                            let coding_request: crate::agents::coding_agent::CodingRequest =
+                                output
+                                    .get("coding_request")
+                                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                                    .unwrap_or(crate::agents::coding_agent::CodingRequest {
+                                        task: user_text_spawn.clone(),
+                                        max_iterations: None,
+                                        dry_run: false,
+                                    });
+
+                            let _ = coding_tx.try_send(CodingUiUpdate {
+                                response: None,
+                                status_msg: format!("🔄 執行中：{}", &coding_request.task),
+                            });
+
+                            let resp = crate::agents::coding_agent::run_coding_via_adk(
+                                coding_request.task,
+                                coding_request.dry_run,
+                                None,
+                            )
+                            .await;
+
+                            let _ = coding_tx.try_send(CodingUiUpdate {
+                                response: Some(resp),
+                                status_msg: "完成".to_string(),
+                            });
+                        } else {
+                            // ── Chat / research agent path ────────────────────
+                            let chat_request = output
+                                .get("chat_request")
+                                .cloned()
+                                .unwrap_or_default();
+                            let request = serde_json::from_value(chat_request)
+                                .unwrap_or(crate::agents::chat_agent::ChatRequest {
+                                    user_text: user_text_spawn.clone(),
+                                    execution_result: None,
+                                    context_block: None,
+                                    fallback_reply: None,
+                                    peer_id: Some(0),
+                                    planner_intent_family: None,
+                                    planner_skills: Vec::new(),
                                 });
-                            }
-                        },
-                    )
-                    .await;
-
-                    let _ = append_context(&user_text, &response.reply, Some(0));
-                    // Send plan_update with final if it was never sent via streaming.
-                    let final_plan = if !plan_sent.load(std::sync::atomic::Ordering::Relaxed) {
-                        Some(plan_update)
-                    } else {
-                        None
-                    };
-                    let _ = tx.send(ChatUiUpdate {
-                        reply: response.reply,
-                        tools: response.tools_used,
-                        trace: response.trace,
-                        partial: false,
-                        plan: final_plan,
+                            run_chat_and_send(request, plan_update, user_text_spawn, tx).await;
+                        }
                     });
-                });
+                }
             }
         });
     }
+}
+
+async fn run_chat_and_send(
+    request: crate::agents::chat_agent::ChatRequest,
+    plan_update: ChatPlanUpdate,
+    user_text: String,
+    tx: std::sync::mpsc::SyncSender<ChatUiUpdate>,
+) {
+    let tx_partial = tx.clone();
+    let accumulated = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let acc_clone = std::sync::Arc::clone(&accumulated);
+    let plan_sent = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let plan_sent_clone = std::sync::Arc::clone(&plan_sent);
+    let plan_update_clone = plan_update.clone();
+
+    let response = crate::agents::chat_agent::stream_chat_response(
+        request,
+        move |token| {
+            if let Ok(mut acc) = acc_clone.lock() {
+                acc.push_str(&token);
+                let preview = format!("{} ▍", acc.trim_end());
+                let plan = if !plan_sent_clone.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    Some(plan_update_clone.clone())
+                } else {
+                    None
+                };
+                let _ = tx_partial.try_send(ChatUiUpdate {
+                    reply: preview,
+                    tools: vec![],
+                    trace: vec![],
+                    partial: true,
+                    plan,
+                });
+            }
+        },
+    )
+    .await;
+
+    let _ = crate::memory::append_context(&user_text, &response.reply, Some(0));
+    let final_plan = if !plan_sent.load(std::sync::atomic::Ordering::Relaxed) {
+        Some(plan_update)
+    } else {
+        None
+    };
+    let _ = tx.send(ChatUiUpdate {
+        reply: response.reply,
+        tools: response.tools_used,
+        trace: response.trace,
+        partial: false,
+        plan: final_plan,
+    });
 }
