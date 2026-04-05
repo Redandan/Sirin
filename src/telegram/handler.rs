@@ -8,7 +8,14 @@ use super::{
 };
 
 pub struct ReplyPlan {
-    pub execution_result: Option<String>,
+    /// The `chat_request` JSON object forwarded from the Router, complete with
+    /// planner intent hints and (for research routes) a language-neutral
+    /// execution_result.  `None` when the router call fails.
+    pub router_chat_request: Option<serde_json::Value>,
+    /// Result from a side-command (e.g. "todo …", "查詢待辦") that was executed
+    /// directly — not through the Router.  When present, overrides the
+    /// execution_result that the router may have embedded in chat_request.
+    pub command_execution_result: Option<String>,
     pub fallback_reply: String,
     pub should_record_ai_decision: bool,
 }
@@ -46,35 +53,33 @@ where
         .and_then(serde_json::Value::as_str)
         .unwrap_or("chat");
 
-    let research_execution = if route == "research" {
+    // Extract the router-built chat_request (carries planner hints + execution_result).
+    let router_chat_request = routed
+        .as_ref()
+        .and_then(|value| value.get("chat_request").cloned());
+
+    // If the router chose the research route, launch the background task.
+    // The router already embedded the language-neutral execution_result into
+    // chat_request — no need to build a separate string here.
+    if route == "research" {
         let research_request = routed
             .as_ref()
             .and_then(|value| value.get("research_request"))
             .cloned();
 
         if let Some(payload) = research_request {
-            if let Ok(request) = serde_json::from_value::<crate::agents::research_agent::ResearchRequest>(payload) {
-                let topic_for_msg = request.topic.clone();
-                let url_for_msg = request.url.clone();
+            if let Ok(request) =
+                serde_json::from_value::<crate::agents::research_agent::ResearchRequest>(payload)
+            {
                 start_research(request.topic, request.url).await;
-                let url_hint = url_for_msg
-                    .map(|value| format!(" ({value})"))
-                    .unwrap_or_default();
-                Some(format!(
-                    "執行結果：已啟動背景調研任務「{}{}」，完成後結果將記錄在任務板。",
-                    topic_for_msg, url_hint
-                ))
-            } else {
-                None
             }
-        } else {
-            None
         }
-    } else {
-        None
-    };
+    }
 
-    let execution_result = research_execution.or_else(|| execute_user_request(text, tracker, persona_name));
+    // Side commands (todo creation, task queries) are executed independently
+    // of routing and their result overrides whatever execution_result the router set.
+    let command_execution_result = execute_user_request(text, tracker, persona_name);
+
     let fallback_reply = cfg
         .auto_reply_text
         .replace("{persona}", persona_name)
@@ -82,9 +87,12 @@ where
         .replace("{ack_prefix}", ack_prefix)
         .replace("{compliance}", compliance);
 
+    let should_record_ai_decision = command_execution_result.is_some() || route == "research";
+
     ReplyPlan {
-        should_record_ai_decision: execution_result.is_some(),
-        execution_result,
+        router_chat_request,
+        command_execution_result,
         fallback_reply,
+        should_record_ai_decision,
     }
 }
