@@ -330,9 +330,12 @@ fn is_contextual_file_explanation_request(user_text: &str) -> bool {
     let has_reference = ["這些", "这些", "那些", "上面", "前面", "剛剛", "刚刚", "它們", "它们"]
         .iter()
         .any(|needle| user_text.contains(needle));
-    let asks_explain = ["是什麼", "是啥", "說明", "说明", "解釋", "解释", "用途", "作用", "幹嘛", "做什麼", "做什么"]
-        .iter()
-        .any(|needle| user_text.contains(needle));
+    let asks_explain = [
+        "是什麼", "是啥", "說明", "说明", "解釋", "解释", "用途", "作用", "幹嘛", "做什麼", "做什么",
+        "分析", "analyze", "explain",
+    ]
+    .iter()
+    .any(|needle| user_text.to_lowercase().contains(needle));
 
     has_reference && asks_explain
 }
@@ -455,6 +458,24 @@ fn infer_focus_paths_from_query(user_text: &str, peer_id: Option<i64>) -> Vec<St
     }
     if lower.contains("memory") || user_text.contains("記憶") {
         push_unique_path(&mut paths, "src/memory.rs");
+    }
+
+    // Fallback: vague "show me / analyze the code" with no specific target →
+    // load the top-level overview files so the ReAct loop has something to work with.
+    if paths.is_empty()
+        && (lower.contains("代碼")
+            || lower.contains("程式碼")
+            || lower.contains("code")
+            || lower.contains("本地"))
+    {
+        for path in [
+            "src/main.rs",
+            "src/agents/mod.rs",
+            "src/telegram/mod.rs",
+            "src/memory.rs",
+        ] {
+            push_unique_path(&mut paths, path);
+        }
     }
 
     paths

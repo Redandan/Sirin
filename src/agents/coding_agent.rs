@@ -554,6 +554,53 @@ pub async fn run_coding_via_adk(
 mod tests {
     use super::*;
 
+    /// Live integration test — requires LM Studio running at http://localhost:1234.
+    /// Run with: `cargo test -- --ignored live_coding`
+    #[tokio::test]
+    #[ignore = "requires local LM Studio at http://localhost:1234"]
+    async fn live_coding_agent_reads_and_summarises_file() {
+        // Load .env so shared_llm() picks up LM_STUDIO_* vars.
+        let _ = dotenvy::dotenv();
+
+        let response = run_coding_via_adk(
+            "Read src/code_graph.rs and summarise what parse_rust_file does in 2-3 sentences. \
+             Do NOT modify any files."
+                .to_string(),
+            true, // dry_run — no writes allowed
+            None,
+        )
+        .await;
+
+        println!("\n=== CodingAgent live test ===");
+        println!("Outcome:    {}", response.outcome);
+        println!("Iterations: {}", response.iterations_used);
+        println!("dry_run:    {}", response.dry_run);
+        println!("Files modified: {:?}", response.files_modified);
+        for (i, step) in response.trace.iter().enumerate() {
+            println!("Step {i}:\n{step}");
+        }
+
+        assert!(
+            !response.outcome.starts_with("Error:"),
+            "CodingAgent returned a hard error: {}",
+            response.outcome
+        );
+        assert!(
+            response.iterations_used > 0,
+            "Agent must have taken at least one ReAct step"
+        );
+        assert!(
+            !response.outcome.is_empty(),
+            "Outcome must not be empty"
+        );
+        // dry_run=true → agent must not write anything
+        assert!(
+            response.files_modified.is_empty(),
+            "dry_run=true but files were modified: {:?}",
+            response.files_modified
+        );
+    }
+
     #[test]
     fn parse_react_step_valid_json() {
         let raw = r#"{"thought":"read the file","action":"local_file_read","action_input":{"path":"src/main.rs"}}"#;

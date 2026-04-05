@@ -22,7 +22,7 @@ coding_agent:
   enabled: true
   project_root: "."
   auto_approve_reads: true
-  auto_approve_writes: false
+  auto_approve_writes: true
   allowed_commands:
     - "cargo check"
     - "cargo test"

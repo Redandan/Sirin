@@ -662,6 +662,34 @@ fn walk_dir(
 mod tests {
     use super::*;
 
+    // ── Temp-file helpers for file_patch / plan_execute tests ─────────────────
+
+    fn unique_test_filename(stem: &str) -> String {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos();
+        // Include current thread id so parallel tests don't collide.
+        let tid = format!("{:?}", std::thread::current().id());
+        let tid_hash: u32 = tid.bytes().fold(0u32, |acc, b| acc.wrapping_add(b as u32));
+        format!("__sirin_test_{stem}_{nanos}_{tid_hash}.txt")
+    }
+
+    fn write_temp(name: &str, content: &str) {
+        std::fs::write(name, content).expect("write_temp failed");
+    }
+
+    fn read_temp(name: &str) -> String {
+        std::fs::read_to_string(name).expect("read_temp failed")
+    }
+
+    fn remove_temp(name: &str) {
+        let _ = std::fs::remove_file(name);
+    }
+
+    // ── Existing tests ────────────────────────────────────────────────────────
+
     #[tokio::test]
     async fn custom_registry_round_trips_values() {
         let registry = ToolRegistry::new().register_fn("echo", |input| async move { Ok(input) });
@@ -732,5 +760,400 @@ mod tests {
         // `cargo --version` isn't in the default allowlist, so it should be rejected.
         // This also doubles as a check that the allowlist comparison is prefix-based.
         assert!(result.is_err());
+    }
+
+    // ── Phase 2: file_patch ───────────────────────────────────────────────────
+
+    /// Test 1 — normal single-hunk patch is applied correctly.
+    #[tokio::test]
+    async fn file_patch_applies_single_hunk() {
+        let name = unique_test_filename("patch1");
+        write_temp(&name, "hello world\nfoo bar\n");
+
+        let ctx = AgentContext::new("test", default_tool_registry());
+        let out = ctx
+            .call_tool(
+                "file_patch",
+                json!({ "path": name, "hunks": [{ "old_str": "hello world", "new_str": "hello Sirin" }] }),
+            )
+            .await
+            .expect("single-hunk patch should succeed");
+
+        assert_eq!(out["hunks_applied"], 1, "hunks_applied must be 1");
+        assert!(
+            out["bytes_written"].as_u64().unwrap_or(0) > 0,
+            "bytes_written must be > 0"
+        );
+        let content = read_temp(&name);
+        assert!(content.contains("hello Sirin"), "new_str must appear in file");
+        assert!(!content.contains("hello world"), "old_str must be gone");
+
+        remove_temp(&name);
+    }
+
+    /// Test 2 — old_str not found → atomic Err, file untouched.
+    #[tokio::test]
+    async fn file_patch_old_str_not_found_is_atomic_failure() {
+        let name = unique_test_filename("patch2");
+        let original = "original content unchanged\n";
+        write_temp(&name, original);
+
+        let ctx = AgentContext::new("test", default_tool_registry());
+        let result = ctx
+            .call_tool(
+                "file_patch",
+                json!({ "path": name, "hunks": [{ "old_str": "this string does not exist", "new_str": "x" }] }),
+            )
+            .await;
+
+        assert!(result.is_err(), "must return Err when old_str is absent");
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("not found"),
+            "error message must say 'not found', got: {msg}"
+        );
+        assert_eq!(
+            read_temp(&name),
+            original,
+            "file must be completely unmodified after failed patch"
+        );
+
+        remove_temp(&name);
+    }
+
+    /// Test 3 — dry_run: Ok returned, file not written.
+    #[tokio::test]
+    async fn file_patch_dry_run_does_not_write() {
+        let name = unique_test_filename("patch3");
+        let original = "dry run source\n";
+        write_temp(&name, original);
+
+        let ctx = AgentContext::new("test", default_tool_registry());
+        let out = ctx
+            .call_tool(
+                "file_patch",
+                json!({
+                    "path": name,
+                    "dry_run": true,
+                    "hunks": [{ "old_str": "dry run source", "new_str": "replaced" }]
+                }),
+            )
+            .await
+            .expect("dry_run must return Ok");
+
+        assert_eq!(out["dry_run"], true, "response must have dry_run:true");
+        assert_eq!(out["hunks_applied"], 1);
+        assert_eq!(
+            read_temp(&name),
+            original,
+            "dry_run must not modify the file"
+        );
+
+        remove_temp(&name);
+    }
+
+    /// Test 4 — multiple hunks are all applied in order.
+    #[tokio::test]
+    async fn file_patch_applies_multiple_hunks() {
+        let name = unique_test_filename("patch4");
+        write_temp(&name, "alpha\nbeta\ngamma\n");
+
+        let ctx = AgentContext::new("test", default_tool_registry());
+        let out = ctx
+            .call_tool(
+                "file_patch",
+                json!({
+                    "path": name,
+                    "hunks": [
+                        { "old_str": "alpha", "new_str": "ALPHA" },
+                        { "old_str": "beta",  "new_str": "BETA"  },
+                        { "old_str": "gamma", "new_str": "GAMMA" }
+                    ]
+                }),
+            )
+            .await
+            .expect("multi-hunk patch should succeed");
+
+        assert_eq!(out["hunks_applied"], 3, "all 3 hunks must be applied");
+        let content = read_temp(&name);
+        assert!(content.contains("ALPHA") && content.contains("BETA") && content.contains("GAMMA"));
+        assert!(
+            !content.contains("alpha") && !content.contains("beta") && !content.contains("gamma")
+        );
+
+        remove_temp(&name);
+    }
+
+    /// Test 5 — path traversal is rejected.
+    #[tokio::test]
+    async fn file_patch_rejects_path_traversal() {
+        let ctx = AgentContext::new("test", default_tool_registry());
+        let result = ctx
+            .call_tool(
+                "file_patch",
+                json!({ "path": "../../etc/passwd", "hunks": [{ "old_str": "root", "new_str": "hacked" }] }),
+            )
+            .await;
+
+        assert!(
+            result.is_err(),
+            "path traversal must be rejected with Err, not Ok"
+        );
+    }
+
+    // ── Phase 1: call_graph_query tool ────────────────────────────────────────
+
+    /// Test 8 — tool returns callers, callees, and defined_in with path:line format.
+    #[tokio::test]
+    async fn call_graph_query_tool_returns_required_fields() {
+        let ctx = AgentContext::new("test", default_tool_registry());
+        let out = ctx
+            .call_tool(
+                "call_graph_query",
+                json!({ "symbol": "parse_rust_file", "hops": 1 }),
+            )
+            .await
+            .expect("call_graph_query must not error");
+
+        assert!(out.get("callers").is_some(), "response must have 'callers'");
+        assert!(out.get("callees").is_some(), "response must have 'callees'");
+        assert!(out.get("defined_in").is_some(), "response must have 'defined_in'");
+        assert!(
+            out["callers"].as_array().is_some(),
+            "'callers' must be an array"
+        );
+        assert!(
+            out["callees"].as_array().is_some(),
+            "'callees' must be an array"
+        );
+
+        if let Some(def) = out["defined_in"].as_str() {
+            assert!(
+                def.contains("code_graph"),
+                "defined_in should reference code_graph, got: {def}"
+            );
+            assert!(
+                def.contains(':'),
+                "defined_in must be 'path:line', got: {def}"
+            );
+        }
+    }
+
+    /// Test 9 — unknown symbol returns Ok with empty callers and callees.
+    #[tokio::test]
+    async fn call_graph_query_unknown_symbol_returns_empty_arrays() {
+        let ctx = AgentContext::new("test", default_tool_registry());
+        let out = ctx
+            .call_tool(
+                "call_graph_query",
+                json!({ "symbol": "no_such_symbol_xyz_totally_absent_99999", "hops": 1 }),
+            )
+            .await
+            .expect("unknown symbol must return Ok, not Err");
+
+        let callers = out["callers"].as_array().expect("callers must be array");
+        let callees = out["callees"].as_array().expect("callees must be array");
+        assert!(callers.is_empty(), "unknown symbol must have no callers");
+        assert!(callees.is_empty(), "unknown symbol must have no callees");
+    }
+
+    // ── Phase 3: plan_execute ─────────────────────────────────────────────────
+
+    /// Test 11 — all steps succeed: all_succeeded true, counts match.
+    #[tokio::test]
+    async fn plan_execute_all_steps_succeed() {
+        let ctx = AgentContext::new("test", default_tool_registry());
+        let out = ctx
+            .call_tool(
+                "plan_execute",
+                json!({
+                    "steps": [
+                        { "tool": "skill_catalog", "input": {} },
+                        { "tool": "skill_catalog", "input": { "query": "search" } }
+                    ]
+                }),
+            )
+            .await
+            .expect("plan_execute should return Ok");
+
+        assert_eq!(out["all_succeeded"], true);
+        assert_eq!(out["steps_attempted"], 2);
+        assert_eq!(out["steps_total"], 2);
+
+        let results = out["results"].as_array().expect("results must be array");
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0]["success"], true);
+        assert_eq!(results[1]["success"], true);
+    }
+
+    /// Test 12 — step N fails → aborted_at_step==N, subsequent steps do not run.
+    #[tokio::test]
+    async fn plan_execute_aborts_on_step_failure() {
+        let ctx = AgentContext::new("test", default_tool_registry());
+        let out = ctx
+            .call_tool(
+                "plan_execute",
+                json!({
+                    "steps": [
+                        { "tool": "skill_catalog", "input": {} },
+                        { "tool": "__nonexistent_tool_xyz__", "input": {} },
+                        // This third step must never execute.
+                        { "tool": "skill_catalog", "input": {} }
+                    ]
+                }),
+            )
+            .await
+            .expect("plan_execute itself must return Ok even when a step fails");
+
+        assert_eq!(out["all_succeeded"], false);
+        assert_eq!(out["aborted_at_step"], 1, "should abort at step index 1");
+
+        let results = out["results"].as_array().expect("results must be array");
+        assert_eq!(
+            results.len(),
+            2,
+            "only steps 0 and 1 should appear; step 2 must not run"
+        );
+        assert_eq!(results[0]["success"], true);
+        assert_eq!(results[1]["success"], false);
+    }
+
+    // ── Integration: full coding tool chain (no LLM required) ────────────────
+
+    /// Simulates what CodingAgent does on each iteration, minus the LLM call:
+    /// project_overview → codebase_search → local_file_read → file_patch (dry)
+    /// → call_graph_query → git_status.
+    /// If any tool in this chain is broken or unregistered the test fails.
+    #[tokio::test]
+    async fn coding_tool_chain_end_to_end_without_llm() {
+        let ctx = AgentContext::new("test", default_tool_registry());
+
+        // 1. project_overview — agent's first context-gathering step.
+        let overview = ctx
+            .call_tool("project_overview", json!({}))
+            .await
+            .expect("project_overview must succeed");
+        assert!(
+            overview.get("summary").and_then(Value::as_str).map(|s| !s.is_empty()).unwrap_or(false),
+            "overview must contain a summary"
+        );
+        assert!(
+            overview.get("files").and_then(Value::as_array).map(|v| !v.is_empty()).unwrap_or(false),
+            "overview must list files"
+        );
+
+        // 2. codebase_search — agent narrows down relevant files.
+        let search = ctx
+            .call_tool("codebase_search", json!({ "query": "parse_rust_file", "limit": 3 }))
+            .await
+            .expect("codebase_search must succeed");
+        assert!(
+            search.as_array().map(|v| !v.is_empty()).unwrap_or(false),
+            "codebase_search must return at least one result for a known symbol"
+        );
+
+        // 3. local_file_read — agent reads the target file.
+        let file = ctx
+            .call_tool("local_file_read", json!({ "path": "src/code_graph.rs" }))
+            .await
+            .expect("local_file_read must succeed for src/code_graph.rs");
+        assert!(
+            file["content"].as_str().map(|s| s.contains("parse_rust_file")).unwrap_or(false),
+            "read content must contain the expected symbol"
+        );
+
+        // 4. file_patch (dry_run) — agent applies a surgical edit.
+        let patch_file = unique_test_filename("e2e_coding");
+        write_temp(&patch_file, "fn placeholder_fn() -> bool { false }\n");
+        let patch = ctx
+            .call_tool(
+                "file_patch",
+                json!({
+                    "path": patch_file,
+                    "dry_run": true,
+                    "hunks": [{ "old_str": "false", "new_str": "true" }]
+                }),
+            )
+            .await
+            .expect("file_patch dry_run must succeed");
+        assert_eq!(patch["dry_run"], true);
+        assert_eq!(patch["hunks_applied"], 1);
+        remove_temp(&patch_file);
+
+        // 5. call_graph_query — agent inspects callers before modifying a function.
+        let cg = ctx
+            .call_tool(
+                "call_graph_query",
+                json!({ "symbol": "build_call_graph", "hops": 1 }),
+            )
+            .await
+            .expect("call_graph_query must succeed");
+        assert!(cg["callers"].as_array().is_some(), "callers must be an array");
+        assert!(cg["callees"].as_array().is_some(), "callees must be an array");
+
+        // 6. symbol_search — agent looks up a symbol by name.
+        let syms = ctx
+            .call_tool("symbol_search", json!({ "query": "run_react_loop" }))
+            .await
+            .expect("symbol_search must succeed");
+        assert!(syms.as_array().is_some(), "symbol_search must return an array");
+
+        // 7. git_status — agent checks working tree before committing.
+        let gs = ctx
+            .call_tool("git_status", json!({}))
+            .await
+            .expect("git_status must succeed");
+        assert!(gs.get("status").is_some(), "git_status must return 'status' field");
+        assert!(gs.get("clean").is_some(), "git_status must return 'clean' field");
+    }
+
+    /// Test 13 — file_patch (step 0) succeeds; shell_exec with non-allowlisted
+    /// command (step 1) fails → aborted_at_step == 1, patch is already on disk.
+    #[tokio::test]
+    async fn plan_execute_file_patch_then_rejected_shell_exec() {
+        let name = unique_test_filename("plan13");
+        write_temp(&name, "plan execute source\n");
+
+        let ctx = AgentContext::new("test", default_tool_registry());
+        let out = ctx
+            .call_tool(
+                "plan_execute",
+                json!({
+                    "steps": [
+                        {
+                            "tool": "file_patch",
+                            "input": {
+                                "path": name,
+                                "hunks": [{ "old_str": "plan execute source", "new_str": "patched by plan" }]
+                            }
+                        },
+                        {
+                            "tool": "shell_exec",
+                            // `cargo --version` is not in the default allowlist.
+                            "input": { "command": "cargo --version" }
+                        }
+                    ]
+                }),
+            )
+            .await
+            .expect("plan_execute must return Ok");
+
+        assert_eq!(out["all_succeeded"], false);
+        assert_eq!(out["aborted_at_step"], 1);
+
+        let results = out["results"].as_array().unwrap();
+        assert_eq!(results[0]["success"], true, "file_patch step must succeed");
+        assert_eq!(
+            results[1]["success"], false,
+            "shell_exec step must fail (not in allowlist)"
+        );
+
+        // The patch from step 0 was committed to disk before step 1 was attempted.
+        assert!(
+            read_temp(&name).contains("patched by plan"),
+            "file_patch side-effect must be persisted even though plan aborted"
+        );
+
+        remove_temp(&name);
     }
 }
