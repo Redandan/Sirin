@@ -42,6 +42,22 @@ pub enum AgentEvent {
     PersonaUpdated {
         new_objectives: Vec<String>,
     },
+    /// The coding agent finished a task (success or failure).
+    CodingAgentCompleted {
+        /// Short task description (truncated to ~80 chars).
+        task: String,
+        /// Whether the agent finished without error.
+        success: bool,
+        /// Relative paths of files that were written.
+        files_modified: Vec<String>,
+    },
+    /// The chat agent produced a final reply.
+    ChatAgentReplied {
+        /// Optional peer identifier (Telegram chat id or UI session 0).
+        peer_id: Option<i64>,
+        /// First ~80 chars of the reply.
+        preview: String,
+    },
 }
 
 // ── Internal bus ──────────────────────────────────────────────────────────────

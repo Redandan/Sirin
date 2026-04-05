@@ -179,13 +179,18 @@ impl Agent for ChatAgent {
 
             let tools_used = ctx.tool_calls_snapshot();
             let response = ChatAgentResponse {
-                reply: final_reply,
+                reply: final_reply.clone(),
                 used_search: tools_used.iter().any(|t| t == "web_search"),
                 used_memory: tools_used.iter().any(|t| t == "memory_search"),
                 used_code_context: used_code_tools(&tools_used),
                 tools_used,
                 trace: ctx.event_trace_snapshot(),
             };
+
+            crate::events::publish(crate::events::AgentEvent::ChatAgentReplied {
+                peer_id: request.peer_id,
+                preview: final_reply.chars().take(80).collect(),
+            });
 
             serde_json::to_value(response).map_err(|e| e.to_string())
         }

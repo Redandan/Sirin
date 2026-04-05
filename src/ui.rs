@@ -731,6 +731,52 @@ impl SirinApp {
     fn show_telegram(&mut self, ui: &mut egui::Ui) {
         let status = self.tg_auth.status();
 
+        // ── Setup guide when env vars are not configured ──────────────────────
+        let has_api_id = std::env::var("TG_API_ID").is_ok();
+        let has_api_hash = std::env::var("TG_API_HASH").is_ok();
+        if !has_api_id || !has_api_hash {
+            egui::Frame::group(ui.style())
+                .fill(Color32::from_rgb(25, 30, 45))
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new("⚙ 尚未設定 Telegram API 憑證")
+                            .color(Color32::YELLOW)
+                            .strong(),
+                    );
+                    ui.add_space(4.0);
+                    ui.label("請在專案根目錄建立 .env 檔案，填入以下設定：");
+                    ui.add_space(4.0);
+                    let guide = "# 從 https://my.telegram.org 取得\n\
+TG_API_ID=12345678\n\
+TG_API_HASH=your_api_hash_here\n\
+TG_PHONE=+886912345678    # 選填：自動登入用\n\
+\n\
+# 回覆設定\n\
+TG_AUTO_REPLY=true        # 啟用 AI 自動回覆\n\
+TG_REPLY_PRIVATE=true     # 回覆私訊\n\
+TG_REPLY_GROUPS=false     # 是否回覆群組\n\
+TG_GROUP_IDS=             # 選填：只監控特定群組 ID（逗號分隔）\n\
+\n\
+# 除錯\n\
+TG_DEBUG_UPDATES=false";
+                    egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
+                        ui.add(
+                            TextEdit::multiline(&mut guide.to_string().as_str())
+                                .code_editor()
+                                .desired_rows(8)
+                                .desired_width(f32::INFINITY),
+                        );
+                    });
+                    ui.add_space(4.0);
+                    if ui.button("📋 複製 .env 範本").clicked() {
+                        ui.ctx().copy_text(guide.to_string());
+                    }
+                    ui.add_space(2.0);
+                    ui.small("設定完成後重新啟動應用程式，Telegram 監聽器將自動連線。");
+                });
+            ui.separator();
+        }
+
         // Status badge
         egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.label(RichText::new("Telegram 連線狀態").strong());
@@ -1140,6 +1186,21 @@ impl SirinApp {
                 )
                 .on_hover_text("強制以 Coding Agent 執行（跳過關鍵字偵測，直接進入 ReAct 迴圈）");
 
+            // auto_approve_writes toggle — reads and immediately saves persona config.
+            ui.separator();
+            let mut auto_approve = crate::persona::Persona::load()
+                .map(|p| p.coding_agent.auto_approve_writes)
+                .unwrap_or(false);
+            let toggle = ui
+                .checkbox(&mut auto_approve, "自動允許寫入")
+                .on_hover_text("關閉時，Coding Agent 寫入檔案前會彈出確認對話框（對應 persona.yaml 中的 auto_approve_writes）");
+            if toggle.changed() {
+                if let Ok(mut p) = crate::persona::Persona::load() {
+                    p.coding_agent.auto_approve_writes = auto_approve;
+                    let _ = p.save();
+                }
+            }
+
             // Plain Enter = send; Shift+Enter = newline.
             let enter_send = input.has_focus()
                 && ui.input_mut(|i| {
@@ -1242,6 +1303,29 @@ impl SirinApp {
         if submit && !self.chat_input.trim().is_empty() {
             let user_text = self.chat_input.trim().to_string();
 
+            // ── /skill command handling ───────────────────────────────────────
+            if user_text.starts_with("/skill") {
+                let arg = user_text["/skill".len()..].trim().to_string();
+                self.chat_messages.push(ChatMessage { role: ChatRole::User, text: user_text.clone() });
+                self.chat_input.clear();
+                let reply = if arg.is_empty() || arg == "list" {
+                    let skills = crate::skills::list_skills();
+                    let lines: Vec<String> = skills
+                        .iter()
+                        .map(|s| format!("• **{}** ({}): {}", s.id, s.category, s.description))
+                        .collect();
+                    format!("📦 可用技能清單：\n\n{}", lines.join("\n"))
+                } else {
+                    match crate::skills::execute_skill(&arg, &chrono::Utc::now().to_rfc3339()) {
+                        Ok(result) => format!(
+                            "✅ 技能 `{}` 已觸發\n事件：{}\n",
+                            result.skill_id, result.emitted_event
+                        ),
+                        Err(e) => format!("❌ 技能執行失敗：{e}\n\n輸入 `/skill list` 查看可用技能。"),
+                    }
+                };
+                self.chat_messages.push(ChatMessage { role: ChatRole::Assistant, text: reply });
+            } else {
                 // Check if this looks like a coding request that needs pre-flight confirmation.
                 let is_coding_hint = crate::agents::router_agent::is_coding_request(&user_text);
                 let needs_confirm = is_coding_hint
@@ -1490,6 +1574,7 @@ impl SirinApp {
                         }
                     });
                 }
+            } // end else (not /skill command)
         }
     }
 }

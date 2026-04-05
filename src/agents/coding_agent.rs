@@ -944,7 +944,7 @@ pub async fn run_coding_via_adk(
         .with_metadata("agent", "coding_agent");
 
     let input = json!(CodingRequest { task: task.clone(), max_iterations: None, dry_run });
-    match runtime.run(&CodingAgent, ctx, input).await {
+    let response = match runtime.run(&CodingAgent, ctx, input).await {
         Ok(v) => serde_json::from_value(v).unwrap_or_else(|_| CodingAgentResponse {
             outcome: "Completed (response parse error)".to_string(),
             ..Default::default()
@@ -956,7 +956,15 @@ pub async fn run_coding_via_adk(
                 ..Default::default()
             }
         }
-    }
+    };
+
+    crate::events::publish(crate::events::AgentEvent::CodingAgentCompleted {
+        task: task.chars().take(80).collect(),
+        success: !response.outcome.starts_with("Error:"),
+        files_modified: response.files_modified.clone(),
+    });
+
+    response
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
