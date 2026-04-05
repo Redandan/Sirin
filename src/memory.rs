@@ -617,6 +617,19 @@ pub fn inspect_project_file(
     path_hint: &str,
     max_chars: usize,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    inspect_project_file_range(path_hint, None, None, max_chars)
+}
+
+/// Like [`inspect_project_file`] but returns only lines `start_line..=end_line`
+/// (1-based, inclusive on both ends).  When both are `None` the full file is
+/// returned up to `max_chars`.  The output includes line numbers so the agent
+/// can reference exact positions for `file_patch`.
+pub fn inspect_project_file_range(
+    path_hint: &str,
+    start_line: Option<usize>,
+    end_line: Option<usize>,
+    max_chars: usize,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let Some(root) = find_project_root() else {
         return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "project root not found").into());
     };
@@ -631,10 +644,39 @@ pub fn inspect_project_file(
     let text = fs::read_to_string(&path)?;
     let rel = relative_display(&path, &root);
     let summary = summarize_file_role(&path, &rel, &text);
-    let excerpt: String = text.chars().take(max_chars.clamp(400, 4000)).collect();
+    let total_lines = text.lines().count();
+
+    let excerpt = if start_line.is_some() || end_line.is_some() {
+        // Line-range mode: return numbered lines in [start..=end].
+        let start = start_line.unwrap_or(1).max(1);
+        let end = end_line.unwrap_or(total_lines).min(total_lines);
+        let cap = max_chars.clamp(400, 16000);
+        let mut out = String::new();
+        let mut chars_used = 0usize;
+        for (i, line) in text.lines().enumerate() {
+            let lineno = i + 1;
+            if lineno < start { continue; }
+            if lineno > end { break; }
+            let entry = format!("{lineno:>5} | {line}\n");
+            if chars_used + entry.len() > cap { break; }
+            out.push_str(&entry);
+            chars_used += entry.len();
+        }
+        out
+    } else {
+        // Full-file mode (char-truncated, same as before).
+        text.chars().take(max_chars.clamp(400, 4000)).collect()
+    };
+
+    let range_note = match (start_line, end_line) {
+        (Some(s), Some(e)) => format!(" [lines {s}–{e} of {total_lines}]"),
+        (Some(s), None) => format!(" [lines {s}–{total_lines} of {total_lines}]"),
+        (None, Some(e)) => format!(" [lines 1–{e} of {total_lines}]"),
+        (None, None) => format!(" [{total_lines} lines total]"),
+    };
 
     Ok(format!(
-        "File: {rel}\nKind: {}\nRole: {summary}\n\nExcerpt:\n{excerpt}",
+        "File: {rel}{range_note}\nKind: {}\nRole: {summary}\n\nExcerpt:\n{excerpt}",
         code_file_kind(&path)
     ))
 }

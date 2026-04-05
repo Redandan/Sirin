@@ -119,14 +119,17 @@ async fn run_react_loop(
     let plan = make_plan(ctx, &request.task, &project_ctx).await;
     sirin_log!("[coding_agent] plan ready ({} chars)", plan.len());
 
-    // ── Step 2.5: git stash baseline (rollback anchor) ───────────────────────
-    // Record the current HEAD so we can restore it if the task leaves the
-    // codebase in a broken state.
+    // ── Step 2.5: record baseline commit (rollback anchor) ───────────────────
+    // Call git directly — bypasses the shell_exec allowlist which only permits
+    // cargo commands. Never panics; baseline is simply None if git is absent.
     let baseline_commit = if !dry_run {
-        ctx.call_tool("shell_exec", json!({ "command": "git rev-parse HEAD" }))
-            .await
+        std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .output()
             .ok()
-            .and_then(|v| v.get("stdout").and_then(Value::as_str).map(|s| s.trim().to_string()))
+            .filter(|o| o.status.success())
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
     } else {
         None
@@ -144,27 +147,32 @@ async fn run_react_loop(
     let write_tools = ["file_write", "file_patch", "plan_execute"];
 
     // Sliding window: only pass recent N entries to the LLM.
-    // file_read entries are "pinned" and never evicted — they carry the source
-    // context the LLM needs to produce correct old_str for file_patch.
+    // file_read entries are "pinned" and kept, but capped at MAX_PINNED to
+    // prevent context explosion when many files are read in one task.
+    // When over the cap, keep only the most recent pinned entries.
     const HISTORY_WINDOW: usize = 6;
+    const MAX_PINNED: usize = 4;
 
     for iteration in 0..max_iter {
-        // Build history window: always keep file_read entries + recent N others.
+        // Build history window: capped pinned entries + recent N non-pinned.
         let history_window: Vec<&HistoryEntry> = {
-            let pinned: Vec<&HistoryEntry> = history
+            let mut pinned: Vec<&HistoryEntry> = history
                 .iter()
-                .filter(|h| h.action == "local_file_read")
+                .filter(|h| h.pinned)
                 .collect();
+            // Keep only the most recent MAX_PINNED file reads.
+            if pinned.len() > MAX_PINNED {
+                pinned = pinned[pinned.len() - MAX_PINNED..].to_vec();
+            }
             let recent: Vec<&HistoryEntry> = history
                 .iter()
-                .filter(|h| h.action != "local_file_read")
+                .filter(|h| !h.pinned)
                 .rev()
                 .take(HISTORY_WINDOW)
                 .collect::<Vec<_>>()
                 .into_iter()
                 .rev()
                 .collect();
-            // Merge: pinned first, then recent (dedup by pointer not needed — they're disjoint)
             pinned.into_iter().chain(recent).collect()
         };
 
@@ -226,7 +234,11 @@ async fn run_react_loop(
         }
 
         // Execute the tool.
-        let tool_input = if dry_run && step.action == "file_write" {
+        // In dry_run mode, inject dry_run=true into file_write and plan_execute
+        // so that writes are never applied regardless of how the agent calls them.
+        let tool_input = if dry_run
+            && (step.action == "file_write" || step.action == "plan_execute")
+        {
             let mut input = step.action_input.clone();
             if let Some(obj) = input.as_object_mut() {
                 obj.insert("dry_run".to_string(), json!(true));
@@ -314,7 +326,7 @@ async fn run_react_loop(
                 Some(preview_text(&err_output)),
             );
 
-            // Inject the compiler error as context and run one fix iteration.
+            // Inject the compiler error as context and run fix iterations.
             let fix_task = format!(
                 "cargo check failed with the following errors. Fix them without changing behaviour:\n\n{}",
                 err_output.chars().take(1200).collect::<String>()
@@ -322,13 +334,28 @@ async fn run_react_loop(
             let fix_plan = "1. Read the failing file(s)\n2. Apply file_patch to fix the error\n3. DONE".to_string();
             let fix_tool_list = describe_tools();
 
+            // Seed fix history with the pinned file_read entries from the main
+            // loop so the LLM doesn't have to re-read files it already knows.
+            let mut fix_history: Vec<HistoryEntry> = history
+                .iter()
+                .filter(|h| h.pinned)
+                .map(|h| HistoryEntry {
+                    thought: h.thought.clone(),
+                    action: h.action.clone(),
+                    action_input: h.action_input.clone(),
+                    observation: h.observation.clone(),
+                    pinned: true,
+                })
+                .collect();
+
             // Re-run up to 4 ReAct iterations to apply the fix.
             for fix_iter in 0..4usize {
+                let fix_window: Vec<&HistoryEntry> = fix_history.iter().collect();
                 let prompt = build_react_prompt(
                     &fix_task,
                     &project_ctx,
                     &fix_plan,
-                    &[],
+                    &fix_window,
                     &fix_tool_list,
                     false,
                 );
@@ -341,34 +368,94 @@ async fn run_react_loop(
                 };
                 let step = parse_react_step(&raw);
                 if step.action == "DONE" { break; }
-                let obs = match ctx.call_tool(&step.action, step.action_input).await {
-                    Ok(v) => format_tool_output(&v),
+                let is_read = step.action == "local_file_read";
+                let obs = match ctx.call_tool(&step.action, step.action_input.clone()).await {
+                    Ok(v) => if is_read { format_tool_output_large(&v) } else { format_tool_output(&v) },
                     Err(e) => format!("ERROR: {e}"),
                 };
                 sirin_log!("[coding_agent] fix iter {fix_iter} action={} obs={}", step.action, preview_text(&obs));
+                fix_history.push(HistoryEntry {
+                    thought: step.thought,
+                    action: step.action,
+                    action_input: step.action_input,
+                    observation: obs,
+                    pinned: is_read,
+                });
             }
 
             (ok, out) = verify_build(ctx).await;
         }
 
-        // If still broken after all fix attempts, rollback to baseline.
+        // If still broken after all fix attempts, rollback only the files this
+        // task touched — leave any other working-tree changes intact.
         if !ok {
             if let Some(ref commit) = baseline_commit {
-                sirin_log!("[coding_agent] ROLLBACK: restoring to {commit}");
-                let _ = ctx.call_tool(
-                    "shell_exec",
-                    json!({ "command": format!("git checkout {commit} -- .") }),
-                ).await;
+                sirin_log!("[coding_agent] ROLLBACK: restoring {} file(s) to {commit}", files_modified.len());
+                let mut rolled_back = Vec::new();
+                let mut rollback_errors = Vec::new();
+
+                for path in &files_modified {
+                    // Use `git show {commit}:{path}` to get the file content at
+                    // baseline — this never touches the allowlist.
+                    let result = std::process::Command::new("git")
+                        .args(["show", &format!("{commit}:{path}")])
+                        .output();
+
+                    match result {
+                        Ok(out) if out.status.success() => {
+                            let content = out.stdout;
+                            match std::fs::write(path, &content) {
+                                Ok(_) => {
+                                    sirin_log!("[coding_agent] ROLLBACK: restored {path}");
+                                    rolled_back.push(path.clone());
+                                }
+                                Err(e) => {
+                                    rollback_errors.push(format!("{path}: write failed ({e})"));
+                                }
+                            }
+                        }
+                        Ok(out) => {
+                            // File didn't exist at baseline commit — delete it.
+                            let stderr = String::from_utf8_lossy(&out.stderr);
+                            if stderr.contains("does not exist") || stderr.contains("exists on disk") {
+                                let _ = std::fs::remove_file(path);
+                                rolled_back.push(path.clone());
+                            } else {
+                                rollback_errors.push(format!("{path}: git show failed ({})", stderr.trim()));
+                            }
+                        }
+                        Err(e) => {
+                            rollback_errors.push(format!("{path}: git show error ({e})"));
+                        }
+                    }
+                }
+
                 ctx.record_system_event(
                     "adk_coding_rollback",
-                    Some(commit.clone()),
+                    Some(commit[..8.min(commit.len())].to_string()),
                     Some("ROLLBACK"),
-                    Some("cargo check still failing after fix attempts — changes reverted".to_string()),
+                    Some(format!(
+                        "restored={} errors={}",
+                        rolled_back.join(","),
+                        if rollback_errors.is_empty() { "none".to_string() } else { rollback_errors.join(";") }
+                    )),
                 );
-                let rollback_msg = format!(
-                    "⚠️ cargo check 仍失敗，已自動還原到 commit {}。請檢查任務描述後重試。",
-                    &commit[..8.min(commit.len())]
-                );
+
+                let rollback_msg = if rollback_errors.is_empty() {
+                    format!(
+                        "⚠️ cargo check 仍失敗，已自動還原 {} 個檔案到 commit {}。請檢查任務描述後重試。\n還原檔案：{}",
+                        rolled_back.len(),
+                        &commit[..8.min(commit.len())],
+                        rolled_back.join(", ")
+                    )
+                } else {
+                    format!(
+                        "⚠️ cargo check 仍失敗，部分還原失敗。成功：{} 失敗：{}",
+                        rolled_back.join(", "),
+                        rollback_errors.join("; ")
+                    )
+                };
+
                 return Ok(CodingAgentResponse {
                     outcome: rollback_msg,
                     files_modified: vec![],
@@ -394,6 +481,15 @@ async fn run_react_loop(
         None
     };
 
+    // ── Step 6: auto-commit when verified ────────────────────────────────────
+    // Only commit when: not dry_run, cargo check passed, files were actually
+    // changed, and git is available. Uses the task description as commit msg.
+    let auto_committed = if !dry_run && verified && !files_modified.is_empty() {
+        auto_commit(&request.task, &files_modified).await
+    } else {
+        false
+    };
+
     let iterations_used = history.iter().filter(|h| h.action != "DONE").count();
     let trace: Vec<String> = history
         .iter()
@@ -415,11 +511,17 @@ async fn run_react_loop(
         final_answer
     };
 
+    let outcome = if auto_committed {
+        format!("{outcome}\n\n✅ 已自動 commit（cargo check 通過）")
+    } else {
+        outcome
+    };
+
     ctx.record_system_event(
         "adk_coding_agent_done",
         Some(preview_text(&outcome)),
         Some(if verified { "DONE" } else { "FOLLOWUP_NEEDED" }),
-        Some(format!("files={} verified={verified} dry_run={dry_run}", files_modified.len())),
+        Some(format!("files={} verified={verified} committed={auto_committed} dry_run={dry_run}", files_modified.len())),
     );
 
     Ok(CodingAgentResponse {
@@ -478,7 +580,7 @@ Return only the numbered list, no extra prose.",
 fn describe_tools() -> String {
     let tools = [
         ("file_list", r#"{"path":"dir","max_depth":3}"#, "List files in a directory."),
-        ("local_file_read", r#"{"path":"src/foo.rs"}"#, "Read a file's content."),
+        ("local_file_read", r#"{"path":"src/foo.rs","start_line":100,"end_line":200}"#, "Read a file's content. Use start_line/end_line (1-based, optional) to fetch a specific window — output includes line numbers, essential for precise file_patch old_str."),
         ("file_write", r#"{"path":"src/foo.rs","content":"..."}"#, "Write full content to a file (use only when replacing the entire file)."),
         ("file_patch", r#"{"path":"src/foo.rs","hunks":[{"old_str":"fn foo() {","new_str":"fn foo() -> i32 {"}]}"#, "Apply surgical hunk-based edits. Fails atomically if any old_str is not found. Prefer over file_write for partial changes."),
         ("file_diff", r#"{"path":null}"#, "Show git diff of uncommitted changes."),
@@ -652,6 +754,58 @@ async fn get_diff(ctx: &AgentContext) -> Option<String> {
         .ok()
         .and_then(|v| v.get("diff").and_then(Value::as_str).map(|s| s.to_string()))
         .filter(|s| !s.trim().is_empty())
+}
+
+/// Truncate `s` to at most `max_bytes` UTF-8 bytes, always at a valid char
+/// boundary.  Chinese/CJK chars are 3 bytes each, so 72 bytes ≈ 24 CJK chars.
+fn truncate_to_bytes(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+/// Stage only the files this task modified and create a commit.
+/// Returns true on success. Never panics — all errors are logged and ignored.
+async fn auto_commit(task: &str, files_modified: &[String]) -> bool {
+    // Stage only the modified files (never `git add -A`).
+    let add_ok = std::process::Command::new("git")
+        .arg("add")
+        .arg("--")
+        .args(files_modified)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if !add_ok {
+        sirin_log!("[coding_agent] auto_commit: git add failed");
+        return false;
+    }
+
+    // Build a concise commit message.  Truncate at 72 *bytes* (not chars) so
+    // CJK-heavy task descriptions don't blow past the conventional line limit.
+    let prefix = "chore(sirin-agent): ";
+    let max_summary_bytes = 72usize.saturating_sub(prefix.len());
+    let summary = truncate_to_bytes(task.trim(), max_summary_bytes);
+    let msg = format!("{prefix}{summary}\n\nAuto-committed by Sirin Coding Agent after cargo check passed.");
+
+    let commit_ok = std::process::Command::new("git")
+        .args(["commit", "-m", &msg])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if !commit_ok {
+        sirin_log!("[coding_agent] auto_commit: git commit failed (nothing to commit?)");
+        return false;
+    }
+
+    sirin_log!("[coding_agent] auto_commit: committed {} file(s)", files_modified.len());
+    true
 }
 
 // ── History entry ─────────────────────────────────────────────────────────────
@@ -850,5 +1004,37 @@ mod tests {
                    \"action_input\":{\"path\":\"src/main.rs\"}}\n以上是我的回應。";
         let step = parse_react_step(raw);
         assert_eq!(step.action, "local_file_read");
+    }
+
+    #[test]
+    fn truncate_to_bytes_ascii() {
+        assert_eq!(truncate_to_bytes("hello world", 5), "hello");
+        assert_eq!(truncate_to_bytes("hi", 10), "hi");
+        assert_eq!(truncate_to_bytes("", 10), "");
+    }
+
+    #[test]
+    fn truncate_to_bytes_cjk_boundary() {
+        // "你好世界" = 4 chars × 3 bytes = 12 bytes total.
+        // Truncating at 9 bytes should give "你好世" (9 bytes), not corrupt mid-char.
+        let s = "你好世界";
+        assert_eq!(s.len(), 12);
+        let truncated = truncate_to_bytes(s, 9);
+        assert_eq!(truncated, "你好世");
+        // Truncating at 10 bytes (not a char boundary) must still yield "你好世".
+        let truncated2 = truncate_to_bytes(s, 10);
+        assert_eq!(truncated2, "你好世");
+    }
+
+    #[test]
+    fn auto_commit_summary_fits_in_72_bytes() {
+        // A long CJK task string must not produce a summary > 72 bytes.
+        let long_task: String = "幫我優化這個專案的效能，讓它更快更穩定，不要動到測試檔案".repeat(5);
+        let prefix = "chore(sirin-agent): ";
+        let max_summary_bytes = 72usize.saturating_sub(prefix.len());
+        let summary = truncate_to_bytes(long_task.trim(), max_summary_bytes);
+        assert!(summary.len() <= max_summary_bytes, "summary too long: {} bytes", summary.len());
+        // Must be valid UTF-8 (no panics from str operations).
+        let _ = format!("{prefix}{summary}");
     }
 }

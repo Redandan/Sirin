@@ -133,8 +133,25 @@ pub fn default_tool_registry() -> ToolRegistry {
                 .and_then(Value::as_u64)
                 .map(|v| v as usize)
                 .unwrap_or(2400);
-            let content = crate::memory::inspect_project_file(&path, max_chars)
-                .map_err(|e| e.to_string())?;
+            let start_line = input
+                .get("start_line")
+                .and_then(Value::as_u64)
+                .map(|v| v as usize);
+            let end_line = input
+                .get("end_line")
+                .and_then(Value::as_u64)
+                .map(|v| v as usize);
+            // Use range variant so the agent can request exact line windows —
+            // crucial for file_patch old_str accuracy on large files.
+            let effective_max = if start_line.is_some() || end_line.is_some() {
+                max_chars.max(8000)
+            } else {
+                max_chars
+            };
+            let content = crate::memory::inspect_project_file_range(
+                &path, start_line, end_line, effective_max,
+            )
+            .map_err(|e| e.to_string())?;
             Ok(json!({
                 "path": path,
                 "content": content,
@@ -481,13 +498,25 @@ pub fn default_tool_registry() -> ToolRegistry {
                 let total = steps.len();
                 let mut results: Vec<Value> = Vec::with_capacity(total);
 
+                // Propagate dry_run from the plan_execute call into each
+                // file_write step — prevents writes slipping through when the
+                // agent wraps file_write inside plan_execute.
+                let plan_dry_run = input.get("dry_run").and_then(Value::as_bool).unwrap_or(false);
+
                 for (i, step) in steps.iter().enumerate() {
                     let tool = step
                         .get("tool")
                         .and_then(Value::as_str)
                         .ok_or_else(|| format!("Step {i}: missing 'tool'"))?
                         .to_string();
-                    let step_input = step.get("input").cloned().unwrap_or(json!({}));
+                    let mut step_input = step.get("input").cloned().unwrap_or(json!({}));
+
+                    // Inject dry_run into file_write steps when running in dry-run mode.
+                    if plan_dry_run && tool == "file_write" {
+                        if let Some(obj) = step_input.as_object_mut() {
+                            obj.insert("dry_run".to_string(), json!(true));
+                        }
+                    }
 
                     match ctx.call_tool(&tool, step_input).await {
                         Ok(result) => {
