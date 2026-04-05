@@ -37,7 +37,7 @@ struct ChatMessage {
     text: String,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct AgentConsoleState {
     route: String,
     intent_family: String,
@@ -48,6 +48,22 @@ struct AgentConsoleState {
     trace: Vec<String>,
     latest_task_summary: String,
     status: String,
+}
+
+impl Default for AgentConsoleState {
+    fn default() -> Self {
+        Self {
+            route: String::new(),
+            intent_family: String::new(),
+            summary: String::new(),
+            steps: Vec::new(),
+            recommended_skills: Vec::new(),
+            tools: Vec::new(),
+            trace: Vec::new(),
+            latest_task_summary: String::new(),
+            status: "Idle".to_string(),
+        }
+    }
 }
 
 impl AgentConsoleState {
@@ -948,7 +964,7 @@ impl SirinApp {
                     );
                     ui.small("任務：");
                     ui.small(pending_task.chars().take(100).collect::<String>());
-                    ui.small("config/persona.yaml 中 auto_approve_writes = false，請確認是否允許 AI 寫入檔案。");
+                    ui.small("persona.yaml 中 auto_approve_writes = false。確認後 AI 將直接寫入檔案，此操作不可逆。");
                     ui.horizontal(|ui| {
                         if ui
                             .button(RichText::new("✅ 允許寫入").color(Color32::from_rgb(100, 220, 100)))
@@ -1098,20 +1114,33 @@ impl SirinApp {
         ui.separator();
 
         // ── Input area ────────────────────────────────────────────────────────
-        ui.horizontal(|ui| {
-            let input = ui.add_sized(
-                [ui.available_width() - 70.0, 40.0],
-                TextEdit::multiline(&mut self.chat_input)
-                    .hint_text("輸入訊息…（Enter 送出，Shift+Enter 換行）")
-                    .desired_rows(2),
-            );
+        // Row 1: text input (full width)
+        let input = ui.add(
+            TextEdit::multiline(&mut self.chat_input)
+                .hint_text("輸入訊息…（Enter 送出，Shift+Enter 換行）")
+                .desired_rows(2)
+                .desired_width(f32::INFINITY),
+        );
+
+        // Row 2: action buttons
+        let (submit, force_coding) = ui.horizontal(|ui| {
+            let can_act = !self.chat_pending && !self.chat_input.trim().is_empty();
 
             let send = ui.add_enabled(
-                !self.chat_pending && !self.chat_input.trim().is_empty(),
-                egui::Button::new("送出").min_size([60.0, 40.0].into()),
+                can_act,
+                egui::Button::new("送出").min_size([60.0, 30.0].into()),
             );
 
-            // Intercept plain Enter (send); leave Shift+Enter as newline.
+            let code_btn = ui
+                .add_enabled(
+                    can_act,
+                    egui::Button::new("⚙ 開發任務")
+                        .min_size([100.0, 30.0].into())
+                        .fill(Color32::from_rgb(25, 50, 80)),
+                )
+                .on_hover_text("強制以 Coding Agent 執行（跳過關鍵字偵測，直接進入 ReAct 迴圈）");
+
+            // Plain Enter = send; Shift+Enter = newline.
             let enter_send = input.has_focus()
                 && ui.input_mut(|i| {
                     if i.key_pressed(egui::Key::Enter) && !i.modifiers.shift {
@@ -1122,10 +1151,67 @@ impl SirinApp {
                     }
                 });
 
-            let submit = send.clicked() || enter_send;
+            (send.clicked() || enter_send, code_btn.clicked())
+        })
+        .inner;
 
-            if submit && !self.chat_input.trim().is_empty() {
-                let user_text = self.chat_input.trim().to_string();
+        // ── Force-coding path (⚙ 開發任務 button) ──────────────────────────
+        if force_coding && !self.chat_input.trim().is_empty() {
+            let task = self.chat_input.trim().to_string();
+            self.chat_input.clear();
+            self.chat_messages.push(ChatMessage { role: ChatRole::User, text: task.clone() });
+            self.chat_pending = true;
+            self.coding_console = CodingConsoleState {
+                status: "Coding Agent 啟動中…".to_string(),
+                task: task.clone(),
+                ..Default::default()
+            };
+            self.agent_console.route = "coding".to_string();
+            self.agent_console.intent_family = "code_modification".to_string();
+            self.agent_console.summary = "Coding Agent（強制觸發）".to_string();
+            self.agent_console.steps = vec![
+                "gather context".to_string(),
+                "plan".to_string(),
+                "ReAct loop".to_string(),
+                "verify".to_string(),
+            ];
+            self.agent_console.recommended_skills = vec!["coding_agent".to_string()];
+            self.agent_console.status = "Coding Agent 執行中…".to_string();
+
+            let tx = self.chat_tx.clone();
+            let coding_tx = self.coding_tx.clone();
+            let rt = self.rt.clone();
+            rt.spawn(async move {
+                let _ = tx.try_send(ChatUiUpdate {
+                    reply: "⚙ Coding Agent 啟動中…".to_string(),
+                    tools: vec![],
+                    trace: vec![],
+                    partial: true,
+                    plan: Some(ChatPlanUpdate {
+                        route: "coding".to_string(),
+                        intent_family: "code_modification".to_string(),
+                        summary: "Coding Agent（強制觸發，跳過 Planner / Router）".to_string(),
+                        steps: vec![
+                            "gather context".to_string(),
+                            "plan".to_string(),
+                            "ReAct loop".to_string(),
+                            "verify".to_string(),
+                        ],
+                        recommended_skills: vec!["coding_agent".to_string()],
+                    }),
+                });
+                let resp =
+                    crate::agents::coding_agent::run_coding_via_adk(task, false, None).await;
+                let _ = coding_tx.try_send(CodingUiUpdate {
+                    response: Some(resp),
+                    status_msg: "完成".to_string(),
+                });
+            });
+        }
+
+        // ── Normal submit path ───────────────────────────────────────────────
+        if submit && !self.chat_input.trim().is_empty() {
+            let user_text = self.chat_input.trim().to_string();
 
                 // Check if this looks like a coding request that needs pre-flight confirmation.
                 let is_coding_hint = crate::agents::router_agent::is_coding_request(&user_text);
@@ -1155,11 +1241,16 @@ impl SirinApp {
                     });
                     self.chat_input.clear();
                     self.chat_pending = true;
-                    self.coding_console = CodingConsoleState {
-                        status: "計畫中…".to_string(),
-                        task: confirmed_user_text.clone(),
-                        ..Default::default()
-                    };
+                    // Only initialise the Coding Console when this actually looks like
+                    // a coding request — for normal chat messages leave the previous
+                    // console state intact so it doesn't flash up then disappear.
+                    if is_coding_hint {
+                        self.coding_console = CodingConsoleState {
+                            status: "計畫中…".to_string(),
+                            task: confirmed_user_text.clone(),
+                            ..Default::default()
+                        };
+                    }
 
                     let is_meta_request = crate::telegram::language::is_identity_question(&confirmed_user_text)
                         || crate::telegram::language::is_code_access_question(&confirmed_user_text);
@@ -1370,11 +1461,9 @@ impl SirinApp {
                         }
                     });
                 }
-            }
-        });
+        }
     }
 }
-
 async fn run_chat_and_send(
     request: crate::agents::chat_agent::ChatRequest,
     plan_update: ChatPlanUpdate,
