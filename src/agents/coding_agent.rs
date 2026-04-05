@@ -234,11 +234,14 @@ async fn run_react_loop(
         }
 
         // Execute the tool.
-        // In dry_run mode, inject dry_run=true into file_write and plan_execute
-        // so that writes are never applied regardless of how the agent calls them.
-        let tool_input = if dry_run
-            && (step.action == "file_write" || step.action == "plan_execute")
-        {
+        // In dry_run mode, force dry_run=true into every write tool so that
+        // writes are never applied regardless of how the agent calls them.
+        // file_patch, file_write, and plan_execute all honour the dry_run flag.
+        let is_write_tool = matches!(
+            step.action.as_str(),
+            "file_write" | "file_patch" | "plan_execute"
+        );
+        let tool_input = if dry_run && is_write_tool {
             let mut input = step.action_input.clone();
             if let Some(obj) = input.as_object_mut() {
                 obj.insert("dry_run".to_string(), json!(true));
@@ -349,6 +352,9 @@ async fn run_react_loop(
                 .collect();
 
             // Re-run up to 4 ReAct iterations to apply the fix.
+            // Circuit breaker: abort if file_patch fails twice in a row.
+            let mut fix_patch_errors: u32 = 0;
+            const MAX_FIX_PATCH_ERRORS: u32 = 2;
             for fix_iter in 0..4usize {
                 let fix_window: Vec<&HistoryEntry> = fix_history.iter().collect();
                 let prompt = build_react_prompt(
@@ -368,12 +374,55 @@ async fn run_react_loop(
                 };
                 let step = parse_react_step(&raw);
                 if step.action == "DONE" { break; }
+
+                // Safety: stop fix loop if write patches keep failing.
+                if fix_patch_errors >= MAX_FIX_PATCH_ERRORS
+                    && matches!(step.action.as_str(), "file_patch" | "file_write" | "plan_execute")
+                {
+                    sirin_log!(
+                        "[coding_agent] fix loop circuit breaker: {} consecutive patch errors, aborting",
+                        fix_patch_errors
+                    );
+                    break;
+                }
+
                 let is_read = step.action == "local_file_read";
+                let action_name = step.action.clone();
                 let obs = match ctx.call_tool(&step.action, step.action_input.clone()).await {
-                    Ok(v) => if is_read { format_tool_output_large(&v) } else { format_tool_output(&v) },
-                    Err(e) => format!("ERROR: {e}"),
+                    Ok(v) => {
+                        // Track files modified in fix loop so auto-commit and
+                        // rollback cover them too.
+                        if action_name == "file_write" || action_name == "file_patch" {
+                            if let Some(path) = v.get("path").and_then(Value::as_str) {
+                                if !files_modified.contains(&path.to_string()) {
+                                    files_modified.push(path.to_string());
+                                }
+                            }
+                        }
+                        if action_name == "plan_execute" {
+                            if let Some(results) = v.get("results").and_then(Value::as_array) {
+                                for r in results {
+                                    if let Some(result) = r.get("result") {
+                                        if let Some(path) = result.get("path").and_then(Value::as_str) {
+                                            if !files_modified.contains(&path.to_string()) {
+                                                files_modified.push(path.to_string());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        fix_patch_errors = 0;
+                        if is_read { format_tool_output_large(&v) } else { format_tool_output(&v) }
+                    }
+                    Err(e) => {
+                        if action_name == "file_patch" {
+                            fix_patch_errors += 1;
+                        }
+                        format!("ERROR: {e}")
+                    }
                 };
-                sirin_log!("[coding_agent] fix iter {fix_iter} action={} obs={}", step.action, preview_text(&obs));
+                sirin_log!("[coding_agent] fix iter {fix_iter} action={action_name} obs={}", preview_text(&obs));
                 fix_history.push(HistoryEntry {
                     thought: step.thought,
                     action: step.action,
@@ -609,8 +658,9 @@ fn build_react_prompt(
     dry_run: bool,
 ) -> String {
     let dry_run_note = if dry_run {
-        "\nNOTE: Running in DRY-RUN mode. For file_write actions, pass `\"dry_run\": true` in \
-action_input. Files will NOT be written to disk; the agent will report what would change.\n"
+        "\nNOTE: Running in DRY-RUN mode. For file_write, file_patch, and plan_execute actions \
+pass `\"dry_run\": true` in action_input. Files will NOT be written to disk; the agent will \
+report what would change.\n"
     } else {
         ""
     };

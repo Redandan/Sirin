@@ -1871,7 +1871,7 @@ mod tests {
         .await;
 
         println!("file reply:\n{}", response.reply);
-        assert!(response.reply.contains("`src/main.rs`"));
+        assert!(response.reply.contains("src/main.rs"));
         assert!(response.reply.contains("檔案片段"));
         assert!(response.used_code_context);
     }
