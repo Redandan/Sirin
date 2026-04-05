@@ -76,9 +76,7 @@ fn main() {
             telegram::run_listener(tg_tracker, tg_auth_spawn).await;
         });
 
-        rt.spawn(agents::followup_agent::run_followup_worker_via_adk(
-            tracker.clone(),
-        ));
+        rt.spawn(followup::run_worker(tracker.clone()));
     }
 
     // Keep the runtime alive by storing it; drop order matters on Windows.

@@ -113,6 +113,58 @@ impl LlmConfig {
     }
 }
 
+// ── Public message types ──────────────────────────────────────────────────────
+
+/// Role of a participant in a multi-turn conversation.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MessageRole {
+    System,
+    User,
+    Assistant,
+}
+
+impl MessageRole {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::User => "user",
+            Self::Assistant => "assistant",
+        }
+    }
+}
+
+/// A single turn in a multi-turn conversation sent to the LLM.
+///
+/// Use the convenience constructors ([`LlmMessage::system`], [`LlmMessage::user`],
+/// [`LlmMessage::assistant`]) or build directly and pass a slice to
+/// [`call_prompt_messages`].
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmMessage {
+    pub role: MessageRole,
+    pub content: String,
+}
+
+#[allow(dead_code)]
+impl LlmMessage {
+    /// Create a `system` role message.
+    pub fn system(content: impl Into<String>) -> Self {
+        Self { role: MessageRole::System, content: content.into() }
+    }
+
+    /// Create a `user` role message.
+    pub fn user(content: impl Into<String>) -> Self {
+        Self { role: MessageRole::User, content: content.into() }
+    }
+
+    /// Create an `assistant` role message.
+    pub fn assistant(content: impl Into<String>) -> Self {
+        Self { role: MessageRole::Assistant, content: content.into() }
+    }
+}
+
 // ── HTTP request / response types (private) ───────────────────────────────────
 
 #[derive(Serialize)]
@@ -209,12 +261,26 @@ async fn call_openai(
     api_key: Option<&str>,
     prompt: String,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    let body = OpenAiRequest {
+    call_openai_messages(
+        client,
+        base_url,
         model,
-        messages: vec![OpenAiMessage { role: "user".into(), content: prompt }],
-        stream: false,
-    };
+        api_key,
+        vec![OpenAiMessage { role: "user".into(), content: prompt }],
+    )
+    .await
+}
+
+/// Send a pre-built messages array to an OpenAI-compatible endpoint.
+async fn call_openai_messages(
+    client: &reqwest::Client,
+    base_url: &str,
+    model: &str,
+    api_key: Option<&str>,
+    messages: Vec<OpenAiMessage>,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+    let body = OpenAiRequest { model, messages, stream: false };
     let mut req = client.post(&url).json(&body);
     if let Some(key) = api_key {
         req = req.bearer_auth(key);
@@ -286,6 +352,40 @@ where
                 on_token,
             )
             .await
+        }
+    }
+}
+
+/// Send a multi-turn conversation to the LLM and return the trimmed response.
+///
+/// For Ollama (which uses a single-prompt API), the messages are serialised as
+/// a `System: … User: … Assistant: …` string.  For OpenAI-compatible backends
+/// the messages array is forwarded directly.
+#[allow(dead_code)]
+pub async fn call_prompt_messages(
+    client: &reqwest::Client,
+    llm: &LlmConfig,
+    messages: &[LlmMessage],
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    match llm.backend {
+        LlmBackend::Ollama => {
+            // Ollama uses a flat prompt string — serialise the conversation.
+            let prompt = messages
+                .iter()
+                .map(|m| format!("{}: {}", m.role.as_str().to_uppercase(), m.content))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            call_ollama(client, &llm.base_url, &llm.model, prompt).await
+        }
+        LlmBackend::LmStudio => {
+            let openai_msgs: Vec<OpenAiMessage> = messages
+                .iter()
+                .map(|m| OpenAiMessage {
+                    role: m.role.as_str().to_string(),
+                    content: m.content.clone(),
+                })
+                .collect();
+            call_openai_messages(client, &llm.base_url, &llm.model, llm.api_key.as_deref(), openai_msgs).await
         }
     }
 }

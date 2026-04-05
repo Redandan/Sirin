@@ -31,6 +31,9 @@ pub struct AgentContext {
     pub llm: Arc<LlmConfig>,
     tracker: Option<TaskTracker>,
     trace: Arc<Mutex<ExecutionTrace>>,
+    /// Optional recent-conversation snippet injected by the caller so agents
+    /// have awareness of what the user was just discussing.
+    context_hint: Option<String>,
 }
 
 impl AgentContext {
@@ -44,6 +47,7 @@ impl AgentContext {
             llm: shared_llm(),
             tracker: None,
             trace: Arc::new(Mutex::new(ExecutionTrace::default())),
+            context_hint: None,
         }
     }
 
@@ -60,6 +64,15 @@ impl AgentContext {
     pub fn with_metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.metadata.insert(key.into(), value.into());
         self
+    }
+
+    pub fn with_context_hint(mut self, hint: Option<String>) -> Self {
+        self.context_hint = hint;
+        self
+    }
+
+    pub fn context_hint(&self) -> Option<&str> {
+        self.context_hint.as_deref()
     }
 
     pub fn tracker(&self) -> Option<&TaskTracker> {

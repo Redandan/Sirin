@@ -6,7 +6,9 @@
 
 use eframe::egui::{self, Color32, FontData, FontDefinitions, FontFamily, RichText, ScrollArea, TextEdit};
 use tokio::runtime::Handle;
+use tokio::sync::broadcast;
 
+use crate::events::AgentEvent;
 use crate::log_buffer;
 use crate::memory::ensure_codebase_index;
 use crate::persona::{TaskEntry, TaskTracker};
@@ -239,11 +241,17 @@ pub struct SirinApp {
     /// When true, show a confirmation dialog before running the coding agent
     /// (because auto_approve_writes = false in persona config).
     pending_coding_confirmation: Option<String>,
+    /// Cached value of `persona.coding_agent.auto_approve_writes`.
+    /// Refreshed from disk on every `refresh()` call (every 5 s) and on toggle.
+    auto_approve_writes: bool,
 
     // Log panel
     log_visible: bool,
 
     last_refresh: std::time::Instant,
+
+    /// Subscriber for the process-wide agent event bus.  Drained every frame.
+    event_rx: broadcast::Receiver<AgentEvent>,
 }
 
 impl SirinApp {
@@ -313,9 +321,13 @@ impl SirinApp {
             coding_tx,
             coding_rx,
             pending_coding_confirmation: None,
+            auto_approve_writes: crate::persona::Persona::load()
+                .map(|p| p.coding_agent.auto_approve_writes)
+                .unwrap_or(false),
             log_visible: true,
             last_refresh: std::time::Instant::now()
                 - std::time::Duration::from_secs(60),
+            event_rx: crate::events::subscribe(),
         };
         app.refresh();
         app
@@ -353,6 +365,10 @@ impl SirinApp {
         if let Some(proposed) = researcher::take_pending_objectives() {
             self.pending_objectives = Some(proposed);
         }
+        // Sync the cached auto_approve_writes from persona config.
+        self.auto_approve_writes = crate::persona::Persona::load()
+            .map(|p| p.coding_agent.auto_approve_writes)
+            .unwrap_or(false);
         self.last_refresh = std::time::Instant::now();
     }
 }
@@ -468,6 +484,34 @@ impl eframe::App for SirinApp {
             self.refresh();
         }
         ctx.request_repaint_after(std::time::Duration::from_secs(5));
+
+        // Drain agent-event-bus messages (non-blocking).
+        loop {
+            match self.event_rx.try_recv() {
+                Ok(AgentEvent::ResearchRequested { topic, url }) => {
+                    // Auto-fill the Research tab form and kick off the research run.
+                    self.tab = Tab::Research;
+                    self.research_topic = topic.clone();
+                    if let Some(ref u) = url {
+                        self.research_url = u.clone();
+                    }
+                    let rt = self.rt.clone();
+                    rt.spawn(async move {
+                        let task = crate::agents::research_agent::run_research_via_adk(
+                            topic, url,
+                        )
+                        .await;
+                        eprintln!("[ui] auto-research '{}' → {:?}", task.id, task.status);
+                    });
+                    self.research_msg = format!("自動啟動調研：{}", self.research_topic.trim());
+                    self.research_topic.clear();
+                    self.research_url.clear();
+                }
+                Ok(_) => {} // other events — ignored in UI for now
+                Err(broadcast::error::TryRecvError::Lagged(_)) => {} // skip lagged events
+                Err(_) => break, // Empty or Closed
+            }
+        }
 
         // ── Top panel (tabs + refresh) ────────────────────────────────────────
         egui::TopBottomPanel::top("tabs").show(ctx, |ui| {
@@ -730,6 +774,53 @@ impl SirinApp {
 
     fn show_telegram(&mut self, ui: &mut egui::Ui) {
         let status = self.tg_auth.status();
+
+        // ── Setup guide when env vars are not configured ──────────────────────
+        let has_api_id = std::env::var("TG_API_ID").is_ok();
+        let has_api_hash = std::env::var("TG_API_HASH").is_ok();
+        if !has_api_id || !has_api_hash {
+            egui::Frame::group(ui.style())
+                .fill(Color32::from_rgb(25, 30, 45))
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new("⚙ 尚未設定 Telegram API 憑證")
+                            .color(Color32::YELLOW)
+                            .strong(),
+                    );
+                    ui.add_space(4.0);
+                    ui.label("請在專案根目錄建立 .env 檔案，填入以下設定：");
+                    ui.add_space(4.0);
+                    let guide = "# 從 https://my.telegram.org 取得\n\
+TG_API_ID=12345678\n\
+TG_API_HASH=your_api_hash_here\n\
+TG_PHONE=+886912345678    # 選填：自動登入用\n\
+\n\
+# 回覆設定\n\
+TG_AUTO_REPLY=true        # 啟用 AI 自動回覆\n\
+TG_REPLY_PRIVATE=true     # 回覆私訊\n\
+TG_REPLY_GROUPS=false     # 是否回覆群組\n\
+TG_GROUP_IDS=             # 選填：只監控特定群組 ID（逗號分隔）\n\
+\n\
+# 除錯\n\
+TG_DEBUG_UPDATES=false";
+                    let mut guide_display = guide.to_string();
+                    egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
+                        ui.add(
+                            TextEdit::multiline(&mut guide_display)
+                                .code_editor()
+                                .desired_rows(8)
+                                .desired_width(f32::INFINITY),
+                        );
+                    });
+                    ui.add_space(4.0);
+                    if ui.button("📋 複製 .env 範本").clicked() {
+                        ui.ctx().copy_text(guide.to_string());
+                    }
+                    ui.add_space(2.0);
+                    ui.small("設定完成後重新啟動應用程式，Telegram 監聽器將自動連線。");
+                });
+            ui.separator();
+        }
 
         // Status badge
         egui::Frame::group(ui.style()).show(ui, |ui| {
@@ -1123,7 +1214,9 @@ impl SirinApp {
         );
 
         // Row 2: action buttons
-        let (submit, force_coding) = ui.horizontal(|ui| {
+        // Snapshot the cached auto_approve flag so the closure can mutate it.
+        let mut auto_approve_local = self.auto_approve_writes;
+        let (submit, force_coding, toggle_changed) = ui.horizontal(|ui| {
             let can_act = !self.chat_pending && !self.chat_input.trim().is_empty();
 
             let send = ui.add_enabled(
@@ -1140,6 +1233,12 @@ impl SirinApp {
                 )
                 .on_hover_text("強制以 Coding Agent 執行（跳過關鍵字偵測，直接進入 ReAct 迴圈）");
 
+            // auto_approve_writes toggle — uses the cached value; saves to disk only on change.
+            ui.separator();
+            let toggle = ui
+                .checkbox(&mut auto_approve_local, "自動允許寫入")
+                .on_hover_text("關閉時，Coding Agent 寫入檔案前會彈出確認對話框（對應 persona.yaml 中的 auto_approve_writes）");
+
             // Plain Enter = send; Shift+Enter = newline.
             let enter_send = input.has_focus()
                 && ui.input_mut(|i| {
@@ -1151,9 +1250,18 @@ impl SirinApp {
                     }
                 });
 
-            (send.clicked() || enter_send, code_btn.clicked())
+            (send.clicked() || enter_send, code_btn.clicked(), toggle.changed())
         })
         .inner;
+
+        // Persist the toggle change if the user flipped it.
+        if toggle_changed {
+            self.auto_approve_writes = auto_approve_local;
+            if let Ok(mut p) = crate::persona::Persona::load() {
+                p.coding_agent.auto_approve_writes = auto_approve_local;
+                let _ = p.save();
+            }
+        }
 
         // ── Force-coding path (⚙ 開發任務 button) ──────────────────────────
         if force_coding && !self.chat_input.trim().is_empty() {
@@ -1242,12 +1350,32 @@ impl SirinApp {
         if submit && !self.chat_input.trim().is_empty() {
             let user_text = self.chat_input.trim().to_string();
 
+            // ── /skill command handling ───────────────────────────────────────
+            if user_text.starts_with("/skill") {
+                let arg = user_text["/skill".len()..].trim().to_string();
+                self.chat_messages.push(ChatMessage { role: ChatRole::User, text: user_text.clone() });
+                self.chat_input.clear();
+                let reply = if arg.is_empty() || arg == "list" {
+                    let skills = crate::skills::list_skills();
+                    let lines: Vec<String> = skills
+                        .iter()
+                        .map(|s| format!("• **{}** ({}): {}", s.id, s.category, s.description))
+                        .collect();
+                    format!("📦 可用技能清單：\n\n{}", lines.join("\n"))
+                } else {
+                    match crate::skills::execute_skill(&arg, &chrono::Utc::now().to_rfc3339()) {
+                        Ok(result) => format!(
+                            "✅ 技能 `{}` 已觸發\n事件：{}\n",
+                            result.skill_id, result.emitted_event
+                        ),
+                        Err(e) => format!("❌ 技能執行失敗：{e}\n\n輸入 `/skill list` 查看可用技能。"),
+                    }
+                };
+                self.chat_messages.push(ChatMessage { role: ChatRole::Assistant, text: reply });
+            } else {
                 // Check if this looks like a coding request that needs pre-flight confirmation.
                 let is_coding_hint = crate::agents::router_agent::is_coding_request(&user_text);
-                let needs_confirm = is_coding_hint
-                    && crate::persona::Persona::load()
-                        .map(|p| !p.coding_agent.auto_approve_writes)
-                        .unwrap_or(false);
+                let needs_confirm = is_coding_hint && !self.auto_approve_writes;
 
                 if needs_confirm && self.pending_coding_confirmation.is_none() {
                     // Show confirmation dialog — don't submit yet.
@@ -1490,6 +1618,7 @@ impl SirinApp {
                         }
                     });
                 }
+            } // end else (not /skill command)
         }
     }
 }

@@ -1,6 +1,7 @@
 # ── Security: never track secrets or sensitive runtime data ──────────────────
 .env
 .env.*
+!.env.example
 *.session
 /data/auth/
 /data/tracking/task.jsonl
