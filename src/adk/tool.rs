@@ -278,6 +278,21 @@ pub fn default_tool_registry() -> ToolRegistry {
 
             let safe_path = safe_project_path(&path)?;
 
+            // Safety: refuse to overwrite an existing file that has more than
+            // 50 lines — use file_patch for surgical edits instead.
+            if !dry_run && safe_path.exists() {
+                let existing = std::fs::read_to_string(&safe_path)
+                    .unwrap_or_default();
+                let line_count = existing.lines().count();
+                if line_count > 50 {
+                    return Err(format!(
+                        "SAFETY: file_write refused — '{}' already exists with {} lines. \
+                        Use file_patch for partial edits, or explicitly confirm full replacement.",
+                        safe_path.display(), line_count
+                    ));
+                }
+            }
+
             if dry_run {
                 return Ok(json!({
                     "dry_run": true,

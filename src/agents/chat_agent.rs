@@ -382,6 +382,19 @@ fn looks_like_capability_query(user_text: &str) -> bool {
         || is_skill_inventory_request(user_text)
 }
 
+fn looks_like_purpose_query(user_text: &str) -> bool {
+    let lower = user_text.to_lowercase();
+    let compact = lower.split_whitespace().collect::<String>();
+    [
+        "是幹嘛用的", "是幹啥用的", "是做什麼的", "是做啥的",
+        "是什麼軟體", "是什麼工具", "是什麼系統", "是什麼程式",
+        "幹嘛用的", "有什麼用", "有啥用途",
+        "whatisthis", "whatdoesitdo", "whatsirin",
+    ]
+    .iter()
+    .any(|needle| compact.contains(needle))
+}
+
 fn is_skill_inventory_request(user_text: &str) -> bool {
     let lower = user_text.to_lowercase();
     let compact = lower.split_whitespace().collect::<String>();
@@ -413,10 +426,44 @@ fn push_unique_path(paths: &mut Vec<String>, path: &str) {
     }
 }
 
-fn infer_focus_paths_from_query(user_text: &str, peer_id: Option<i64>) -> Vec<String> {
+fn infer_focus_paths_from_query(
+    user_text: &str,
+    peer_id: Option<i64>,
+    intent_family: Option<&str>,
+) -> Vec<String> {
     let lower = user_text.to_lowercase();
     let mut paths = Vec::new();
 
+    // ── Step 1: Planner intent → deterministic file sets (no keyword needed) ──
+    match intent_family {
+        Some("capability") | Some("skill_architecture") => {
+            for path in [
+                "src/skills.rs",
+                "src/agents/planner_agent.rs",
+                "src/agents/router_agent.rs",
+                "src/adk/tool.rs",
+                "README.md",
+            ] {
+                push_unique_path(&mut paths, path);
+            }
+            return paths;
+        }
+        Some("project_overview") => {
+            for path in ["README.md", "docs/ROADMAP.md", "src/main.rs", "src/agents/mod.rs"] {
+                push_unique_path(&mut paths, path);
+            }
+            return paths;
+        }
+        Some("local_file") | Some("code_analysis") => {
+            // Planner said it's about local files but didn't pin down which ones —
+            // fall through to keyword / reference extraction below.
+        }
+        _ => {
+            // No planner hint — fall through to full keyword matching.
+        }
+    }
+
+    // ── Step 2: Explicit file reference in the message ─────────────────────────
     if let Some(path) = extract_file_reference(user_text) {
         push_unique_path(&mut paths, &path);
     }
@@ -427,6 +474,7 @@ fn infer_focus_paths_from_query(user_text: &str, peer_id: Option<i64>) -> Vec<St
         }
     }
 
+    // ── Step 3: Keyword fallback (only when Planner gave no strong signal) ─────
     if looks_like_skill_query(user_text) || looks_like_capability_query(user_text) {
         for path in [
             "src/skills.rs",
@@ -438,7 +486,16 @@ fn infer_focus_paths_from_query(user_text: &str, peer_id: Option<i64>) -> Vec<St
         }
     }
 
-    if looks_like_project_overview_query(user_text) || lower.contains("怎麼運作") || lower.contains("如何運作") {
+    if looks_like_capability_query(user_text) || looks_like_purpose_query(user_text) {
+        for path in ["README.md", "docs/ROADMAP.md"] {
+            push_unique_path(&mut paths, path);
+        }
+    }
+
+    if looks_like_project_overview_query(user_text)
+        || lower.contains("怎麼運作")
+        || lower.contains("如何運作")
+    {
         for path in ["src/main.rs", "src/ui.rs", "src/llm.rs", "src/memory.rs"] {
             push_unique_path(&mut paths, path);
         }
@@ -460,8 +517,7 @@ fn infer_focus_paths_from_query(user_text: &str, peer_id: Option<i64>) -> Vec<St
         push_unique_path(&mut paths, "src/memory.rs");
     }
 
-    // Fallback: vague "show me / analyze the code" with no specific target →
-    // load the top-level overview files so the ReAct loop has something to work with.
+    // Fallback: vague "code / local" query with no specific target.
     if paths.is_empty()
         && (lower.contains("代碼")
             || lower.contains("程式碼")
@@ -1353,7 +1409,11 @@ async fn dispatch_by_understanding(
             let paths = if !understanding.target_files.is_empty() {
                 understanding.target_files.clone()
             } else {
-                infer_focus_paths_from_query(&request.user_text, request.peer_id)
+                infer_focus_paths_from_query(
+                    &request.user_text,
+                    request.peer_id,
+                    request.planner_intent_family.as_deref(),
+                )
             };
 
             let reports = load_local_file_reports(ctx, &request.user_text, &paths, 4, 1600).await;
@@ -1726,7 +1786,7 @@ mod tests {
 
     #[test]
     fn infers_skills_rs_as_primary_evidence_for_skill_questions() {
-        let paths = infer_focus_paths_from_query("分析 skill", None);
+        let paths = infer_focus_paths_from_query("分析 skill", None, None);
         assert!(paths.contains(&"src/skills.rs".to_string()));
         assert!(paths.contains(&"src/agents/planner_agent.rs".to_string()));
     }

@@ -70,12 +70,15 @@ impl Agent for RouterAgent {
                 || is_code_access_question(&request.user_text)
                 || is_direct_answer_request(&request.user_text)
             {
+                // Hard-coded identity / capability shortcut — always chat.
                 RouteTarget::Chat
-            } else if is_coding_request(&request.user_text) {
-                // Coding intent takes priority over the planner when keywords match.
-                RouteTarget::Coding
             } else if let Some(plan) = plan.as_ref() {
+                // Planner (LLM) result takes priority — respect semantic intent.
+                // Keyword matching only acts as a fallback when Planner is absent.
                 route_target_from_plan(plan, &request.user_text)
+            } else if is_coding_request(&request.user_text) {
+                // No planner result → fall back to keyword heuristic.
+                RouteTarget::Coding
             } else {
                 classify_route(&request.user_text)
             };
@@ -135,13 +138,22 @@ impl Agent for RouterAgent {
                     }))
                 }
                 RouteTarget::Coding => {
+                    // Truncate oversized task strings — long inputs (e.g. pasted
+                    // chat history) confuse the LLM about which file/function to target.
+                    const MAX_TASK_CHARS: usize = 800;
+                    let task = if request.user_text.chars().count() > MAX_TASK_CHARS {
+                        let truncated: String = request.user_text.chars().take(MAX_TASK_CHARS).collect();
+                        format!("{truncated}…（已截斷，請縮短任務描述）")
+                    } else {
+                        request.user_text.clone()
+                    };
                     Ok(json!({
                         "route": route,
                         "planner_summary": plan_summary,
                         "intent_family": plan.as_ref().map(|p| p.intent_family.clone()).unwrap_or(IntentFamily::CodeAnalysis),
                         "recommended_skills": &planner_skills,
                         "coding_request": CodingRequest {
-                            task: request.user_text.clone(),
+                            task,
                             max_iterations: None,
                             dry_run: false,
                         }
@@ -210,11 +222,18 @@ fn should_prefer_chat_from_skills(skills: &[String]) -> bool {
 fn route_target_from_plan(plan: &super::planner_agent::WorkflowPlan, text: &str) -> RouteTarget {
     match plan.intent_family {
         IntentFamily::Research => RouteTarget::Research,
+        // LocalFile / CodeAnalysis: could be read-only Q&A *or* a write task.
+        // Use keyword check to distinguish "讀/解釋" from "改/重構/實作".
+        IntentFamily::LocalFile | IntentFamily::CodeAnalysis => {
+            if is_coding_request(text) {
+                RouteTarget::Coding
+            } else {
+                RouteTarget::Chat
+            }
+        }
         IntentFamily::Capability
-        | IntentFamily::LocalFile
         | IntentFamily::ProjectOverview
-        | IntentFamily::SkillArchitecture
-        | IntentFamily::CodeAnalysis => RouteTarget::Chat,
+        | IntentFamily::SkillArchitecture => RouteTarget::Chat,
         IntentFamily::GeneralChat => {
             if matches!(plan.intent, PlanIntent::Research) && !should_prefer_chat_from_skills(&plan.recommended_skills) {
                 RouteTarget::Research

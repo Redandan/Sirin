@@ -125,12 +125,26 @@ async fn run_react_loop(
     let mut final_answer = String::new();
     let tool_list = describe_tools();
 
+    // Safety counters — prevent destructive escalation when surgical edits fail.
+    let mut consecutive_patch_errors: u32 = 0;
+    const MAX_PATCH_ERRORS: u32 = 2;
+    let write_tools = ["file_write", "file_patch", "plan_execute"];
+
+    // Only pass the most recent N history entries to the LLM to avoid blowing
+    // up the context window on long tasks.
+    const HISTORY_WINDOW: usize = 6;
+
     for iteration in 0..max_iter {
+        let history_window = if history.len() > HISTORY_WINDOW {
+            &history[history.len() - HISTORY_WINDOW..]
+        } else {
+            &history[..]
+        };
         let prompt = build_react_prompt(
             &request.task,
             &project_ctx,
             &plan,
-            &history,
+            history_window,
             &tool_list,
             dry_run,
         );
@@ -162,6 +176,23 @@ async fn run_react_loop(
                 action_input: json!({}),
                 observation: "Task complete.".to_string(),
             });
+            break;
+        }
+
+        // Safety: if file_patch has failed too many times, block all write tools
+        // to prevent the LLM from escalating to file_write as a fallback.
+        if consecutive_patch_errors >= MAX_PATCH_ERRORS
+            && write_tools.contains(&step.action.as_str())
+        {
+            sirin_log!(
+                "[coding_agent] SAFETY: write tool '{}' blocked after {} consecutive patch errors",
+                step.action, consecutive_patch_errors
+            );
+            final_answer = format!(
+                "任務中止：file_patch 連續失敗 {} 次，已封鎖所有寫入工具以防止資料損毀。\
+                請縮小任務範圍，並確認目標函式的確切位置後重試。",
+                consecutive_patch_errors
+            );
             break;
         }
 
@@ -205,6 +236,7 @@ async fn run_react_loop(
             Err(e) => format!("ERROR: {e}"),
         };
 
+        let action_name = step.action.clone();
         history.push(HistoryEntry {
             thought: step.thought,
             action: step.action,
@@ -212,9 +244,14 @@ async fn run_react_loop(
             observation: observation.clone(),
         });
 
-        // Bail early if we hit a repeated error pattern.
+        // Track consecutive patch errors for safety circuit breaker.
         if observation.starts_with("ERROR:") {
             sirin_log!("[coding_agent] tool error: {observation}");
+            if action_name == "file_patch" {
+                consecutive_patch_errors += 1;
+            }
+        } else if action_name == "file_patch" {
+            consecutive_patch_errors = 0; // reset on success
         }
     }
 
@@ -285,8 +322,11 @@ async fn gather_project_context(ctx: &AgentContext, task: &str) -> String {
         .and_then(|v| v.get("summary").and_then(Value::as_str).map(|s| s.to_string()))
         .unwrap_or_default();
 
+    // Use only the first 60 chars of the task as the search query — long task
+    // strings produce noisy semantic search results.
+    let search_query: String = task.chars().take(60).collect();
     let search = ctx
-        .call_tool("codebase_search", json!({ "query": task, "limit": 4 }))
+        .call_tool("codebase_search", json!({ "query": search_query, "limit": 4 }))
         .await
         .ok()
         .map(|v| format_tool_output(&v))

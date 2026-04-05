@@ -1157,7 +1157,14 @@ impl SirinApp {
 
         // ── Force-coding path (⚙ 開發任務 button) ──────────────────────────
         if force_coding && !self.chat_input.trim().is_empty() {
-            let task = self.chat_input.trim().to_string();
+            const MAX_TASK_CHARS: usize = 800;
+            let raw = self.chat_input.trim().to_string();
+            let task = if raw.chars().count() > MAX_TASK_CHARS {
+                let t: String = raw.chars().take(MAX_TASK_CHARS).collect();
+                format!("{t}…（已截斷）")
+            } else {
+                raw
+            };
             self.chat_input.clear();
             self.chat_messages.push(ChatMessage { role: ChatRole::User, text: task.clone() });
             self.chat_pending = true;
