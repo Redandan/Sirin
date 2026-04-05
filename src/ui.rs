@@ -1200,12 +1200,34 @@ impl SirinApp {
                         recommended_skills: vec!["coding_agent".to_string()],
                     }),
                 });
-                let resp =
-                    crate::agents::coding_agent::run_coding_via_adk(task, false, None).await;
-                let _ = coding_tx.try_send(CodingUiUpdate {
-                    response: Some(resp),
-                    status_msg: "完成".to_string(),
-                });
+                let result = tokio::task::spawn(
+                    crate::agents::coding_agent::run_coding_via_adk(task, false, None),
+                )
+                .await;
+                match result {
+                    Ok(resp) => {
+                        let _ = coding_tx.try_send(CodingUiUpdate {
+                            response: Some(resp),
+                            status_msg: "完成".to_string(),
+                        });
+                    }
+                    Err(e) => {
+                        // spawn 內部 panic — 解鎖 UI 並顯示錯誤
+                        let _ = coding_tx.try_send(CodingUiUpdate {
+                            response: Some(crate::agents::coding_agent::CodingAgentResponse {
+                                outcome: format!("❌ Coding Agent 崩潰：{e}"),
+                                files_modified: vec![],
+                                iterations_used: 0,
+                                trace: vec![],
+                                diff: None,
+                                verified: false,
+                                verification_output: None,
+                                dry_run: false,
+                            }),
+                            status_msg: "任務中止".to_string(),
+                        });
+                    }
+                }
             });
         }
 
