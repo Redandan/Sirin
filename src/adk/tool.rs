@@ -294,6 +294,7 @@ pub fn default_tool_registry() -> ToolRegistry {
             let bytes = content.len();
             std::fs::write(&safe_path, content)
                 .map_err(|e| format!("Write failed: {e}"))?;
+            let _ = crate::memory::refresh_codebase_index();
             Ok(json!({
                 "path": safe_path.display().to_string(),
                 "bytes_written": bytes,
