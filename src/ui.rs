@@ -954,12 +954,46 @@ impl SirinApp {
                             .button(RichText::new("✅ 允許寫入").color(Color32::from_rgb(100, 220, 100)))
                             .clicked()
                         {
-                            // Trigger the confirmed coding task.
-                            self.chat_input = pending_task.clone();
+                            // Directly spawn the coding agent with dry_run=false.
+                            let task_clone = pending_task.clone();
                             self.pending_coding_confirmation = None;
-                            // Temporarily set auto_approve to true by confirming here:
-                            // We'll spawn the agent with dry_run=false via the normal submit path.
-                            // (We clear pending_coding_confirmation so the guard is bypassed.)
+                            let coding_tx = self.coding_tx.clone();
+                            let tx = self.chat_tx.clone();
+                            let rt = self.rt.clone();
+                            self.chat_pending = true;
+                            self.coding_console = CodingConsoleState {
+                                status: "執行中（允許寫入）…".to_string(),
+                                task: task_clone.clone(),
+                                ..Default::default()
+                            };
+                            rt.spawn(async move {
+                                let _ = tx.try_send(ChatUiUpdate {
+                                    reply: "⚙ Coding Agent 啟動中（允許寫入）…".to_string(),
+                                    tools: vec![],
+                                    trace: vec![],
+                                    partial: true,
+                                    plan: Some(ChatPlanUpdate {
+                                        route: "coding".to_string(),
+                                        intent_family: "code_modification".to_string(),
+                                        summary: "Running local AI Coding Agent with write permission…".to_string(),
+                                        steps: vec![
+                                            "gather context".to_string(),
+                                            "plan".to_string(),
+                                            "ReAct loop".to_string(),
+                                            "verify".to_string(),
+                                        ],
+                                        recommended_skills: vec!["coding_agent".to_string()],
+                                    }),
+                                });
+                                let resp = crate::agents::coding_agent::run_coding_via_adk(
+                                    task_clone, false, None,
+                                )
+                                .await;
+                                let _ = coding_tx.try_send(CodingUiUpdate {
+                                    response: Some(resp),
+                                    status_msg: "完成".to_string(),
+                                });
+                            });
                         }
                         if ui
                             .button(RichText::new("👁 僅讀取（Dry-run）").color(Color32::from_rgb(100, 180, 255)))
