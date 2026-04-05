@@ -65,13 +65,15 @@ fn main() {
     let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
 
     // ── Startup environment probe ─────────────────────────────────────────────
-    // Query the configured LLM backend for available models and auto-assign
-    // model roles (router / coding / large) before any agent work begins.
-    // This must happen before the first call to `shared_llm()`.
+    // Query the configured LLM backend, classify all available models by their
+    // capabilities, and build the AgentFleet before any agent work begins.
+    // This must happen before the first call to `shared_llm()` or `shared_fleet()`.
     {
         let client = reqwest::Client::new();
-        let probed = rt.block_on(llm::probe_and_configure(&client));
-        llm::init_shared_llm(probed);
+        let fleet = rt.block_on(llm::probe_and_build_fleet(&client));
+        fleet.log_summary();
+        llm::init_shared_llm(fleet.to_llm_config());
+        llm::init_agent_fleet(fleet);
     }
 
     // Spawn all background tasks onto the runtime.
