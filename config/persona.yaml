@@ -17,3 +17,15 @@ roi_thresholds:
 
 version: "1.0"
 description: "Proactive Senior Architect AI agent with ROI awareness"
+
+coding_agent:
+  enabled: true
+  project_root: "."
+  auto_approve_reads: true
+  auto_approve_writes: false
+  allowed_commands:
+    - "cargo check"
+    - "cargo test"
+    - "cargo build --release"
+  max_iterations: 10
+  max_file_write_bytes: 102400

@@ -6,6 +6,7 @@ mod llm;
 mod log_buffer;
 mod adk;
 mod agents;
+mod code_graph;
 mod memory;
 mod persona;
 mod researcher;

@@ -468,6 +468,34 @@ pub fn list_skills() -> Vec<SkillDefinition> {
             &[],
             &["回覆 Telegram 訊息", "發一則通知"],
         ),
+        skill(
+            "coding_agent",
+            "Local AI Coding Agent",
+            "啟動本地 ReAct 迴圈，讓 AI 自動讀取、修改、驗證程式碼以完成 coding 任務。",
+            "code-modification",
+            false,
+            &["file_list", "local_file_read", "file_write", "shell_exec",
+              "codebase_search", "symbol_search", "file_diff", "git_status", "git_log"],
+            &["幫我修 src/llm.rs 的 error handling", "實作一個新功能", "重構 agent 模組"],
+        ),
+        skill(
+            "file_write",
+            "File Write",
+            "直接寫入或覆蓋本地檔案；屬於需要明確授權的破壞性操作。",
+            "code-modification",
+            true,
+            &["file_write"],
+            &["把這段 code 寫入 src/foo.rs", "更新 config/persona.yaml"],
+        ),
+        skill(
+            "shell_exec",
+            "Shell Exec (Whitelisted)",
+            "在白名單內執行 shell 指令（如 cargo check / cargo test）。",
+            "code-modification",
+            true,
+            &["shell_exec"],
+            &["跑 cargo check", "執行測試", "build release"],
+        ),
     ]
 }
 
@@ -580,6 +608,38 @@ fn score_skill_for_query(skill_id: &str, query: &str) -> i32 {
                 .any(|needle| lower.contains(needle))
             {
                 6
+            } else {
+                0
+            }
+        }
+        "coding_agent" => {
+            if ["幫我寫", "帮我写", "幫我修", "帮我修", "幫我改", "帮我改",
+                "重構", "重构", "實作", "实现", "implement", "refactor",
+                "fix the bug", "add feature", "write code", "加功能"]
+                .iter()
+                .any(|needle| lower.contains(needle))
+            {
+                13
+            } else {
+                0
+            }
+        }
+        "file_write" => {
+            if ["寫入", "写入", "覆蓋", "覆盖", "file write", "寫檔案", "更新檔案"]
+                .iter()
+                .any(|needle| lower.contains(needle))
+            {
+                7
+            } else {
+                0
+            }
+        }
+        "shell_exec" => {
+            if ["cargo", "build", "test", "check", "執行", "跑"]
+                .iter()
+                .any(|needle| lower.contains(needle))
+            {
+                7
             } else {
                 0
             }

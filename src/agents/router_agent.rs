@@ -11,6 +11,7 @@ use crate::telegram::language::{
 
 use super::{
     chat_agent::ChatRequest,
+    coding_agent::CodingRequest,
     planner_agent::{IntentFamily, PlanIntent, PlannerRequest},
     research_agent::ResearchRequest,
 };
@@ -33,6 +34,7 @@ pub struct RouterRequest {
 pub enum RouteTarget {
     Chat,
     Research,
+    Coding,
 }
 
 pub struct RouterAgent;
@@ -69,14 +71,19 @@ impl Agent for RouterAgent {
                 || is_direct_answer_request(&request.user_text)
             {
                 RouteTarget::Chat
+            } else if is_coding_request(&request.user_text) {
+                // Coding intent takes priority over the planner when keywords match.
+                RouteTarget::Coding
             } else if let Some(plan) = plan.as_ref() {
                 route_target_from_plan(plan, &request.user_text)
             } else {
                 classify_route(&request.user_text)
             };
+
             let route_name = match route {
                 RouteTarget::Chat => "chat",
                 RouteTarget::Research => "research",
+                RouteTarget::Coding => "coding",
             };
             let plan_summary = plan
                 .as_ref()
@@ -112,8 +119,6 @@ impl Agent for RouterAgent {
                         "recommended_skills": &planner_skills,
                         "chat_request": {
                             "user_text": request.user_text,
-                            // Language-neutral execution result — the LLM in chat_agent will
-                            // render this in the same language as the user's message.
                             "execution_result": Some(format!(
                                 "Background research task launched: \"{}{}\". \
                                  Results will be recorded in the task board upon completion.",
@@ -127,6 +132,19 @@ impl Agent for RouterAgent {
                             "planner_skills": &planner_skills,
                         },
                         "research_request": ResearchRequest { topic, url }
+                    }))
+                }
+                RouteTarget::Coding => {
+                    Ok(json!({
+                        "route": route,
+                        "planner_summary": plan_summary,
+                        "intent_family": plan.as_ref().map(|p| p.intent_family.clone()).unwrap_or(IntentFamily::CodeAnalysis),
+                        "recommended_skills": &planner_skills,
+                        "coding_request": CodingRequest {
+                            task: request.user_text.clone(),
+                            max_iterations: None,
+                            dry_run: false,
+                        }
                     }))
                 }
                 RouteTarget::Chat => Ok(json!({
@@ -207,10 +225,35 @@ fn route_target_from_plan(plan: &super::planner_agent::WorkflowPlan, text: &str)
     }
 }
 
+/// Returns `true` when the user message expresses intent to modify or generate code.
+pub fn is_coding_request(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let compact: String = lower.split_whitespace().collect();
+    // Chinese coding keywords
+    let zh_keywords = [
+        "幫我寫", "帮我写", "幫我修", "帮我修", "幫我改", "帮我改",
+        "幫我實作", "帮我实现", "幫我新增", "帮我添加",
+        "修改代碼", "修改代码", "修改程式", "重構", "重构",
+        "加功能", "加一個功能", "新增功能", "新增一個",
+        "幫我重構", "帮我重构", "實作一個", "实现一个",
+        "寫一個", "写一个", "coding", "實作", "实现",
+    ];
+    // English coding keywords
+    let en_keywords = [
+        "implement", "refactor", "fix the bug", "add a feature", "add feature",
+        "create a function", "write a function", "modify the code", "update the code",
+        "change the code", "edit the file", "write code", "generate code",
+    ];
+    zh_keywords.iter().any(|kw| compact.contains(kw))
+        || en_keywords.iter().any(|kw| lower.contains(kw))
+}
+
 pub fn classify_route(text: &str) -> RouteTarget {
     if is_identity_question(text) || is_code_access_question(text) || is_direct_answer_request(text)
     {
         RouteTarget::Chat
+    } else if is_coding_request(text) {
+        RouteTarget::Coding
     } else if detect_research_intent(text).is_some() {
         RouteTarget::Research
     } else {
@@ -240,6 +283,14 @@ mod tests {
         assert_eq!(classify_route("直接講重點，不要貼連結"), RouteTarget::Chat);
         assert_eq!(classify_route("你是誰"), RouteTarget::Chat);
         assert_eq!(classify_route("能看到當前代碼嗎"), RouteTarget::Chat);
+    }
+
+    #[test]
+    fn classifies_coding_requests() {
+        assert_eq!(classify_route("幫我修改 src/llm.rs 的 error handling"), RouteTarget::Coding);
+        assert_eq!(classify_route("幫我重構 router_agent"), RouteTarget::Coding);
+        assert_eq!(classify_route("implement a new feature"), RouteTarget::Coding);
+        assert_eq!(classify_route("refactor the chat module"), RouteTarget::Coding);
     }
 
     #[test]
@@ -296,4 +347,23 @@ mod tests {
         assert_eq!(output.get("route").and_then(Value::as_str), Some("chat"));
         assert_eq!(output.get("intent_family").and_then(Value::as_str), Some("project_overview"));
     }
+
+    #[tokio::test]
+    async fn router_routes_coding_request_to_coding() {
+        let output = run_router_via_adk(
+            RouterRequest {
+                user_text: "幫我重構 src/llm.rs 讓它支援更多後端".to_string(),
+                context_block: None,
+                peer_id: None,
+                fallback_reply: None,
+                execution_result: None,
+            },
+            None,
+        )
+        .await
+        .expect("router should succeed");
+
+        assert_eq!(output.get("route").and_then(Value::as_str), Some("coding"));
+    }
 }
+

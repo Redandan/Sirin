@@ -54,6 +54,10 @@ pub struct LlmConfig {
     pub base_url: String,
     pub model: String,
     pub api_key: Option<String>,
+    /// Optional separate model to use for coding tasks (e.g. `qwen2.5-coder`).
+    /// Falls back to `model` when not set.
+    /// Set via `CODING_MODEL` environment variable.
+    pub coding_model: Option<String>,
 }
 
 impl LlmConfig {
@@ -62,6 +66,10 @@ impl LlmConfig {
         let provider = std::env::var("LLM_PROVIDER")
             .unwrap_or_else(|_| "ollama".to_string())
             .to_lowercase();
+
+        let coding_model = std::env::var("CODING_MODEL")
+            .ok()
+            .filter(|v| !v.trim().is_empty());
 
         match provider.as_str() {
             "lmstudio" | "lm_studio" | "openai" => Self {
@@ -76,6 +84,7 @@ impl LlmConfig {
                     .or_else(|_| std::env::var("OPENAI_API_KEY"))
                     .ok()
                     .filter(|v| !v.trim().is_empty()),
+                coding_model,
             },
             _ => Self {
                 backend: LlmBackend::Ollama,
@@ -84,6 +93,7 @@ impl LlmConfig {
                 model: std::env::var("OLLAMA_MODEL")
                     .unwrap_or_else(|_| DEFAULT_MODEL.to_string()),
                 api_key: None,
+                coding_model,
             },
         }
     }
@@ -94,6 +104,12 @@ impl LlmConfig {
             LlmBackend::Ollama => "ollama",
             LlmBackend::LmStudio => "lmstudio",
         }
+    }
+
+    /// The model name to use for coding tasks.
+    /// Falls back to the general `model` if `CODING_MODEL` is not set.
+    pub fn effective_coding_model(&self) -> &str {
+        self.coding_model.as_deref().unwrap_or(&self.model)
     }
 }
 
@@ -220,6 +236,22 @@ pub async fn call_prompt(
         LlmBackend::Ollama => call_ollama(client, &llm.base_url, &llm.model, prompt).await,
         LlmBackend::LmStudio => {
             call_openai(client, &llm.base_url, &llm.model, llm.api_key.as_deref(), prompt).await
+        }
+    }
+}
+
+/// Like [`call_prompt`] but uses the coding-specific model when configured.
+pub async fn call_coding_prompt(
+    client: &reqwest::Client,
+    llm: &LlmConfig,
+    prompt: impl Into<String>,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let prompt = prompt.into();
+    let model = llm.effective_coding_model();
+    match llm.backend {
+        LlmBackend::Ollama => call_ollama(client, &llm.base_url, model, prompt).await,
+        LlmBackend::LmStudio => {
+            call_openai(client, &llm.base_url, model, llm.api_key.as_deref(), prompt).await
         }
     }
 }

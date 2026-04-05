@@ -49,6 +49,60 @@ impl Default for ResponseStyle {
     }
 }
 
+/// Configuration for the local AI Coding Agent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodingAgentConfig {
+    /// Whether the coding agent is enabled at all.
+    #[serde(default = "default_coding_enabled")]
+    pub enabled: bool,
+    /// Root directory that file operations are allowed to touch.
+    /// Relative paths are resolved from the process working directory.
+    #[serde(default = "default_coding_project_root")]
+    pub project_root: String,
+    /// Skip user confirmation for read-only operations.
+    #[serde(default = "default_true")]
+    pub auto_approve_reads: bool,
+    /// When false, the UI will show a confirmation dialog before any file write.
+    #[serde(default)]
+    pub auto_approve_writes: bool,
+    /// Shell commands (exact prefix match) the agent is allowed to execute.
+    #[serde(default = "default_allowed_commands")]
+    pub allowed_commands: Vec<String>,
+    /// Maximum number of ReAct loop iterations per task.
+    #[serde(default = "default_max_iterations")]
+    pub max_iterations: usize,
+    /// Maximum bytes that a single file write may contain.
+    #[serde(default = "default_max_file_write_bytes")]
+    pub max_file_write_bytes: usize,
+}
+
+fn default_coding_enabled() -> bool { true }
+fn default_coding_project_root() -> String { ".".to_string() }
+fn default_true() -> bool { true }
+fn default_allowed_commands() -> Vec<String> {
+    vec![
+        "cargo check".to_string(),
+        "cargo test".to_string(),
+        "cargo build --release".to_string(),
+    ]
+}
+fn default_max_iterations() -> usize { 10 }
+fn default_max_file_write_bytes() -> usize { 102_400 }
+
+impl Default for CodingAgentConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_coding_enabled(),
+            project_root: default_coding_project_root(),
+            auto_approve_reads: default_true(),
+            auto_approve_writes: false,
+            allowed_commands: default_allowed_commands(),
+            max_iterations: default_max_iterations(),
+            max_file_write_bytes: default_max_file_write_bytes(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Persona {
     pub identity: Identity,
@@ -60,6 +114,8 @@ pub struct Persona {
     pub version: String,
     #[serde(default)]
     pub description: String,
+    #[serde(default)]
+    pub coding_agent: CodingAgentConfig,
 }
 
 fn default_version() -> String {
@@ -516,6 +572,7 @@ mod tests {
             response_style: ResponseStyle::default(),
             version: "1.0".to_string(),
             description: "test".to_string(),
+            coding_agent: CodingAgentConfig::default(),
         }
     }
 
