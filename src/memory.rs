@@ -176,8 +176,12 @@ fn sanitize_fts5_query(query: &str) -> String {
 
 // ── Text scoring utilities (used by codebase index search) ──────────────────
 
-/// Tokenize text into lowercase words (CJK chars split individually).
-pub fn tokenize(text: &str) -> Vec<String> {
+/// Tokenize text into lowercase words, splitting CJK characters individually.
+///
+/// Used by [`score_entry`] for codebase index search (TF-IDF).
+/// The SQLite FTS5 memory backend handles its own tokenisation via the
+/// `unicode61` tokenizer and does not use this function.
+fn tokenize(text: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut word = String::new();
 
@@ -213,8 +217,15 @@ fn is_cjk(c: char) -> bool {
     )
 }
 
-/// Simple TF score: sum of (term_frequency_in_doc) for each query term.
-pub fn score_entry(text: &str, query_terms: &[String]) -> f64 {
+/// Compute a simple TF score for `text` against a set of query terms.
+///
+/// Returns the sum of per-term term-frequency scores: each term's count in the
+/// document divided by the total document length.  A score of 0.0 means none
+/// of the query terms appear in the text.
+///
+/// Used by [`search_codebase`] for ranking local file entries by relevance.
+/// Not used by the SQLite FTS5 memory backend which relies on BM25 ranking.
+fn score_entry(text: &str, query_terms: &[String]) -> f64 {
     let doc_tokens = tokenize(text);
     let doc_len = doc_tokens.len().max(1) as f64;
     let mut tf: HashMap<&str, usize> = HashMap::new();
