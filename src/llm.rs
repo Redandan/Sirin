@@ -765,10 +765,12 @@ pub fn classify_model_capabilities(model: &ModelInfo) -> Vec<ModelCapability> {
 
     // ── Embedding-only ────────────────────────────────────────────────────────
     // These models cannot generate text; skip all other capability checks.
+    // `bge-` covers the entire BGE family (bge-small, bge-large, bge-m3, etc.)
+    // which are embedding/retrieval models not intended for text generation.
     let is_embedding = name.contains("embed")
         || name.contains("nomic")
         || name.contains("all-minilm")
-        || (name.contains("bge") && !name.contains("bge-m3-unsup"))
+        || name.contains("bge-")
         || name.starts_with("e5-");
     if is_embedding {
         caps.push(ModelCapability::Embedding);
@@ -789,6 +791,9 @@ pub fn classify_model_capabilities(model: &ModelInfo) -> Vec<ModelCapability> {
     }
 
     // ── Code-specialised ──────────────────────────────────────────────────────
+    // Note: `"coder"` is excluded when the name also contains `"decoder"` because
+    // "decoder" is a substring of architectures like "decoder-only" and also
+    // because "decoder" itself contains the letters c-o-d-e-r as a suffix.
     if name.contains("qwen2.5-coder")
         || name.contains("qwen2.5coder")
         || name.contains("codellama")
@@ -999,7 +1004,6 @@ fn best_for_role(
             .iter()
             .filter(|m| m.info.size_bytes > 0)
             .max_by_key(|m| m.info.size_bytes)
-            .or_else(|| candidates.last())
             .map(|m| m.info.name.clone()),
 
         _ => candidates.first().map(|m| m.info.name.clone()),
