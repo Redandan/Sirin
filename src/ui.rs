@@ -239,6 +239,9 @@ pub struct SirinApp {
     /// When true, show a confirmation dialog before running the coding agent
     /// (because auto_approve_writes = false in persona config).
     pending_coding_confirmation: Option<String>,
+    /// Cached value of `persona.coding_agent.auto_approve_writes`.
+    /// Refreshed from disk on every `refresh()` call (every 5 s) and on toggle.
+    auto_approve_writes: bool,
 
     // Log panel
     log_visible: bool,
@@ -313,6 +316,9 @@ impl SirinApp {
             coding_tx,
             coding_rx,
             pending_coding_confirmation: None,
+            auto_approve_writes: crate::persona::Persona::load()
+                .map(|p| p.coding_agent.auto_approve_writes)
+                .unwrap_or(false),
             log_visible: true,
             last_refresh: std::time::Instant::now()
                 - std::time::Duration::from_secs(60),
@@ -353,6 +359,10 @@ impl SirinApp {
         if let Some(proposed) = researcher::take_pending_objectives() {
             self.pending_objectives = Some(proposed);
         }
+        // Sync the cached auto_approve_writes from persona config.
+        self.auto_approve_writes = crate::persona::Persona::load()
+            .map(|p| p.coding_agent.auto_approve_writes)
+            .unwrap_or(false);
         self.last_refresh = std::time::Instant::now();
     }
 }
@@ -759,9 +769,10 @@ TG_GROUP_IDS=             # 選填：只監控特定群組 ID（逗號分隔）\
 \n\
 # 除錯\n\
 TG_DEBUG_UPDATES=false";
+                    let mut guide_display = guide.to_string();
                     egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
                         ui.add(
-                            TextEdit::multiline(&mut guide.to_string().as_str())
+                            TextEdit::multiline(&mut guide_display)
                                 .code_editor()
                                 .desired_rows(8)
                                 .desired_width(f32::INFINITY),
@@ -1169,7 +1180,9 @@ TG_DEBUG_UPDATES=false";
         );
 
         // Row 2: action buttons
-        let (submit, force_coding) = ui.horizontal(|ui| {
+        // Snapshot the cached auto_approve flag so the closure can mutate it.
+        let mut auto_approve_local = self.auto_approve_writes;
+        let (submit, force_coding, toggle_changed) = ui.horizontal(|ui| {
             let can_act = !self.chat_pending && !self.chat_input.trim().is_empty();
 
             let send = ui.add_enabled(
@@ -1186,20 +1199,11 @@ TG_DEBUG_UPDATES=false";
                 )
                 .on_hover_text("強制以 Coding Agent 執行（跳過關鍵字偵測，直接進入 ReAct 迴圈）");
 
-            // auto_approve_writes toggle — reads and immediately saves persona config.
+            // auto_approve_writes toggle — uses the cached value; saves to disk only on change.
             ui.separator();
-            let mut auto_approve = crate::persona::Persona::load()
-                .map(|p| p.coding_agent.auto_approve_writes)
-                .unwrap_or(false);
             let toggle = ui
-                .checkbox(&mut auto_approve, "自動允許寫入")
+                .checkbox(&mut auto_approve_local, "自動允許寫入")
                 .on_hover_text("關閉時，Coding Agent 寫入檔案前會彈出確認對話框（對應 persona.yaml 中的 auto_approve_writes）");
-            if toggle.changed() {
-                if let Ok(mut p) = crate::persona::Persona::load() {
-                    p.coding_agent.auto_approve_writes = auto_approve;
-                    let _ = p.save();
-                }
-            }
 
             // Plain Enter = send; Shift+Enter = newline.
             let enter_send = input.has_focus()
@@ -1212,9 +1216,18 @@ TG_DEBUG_UPDATES=false";
                     }
                 });
 
-            (send.clicked() || enter_send, code_btn.clicked())
+            (send.clicked() || enter_send, code_btn.clicked(), toggle.changed())
         })
         .inner;
+
+        // Persist the toggle change if the user flipped it.
+        if toggle_changed {
+            self.auto_approve_writes = auto_approve_local;
+            if let Ok(mut p) = crate::persona::Persona::load() {
+                p.coding_agent.auto_approve_writes = auto_approve_local;
+                let _ = p.save();
+            }
+        }
 
         // ── Force-coding path (⚙ 開發任務 button) ──────────────────────────
         if force_coding && !self.chat_input.trim().is_empty() {
@@ -1328,10 +1341,7 @@ TG_DEBUG_UPDATES=false";
             } else {
                 // Check if this looks like a coding request that needs pre-flight confirmation.
                 let is_coding_hint = crate::agents::router_agent::is_coding_request(&user_text);
-                let needs_confirm = is_coding_hint
-                    && crate::persona::Persona::load()
-                        .map(|p| !p.coding_agent.auto_approve_writes)
-                        .unwrap_or(false);
+                let needs_confirm = is_coding_hint && !self.auto_approve_writes;
 
                 if needs_confirm && self.pending_coding_confirmation.is_none() {
                     // Show confirmation dialog — don't submit yet.
