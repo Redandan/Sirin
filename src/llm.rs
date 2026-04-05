@@ -50,6 +50,28 @@ pub(crate) fn shared_llm() -> Arc<LlmConfig> {
 pub(crate) fn init_shared_llm(config: LlmConfig) {
     let _ = SHARED_LLM.set(Arc::new(config));
 }
+
+/// Returns a pre-configured `Arc<LlmConfig>` whose `model` field is already
+/// set to the effective large model.  Cached process-wide so the clone happens
+/// at most once.
+///
+/// Used by `ChatAgent` when `use_large_model = true` to avoid cloning the config
+/// on every request.
+pub(crate) fn shared_large_llm() -> Arc<LlmConfig> {
+    static LARGE: OnceLock<Arc<LlmConfig>> = OnceLock::new();
+    Arc::clone(LARGE.get_or_init(|| {
+        let base = shared_llm();
+        let large_model = base.effective_large_model().to_string();
+        if large_model == base.model {
+            // No dedicated large model configured — reuse the same Arc.
+            Arc::clone(&base)
+        } else {
+            let mut cfg = (*base).clone();
+            cfg.model = large_model;
+            Arc::new(cfg)
+        }
+    }))
+}
 const LM_STUDIO_BASE_URL: &str = "http://localhost:1234/v1";
 const DEFAULT_MODEL: &str = "llama3.2";
 
@@ -592,7 +614,7 @@ pub struct ModelInfo {
 }
 
 impl ModelInfo {
-    /// Name without the `:latest` (or any other) tag suffix — used for matching.
+    /// Name without its tag suffix (e.g., `:latest`, `:13b`, `:q4_0`) — used for matching.
     pub fn base_name(&self) -> &str {
         self.name.split(':').next().unwrap_or(&self.name)
     }
@@ -821,10 +843,11 @@ pub async fn probe_and_configure(client: &reqwest::Client) -> LlmConfig {
     // ── Heuristic candidates for unset roles ─────────────────────────────────
 
     // Router / planner: prefer small, fast models.
+    // "phi" is deliberately last — it is broad and could match unintended names.
     let auto_router = find_by_name(&models, &[
-        "tinyllama", "phi3-mini", "phi-3-mini", "phi3:mini", "phi",
+        "tinyllama", "phi3-mini", "phi-3-mini", "phi3:mini",
         "qwen:0.5", "qwen:1.5", "qwen2:0.5", "qwen2:1.5",
-        "smollm", "gemma:2b",
+        "smollm", "gemma:2b", "phi",
     ])
     .or_else(|| find_smallest(&models, &main_model));
 
@@ -834,16 +857,20 @@ pub async fn probe_and_configure(client: &reqwest::Client) -> LlmConfig {
         "deepseek-coder", "devstral", "coder", "code",
     ]);
 
-    // Large: prefer the biggest model by size or well-known large model names.
+    // Large: prefer well-known large model names, then fall back to largest by size.
+    // Use tag-prefixed patterns (":70b") and dash-prefixed ("-70b") to reduce
+    // false positives from model names that merely contain these digit strings.
     let auto_large = find_by_name(&models, &[
-        "70b", "72b", "65b", "34b", "32b", "mixtral", "opus",
+        ":70b", "-70b", ":72b", "-72b", ":65b", "-65b",
+        ":34b", "-34b", ":32b", "-32b",
+        "mixtral", "opus",
     ])
     .or_else(|| find_largest(&models));
 
     // ── Apply assignments ─────────────────────────────────────────────────────
     let router_model = assign_role("router", baseline.router_model, &models, auto_router, &main_model);
     let coding_model = assign_role("coding", baseline.coding_model, &models, auto_coding, &main_model);
-    let large_model  = assign_role("large",  baseline.large_model,  &models, auto_large,  &main_model);
+    let large_model = assign_role("large", baseline.large_model, &models, auto_large, &main_model);
 
     eprintln!("[llm probe] Model assignments:");
     eprintln!("  main   → {main_model}");

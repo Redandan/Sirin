@@ -92,13 +92,10 @@ impl Agent for ChatAgent {
 
             let client = Arc::clone(&ctx.http);
             let llm_arc = Arc::clone(&ctx.llm);
-            // When use_large_model is requested, override the model field in a
-            // cloned config so all downstream LLM calls use the large model.
+            // When use_large_model is requested, use the process-wide large-model
+            // config (cached; avoids cloning on every request).
             let llm: Arc<crate::llm::LlmConfig> = if request.use_large_model {
-                let large = llm_arc.effective_large_model().to_string();
-                let mut cloned = (*llm_arc).clone();
-                cloned.model = large;
-                Arc::new(cloned)
+                crate::llm::shared_large_llm()
             } else {
                 llm_arc
             };
