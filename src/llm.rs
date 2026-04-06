@@ -40,7 +40,11 @@ static SHARED_LLM: OnceLock<Arc<LlmConfig>> = OnceLock::new();
 /// If [`init_shared_llm`] was called before the first use, returns the
 /// probed/validated config.  Otherwise falls back to `LlmConfig::from_env()`.
 pub(crate) fn shared_llm() -> Arc<LlmConfig> {
-    Arc::clone(SHARED_LLM.get_or_init(|| Arc::new(LlmConfig::from_env())))
+    Arc::clone(SHARED_LLM.get_or_init(|| {
+        let cfg = LlmConfig::from_env();
+        crate::sirin_log!("[llm] main  backend={} model={}", cfg.backend_name(), cfg.model);
+        Arc::new(cfg)
+    }))
 }
 
 /// Prime the process-wide LLM singleton with a probed config.
@@ -48,6 +52,7 @@ pub(crate) fn shared_llm() -> Arc<LlmConfig> {
 /// Must be called **before** the first call to [`shared_llm`].  A second call
 /// is a no-op because the underlying `OnceLock` is already set.
 pub(crate) fn init_shared_llm(config: LlmConfig) {
+    crate::sirin_log!("[llm] main  backend={} model={}", config.backend_name(), config.model);
     let _ = SHARED_LLM.set(Arc::new(config));
 }
 
@@ -81,7 +86,11 @@ pub(crate) fn shared_large_llm() -> Arc<LlmConfig> {
 /// Falls back to [`shared_llm`] when `ROUTER_LLM_PROVIDER` is not set.
 pub(crate) fn shared_router_llm() -> Arc<LlmConfig> {
     static ROUTER: OnceLock<Arc<LlmConfig>> = OnceLock::new();
-    Arc::clone(ROUTER.get_or_init(|| Arc::new(LlmConfig::router_from_env())))
+    Arc::clone(ROUTER.get_or_init(|| {
+        let cfg = LlmConfig::router_from_env();
+        crate::sirin_log!("[llm] router backend={} model={}", cfg.backend_name(), cfg.model);
+        Arc::new(cfg)
+    }))
 }
 const LM_STUDIO_BASE_URL: &str = "http://localhost:1234/v1";
 const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
@@ -397,6 +406,7 @@ async fn call_ollama(
     prompt: String,
     keep_alive: Option<serde_json::Value>,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    crate::sirin_log!("[llm] call  backend=ollama model={} chars={}", model, prompt.len());
     let url = format!("{}/api/generate", base_url.trim_end_matches('/'));
     let body = OllamaRequest { model, prompt, stream: false, keep_alive };
     let resp: OllamaResponse = client
@@ -437,6 +447,8 @@ async fn call_openai_messages(
     api_key: Option<&str>,
     messages: Vec<OpenAiMessage>,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let total_chars: usize = messages.iter().map(|m| m.content.len()).sum();
+    crate::sirin_log!("[llm] call  backend=openai-compat model={} msgs={} chars={}", model, messages.len(), total_chars);
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let body = OpenAiRequest { model, messages, stream: false };
 
@@ -449,6 +461,7 @@ async fn call_openai_messages(
         let resp = req.send().await?;
         if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
             if attempt >= 3 {
+                crate::sirin_log!("[llm] 429 max retries exceeded model={}", model);
                 return Err(resp.error_for_status().unwrap_err().into());
             }
             let wait_secs = resp
@@ -457,13 +470,15 @@ async fn call_openai_messages(
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.parse::<u64>().ok())
                 .unwrap_or(30u64 << attempt); // 30 → 60 → 120
-            eprintln!("[llm] 429 rate-limited — retrying in {}s (attempt {}/3)", wait_secs, attempt + 1);
+            crate::sirin_log!("[llm] 429 rate-limited — waiting {}s (attempt {}/3) model={}", wait_secs, attempt + 1, model);
             tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
             attempt += 1;
             continue;
         }
         let parsed: OpenAiResponse = resp.error_for_status()?.json().await?;
-        return Ok(parsed.choices.first().map(|c| c.message.content.trim().to_string()).unwrap_or_default());
+        let reply = parsed.choices.first().map(|c| c.message.content.trim().to_string()).unwrap_or_default();
+        crate::sirin_log!("[llm] resp  backend=openai-compat model={} reply_chars={}", model, reply.len());
+        return Ok(reply);
     }
 }
 
@@ -658,6 +673,7 @@ async fn stream_openai<F>(
 where
     F: Fn(String) + Send,
 {
+    crate::sirin_log!("[llm] stream backend=openai-compat model={} chars={}", model, prompt.len());
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let body = OpenAiStreamRequest {
         model,
@@ -674,6 +690,7 @@ where
         let r = req.send().await?;
         if r.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
             if attempt >= 3 {
+                crate::sirin_log!("[llm] 429 max retries exceeded model={} (stream)", model);
                 return Err(r.error_for_status().unwrap_err().into());
             }
             let wait_secs = r
@@ -682,7 +699,7 @@ where
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.parse::<u64>().ok())
                 .unwrap_or(30u64 << attempt);
-            eprintln!("[llm] 429 rate-limited — retrying in {}s (attempt {}/3)", wait_secs, attempt + 1);
+            crate::sirin_log!("[llm] 429 rate-limited — waiting {}s (attempt {}/3) model={} (stream)", wait_secs, attempt + 1, model);
             tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
             attempt += 1;
             continue;
