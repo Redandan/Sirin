@@ -121,8 +121,22 @@ fn build_full_registry() -> ToolRegistry {
         .register_fn("codebase_search", |input| async move {
             let query = query_from_input(&input)?;
             let limit = limit_from_input(&input, 5);
-            let results = crate::memory::search_codebase(&query, limit)
+            let path_filter = optional_string_field(&input, "path")
+                .map(|p| p.replace('\\', "/").to_lowercase());
+
+            let mut results = crate::memory::search_codebase(&query, limit.saturating_mul(3).max(limit))
                 .map_err(|e| e.to_string())?;
+
+            if let Some(ref path) = path_filter {
+                results.retain(|entry| entry.to_lowercase().contains(path));
+                if results.is_empty() {
+                    if let Ok(content) = crate::memory::inspect_project_file_range(path, Some(1), Some(160), 5000) {
+                        results.push(content);
+                    }
+                }
+            }
+
+            results.truncate(limit);
             Ok(json!(results))
         })
         .register_fn("project_overview", |input| async move {
@@ -799,6 +813,21 @@ mod tests {
 
         assert!(output.as_array().map(|items| !items.is_empty()).unwrap_or(false));
         assert!(ctx.tools.names().iter().any(|name| name == "project_overview"));
+    }
+
+    #[tokio::test]
+    async fn codebase_search_path_filter_prefers_requested_file() {
+        let ctx = AgentContext::new("test", default_tool_registry());
+        let output = ctx
+            .call_tool(
+                "codebase_search",
+                json!({ "query": "struct LlmConfig", "path": "src/llm.rs", "limit": 1 }),
+            )
+            .await
+            .expect("codebase_search should succeed");
+
+        let rendered = output.to_string().to_lowercase();
+        assert!(rendered.contains("src/llm.rs") || rendered.contains("llmconfig"), "unexpected output: {output}");
     }
 
     #[tokio::test]

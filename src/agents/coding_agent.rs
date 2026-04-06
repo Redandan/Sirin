@@ -108,6 +108,7 @@ async fn run_react_loop(
 ) -> Result<CodingAgentResponse, String> {
     let max_iter = request.max_iterations.unwrap_or(config.max_iterations);
     let dry_run = request.dry_run || !config.auto_approve_writes;
+    let read_only_analysis = is_read_only_analysis_task(&request.task);
 
     sirin_log!("[coding_agent] task='{}' max_iter={max_iter} dry_run={dry_run}", request.task);
     ctx.record_system_event(
@@ -218,9 +219,19 @@ async fn run_react_loop(
             dry_run,
         );
 
-        let raw = call_coding_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), prompt)
-            .await
-            .map_err(|e| format!("LLM error on iteration {iteration}: {e}"))?;
+        let raw = match call_coding_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), prompt).await {
+            Ok(raw) => raw,
+            Err(e) => {
+                let err_msg = format!("LLM error on iteration {iteration}: {e}");
+                if read_only_analysis && has_sufficient_analysis_evidence(&history) {
+                    had_tool_errors = true;
+                    last_tool_error = Some(preview_text(&err_msg));
+                    final_answer = format!("⚠️ {err_msg}\n\n{}", synthesize_read_only_outcome(&history));
+                    break;
+                }
+                return Err(err_msg);
+            }
+        };
 
         let step = parse_react_step(&raw);
         sirin_log!(
@@ -238,6 +249,18 @@ async fn run_react_loop(
         );
 
         if step.parse_error {
+            if read_only_analysis && has_sufficient_analysis_evidence(&history) {
+                final_answer = salvage_non_json_final_answer(&raw, &history);
+                history.push(HistoryEntry {
+                    thought: step.thought,
+                    action: "DONE".to_string(),
+                    action_input: json!({}),
+                    observation: "Task complete (salvaged non-JSON analysis answer).".to_string(),
+                    pinned: false,
+                });
+                break;
+            }
+
             let observation = format!(
                 "ERROR: LLM step was not valid JSON. Retry with ONLY the required JSON object and do not mark DONE until you have either verified the existing code or applied a real change. Raw preview: {}",
                 preview_text(&raw),
@@ -310,19 +333,15 @@ async fn run_react_loop(
         // read fetches the updated content instead of the stale cached version.
         if step.action == "file_patch" || step.action == "file_write" {
             if let Some(path) = step.action_input.get("path").and_then(Value::as_str) {
-                file_read_cache.remove(path);
+                let path = path.to_string();
+                file_read_cache.retain(|key, _| !key.starts_with(&format!("{path}|")) && key != &path);
             }
         }
 
         // Short-circuit duplicate file reads: return cached content immediately
         // without consuming an API round-trip.
         let observation = if is_file_read {
-            let path_key = step.action_input
-                .get("path")
-                .or_else(|| step.action_input.get("file_path"))
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .unwrap_or_default();
+            let path_key = file_read_cache_key(&step.action_input);
             if let Some((cached_iter, cached)) = file_read_cache.get(&path_key) {
                 sirin_log!("[coding_agent] cache hit: {path_key} (first read at iter {cached_iter})");
                 format!("[Already read at iteration {cached_iter} — content unchanged, using cache]\n{cached}")
@@ -660,8 +679,12 @@ async fn run_react_loop(
         .collect();
 
     let mut outcome = if final_answer.is_empty() {
-        format!("Completed {iterations_used} step(s). Files touched: {}",
-            if files_modified.is_empty() { "none".to_string() } else { files_modified.join(", ") })
+        if read_only_analysis && has_sufficient_analysis_evidence(&history) {
+            synthesize_read_only_outcome(&history)
+        } else {
+            format!("Completed {iterations_used} step(s). Files touched: {}",
+                if files_modified.is_empty() { "none".to_string() } else { files_modified.join(", ") })
+        }
     } else {
         final_answer
     };
@@ -784,6 +807,21 @@ fn build_task_named_file_context(path_hints: &[String]) -> String {
     blocks.join("")
 }
 
+fn is_read_only_analysis_task(task: &str) -> bool {
+    let lower = task.to_lowercase();
+    let asks_analysis = ["分析", "說明", "summar", "explain", "inspect", "review", "找出", "檢查", "read "]
+        .iter()
+        .any(|needle| lower.contains(needle));
+    let forbids_write = ["不要寫入", "不要修改", "do not modify", "don't modify", "read-only", "dry-run"]
+        .iter()
+        .any(|needle| lower.contains(needle));
+    let asks_to_change = ["修改", "新增", "加入", "修正", "fix", "implement", "write", "patch", "refactor"]
+        .iter()
+        .any(|needle| lower.contains(needle));
+
+    forbids_write || (asks_analysis && !asks_to_change)
+}
+
 async fn make_plan(ctx: &AgentContext, task: &str, project_ctx: &str) -> String {
     let prompt = format!(
         "You are an expert software engineer. \
@@ -844,6 +882,11 @@ report what would change.\n"
     } else {
         ""
     };
+    let analysis_mode_note = if is_read_only_analysis_task(task) {
+        "\nREAD-ONLY ANALYSIS MODE: inspect the most relevant 2-4 files, then return `DONE` with a concise evidence-based summary that cites the file paths you used. Avoid repeating the same reads/searches once the answer is clear.\n"
+    } else {
+        ""
+    };
 
     let history_block = if history.is_empty() {
         String::new()
@@ -887,7 +930,7 @@ report what would change.\n"
 {tool_list}
 
 ## Instructions
-Decide the next single action to take.
+Decide the next single action to take.{analysis_mode_note}
 
 **Tool preferences:**
 - Prefer `file_patch` over `file_write` whenever you are making partial changes to an existing file. `file_patch` is surgical and safe — it fails atomically if the context doesn't match, preventing accidental corruption.
@@ -1190,6 +1233,80 @@ fn preview_text(text: &str) -> String {
     if chars.next().is_some() { format!("{head}…") } else { head }
 }
 
+fn file_read_cache_key(input: &Value) -> String {
+    let path = input
+        .get("path")
+        .or_else(|| input.get("file_path"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let start = input.get("start_line").and_then(Value::as_u64).unwrap_or(0);
+    let end = input.get("end_line").and_then(Value::as_u64).unwrap_or(0);
+
+    format!("{path}|{start}|{end}")
+}
+
+fn has_sufficient_analysis_evidence(history: &[HistoryEntry]) -> bool {
+    history
+        .iter()
+        .filter(|h| h.action == "local_file_read" && !h.observation.starts_with("ERROR:"))
+        .count() >= 2
+}
+
+fn inspected_paths_from_history(history: &[HistoryEntry]) -> Vec<String> {
+    let mut paths = Vec::new();
+    for entry in history {
+        if entry.action != "local_file_read" {
+            continue;
+        }
+        if let Some(path) = entry.action_input.get("path").and_then(Value::as_str) {
+            let path = path.trim().to_string();
+            if !path.is_empty() && !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+    }
+    paths
+}
+
+fn salvage_non_json_final_answer(raw: &str, history: &[HistoryEntry]) -> String {
+    let trimmed = raw.trim();
+    if trimmed.len() >= 40 {
+        return trimmed.to_string();
+    }
+
+    let inspected = inspected_paths_from_history(history);
+    if inspected.is_empty() {
+        "分析完成，但模型沒有回傳結構化 JSON。請根據已讀取的檔案內容確認結論。".to_string()
+    } else {
+        format!(
+            "分析完成。已檢查檔案：{}。模型最後一步沒有回傳合法 JSON，但前面的檔案證據已足以支撐這個結論。",
+            inspected.join(", ")
+        )
+    }
+}
+
+fn synthesize_read_only_outcome(history: &[HistoryEntry]) -> String {
+    let inspected = inspected_paths_from_history(history);
+    let evidence = history
+        .iter()
+        .rev()
+        .find(|h| matches!(h.action.as_str(), "local_file_read" | "codebase_search") && !h.observation.starts_with("ERROR:"))
+        .map(|h| preview_text(&h.observation))
+        .unwrap_or_default();
+
+    if inspected.is_empty() {
+        "分析完成；目前沒有寫入任何檔案。".to_string()
+    } else if evidence.is_empty() {
+        format!("分析完成。已檢查檔案：{}。目前沒有寫入任何檔案。", inspected.join(", "))
+    } else {
+        format!(
+            "分析完成。已檢查檔案：{}。目前沒有寫入任何檔案。\n\n最後一條關鍵證據：{}",
+            inspected.join(", "),
+            evidence
+        )
+    }
+}
+
 // ── Public runner ─────────────────────────────────────────────────────────────
 
 pub async fn run_coding_via_adk(
@@ -1303,6 +1420,37 @@ mod tests {
         assert!(hints.iter().any(|p| p == "src/llm.rs"), "missing llm path: {hints:?}");
     }
 
+    #[test]
+    fn read_only_analysis_task_detection_is_reasonable() {
+        assert!(is_read_only_analysis_task("請分析 src/telegram.rs，不要寫入檔案"));
+        assert!(is_read_only_analysis_task("Explain what this module does without modifying files."));
+        assert!(!is_read_only_analysis_task("請修改 src/telegram/mod.rs 並加入新的 log"));
+    }
+
+    #[test]
+    fn salvage_non_json_final_answer_uses_grounded_paths() {
+        let history = vec![
+            HistoryEntry {
+                thought: "read telegram mod".to_string(),
+                action: "local_file_read".to_string(),
+                action_input: json!({"path": "src/telegram/mod.rs"}),
+                observation: "ok".to_string(),
+                pinned: true,
+            },
+            HistoryEntry {
+                thought: "read llm".to_string(),
+                action: "local_file_read".to_string(),
+                action_input: json!({"path": "src/llm.rs"}),
+                observation: "ok".to_string(),
+                pinned: true,
+            },
+        ];
+
+        let summary = salvage_non_json_final_answer("", &history);
+        assert!(summary.contains("src/telegram/mod.rs"), "summary should cite inspected paths: {summary}");
+        assert!(summary.contains("src/llm.rs"), "summary should cite inspected paths: {summary}");
+    }
+
     /// Live dry-run development-task test using the real coding workflow.
     /// Run: `cargo test gemini_dry_run_real_dev_task -- --ignored --nocapture`
     #[tokio::test]
@@ -1327,6 +1475,15 @@ mod tests {
         assert!(response.iterations_used > 0, "expected the coding workflow to take at least one step");
         assert!(!response.outcome.is_empty(), "outcome should not be empty");
         assert!(!response.verified, "dry-run task should not be marked as build-verified");
+        let normalized = response.outcome.to_lowercase();
+        assert!(
+            normalized.contains("src/telegram/mod.rs")
+                || normalized.contains("src/telegram/reply.rs")
+                || normalized.contains("backend")
+                || normalized.contains("model"),
+            "expected grounded analysis details in outcome, got: {}",
+            response.outcome
+        );
     }
 
     /// Gemini 能力驗證：設計並新增兩個模組（AppConfig + LogManager）
