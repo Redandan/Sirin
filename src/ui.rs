@@ -212,23 +212,82 @@ fn extract_ai_details(reason: &str) -> String {
 }
 
 fn coding_status_text(resp: &crate::agents::coding_agent::CodingAgentResponse) -> String {
-    let outcome_lower = resp.outcome.to_lowercase();
+    match resp.result_status {
+        crate::agents::coding_agent::CodingResultStatus::Verified => {
+            "✅ 完成（已驗證）".to_string()
+        }
+        crate::agents::coding_agent::CodingResultStatus::DryRunDone => "Dry-run 完成".to_string(),
+        crate::agents::coding_agent::CodingResultStatus::Rollback => {
+            "↩ 已回滾（待處理）".to_string()
+        }
+        crate::agents::coding_agent::CodingResultStatus::FollowupNeeded => {
+            "⚠️ 需要跟進".to_string()
+        }
+        crate::agents::coding_agent::CodingResultStatus::Error => "❌ 執行失敗".to_string(),
+        crate::agents::coding_agent::CodingResultStatus::Done => {
+            if resp.dry_run {
+                "Dry-run 完成".to_string()
+            } else {
+                "完成".to_string()
+            }
+        }
+    }
+}
 
-    if resp.verified {
-        "✅ 完成（已驗證）".to_string()
-    } else if resp.outcome.contains("已自動還原") || outcome_lower.contains("rollback") {
-        "↩ 已回滾（待處理）".to_string()
-    } else if resp.outcome.contains("fail-fast")
-        || resp.outcome.contains("FOLLOWUP")
-        || resp.outcome.contains("需要跟進")
-        || resp.outcome.contains("待人工")
-        || resp.outcome.contains("⚠️")
-    {
-        "⚠️ 需要跟進".to_string()
-    } else if resp.dry_run {
-        "Dry-run 完成".to_string()
-    } else {
-        "完成".to_string()
+fn task_status_badge(
+    status: &str,
+    reason: Option<&str>,
+    is_summary: bool,
+) -> (&'static str, Color32, Color32) {
+    let reason = reason.unwrap_or_default();
+
+    match status {
+        "DONE" if is_summary => (
+            "🧠 調研完成",
+            Color32::from_rgb(120, 210, 255),
+            Color32::from_rgb(22, 48, 68),
+        ),
+        "DONE" if reason.contains("status=DryRunDone") => (
+            "🧪 Dry-run",
+            Color32::from_rgb(255, 200, 60),
+            Color32::from_rgb(68, 52, 18),
+        ),
+        "DONE" if reason.contains("status=Verified") || reason.contains("verified=true") => (
+            "✅ 已驗證",
+            Color32::from_rgb(100, 220, 100),
+            Color32::from_rgb(20, 56, 26),
+        ),
+        "DONE" => (
+            "✅ 完成",
+            Color32::from_rgb(100, 220, 100),
+            Color32::from_rgb(22, 48, 24),
+        ),
+        "PENDING" | "RUNNING" => (
+            "⏳ 進行中",
+            Color32::from_rgb(255, 200, 60),
+            Color32::from_rgb(70, 54, 18),
+        ),
+        "FOLLOWING" => (
+            "🔄 跟進中",
+            Color32::from_rgb(120, 180, 255),
+            Color32::from_rgb(20, 46, 72),
+        ),
+        "FOLLOWUP_NEEDED" => (
+            "⚠️ 需跟進",
+            Color32::from_rgb(255, 160, 80),
+            Color32::from_rgb(78, 42, 20),
+        ),
+        "ROLLBACK" => (
+            "↩ 已回滾",
+            Color32::from_rgb(190, 150, 255),
+            Color32::from_rgb(48, 30, 74),
+        ),
+        "FAILED" | "ERROR" => (
+            "❌ 錯誤",
+            Color32::from_rgb(220, 80, 80),
+            Color32::from_rgb(72, 24, 24),
+        ),
+        _ => ("• 未知", Color32::GRAY, Color32::from_rgb(45, 45, 45)),
     }
 }
 
@@ -817,13 +876,33 @@ impl SirinApp {
         ui.add_space(4.0);
 
         // ── Filter bar ────────────────────────────────────────────────────────
+        let running_count = self
+            .tasks
+            .iter()
+            .filter(|t| matches!(t.status.as_deref(), Some("PENDING") | Some("RUNNING") | Some("FOLLOWING")))
+            .count();
+        let attention_count = self
+            .tasks
+            .iter()
+            .filter(|t| matches!(t.status.as_deref(), Some("FOLLOWUP_NEEDED") | Some("FAILED") | Some("ERROR") | Some("ROLLBACK")))
+            .count();
+        let done_count = self
+            .tasks
+            .iter()
+            .filter(|t| t.status.as_deref() == Some("DONE"))
+            .count();
+
         ui.horizontal(|ui| {
             ui.label(RichText::new("活動記錄").strong());
             ui.separator();
             ui.selectable_value(&mut self.task_filter, TaskFilter::All, "全部");
             ui.selectable_value(&mut self.task_filter, TaskFilter::Running, "進行中");
             ui.selectable_value(&mut self.task_filter, TaskFilter::Done, "完成");
-            ui.selectable_value(&mut self.task_filter, TaskFilter::Failed, "失敗");
+            ui.selectable_value(&mut self.task_filter, TaskFilter::Failed, "需處理");
+            ui.separator();
+            ui.small(format!("⏳ {}", running_count));
+            ui.small(format!("⚠️ {}", attention_count));
+            ui.small(format!("✅ {}", done_count));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let total = self.tasks.len();
                 ui.small(format!("{total} 筆"));
@@ -867,16 +946,8 @@ impl SirinApp {
 
                 let ts = task.timestamp.get(..19).unwrap_or(&task.timestamp);
                 let is_summary = task.event == "research_summary_ready";
-                let status_color = match status {
-                    "DONE" if is_summary => Color32::from_rgb(120, 210, 255),
-                    "DONE" => Color32::from_rgb(100, 220, 100),
-                    "PENDING" | "RUNNING" => Color32::from_rgb(255, 200, 60),
-                    "FOLLOWING" => Color32::from_rgb(120, 180, 255),
-                    "FOLLOWUP_NEEDED" => Color32::from_rgb(255, 160, 80),
-                    "ROLLBACK" => Color32::from_rgb(190, 150, 255),
-                    "FAILED" | "ERROR" => Color32::from_rgb(220, 80, 80),
-                    _ => Color32::GRAY,
-                };
+                let (badge_text, badge_fg, badge_bg) =
+                    task_status_badge(status, task.reason.as_deref(), is_summary);
 
                 ui.horizontal(|ui| {
                     ui.add_sized(
@@ -889,11 +960,13 @@ impl SirinApp {
                         .or(task.reason.as_deref())
                         .unwrap_or(&task.event);
                     let event_label = if is_summary {
-                        "research_summary"
+                        "🧠 research_summary"
                     } else if task.event == "adk_coding_fail_fast" {
                         "⚠ coding_fail_fast"
                     } else if task.event == "adk_coding_rollback" {
                         "↩ coding_rollback"
+                    } else if task.event == "adk_coding_agent_done" {
+                        "⚙ coding_done"
                     } else {
                         &task.event
                     };
@@ -906,15 +979,22 @@ impl SirinApp {
                         [col_widths[1], row_height],
                         egui::Label::new(&label_text).truncate(),
                     );
-                    ui.colored_label(status_color, status);
+                    egui::Frame::new()
+                        .fill(badge_bg)
+                        .stroke(egui::Stroke::new(1.0, badge_fg))
+                        .inner_margin(egui::Margin::symmetric(8, 3))
+                        .corner_radius(6.0)
+                        .show(ui, |ui| {
+                            ui.label(RichText::new(badge_text).small().strong().color(badge_fg));
+                        });
                 });
 
                 // Inline summary expansion for research / fail-fast events.
-                if is_summary || matches!(status, "FOLLOWUP_NEEDED" | "ROLLBACK") {
+                if is_summary || matches!(status, "FOLLOWUP_NEEDED" | "ROLLBACK" | "FAILED" | "ERROR") {
                     if let Some(reason) = task.reason.as_deref() {
                         let preview: String = reason.chars().take(180).collect();
                         ui.add_space(1.0);
-                        ui.small(format!("   ↳ {preview}"));
+                        ui.colored_label(badge_fg, format!("   ↳ {preview}"));
                     }
                 }
             }
@@ -1876,6 +1956,8 @@ TG_DEBUG_UPDATES=false";
                         let _ = coding_tx.try_send(CodingUiUpdate {
                             response: Some(crate::agents::coding_agent::CodingAgentResponse {
                                 outcome: format!("❌ Coding Agent 崩潰：{e}"),
+                                result_status:
+                                    crate::agents::coding_agent::CodingResultStatus::Error,
                                 change_summary: "Coding Agent 執行時發生 panic，請查看 trace。"
                                     .to_string(),
                                 files_modified: vec![],

@@ -41,10 +41,40 @@ pub struct CodingRequest {
     pub context_block: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CodingResultStatus {
+    #[default]
+    Done,
+    Verified,
+    DryRunDone,
+    FollowupNeeded,
+    Rollback,
+    Error,
+}
+
+impl CodingResultStatus {
+    pub fn task_status(self) -> &'static str {
+        match self {
+            Self::Done | Self::Verified | Self::DryRunDone => "DONE",
+            Self::FollowupNeeded => "FOLLOWUP_NEEDED",
+            Self::Rollback => "ROLLBACK",
+            Self::Error => "ERROR",
+        }
+    }
+
+    pub fn is_success(self) -> bool {
+        matches!(self, Self::Done | Self::Verified | Self::DryRunDone)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CodingAgentResponse {
     /// Human-readable summary of what was accomplished.
     pub outcome: String,
+    /// Structured result state for UI / task tracking.
+    #[serde(default)]
+    pub result_status: CodingResultStatus,
     /// Short change summary for the UI/task board.
     #[serde(default)]
     pub change_summary: String,
@@ -748,6 +778,7 @@ async fn run_react_loop(
 
                 return Ok(CodingAgentResponse {
                     outcome: rollback_msg,
+                    result_status: CodingResultStatus::Rollback,
                     change_summary: "已自動回滾本次修改，請重新確認任務描述後再試。".to_string(),
                     files_modified: vec![],
                     iterations_used: history.iter().filter(|h| h.action != "DONE").count(),
@@ -835,13 +866,24 @@ async fn run_react_loop(
 
     let change_summary =
         build_change_summary(&files_modified, verified, dry_run, auto_committed, &outcome);
+    let analysis_completed = read_only_analysis && has_sufficient_analysis_evidence(&history);
+    let result_status = derive_result_status(
+        dry_run,
+        analysis_completed,
+        verified,
+        build_verified,
+        attempted_write,
+        files_modified.len(),
+        had_tool_errors,
+    );
 
     ctx.record_system_event(
         "adk_coding_agent_done",
         Some(change_summary.clone()),
-        Some(if verified { "DONE" } else { "FOLLOWUP_NEEDED" }),
+        Some(result_status.task_status()),
         Some(format!(
-            "summary={change_summary}; files={} verified={verified} committed={auto_committed} dry_run={dry_run}; outcome={}",
+            "status={:?}; summary={change_summary}; files={} verified={verified} committed={auto_committed} dry_run={dry_run}; outcome={}",
+            result_status,
             files_modified.len(),
             preview_text(&outcome)
         )),
@@ -849,6 +891,7 @@ async fn run_react_loop(
 
     Ok(CodingAgentResponse {
         outcome,
+        result_status,
         change_summary,
         files_modified,
         iterations_used,
@@ -1562,6 +1605,41 @@ fn build_fail_fast_outcome(
     }
 }
 
+fn derive_result_status(
+    dry_run: bool,
+    analysis_completed: bool,
+    verified: bool,
+    build_verified: bool,
+    attempted_write: bool,
+    files_modified_count: usize,
+    had_tool_errors: bool,
+) -> CodingResultStatus {
+    if verified {
+        return CodingResultStatus::Verified;
+    }
+
+    if analysis_completed {
+        return if dry_run {
+            CodingResultStatus::DryRunDone
+        } else {
+            CodingResultStatus::Done
+        };
+    }
+
+    if dry_run && !had_tool_errors {
+        return CodingResultStatus::DryRunDone;
+    }
+
+    if !build_verified
+        || (attempted_write && files_modified_count == 0)
+        || (had_tool_errors && files_modified_count == 0)
+    {
+        return CodingResultStatus::FollowupNeeded;
+    }
+
+    CodingResultStatus::Done
+}
+
 fn build_change_summary(
     files_modified: &[String],
     verified: bool,
@@ -1659,12 +1737,14 @@ pub async fn run_coding_via_adk(
     let response = match runtime.run(&CodingAgent, ctx, input).await {
         Ok(v) => serde_json::from_value(v).unwrap_or_else(|_| CodingAgentResponse {
             outcome: "Completed (response parse error)".to_string(),
+            result_status: CodingResultStatus::Error,
             ..Default::default()
         }),
         Err(e) => {
             sirin_log!("[coding_agent] run failed: {e}");
             CodingAgentResponse {
                 outcome: format!("Error: {e}"),
+                result_status: CodingResultStatus::Error,
                 ..Default::default()
             }
         }
@@ -1672,7 +1752,7 @@ pub async fn run_coding_via_adk(
 
     crate::events::publish(crate::events::AgentEvent::CodingAgentCompleted {
         task: task.chars().take(80).collect(),
-        success: !response.outcome.starts_with("Error:"),
+        success: response.result_status.is_success(),
         files_modified: response.files_modified.clone(),
     });
 
@@ -1837,6 +1917,18 @@ mod tests {
             summary.contains("已自動 commit"),
             "auto-commit should be included: {summary}"
         );
+    }
+
+    #[test]
+    fn derive_result_status_treats_dry_run_analysis_as_done() {
+        let status = derive_result_status(true, true, false, false, false, 0, true);
+        assert_eq!(status, CodingResultStatus::DryRunDone);
+    }
+
+    #[test]
+    fn derive_result_status_marks_unverified_write_as_followup() {
+        let status = derive_result_status(false, false, false, false, true, 0, true);
+        assert_eq!(status, CodingResultStatus::FollowupNeeded);
     }
 
     /// Live dry-run development-task test using the real coding workflow.

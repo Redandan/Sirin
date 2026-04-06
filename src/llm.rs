@@ -281,14 +281,31 @@ impl LlmConfig {
         self.large_model.as_deref().unwrap_or(&self.model)
     }
 
+    fn effective_router_backend_name(&self) -> &'static str {
+        let provider = std::env::var("ROUTER_LLM_PROVIDER")
+            .unwrap_or_default()
+            .to_lowercase();
+
+        match provider.as_str() {
+            "lmstudio" | "lm_studio" | "openai" => "lmstudio",
+            "ollama" => "ollama",
+            "gemini" => "gemini",
+            _ => self.backend_name(),
+        }
+    }
+
     /// Concise human-readable summary for task-start logging.
     pub fn task_log_summary(&self) -> String {
         format!(
-            "backend={} chat={} router={} coding={} large={}",
+            "backend={} chat={}/{} router={}/{} coding={}/{} large={}/{}",
+            self.backend_name(),
             self.backend_name(),
             self.model,
+            self.effective_router_backend_name(),
             self.effective_router_model(),
+            self.backend_name(),
             self.effective_coding_model(),
+            self.backend_name(),
             self.effective_large_model(),
         )
     }
@@ -1562,19 +1579,19 @@ mod tests {
             "unexpected summary: {summary}"
         );
         assert!(
-            summary.contains("chat=llama3.2"),
+            summary.contains("chat=ollama/llama3.2"),
             "unexpected summary: {summary}"
         );
         assert!(
-            summary.contains("router=phi3-mini"),
+            summary.contains("router=") && summary.contains("phi3-mini"),
             "unexpected summary: {summary}"
         );
         assert!(
-            summary.contains("coding=qwen2.5-coder"),
+            summary.contains("coding=ollama/qwen2.5-coder"),
             "unexpected summary: {summary}"
         );
         assert!(
-            summary.contains("large=llama3:70b"),
+            summary.contains("large=ollama/llama3:70b"),
             "unexpected summary: {summary}"
         );
     }
