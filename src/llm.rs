@@ -72,6 +72,17 @@ pub(crate) fn shared_large_llm() -> Arc<LlmConfig> {
         }
     }))
 }
+
+/// Returns the process-wide LLM config used for routing and planning.
+///
+/// Reads `ROUTER_LLM_PROVIDER` first.  When set, builds a config from that
+/// provider (Ollama or LM Studio) so cheap classification calls stay local
+/// even when the main backend is a remote service like Gemini.
+/// Falls back to [`shared_llm`] when `ROUTER_LLM_PROVIDER` is not set.
+pub(crate) fn shared_router_llm() -> Arc<LlmConfig> {
+    static ROUTER: OnceLock<Arc<LlmConfig>> = OnceLock::new();
+    Arc::clone(ROUTER.get_or_init(|| Arc::new(LlmConfig::router_from_env())))
+}
 const LM_STUDIO_BASE_URL: &str = "http://localhost:1234/v1";
 const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
 const DEFAULT_MODEL: &str = "llama3.2";
@@ -171,6 +182,54 @@ impl LlmConfig {
                 router_model,
                 large_model,
             },
+        }
+    }
+
+    /// Build the router/planner LLM config from environment variables.
+    ///
+    /// Checks `ROUTER_LLM_PROVIDER` first.  When present, constructs a config
+    /// for that local backend using the same URL/model env vars as the main
+    /// provider (e.g. `LM_STUDIO_BASE_URL`, `OLLAMA_MODEL`).  This lets you
+    /// keep cheap intent-classification calls on a local model while routing
+    /// main responses through a remote service.
+    ///
+    /// Falls back to `LlmConfig::from_env()` when `ROUTER_LLM_PROVIDER` is
+    /// absent so existing setups require no config changes.
+    pub fn router_from_env() -> Self {
+        let provider = std::env::var("ROUTER_LLM_PROVIDER")
+            .unwrap_or_default()
+            .to_lowercase();
+
+        match provider.as_str() {
+            "lmstudio" | "lm_studio" | "openai" => Self {
+                backend: LlmBackend::LmStudio,
+                base_url: std::env::var("LM_STUDIO_BASE_URL")
+                    .or_else(|_| std::env::var("OPENAI_BASE_URL"))
+                    .unwrap_or_else(|_| LM_STUDIO_BASE_URL.to_string()),
+                model: std::env::var("ROUTER_MODEL")
+                    .or_else(|_| std::env::var("LM_STUDIO_MODEL"))
+                    .unwrap_or_else(|_| DEFAULT_MODEL.to_string()),
+                api_key: std::env::var("LM_STUDIO_API_KEY")
+                    .ok()
+                    .filter(|v| !v.trim().is_empty()),
+                coding_model: None,
+                router_model: None,
+                large_model: None,
+            },
+            "ollama" => Self {
+                backend: LlmBackend::Ollama,
+                base_url: std::env::var("OLLAMA_BASE_URL")
+                    .unwrap_or_else(|_| OLLAMA_BASE_URL.to_string()),
+                model: std::env::var("ROUTER_MODEL")
+                    .or_else(|_| std::env::var("OLLAMA_MODEL"))
+                    .unwrap_or_else(|_| DEFAULT_MODEL.to_string()),
+                api_key: None,
+                coding_model: None,
+                router_model: None,
+                large_model: None,
+            },
+            // No override set — fall back to the main provider config.
+            _ => Self::from_env(),
         }
     }
 

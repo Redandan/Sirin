@@ -678,7 +678,9 @@ Task: {task}\n\n\
 List 3-6 numbered steps. Be specific about which files to read or modify. \
 Return only the numbered list, no extra prose.",
     );
-    call_coding_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), prompt)
+    // Plan generation is a lightweight step-list task — use the router (local)
+    // LLM to save remote quota for the actual ReAct coding iterations.
+    crate::llm::call_prompt(ctx.http.as_ref(), &crate::llm::shared_router_llm(), prompt)
         .await
         .unwrap_or_else(|_| "1. Read relevant files\n2. Make changes\n3. Verify".to_string())
 }

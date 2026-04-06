@@ -310,7 +310,7 @@ pub async fn run_research(topic: String, url: Option<String>) -> ResearchTask {
         if done_count % 5 == 0 {
             maybe_reflect_on_objectives(
                 crate::llm::shared_http().as_ref(),
-                crate::llm::shared_llm().as_ref(),
+                &crate::llm::shared_router_llm(),
                 &task,
             ).await;
         }

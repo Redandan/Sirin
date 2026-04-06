@@ -409,7 +409,10 @@ Output only the JSON object, no explanation."#,
         context_hint = context_hint,
     );
 
-    let raw = call_router_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), prompt)
+    // Use the router-specific LLM (local backend when ROUTER_LLM_PROVIDER is
+    // set) so intent classification never consumes remote API quota.
+    let router_llm = crate::llm::shared_router_llm();
+    let raw = call_router_prompt(ctx.http.as_ref(), &router_llm, prompt)
         .await
         .ok()?;
 

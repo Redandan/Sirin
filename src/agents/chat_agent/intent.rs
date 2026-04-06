@@ -386,7 +386,9 @@ User message: {user_text}\n\
 Output ONLY valid JSON."
     );
 
-    let raw = match call_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), prompt).await {
+    // Intent classification is a simple JSON categorisation task — use the
+    // router (local) LLM to avoid burning remote API quota on every message.
+    let raw = match call_prompt(ctx.http.as_ref(), &crate::llm::shared_router_llm(), prompt).await {
         Ok(r) => r,
         Err(_) => return default,
     };

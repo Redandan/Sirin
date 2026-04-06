@@ -6,7 +6,6 @@
 use serde_json::{json, Value};
 
 use crate::adk::AgentContext;
-use crate::llm::LlmConfig;
 use crate::memory::load_recent_context;
 use crate::telegram::commands::{extract_search_query, should_search};
 
@@ -59,18 +58,21 @@ pub(super) fn resolve_context_block(request: &ChatRequest, ctx: &AgentContext) -
 
 /// Perform a web search when the request warrants one and return a formatted
 /// results block.  Returns `None` when search is skipped or fails.
+///
+/// Query extraction uses the router (local) LLM — it's a simple ≤8-word
+/// extraction task that doesn't need a remote model.
 pub(super) async fn resolve_search_context(
     request: &ChatRequest,
     ctx: &AgentContext,
     client: &reqwest::Client,
-    llm: &LlmConfig,
     direct_answer_request: bool,
 ) -> Option<String> {
     if direct_answer_request || !should_search(&request.user_text) {
         return None;
     }
 
-    let query = extract_search_query(client, llm, &request.user_text).await;
+    let router_llm = crate::llm::shared_router_llm();
+    let query = extract_search_query(client, &router_llm, &request.user_text).await;
     match ctx
         .call_tool("web_search", json!({ "query": query.clone(), "limit": 3 }))
         .await
