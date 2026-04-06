@@ -36,11 +36,12 @@ impl AgentRuntime {
         input: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
         let tool_list = ctx.tools.names().join(", ");
+        let llm_details = format!("{:?}", ctx.llm.as_ref()); // Access the LlmConfig through the Arc
         ctx.record_system_event(
             format!("adk:{}:start", agent.name()),
             None,
             Some("RUNNING"),
-            Some(format!("tools=[{tool_list}]")),
+            Some(format!("tools=[{tool_list}], llm=[{llm_details}]")),
         );
 
         let result = agent.run(&ctx, input).await;
