@@ -1058,6 +1058,44 @@ mod tests {
         );
     }
 
+    /// Gemini 能力驗證：設計並新增兩個模組（AppConfig + LogManager）
+    /// Run: cargo test gemini_config_and_log -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore = "requires Gemini API key in .env (LLM_PROVIDER=gemini)"]
+    async fn gemini_config_and_log() {
+        let _ = dotenvy::dotenv();
+
+        let task = "分析 Sirin 專案目前的配置管理（.env 各模組 from_env）和日誌系統（src/log_buffer.rs），\
+            然後新增以下兩個模組：\
+            \n1. src/config.rs — AppConfig struct，統一管理 LLM / Telegram / Followup 的配置項，\
+            提供 AppConfig::load() 從環境變數讀取，並加 #[cfg(test)] 單元測試。\
+            \n2. src/log_manager.rs — LogLevel enum (Error/Warn/Info/Debug)、\
+            一個 filtered_recent(level, n) 函數按等級過濾 log_buffer 內容，\
+            以及 export_to_string(n) 匯出最近 n 條為純文字，並加 #[cfg(test)] 單元測試。\
+            \n不要修改任何現有檔案。兩個新檔案都要能通過 cargo check。";
+
+        let response = run_coding_via_adk(
+            task.to_string(),
+            false, // actually write the files
+            None,
+            None,
+        )
+        .await;
+
+        println!("\n======== Gemini Coding Agent ========");
+        println!("Iterations used : {}", response.iterations_used);
+        println!("Files modified  : {:?}", response.files_modified);
+        println!("cargo check pass: {}", response.verified);
+        println!("Outcome:\n{}", response.outcome);
+        if let Some(ref diff) = response.diff {
+            println!("\n--- diff preview ---\n{}", diff.chars().take(1200).collect::<String>());
+        }
+
+        assert!(!response.outcome.starts_with("Error:"), "agent error: {}", response.outcome);
+        assert!(!response.files_modified.is_empty(), "no files were written");
+        assert!(response.verified, "cargo check failed after changes");
+    }
+
     #[test]
     fn parse_react_step_valid_json() {
         let raw = r#"{"thought":"read the file","action":"local_file_read","action_input":{"path":"src/main.rs"}}"#;
