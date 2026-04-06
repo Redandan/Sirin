@@ -21,6 +21,7 @@ use tokio::sync::broadcast;
 
 // ── Event types ───────────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
     /// A background research task finished (success or failure).

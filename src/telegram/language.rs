@@ -9,6 +9,7 @@ pub fn contains_cjk(text: &str) -> bool {
     })
 }
 
+#[allow(dead_code)]
 pub fn is_mixed_language_reply(text: &str) -> bool {
     let mut cjk_count = 0usize;
     let mut latin_count = 0usize;

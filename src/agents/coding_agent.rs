@@ -166,11 +166,16 @@ async fn run_react_loop(
     let mut attempted_write = false;
     let mut had_tool_errors = false;
     let mut last_tool_error: Option<String> = None;
+    let mut total_tool_errors: u32 = 0;
+    let mut stalled_iterations: u32 = 0;
+    let mut last_step_fingerprint: Option<String> = None;
     let tool_list = describe_tools();
 
     // Safety counters — prevent destructive escalation when surgical edits fail.
     let mut consecutive_patch_errors: u32 = 0;
     const MAX_PATCH_ERRORS: u32 = 2;
+    const MAX_TOTAL_TOOL_ERRORS: u32 = 3;
+    let max_stalled_iterations: u32 = if read_only_analysis { 2 } else { 3 };
     let write_tools = ["file_write", "file_patch", "plan_execute"];
 
     // Read cache: deduplicates local_file_read calls within one task so the
@@ -273,7 +278,24 @@ async fn run_react_loop(
                 pinned: false,
             });
             had_tool_errors = true;
+            total_tool_errors += 1;
             last_tool_error = Some(preview_text(&observation));
+
+            if total_tool_errors >= MAX_TOTAL_TOOL_ERRORS {
+                final_answer = build_fail_fast_outcome(
+                    "模型連續回傳不可解析的輸出，已觸發 fail-fast",
+                    &history,
+                    last_tool_error.as_deref(),
+                    read_only_analysis,
+                );
+                ctx.record_system_event(
+                    "adk_coding_fail_fast",
+                    Some("invalid_json".to_string()),
+                    Some("FOLLOWUP_NEEDED"),
+                    last_tool_error.clone(),
+                );
+                break;
+            }
             continue;
         }
 
@@ -401,6 +423,7 @@ async fn run_react_loop(
         // Track consecutive patch errors for safety circuit breaker.
         if observation.starts_with("ERROR:") {
             had_tool_errors = true;
+            total_tool_errors += 1;
             last_tool_error = Some(preview_text(&observation));
             sirin_log!("[coding_agent] tool error: {observation}");
             if action_name == "file_patch" {
@@ -408,6 +431,63 @@ async fn run_react_loop(
             }
         } else if action_name == "file_patch" {
             consecutive_patch_errors = 0; // reset on success
+        }
+
+        let fingerprint = step_fingerprint(
+            &action_name,
+            &history.last().expect("history entry just pushed").action_input,
+            &observation,
+        );
+        let repeated_cache_hit = action_name == "local_file_read"
+            && observation.starts_with("[Already read at iteration");
+        if repeated_cache_hit || last_step_fingerprint.as_deref() == Some(&fingerprint) {
+            stalled_iterations += 1;
+        } else {
+            stalled_iterations = 0;
+        }
+        last_step_fingerprint = Some(fingerprint);
+
+        if read_only_analysis && repeated_cache_hit && has_sufficient_analysis_evidence(&history) {
+            final_answer = synthesize_read_only_outcome(&history);
+            ctx.record_system_event(
+                "adk_coding_fail_fast",
+                Some("read_only_analysis_complete".to_string()),
+                Some("DONE"),
+                Some("Stopped after repeated cached reads because enough grounded evidence was already collected.".to_string()),
+            );
+            break;
+        }
+
+        if total_tool_errors >= MAX_TOTAL_TOOL_ERRORS {
+            final_answer = build_fail_fast_outcome(
+                "工具錯誤次數過多，已觸發 fail-fast",
+                &history,
+                last_tool_error.as_deref(),
+                read_only_analysis,
+            );
+            ctx.record_system_event(
+                "adk_coding_fail_fast",
+                Some("too_many_tool_errors".to_string()),
+                Some("FOLLOWUP_NEEDED"),
+                last_tool_error.clone(),
+            );
+            break;
+        }
+
+        if stalled_iterations >= max_stalled_iterations {
+            final_answer = build_fail_fast_outcome(
+                "連續多步沒有新進展，已觸發 fail-fast",
+                &history,
+                last_tool_error.as_deref(),
+                read_only_analysis,
+            );
+            ctx.record_system_event(
+                "adk_coding_fail_fast",
+                Some("stalled_iterations".to_string()),
+                Some("FOLLOWUP_NEEDED"),
+                Some(format!("stalled_iterations={stalled_iterations}")),
+            );
+            break;
         }
     }
 
@@ -1233,6 +1313,15 @@ fn preview_text(text: &str) -> String {
     if chars.next().is_some() { format!("{head}…") } else { head }
 }
 
+fn step_fingerprint(action_name: &str, action_input: &Value, observation: &str) -> String {
+    format!(
+        "{}|{}|{}",
+        action_name,
+        preview_tool_input(action_input),
+        preview_text(observation)
+    )
+}
+
 fn file_read_cache_key(input: &Value) -> String {
     let path = input
         .get("path")
@@ -1307,6 +1396,23 @@ fn synthesize_read_only_outcome(history: &[HistoryEntry]) -> String {
     }
 }
 
+fn build_fail_fast_outcome(
+    reason: &str,
+    history: &[HistoryEntry],
+    last_tool_error: Option<&str>,
+    read_only_analysis: bool,
+) -> String {
+    let suffix = last_tool_error
+        .map(|err| format!(" 最後錯誤：{err}"))
+        .unwrap_or_default();
+
+    if read_only_analysis && has_sufficient_analysis_evidence(history) {
+        format!("⚠️ {reason}.{suffix}\n\n{}", synthesize_read_only_outcome(history))
+    } else {
+        format!("⚠️ 任務已 fail-fast 中止：{reason}.{suffix}")
+    }
+}
+
 // ── Public runner ─────────────────────────────────────────────────────────────
 
 pub async fn run_coding_via_adk(
@@ -1328,8 +1434,12 @@ pub async fn run_coding_via_adk(
         });
 
     let runtime = AgentRuntime::default();
-    let ctx = runtime
-        .context("coding_request")
+    let base_ctx = if let Some(ref task_tracker) = tracker {
+        runtime.context_with_tracker("coding_request", task_tracker.clone())
+    } else {
+        runtime.context("coding_request")
+    };
+    let ctx = base_ctx
         .with_optional_tracker(tracker)
         .with_context_hint(context_hint)
         .with_metadata("agent", "coding_agent");
@@ -1449,6 +1559,27 @@ mod tests {
         let summary = salvage_non_json_final_answer("", &history);
         assert!(summary.contains("src/telegram/mod.rs"), "summary should cite inspected paths: {summary}");
         assert!(summary.contains("src/llm.rs"), "summary should cite inspected paths: {summary}");
+    }
+
+    #[test]
+    fn file_read_cache_key_distinguishes_line_ranges() {
+        let full = file_read_cache_key(&json!({"path": "src/telegram/mod.rs"}));
+        let ranged = file_read_cache_key(&json!({"path": "src/telegram/mod.rs", "start_line": 1, "end_line": 120}));
+        assert_ne!(full, ranged, "cache key should include line-range information");
+    }
+
+    #[test]
+    fn fail_fast_outcome_mentions_reason() {
+        let history = vec![HistoryEntry {
+            thought: "read telegram mod".to_string(),
+            action: "local_file_read".to_string(),
+            action_input: json!({"path": "src/telegram/mod.rs"}),
+            observation: "ok".to_string(),
+            pinned: true,
+        }];
+
+        let msg = build_fail_fast_outcome("連續多步沒有新進展", &history, Some("cache hit"), true);
+        assert!(msg.contains("連續多步沒有新進展"), "reason should be preserved: {msg}");
     }
 
     /// Live dry-run development-task test using the real coding workflow.

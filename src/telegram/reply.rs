@@ -13,6 +13,7 @@ use super::{commands::message_preview, config::TelegramConfig};
 // ── Streaming reply ───────────────────────────────────────────────────────────
 
 /// Minimum tokens accumulated before we edit the placeholder message.
+#[allow(dead_code)]
 const STREAM_EDIT_EVERY_TOKENS: usize = 20;
 
 /// Generate a reply via streaming LLM and progressively edit a Telegram
@@ -25,6 +26,7 @@ const STREAM_EDIT_EVERY_TOKENS: usize = 20;
 /// 3. Final edit with the complete text.
 ///
 /// Falls back to `send_final_reply` if the placeholder send fails.
+#[allow(dead_code)]
 pub async fn send_streaming_reply(
     client: &Client,
     message: &Message,

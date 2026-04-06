@@ -745,6 +745,7 @@ fn resolve_project_file_path(root: &Path, path_hint: &str) -> Option<PathBuf> {
     })
 }
 
+#[allow(dead_code)]
 pub fn inspect_project_file(
     path_hint: &str,
     max_chars: usize,

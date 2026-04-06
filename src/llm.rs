@@ -537,6 +537,7 @@ pub async fn call_router_prompt(
 }
 
 /// Like [`call_prompt`] but uses the large/powerful model when configured.
+#[allow(dead_code)]
 pub async fn call_large_prompt(
     client: &reqwest::Client,
     llm: &LlmConfig,
@@ -756,6 +757,7 @@ impl ModelInfo {
         self.name.split(':').next().unwrap_or(&self.name)
     }
 
+    #[allow(dead_code)]
     fn name_contains_any(&self, patterns: &[&str]) -> bool {
         let lower = self.name.to_lowercase();
         patterns.iter().any(|p| lower.contains(p))
@@ -1007,6 +1009,7 @@ pub struct AgentFleet {
     pub classified_models: Vec<ClassifiedModel>,
 }
 
+#[allow(dead_code)]
 impl AgentFleet {
     /// Returns `true` when a dedicated fast router/planner model is available.
     pub fn has_fast_router(&self) -> bool { self.router_model.is_some() }
@@ -1064,6 +1067,7 @@ static SHARED_FLEET: OnceLock<Arc<AgentFleet>> = OnceLock::new();
 ///
 /// If [`init_agent_fleet`] has not been called, a minimal fleet built from
 /// `LlmConfig::from_env()` is returned (no classified models).
+#[allow(dead_code)]
 pub(crate) fn shared_fleet() -> Arc<AgentFleet> {
     Arc::clone(SHARED_FLEET.get_or_init(|| {
         let cfg = LlmConfig::from_env();
@@ -1308,6 +1312,7 @@ pub async fn probe_and_build_fleet(client: &reqwest::Client) -> AgentFleet {
 ///
 /// This is a convenience wrapper around [`probe_and_build_fleet`] for callers
 /// that only need the config and not the full fleet.
+#[allow(dead_code)]
 pub async fn probe_and_configure(client: &reqwest::Client) -> LlmConfig {
     probe_and_build_fleet(client).await.to_llm_config()
 }
