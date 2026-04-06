@@ -162,6 +162,9 @@ async fn run_react_loop(
     let mut history: Vec<HistoryEntry> = Vec::new();
     let mut files_modified: Vec<String> = Vec::new();
     let mut final_answer = String::new();
+    let mut attempted_write = false;
+    let mut had_tool_errors = false;
+    let mut last_tool_error: Option<String> = None;
     let tool_list = describe_tools();
 
     // Safety counters — prevent destructive escalation when surgical edits fail.
@@ -234,6 +237,23 @@ async fn run_react_loop(
             Some(preview_text(&step.thought)),
         );
 
+        if step.parse_error {
+            let observation = format!(
+                "ERROR: LLM step was not valid JSON. Retry with ONLY the required JSON object and do not mark DONE until you have either verified the existing code or applied a real change. Raw preview: {}",
+                preview_text(&raw),
+            );
+            history.push(HistoryEntry {
+                thought: step.thought,
+                action: "INVALID_JSON".to_string(),
+                action_input: json!({}),
+                observation: observation.clone(),
+                pinned: false,
+            });
+            had_tool_errors = true;
+            last_tool_error = Some(preview_text(&observation));
+            continue;
+        }
+
         if step.action == "DONE" {
             final_answer = step.final_answer.unwrap_or_else(|| step.thought.clone());
             history.push(HistoryEntry {
@@ -271,6 +291,9 @@ async fn run_react_loop(
             step.action.as_str(),
             "file_write" | "file_patch" | "plan_execute"
         );
+        if is_write_tool {
+            attempted_write = true;
+        }
         let tool_input = if dry_run && is_write_tool {
             let mut input = step.action_input.clone();
             if let Some(obj) = input.as_object_mut() {
@@ -347,6 +370,7 @@ async fn run_react_loop(
         };
 
         let action_name = step.action.clone();
+        let observation = maybe_enrich_tool_error(&action_name, observation);
         history.push(HistoryEntry {
             thought: step.thought,
             action: step.action,
@@ -357,6 +381,8 @@ async fn run_react_loop(
 
         // Track consecutive patch errors for safety circuit breaker.
         if observation.starts_with("ERROR:") {
+            had_tool_errors = true;
+            last_tool_error = Some(preview_text(&observation));
             sirin_log!("[coding_agent] tool error: {observation}");
             if action_name == "file_patch" {
                 consecutive_patch_errors += 1;
@@ -368,7 +394,7 @@ async fn run_react_loop(
 
     // ── Step 4: verification + auto-fix loop ─────────────────────────────────
     let can_verify = !dry_run && config.allowed_commands.iter().any(|cmd| cmd == "cargo check");
-    let (verified, verification_output) = if can_verify {
+    let (build_verified, verification_output) = if can_verify {
         let (mut ok, mut out) = verify_build(ctx).await;
 
         // If verification fails, re-enter the ReAct loop up to 3 times to fix
@@ -432,6 +458,19 @@ async fn run_react_loop(
                     }
                 };
                 let step = parse_react_step(&raw);
+                if step.parse_error {
+                    let obs = "ERROR: Invalid JSON from model during fix loop. Retry with ONLY the required JSON object.".to_string();
+                    had_tool_errors = true;
+                    last_tool_error = Some(preview_text(&obs));
+                    fix_history.push(HistoryEntry {
+                        thought: step.thought,
+                        action: "INVALID_JSON".to_string(),
+                        action_input: json!({}),
+                        observation: obs,
+                        pinned: false,
+                    });
+                    continue;
+                }
                 if step.action == "DONE" { break; }
 
                 // Safety: stop fix loop if write patches keep failing.
@@ -582,6 +621,14 @@ async fn run_react_loop(
         (false, None)
     };
 
+    let verified = overall_verified(
+        dry_run,
+        build_verified,
+        attempted_write,
+        files_modified.len(),
+        had_tool_errors,
+    );
+
     // ── Step 5: diff ──────────────────────────────────────────────────────────
     let diff = if !dry_run {
         get_diff(ctx).await
@@ -612,12 +659,23 @@ async fn run_react_loop(
         })
         .collect();
 
-    let outcome = if final_answer.is_empty() {
+    let mut outcome = if final_answer.is_empty() {
         format!("Completed {iterations_used} step(s). Files touched: {}",
             if files_modified.is_empty() { "none".to_string() } else { files_modified.join(", ") })
     } else {
         final_answer
     };
+
+    if let Some(reason) = followup_reason(
+        dry_run,
+        build_verified,
+        attempted_write,
+        files_modified.len(),
+        had_tool_errors,
+        last_tool_error.as_deref(),
+    ) {
+        outcome = format!("⚠️ {reason}\n\n{outcome}");
+    }
 
     let outcome = if auto_committed {
         format!("{outcome}\n\n✅ 已自動 commit（cargo check 通過）")
@@ -654,9 +712,11 @@ async fn gather_project_context(ctx: &AgentContext, task: &str) -> String {
         .and_then(|v| v.get("summary").and_then(Value::as_str).map(|s| s.to_string()))
         .unwrap_or_default();
 
-    // Use only the first 60 chars of the task as the search query — long task
-    // strings produce noisy semantic search results.
-    let search_query: String = task.chars().take(60).collect();
+    let path_hints = extract_path_hints_from_task(task);
+    let search_query = path_hints
+        .first()
+        .cloned()
+        .unwrap_or_else(|| task.chars().take(60).collect());
     let search = ctx
         .call_tool("codebase_search", json!({ "query": search_query, "limit": 4 }))
         .await
@@ -664,9 +724,64 @@ async fn gather_project_context(ctx: &AgentContext, task: &str) -> String {
         .map(|v| format_tool_output(&v))
         .unwrap_or_default();
 
+    let explicit_file_context = build_task_named_file_context(&path_hints);
+
     format!(
-        "Project overview: {overview}\n\nRelevant codebase context:\n{search}"
+        "Project overview: {overview}\n\nRelevant codebase context:\n{search}{explicit_file_context}"
     )
+}
+
+fn extract_path_hints_from_task(task: &str) -> Vec<String> {
+    let mut hints = Vec::new();
+    let known_exts = [".rs", ".toml", ".md", ".json", ".yaml", ".yml", ".tsx", ".ts", ".js"];
+
+    for raw in task.split_whitespace() {
+        let trimmed = raw
+            .trim()
+            .trim_matches(|c: char| {
+                matches!(c, '`' | '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | '，' | '。' | ':' | '：' | ';' | '；' | '?' | '？')
+            })
+            .replace('\\', "/");
+        let cleaned: String = trimmed
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-'))
+            .collect();
+
+        if cleaned.is_empty() {
+            continue;
+        }
+
+        let looks_like_path = cleaned.contains('/')
+            || cleaned.starts_with("src")
+            || cleaned.starts_with("tests")
+            || cleaned.starts_with("app")
+            || cleaned.starts_with("config");
+        let has_known_ext = known_exts.iter().any(|ext| cleaned.ends_with(ext));
+
+        if (looks_like_path || has_known_ext) && !hints.contains(&cleaned) {
+            hints.push(cleaned);
+        }
+
+        if hints.len() >= 3 {
+            break;
+        }
+    }
+
+    hints
+}
+
+fn build_task_named_file_context(path_hints: &[String]) -> String {
+    let blocks: Vec<String> = path_hints
+        .iter()
+        .take(2)
+        .filter_map(|path| {
+            crate::memory::inspect_project_file_range(path, Some(1), Some(120), 5000)
+                .ok()
+                .map(|content| format!("\n\n## Task-named file hint\nRequested path: {path}\n{content}"))
+        })
+        .collect();
+
+    blocks.join("")
 }
 
 async fn make_plan(ctx: &AgentContext, task: &str, project_ctx: &str) -> String {
@@ -776,6 +891,10 @@ Decide the next single action to take.
 
 **Tool preferences:**
 - Prefer `file_patch` over `file_write` whenever you are making partial changes to an existing file. `file_patch` is surgical and safe — it fails atomically if the context doesn't match, preventing accidental corruption.
+- Before any write, first confirm the exact target path with `local_file_read`, `file_list`, or `codebase_search`. In Rust projects, `foo.rs` may actually live at `foo/mod.rs`.
+- If the task explicitly names a file path, inspect that path first and treat the resolved file as primary evidence.
+- If a read/patch returns `not found` or `old_str` mismatch, do NOT say `DONE`. Re-discover the real path, re-read the latest file, and then retry the surgical patch.
+- If the requested behavior is already present, cite the confirming file/path evidence in `final_answer` instead of forcing another edit.
 - Use `plan_execute` when the task requires changes to multiple files — batch all the `file_patch` (and optionally a final `shell_exec`) calls into one `plan_execute` action to complete the work in a single step.
 - Use `call_graph_query` to understand callers and callees before modifying a function.
 
@@ -799,6 +918,7 @@ struct ReactStep {
     action: String,
     action_input: Value,
     final_answer: Option<String>,
+    parse_error: bool,
 }
 
 fn extract_json_body(raw: &str) -> &str {
@@ -838,19 +958,98 @@ fn parse_react_step(raw: &str) -> ReactStep {
             .and_then(Value::as_str)
             .map(|s| s.to_string())
             .filter(|s| !s.is_empty());
-        return ReactStep { thought, action, action_input, final_answer };
+        return ReactStep { thought, action, action_input, final_answer, parse_error: false };
     }
 
-    // Fallback: LLM didn't produce valid JSON — stop the loop gracefully.
+    // Fallback: LLM didn't produce valid JSON — request another iteration
+    // instead of falsely treating the task as complete.
     ReactStep {
         thought: format!("(LLM response could not be parsed as JSON) raw={}", preview_text(raw)),
-        action: "DONE".to_string(),
+        action: "INVALID_JSON".to_string(),
         action_input: json!({}),
-        final_answer: Some(format!("Could not parse LLM step. Raw output: {}", preview_text(raw))),
+        final_answer: None,
+        parse_error: true,
     }
 }
 
 // ── Post-processing ───────────────────────────────────────────────────────────
+
+fn overall_verified(
+    dry_run: bool,
+    build_verified: bool,
+    attempted_write: bool,
+    files_modified_count: usize,
+    had_tool_errors: bool,
+) -> bool {
+    if dry_run || !build_verified {
+        return false;
+    }
+    if attempted_write && files_modified_count == 0 {
+        return false;
+    }
+    if had_tool_errors && files_modified_count == 0 {
+        return false;
+    }
+    true
+}
+
+fn followup_reason(
+    dry_run: bool,
+    build_verified: bool,
+    attempted_write: bool,
+    files_modified_count: usize,
+    had_tool_errors: bool,
+    last_tool_error: Option<&str>,
+) -> Option<String> {
+    if dry_run {
+        return None;
+    }
+
+    if !build_verified {
+        return Some("cargo check 尚未通過，任務仍需 follow-up。".to_string());
+    }
+
+    if attempted_write && files_modified_count == 0 {
+        let suffix = last_tool_error
+            .map(|err| format!(" 最後錯誤：{err}"))
+            .unwrap_or_default();
+        return Some(format!(
+            "Agent 曾嘗試修改程式，但沒有任何檔案真正寫入；這通常代表路徑猜錯、上下文已過期，或 patch 比對失敗。請先重新確認真實檔案位置後再繼續。{suffix}"
+        ));
+    }
+
+    if had_tool_errors && files_modified_count == 0 {
+        let suffix = last_tool_error
+            .map(|err| format!(" 最後錯誤：{err}"))
+            .unwrap_or_default();
+        return Some(format!("工具執行過程仍有錯誤，任務需要 follow-up。{suffix}"));
+    }
+
+    None
+}
+
+fn maybe_enrich_tool_error(action_name: &str, observation: String) -> String {
+    if !observation.starts_with("ERROR:") {
+        return observation;
+    }
+
+    let lower = observation.to_lowercase();
+    let looks_like_path_issue = lower.contains("could not resolve local project file")
+        || lower.contains("cannot read '")
+        || lower.contains("patch aborted")
+        || lower.contains("not found in '")
+        || lower.contains("directory not found");
+
+    if looks_like_path_issue
+        && matches!(action_name, "local_file_read" | "file_patch" | "file_write" | "plan_execute")
+    {
+        format!(
+            "{observation}\nHint: verify the real path with file_list/codebase_search before more writes. In Rust projects, `foo.rs` may actually be `foo/mod.rs`."
+        )
+    } else {
+        observation
+    }
+}
 
 async fn verify_build(ctx: &AgentContext) -> (bool, Option<String>) {
     match ctx
@@ -1096,6 +1295,40 @@ mod tests {
         );
     }
 
+    #[test]
+    fn extract_path_hints_from_task_finds_explicit_repo_paths() {
+        let task = "請幫我檢查 src/telegram.rs 和 src/llm.rs，看看 task 開始時要在哪裡加 log。";
+        let hints = extract_path_hints_from_task(task);
+        assert!(hints.iter().any(|p| p == "src/telegram.rs"), "missing telegram path: {hints:?}");
+        assert!(hints.iter().any(|p| p == "src/llm.rs"), "missing llm path: {hints:?}");
+    }
+
+    /// Live dry-run development-task test using the real coding workflow.
+    /// Run: `cargo test gemini_dry_run_real_dev_task -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore = "requires Gemini API key in .env (LLM_PROVIDER=gemini)"]
+    async fn gemini_dry_run_real_dev_task() {
+        let _ = dotenvy::dotenv();
+
+        let task = "請分析 `src/telegram.rs` 的 listener / 回覆流程，找出實際應修改的檔案，並說明若要在任務開始時印出 AI backend 與 model，最小修改點會在哪裡。不要寫入檔案。";
+
+        let response = run_coding_via_adk(task.to_string(), true, None, None).await;
+
+        println!("\n=== Gemini dry-run dev task ===");
+        println!("Outcome: {}", response.outcome);
+        println!("Iterations: {}", response.iterations_used);
+        println!("Trace:\n{}", response.trace.join("\n---\n"));
+
+        assert!(
+            !response.outcome.starts_with("Error:"),
+            "coding workflow returned an error: {}",
+            response.outcome
+        );
+        assert!(response.iterations_used > 0, "expected the coding workflow to take at least one step");
+        assert!(!response.outcome.is_empty(), "outcome should not be empty");
+        assert!(!response.verified, "dry-run task should not be marked as build-verified");
+    }
+
     /// Gemini 能力驗證：設計並新增兩個模組（AppConfig + LogManager）
     /// Run: cargo test gemini_config_and_log -- --ignored --nocapture
     #[tokio::test]
@@ -1151,10 +1384,18 @@ mod tests {
     }
 
     #[test]
-    fn parse_react_step_bad_json_gracefully_stops() {
+    fn parse_react_step_bad_json_requests_retry() {
         let step = parse_react_step("not valid json at all");
-        assert_eq!(step.action, "DONE");
-        assert!(step.final_answer.is_some());
+        assert_eq!(step.action, "INVALID_JSON");
+        assert!(step.parse_error);
+        assert!(step.final_answer.is_none());
+    }
+
+    #[test]
+    fn overall_verified_requires_actual_write_evidence_after_write_attempts() {
+        assert!(!overall_verified(false, true, true, 0, true));
+        assert!(overall_verified(false, true, true, 1, true));
+        assert!(overall_verified(false, true, false, 0, false));
     }
 
     #[test]

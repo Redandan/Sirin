@@ -643,7 +643,18 @@ fn safe_project_path(path: &str) -> Result<std::path::PathBuf, String> {
     let requested = root.join(path);
 
     // We can't canonicalize a path that doesn't exist yet, so normalize manually.
-    let normalized = normalize_path(&requested);
+    let mut normalized = normalize_path(&requested);
+
+    // Rust module convenience: if the agent guesses `foo.rs` but the project
+    // actually uses `foo/mod.rs`, transparently resolve to the existing file.
+    if !normalized.exists()
+        && normalized.extension().and_then(|ext| ext.to_str()) == Some("rs")
+    {
+        let mod_candidate = normalized.with_extension("").join("mod.rs");
+        if mod_candidate.is_file() {
+            normalized = mod_candidate;
+        }
+    }
 
     // Security: ensure normalized path starts with root.
     let root_canon = std::fs::canonicalize(&root).unwrap_or(root.clone());
@@ -814,6 +825,17 @@ mod tests {
         let p = std::path::PathBuf::from("/tmp/foo/../bar");
         let norm = normalize_path(&p);
         assert_eq!(norm, std::path::PathBuf::from("/tmp/bar"));
+    }
+
+    #[test]
+    fn safe_project_path_resolves_rust_module_to_mod_rs() {
+        let path = safe_project_path("src/telegram.rs")
+            .expect("should resolve Rust module path to the existing mod.rs file");
+        assert!(
+            path.ends_with(std::path::Path::new("src/telegram/mod.rs")),
+            "unexpected resolved path: {}",
+            path.display()
+        );
     }
 
     #[tokio::test]

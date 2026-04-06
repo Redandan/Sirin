@@ -701,6 +701,9 @@ fn resolve_project_file_path(root: &Path, path_hint: &str) -> Option<PathBuf> {
     } else {
         root.join(&normalized)
     };
+    let rust_mod_candidate = normalized
+        .strip_suffix(".rs")
+        .map(|stem| root.join(stem).join("mod.rs"));
 
     if candidate.is_file() {
         let canonical = fs::canonicalize(&candidate).ok().unwrap_or(candidate.clone());
@@ -709,9 +712,21 @@ fn resolve_project_file_path(root: &Path, path_hint: &str) -> Option<PathBuf> {
         }
     }
 
+    if let Some(mod_candidate) = rust_mod_candidate {
+        if mod_candidate.is_file() {
+            let canonical = fs::canonicalize(&mod_candidate).ok().unwrap_or(mod_candidate.clone());
+            if canonical.starts_with(&root_canonical) {
+                return Some(mod_candidate);
+            }
+        }
+    }
+
     let mut files = Vec::new();
     collect_codebase_files(root, &mut files).ok()?;
     let normalized_lower = normalized.to_lowercase();
+    let rust_mod_suffix = normalized_lower
+        .strip_suffix(".rs")
+        .map(|stem| format!("{stem}/mod.rs"));
 
     files.into_iter().find(|path| {
         let rel = relative_display(path, root).to_lowercase();
@@ -720,7 +735,13 @@ fn resolve_project_file_path(root: &Path, path_hint: &str) -> Option<PathBuf> {
             .and_then(|v| v.to_str())
             .unwrap_or_default()
             .to_lowercase();
-        rel == normalized_lower || rel.ends_with(&normalized_lower) || name == normalized_lower
+        rel == normalized_lower
+            || rel.ends_with(&normalized_lower)
+            || name == normalized_lower
+            || rust_mod_suffix
+                .as_ref()
+                .map(|suffix| rel == *suffix || rel.ends_with(suffix))
+                .unwrap_or(false)
     })
 }
 
@@ -1085,6 +1106,16 @@ mod tests {
         let content = result.expect("should find src/main.rs");
         // The header line should mention the range.
         assert!(content.contains("lines 1"), "range note should appear in header: {content}");
+    }
+
+    #[test]
+    fn range_read_resolves_rust_module_path_to_mod_rs() {
+        let result = inspect_project_file_range("src/telegram.rs", Some(1), Some(5), 4000);
+        let content = result.expect("should resolve Rust module path to src/telegram/mod.rs");
+        assert!(
+            content.contains("File: src/telegram/mod.rs"),
+            "expected module path resolution, got: {content}"
+        );
     }
 
     // ── collect_codebase_files ────────────────────────────────────────────────
