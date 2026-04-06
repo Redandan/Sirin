@@ -369,6 +369,8 @@ async fn call_openai(
 }
 
 /// Send a pre-built messages array to an OpenAI-compatible endpoint.
+/// Retries up to 3 times on HTTP 429 (Too Many Requests) with exponential back-off
+/// (30 s → 60 s → 120 s), honouring the `Retry-After` response header when present.
 async fn call_openai_messages(
     client: &reqwest::Client,
     base_url: &str,
@@ -378,12 +380,32 @@ async fn call_openai_messages(
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let body = OpenAiRequest { model, messages, stream: false };
-    let mut req = client.post(&url).json(&body);
-    if let Some(key) = api_key {
-        req = req.bearer_auth(key);
+
+    let mut attempt = 0u32;
+    loop {
+        let mut req = client.post(&url).json(&body);
+        if let Some(key) = api_key {
+            req = req.bearer_auth(key);
+        }
+        let resp = req.send().await?;
+        if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            if attempt >= 3 {
+                return Err(resp.error_for_status().unwrap_err().into());
+            }
+            let wait_secs = resp
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(30u64 << attempt); // 30 → 60 → 120
+            eprintln!("[llm] 429 rate-limited — retrying in {}s (attempt {}/3)", wait_secs, attempt + 1);
+            tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
+            attempt += 1;
+            continue;
+        }
+        let parsed: OpenAiResponse = resp.error_for_status()?.json().await?;
+        return Ok(parsed.choices.first().map(|c| c.message.content.trim().to_string()).unwrap_or_default());
     }
-    let resp: OpenAiResponse = req.send().await?.error_for_status()?.json().await?;
-    Ok(resp.choices.first().map(|c| c.message.content.trim().to_string()).unwrap_or_default())
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -583,11 +605,31 @@ where
         messages: vec![OpenAiMessage { role: "user".into(), content: prompt }],
         stream: true,
     };
-    let mut req = client.post(&url).json(&body);
-    if let Some(key) = api_key {
-        req = req.bearer_auth(key);
-    }
-    let resp = req.send().await?.error_for_status()?;
+
+    let mut attempt = 0u32;
+    let resp = loop {
+        let mut req = client.post(&url).json(&body);
+        if let Some(key) = api_key {
+            req = req.bearer_auth(key);
+        }
+        let r = req.send().await?;
+        if r.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            if attempt >= 3 {
+                return Err(r.error_for_status().unwrap_err().into());
+            }
+            let wait_secs = r
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(30u64 << attempt);
+            eprintln!("[llm] 429 rate-limited — retrying in {}s (attempt {}/3)", wait_secs, attempt + 1);
+            tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
+            attempt += 1;
+            continue;
+        }
+        break r.error_for_status()?;
+    };
 
     let mut stream = resp.bytes_stream();
     let mut full = String::new();

@@ -169,6 +169,13 @@ async fn run_react_loop(
     const MAX_PATCH_ERRORS: u32 = 2;
     let write_tools = ["file_write", "file_patch", "plan_execute"];
 
+    // Read cache: deduplicates local_file_read calls within one task so the
+    // model can't waste iterations re-reading files it already inspected.
+    // Key = file path.  Value = (first_read_iteration, formatted_content).
+    // Invalidated when file_patch / file_write succeeds on that path.
+    let mut file_read_cache: std::collections::HashMap<String, (usize, String)> =
+        std::collections::HashMap::new();
+
     // Sliding window: only pass recent N entries to the LLM.
     // file_read entries are "pinned" and kept, but capped at MAX_PINNED to
     // prevent context explosion when many files are read in one task.
@@ -275,39 +282,68 @@ async fn run_react_loop(
         };
 
         let is_file_read = step.action == "local_file_read";
-        let observation = match ctx.call_tool(&step.action, tool_input).await {
-            Ok(v) => {
-                // Track which files were written.
-                if step.action == "file_write" || step.action == "file_patch" {
-                    if let Some(path) = v.get("path").and_then(Value::as_str) {
-                        if !files_modified.contains(&path.to_string()) {
-                            files_modified.push(path.to_string());
+
+        // Invalidate cache when a file is about to be modified so a subsequent
+        // read fetches the updated content instead of the stale cached version.
+        if step.action == "file_patch" || step.action == "file_write" {
+            if let Some(path) = step.action_input.get("path").and_then(Value::as_str) {
+                file_read_cache.remove(path);
+            }
+        }
+
+        // Short-circuit duplicate file reads: return cached content immediately
+        // without consuming an API round-trip.
+        let observation = if is_file_read {
+            let path_key = step.action_input
+                .get("path")
+                .or_else(|| step.action_input.get("file_path"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_default();
+            if let Some((cached_iter, cached)) = file_read_cache.get(&path_key) {
+                sirin_log!("[coding_agent] cache hit: {path_key} (first read at iter {cached_iter})");
+                format!("[Already read at iteration {cached_iter} — content unchanged, using cache]\n{cached}")
+            } else {
+                match ctx.call_tool(&step.action, tool_input).await {
+                    Ok(v) => {
+                        let out = format_tool_output_large(&v);
+                        if !path_key.is_empty() {
+                            file_read_cache.insert(path_key, (iteration, out.clone()));
+                        }
+                        out
+                    }
+                    Err(e) => format!("ERROR: {e}"),
+                }
+            }
+        } else {
+            match ctx.call_tool(&step.action, tool_input).await {
+                Ok(v) => {
+                    // Track which files were written.
+                    if step.action == "file_write" || step.action == "file_patch" {
+                        if let Some(path) = v.get("path").and_then(Value::as_str) {
+                            if !files_modified.contains(&path.to_string()) {
+                                files_modified.push(path.to_string());
+                            }
                         }
                     }
-                }
-                // Track files touched via plan_execute steps.
-                if step.action == "plan_execute" {
-                    if let Some(results) = v.get("results").and_then(Value::as_array) {
-                        for r in results {
-                            if let Some(result) = r.get("result") {
-                                if let Some(path) = result.get("path").and_then(Value::as_str) {
-                                    if !files_modified.contains(&path.to_string()) {
-                                        files_modified.push(path.to_string());
+                    // Track files touched via plan_execute steps.
+                    if step.action == "plan_execute" {
+                        if let Some(results) = v.get("results").and_then(Value::as_array) {
+                            for r in results {
+                                if let Some(result) = r.get("result") {
+                                    if let Some(path) = result.get("path").and_then(Value::as_str) {
+                                        if !files_modified.contains(&path.to_string()) {
+                                            files_modified.push(path.to_string());
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                }
-                // file_read observations get a larger budget so the LLM sees enough
-                // context to construct accurate old_str for file_patch.
-                if is_file_read {
-                    format_tool_output_large(&v)
-                } else {
                     format_tool_output(&v)
                 }
+                Err(e) => format!("ERROR: {e}"),
             }
-            Err(e) => format!("ERROR: {e}"),
         };
 
         let action_name = step.action.clone();
