@@ -1025,4 +1025,111 @@ mod tests {
         // The header line should mention the range.
         assert!(content.contains("lines 1"), "range note should appear in header: {content}");
     }
+
+    // ── collect_codebase_files ────────────────────────────────────────────────
+
+    #[test]
+    fn collect_skips_excluded_dirs() {
+        use std::io;
+
+        let tmp = std::env::temp_dir().join(format!("sirin_collect_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join("src")).unwrap();
+        fs::create_dir_all(tmp.join("target/debug")).unwrap();
+        fs::create_dir_all(tmp.join(".git/objects")).unwrap();
+        fs::create_dir_all(tmp.join("node_modules/pkg")).unwrap();
+
+        fs::write(tmp.join("src/main.rs"), "fn main() {}").unwrap();
+        fs::write(tmp.join("target/debug/artifact.rs"), "// should skip").unwrap();
+        fs::write(tmp.join(".git/objects/pack"), "binary").unwrap();
+        fs::write(tmp.join("node_modules/pkg/index.js"), "module.exports={}").unwrap();
+
+        let mut found: Vec<std::path::PathBuf> = Vec::new();
+        collect_codebase_files(&tmp, &mut found).unwrap();
+
+        let names: Vec<String> = found.iter()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .collect();
+
+        assert!(names.iter().any(|n| n.ends_with("src/main.rs")), "should include src/main.rs");
+        assert!(!names.iter().any(|n| n.contains("/target/")), "should skip target/");
+        assert!(!names.iter().any(|n| n.contains("/.git/")), "should skip .git/");
+        assert!(!names.iter().any(|n| n.contains("/node_modules/")), "should skip node_modules/");
+
+        let _ = fs::remove_dir_all(&tmp);
+        let _: io::Result<()> = Ok(());
+    }
+
+    // ── is_codebase_candidate ─────────────────────────────────────────────────
+
+    #[test]
+    fn candidate_accepts_source_extensions() {
+        let tmp = std::env::temp_dir().join(format!("sirin_cand_{}", std::process::id()));
+        fs::create_dir_all(&tmp).unwrap();
+
+        for ext in ["main.rs", "Cargo.toml", "README.md", "config.yaml", "app.ts", "page.tsx"] {
+            let p = tmp.join(ext);
+            fs::write(&p, "content").unwrap();
+            let meta = fs::metadata(&p).unwrap();
+            assert!(is_codebase_candidate(&p, &meta), "should accept .{}", ext);
+        }
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn candidate_rejects_unknown_extensions() {
+        let tmp = std::env::temp_dir().join(format!("sirin_rej_{}", std::process::id()));
+        fs::create_dir_all(&tmp).unwrap();
+
+        for name in ["binary.exe", "archive.zip", "image.png", "data.bin"] {
+            let p = tmp.join(name);
+            fs::write(&p, "content").unwrap();
+            let meta = fs::metadata(&p).unwrap();
+            assert!(!is_codebase_candidate(&p, &meta), "should reject {name}");
+        }
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    // ── extract_symbols ───────────────────────────────────────────────────────
+
+    #[test]
+    fn extract_symbols_handles_async_and_pub() {
+        let src = "pub async fn run_listener() {}\nasync fn helper_task() {}\npub struct Config {}";
+        let syms = extract_symbols(std::path::Path::new("src/foo.rs"), src);
+        assert!(syms.contains(&"run_listener".to_string()), "should extract pub async fn");
+        assert!(syms.contains(&"helper_task".to_string()), "should extract async fn");
+        assert!(syms.contains(&"Config".to_string()), "should extract pub struct");
+    }
+
+    #[test]
+    fn extract_symbols_caps_at_twelve() {
+        // Generate 20 distinct functions.
+        let src: String = (0..20).map(|i| format!("fn func_{i}() {{}}\n")).collect();
+        let syms = extract_symbols(std::path::Path::new("src/foo.rs"), &src);
+        assert!(syms.len() <= 12, "should cap at 12 symbols, got {}", syms.len());
+    }
+
+    // ── refresh_codebase_index ────────────────────────────────────────────────
+
+    #[test]
+    fn refresh_returns_nonzero_for_real_project() {
+        // run against the actual Sirin workspace (Cargo.toml is present in cwd)
+        let count = refresh_codebase_index();
+        assert!(count.is_ok(), "refresh should succeed: {:?}", count.err());
+        assert!(count.unwrap() > 0, "should have indexed at least one file");
+    }
+
+    #[test]
+    fn search_codebase_finds_relevant_results() {
+        // Ensure index exists first.
+        let _ = refresh_codebase_index();
+        let results = search_codebase("planner agent intent", 5);
+        assert!(results.is_ok(), "search should succeed");
+        let results = results.unwrap();
+        // The planner_agent module must surface in results.
+        assert!(
+            results.iter().any(|r| r.to_lowercase().contains("planner")),
+            "planner should appear in results: {:?}", results
+        );
+    }
 }

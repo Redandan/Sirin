@@ -149,6 +149,7 @@ async fn fetch_page(url: &str) -> Option<String> {
 // ── Full pipeline test ────────────────────────────────────────────────────────
 
 #[tokio::test]
+#[ignore = "requires local LM Studio at http://localhost:1234"]
 async fn research_full_pipeline() {
     let topic = "AgoraMarket 平台功能分析";
     let url   = "https://agoramarket.purrtechllc.com/";

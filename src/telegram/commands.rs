@@ -221,3 +221,190 @@ pub fn execute_user_request(
 
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── message_preview ───────────────────────────────────────────────────────
+
+    #[test]
+    fn preview_truncates_long_text() {
+        let text = "a".repeat(200);
+        let p = message_preview(&text, 80);
+        assert!(p.ends_with("..."), "should add ellipsis");
+        // body is exactly 80 chars, then "..." = 83
+        assert!(p.len() <= 83);
+    }
+
+    #[test]
+    fn preview_passes_short_text_unchanged() {
+        assert_eq!(message_preview("hello world", 80), "hello world");
+    }
+
+    #[test]
+    fn preview_normalizes_whitespace() {
+        assert_eq!(message_preview("hello   world", 80), "hello world");
+    }
+
+    // ── should_search ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn should_search_detects_question_marks() {
+        assert!(should_search("Rust 是什麼?"));
+        assert!(should_search("How does async work？"));
+    }
+
+    #[test]
+    fn should_search_detects_chinese_keywords() {
+        assert!(should_search("Rust 是什麼"));
+        assert!(should_search("如何使用 tokio"));
+        assert!(should_search("為什麼需要 lifetime"));
+        assert!(should_search("怎麼實作 async"));
+        assert!(should_search("哪裡可以找到文件"));
+    }
+
+    #[test]
+    fn should_search_detects_english_keywords() {
+        assert!(should_search("what is async"));
+        assert!(should_search("how does this work"));
+        assert!(should_search("why is Rust safe"));
+        assert!(should_search("when did Rust release"));
+        assert!(should_search("where is the config file"));
+        assert!(should_search("who wrote this code"));
+    }
+
+    #[test]
+    fn should_search_rejects_plain_commands() {
+        assert!(!should_search("幫我修改 src/llm.rs"));
+        assert!(!should_search("add a feature to the router"));
+        assert!(!should_search("refactor this function"));
+    }
+
+    // ── detect_research_intent ───────────────────────────────────────────────
+
+    #[test]
+    fn research_intent_accepts_all_trigger_prefixes() {
+        let cases = [
+            ("調研 Rust async", "Rust async"),
+            ("研究 Rust async", "Rust async"),
+            ("幫我研究 Rust async", "Rust async"),
+            ("幫我調研 Rust async", "Rust async"),
+            ("幫我查一下 Rust async", "Rust async"),
+            ("幫我查 Rust async", "Rust async"),
+            ("深入研究 Rust async", "Rust async"),
+            ("背景調研 Rust async", "Rust async"),
+        ];
+        for (text, expected_topic_fragment) in &cases {
+            let result = detect_research_intent(text);
+            assert!(result.is_some(), "should match: {text}");
+            let (topic, url) = result.unwrap();
+            assert!(
+                topic.contains(expected_topic_fragment),
+                "topic should contain '{expected_topic_fragment}', got: {topic}"
+            );
+            assert_eq!(url, None, "no URL in: {text}");
+        }
+    }
+
+    #[test]
+    fn research_intent_extracts_url() {
+        let result = detect_research_intent("幫我研究 https://example.com 的功能");
+        assert!(result.is_some());
+        let (_topic, url) = result.unwrap();
+        assert_eq!(url, Some("https://example.com".to_string()));
+    }
+
+    #[test]
+    fn research_intent_extracts_http_url() {
+        let result = detect_research_intent("調研 http://localhost:8080 的 API");
+        let (_topic, url) = result.unwrap();
+        assert_eq!(url, Some("http://localhost:8080".to_string()));
+    }
+
+    #[test]
+    fn research_intent_rejects_non_research() {
+        assert!(detect_research_intent("你是誰").is_none());
+        assert!(detect_research_intent("幫我修改 llm.rs").is_none());
+        assert!(detect_research_intent("hello world").is_none());
+        assert!(detect_research_intent("").is_none());
+    }
+
+    // ── execute_user_request ─────────────────────────────────────────────────
+
+    fn tmp_tracker(suffix: &str) -> (crate::persona::TaskTracker, std::path::PathBuf) {
+        let path = std::env::temp_dir()
+            .join(format!("sirin_cmd_test_{}_{}.jsonl", std::process::id(), suffix));
+        (crate::persona::TaskTracker::new(&path), path)
+    }
+
+    #[test]
+    fn execute_creates_todo_and_records_pending() {
+        let (tracker, path) = tmp_tracker("create");
+        let result = execute_user_request("todo 測試任務描述", &tracker, "Sirin");
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("PENDING"));
+        let entries = tracker.read_last_n(10).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].status.as_deref(), Some("PENDING"));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn execute_todo_chinese_prefix_also_records() {
+        let (tracker, path) = tmp_tracker("zh_todo");
+        let result = execute_user_request("待辦 買咖啡", &tracker, "Sirin");
+        assert!(result.is_some(), "待辦 prefix should be recognized");
+        let entries = tracker.read_last_n(10).unwrap();
+        assert!(!entries.is_empty());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn execute_query_returns_empty_when_no_todos() {
+        let (tracker, path) = tmp_tracker("query_empty");
+        let result = execute_user_request("查詢待辦", &tracker, "Sirin");
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("沒有"));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn execute_query_lists_pending_todos() {
+        let (tracker, path) = tmp_tracker("query_list");
+        execute_user_request("todo 任務A", &tracker, "Sirin");
+        let result = execute_user_request("查詢待辦", &tracker, "Sirin");
+        let msg = result.unwrap();
+        assert!(msg.contains("PENDING") || msg.contains("待辦"), "should list tasks: {msg}");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn execute_complete_latest_marks_done() {
+        let (tracker, path) = tmp_tracker("complete");
+        execute_user_request("todo 待完成任務", &tracker, "Sirin");
+        let result = execute_user_request("完成最新待辦", &tracker, "Sirin");
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("DONE"));
+        let entries = tracker.read_last_n(10).unwrap();
+        assert_eq!(entries[0].status.as_deref(), Some("DONE"));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn execute_returns_none_for_unrecognized_input() {
+        let (tracker, path) = tmp_tracker("none");
+        let result = execute_user_request("你好", &tracker, "Sirin");
+        assert_eq!(result, None);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn execute_complete_when_nothing_pending_says_so() {
+        let (tracker, path) = tmp_tracker("no_pending");
+        let result = execute_user_request("完成最新待辦", &tracker, "Sirin");
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("沒有"));
+        std::fs::remove_file(&path).ok();
+    }
+}

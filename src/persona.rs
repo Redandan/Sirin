@@ -602,4 +602,135 @@ mod tests {
         assert!(decision.high_priority);
         assert!(matches!(decision.tier, ActionTier::Escalate));
     }
+
+    // ── Persona serialisation ─────────────────────────────────────────────────
+
+    #[test]
+    fn persona_load_reads_config_yaml() {
+        let p = Persona::load();
+        assert!(p.is_ok(), "config/persona.yaml should be loadable: {:?}", p.err());
+        let p = p.unwrap();
+        assert!(!p.identity.name.is_empty(), "persona name must not be empty");
+    }
+
+    #[test]
+    fn persona_yaml_roundtrip() {
+        let p = test_persona();
+        let yaml = serde_yaml::to_string(&p).expect("serialization should not fail");
+        let reloaded: Persona = serde_yaml::from_str(&yaml).expect("deserialization should not fail");
+        assert_eq!(reloaded.identity.name, p.identity.name);
+        assert_eq!(reloaded.objectives, p.objectives);
+        assert!((reloaded.roi_thresholds.min_usd_to_notify - p.roi_thresholds.min_usd_to_notify).abs() < f64::EPSILON);
+    }
+
+    // ── TaskTracker ───────────────────────────────────────────────────────────
+
+    fn tmp_tracker(label: &str) -> (TaskTracker, std::path::PathBuf) {
+        let path = std::env::temp_dir()
+            .join(format!("sirin_persona_test_{}_{}.jsonl", std::process::id(), label));
+        (TaskTracker::new(&path), path)
+    }
+
+    #[test]
+    fn tracker_record_and_read_roundtrip() {
+        let (tracker, path) = tmp_tracker("roundtrip");
+        let entry = TaskEntry::heartbeat("TestPersona");
+        tracker.record(&entry).expect("record should succeed");
+
+        let entries = tracker.read_last_n(10).expect("read should succeed");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].persona, "TestPersona");
+        assert_eq!(entries[0].event, "heartbeat");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn tracker_read_last_n_returns_tail() {
+        let (tracker, path) = tmp_tracker("tail");
+        for i in 0..10usize {
+            let mut e = TaskEntry::heartbeat("P");
+            e.reason = Some(format!("entry {i}"));
+            tracker.record(&e).expect("record ok");
+        }
+        let entries = tracker.read_last_n(3).expect("read ok");
+        assert_eq!(entries.len(), 3);
+        // The 3 newest entries should be entries 7, 8, 9.
+        assert_eq!(entries[2].reason.as_deref(), Some("entry 9"));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn tracker_read_missing_file_returns_empty() {
+        let path = std::env::temp_dir().join("sirin_nonexistent_tracker.jsonl");
+        let _ = std::fs::remove_file(&path); // ensure absent
+        let tracker = TaskTracker::new(&path);
+        let entries = tracker.read_last_n(10).expect("should succeed even if file is absent");
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn tracker_update_statuses_rewrites_atomically() {
+        let (tracker, path) = tmp_tracker("update");
+        let mut entry = TaskEntry::heartbeat("P");
+        entry.status = Some("PENDING".to_string());
+        let ts = entry.timestamp.clone();
+        tracker.record(&entry).expect("record ok");
+
+        let mut updates = std::collections::HashMap::new();
+        updates.insert(ts, "DONE".to_string());
+        tracker.update_statuses(&updates).expect("update ok");
+
+        let entries = tracker.read_last_n(10).expect("read ok");
+        assert_eq!(entries[0].status.as_deref(), Some("DONE"));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn tracker_update_statuses_noop_when_empty() {
+        let (tracker, path) = tmp_tracker("noop");
+        // Should not fail even when no updates provided.
+        tracker.update_statuses(&std::collections::HashMap::new()).expect("noop ok");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn tracker_trim_to_max_removes_oldest_entries() {
+        let (tracker, path) = tmp_tracker("trim");
+        for i in 0..8usize {
+            let mut e = TaskEntry::heartbeat("P");
+            e.reason = Some(format!("entry {i}"));
+            tracker.record(&e).expect("record ok");
+        }
+        let removed = tracker.trim_to_max(5).expect("trim ok");
+        assert_eq!(removed, 3);
+        let remaining = tracker.read_last_n(10).expect("read ok");
+        assert_eq!(remaining.len(), 5);
+        assert_eq!(remaining[0].reason.as_deref(), Some("entry 3"), "oldest kept should be entry 3");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn tracker_trim_to_max_noop_when_under_limit() {
+        let (tracker, path) = tmp_tracker("trim_noop");
+        for _ in 0..3 {
+            tracker.record(&TaskEntry::heartbeat("P")).expect("record ok");
+        }
+        let removed = tracker.trim_to_max(10).expect("trim ok");
+        assert_eq!(removed, 0);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn tracker_find_by_timestamp_returns_correct_entry() {
+        let (tracker, path) = tmp_tracker("find");
+        let mut entry = TaskEntry::heartbeat("P");
+        entry.reason = Some("unique-reason".to_string());
+        let ts = entry.timestamp.clone();
+        tracker.record(&entry).expect("record ok");
+
+        let found = tracker.find_by_timestamp(&ts).expect("find ok");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().reason.as_deref(), Some("unique-reason"));
+        std::fs::remove_file(&path).ok();
+    }
 }

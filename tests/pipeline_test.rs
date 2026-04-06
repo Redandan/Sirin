@@ -139,6 +139,7 @@ async fn call_llm(prompt: &str) -> String {
 // ── Full pipeline test ────────────────────────────────────────────────────────
 
 #[tokio::test]
+#[ignore = "requires local LM Studio at http://localhost:1234"]
 async fn pipeline_receive_search_think_reply() {
     // ── Step 1: Simulate incoming Telegram message ────────────────────────────
     let incoming_msg = "Rust 語言的 async/await 是怎麼運作的？";

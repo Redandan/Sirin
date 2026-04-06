@@ -546,4 +546,70 @@ enum Color { Red, Green, Blue }
         // Clean up the cache after the test.
         invalidate_cache();
     }
+
+    // ── build_call_graph ──────────────────────────────────────────────────────
+
+    #[test]
+    fn build_call_graph_returns_entries_for_real_project() {
+        let entries = build_call_graph().expect("build_call_graph should succeed");
+        assert!(!entries.is_empty(), "should parse at least one symbol from the project");
+        // Every entry must have a non-empty symbol and path.
+        assert!(entries.iter().all(|e| !e.symbol.is_empty()), "all symbols should be non-empty");
+        assert!(entries.iter().all(|e| !e.path.is_empty()), "all paths should be non-empty");
+    }
+
+    #[test]
+    fn build_call_graph_finds_known_symbols() {
+        let entries = build_call_graph().expect("build should succeed");
+        let symbols: Vec<&str> = entries.iter().map(|e| e.symbol.as_str()).collect();
+        // These functions exist in the project and must be detected.
+        assert!(symbols.contains(&"run_react_loop"), "run_react_loop should be in call graph");
+        assert!(symbols.contains(&"memory_store"), "memory_store should be in call graph");
+    }
+
+    // ── refresh_call_graph writes to disk ─────────────────────────────────────
+    //
+    // NOTE: Tests that mutate the global graph_cache() run here serially because
+    // `query_returns_callers_and_callees` also manipulates the cache.
+    // These tests therefore only verify file I/O, not cache state.
+
+    #[test]
+    fn refresh_call_graph_writes_nonempty_file_to_disk() {
+        let count = refresh_call_graph().expect("refresh should succeed");
+        assert!(count > 0, "should have written at least one entry");
+
+        // Verify the on-disk file exists and is not empty.
+        let path = graph_file_path();
+        assert!(path.exists(), "graph file should be written to disk");
+        let content = std::fs::read_to_string(&path).expect("should read graph file");
+        assert!(!content.trim().is_empty(), "graph file should not be empty");
+
+        // Leave the cache in a known state.
+        invalidate_cache();
+    }
+
+    #[test]
+    fn graph_file_contains_valid_jsonl_entries() {
+        // Build entries without touching the cache.
+        let entries = build_call_graph().expect("build ok");
+
+        // Write to a temp file and verify round-trip.
+        let tmp = std::env::temp_dir()
+            .join(format!("sirin_cg_test_{}.jsonl", std::process::id()));
+        {
+            use std::io::Write as IoWrite;
+            let mut f = std::fs::File::create(&tmp).expect("create tmp ok");
+            for e in &entries {
+                writeln!(f, "{}", serde_json::to_string(e).expect("serialize ok")).expect("write ok");
+            }
+        }
+        let content = std::fs::read_to_string(&tmp).expect("read ok");
+        let loaded: Vec<CallGraphEntry> = content
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| serde_json::from_str(l).expect("deserialize ok"))
+            .collect();
+        assert_eq!(loaded.len(), entries.len(), "round-trip count should match");
+        std::fs::remove_file(&tmp).ok();
+    }
 }

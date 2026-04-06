@@ -1024,6 +1024,7 @@ mod tests {
                 .to_string(),
             true, // dry_run — no writes allowed
             None,
+            None, // context_block
         )
         .await;
 

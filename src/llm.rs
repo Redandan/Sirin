@@ -1174,3 +1174,93 @@ pub async fn probe_and_build_fleet(client: &reqwest::Client) -> AgentFleet {
 pub async fn probe_and_configure(client: &reqwest::Client) -> LlmConfig {
     probe_and_build_fleet(client).await.to_llm_config()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ollama_cfg() -> LlmConfig {
+        LlmConfig {
+            backend: LlmBackend::Ollama,
+            base_url: "http://localhost:11434".to_string(),
+            model: "llama3.2".to_string(),
+            api_key: None,
+            coding_model: None,
+            router_model: None,
+            large_model: None,
+        }
+    }
+
+    // ── effective_* fallback chain ────────────────────────────────────────────
+
+    #[test]
+    fn effective_models_fall_back_to_main_model() {
+        let cfg = ollama_cfg();
+        assert_eq!(cfg.effective_coding_model(), "llama3.2");
+        assert_eq!(cfg.effective_router_model(), "llama3.2");
+        assert_eq!(cfg.effective_large_model(), "llama3.2");
+    }
+
+    #[test]
+    fn effective_models_prefer_dedicated_when_set() {
+        let cfg = LlmConfig {
+            coding_model: Some("qwen2.5-coder".to_string()),
+            router_model: Some("phi3-mini".to_string()),
+            large_model: Some("llama3:70b".to_string()),
+            ..ollama_cfg()
+        };
+        assert_eq!(cfg.effective_coding_model(), "qwen2.5-coder");
+        assert_eq!(cfg.effective_router_model(), "phi3-mini");
+        assert_eq!(cfg.effective_large_model(), "llama3:70b");
+    }
+
+    #[test]
+    fn effective_partial_override_falls_back_correctly() {
+        // Only coding_model set; router and large fall back to main.
+        let cfg = LlmConfig {
+            coding_model: Some("qwen-coder:7b".to_string()),
+            ..ollama_cfg()
+        };
+        assert_eq!(cfg.effective_coding_model(), "qwen-coder:7b");
+        assert_eq!(cfg.effective_router_model(), "llama3.2", "router should fall back");
+        assert_eq!(cfg.effective_large_model(), "llama3.2", "large should fall back");
+    }
+
+    #[test]
+    fn backend_name_returns_correct_string() {
+        assert_eq!(ollama_cfg().backend_name(), "ollama");
+        let lm = LlmConfig { backend: LlmBackend::LmStudio, ..ollama_cfg() };
+        assert_eq!(lm.backend_name(), "lmstudio");
+    }
+
+    // ── LlmConfig::from_env smoke test (read-only, no mutation) ──────────────
+
+    #[test]
+    fn from_env_succeeds_without_panicking() {
+        // Should not panic regardless of what env vars are set.
+        let cfg = LlmConfig::from_env();
+        assert!(!cfg.model.is_empty(), "model must not be empty after from_env");
+        assert!(!cfg.base_url.is_empty(), "base_url must not be empty after from_env");
+    }
+
+    // ── MessageRole ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn message_role_as_str_matches_openai_convention() {
+        assert_eq!(MessageRole::System.as_str(), "system");
+        assert_eq!(MessageRole::User.as_str(), "user");
+        assert_eq!(MessageRole::Assistant.as_str(), "assistant");
+    }
+
+    #[test]
+    fn llm_message_constructors_set_correct_roles() {
+        let sys = LlmMessage::system("you are an assistant");
+        let usr = LlmMessage::user("hello");
+        let ast = LlmMessage::assistant("hi there");
+        assert_eq!(sys.role, MessageRole::System);
+        assert_eq!(usr.role, MessageRole::User);
+        assert_eq!(ast.role, MessageRole::Assistant);
+        assert_eq!(usr.content, "hello");
+    }
+}
+
