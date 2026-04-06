@@ -268,12 +268,13 @@ pub async fn run_research(topic: String, url: Option<String>) -> ResearchTask {
 
     let _ = save_research(&task);
 
-    let http = scraping_http();
+    let scrape_http = scraping_http();
+    let llm_http = crate::llm::shared_http();
     let llm_arc = crate::llm::shared_llm();
     let llm = llm_arc.as_ref();
 
     // Run the pipeline; on any hard failure record it and return.
-    match pipeline(&http, &llm, &mut task).await {
+    match pipeline(scrape_http, &llm_http, llm, &mut task).await {
         Ok(_) => {
             task.status = ResearchStatus::Done;
             task.finished_at = Some(Utc::now().to_rfc3339());
@@ -403,14 +404,15 @@ Output ONLY the JSON array, e.g.: ["Objective 1", "Objective 2"]"#,
 }
 
 async fn pipeline(
-    http: &reqwest::Client,
+    scrape_http: &reqwest::Client,
+    llm_http: &reqwest::Client,
     llm: &LlmConfig,
     task: &mut ResearchTask,
 ) -> Result<(), String> {
     // ── Phase 1: Fetch page (if URL given) ────────────────────────────────────
     let page_text: Option<String> = if let Some(ref url) = task.url {
         sirin_log!("[researcher] Phase 1: fetching {url}");
-        match fetch_page_text(http, url).await {
+        match fetch_page_text(scrape_http, url).await {
             Ok(text) => {
                 sirin_log!("[researcher] Fetched {} chars", text.len());
                 task.steps.push(ResearchStep {
@@ -460,7 +462,7 @@ async fn pipeline(
          Provide your structured overview:"
     );
 
-    let overview = call_prompt(http, llm, &overview_prompt).await.map_err(|e| e.to_string())?;
+    let overview = call_prompt(llm_http, llm, &overview_prompt).await.map_err(|e| e.to_string())?;
     sirin_log!("[researcher] Overview done ({} chars)", overview.len());
     task.steps.push(ResearchStep {
         phase: "overview".into(),
@@ -481,7 +483,7 @@ async fn pipeline(
          4 research questions:"
     );
 
-    let questions_raw = call_prompt(http, llm, &questions_prompt).await.map_err(|e| e.to_string())?;
+    let questions_raw = call_prompt(llm_http, llm, &questions_prompt).await.map_err(|e| e.to_string())?;
     let questions: Vec<String> = questions_raw
         .lines()
         .filter_map(|line| {
@@ -515,7 +517,7 @@ async fn pipeline(
         .iter()
         .enumerate()
         .map(|(i, question)| {
-            let http = http.clone();
+            let llm_http = llm_http.clone();
             let llm = llm.clone();
             let question = question.clone();
             async move {
@@ -541,7 +543,7 @@ async fn pipeline(
                      \n\
                      Answer:"
                 );
-                let answer = call_prompt(&http, &llm, &qa_prompt)
+                let answer = call_prompt(&llm_http, &llm, &qa_prompt)
                     .await
                     .map_err(|e: Box<dyn std::error::Error + Send + Sync>| e.to_string())?;
                 sirin_log!("[researcher] Q{} answered ({} chars)", i + 1, answer.len());
@@ -603,7 +605,7 @@ async fn pipeline(
         url = task.url.as_deref().unwrap_or("N/A"),
     );
 
-    let report = call_prompt(http, llm, &synthesis_prompt).await.map_err(|e| e.to_string())?;
+    let report = call_prompt(llm_http, llm, &synthesis_prompt).await.map_err(|e| e.to_string())?;
     sirin_log!("[researcher] Final report generated ({} chars)", report.len());
 
     task.steps.push(ResearchStep {
