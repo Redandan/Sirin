@@ -23,6 +23,67 @@ use std::sync::{Mutex, OnceLock};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
+// ── Storage usage ─────────────────────────────────────────────────────────────
+
+/// Breakdown of Sirin's on-disk footprint across all managed data files.
+#[derive(Debug, Clone, Default)]
+pub struct StorageUsage {
+    pub memory_db_bytes:    u64,   // SQLite FTS5 memories.db
+    pub call_graph_bytes:   u64,   // call_graph.jsonl
+    pub research_log_bytes: u64,   // tracking/research.jsonl
+    pub task_log_bytes:     u64,   // tracking/task.jsonl
+    pub context_bytes:      u64,   // context/*.jsonl (sum of all peers)
+    pub total_bytes:        u64,
+}
+
+impl StorageUsage {
+    /// Format a byte count as a readable string (B / KB / MB).
+    pub fn fmt_bytes(b: u64) -> String {
+        if b < 1_024 {
+            format!("{b} B")
+        } else if b < 1_024 * 1_024 {
+            format!("{:.1} KB", b as f64 / 1_024.0)
+        } else {
+            format!("{:.2} MB", b as f64 / (1_024.0 * 1_024.0))
+        }
+    }
+}
+
+fn file_size(path: &Path) -> u64 {
+    fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+}
+
+fn dir_size(path: &Path) -> u64 {
+    fs::read_dir(path)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .filter(|e| e.path().is_file())
+                .map(|e| e.metadata().map(|m| m.len()).unwrap_or(0))
+                .sum()
+        })
+        .unwrap_or(0)
+}
+
+/// Collect on-disk storage sizes for all Sirin data files.
+pub fn storage_usage() -> StorageUsage {
+    let base = if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        Path::new(&local).join("Sirin")
+    } else {
+        Path::new("data").to_path_buf()
+    };
+
+    let memory_db_bytes    = file_size(&base.join("memory").join("memories.db"));
+    let call_graph_bytes   = file_size(&base.join("call_graph.jsonl"));
+    let research_log_bytes = file_size(&base.join("tracking").join("research.jsonl"));
+    let task_log_bytes     = file_size(&base.join("tracking").join("task.jsonl"));
+    let context_bytes      = dir_size(&base.join("context"));
+    let total_bytes        = memory_db_bytes + call_graph_bytes
+                           + research_log_bytes + task_log_bytes + context_bytes;
+
+    StorageUsage { memory_db_bytes, call_graph_bytes, research_log_bytes,
+                   task_log_bytes, context_bytes, total_bytes }
+}
+
 // ── Memory store (SQLite FTS5 backend) ───────────────────────────────────────
 
 fn memory_db_path() -> PathBuf {

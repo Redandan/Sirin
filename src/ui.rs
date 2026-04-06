@@ -274,6 +274,8 @@ pub struct SirinApp {
     coding_done_at: Option<std::time::Instant>,
     /// When the research startup message was set (auto-clears after 4 s).
     research_msg_at: Option<std::time::Instant>,
+    /// Cached storage usage snapshot (refreshed every 5 s alongside other data).
+    storage: crate::memory::StorageUsage,
 }
 
 impl SirinApp {
@@ -355,6 +357,7 @@ impl SirinApp {
             research_expanded: std::collections::HashSet::new(),
             coding_done_at: None,
             research_msg_at: None,
+            storage: crate::memory::StorageUsage::default(),
         };
         app.refresh();
         app
@@ -396,6 +399,7 @@ impl SirinApp {
         self.auto_approve_writes = crate::persona::Persona::load()
             .map(|p| p.coding_agent.auto_approve_writes)
             .unwrap_or(false);
+        self.storage = crate::memory::storage_usage();
         self.last_refresh = std::time::Instant::now();
     }
 }
@@ -654,6 +658,48 @@ impl eframe::App for SirinApp {
 
 impl SirinApp {
     fn show_tasks(&mut self, ui: &mut egui::Ui) {
+        // ── Storage usage panel ───────────────────────────────────────────────
+        use crate::memory::StorageUsage;
+        let s = &self.storage;
+        egui::Frame::group(ui.style())
+            .fill(Color32::from_rgb(22, 28, 38))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("💾 儲存空間").strong());
+                    ui.separator();
+                    ui.colored_label(
+                        Color32::from_rgb(130, 200, 255),
+                        format!("總計 {}", StorageUsage::fmt_bytes(s.total_bytes)),
+                    );
+                });
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    let items = [
+                        ("記憶 DB",    s.memory_db_bytes),
+                        ("Call Graph", s.call_graph_bytes),
+                        ("調研記錄",   s.research_log_bytes),
+                        ("任務記錄",   s.task_log_bytes),
+                        ("對話 Context", s.context_bytes),
+                    ];
+                    for (label, bytes) in items {
+                        if bytes > 0 {
+                            egui::Frame::new()
+                                .fill(Color32::from_rgb(32, 40, 55))
+                                .inner_margin(egui::Margin::symmetric(8, 3))
+                                .corner_radius(4.0)
+                                .show(ui, |ui| {
+                                    ui.small(format!("{label}  {}", StorageUsage::fmt_bytes(bytes)));
+                                });
+                        }
+                    }
+                    if s.total_bytes == 0 {
+                        ui.colored_label(Color32::GRAY, "尚無資料");
+                    }
+                });
+            });
+
+        ui.add_space(4.0);
+
         // ── Filter bar ────────────────────────────────────────────────────────
         ui.horizontal(|ui| {
             ui.label(RichText::new("活動記錄").strong());
