@@ -25,6 +25,16 @@ enum Tab {
     Chat,
 }
 
+// ── Task filter ───────────────────────────────────────────────────────────────
+
+#[derive(PartialEq, Clone, Copy)]
+enum TaskFilter {
+    All,
+    Running,
+    Done,
+    Failed,
+}
+
 // ── Chat types ────────────────────────────────────────────────────────────────
 
 #[derive(Clone, PartialEq)]
@@ -252,6 +262,18 @@ pub struct SirinApp {
 
     /// Subscriber for the process-wide agent event bus.  Drained every frame.
     event_rx: broadcast::Receiver<AgentEvent>,
+
+    // ── UI state: new ─────────────────────────────────────────────────────────
+    /// Whether the Agent / Coding debug panel is expanded in Chat tab.
+    debug_panel_open: bool,
+    /// Filter applied in the Tasks (Activity Log) tab.
+    task_filter: TaskFilter,
+    /// Set of research task IDs whose full report is expanded.
+    research_expanded: std::collections::HashSet<String>,
+    /// When the last coding task completed (for auto-dismissing the mini bar).
+    coding_done_at: Option<std::time::Instant>,
+    /// When the research startup message was set (auto-clears after 4 s).
+    research_msg_at: Option<std::time::Instant>,
 }
 
 impl SirinApp {
@@ -328,6 +350,11 @@ impl SirinApp {
             last_refresh: std::time::Instant::now()
                 - std::time::Duration::from_secs(60),
             event_rx: crate::events::subscribe(),
+            debug_panel_open: false,
+            task_filter: TaskFilter::All,
+            research_expanded: std::collections::HashSet::new(),
+            coding_done_at: None,
+            research_msg_at: None,
         };
         app.refresh();
         app
@@ -381,6 +408,22 @@ impl eframe::App for SirinApp {
         if ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        }
+
+        // ── Timed auto-dismiss: coding mini bar (8 s after completion) ──────────
+        if let Some(done_at) = self.coding_done_at {
+            if done_at.elapsed() > std::time::Duration::from_secs(8) {
+                self.coding_console = CodingConsoleState::default();
+                self.coding_done_at = None;
+            }
+        }
+
+        // ── Timed auto-dismiss: research startup message (4 s) ───────────────
+        if let Some(msg_at) = self.research_msg_at {
+            if msg_at.elapsed() > std::time::Duration::from_secs(4) {
+                self.research_msg.clear();
+                self.research_msg_at = None;
+            }
         }
 
         // Poll for LLM reply from background chat task.
@@ -457,6 +500,8 @@ impl eframe::App for SirinApp {
                 } else {
                     "完成".to_string()
                 };
+                // Start the auto-dismiss timer for the mini status bar.
+                self.coding_done_at = Some(std::time::Instant::now());
                 // Push the outcome as an assistant message in the chat.
                 let summary = format!(
                     "**[Coding Agent]** {}\n\n{}{}",
@@ -504,6 +549,7 @@ impl eframe::App for SirinApp {
                         eprintln!("[ui] auto-research '{}' → {:?}", task.id, task.status);
                     });
                     self.research_msg = format!("自動啟動調研：{}", self.research_topic.trim());
+                    self.research_msg_at = Some(std::time::Instant::now());
                     self.research_topic.clear();
                     self.research_url.clear();
                 }
@@ -518,10 +564,25 @@ impl eframe::App for SirinApp {
             ui.horizontal(|ui| {
                 ui.heading("Sirin");
                 ui.separator();
-                ui.selectable_value(&mut self.tab, Tab::Tasks, "📋 任務板");
-                ui.selectable_value(&mut self.tab, Tab::Research, "🔬 調研");
-                ui.selectable_value(&mut self.tab, Tab::Telegram, "✈ Telegram");
-                ui.selectable_value(&mut self.tab, Tab::Chat, "💬 對話");
+                ui.selectable_value(&mut self.tab, Tab::Tasks, "📋 活動記錄");
+
+                // Research tab: badge when a task is running.
+                let research_running = self.research_tasks.iter()
+                    .any(|t| t.status == ResearchStatus::Running);
+                let research_label = if research_running { "🔬 調研 ●" } else { "🔬 調研" };
+                let res_tab = ui.selectable_value(&mut self.tab, Tab::Research, research_label);
+                if research_running {
+                    res_tab.on_hover_text("有調研任務進行中");
+                }
+
+                // Telegram tab: badge when connected.
+                let tg_connected = matches!(self.tg_auth.status(), TelegramStatus::Connected);
+                let tg_label = if tg_connected { "✈ Telegram ●" } else { "✈ Telegram" };
+                ui.selectable_value(&mut self.tab, Tab::Telegram, tg_label);
+
+                // Chat tab: badge when pending coding confirmation.
+                let chat_label = if self.pending_coding_confirmation.is_some() { "💬 對話 ⚠" } else { "💬 對話" };
+                ui.selectable_value(&mut self.tab, Tab::Chat, chat_label);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("⟳").on_hover_text("立即刷新").clicked() {
                         self.refresh();
@@ -593,46 +654,68 @@ impl eframe::App for SirinApp {
 
 impl SirinApp {
     fn show_tasks(&mut self, ui: &mut egui::Ui) {
-        ui.label(format!("共 {} 筆任務（最近 200 筆，不含 heartbeat）", self.tasks.len()));
+        // ── Filter bar ────────────────────────────────────────────────────────
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("活動記錄").strong());
+            ui.separator();
+            ui.selectable_value(&mut self.task_filter, TaskFilter::All,     "全部");
+            ui.selectable_value(&mut self.task_filter, TaskFilter::Running, "進行中");
+            ui.selectable_value(&mut self.task_filter, TaskFilter::Done,    "完成");
+            ui.selectable_value(&mut self.task_filter, TaskFilter::Failed,  "失敗");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let total = self.tasks.len();
+                ui.small(format!("{total} 筆"));
+            });
+        });
         ui.separator();
 
+        let filter = self.task_filter;
         let row_height = 18.0;
-        let col_widths = [130.0_f32, 200.0, 40.0];
+        let col_widths = [120.0_f32, 230.0, 50.0];
 
-        // Header
+        // Column headers
         ui.horizontal(|ui| {
-            ui.add_sized([col_widths[0], row_height], egui::Label::new(RichText::new("時間").strong()));
-            ui.add_sized([col_widths[1], row_height], egui::Label::new(RichText::new("事件").strong()));
-            ui.label(RichText::new("狀態").strong());
+            ui.add_sized([col_widths[0], row_height], egui::Label::new(RichText::new("時間").strong().small()));
+            ui.add_sized([col_widths[1], row_height], egui::Label::new(RichText::new("事件").strong().small()));
+            ui.label(RichText::new("狀態").strong().small());
         });
         ui.separator();
 
         ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
             for task in &self.tasks {
-                let ts = task.timestamp.get(..19).unwrap_or(&task.timestamp);
                 let status = task.status.as_deref().unwrap_or("—");
+                // Apply filter.
+                let passes = match filter {
+                    TaskFilter::All     => true,
+                    TaskFilter::Running => status == "PENDING" || status == "RUNNING",
+                    TaskFilter::Done    => status == "DONE",
+                    TaskFilter::Failed  => status == "FAILED" || status == "ERROR",
+                };
+                if !passes { continue; }
+
+                let ts = task.timestamp.get(..19).unwrap_or(&task.timestamp);
                 let is_summary = task.event == "research_summary_ready";
                 let status_color = match status {
                     "DONE" if is_summary => Color32::from_rgb(120, 210, 255),
-                    "DONE" => Color32::from_rgb(100, 220, 100),
-                    "PENDING" => Color32::from_rgb(255, 200, 60),
-                    "FAILED" | "ERROR" => Color32::from_rgb(220, 80, 80),
-                    _ => Color32::GRAY,
+                    "DONE"               => Color32::from_rgb(100, 220, 100),
+                    "PENDING" | "RUNNING"=> Color32::from_rgb(255, 200, 60),
+                    "FAILED" | "ERROR"   => Color32::from_rgb(220, 80, 80),
+                    _                    => Color32::GRAY,
                 };
 
                 ui.horizontal(|ui| {
                     ui.add_sized(
                         [col_widths[0], row_height],
-                        egui::Label::new(egui::RichText::new(ts).monospace().small()),
+                        egui::Label::new(RichText::new(ts).monospace().small()),
                     );
-                    let preview = task
-                        .message_preview
-                        .as_deref()
+                    let preview = task.message_preview.as_deref()
                         .or(task.reason.as_deref())
                         .unwrap_or(&task.event);
                     let event_label = if is_summary { "research_summary" } else { &task.event };
-                    let label_text = format!("{} — {}", event_label,
-                        preview.chars().take(80).collect::<String>());
+                    let label_text = format!("{} — {}",
+                        event_label,
+                        preview.chars().take(80).collect::<String>()
+                    );
                     ui.add_sized(
                         [col_widths[1], row_height],
                         egui::Label::new(&label_text).truncate(),
@@ -640,11 +723,12 @@ impl SirinApp {
                     ui.colored_label(status_color, status);
                 });
 
+                // Inline summary expansion for research events.
                 if is_summary {
                     if let Some(reason) = task.reason.as_deref() {
-                        let summary_preview: String = reason.chars().take(140).collect();
-                        ui.add_space(2.0);
-                        ui.small(format!("   ↳ {}", summary_preview));
+                        let preview: String = reason.chars().take(140).collect();
+                        ui.add_space(1.0);
+                        ui.small(format!("   ↳ {preview}"));
                     }
                 }
             }
@@ -732,6 +816,7 @@ impl SirinApp {
                         eprintln!("[ui] research '{}' → {:?}", task.id, task.status);
                     });
                     self.research_msg = format!("已啟動：{}", self.research_topic.trim());
+                    self.research_msg_at = Some(std::time::Instant::now());
                     self.research_topic.clear();
                     self.research_url.clear();
                 }
@@ -744,32 +829,98 @@ impl SirinApp {
         ui.separator();
         ui.label(format!("{} 筆調研記錄", self.research_tasks.len()));
 
+        // Collect IDs to expand/collapse without borrowing self during the loop.
+        let mut toggle_expand: Option<String> = None;
+
         ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
             for task in &self.research_tasks {
                 egui::Frame::group(ui.style()).show(ui, |ui| {
+                    // ── Header row ────────────────────────────────────────────
                     ui.horizontal(|ui| {
                         let (color, label) = match task.status {
-                            ResearchStatus::Done => (Color32::from_rgb(100, 220, 100), "完成"),
+                            ResearchStatus::Done    => (Color32::from_rgb(100, 220, 100), "完成"),
                             ResearchStatus::Running => (Color32::YELLOW, "進行中"),
-                            ResearchStatus::Failed => (Color32::from_rgb(220, 80, 80), "失敗"),
+                            ResearchStatus::Failed  => (Color32::from_rgb(220, 80, 80), "失敗"),
                         };
                         ui.colored_label(color, label);
                         ui.strong(&task.topic);
-                        if let Some(ref url) = task.url {
-                            ui.small(url);
-                        }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.small(task.started_at.get(..10).unwrap_or(&task.started_at));
+                            if let Some(ref url) = task.url {
+                                ui.small(url.chars().take(40).collect::<String>());
+                            }
                         });
                     });
-                    if let Some(ref report) = task.final_report {
-                        let preview: String = report.chars().take(300).collect();
-                        ui.label(preview);
+
+                    // ── Phase progress (Running) ───────────────────────────────
+                    if task.status == ResearchStatus::Running {
+                        let phases = ["fetch", "overview", "questions", "search", "synthesis"];
+                        // Determine current phase from completed steps.
+                        let completed_phases: Vec<&str> = task.steps.iter().map(|s| s.phase.as_str()).collect();
+                        let current_idx = if completed_phases.is_empty() { 0 } else {
+                            let last = *completed_phases.last().unwrap();
+                            if last.starts_with("research_q") { 3 }
+                            else { phases.iter().position(|&p| p == last).map(|i| i + 1).unwrap_or(0) }
+                        };
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            for (i, phase) in phases.iter().enumerate() {
+                                let is_done    = i < current_idx;
+                                let is_current = i == current_idx;
+                                let (color, icon) = if is_done {
+                                    (Color32::from_rgb(100, 220, 100), "✓")
+                                } else if is_current {
+                                    (Color32::YELLOW, "▶")
+                                } else {
+                                    (Color32::from_rgb(80, 80, 80), "·")
+                                };
+                                ui.colored_label(color, format!("{icon} {phase}"));
+                                if i < phases.len() - 1 {
+                                    ui.colored_label(Color32::from_rgb(60, 60, 60), "→");
+                                }
+                            }
+                        });
                     }
-                    ui.small(format!("{} 個步驟", task.steps.len()));
+
+                    // ── Report preview / expand ────────────────────────────────
+                    if let Some(ref report) = task.final_report {
+                        let is_expanded = self.research_expanded.contains(&task.id);
+                        if is_expanded {
+                            ScrollArea::vertical()
+                                .id_salt(format!("report_{}", task.id))
+                                .max_height(300.0)
+                                .show(ui, |ui| {
+                                    ui.label(report.as_str());
+                                });
+                            if ui.small_button("▲ 收起報告").clicked() {
+                                toggle_expand = Some(task.id.clone());
+                            }
+                        } else {
+                            let preview: String = report.chars().take(200).collect();
+                            ui.small(format!("{}…", preview.trim_end()));
+                            if ui.small_button("▼ 展開完整報告").clicked() {
+                                toggle_expand = Some(task.id.clone());
+                            }
+                        }
+                    } else if task.status == ResearchStatus::Failed {
+                        // Show error reason from steps.
+                        if let Some(err_step) = task.steps.iter().find(|s| s.phase == "error") {
+                            ui.colored_label(Color32::from_rgb(220, 100, 100),
+                                format!("❌ {}", err_step.output.chars().take(120).collect::<String>()));
+                        }
+                    }
                 });
             }
         });
+
+        // Apply deferred toggle outside the borrow.
+        if let Some(id) = toggle_expand {
+            if self.research_expanded.contains(&id) {
+                self.research_expanded.remove(&id);
+            } else {
+                self.research_expanded.insert(id);
+            }
+        }
     }
 
     fn show_telegram(&mut self, ui: &mut egui::Ui) {
@@ -897,148 +1048,205 @@ TG_DEBUG_UPDATES=false";
         if !self.tg_msg.is_empty() {
             ui.colored_label(Color32::from_rgb(100, 220, 100), &self.tg_msg);
         }
+
+        ui.separator();
+
+        // ── Auto-reply toggle ─────────────────────────────────────────────────
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.label(RichText::new("回覆設定").strong());
+            let auto_reply = std::env::var("TG_AUTO_REPLY").unwrap_or_default();
+            let auto_priv  = std::env::var("TG_REPLY_PRIVATE").unwrap_or_default();
+            let auto_grp   = std::env::var("TG_REPLY_GROUPS").unwrap_or_default();
+            ui.horizontal(|ui| {
+                let on_color  = Color32::from_rgb(100, 220, 100);
+                let off_color = Color32::from_rgb(140, 140, 140);
+                let reply_color = if auto_reply == "true" { on_color } else { off_color };
+                ui.colored_label(reply_color, if auto_reply == "true" { "● 自動回覆：開" } else { "○ 自動回覆：關" });
+                ui.separator();
+                ui.colored_label(if auto_priv == "true" { on_color } else { off_color },
+                    if auto_priv == "true" { "私訊 ✓" } else { "私訊 ✗" });
+                ui.colored_label(if auto_grp == "true" { on_color } else { off_color },
+                    if auto_grp == "true" { "群組 ✓" } else { "群組 ✗" });
+            });
+            ui.small("如需更改，請修改 .env 後重啟應用程式。");
+        });
+
+        ui.separator();
+
+        // ── Recent Telegram activity from log buffer ──────────────────────────
+        ui.label(RichText::new("近期 Telegram 活動").strong());
+        let tg_lines: Vec<String> = log_buffer::recent(300)
+            .into_iter()
+            .filter(|l| l.contains("[telegram]") || l.contains("[tg]"))
+            .take(60)
+            .collect();
+
+        if tg_lines.is_empty() {
+            ui.colored_label(Color32::GRAY, "（尚無 Telegram 活動記錄）");
+        } else {
+            ScrollArea::vertical()
+                .id_salt("tg_log")
+                .stick_to_bottom(true)
+                .max_height(280.0)
+                .auto_shrink(false)
+                .show(ui, |ui| {
+                    for line in &tg_lines {
+                        let color = if line.contains("error") || line.contains("Error") || line.contains("failed") {
+                            Color32::from_rgb(220, 100, 100)
+                        } else if line.contains("reply") || line.contains("sent") {
+                            Color32::from_rgb(150, 220, 150)
+                        } else {
+                            Color32::from_rgb(100, 180, 255)
+                        };
+                        ui.colored_label(color, RichText::new(line).monospace().small());
+                    }
+                });
+        }
     }
 
     fn show_chat(&mut self, ui: &mut egui::Ui) {
-        egui::Frame::group(ui.style()).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Agent Console").strong());
+        // ── Top status bar ────────────────────────────────────────────────────
+        ui.horizontal(|ui| {
+            let status_color = if self.chat_pending { Color32::YELLOW } else { Color32::from_rgb(100, 220, 100) };
+            ui.colored_label(status_color, &self.agent_console.status);
+            if !self.agent_console.route.is_empty() && self.agent_console.route != "pending…" {
                 ui.separator();
-                let status_color = if self.chat_pending {
-                    Color32::YELLOW
-                } else {
-                    Color32::from_rgb(100, 220, 100)
-                };
-                ui.colored_label(status_color, &self.agent_console.status);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("複製全部（Console + 對話 + Log）").clicked() {
-                        let bundle = build_console_log_bundle(&self.agent_console, &self.chat_messages, 250);
-                        ui.ctx().copy_text(bundle);
-                        self.agent_console.status = "已複製 Console + 對話 + Log".to_string();
-                    }
-                    if ui.small_button("複製對話").clicked() {
-                        ui.ctx().copy_text(chat_history_snapshot(&self.chat_messages));
-                        self.agent_console.status = "已複製對話內容".to_string();
-                    }
-                    if ui.small_button("複製 Console + Log").clicked() {
-                        let bundle = format!(
-                            "=== Agent Console ===\n{}\n\n=== Recent Logs ===\n{}",
-                            self.agent_console.snapshot_text(),
-                            log_buffer::snapshot_text(200)
-                        );
-                        ui.ctx().copy_text(bundle);
-                        self.agent_console.status = "已複製 Console + Log".to_string();
-                    }
-                    if ui.small_button("複製 Console").clicked() {
-                        ui.ctx().copy_text(self.agent_console.snapshot_text());
-                        self.agent_console.status = "已複製 Console".to_string();
-                    }
-                });
-            });
-            ui.small(format!("Route: {}", self.agent_console.route));
+                ui.small(format!("→ {}", self.agent_console.route));
+            }
             if !self.agent_console.intent_family.is_empty() {
-                ui.small(format!("Intent Family: {}", self.agent_console.intent_family));
+                ui.small(format!("[{}]", self.agent_console.intent_family));
             }
-            if !self.agent_console.summary.is_empty() {
-                ui.label(&self.agent_console.summary);
-            }
-            if !self.agent_console.steps.is_empty() {
-                ui.small(format!("Steps: {}", self.agent_console.steps.join(" → ")));
-            }
-            if !self.agent_console.recommended_skills.is_empty() {
-                ui.small(format!("Recommended Skills: {}", self.agent_console.recommended_skills.join(", ")));
-            }
-            if !self.agent_console.tools.is_empty() {
-                ui.small(format!("Tools: {}", self.agent_console.tools.join(", ")));
-            }
-            if !self.agent_console.trace.is_empty() {
-                ui.collapsing("Execution Trace", |ui| {
-                    for item in &self.agent_console.trace {
-                        ui.small(item);
-                    }
-                });
-            }
-            if !self.agent_console.latest_task_summary.is_empty() {
-                ui.collapsing("Latest Research Summary", |ui| {
-                    ui.small(&self.agent_console.latest_task_summary);
-                });
-            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("複製對話").clicked() {
+                    ui.ctx().copy_text(chat_history_snapshot(&self.chat_messages));
+                }
+                ui.separator();
+                // Debug panel toggle button.
+                let debug_label = if self.debug_panel_open { "🔍 隱藏診斷" } else { "🔍 診斷" };
+                if ui.small_button(debug_label).clicked() {
+                    self.debug_panel_open = !self.debug_panel_open;
+                }
+            });
         });
 
-        // ── Coding Console (shown when a coding task is active or recent) ─────
-        if !self.coding_console.task.is_empty() {
-            ui.add_space(4.0);
+        // ── Debug panel (Agent Console + Coding Console, hidden by default) ───
+        if self.debug_panel_open {
             egui::Frame::group(ui.style())
-                .fill(Color32::from_rgb(20, 30, 40))
+                .fill(Color32::from_rgb(20, 22, 30))
                 .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("⚙ Coding Console").strong().color(Color32::from_rgb(100, 200, 255)));
-                        ui.separator();
-                        let status_color = if self.coding_console.status.contains("完成") || self.coding_console.status.contains("✅") {
-                            Color32::from_rgb(100, 220, 100)
-                        } else if self.coding_console.status.contains("錯誤") || self.coding_console.status.contains("Error") {
-                            Color32::from_rgb(220, 80, 80)
-                        } else {
-                            Color32::YELLOW
-                        };
-                        ui.colored_label(status_color, &self.coding_console.status);
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button("複製 Coding Console").clicked() {
-                                ui.ctx().copy_text(self.coding_console.snapshot_text());
+                    ui.label(RichText::new("Agent Console").strong().small());
+                    if !self.agent_console.summary.is_empty() {
+                        ui.small(&self.agent_console.summary);
+                    }
+                    if !self.agent_console.steps.is_empty() {
+                        ui.small(format!("Steps: {}", self.agent_console.steps.join(" → ")));
+                    }
+                    if !self.agent_console.recommended_skills.is_empty() {
+                        ui.small(format!("Skills: {}", self.agent_console.recommended_skills.join(", ")));
+                    }
+                    if !self.agent_console.tools.is_empty() {
+                        ui.small(format!("Tools: {}", self.agent_console.tools.join(", ")));
+                    }
+                    if !self.agent_console.trace.is_empty() {
+                        ui.collapsing(format!("Execution Trace ({} items)", self.agent_console.trace.len()), |ui| {
+                            for item in &self.agent_console.trace {
+                                ui.small(item);
                             }
                         });
-                    });
-
-                    if !self.coding_console.task.is_empty() {
-                        ui.small(format!("Task: {}", self.coding_console.task.chars().take(80).collect::<String>()));
                     }
-                    if self.coding_console.dry_run {
-                        ui.colored_label(Color32::from_rgb(255, 200, 60), "⚠ Dry-run 模式：檔案未實際寫入");
-                    }
-                    if !self.coding_console.files_modified.is_empty() {
-                        ui.small(format!("📁 Files: {}", self.coding_console.files_modified.join(", ")));
-                    }
-                    if self.coding_console.verified {
-                        ui.colored_label(Color32::from_rgb(100, 220, 100), "✅ cargo check passed");
-                    }
-                    if !self.coding_console.trace.is_empty() {
-                        ui.collapsing(format!("ReAct Trace ({} steps)", self.coding_console.trace.len()), |ui| {
-                            ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
-                                for step in &self.coding_console.trace {
-                                    egui::Frame::new()
-                                        .fill(Color32::from_rgb(25, 35, 45))
-                                        .inner_margin(egui::Margin::symmetric(6, 4))
-                                        .corner_radius(4.0)
-                                        .show(ui, |ui| {
-                                            ui.small(step);
-                                        });
-                                    ui.add_space(2.0);
-                                }
-                            });
+                    if !self.agent_console.latest_task_summary.is_empty() {
+                        ui.collapsing("Latest Research Summary", |ui| {
+                            ui.small(&self.agent_console.latest_task_summary);
                         });
                     }
-                    if let Some(ref diff) = self.coding_console.diff {
-                        if !diff.trim().is_empty() {
-                            ui.collapsing("📝 Git Diff", |ui| {
-                                ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
-                                    let preview: String = diff.chars().take(2000).collect();
-                                    ui.add(
-                                        TextEdit::multiline(&mut preview.as_str())
-                                            .code_editor()
-                                            .desired_rows(8)
-                                            .desired_width(f32::INFINITY),
-                                    );
+
+                    // Coding Console inside debug panel.
+                    if !self.coding_console.task.is_empty() {
+                        ui.separator();
+                        ui.label(RichText::new("⚙ Coding Console").strong().small().color(Color32::from_rgb(100, 200, 255)));
+                        ui.small(format!("Task: {}", self.coding_console.task.chars().take(100).collect::<String>()));
+                        if self.coding_console.dry_run {
+                            ui.colored_label(Color32::from_rgb(255, 200, 60), "⚠ Dry-run 模式");
+                        }
+                        if !self.coding_console.files_modified.is_empty() {
+                            ui.small(format!("📁 {}", self.coding_console.files_modified.join(", ")));
+                        }
+                        if self.coding_console.verified {
+                            ui.colored_label(Color32::from_rgb(100, 220, 100), "✅ cargo check passed");
+                        }
+                        if !self.coding_console.trace.is_empty() {
+                            ui.collapsing(format!("ReAct Trace ({} steps)", self.coding_console.trace.len()), |ui| {
+                                ScrollArea::vertical().max_height(140.0).show(ui, |ui| {
+                                    for step in &self.coding_console.trace {
+                                        egui::Frame::new()
+                                            .fill(Color32::from_rgb(25, 35, 45))
+                                            .inner_margin(egui::Margin::symmetric(6, 4))
+                                            .corner_radius(4.0)
+                                            .show(ui, |ui| { ui.small(step); });
+                                        ui.add_space(2.0);
+                                    }
                                 });
                             });
                         }
-                    }
-                    if let Some(ref vout) = self.coding_console.verification_output {
-                        if !vout.trim().is_empty() {
-                            ui.collapsing("🔍 Verification Output", |ui| {
-                                ui.small(vout.chars().take(400).collect::<String>());
-                            });
+                        if let Some(ref diff) = self.coding_console.diff {
+                            if !diff.trim().is_empty() {
+                                ui.collapsing("📝 Git Diff", |ui| {
+                                    ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
+                                        let preview: String = diff.chars().take(2000).collect();
+                                        ui.add(
+                                            TextEdit::multiline(&mut preview.as_str())
+                                                .code_editor()
+                                                .desired_rows(6)
+                                                .desired_width(f32::INFINITY),
+                                        );
+                                    });
+                                });
+                            }
                         }
+                        if let Some(ref vout) = self.coding_console.verification_output {
+                            if !vout.trim().is_empty() {
+                                ui.collapsing("🔍 Verification", |ui| {
+                                    ui.small(vout.chars().take(400).collect::<String>());
+                                });
+                            }
+                        }
+                        ui.horizontal(|ui| {
+                            if ui.small_button("複製 Coding Console").clicked() {
+                                ui.ctx().copy_text(self.coding_console.snapshot_text());
+                            }
+                            if ui.small_button("複製全部 (Console+Log)").clicked() {
+                                let bundle = build_console_log_bundle(&self.agent_console, &self.chat_messages, 250);
+                                ui.ctx().copy_text(bundle);
+                            }
+                        });
                     }
+                });
+        }
+
+        // ── Mini coding status bar (visible outside debug panel when running) ─
+        if !self.coding_console.task.is_empty() && !self.debug_panel_open {
+            let is_done = self.coding_console.status.contains("完成") || self.coding_console.status.contains("✅");
+            let is_err  = self.coding_console.status.contains("錯誤") || self.coding_console.status.contains("Error");
+            let bar_color = if is_done { Color32::from_rgb(100, 220, 100) }
+                            else if is_err { Color32::from_rgb(220, 80, 80) }
+                            else { Color32::YELLOW };
+            egui::Frame::new()
+                .fill(Color32::from_rgb(20, 30, 40))
+                .inner_margin(egui::Margin::symmetric(8, 4))
+                .corner_radius(4.0)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.colored_label(bar_color, "⚙");
+                        ui.small(format!("{}", self.coding_console.status));
+                        if !self.coding_console.files_modified.is_empty() {
+                            ui.small(format!("· 📁 {}", self.coding_console.files_modified.join(", ")));
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("詳情").clicked() {
+                                self.debug_panel_open = true;
+                            }
+                        });
+                    });
                 });
         }
 
@@ -1150,16 +1358,46 @@ TG_DEBUG_UPDATES=false";
         let available = ui.available_height();
         let input_area_height = 120.0;
 
-        ScrollArea::vertical()
+        let chosen_example = ScrollArea::vertical()
             .max_height(available - input_area_height)
             .stick_to_bottom(true)
             .auto_shrink(false)
             .show(ui, |ui| {
+                let mut chosen: Option<String> = None;
                 if self.chat_messages.is_empty() {
                     ui.vertical_centered(|ui| {
-                        ui.add_space(40.0);
-                        ui.colored_label(Color32::GRAY, "直接輸入訊息，與本地 AI 對話");
-                        ui.small("使用 .env 設定的 LLM 後端（Ollama / LM Studio）");
+                        ui.add_space(30.0);
+                        ui.colored_label(
+                            Color32::from_rgb(160, 160, 160),
+                            RichText::new("Sirin").size(20.0).strong(),
+                        );
+                        ui.add_space(4.0);
+                        ui.colored_label(Color32::GRAY, "本地 AI Agent · 對話 / 編程 / 調研");
+                        ui.add_space(20.0);
+                        ui.colored_label(Color32::from_rgb(100, 100, 100), "試試這些：");
+                        ui.add_space(6.0);
+                        let examples = [
+                            ("📋", "這個專案的架構是什麼？"),
+                            ("⚙", "幫我找出 researcher.rs 裡的 TODO"),
+                            ("🔬", "研究 Rust async/await 的底層原理"),
+                            ("💬", "你能做什麼？"),
+                        ];
+                        for (icon, prompt) in &examples {
+                            let resp = egui::Frame::new()
+                                .fill(Color32::from_rgb(35, 40, 50))
+                                .inner_margin(egui::Margin::symmetric(10, 5))
+                                .corner_radius(8.0)
+                                .show(ui, |ui| {
+                                    ui.add(egui::Label::new(
+                                        RichText::new(format!("{icon} {prompt}"))
+                                            .color(Color32::from_rgb(180, 190, 210))
+                                    ).sense(egui::Sense::click()))
+                                });
+                            if resp.inner.clicked() {
+                                chosen = Some(prompt.to_string());
+                            }
+                            ui.add_space(3.0);
+                        }
                     });
                 }
 
@@ -1191,16 +1429,27 @@ TG_DEBUG_UPDATES=false";
                 }
 
                 if self.chat_pending {
+                    // Animate the thinking dots using elapsed time.
+                    let dot_count = ((ui.ctx().input(|i| i.time) * 2.0) as usize % 4) + 1;
+                    let dots: String = "●".repeat(dot_count)
+                        + &"○".repeat(4 - dot_count);
                     egui::Frame::new()
                         .fill(Color32::from_rgb(45, 55, 45))
                         .inner_margin(egui::Margin::symmetric(10, 6))
                         .corner_radius(6.0)
                         .show(ui, |ui| {
                             ui.colored_label(Color32::GRAY, "Sirin");
-                            ui.colored_label(Color32::YELLOW, "思考中…");
+                            ui.colored_label(Color32::YELLOW, format!("思考中  {dots}"));
                         });
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
                 }
-            });
+                chosen
+            }).inner;
+
+        // Apply chosen example prompt (fills the input and immediately submits).
+        if let Some(prompt) = chosen_example {
+            self.chat_input = prompt;
+        }
 
         ui.separator();
 
