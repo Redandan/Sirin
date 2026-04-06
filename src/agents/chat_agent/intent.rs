@@ -40,9 +40,32 @@ pub(super) fn is_file_view_request(user_text: &str) -> bool {
     let lower = user_text.trim().to_lowercase();
 
     let has_question = [
-        "什麼", "是啥", "怎麼", "如何", "為什麼", "哪裡", "問題", "分析", "解釋", "說明",
-        "用途", "作用", "幹嘛", "做什麼", "怎樣", "有沒有", "會不會",
-        "what", "how", "why", "where", "explain", "analyze", "describe", "problem", "issue",
+        "什麼",
+        "是啥",
+        "怎麼",
+        "如何",
+        "為什麼",
+        "哪裡",
+        "問題",
+        "分析",
+        "解釋",
+        "說明",
+        "用途",
+        "作用",
+        "幹嘛",
+        "做什麼",
+        "怎樣",
+        "有沒有",
+        "會不會",
+        "what",
+        "how",
+        "why",
+        "where",
+        "explain",
+        "analyze",
+        "describe",
+        "problem",
+        "issue",
     ]
     .iter()
     .any(|q| lower.contains(q));
@@ -83,9 +106,23 @@ pub(super) fn is_simple_meta_request(user_text: &str) -> bool {
 pub(super) fn looks_like_project_overview_query(user_text: &str) -> bool {
     let lower = user_text.to_lowercase();
     [
-        "專案", "项目", "項目", "架構", "architecture", "結構", "模組", "module",
-        "檔案", "files", "codebase", "這是啥", "這是什麼",
-        "能看到什麼", "看到什麼", "看得到什麼", "哪些檔案",
+        "專案",
+        "项目",
+        "項目",
+        "架構",
+        "architecture",
+        "結構",
+        "模組",
+        "module",
+        "檔案",
+        "files",
+        "codebase",
+        "這是啥",
+        "這是什麼",
+        "能看到什麼",
+        "看到什麼",
+        "看得到什麼",
+        "哪些檔案",
     ]
     .iter()
     .any(|needle| lower.contains(needle))
@@ -96,7 +133,10 @@ pub(super) fn extract_file_reference(user_text: &str) -> Option<String> {
         .split_whitespace()
         .map(|token| {
             token.trim_matches(|c: char| {
-                matches!(c, '`' | '"' | '\'' | ',' | '，' | '。' | '?' | '？' | ':' | '：' | '(' | ')')
+                matches!(
+                    c,
+                    '`' | '"' | '\'' | ',' | '，' | '。' | '?' | '？' | ':' | '：' | '(' | ')'
+                )
             })
         })
         .find(|token| !token.is_empty() && looks_like_file_token(token))
@@ -118,7 +158,19 @@ pub(super) fn extract_file_references_from_text(text: &str) -> Vec<String> {
             .trim_matches(|c: char| {
                 matches!(
                     c,
-                    '`' | '"' | '\'' | ',' | '，' | '。' | '?' | '？' | ':' | '：' | '(' | ')' | '-' | '•'
+                    '`' | '"'
+                        | '\''
+                        | ','
+                        | '，'
+                        | '。'
+                        | '?'
+                        | '？'
+                        | ':'
+                        | '：'
+                        | '('
+                        | ')'
+                        | '-'
+                        | '•'
                 )
             })
             .replace('\\', "/");
@@ -132,12 +184,26 @@ pub(super) fn extract_file_references_from_text(text: &str) -> Vec<String> {
 }
 
 pub(super) fn is_contextual_file_explanation_request(user_text: &str) -> bool {
-    let has_reference = ["這些", "这些", "那些", "上面", "前面", "剛剛", "刚刚", "它們", "它们"]
-        .iter()
-        .any(|needle| user_text.contains(needle));
+    let has_reference = [
+        "這些", "这些", "那些", "上面", "前面", "剛剛", "刚刚", "它們", "它们",
+    ]
+    .iter()
+    .any(|needle| user_text.contains(needle));
     let asks_explain = [
-        "是什麼", "是啥", "說明", "说明", "解釋", "解释", "用途", "作用", "幹嘛", "做什麼", "做什么",
-        "分析", "analyze", "explain",
+        "是什麼",
+        "是啥",
+        "說明",
+        "说明",
+        "解釋",
+        "解释",
+        "用途",
+        "作用",
+        "幹嘛",
+        "做什麼",
+        "做什么",
+        "分析",
+        "analyze",
+        "explain",
     ]
     .iter()
     .any(|needle| user_text.to_lowercase().contains(needle));
@@ -158,9 +224,22 @@ pub(super) fn looks_like_capability_query(user_text: &str) -> bool {
     let compact = lower.split_whitespace().collect::<String>();
 
     [
-        "你能做什麼", "你可以做什麼", "你可以幫我做什麼", "你能幫我做什麼", "你會做什麼", "你會什麼",
-        "有什麼能力", "有哪些能力", "有什麼功能", "有哪些功能", "能幹嘛", "能做啥",
-        "whatcanyoudo", "howcanyouhelp", "capabilities", "abilities",
+        "你能做什麼",
+        "你可以做什麼",
+        "你可以幫我做什麼",
+        "你能幫我做什麼",
+        "你會做什麼",
+        "你會什麼",
+        "有什麼能力",
+        "有哪些能力",
+        "有什麼功能",
+        "有哪些功能",
+        "能幹嘛",
+        "能做啥",
+        "whatcanyoudo",
+        "howcanyouhelp",
+        "capabilities",
+        "abilities",
     ]
     .iter()
     .any(|needle| compact.contains(needle))
@@ -170,8 +249,23 @@ pub(super) fn looks_like_capability_query(user_text: &str) -> bool {
 pub(super) fn looks_like_analysis_request(user_text: &str) -> bool {
     let lower = user_text.to_lowercase();
     [
-        "分析", "解釋", "解释", "說明", "说明", "是什麼", "是啥", "用途", "作用", "如何", "怎麼", "为什么", "為什麼",
-        "analyze", "explain", "how", "why",
+        "分析",
+        "解釋",
+        "解释",
+        "說明",
+        "说明",
+        "是什麼",
+        "是啥",
+        "用途",
+        "作用",
+        "如何",
+        "怎麼",
+        "为什么",
+        "為什麼",
+        "analyze",
+        "explain",
+        "how",
+        "why",
     ]
     .iter()
     .any(|needle| lower.contains(needle))
@@ -180,9 +274,18 @@ pub(super) fn looks_like_analysis_request(user_text: &str) -> bool {
 pub(super) fn is_skill_inventory_request(user_text: &str) -> bool {
     let lower = user_text.to_lowercase();
     let compact = lower.split_whitespace().collect::<String>();
-    let asks_what = ["有哪些", "有什麼", "有什么", "哪些", "會什麼", "会什么", "what", "list"]
-        .iter()
-        .any(|needle| compact.contains(needle));
+    let asks_what = [
+        "有哪些",
+        "有什麼",
+        "有什么",
+        "哪些",
+        "會什麼",
+        "会什么",
+        "what",
+        "list",
+    ]
+    .iter()
+    .any(|needle| compact.contains(needle));
     let mentions_skills = compact.contains("skill")
         || compact.contains("skills")
         || user_text.contains("技能")
@@ -213,7 +316,12 @@ pub(super) fn infer_focus_paths_from_query(
             return paths;
         }
         Some("project_overview") => {
-            for path in ["README.md", "docs/ROADMAP.md", "src/main.rs", "src/agents/mod.rs"] {
+            for path in [
+                "README.md",
+                "docs/ROADMAP.md",
+                "src/main.rs",
+                "src/agents/mod.rs",
+            ] {
                 push_unique_path(&mut paths, path);
             }
             return paths;
@@ -404,7 +512,11 @@ Output ONLY valid JSON."
         return default;
     };
 
-    let intent = match parsed.get("intent").and_then(|v| v.as_str()).unwrap_or("general") {
+    let intent = match parsed
+        .get("intent")
+        .and_then(|v| v.as_str())
+        .unwrap_or("general")
+    {
         "local_file" => Intent::LocalFile,
         "project_overview" => Intent::ProjectOverview,
         "code_analysis" => Intent::CodeAnalysis,
@@ -414,17 +526,29 @@ Output ONLY valid JSON."
         _ => Intent::General,
     };
 
-    let is_correction = parsed.get("is_correction").and_then(|v| v.as_bool()).unwrap_or(false)
+    let is_correction = parsed
+        .get("is_correction")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
         || intent == Intent::Correction;
 
     let target_files: Vec<String> = parsed
         .get("target_files")
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str()).map(|s| s.to_string()).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .map(|s| s.to_string())
+                .collect()
+        })
         .filter(|v: &Vec<String>| !v.is_empty())
         .unwrap_or_else(|| extract_file_references_from_text(user_text));
 
-    MessageUnderstanding { intent, is_correction, target_files }
+    MessageUnderstanding {
+        intent,
+        is_correction,
+        target_files,
+    }
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
@@ -435,9 +559,11 @@ fn looks_like_file_token(token: &str) -> bool {
         return false;
     }
 
-    let has_known_extension = [".rs", ".toml", ".md", ".yaml", ".yml", ".json", ".ts", ".tsx", ".js", ".jsx"]
-        .iter()
-        .any(|suffix| normalized.ends_with(suffix));
+    let has_known_extension = [
+        ".rs", ".toml", ".md", ".yaml", ".yml", ".json", ".ts", ".tsx", ".js", ".jsx",
+    ]
+    .iter()
+    .any(|suffix| normalized.ends_with(suffix));
 
     let has_known_prefix = [
         "src/", "app/", "config/", "data/", "docs/", "tests/", ".cargo/", ".claude/", "icons/",
@@ -447,7 +573,10 @@ fn looks_like_file_token(token: &str) -> bool {
 
     has_known_extension
         || has_known_prefix
-        || matches!(normalized.as_str(), "Cargo.toml" | "README.md" | "tauri.conf.json" | "build.rs")
+        || matches!(
+            normalized.as_str(),
+            "Cargo.toml" | "README.md" | "tauri.conf.json" | "build.rs"
+        )
 }
 
 fn recent_context_file_references(peer_id: Option<i64>) -> Vec<String> {
@@ -474,10 +603,20 @@ fn looks_like_purpose_query(user_text: &str) -> bool {
     let lower = user_text.to_lowercase();
     let compact = lower.split_whitespace().collect::<String>();
     [
-        "是幹嘛用的", "是幹啥用的", "是做什麼的", "是做啥的",
-        "是什麼軟體", "是什麼工具", "是什麼系統", "是什麼程式",
-        "幹嘛用的", "有什麼用", "有啥用途",
-        "whatisthis", "whatdoesitdo", "whatsirin",
+        "是幹嘛用的",
+        "是幹啥用的",
+        "是做什麼的",
+        "是做啥的",
+        "是什麼軟體",
+        "是什麼工具",
+        "是什麼系統",
+        "是什麼程式",
+        "幹嘛用的",
+        "有什麼用",
+        "有啥用途",
+        "whatisthis",
+        "whatdoesitdo",
+        "whatsirin",
     ]
     .iter()
     .any(|needle| compact.contains(needle))

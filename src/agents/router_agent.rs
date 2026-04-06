@@ -275,7 +275,9 @@ const LARGE_MODEL_SKILLS: &[&str] = &[
 /// Returns `true` when the planner recommends skills that benefit from a
 /// large/powerful model (deep multi-step reasoning, cross-module analysis).
 fn should_use_large_model_from_skills(skills: &[String]) -> bool {
-    skills.iter().any(|skill| LARGE_MODEL_SKILLS.contains(&skill.as_str()))
+    skills
+        .iter()
+        .any(|skill| LARGE_MODEL_SKILLS.contains(&skill.as_str()))
 }
 
 fn route_target_from_plan(plan: &super::planner_agent::WorkflowPlan, text: &str) -> RouteTarget {
@@ -299,7 +301,9 @@ fn route_target_from_plan(plan: &super::planner_agent::WorkflowPlan, text: &str)
         | IntentFamily::ProjectOverview
         | IntentFamily::SkillArchitecture => RouteTarget::Chat,
         IntentFamily::GeneralChat => {
-            if matches!(plan.intent, PlanIntent::Research) && !should_prefer_chat_from_skills(&plan.recommended_skills) {
+            if matches!(plan.intent, PlanIntent::Research)
+                && !should_prefer_chat_from_skills(&plan.recommended_skills)
+            {
                 RouteTarget::Research
             } else {
                 classify_route(text)
@@ -314,18 +318,50 @@ pub fn is_coding_request(text: &str) -> bool {
     let compact: String = lower.split_whitespace().collect();
     // Chinese coding keywords
     let zh_keywords = [
-        "幫我寫", "帮我写", "幫我修", "帮我修", "幫我改", "帮我改",
-        "幫我實作", "帮我实现", "幫我新增", "帮我添加",
-        "修改代碼", "修改代码", "修改程式", "重構", "重构",
-        "加功能", "加一個功能", "新增功能", "新增一個",
-        "幫我重構", "帮我重构", "實作一個", "实现一个",
-        "寫一個", "写一个", "coding", "實作", "实现",
+        "幫我寫",
+        "帮我写",
+        "幫我修",
+        "帮我修",
+        "幫我改",
+        "帮我改",
+        "幫我實作",
+        "帮我实现",
+        "幫我新增",
+        "帮我添加",
+        "修改代碼",
+        "修改代码",
+        "修改程式",
+        "重構",
+        "重构",
+        "加功能",
+        "加一個功能",
+        "新增功能",
+        "新增一個",
+        "幫我重構",
+        "帮我重构",
+        "實作一個",
+        "实现一个",
+        "寫一個",
+        "写一个",
+        "coding",
+        "實作",
+        "实现",
     ];
     // English coding keywords
     let en_keywords = [
-        "implement", "refactor", "fix the bug", "add a feature", "add feature",
-        "create a function", "write a function", "modify the code", "update the code",
-        "change the code", "edit the file", "write code", "generate code",
+        "implement",
+        "refactor",
+        "fix the bug",
+        "add a feature",
+        "add feature",
+        "create a function",
+        "write a function",
+        "modify the code",
+        "update the code",
+        "change the code",
+        "edit the file",
+        "write code",
+        "generate code",
     ];
     zh_keywords.iter().any(|kw| compact.contains(kw))
         || en_keywords.iter().any(|kw| lower.contains(kw))
@@ -362,7 +398,10 @@ mod tests {
 
     #[test]
     fn classifies_research_requests() {
-        assert_eq!(classify_route("幫我研究 Rust async runtime"), RouteTarget::Research);
+        assert_eq!(
+            classify_route("幫我研究 Rust async runtime"),
+            RouteTarget::Research
+        );
         assert_eq!(classify_route("直接講重點，不要貼連結"), RouteTarget::Chat);
         assert_eq!(classify_route("你是誰"), RouteTarget::Chat);
         assert_eq!(classify_route("能看到當前代碼嗎"), RouteTarget::Chat);
@@ -370,10 +409,19 @@ mod tests {
 
     #[test]
     fn classifies_coding_requests() {
-        assert_eq!(classify_route("幫我修改 src/llm.rs 的 error handling"), RouteTarget::Coding);
+        assert_eq!(
+            classify_route("幫我修改 src/llm.rs 的 error handling"),
+            RouteTarget::Coding
+        );
         assert_eq!(classify_route("幫我重構 router_agent"), RouteTarget::Coding);
-        assert_eq!(classify_route("implement a new feature"), RouteTarget::Coding);
-        assert_eq!(classify_route("refactor the chat module"), RouteTarget::Coding);
+        assert_eq!(
+            classify_route("implement a new feature"),
+            RouteTarget::Coding
+        );
+        assert_eq!(
+            classify_route("refactor the chat module"),
+            RouteTarget::Coding
+        );
     }
 
     #[test]
@@ -402,14 +450,21 @@ mod tests {
         .expect("router should succeed");
 
         assert_eq!(output.get("route").and_then(Value::as_str), Some("chat"));
-        assert_eq!(output.get("intent_family").and_then(Value::as_str), Some("code_analysis"));
+        assert_eq!(
+            output.get("intent_family").and_then(Value::as_str),
+            Some("code_analysis")
+        );
         let recommended = output
             .get("recommended_skills")
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        assert!(recommended.iter().any(|skill| skill.as_str() == Some("code_change_planning")));
-        assert!(recommended.iter().any(|skill| skill.as_str() == Some("grounded_fix")));
+        assert!(recommended
+            .iter()
+            .any(|skill| skill.as_str() == Some("code_change_planning")));
+        assert!(recommended
+            .iter()
+            .any(|skill| skill.as_str() == Some("grounded_fix")));
     }
 
     #[tokio::test]
@@ -428,7 +483,10 @@ mod tests {
         .expect("router should succeed");
 
         assert_eq!(output.get("route").and_then(Value::as_str), Some("chat"));
-        assert_eq!(output.get("intent_family").and_then(Value::as_str), Some("project_overview"));
+        assert_eq!(
+            output.get("intent_family").and_then(Value::as_str),
+            Some("project_overview")
+        );
     }
 
     #[tokio::test]
@@ -449,4 +507,3 @@ mod tests {
         assert_eq!(output.get("route").and_then(Value::as_str), Some("coding"));
     }
 }
-

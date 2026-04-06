@@ -27,16 +27,16 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use grammers_client::client::UpdatesConfiguration;
+use grammers_client::update::Update;
 use grammers_client::SignInError;
 use grammers_client::{Client, SenderPool};
-use grammers_client::update::Update;
 use grammers_session::storages::SqliteSession;
 use grammers_session::types::{PeerId, PeerKind};
 
 use crate::memory::ensure_codebase_index;
-use crate::sirin_log;
 use crate::persona::{Persona, TaskTracker};
 use crate::researcher;
+use crate::sirin_log;
 use crate::telegram_auth::TelegramAuthState;
 
 use config::{require_login, session_path, TelegramConfig, AUTH_INPUT_TIMEOUT_SECS};
@@ -61,10 +61,10 @@ async fn ensure_user_authorized(
     }
 
     if !require_login() {
-        auth.set_disconnected("telegram login optional; set TG_REQUIRE_LOGIN=1 to enable auth flow");
-        sirin_log!(
-            "[telegram] Session not authorized; login is optional, skipping sign-in flow"
+        auth.set_disconnected(
+            "telegram login optional; set TG_REQUIRE_LOGIN=1 to enable auth flow",
         );
+        sirin_log!("[telegram] Session not authorized; login is optional, skipping sign-in flow");
         return Ok(());
     }
 
@@ -75,7 +75,10 @@ async fn ensure_user_authorized(
     })?;
 
     let login_token = client.request_login_code(&phone, &cfg.api_hash).await?;
-    sirin_log!("[telegram] Login code requested for {phone}; waiting for UI input (timeout {}s)", AUTH_INPUT_TIMEOUT_SECS);
+    sirin_log!(
+        "[telegram] Login code requested for {phone}; waiting for UI input (timeout {}s)",
+        AUTH_INPUT_TIMEOUT_SECS
+    );
 
     let code = auth
         .request_code(AUTH_INPUT_TIMEOUT_SECS)
@@ -94,7 +97,9 @@ async fn ensure_user_authorized(
                 .request_password(&hint, AUTH_INPUT_TIMEOUT_SECS)
                 .await
                 .ok_or("Timed out waiting for Telegram 2FA password from UI")?;
-            client.check_password(password_token, password.trim()).await?;
+            client
+                .check_password(password_token, password.trim())
+                .await?;
             sirin_log!("[telegram] User sign-in with 2FA succeeded");
             Ok(())
         }
@@ -159,12 +164,15 @@ async fn run_listener_once(
     let backend_name = llm.backend_name();
     sirin_log!(
         "[telegram] AI reply backend={} model='{}'",
-        backend_name, llm.model
+        backend_name,
+        llm.model
     );
     if cfg.debug_updates {
         sirin_log!(
             "[telegram] debug_updates=on, reply_private={}, reply_groups={}, auto_reply_enabled={}",
-            cfg.reply_private, cfg.reply_groups, cfg.auto_reply_enabled
+            cfg.reply_private,
+            cfg.reply_groups,
+            cfg.auto_reply_enabled
         );
     }
     let listener_started_at = Utc::now();
@@ -211,7 +219,10 @@ async fn run_listener_once(
             continue;
         }
 
-        let is_private = matches!(message.peer_id().kind(), PeerKind::User | PeerKind::UserSelf);
+        let is_private = matches!(
+            message.peer_id().kind(),
+            PeerKind::User | PeerKind::UserSelf
+        );
         if is_private && !cfg.reply_private {
             if cfg.debug_updates {
                 sirin_log!("[telegram] skip: private replies disabled");
@@ -272,7 +283,11 @@ async fn run_listener_once(
                         p.response_style.compliance_line.as_str(),
                     )
                 })
-                .unwrap_or(("自然、禮貌、專業", "已收到你的訊息。", "我會按照你的要求處理。"));
+                .unwrap_or((
+                    "自然、禮貌、專業",
+                    "已收到你的訊息。",
+                    "我會按照你的要求處理。",
+                ));
 
             let reply_plan = handler::prepare_reply_plan(
                 &text,
@@ -290,22 +305,35 @@ async fn run_listener_once(
                     async move {
                         let notify_peer = notify_peer_fut.await;
                         tokio::spawn(async move {
-                            let task = crate::agents::research_agent::run_research_via_adk_with_tracker(
-                                topic,
-                                url,
-                                Some(adk_tracker),
-                            )
-                            .await;
-                            sirin_log!("[researcher] Background task '{}' completed with status={:?}", task.id, task.status);
+                            let task =
+                                crate::agents::research_agent::run_research_via_adk_with_tracker(
+                                    topic,
+                                    url,
+                                    Some(adk_tracker),
+                                )
+                                .await;
+                            sirin_log!(
+                                "[researcher] Background task '{}' completed with status={:?}",
+                                task.id,
+                                task.status
+                            );
                             if task.status == researcher::ResearchStatus::Done {
-                                if let (Some(ref report), Some(peer)) = (&task.final_report, notify_peer) {
+                                if let (Some(ref report), Some(peer)) =
+                                    (&task.final_report, notify_peer)
+                                {
                                     let summary: String = report.chars().take(500).collect();
                                     let msg = format!("✅ 調研完成：{}\n\n{}", task.topic, summary);
                                     let notify_client = Client::new(notify_handle);
-                                    if let Err(e) = notify_client.send_message(peer, msg.as_str()).await {
-                                        sirin_log!("[researcher] Failed to notify user of completion: {e}");
+                                    if let Err(e) =
+                                        notify_client.send_message(peer, msg.as_str()).await
+                                    {
+                                        sirin_log!(
+                                            "[researcher] Failed to notify user of completion: {e}"
+                                        );
                                     } else {
-                                        sirin_log!("[researcher] Research completion notified to user");
+                                        sirin_log!(
+                                            "[researcher] Research completion notified to user"
+                                        );
                                     }
                                 }
                             }
@@ -324,7 +352,9 @@ async fn run_listener_once(
             // vs ADK branch needed.
             let mut chat_request = reply_plan
                 .router_chat_request
-                .and_then(|v| serde_json::from_value::<crate::agents::chat_agent::ChatRequest>(v).ok())
+                .and_then(|v| {
+                    serde_json::from_value::<crate::agents::chat_agent::ChatRequest>(v).ok()
+                })
                 .unwrap_or_else(|| crate::agents::chat_agent::ChatRequest {
                     user_text: text.clone(),
                     execution_result: None,
@@ -413,14 +443,19 @@ mod tests {
 
     #[test]
     fn research_intent_url_extracted() {
-        let (topic, url) = detect_research_intent("調研 https://agoramarket.purrtechllc.com/").unwrap();
-        assert!(url.as_deref() == Some("https://agoramarket.purrtechllc.com/"), "url={url:?}");
+        let (topic, url) =
+            detect_research_intent("調研 https://agoramarket.purrtechllc.com/").unwrap();
+        assert!(
+            url.as_deref() == Some("https://agoramarket.purrtechllc.com/"),
+            "url={url:?}"
+        );
         assert!(topic.contains("agoramarket"), "topic={topic}");
     }
 
     #[test]
     fn research_intent_topic_only() {
-        let (topic, url) = detect_research_intent("幫我研究 Rust async runtime 的工作原理").unwrap();
+        let (topic, url) =
+            detect_research_intent("幫我研究 Rust async runtime 的工作原理").unwrap();
         assert!(url.is_none());
         assert!(topic.contains("Rust"), "topic={topic}");
     }
@@ -456,7 +491,11 @@ mod tests {
 
     #[test]
     fn mixed_language_reply_detection() {
-        assert!(is_mixed_language_reply("Sorry吧，我直接跟你說了，nothing 的發生。"));
-        assert!(!is_mixed_language_reply("我直接跟你說：先準備文件，再到網站提交 90 天報到。"));
+        assert!(is_mixed_language_reply(
+            "Sorry吧，我直接跟你說了，nothing 的發生。"
+        ));
+        assert!(!is_mixed_language_reply(
+            "我直接跟你說：先準備文件，再到網站提交 90 天報到。"
+        ));
     }
 }

@@ -3,11 +3,9 @@
 ///
 /// Run with:
 ///   cargo test pipeline -- --nocapture
-
 use serde::{Deserialize, Serialize};
 
-const USER_AGENT: &str =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
      (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
 const LM_STUDIO_URL: &str = "http://localhost:1234/v1/chat/completions";
@@ -72,12 +70,12 @@ async fn ddg_search(query: &str) -> Vec<SearchResult> {
 
     let document = scraper::Html::parse_document(&html);
     let result_sel = scraper::Selector::parse(".result__body").unwrap();
-    let title_sel  = scraper::Selector::parse(".result__title a").unwrap();
+    let title_sel = scraper::Selector::parse(".result__title a").unwrap();
     let snippet_sel = scraper::Selector::parse(".result__snippet").unwrap();
 
     let mut results = Vec::new();
     for card in document.select(&result_sel).take(3) {
-        let title_el   = card.select(&title_sel).next();
+        let title_el = card.select(&title_sel).next();
         let snippet_el = card.select(&snippet_sel).next();
 
         let title = title_el
@@ -92,7 +90,11 @@ async fn ddg_search(query: &str) -> Vec<SearchResult> {
             .unwrap_or_default();
 
         if !title.is_empty() {
-            results.push(SearchResult { title, url, snippet });
+            results.push(SearchResult {
+                title,
+                url,
+                snippet,
+            });
         }
     }
     results
@@ -102,12 +104,18 @@ async fn ddg_search(query: &str) -> Vec<SearchResult> {
 
 fn should_search(text: &str) -> bool {
     let lower = text.to_lowercase();
-    text.contains('?') || text.contains('？')
-        || lower.contains("什麼") || lower.contains("如何")
-        || lower.contains("為什麼") || lower.contains("怎麼")
-        || lower.contains("what") || lower.contains("how")
-        || lower.contains("why")  || lower.contains("when")
-        || lower.contains("where")|| lower.contains("who")
+    text.contains('?')
+        || text.contains('？')
+        || lower.contains("什麼")
+        || lower.contains("如何")
+        || lower.contains("為什麼")
+        || lower.contains("怎麼")
+        || lower.contains("what")
+        || lower.contains("how")
+        || lower.contains("why")
+        || lower.contains("when")
+        || lower.contains("where")
+        || lower.contains("who")
 }
 
 // ── LM Studio call ────────────────────────────────────────────────────────────
@@ -117,7 +125,10 @@ async fn call_llm(prompt: &str) -> String {
     let model = lm_studio_model();
     let body = ChatRequest {
         model: &model,
-        messages: vec![ChatMessage { role: "user".into(), content: prompt.into() }],
+        messages: vec![ChatMessage {
+            role: "user".into(),
+            content: prompt.into(),
+        }],
         stream: false,
     };
     let resp: ChatResponse = client
@@ -151,7 +162,10 @@ async fn pipeline_receive_search_think_reply() {
 
     // ── Step 2: Decide whether to search ─────────────────────────────────────
     let needs_search = should_search(incoming_msg);
-    println!("\n🔍 觸發搜尋判斷 → {}", if needs_search { "YES" } else { "NO" });
+    println!(
+        "\n🔍 觸發搜尋判斷 → {}",
+        if needs_search { "YES" } else { "NO" }
+    );
     assert!(needs_search, "此訊息應該觸發搜尋");
 
     // ── Step 3: Web search ────────────────────────────────────────────────────
@@ -170,7 +184,8 @@ async fn pipeline_receive_search_think_reply() {
     }
 
     let search_block = if results.is_empty() {
-        "- External search unavailable; answer from model knowledge and say when uncertain.".to_string()
+        "- External search unavailable; answer from model knowledge and say when uncertain."
+            .to_string()
     } else {
         results
             .iter()

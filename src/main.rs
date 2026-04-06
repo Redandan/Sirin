@@ -1,12 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod adk;
+mod agents;
+mod code_graph;
 mod events;
 mod followup;
 mod llm;
 mod log_buffer;
-mod adk;
-mod agents;
-mod code_graph;
 mod memory;
 mod persona;
 mod researcher;

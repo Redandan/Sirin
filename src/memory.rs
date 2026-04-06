@@ -28,12 +28,12 @@ use serde::{Deserialize, Serialize};
 /// Breakdown of Sirin's on-disk footprint across all managed data files.
 #[derive(Debug, Clone, Default)]
 pub struct StorageUsage {
-    pub memory_db_bytes:    u64,   // SQLite FTS5 memories.db
-    pub call_graph_bytes:   u64,   // call_graph.jsonl
-    pub research_log_bytes: u64,   // tracking/research.jsonl
-    pub task_log_bytes:     u64,   // tracking/task.jsonl
-    pub context_bytes:      u64,   // context/*.jsonl (sum of all peers)
-    pub total_bytes:        u64,
+    pub memory_db_bytes: u64,    // SQLite FTS5 memories.db
+    pub call_graph_bytes: u64,   // call_graph.jsonl
+    pub research_log_bytes: u64, // tracking/research.jsonl
+    pub task_log_bytes: u64,     // tracking/task.jsonl
+    pub context_bytes: u64,      // context/*.jsonl (sum of all peers)
+    pub total_bytes: u64,
 }
 
 impl StorageUsage {
@@ -72,16 +72,22 @@ pub fn storage_usage() -> StorageUsage {
         Path::new("data").to_path_buf()
     };
 
-    let memory_db_bytes    = file_size(&base.join("memory").join("memories.db"));
-    let call_graph_bytes   = file_size(&base.join("call_graph.jsonl"));
+    let memory_db_bytes = file_size(&base.join("memory").join("memories.db"));
+    let call_graph_bytes = file_size(&base.join("call_graph.jsonl"));
     let research_log_bytes = file_size(&base.join("tracking").join("research.jsonl"));
-    let task_log_bytes     = file_size(&base.join("tracking").join("task.jsonl"));
-    let context_bytes      = dir_size(&base.join("context"));
-    let total_bytes        = memory_db_bytes + call_graph_bytes
-                           + research_log_bytes + task_log_bytes + context_bytes;
+    let task_log_bytes = file_size(&base.join("tracking").join("task.jsonl"));
+    let context_bytes = dir_size(&base.join("context"));
+    let total_bytes =
+        memory_db_bytes + call_graph_bytes + research_log_bytes + task_log_bytes + context_bytes;
 
-    StorageUsage { memory_db_bytes, call_graph_bytes, research_log_bytes,
-                   task_log_bytes, context_bytes, total_bytes }
+    StorageUsage {
+        memory_db_bytes,
+        call_graph_bytes,
+        research_log_bytes,
+        task_log_bytes,
+        context_bytes,
+        total_bytes,
+    }
 }
 
 // ── Memory store (SQLite FTS5 backend) ───────────────────────────────────────
@@ -124,8 +130,8 @@ fn memory_db() -> &'static Mutex<rusqlite::Connection> {
         if let Some(parent) = path.parent() {
             let _ = fs::create_dir_all(parent);
         }
-        let conn = rusqlite::Connection::open(&path)
-            .expect("Failed to open memory SQLite database");
+        let conn =
+            rusqlite::Connection::open(&path).expect("Failed to open memory SQLite database");
         conn.execute_batch(
             "CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts \
              USING fts5(text, source, timestamp, tokenize='unicode61');",
@@ -168,7 +174,8 @@ fn migrate_jsonl_to_sqlite(conn: &rusqlite::Connection) {
         .filter(|l| !l.trim().is_empty())
         .filter_map(|l| serde_json::from_str::<MemoryEntry>(&l).ok())
         .filter_map(|e| {
-            stmt.execute(rusqlite::params![e.text, e.source, e.timestamp]).ok()
+            stmt.execute(rusqlite::params![e.text, e.source, e.timestamp])
+                .ok()
         })
         .count();
     if migrated > 0 {
@@ -177,12 +184,17 @@ fn migrate_jsonl_to_sqlite(conn: &rusqlite::Connection) {
 }
 
 /// Persist a text snippet to the memory store (SQLite FTS5).
-pub fn memory_store(text: &str, source: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub fn memory_store(
+    text: &str,
+    source: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if text.trim().is_empty() {
         return Ok(());
     }
     let timestamp = Utc::now().to_rfc3339();
-    let conn = memory_db().lock().map_err(|e| format!("memory DB lock poisoned: {e}"))?;
+    let conn = memory_db()
+        .lock()
+        .map_err(|e| format!("memory DB lock poisoned: {e}"))?;
     conn.execute(
         "INSERT INTO memories_fts(text, source, timestamp) VALUES (?1, ?2, ?3)",
         rusqlite::params![text, source, timestamp],
@@ -201,7 +213,9 @@ pub fn memory_search(
         return Ok(Vec::new());
     }
     let safe_query = sanitize_fts5_query(query);
-    let conn = memory_db().lock().map_err(|e| format!("memory DB lock poisoned: {e}"))?;
+    let conn = memory_db()
+        .lock()
+        .map_err(|e| format!("memory DB lock poisoned: {e}"))?;
     let mut stmt = conn.prepare(
         "SELECT text FROM memories_fts \
          WHERE memories_fts MATCH ?1 \
@@ -209,7 +223,9 @@ pub fn memory_search(
          LIMIT ?2",
     )?;
     let results: Vec<String> = stmt
-        .query_map(rusqlite::params![safe_query, limit as i64], |row| row.get(0))?
+        .query_map(rusqlite::params![safe_query, limit as i64], |row| {
+            row.get(0)
+        })?
         .filter_map(|r| r.ok())
         .collect();
     Ok(results)
@@ -232,8 +248,6 @@ fn sanitize_fts5_query(query: &str) -> String {
     }
     tokens.join(" ")
 }
-
-
 
 // ── Text scoring utilities (used by codebase index search) ──────────────────
 
@@ -308,7 +322,9 @@ fn codebase_index_path() -> PathBuf {
             .join("memory")
             .join("codebase_index.jsonl");
     }
-    Path::new("data").join("memory").join("codebase_index.jsonl")
+    Path::new("data")
+        .join("memory")
+        .join("codebase_index.jsonl")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -334,7 +350,11 @@ fn find_project_root() -> Option<PathBuf> {
 }
 
 fn code_file_kind(path: &Path) -> &'static str {
-    match path.extension().and_then(|v| v.to_str()).unwrap_or_default() {
+    match path
+        .extension()
+        .and_then(|v| v.to_str())
+        .unwrap_or_default()
+    {
         "rs" => "rust-source",
         "toml" => "cargo-config",
         "md" => "documentation",
@@ -352,7 +372,9 @@ fn is_codebase_candidate(path: &Path, metadata: &fs::Metadata) -> bool {
     }
 
     matches!(
-        path.extension().and_then(|v| v.to_str()).unwrap_or_default(),
+        path.extension()
+            .and_then(|v| v.to_str())
+            .unwrap_or_default(),
         "rs" | "toml" | "md" | "yaml" | "yml" | "ts" | "tsx" | "js" | "jsx" | "json"
     )
 }
@@ -364,8 +386,14 @@ fn collect_codebase_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result
         let metadata = entry.metadata()?;
 
         if metadata.is_dir() {
-            let name = path.file_name().and_then(|v| v.to_str()).unwrap_or_default();
-            if matches!(name, ".git" | "target" | "node_modules" | ".next" | "dist" | "build") {
+            let name = path
+                .file_name()
+                .and_then(|v| v.to_str())
+                .unwrap_or_default();
+            if matches!(
+                name,
+                ".git" | "target" | "node_modules" | ".next" | "dist" | "build"
+            ) {
                 continue;
             }
             collect_codebase_files(&path, out)?;
@@ -417,7 +445,10 @@ fn capture_symbol_after_prefix(line: &str, prefix: &str) -> Option<String> {
 }
 
 fn extract_symbols(path: &Path, text: &str) -> Vec<String> {
-    let ext = path.extension().and_then(|v| v.to_str()).unwrap_or_default();
+    let ext = path
+        .extension()
+        .and_then(|v| v.to_str())
+        .unwrap_or_default();
     let mut symbols = Vec::new();
 
     for line in text.lines().take(240) {
@@ -435,12 +466,14 @@ fn extract_symbols(path: &Path, text: &str) -> Vec<String> {
                 .or_else(|| capture_symbol_after_prefix(trimmed, "trait "))
                 .or_else(|| capture_symbol_after_prefix(trimmed, "pub mod "))
                 .or_else(|| capture_symbol_after_prefix(trimmed, "mod ")),
-            "ts" | "tsx" | "js" | "jsx" => capture_symbol_after_prefix(trimmed, "export async function ")
-                .or_else(|| capture_symbol_after_prefix(trimmed, "export function "))
-                .or_else(|| capture_symbol_after_prefix(trimmed, "function "))
-                .or_else(|| capture_symbol_after_prefix(trimmed, "export const "))
-                .or_else(|| capture_symbol_after_prefix(trimmed, "const "))
-                .or_else(|| capture_symbol_after_prefix(trimmed, "export default function ")),
+            "ts" | "tsx" | "js" | "jsx" => {
+                capture_symbol_after_prefix(trimmed, "export async function ")
+                    .or_else(|| capture_symbol_after_prefix(trimmed, "export function "))
+                    .or_else(|| capture_symbol_after_prefix(trimmed, "function "))
+                    .or_else(|| capture_symbol_after_prefix(trimmed, "export const "))
+                    .or_else(|| capture_symbol_after_prefix(trimmed, "const "))
+                    .or_else(|| capture_symbol_after_prefix(trimmed, "export default function "))
+            }
             _ => None,
         };
 
@@ -492,13 +525,19 @@ fn role_hint_for_path(rel: &str) -> Option<&'static str> {
         "src/followup.rs" => Some("後續追蹤與待辦處理流程。"),
         "src/agents/chat_agent.rs" => Some("聊天 agent，負責整合本地檔案與程式碼內容來回答問題。"),
         "src/agents/planner_agent.rs" => Some("planner agent，先判斷使用者意圖與可能的步驟。"),
-        "src/agents/router_agent.rs" => Some("router agent，決定要走 chat、research 或 follow-up 路線。"),
+        "src/agents/router_agent.rs" => {
+            Some("router agent，決定要走 chat、research 或 follow-up 路線。")
+        }
         "src/agents/research_agent.rs" => Some("research agent，負責調研、摘要與結果記錄。"),
         "src/agents/followup_agent.rs" => Some("follow-up agent，背景處理待辦與後續任務。"),
         "docs/ARCHITECTURE.md" => Some("架構設計說明文件。"),
         "docs/QUICKSTART.md" => Some("快速上手與執行說明。"),
-        _ if rel.starts_with("src/adk/") => Some("ADK 執行框架元件，負責 context、tools、runner 與 agent runtime。"),
-        _ if rel.starts_with("src/telegram/") => Some("Telegram 整合模組，處理 listener、回覆、語言與驗證。"),
+        _ if rel.starts_with("src/adk/") => {
+            Some("ADK 執行框架元件，負責 context、tools、runner 與 agent runtime。")
+        }
+        _ if rel.starts_with("src/telegram/") => {
+            Some("Telegram 整合模組，處理 listener、回覆、語言與驗證。")
+        }
         _ if rel.starts_with("docs/") => Some("專案文件，用來說明架構、路線圖或使用方式。"),
         _ => None,
     }
@@ -684,7 +723,9 @@ fn normalize_path_hint(path_hint: &str) -> String {
     path_hint
         .trim()
         .trim_matches(|c| matches!(c, '`' | '"' | '\''))
-        .trim_matches(|c: char| matches!(c, ',' | '，' | '。' | '?' | '？' | ':' | '：' | '(' | ')'))
+        .trim_matches(|c: char| {
+            matches!(c, ',' | '，' | '。' | '?' | '？' | ':' | '：' | '(' | ')')
+        })
         .replace('\\', "/")
 }
 
@@ -694,7 +735,9 @@ fn resolve_project_file_path(root: &Path, path_hint: &str) -> Option<PathBuf> {
         return None;
     }
 
-    let root_canonical = fs::canonicalize(root).ok().unwrap_or_else(|| root.to_path_buf());
+    let root_canonical = fs::canonicalize(root)
+        .ok()
+        .unwrap_or_else(|| root.to_path_buf());
     let direct = PathBuf::from(&normalized);
     let candidate = if direct.is_absolute() {
         direct
@@ -706,7 +749,9 @@ fn resolve_project_file_path(root: &Path, path_hint: &str) -> Option<PathBuf> {
         .map(|stem| root.join(stem).join("mod.rs"));
 
     if candidate.is_file() {
-        let canonical = fs::canonicalize(&candidate).ok().unwrap_or(candidate.clone());
+        let canonical = fs::canonicalize(&candidate)
+            .ok()
+            .unwrap_or(candidate.clone());
         if canonical.starts_with(&root_canonical) {
             return Some(candidate);
         }
@@ -714,7 +759,9 @@ fn resolve_project_file_path(root: &Path, path_hint: &str) -> Option<PathBuf> {
 
     if let Some(mod_candidate) = rust_mod_candidate {
         if mod_candidate.is_file() {
-            let canonical = fs::canonicalize(&mod_candidate).ok().unwrap_or(mod_candidate.clone());
+            let canonical = fs::canonicalize(&mod_candidate)
+                .ok()
+                .unwrap_or(mod_candidate.clone());
             if canonical.starts_with(&root_canonical) {
                 return Some(mod_candidate);
             }
@@ -764,7 +811,9 @@ pub fn inspect_project_file_range(
     max_chars: usize,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let Some(root) = find_project_root() else {
-        return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "project root not found").into());
+        return Err(
+            std::io::Error::new(std::io::ErrorKind::NotFound, "project root not found").into(),
+        );
     };
 
     let path = resolve_project_file_path(&root, path_hint).ok_or_else(|| {
@@ -788,10 +837,16 @@ pub fn inspect_project_file_range(
         let mut chars_used = 0usize;
         for (i, line) in text.lines().enumerate() {
             let lineno = i + 1;
-            if lineno < start { continue; }
-            if lineno > end { break; }
+            if lineno < start {
+                continue;
+            }
+            if lineno > end {
+                break;
+            }
             let entry = format!("{lineno:>5} | {line}\n");
-            if chars_used + entry.len() > cap { break; }
+            if chars_used + entry.len() > cap {
+                break;
+            }
             out.push_str(&entry);
             chars_used += entry.len();
         }
@@ -903,9 +958,31 @@ pub fn search_codebase(
 pub fn looks_like_code_query(text: &str) -> bool {
     let lower = text.to_lowercase();
     [
-        "code", "repo", "project", "architecture", "module", "function", "file", "cargo",
-        "rust", "tauri", "src/", ".rs", "cargo.toml", "專案", "項目", "架構", "代碼",
-        "程式碼", "模組", "函式", "檔案", "實作", "分析", "telegram", "memory",
+        "code",
+        "repo",
+        "project",
+        "architecture",
+        "module",
+        "function",
+        "file",
+        "cargo",
+        "rust",
+        "tauri",
+        "src/",
+        ".rs",
+        "cargo.toml",
+        "專案",
+        "項目",
+        "架構",
+        "代碼",
+        "程式碼",
+        "模組",
+        "函式",
+        "檔案",
+        "實作",
+        "分析",
+        "telegram",
+        "memory",
     ]
     .iter()
     .any(|needle| lower.contains(needle))
@@ -1047,15 +1124,25 @@ mod tests {
     #[test]
     fn known_files_use_human_friendly_role_hints() {
         assert_eq!(
-            summarize_file_role(Path::new("src/main.rs"), "src/main.rs", "#![cfg_attr(...)]\nfn main() {}"),
+            summarize_file_role(
+                Path::new("src/main.rs"),
+                "src/main.rs",
+                "#![cfg_attr(...)]\nfn main() {}"
+            ),
             "應用程式入口，負責啟動 UI、agents、Telegram 與背景工作。"
         );
     }
 
     #[test]
     fn prioritizes_core_project_files_over_hidden_command_docs() {
-        assert!(project_file_priority("src/main.rs") > project_file_priority(".claude/commands/build-check.md"));
-        assert!(project_file_priority("Cargo.toml") > project_file_priority(".claude/commands/build-check.md"));
+        assert!(
+            project_file_priority("src/main.rs")
+                > project_file_priority(".claude/commands/build-check.md")
+        );
+        assert!(
+            project_file_priority("Cargo.toml")
+                > project_file_priority(".claude/commands/build-check.md")
+        );
     }
 
     #[test]
@@ -1074,12 +1161,23 @@ mod tests {
         let result = inspect_project_file_range("src/main.rs", Some(1), Some(3), 4000);
         let content = result.expect("should find src/main.rs");
         // Output must include line numbers in "  N | ..." format.
-        assert!(content.contains("    1 |"), "line 1 should be numbered: {content}");
-        assert!(content.contains("    2 |") || content.contains("    3 |"), "line 2 or 3 should appear");
+        assert!(
+            content.contains("    1 |"),
+            "line 1 should be numbered: {content}"
+        );
+        assert!(
+            content.contains("    2 |") || content.contains("    3 |"),
+            "line 2 or 3 should appear"
+        );
         // Lines after the range should not be present (file has > 3 lines).
-        let excerpt_start = content.find("Excerpt:").expect("should have Excerpt section");
+        let excerpt_start = content
+            .find("Excerpt:")
+            .expect("should have Excerpt section");
         let excerpt = &content[excerpt_start..];
-        assert!(!excerpt.contains("    4 |"), "line 4 should be outside range");
+        assert!(
+            !excerpt.contains("    4 |"),
+            "line 4 should be outside range"
+        );
     }
 
     #[test]
@@ -1087,7 +1185,10 @@ mod tests {
         let result = inspect_project_file_range("src/main.rs", None, None, 4000);
         let content = result.expect("should find src/main.rs");
         // Full-file mode does not add line number prefixes.
-        assert!(!content.contains("    1 |"), "full-file mode should not number lines");
+        assert!(
+            !content.contains("    1 |"),
+            "full-file mode should not number lines"
+        );
         assert!(content.contains("Excerpt:"), "should have Excerpt section");
     }
 
@@ -1095,10 +1196,17 @@ mod tests {
     fn range_read_start_beyond_eof_returns_empty_excerpt() {
         let result = inspect_project_file_range("src/main.rs", Some(99999), None, 4000);
         let content = result.expect("should find src/main.rs even with out-of-range start");
-        let excerpt_start = content.find("Excerpt:").expect("should have Excerpt section");
-        let excerpt = &content[excerpt_start + "Excerpt:".len()..].trim().to_string();
+        let excerpt_start = content
+            .find("Excerpt:")
+            .expect("should have Excerpt section");
+        let excerpt = &content[excerpt_start + "Excerpt:".len()..]
+            .trim()
+            .to_string();
         // Excerpt should be empty or very short (no matching lines).
-        assert!(excerpt.len() < 20, "excerpt should be empty for out-of-range start: '{excerpt}'");
+        assert!(
+            excerpt.len() < 20,
+            "excerpt should be empty for out-of-range start: '{excerpt}'"
+        );
     }
 
     #[test]
@@ -1106,7 +1214,10 @@ mod tests {
         let result = inspect_project_file_range("src/main.rs", Some(1), Some(5), 4000);
         let content = result.expect("should find src/main.rs");
         // The header line should mention the range.
-        assert!(content.contains("lines 1"), "range note should appear in header: {content}");
+        assert!(
+            content.contains("lines 1"),
+            "range note should appear in header: {content}"
+        );
     }
 
     #[test]
@@ -1140,14 +1251,27 @@ mod tests {
         let mut found: Vec<std::path::PathBuf> = Vec::new();
         collect_codebase_files(&tmp, &mut found).unwrap();
 
-        let names: Vec<String> = found.iter()
+        let names: Vec<String> = found
+            .iter()
             .map(|p| p.to_string_lossy().replace('\\', "/"))
             .collect();
 
-        assert!(names.iter().any(|n| n.ends_with("src/main.rs")), "should include src/main.rs");
-        assert!(!names.iter().any(|n| n.contains("/target/")), "should skip target/");
-        assert!(!names.iter().any(|n| n.contains("/.git/")), "should skip .git/");
-        assert!(!names.iter().any(|n| n.contains("/node_modules/")), "should skip node_modules/");
+        assert!(
+            names.iter().any(|n| n.ends_with("src/main.rs")),
+            "should include src/main.rs"
+        );
+        assert!(
+            !names.iter().any(|n| n.contains("/target/")),
+            "should skip target/"
+        );
+        assert!(
+            !names.iter().any(|n| n.contains("/.git/")),
+            "should skip .git/"
+        );
+        assert!(
+            !names.iter().any(|n| n.contains("/node_modules/")),
+            "should skip node_modules/"
+        );
 
         let _ = fs::remove_dir_all(&tmp);
         let _: io::Result<()> = Ok(());
@@ -1160,7 +1284,14 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("sirin_cand_{}", std::process::id()));
         fs::create_dir_all(&tmp).unwrap();
 
-        for ext in ["main.rs", "Cargo.toml", "README.md", "config.yaml", "app.ts", "page.tsx"] {
+        for ext in [
+            "main.rs",
+            "Cargo.toml",
+            "README.md",
+            "config.yaml",
+            "app.ts",
+            "page.tsx",
+        ] {
             let p = tmp.join(ext);
             fs::write(&p, "content").unwrap();
             let meta = fs::metadata(&p).unwrap();
@@ -1189,9 +1320,18 @@ mod tests {
     fn extract_symbols_handles_async_and_pub() {
         let src = "pub async fn run_listener() {}\nasync fn helper_task() {}\npub struct Config {}";
         let syms = extract_symbols(std::path::Path::new("src/foo.rs"), src);
-        assert!(syms.contains(&"run_listener".to_string()), "should extract pub async fn");
-        assert!(syms.contains(&"helper_task".to_string()), "should extract async fn");
-        assert!(syms.contains(&"Config".to_string()), "should extract pub struct");
+        assert!(
+            syms.contains(&"run_listener".to_string()),
+            "should extract pub async fn"
+        );
+        assert!(
+            syms.contains(&"helper_task".to_string()),
+            "should extract async fn"
+        );
+        assert!(
+            syms.contains(&"Config".to_string()),
+            "should extract pub struct"
+        );
     }
 
     #[test]
@@ -1199,7 +1339,11 @@ mod tests {
         // Generate 20 distinct functions.
         let src: String = (0..20).map(|i| format!("fn func_{i}() {{}}\n")).collect();
         let syms = extract_symbols(std::path::Path::new("src/foo.rs"), &src);
-        assert!(syms.len() <= 12, "should cap at 12 symbols, got {}", syms.len());
+        assert!(
+            syms.len() <= 12,
+            "should cap at 12 symbols, got {}",
+            syms.len()
+        );
     }
 
     // ── refresh_codebase_index ────────────────────────────────────────────────
@@ -1222,7 +1366,8 @@ mod tests {
         // The planner_agent module must surface in results.
         assert!(
             results.iter().any(|r| r.to_lowercase().contains("planner")),
-            "planner should appear in results: {:?}", results
+            "planner should appear in results: {:?}",
+            results
         );
     }
 }

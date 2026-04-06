@@ -1,4 +1,8 @@
-use crate::adk::{agent::Agent, context::AgentContext, tool::{default_tool_registry, ToolRegistry}};
+use crate::adk::{
+    agent::Agent,
+    context::AgentContext,
+    tool::{default_tool_registry, ToolRegistry},
+};
 use crate::persona::TaskTracker;
 
 #[derive(Clone)]
@@ -36,12 +40,18 @@ impl AgentRuntime {
         input: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
         let tool_list = ctx.tools.names().join(", ");
-        let llm_details = format!("{:?}", ctx.llm.as_ref()); // Access the LlmConfig through the Arc
+        let llm_summary = ctx.llm.task_log_summary();
+        crate::sirin_log!(
+            "[adk:{}] task_start agent={} {}",
+            ctx.source,
+            agent.name(),
+            llm_summary,
+        );
         ctx.record_system_event(
             format!("adk:{}:start", agent.name()),
             None,
             Some("RUNNING"),
-            Some(format!("tools=[{tool_list}], llm=[{llm_details}]")),
+            Some(format!("tools=[{tool_list}], ai=[{llm_summary}]")),
         );
 
         let result = agent.run(&ctx, input).await;

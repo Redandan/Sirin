@@ -76,9 +76,15 @@ pub struct CodingAgentConfig {
     pub max_file_write_bytes: usize,
 }
 
-fn default_coding_enabled() -> bool { true }
-fn default_coding_project_root() -> String { ".".to_string() }
-fn default_true() -> bool { true }
+fn default_coding_enabled() -> bool {
+    true
+}
+fn default_coding_project_root() -> String {
+    ".".to_string()
+}
+fn default_true() -> bool {
+    true
+}
 fn default_allowed_commands() -> Vec<String> {
     vec![
         "cargo check".to_string(),
@@ -86,8 +92,12 @@ fn default_allowed_commands() -> Vec<String> {
         "cargo build --release".to_string(),
     ]
 }
-fn default_max_iterations() -> usize { 10 }
-fn default_max_file_write_bytes() -> usize { 102_400 }
+fn default_max_iterations() -> usize {
+    10
+}
+fn default_max_file_write_bytes() -> usize {
+    102_400
+}
 
 impl Default for CodingAgentConfig {
     fn default() -> Self {
@@ -241,8 +251,7 @@ impl BehaviorEngine {
             ),
             ActionTier::LocalProcess => format!(
                 "{:.2} <= estimated_value={estimated_value:.2} <= {:.2}",
-                p.roi_thresholds.min_usd_to_notify,
-                p.roi_thresholds.min_usd_to_call_remote_llm
+                p.roi_thresholds.min_usd_to_notify, p.roi_thresholds.min_usd_to_call_remote_llm
             ),
             ActionTier::Escalate => format!(
                 "estimated_value={estimated_value:.2} > min_usd_to_call_remote_llm={:.2}",
@@ -258,7 +267,8 @@ impl BehaviorEngine {
 
         let reason = format!(
             "persona='{}', source='{}', {objective_reason}, {threshold_reason}",
-            p.name(), msg.source
+            p.name(),
+            msg.source
         );
 
         BehaviorDecision {
@@ -311,10 +321,7 @@ impl TaskEntry {
         }
     }
 
-    pub fn ai_decision(
-        persona_name: &str,
-        message_preview: Option<String>,
-    ) -> Self {
+    pub fn ai_decision(persona_name: &str, message_preview: Option<String>) -> Self {
         Self {
             timestamp: Utc::now().to_rfc3339(),
             event: "ai_decision".to_string(),
@@ -392,7 +399,10 @@ impl TaskTracker {
         }
     }
 
-    pub fn record(&self, entry: &TaskEntry) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub fn record(
+        &self,
+        entry: &TaskEntry,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let path = self.path.lock().expect("TaskTracker mutex poisoned");
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -406,7 +416,11 @@ impl TaskTracker {
     fn read_raw_lines_lossy(
         &self,
     ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
-        let path = self.path.lock().expect("TaskTracker mutex poisoned").clone();
+        let path = self
+            .path
+            .lock()
+            .expect("TaskTracker mutex poisoned")
+            .clone();
         if !path.exists() {
             return Ok(Vec::new());
         }
@@ -436,8 +450,12 @@ impl TaskTracker {
         Ok(lines)
     }
 
-    pub fn read_last_n(&self, n: usize) -> Result<Vec<TaskEntry>, Box<dyn std::error::Error + Send + Sync>> {
-        let mut ring: std::collections::VecDeque<String> = std::collections::VecDeque::with_capacity(n);
+    pub fn read_last_n(
+        &self,
+        n: usize,
+    ) -> Result<Vec<TaskEntry>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut ring: std::collections::VecDeque<String> =
+            std::collections::VecDeque::with_capacity(n);
         for line in self.read_raw_lines_lossy()? {
             if line.trim().is_empty() {
                 continue;
@@ -462,7 +480,11 @@ impl TaskTracker {
         if updates.is_empty() {
             return Ok(());
         }
-        let path = self.path.lock().expect("TaskTracker mutex poisoned").clone();
+        let path = self
+            .path
+            .lock()
+            .expect("TaskTracker mutex poisoned")
+            .clone();
         if !path.exists() {
             return Ok(());
         }
@@ -537,7 +559,11 @@ impl TaskTracker {
         let removed = non_empty.len() - max_lines;
         let keep = &non_empty[removed..];
 
-        let path = self.path.lock().expect("TaskTracker mutex poisoned").clone();
+        let path = self
+            .path
+            .lock()
+            .expect("TaskTracker mutex poisoned")
+            .clone();
         let tmp_path = path.with_extension("jsonl.tmp");
         {
             let mut tmp = OpenOptions::new()
@@ -580,8 +606,14 @@ mod tests {
     fn action_tier_thresholds() {
         let p = test_persona();
         assert!(matches!(determine_action_tier(1.0, &p), ActionTier::Ignore));
-        assert!(matches!(determine_action_tier(10.0, &p), ActionTier::LocalProcess));
-        assert!(matches!(determine_action_tier(99.0, &p), ActionTier::Escalate));
+        assert!(matches!(
+            determine_action_tier(10.0, &p),
+            ActionTier::LocalProcess
+        ));
+        assert!(matches!(
+            determine_action_tier(99.0, &p),
+            ActionTier::Escalate
+        ));
     }
 
     #[test]
@@ -608,26 +640,40 @@ mod tests {
     #[test]
     fn persona_load_reads_config_yaml() {
         let p = Persona::load();
-        assert!(p.is_ok(), "config/persona.yaml should be loadable: {:?}", p.err());
+        assert!(
+            p.is_ok(),
+            "config/persona.yaml should be loadable: {:?}",
+            p.err()
+        );
         let p = p.unwrap();
-        assert!(!p.identity.name.is_empty(), "persona name must not be empty");
+        assert!(
+            !p.identity.name.is_empty(),
+            "persona name must not be empty"
+        );
     }
 
     #[test]
     fn persona_yaml_roundtrip() {
         let p = test_persona();
         let yaml = serde_yaml::to_string(&p).expect("serialization should not fail");
-        let reloaded: Persona = serde_yaml::from_str(&yaml).expect("deserialization should not fail");
+        let reloaded: Persona =
+            serde_yaml::from_str(&yaml).expect("deserialization should not fail");
         assert_eq!(reloaded.identity.name, p.identity.name);
         assert_eq!(reloaded.objectives, p.objectives);
-        assert!((reloaded.roi_thresholds.min_usd_to_notify - p.roi_thresholds.min_usd_to_notify).abs() < f64::EPSILON);
+        assert!(
+            (reloaded.roi_thresholds.min_usd_to_notify - p.roi_thresholds.min_usd_to_notify).abs()
+                < f64::EPSILON
+        );
     }
 
     // ── TaskTracker ───────────────────────────────────────────────────────────
 
     fn tmp_tracker(label: &str) -> (TaskTracker, std::path::PathBuf) {
-        let path = std::env::temp_dir()
-            .join(format!("sirin_persona_test_{}_{}.jsonl", std::process::id(), label));
+        let path = std::env::temp_dir().join(format!(
+            "sirin_persona_test_{}_{}.jsonl",
+            std::process::id(),
+            label
+        ));
         (TaskTracker::new(&path), path)
     }
 
@@ -664,7 +710,9 @@ mod tests {
         let path = std::env::temp_dir().join("sirin_nonexistent_tracker.jsonl");
         let _ = std::fs::remove_file(&path); // ensure absent
         let tracker = TaskTracker::new(&path);
-        let entries = tracker.read_last_n(10).expect("should succeed even if file is absent");
+        let entries = tracker
+            .read_last_n(10)
+            .expect("should succeed even if file is absent");
         assert!(entries.is_empty());
     }
 
@@ -689,7 +737,9 @@ mod tests {
     fn tracker_update_statuses_noop_when_empty() {
         let (tracker, path) = tmp_tracker("noop");
         // Should not fail even when no updates provided.
-        tracker.update_statuses(&std::collections::HashMap::new()).expect("noop ok");
+        tracker
+            .update_statuses(&std::collections::HashMap::new())
+            .expect("noop ok");
         std::fs::remove_file(&path).ok();
     }
 
@@ -705,7 +755,11 @@ mod tests {
         assert_eq!(removed, 3);
         let remaining = tracker.read_last_n(10).expect("read ok");
         assert_eq!(remaining.len(), 5);
-        assert_eq!(remaining[0].reason.as_deref(), Some("entry 3"), "oldest kept should be entry 3");
+        assert_eq!(
+            remaining[0].reason.as_deref(),
+            Some("entry 3"),
+            "oldest kept should be entry 3"
+        );
         std::fs::remove_file(&path).ok();
     }
 
@@ -713,7 +767,9 @@ mod tests {
     fn tracker_trim_to_max_noop_when_under_limit() {
         let (tracker, path) = tmp_tracker("trim_noop");
         for _ in 0..3 {
-            tracker.record(&TaskEntry::heartbeat("P")).expect("record ok");
+            tracker
+                .record(&TaskEntry::heartbeat("P"))
+                .expect("record ok");
         }
         let removed = tracker.trim_to_max(10).expect("trim ok");
         assert_eq!(removed, 0);

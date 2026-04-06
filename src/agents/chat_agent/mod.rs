@@ -121,12 +121,13 @@ impl Agent for ChatAgent {
                     Some(format!("tier={tier}")),
                 );
             }
-            let fallback_reply = request
-                .fallback_reply
-                .clone()
-                .unwrap_or_else(|| chinese_fallback_reply(&request.user_text, request.execution_result.as_deref()));
+            let fallback_reply = request.fallback_reply.clone().unwrap_or_else(|| {
+                chinese_fallback_reply(&request.user_text, request.execution_result.as_deref())
+            });
 
-            if request.execution_result.is_none() && intent::is_simple_meta_request(&request.user_text) {
+            if request.execution_result.is_none()
+                && intent::is_simple_meta_request(&request.user_text)
+            {
                 let reply = shortcut_reply(&request.user_text, persona.as_ref())
                     .unwrap_or_else(|| fallback_reply.clone());
                 ctx.record_system_event(
@@ -135,21 +136,32 @@ impl Agent for ChatAgent {
                     Some("DONE"),
                     Some("identity_or_code_capability".to_string()),
                 );
-                let response = ChatAgentResponse { reply, ..Default::default() };
+                let response = ChatAgentResponse {
+                    reply,
+                    ..Default::default()
+                };
                 return serde_json::to_value(response).map_err(|e| e.to_string());
             }
 
             let context_block = resolve_context_block(&request, ctx);
 
             let understanding = if request.execution_result.is_none() {
-                let u = understand_message(ctx, &request.user_text, context_block.as_deref(), request.planner_intent_family.as_deref()).await;
+                let u = understand_message(
+                    ctx,
+                    &request.user_text,
+                    context_block.as_deref(),
+                    request.planner_intent_family.as_deref(),
+                )
+                .await;
                 ctx.record_system_event(
                     "adk_chat_understood",
                     Some(preview_text(&request.user_text)),
                     Some("RUNNING"),
                     Some(format!(
                         "intent={:?} correction={} files={}",
-                        u.intent, u.is_correction, u.target_files.len()
+                        u.intent,
+                        u.is_correction,
+                        u.target_files.len()
                     )),
                 );
                 u
@@ -209,17 +221,22 @@ pub async fn run_chat_response_via_adk_with_tracker(
     request: ChatRequest,
     tracker: Option<TaskTracker>,
 ) -> ChatAgentResponse {
-    let fallback_reply = request
-        .fallback_reply
-        .clone()
-        .unwrap_or_else(|| chinese_fallback_reply(&request.user_text, request.execution_result.as_deref()));
+    let fallback_reply = request.fallback_reply.clone().unwrap_or_else(|| {
+        chinese_fallback_reply(&request.user_text, request.execution_result.as_deref())
+    });
 
     let runtime = AgentRuntime::new(crate::adk::tool::read_only_tool_registry());
     let ctx = runtime
         .context("chat_request")
         .with_optional_tracker(tracker)
         .with_metadata("agent", "chat_agent")
-        .with_metadata("peer_id", request.peer_id.map(|id| id.to_string()).unwrap_or_else(|| "none".to_string()));
+        .with_metadata(
+            "peer_id",
+            request
+                .peer_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+        );
 
     match runtime.run(&ChatAgent, ctx, json!(request)).await {
         Ok(output) => serde_json::from_value(output).unwrap_or_else(|_| ChatAgentResponse {
@@ -259,16 +276,18 @@ where
         .with_metadata("agent", "chat_agent_stream");
 
     let persona = Persona::load().ok();
-    let fallback_reply = request
-        .fallback_reply
-        .clone()
-        .unwrap_or_else(|| chinese_fallback_reply(&request.user_text, request.execution_result.as_deref()));
+    let fallback_reply = request.fallback_reply.clone().unwrap_or_else(|| {
+        chinese_fallback_reply(&request.user_text, request.execution_result.as_deref())
+    });
 
     if request.execution_result.is_none() && intent::is_simple_meta_request(&request.user_text) {
         let reply = shortcut_reply(&request.user_text, persona.as_ref())
             .unwrap_or_else(|| fallback_reply.clone());
         on_token(reply.clone());
-        return ChatAgentResponse { reply, ..Default::default() };
+        return ChatAgentResponse {
+            reply,
+            ..Default::default()
+        };
     }
 
     let client = Arc::clone(&ctx.http);
@@ -276,14 +295,22 @@ where
     let context_block = resolve_context_block(&request, &ctx);
 
     let understanding = if request.execution_result.is_none() {
-        let u = understand_message(&ctx, &request.user_text, context_block.as_deref(), request.planner_intent_family.as_deref()).await;
+        let u = understand_message(
+            &ctx,
+            &request.user_text,
+            context_block.as_deref(),
+            request.planner_intent_family.as_deref(),
+        )
+        .await;
         ctx.record_system_event(
             "adk_chat_understood",
             Some(preview_text(&request.user_text)),
             Some("RUNNING"),
             Some(format!(
                 "intent={:?} correction={} files={}",
-                u.intent, u.is_correction, u.target_files.len()
+                u.intent,
+                u.is_correction,
+                u.target_files.len()
             )),
         );
         u
@@ -296,7 +323,8 @@ where
     };
 
     let reply = if understanding.intent == Intent::General {
-        let direct_answer_request = crate::telegram::language::is_direct_answer_request(&request.user_text);
+        let direct_answer_request =
+            crate::telegram::language::is_direct_answer_request(&request.user_text);
         let memory_ctx = resolve_memory_context(&request.user_text, &ctx).await;
         let search_ctx = if crate::telegram::commands::should_search(&request.user_text) {
             resolve_search_context(&request, &ctx, client.as_ref(), direct_answer_request).await
@@ -337,7 +365,11 @@ where
         complete
     };
 
-    let reply = if reply.trim().is_empty() { fallback_reply } else { reply.trim().to_string() };
+    let reply = if reply.trim().is_empty() {
+        fallback_reply
+    } else {
+        reply.trim().to_string()
+    };
 
     let tools_used = ctx.tool_calls_snapshot();
     ChatAgentResponse {
@@ -407,7 +439,11 @@ fn used_code_tools(tools: &[String]) -> bool {
     tools.iter().any(|tool| {
         matches!(
             tool.as_str(),
-            "codebase_search" | "local_file_read" | "project_overview" | "skill_catalog" | "skill_execute"
+            "codebase_search"
+                | "local_file_read"
+                | "project_overview"
+                | "skill_catalog"
+                | "skill_execute"
         )
     })
 }
@@ -423,10 +459,9 @@ mod tests {
     use super::context::format_search_results;
     use super::dispatch::{format_local_file_reply, format_skill_catalog_reply};
     use super::intent::{
-        extract_file_reference, extract_file_references_from_text,
-        infer_focus_paths_from_query, is_contextual_file_explanation_request,
-        is_simple_meta_request, is_skill_inventory_request, looks_like_capability_query,
-        looks_like_project_overview_query,
+        extract_file_reference, extract_file_references_from_text, infer_focus_paths_from_query,
+        is_contextual_file_explanation_request, is_simple_meta_request, is_skill_inventory_request,
+        looks_like_capability_query, looks_like_project_overview_query,
     };
 
     fn unique_peer_id() -> i64 {
@@ -477,8 +512,14 @@ mod tests {
 
     #[test]
     fn extracts_file_references_from_queries() {
-        assert_eq!(extract_file_reference("幫我看 src/main.rs"), Some("src/main.rs".to_string()));
-        assert_eq!(extract_file_reference("請解釋 `src/ui.rs`"), Some("src/ui.rs".to_string()));
+        assert_eq!(
+            extract_file_reference("幫我看 src/main.rs"),
+            Some("src/main.rs".to_string())
+        );
+        assert_eq!(
+            extract_file_reference("請解釋 `src/ui.rs`"),
+            Some("src/ui.rs".to_string())
+        );
         assert_eq!(extract_file_reference("這個專案是什麼"), None);
     }
 
@@ -497,8 +538,12 @@ mod tests {
     #[test]
     fn detects_contextual_file_explanation_requests() {
         assert!(is_contextual_file_explanation_request("說明這些都是啥"));
-        assert!(is_contextual_file_explanation_request("上面那些檔案是做什麼的"));
-        assert!(!is_contextual_file_explanation_request("幫我看 src/main.rs"));
+        assert!(is_contextual_file_explanation_request(
+            "上面那些檔案是做什麼的"
+        ));
+        assert!(!is_contextual_file_explanation_request(
+            "幫我看 src/main.rs"
+        ));
     }
 
     #[test]
@@ -537,12 +582,15 @@ mod tests {
 
     #[test]
     fn formats_skill_catalog_reply_with_actual_skill_ids() {
-        let reply = format_skill_catalog_reply(&json!([
-            {"id": "project_overview", "category": "code-understanding"},
-            {"id": "local_file_read", "category": "code-understanding"},
-            {"id": "grounded_fix", "category": "code-optimization"},
-            {"id": "web_search", "category": "external-research"}
-        ]), "有哪些 skills？")
+        let reply = format_skill_catalog_reply(
+            &json!([
+                {"id": "project_overview", "category": "code-understanding"},
+                {"id": "local_file_read", "category": "code-understanding"},
+                {"id": "grounded_fix", "category": "code-optimization"},
+                {"id": "web_search", "category": "external-research"}
+            ]),
+            "有哪些 skills？",
+        )
         .expect("should build a skill inventory reply");
 
         assert!(reply.contains("`project_overview`"));
@@ -568,8 +616,14 @@ mod tests {
         .await;
 
         println!("overview reply:\n{}", response.reply);
-        assert!(!response.reply.trim().is_empty(), "should return a non-empty overview");
-        assert!(response.used_code_context, "should have used code context tools");
+        assert!(
+            !response.reply.trim().is_empty(),
+            "should return a non-empty overview"
+        );
+        assert!(
+            response.used_code_context,
+            "should have used code context tools"
+        );
     }
 
     #[tokio::test]
@@ -631,9 +685,14 @@ mod tests {
         .await;
 
         println!("follow-up reply:\n{}", second.reply);
-        assert!(!second.reply.trim().is_empty(), "follow-up should return a non-empty reply");
         assert!(
-            second.reply.contains("src/main.rs") || second.reply.contains("src/ui.rs") || second.used_code_context,
+            !second.reply.trim().is_empty(),
+            "follow-up should return a non-empty reply"
+        );
+        assert!(
+            second.reply.contains("src/main.rs")
+                || second.reply.contains("src/ui.rs")
+                || second.used_code_context,
             "follow-up should reference prior files or use code tools"
         );
     }
@@ -656,8 +715,14 @@ mod tests {
         .await;
 
         println!("skill reply:\n{}", response.reply);
-        assert!(!response.reply.trim().is_empty(), "should return a non-empty skill analysis");
-        assert!(response.used_code_context, "should have used code context tools");
+        assert!(
+            !response.reply.trim().is_empty(),
+            "should return a non-empty skill analysis"
+        );
+        assert!(
+            response.used_code_context,
+            "should have used code context tools"
+        );
     }
 
     #[tokio::test]
@@ -702,8 +767,14 @@ mod tests {
         .await;
 
         println!("capability reply:\n{}", response.reply);
-        assert!(!response.reply.trim().is_empty(), "should return a non-empty capability reply");
-        assert!(response.used_code_context, "should have used skill_catalog or code tools");
+        assert!(
+            !response.reply.trim().is_empty(),
+            "should return a non-empty capability reply"
+        );
+        assert!(
+            response.used_code_context,
+            "should have used skill_catalog or code tools"
+        );
     }
 
     #[tokio::test]
@@ -724,7 +795,13 @@ mod tests {
         .await;
 
         println!("generic analysis reply:\n{}", response.reply);
-        assert!(!response.reply.trim().is_empty(), "should return a non-empty analysis");
-        assert!(response.used_code_context, "should have used code context tools");
+        assert!(
+            !response.reply.trim().is_empty(),
+            "should return a non-empty analysis"
+        );
+        assert!(
+            response.used_code_context,
+            "should have used code context tools"
+        );
     }
 }

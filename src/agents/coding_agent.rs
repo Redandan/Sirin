@@ -45,6 +45,9 @@ pub struct CodingRequest {
 pub struct CodingAgentResponse {
     /// Human-readable summary of what was accomplished.
     pub outcome: String,
+    /// Short change summary for the UI/task board.
+    #[serde(default)]
+    pub change_summary: String,
     /// Files that were (or would have been, in dry-run mode) written.
     pub files_modified: Vec<String>,
     /// Number of ReAct iterations consumed.
@@ -84,9 +87,7 @@ impl Agent for CodingAgent {
             let request: CodingRequest = serde_json::from_value(input)
                 .map_err(|e| format!("Invalid coding request payload: {e}"))?;
 
-            let config = Persona::load()
-                .map(|p| p.coding_agent)
-                .unwrap_or_default();
+            let config = Persona::load().map(|p| p.coding_agent).unwrap_or_default();
 
             if !config.enabled {
                 return Err("Coding agent is disabled in persona config.".to_string());
@@ -110,7 +111,10 @@ async fn run_react_loop(
     let dry_run = request.dry_run || !config.auto_approve_writes;
     let read_only_analysis = is_read_only_analysis_task(&request.task);
 
-    sirin_log!("[coding_agent] task='{}' max_iter={max_iter} dry_run={dry_run}", request.task);
+    sirin_log!(
+        "[coding_agent] task='{}' max_iter={max_iter} dry_run={dry_run}",
+        request.task
+    );
     ctx.record_system_event(
         "adk_coding_agent_start",
         Some(preview_text(&request.task)),
@@ -195,10 +199,7 @@ async fn run_react_loop(
     for iteration in 0..max_iter {
         // Build history window: capped pinned entries + recent N non-pinned.
         let history_window: Vec<&HistoryEntry> = {
-            let mut pinned: Vec<&HistoryEntry> = history
-                .iter()
-                .filter(|h| h.pinned)
-                .collect();
+            let mut pinned: Vec<&HistoryEntry> = history.iter().filter(|h| h.pinned).collect();
             // Keep only the most recent MAX_PINNED file reads.
             if pinned.len() > MAX_PINNED {
                 pinned = pinned[pinned.len() - MAX_PINNED..].to_vec();
@@ -231,7 +232,8 @@ async fn run_react_loop(
                 if read_only_analysis && has_sufficient_analysis_evidence(&history) {
                     had_tool_errors = true;
                     last_tool_error = Some(preview_text(&err_msg));
-                    final_answer = format!("⚠️ {err_msg}\n\n{}", synthesize_read_only_outcome(&history));
+                    final_answer =
+                        format!("⚠️ {err_msg}\n\n{}", synthesize_read_only_outcome(&history));
                     break;
                 }
                 return Err(err_msg);
@@ -290,7 +292,7 @@ async fn run_react_loop(
                 );
                 ctx.record_system_event(
                     "adk_coding_fail_fast",
-                    Some("invalid_json".to_string()),
+                    Some("⚠ fail-fast：模型連續回傳無效 JSON".to_string()),
                     Some("FOLLOWUP_NEEDED"),
                     last_tool_error.clone(),
                 );
@@ -318,7 +320,8 @@ async fn run_react_loop(
         {
             sirin_log!(
                 "[coding_agent] SAFETY: write tool '{}' blocked after {} consecutive patch errors",
-                step.action, consecutive_patch_errors
+                step.action,
+                consecutive_patch_errors
             );
             final_answer = format!(
                 "任務中止：file_patch 連續失敗 {} 次，已封鎖所有寫入工具以防止資料損毀。\
@@ -356,7 +359,8 @@ async fn run_react_loop(
         if step.action == "file_patch" || step.action == "file_write" {
             if let Some(path) = step.action_input.get("path").and_then(Value::as_str) {
                 let path = path.to_string();
-                file_read_cache.retain(|key, _| !key.starts_with(&format!("{path}|")) && key != &path);
+                file_read_cache
+                    .retain(|key, _| !key.starts_with(&format!("{path}|")) && key != &path);
             }
         }
 
@@ -365,7 +369,9 @@ async fn run_react_loop(
         let observation = if is_file_read {
             let path_key = file_read_cache_key(&step.action_input);
             if let Some((cached_iter, cached)) = file_read_cache.get(&path_key) {
-                sirin_log!("[coding_agent] cache hit: {path_key} (first read at iter {cached_iter})");
+                sirin_log!(
+                    "[coding_agent] cache hit: {path_key} (first read at iter {cached_iter})"
+                );
                 format!("[Already read at iteration {cached_iter} — content unchanged, using cache]\n{cached}")
             } else {
                 match ctx.call_tool(&step.action, tool_input).await {
@@ -435,7 +441,10 @@ async fn run_react_loop(
 
         let fingerprint = step_fingerprint(
             &action_name,
-            &history.last().expect("history entry just pushed").action_input,
+            &history
+                .last()
+                .expect("history entry just pushed")
+                .action_input,
             &observation,
         );
         let repeated_cache_hit = action_name == "local_file_read"
@@ -451,7 +460,7 @@ async fn run_react_loop(
             final_answer = synthesize_read_only_outcome(&history);
             ctx.record_system_event(
                 "adk_coding_fail_fast",
-                Some("read_only_analysis_complete".to_string()),
+                Some("✅ read-only analysis：grounded answer ready".to_string()),
                 Some("DONE"),
                 Some("Stopped after repeated cached reads because enough grounded evidence was already collected.".to_string()),
             );
@@ -467,7 +476,7 @@ async fn run_react_loop(
             );
             ctx.record_system_event(
                 "adk_coding_fail_fast",
-                Some("too_many_tool_errors".to_string()),
+                Some("⚠ fail-fast：工具錯誤次數過多".to_string()),
                 Some("FOLLOWUP_NEEDED"),
                 last_tool_error.clone(),
             );
@@ -483,7 +492,7 @@ async fn run_react_loop(
             );
             ctx.record_system_event(
                 "adk_coding_fail_fast",
-                Some("stalled_iterations".to_string()),
+                Some("⚠ fail-fast：連續多步沒有新進展".to_string()),
                 Some("FOLLOWUP_NEEDED"),
                 Some(format!("stalled_iterations={stalled_iterations}")),
             );
@@ -492,7 +501,11 @@ async fn run_react_loop(
     }
 
     // ── Step 4: verification + auto-fix loop ─────────────────────────────────
-    let can_verify = !dry_run && config.allowed_commands.iter().any(|cmd| cmd == "cargo check");
+    let can_verify = !dry_run
+        && config
+            .allowed_commands
+            .iter()
+            .any(|cmd| cmd == "cargo check");
     let (build_verified, verification_output) = if can_verify {
         let (mut ok, mut out) = verify_build(ctx).await;
 
@@ -518,7 +531,9 @@ async fn run_react_loop(
                 "cargo check failed with the following errors. Fix them without changing behaviour:\n\n{}",
                 err_output.chars().take(1200).collect::<String>()
             );
-            let fix_plan = "1. Read the failing file(s)\n2. Apply file_patch to fix the error\n3. DONE".to_string();
+            let fix_plan =
+                "1. Read the failing file(s)\n2. Apply file_patch to fix the error\n3. DONE"
+                    .to_string();
             let fix_tool_list = describe_tools();
 
             // Seed fix history with the pinned file_read entries from the main
@@ -549,13 +564,14 @@ async fn run_react_loop(
                     &fix_tool_list,
                     false,
                 );
-                let raw = match call_coding_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), prompt).await {
-                    Ok(r) => r,
-                    Err(e) => {
-                        sirin_log!("[coding_agent] fix iter {fix_iter} LLM error: {e}");
-                        break;
-                    }
-                };
+                let raw =
+                    match call_coding_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), prompt).await {
+                        Ok(r) => r,
+                        Err(e) => {
+                            sirin_log!("[coding_agent] fix iter {fix_iter} LLM error: {e}");
+                            break;
+                        }
+                    };
                 let step = parse_react_step(&raw);
                 if step.parse_error {
                     let obs = "ERROR: Invalid JSON from model during fix loop. Retry with ONLY the required JSON object.".to_string();
@@ -570,11 +586,16 @@ async fn run_react_loop(
                     });
                     continue;
                 }
-                if step.action == "DONE" { break; }
+                if step.action == "DONE" {
+                    break;
+                }
 
                 // Safety: stop fix loop if write patches keep failing.
                 if fix_patch_errors >= MAX_FIX_PATCH_ERRORS
-                    && matches!(step.action.as_str(), "file_patch" | "file_write" | "plan_execute")
+                    && matches!(
+                        step.action.as_str(),
+                        "file_patch" | "file_write" | "plan_execute"
+                    )
                 {
                     sirin_log!(
                         "[coding_agent] fix loop circuit breaker: {} consecutive patch errors, aborting",
@@ -600,7 +621,9 @@ async fn run_react_loop(
                             if let Some(results) = v.get("results").and_then(Value::as_array) {
                                 for r in results {
                                     if let Some(result) = r.get("result") {
-                                        if let Some(path) = result.get("path").and_then(Value::as_str) {
+                                        if let Some(path) =
+                                            result.get("path").and_then(Value::as_str)
+                                        {
                                             if !files_modified.contains(&path.to_string()) {
                                                 files_modified.push(path.to_string());
                                             }
@@ -610,7 +633,11 @@ async fn run_react_loop(
                             }
                         }
                         fix_patch_errors = 0;
-                        if is_read { format_tool_output_large(&v) } else { format_tool_output(&v) }
+                        if is_read {
+                            format_tool_output_large(&v)
+                        } else {
+                            format_tool_output(&v)
+                        }
                     }
                     Err(e) => {
                         if action_name == "file_patch" {
@@ -619,7 +646,10 @@ async fn run_react_loop(
                         format!("ERROR: {e}")
                     }
                 };
-                sirin_log!("[coding_agent] fix iter {fix_iter} action={action_name} obs={}", preview_text(&obs));
+                sirin_log!(
+                    "[coding_agent] fix iter {fix_iter} action={action_name} obs={}",
+                    preview_text(&obs)
+                );
                 fix_history.push(HistoryEntry {
                     thought: step.thought,
                     action: step.action,
@@ -636,7 +666,10 @@ async fn run_react_loop(
         // task touched — leave any other working-tree changes intact.
         if !ok {
             if let Some(ref commit) = baseline_commit {
-                sirin_log!("[coding_agent] ROLLBACK: restoring {} file(s) to {commit}", files_modified.len());
+                sirin_log!(
+                    "[coding_agent] ROLLBACK: restoring {} file(s) to {commit}",
+                    files_modified.len()
+                );
                 let mut rolled_back = Vec::new();
                 let mut rollback_errors = Vec::new();
 
@@ -663,11 +696,14 @@ async fn run_react_loop(
                         Ok(out) => {
                             // File didn't exist at baseline commit — delete it.
                             let stderr = String::from_utf8_lossy(&out.stderr);
-                            if stderr.contains("does not exist") || stderr.contains("exists on disk") {
+                            if stderr.contains("does not exist")
+                                || stderr.contains("exists on disk")
+                            {
                                 let _ = std::fs::remove_file(path);
                                 rolled_back.push(path.clone());
                             } else {
-                                rollback_errors.push(format!("{path}: git show failed ({})", stderr.trim()));
+                                rollback_errors
+                                    .push(format!("{path}: git show failed ({})", stderr.trim()));
                             }
                         }
                         Err(e) => {
@@ -678,12 +714,20 @@ async fn run_react_loop(
 
                 ctx.record_system_event(
                     "adk_coding_rollback",
-                    Some(commit[..8.min(commit.len())].to_string()),
+                    Some(format!(
+                        "已回滾 {} 個檔案到 {}",
+                        rolled_back.len(),
+                        &commit[..8.min(commit.len())]
+                    )),
                     Some("ROLLBACK"),
                     Some(format!(
                         "restored={} errors={}",
                         rolled_back.join(","),
-                        if rollback_errors.is_empty() { "none".to_string() } else { rollback_errors.join(";") }
+                        if rollback_errors.is_empty() {
+                            "none".to_string()
+                        } else {
+                            rollback_errors.join(";")
+                        }
                     )),
                 );
 
@@ -704,6 +748,7 @@ async fn run_react_loop(
 
                 return Ok(CodingAgentResponse {
                     outcome: rollback_msg,
+                    change_summary: "已自動回滾本次修改，請重新確認任務描述後再試。".to_string(),
                     files_modified: vec![],
                     iterations_used: history.iter().filter(|h| h.action != "DONE").count(),
                     diff: None,
@@ -729,11 +774,7 @@ async fn run_react_loop(
     );
 
     // ── Step 5: diff ──────────────────────────────────────────────────────────
-    let diff = if !dry_run {
-        get_diff(ctx).await
-    } else {
-        None
-    };
+    let diff = if !dry_run { get_diff(ctx).await } else { None };
 
     // ── Step 6: auto-commit when verified ────────────────────────────────────
     // Only commit when: not dry_run, cargo check passed, files were actually
@@ -762,8 +803,14 @@ async fn run_react_loop(
         if read_only_analysis && has_sufficient_analysis_evidence(&history) {
             synthesize_read_only_outcome(&history)
         } else {
-            format!("Completed {iterations_used} step(s). Files touched: {}",
-                if files_modified.is_empty() { "none".to_string() } else { files_modified.join(", ") })
+            format!(
+                "Completed {iterations_used} step(s). Files touched: {}",
+                if files_modified.is_empty() {
+                    "none".to_string()
+                } else {
+                    files_modified.join(", ")
+                }
+            )
         }
     } else {
         final_answer
@@ -786,15 +833,23 @@ async fn run_react_loop(
         outcome
     };
 
+    let change_summary =
+        build_change_summary(&files_modified, verified, dry_run, auto_committed, &outcome);
+
     ctx.record_system_event(
         "adk_coding_agent_done",
-        Some(preview_text(&outcome)),
+        Some(change_summary.clone()),
         Some(if verified { "DONE" } else { "FOLLOWUP_NEEDED" }),
-        Some(format!("files={} verified={verified} committed={auto_committed} dry_run={dry_run}", files_modified.len())),
+        Some(format!(
+            "summary={change_summary}; files={} verified={verified} committed={auto_committed} dry_run={dry_run}; outcome={}",
+            files_modified.len(),
+            preview_text(&outcome)
+        )),
     );
 
     Ok(CodingAgentResponse {
         outcome,
+        change_summary,
         files_modified,
         iterations_used,
         diff,
@@ -812,7 +867,11 @@ async fn gather_project_context(ctx: &AgentContext, task: &str) -> String {
         .call_tool("project_overview", json!({}))
         .await
         .ok()
-        .and_then(|v| v.get("summary").and_then(Value::as_str).map(|s| s.to_string()))
+        .and_then(|v| {
+            v.get("summary")
+                .and_then(Value::as_str)
+                .map(|s| s.to_string())
+        })
         .unwrap_or_default();
 
     let path_hints = extract_path_hints_from_task(task);
@@ -821,7 +880,10 @@ async fn gather_project_context(ctx: &AgentContext, task: &str) -> String {
         .cloned()
         .unwrap_or_else(|| task.chars().take(60).collect());
     let search = ctx
-        .call_tool("codebase_search", json!({ "query": search_query, "limit": 4 }))
+        .call_tool(
+            "codebase_search",
+            json!({ "query": search_query, "limit": 4 }),
+        )
         .await
         .ok()
         .map(|v| format_tool_output(&v))
@@ -836,13 +898,34 @@ async fn gather_project_context(ctx: &AgentContext, task: &str) -> String {
 
 fn extract_path_hints_from_task(task: &str) -> Vec<String> {
     let mut hints = Vec::new();
-    let known_exts = [".rs", ".toml", ".md", ".json", ".yaml", ".yml", ".tsx", ".ts", ".js"];
+    let known_exts = [
+        ".rs", ".toml", ".md", ".json", ".yaml", ".yml", ".tsx", ".ts", ".js",
+    ];
 
     for raw in task.split_whitespace() {
         let trimmed = raw
             .trim()
             .trim_matches(|c: char| {
-                matches!(c, '`' | '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | '，' | '。' | ':' | '：' | ';' | '；' | '?' | '？')
+                matches!(
+                    c,
+                    '`' | '"'
+                        | '\''
+                        | '('
+                        | ')'
+                        | '['
+                        | ']'
+                        | '{'
+                        | '}'
+                        | ','
+                        | '，'
+                        | '。'
+                        | ':'
+                        | '：'
+                        | ';'
+                        | '；'
+                        | '?'
+                        | '？'
+                )
             })
             .replace('\\', "/");
         let cleaned: String = trimmed
@@ -880,7 +963,9 @@ fn build_task_named_file_context(path_hints: &[String]) -> String {
         .filter_map(|path| {
             crate::memory::inspect_project_file_range(path, Some(1), Some(120), 5000)
                 .ok()
-                .map(|content| format!("\n\n## Task-named file hint\nRequested path: {path}\n{content}"))
+                .map(|content| {
+                    format!("\n\n## Task-named file hint\nRequested path: {path}\n{content}")
+                })
         })
         .collect();
 
@@ -889,15 +974,34 @@ fn build_task_named_file_context(path_hints: &[String]) -> String {
 
 fn is_read_only_analysis_task(task: &str) -> bool {
     let lower = task.to_lowercase();
-    let asks_analysis = ["分析", "說明", "summar", "explain", "inspect", "review", "找出", "檢查", "read "]
-        .iter()
-        .any(|needle| lower.contains(needle));
-    let forbids_write = ["不要寫入", "不要修改", "do not modify", "don't modify", "read-only", "dry-run"]
-        .iter()
-        .any(|needle| lower.contains(needle));
-    let asks_to_change = ["修改", "新增", "加入", "修正", "fix", "implement", "write", "patch", "refactor"]
-        .iter()
-        .any(|needle| lower.contains(needle));
+    let asks_analysis = [
+        "分析", "說明", "summar", "explain", "inspect", "review", "找出", "檢查", "read ",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
+    let forbids_write = [
+        "不要寫入",
+        "不要修改",
+        "do not modify",
+        "don't modify",
+        "read-only",
+        "dry-run",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
+    let asks_to_change = [
+        "修改",
+        "新增",
+        "加入",
+        "修正",
+        "fix",
+        "implement",
+        "write",
+        "patch",
+        "refactor",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
 
     forbids_write || (asks_analysis && !asks_to_change)
 }
@@ -1081,13 +1185,22 @@ fn parse_react_step(raw: &str) -> ReactStep {
             .and_then(Value::as_str)
             .map(|s| s.to_string())
             .filter(|s| !s.is_empty());
-        return ReactStep { thought, action, action_input, final_answer, parse_error: false };
+        return ReactStep {
+            thought,
+            action,
+            action_input,
+            final_answer,
+            parse_error: false,
+        };
     }
 
     // Fallback: LLM didn't produce valid JSON — request another iteration
     // instead of falsely treating the task as complete.
     ReactStep {
-        thought: format!("(LLM response could not be parsed as JSON) raw={}", preview_text(raw)),
+        thought: format!(
+            "(LLM response could not be parsed as JSON) raw={}",
+            preview_text(raw)
+        ),
         action: "INVALID_JSON".to_string(),
         action_input: json!({}),
         final_answer: None,
@@ -1145,7 +1258,9 @@ fn followup_reason(
         let suffix = last_tool_error
             .map(|err| format!(" 最後錯誤：{err}"))
             .unwrap_or_default();
-        return Some(format!("工具執行過程仍有錯誤，任務需要 follow-up。{suffix}"));
+        return Some(format!(
+            "工具執行過程仍有錯誤，任務需要 follow-up。{suffix}"
+        ));
     }
 
     None
@@ -1164,7 +1279,10 @@ fn maybe_enrich_tool_error(action_name: &str, observation: String) -> String {
         || lower.contains("directory not found");
 
     if looks_like_path_issue
-        && matches!(action_name, "local_file_read" | "file_patch" | "file_write" | "plan_execute")
+        && matches!(
+            action_name,
+            "local_file_read" | "file_patch" | "file_write" | "plan_execute"
+        )
     {
         format!(
             "{observation}\nHint: verify the real path with file_list/codebase_search before more writes. In Rust projects, `foo.rs` may actually be `foo/mod.rs`."
@@ -1236,7 +1354,9 @@ async fn auto_commit(task: &str, files_modified: &[String]) -> bool {
     let prefix = "chore(sirin-agent): ";
     let max_summary_bytes = 72usize.saturating_sub(prefix.len());
     let summary = truncate_to_bytes(task.trim(), max_summary_bytes);
-    let msg = format!("{prefix}{summary}\n\nAuto-committed by Sirin Coding Agent after cargo check passed.");
+    let msg = format!(
+        "{prefix}{summary}\n\nAuto-committed by Sirin Coding Agent after cargo check passed."
+    );
 
     let commit_ok = std::process::Command::new("git")
         .args(["commit", "-m", &msg])
@@ -1249,7 +1369,10 @@ async fn auto_commit(task: &str, files_modified: &[String]) -> bool {
         return false;
     }
 
-    sirin_log!("[coding_agent] auto_commit: committed {} file(s)", files_modified.len());
+    sirin_log!(
+        "[coding_agent] auto_commit: committed {} file(s)",
+        files_modified.len()
+    );
     true
 }
 
@@ -1273,7 +1396,13 @@ fn format_tool_output(v: &Value) -> String {
         Value::Array(arr) => arr
             .iter()
             .take(10)
-            .map(|item| item.as_str().unwrap_or(&item.to_string()).chars().take(120).collect::<String>())
+            .map(|item| {
+                item.as_str()
+                    .unwrap_or(&item.to_string())
+                    .chars()
+                    .take(120)
+                    .collect::<String>()
+            })
             .collect::<Vec<_>>()
             .join("\n"),
         other => {
@@ -1292,7 +1421,13 @@ fn format_tool_output_large(v: &Value) -> String {
         Value::Array(arr) => arr
             .iter()
             .take(20)
-            .map(|item| item.as_str().unwrap_or(&item.to_string()).chars().take(200).collect::<String>())
+            .map(|item| {
+                item.as_str()
+                    .unwrap_or(&item.to_string())
+                    .chars()
+                    .take(200)
+                    .collect::<String>()
+            })
             .collect::<Vec<_>>()
             .join("\n"),
         other => {
@@ -1310,7 +1445,11 @@ fn preview_tool_input(v: &Value) -> String {
 fn preview_text(text: &str) -> String {
     let mut chars = text.chars();
     let head: String = chars.by_ref().take(120).collect();
-    if chars.next().is_some() { format!("{head}…") } else { head }
+    if chars.next().is_some() {
+        format!("{head}…")
+    } else {
+        head
+    }
 }
 
 fn step_fingerprint(action_name: &str, action_input: &Value, observation: &str) -> String {
@@ -1338,7 +1477,8 @@ fn has_sufficient_analysis_evidence(history: &[HistoryEntry]) -> bool {
     history
         .iter()
         .filter(|h| h.action == "local_file_read" && !h.observation.starts_with("ERROR:"))
-        .count() >= 2
+        .count()
+        >= 2
 }
 
 fn inspected_paths_from_history(history: &[HistoryEntry]) -> Vec<String> {
@@ -1379,14 +1519,20 @@ fn synthesize_read_only_outcome(history: &[HistoryEntry]) -> String {
     let evidence = history
         .iter()
         .rev()
-        .find(|h| matches!(h.action.as_str(), "local_file_read" | "codebase_search") && !h.observation.starts_with("ERROR:"))
+        .find(|h| {
+            matches!(h.action.as_str(), "local_file_read" | "codebase_search")
+                && !h.observation.starts_with("ERROR:")
+        })
         .map(|h| preview_text(&h.observation))
         .unwrap_or_default();
 
     if inspected.is_empty() {
         "分析完成；目前沒有寫入任何檔案。".to_string()
     } else if evidence.is_empty() {
-        format!("分析完成。已檢查檔案：{}。目前沒有寫入任何檔案。", inspected.join(", "))
+        format!(
+            "分析完成。已檢查檔案：{}。目前沒有寫入任何檔案。",
+            inspected.join(", ")
+        )
     } else {
         format!(
             "分析完成。已檢查檔案：{}。目前沒有寫入任何檔案。\n\n最後一條關鍵證據：{}",
@@ -1407,10 +1553,70 @@ fn build_fail_fast_outcome(
         .unwrap_or_default();
 
     if read_only_analysis && has_sufficient_analysis_evidence(history) {
-        format!("⚠️ {reason}.{suffix}\n\n{}", synthesize_read_only_outcome(history))
+        format!(
+            "⚠️ {reason}.{suffix}\n\n{}",
+            synthesize_read_only_outcome(history)
+        )
     } else {
         format!("⚠️ 任務已 fail-fast 中止：{reason}.{suffix}")
     }
+}
+
+fn build_change_summary(
+    files_modified: &[String],
+    verified: bool,
+    dry_run: bool,
+    auto_committed: bool,
+    outcome: &str,
+) -> String {
+    let mut parts = Vec::new();
+
+    if files_modified.is_empty() {
+        parts.push(if dry_run {
+            "僅分析，未寫入檔案".to_string()
+        } else {
+            "未偵測到檔案變更".to_string()
+        });
+    } else {
+        let listed = files_modified
+            .iter()
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        if files_modified.len() > 3 {
+            parts.push(format!(
+                "已變更 {} 個檔案：{} …",
+                files_modified.len(),
+                listed
+            ));
+        } else {
+            parts.push(format!(
+                "已變更 {} 個檔案：{}",
+                files_modified.len(),
+                listed
+            ));
+        }
+    }
+
+    if dry_run {
+        parts.push("dry-run".to_string());
+    } else if verified {
+        parts.push("cargo check 通過".to_string());
+    } else {
+        parts.push("待人工確認".to_string());
+    }
+
+    if auto_committed {
+        parts.push("已自動 commit".to_string());
+    }
+
+    let preview = preview_text(outcome);
+    if !preview.is_empty() {
+        parts.push(format!("摘要：{preview}"));
+    }
+
+    parts.join("｜")
 }
 
 // ── Public runner ─────────────────────────────────────────────────────────────
@@ -1444,7 +1650,12 @@ pub async fn run_coding_via_adk(
         .with_context_hint(context_hint)
         .with_metadata("agent", "coding_agent");
 
-    let input = json!(CodingRequest { task: task.clone(), max_iterations: None, dry_run, context_block });
+    let input = json!(CodingRequest {
+        task: task.clone(),
+        max_iterations: None,
+        dry_run,
+        context_block
+    });
     let response = match runtime.run(&CodingAgent, ctx, input).await {
         Ok(v) => serde_json::from_value(v).unwrap_or_else(|_| CodingAgentResponse {
             outcome: "Completed (response parse error)".to_string(),
@@ -1510,10 +1721,7 @@ mod tests {
             response.iterations_used > 0,
             "Agent must have taken at least one ReAct step"
         );
-        assert!(
-            !response.outcome.is_empty(),
-            "Outcome must not be empty"
-        );
+        assert!(!response.outcome.is_empty(), "Outcome must not be empty");
         // dry_run=true → agent must not write anything
         assert!(
             response.files_modified.is_empty(),
@@ -1526,15 +1734,27 @@ mod tests {
     fn extract_path_hints_from_task_finds_explicit_repo_paths() {
         let task = "請幫我檢查 src/telegram.rs 和 src/llm.rs，看看 task 開始時要在哪裡加 log。";
         let hints = extract_path_hints_from_task(task);
-        assert!(hints.iter().any(|p| p == "src/telegram.rs"), "missing telegram path: {hints:?}");
-        assert!(hints.iter().any(|p| p == "src/llm.rs"), "missing llm path: {hints:?}");
+        assert!(
+            hints.iter().any(|p| p == "src/telegram.rs"),
+            "missing telegram path: {hints:?}"
+        );
+        assert!(
+            hints.iter().any(|p| p == "src/llm.rs"),
+            "missing llm path: {hints:?}"
+        );
     }
 
     #[test]
     fn read_only_analysis_task_detection_is_reasonable() {
-        assert!(is_read_only_analysis_task("請分析 src/telegram.rs，不要寫入檔案"));
-        assert!(is_read_only_analysis_task("Explain what this module does without modifying files."));
-        assert!(!is_read_only_analysis_task("請修改 src/telegram/mod.rs 並加入新的 log"));
+        assert!(is_read_only_analysis_task(
+            "請分析 src/telegram.rs，不要寫入檔案"
+        ));
+        assert!(is_read_only_analysis_task(
+            "Explain what this module does without modifying files."
+        ));
+        assert!(!is_read_only_analysis_task(
+            "請修改 src/telegram/mod.rs 並加入新的 log"
+        ));
     }
 
     #[test]
@@ -1557,15 +1777,26 @@ mod tests {
         ];
 
         let summary = salvage_non_json_final_answer("", &history);
-        assert!(summary.contains("src/telegram/mod.rs"), "summary should cite inspected paths: {summary}");
-        assert!(summary.contains("src/llm.rs"), "summary should cite inspected paths: {summary}");
+        assert!(
+            summary.contains("src/telegram/mod.rs"),
+            "summary should cite inspected paths: {summary}"
+        );
+        assert!(
+            summary.contains("src/llm.rs"),
+            "summary should cite inspected paths: {summary}"
+        );
     }
 
     #[test]
     fn file_read_cache_key_distinguishes_line_ranges() {
         let full = file_read_cache_key(&json!({"path": "src/telegram/mod.rs"}));
-        let ranged = file_read_cache_key(&json!({"path": "src/telegram/mod.rs", "start_line": 1, "end_line": 120}));
-        assert_ne!(full, ranged, "cache key should include line-range information");
+        let ranged = file_read_cache_key(
+            &json!({"path": "src/telegram/mod.rs", "start_line": 1, "end_line": 120}),
+        );
+        assert_ne!(
+            full, ranged,
+            "cache key should include line-range information"
+        );
     }
 
     #[test]
@@ -1579,7 +1810,33 @@ mod tests {
         }];
 
         let msg = build_fail_fast_outcome("連續多步沒有新進展", &history, Some("cache hit"), true);
-        assert!(msg.contains("連續多步沒有新進展"), "reason should be preserved: {msg}");
+        assert!(
+            msg.contains("連續多步沒有新進展"),
+            "reason should be preserved: {msg}"
+        );
+    }
+
+    #[test]
+    fn change_summary_mentions_files_and_verification() {
+        let files = vec![
+            "src/ui.rs".to_string(),
+            "src/agents/coding_agent.rs".to_string(),
+        ];
+        let summary =
+            build_change_summary(&files, true, false, true, "已更新 UI 與 task board 顯示");
+
+        assert!(
+            summary.contains("已變更 2 個檔案"),
+            "file count should be included: {summary}"
+        );
+        assert!(
+            summary.contains("cargo check 通過"),
+            "verification result should be included: {summary}"
+        );
+        assert!(
+            summary.contains("已自動 commit"),
+            "auto-commit should be included: {summary}"
+        );
     }
 
     /// Live dry-run development-task test using the real coding workflow.
@@ -1603,9 +1860,15 @@ mod tests {
             "coding workflow returned an error: {}",
             response.outcome
         );
-        assert!(response.iterations_used > 0, "expected the coding workflow to take at least one step");
+        assert!(
+            response.iterations_used > 0,
+            "expected the coding workflow to take at least one step"
+        );
         assert!(!response.outcome.is_empty(), "outcome should not be empty");
-        assert!(!response.verified, "dry-run task should not be marked as build-verified");
+        assert!(
+            !response.verified,
+            "dry-run task should not be marked as build-verified"
+        );
         let normalized = response.outcome.to_lowercase();
         assert!(
             normalized.contains("src/telegram/mod.rs")
@@ -1647,10 +1910,17 @@ mod tests {
         println!("cargo check pass: {}", response.verified);
         println!("Outcome:\n{}", response.outcome);
         if let Some(ref diff) = response.diff {
-            println!("\n--- diff preview ---\n{}", diff.chars().take(1200).collect::<String>());
+            println!(
+                "\n--- diff preview ---\n{}",
+                diff.chars().take(1200).collect::<String>()
+            );
         }
 
-        assert!(!response.outcome.starts_with("Error:"), "agent error: {}", response.outcome);
+        assert!(
+            !response.outcome.starts_with("Error:"),
+            "agent error: {}",
+            response.outcome
+        );
         assert!(!response.files_modified.is_empty(), "no files were written");
         assert!(response.verified, "cargo check failed after changes");
     }
@@ -1665,7 +1935,8 @@ mod tests {
 
     #[test]
     fn parse_react_step_done() {
-        let raw = r#"{"thought":"done","action":"DONE","action_input":{},"final_answer":"Applied fix."}"#;
+        let raw =
+            r#"{"thought":"done","action":"DONE","action_input":{},"final_answer":"Applied fix."}"#;
         let step = parse_react_step(raw);
         assert_eq!(step.action, "DONE");
         assert_eq!(step.final_answer.as_deref(), Some("Applied fix."));
@@ -1742,11 +2013,16 @@ mod tests {
     #[test]
     fn auto_commit_summary_fits_in_72_bytes() {
         // A long CJK task string must not produce a summary > 72 bytes.
-        let long_task: String = "幫我優化這個專案的效能，讓它更快更穩定，不要動到測試檔案".repeat(5);
+        let long_task: String =
+            "幫我優化這個專案的效能，讓它更快更穩定，不要動到測試檔案".repeat(5);
         let prefix = "chore(sirin-agent): ";
         let max_summary_bytes = 72usize.saturating_sub(prefix.len());
         let summary = truncate_to_bytes(long_task.trim(), max_summary_bytes);
-        assert!(summary.len() <= max_summary_bytes, "summary too long: {} bytes", summary.len());
+        assert!(
+            summary.len() <= max_summary_bytes,
+            "summary too long: {} bytes",
+            summary.len()
+        );
         // Must be valid UTF-8 (no panics from str operations).
         let _ = format!("{prefix}{summary}");
     }

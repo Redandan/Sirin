@@ -13,12 +13,12 @@ use crate::persona::Persona;
 use crate::telegram::language::{contains_cjk, is_direct_answer_request};
 use crate::telegram::llm::generate_ai_reply;
 
-use super::ChatRequest;
 use super::context::{load_local_file_reports, resolve_memory_context, resolve_search_context};
 use super::intent::{
     extract_file_reference, infer_focus_paths_from_query, is_file_view_request,
     is_skill_inventory_request, Intent, MessageUnderstanding,
 };
+use super::ChatRequest;
 
 // ── ReAct loop ────────────────────────────────────────────────────────────────
 
@@ -117,7 +117,10 @@ These bracket tags are internal only; never mention them in the final user-facin
             "adk_react_tool_call",
             Some(user_text.chars().take(60).collect()),
             Some("RUNNING"),
-            Some(format!("tool={tool} query={}", &tool_query.chars().take(60).collect::<String>())),
+            Some(format!(
+                "tool={tool} query={}",
+                &tool_query.chars().take(60).collect::<String>()
+            )),
         );
 
         let tool_result = ctx
@@ -159,7 +162,11 @@ These bracket tags are internal only; never mention them in the final user-facin
     final_raw
         .lines()
         .find(|l| l.trim().starts_with("[ANSWER]"))
-        .and_then(|l| l.trim().strip_prefix("[ANSWER]").map(|s| s.trim().to_string()))
+        .and_then(|l| {
+            l.trim()
+                .strip_prefix("[ANSWER]")
+                .map(|s| s.trim().to_string())
+        })
         .unwrap_or_else(|| final_raw.trim().to_string())
 }
 
@@ -191,7 +198,10 @@ pub(super) async fn dispatch_by_understanding(
                 .or_else(|| extract_file_reference(&request.user_text))?;
 
             match ctx
-                .call_tool("local_file_read", json!({ "path": path, "max_chars": 2200 }))
+                .call_tool(
+                    "local_file_read",
+                    json!({ "path": path, "max_chars": 2200 }),
+                )
                 .await
             {
                 Ok(result) => {
@@ -209,8 +219,7 @@ pub(super) async fn dispatch_by_understanding(
                     } else {
                         let excerpt = extract_excerpt_block(content).unwrap_or(content);
                         let fence = code_fence_language(&path);
-                        let code_ctx =
-                            format!("Contents of `{path}`:\n```{fence}\n{excerpt}\n```");
+                        let code_ctx = format!("Contents of `{path}`:\n```{fence}\n{excerpt}\n```");
                         ctx.record_system_event(
                             "adk_chat_file_question_llm",
                             Some(super::preview_text(&request.user_text)),
@@ -269,7 +278,11 @@ pub(super) async fn dispatch_by_understanding(
                 correction_ctx.as_deref().or(context_block),
             )
             .await;
-            if reply.trim().is_empty() { None } else { Some(reply) }
+            if reply.trim().is_empty() {
+                None
+            } else {
+                Some(reply)
+            }
         }
 
         // ── Project structure / module overview ───────────────────────────────
@@ -298,7 +311,11 @@ pub(super) async fn dispatch_by_understanding(
                 "adk_chat_project_overview_loaded",
                 Some(super::preview_text(&request.user_text)),
                 Some("RUNNING"),
-                Some(format!("files={}, inspected={}", files.len(), reports.len())),
+                Some(format!(
+                    "files={}, inspected={}",
+                    files.len(),
+                    reports.len()
+                )),
             );
 
             let mut code_ctx = String::new();
@@ -369,7 +386,11 @@ pub(super) async fn dispatch_by_understanding(
                 if let Some(ref m) = memory_ctx {
                     parts.push(m);
                 }
-                if parts.is_empty() { None } else { Some(parts.join("\n\n")) }
+                if parts.is_empty() {
+                    None
+                } else {
+                    Some(parts.join("\n\n"))
+                }
             };
 
             ctx.record_system_event(
@@ -379,8 +400,18 @@ pub(super) async fn dispatch_by_understanding(
                 Some(format!("files={}", reports.len())),
             );
 
-            let reply = react_loop(ctx, &request.user_text, persona_name, combined_ctx.as_deref()).await;
-            if reply.trim().is_empty() { None } else { Some(reply) }
+            let reply = react_loop(
+                ctx,
+                &request.user_text,
+                persona_name,
+                combined_ctx.as_deref(),
+            )
+            .await;
+            if reply.trim().is_empty() {
+                None
+            } else {
+                Some(reply)
+            }
         }
 
         // ── What skills / capabilities does the agent have? ───────────────────
@@ -407,7 +438,8 @@ pub(super) async fn dispatch_by_understanding(
                             .flatten()
                             .filter_map(|s| {
                                 let id = s.get("id").and_then(|v| v.as_str())?;
-                                let desc = s.get("description").and_then(|v| v.as_str()).unwrap_or("");
+                                let desc =
+                                    s.get("description").and_then(|v| v.as_str()).unwrap_or("");
                                 Some(format!("- {id}: {desc}"))
                             })
                             .collect();
@@ -460,7 +492,11 @@ pub(super) async fn dispatch_by_understanding(
                 });
             }
             let reply = react_loop(ctx, &request.user_text, persona_name, context_block).await;
-            if reply.trim().is_empty() { None } else { Some(reply) }
+            if reply.trim().is_empty() {
+                None
+            } else {
+                Some(reply)
+            }
         }
 
         // ── General conversation — linear LLM call with memory context ────────
@@ -604,7 +640,11 @@ pub(super) fn format_skill_catalog_reply(catalog: &Value, user_text: &str) -> Op
 
     let mut lines = vec![header];
     for (category, ids) in &groups {
-        lines.push(format!("- {}: {}", category_display_label(category), ids.join(sep)));
+        lines.push(format!(
+            "- {}: {}",
+            category_display_label(category),
+            ids.join(sep)
+        ));
     }
     lines.push(footer);
     Some(lines.join("\n"))

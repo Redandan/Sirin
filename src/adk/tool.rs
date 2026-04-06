@@ -30,7 +30,9 @@ impl ToolRegistry {
         for name in names {
             handlers.remove(*name);
         }
-        Self { handlers: Arc::new(handlers) }
+        Self {
+            handlers: Arc::new(handlers),
+        }
     }
 
     pub fn register_fn<F, Fut>(self, name: impl Into<String>, handler: F) -> Self
@@ -636,8 +638,12 @@ pub fn read_only_tool_registry() -> ToolRegistry {
     static REGISTRY: OnceLock<ToolRegistry> = OnceLock::new();
     REGISTRY
         .get_or_init(|| {
-            build_full_registry()
-                .without(&["file_write", "file_patch", "plan_execute", "shell_exec"])
+            build_full_registry().without(&[
+                "file_write",
+                "file_patch",
+                "plan_execute",
+                "shell_exec",
+            ])
         })
         .clone()
 }
@@ -661,9 +667,7 @@ fn safe_project_path(path: &str) -> Result<std::path::PathBuf, String> {
 
     // Rust module convenience: if the agent guesses `foo.rs` but the project
     // actually uses `foo/mod.rs`, transparently resolve to the existing file.
-    if !normalized.exists()
-        && normalized.extension().and_then(|ext| ext.to_str()) == Some("rs")
-    {
+    if !normalized.exists() && normalized.extension().and_then(|ext| ext.to_str()) == Some("rs") {
         let mod_candidate = normalized.with_extension("").join("mod.rs");
         if mod_candidate.is_file() {
             normalized = mod_candidate;
@@ -701,7 +705,9 @@ fn normalize_path(path: &std::path::Path) -> std::path::PathBuf {
     for component in path.components() {
         use std::path::Component;
         match component {
-            Component::ParentDir => { components.pop(); }
+            Component::ParentDir => {
+                components.pop();
+            }
             Component::CurDir => {}
             other => components.push(other),
         }
@@ -733,9 +739,17 @@ fn walk_dir(
         return;
     }
     let skip_dirs = [
-        ".git", "target", "node_modules", ".next", "dist", "__pycache__", ".cargo",
+        ".git",
+        "target",
+        "node_modules",
+        ".next",
+        "dist",
+        "__pycache__",
+        ".cargo",
     ];
-    let Ok(entries) = std::fs::read_dir(current) else { return };
+    let Ok(entries) = std::fs::read_dir(current) else {
+        return;
+    };
     let mut entries: Vec<_> = entries.filter_map(|e| e.ok()).collect();
     entries.sort_by_key(|e| e.file_name());
     for entry in entries {
@@ -811,8 +825,15 @@ mod tests {
             .await
             .expect("skill catalog should be available");
 
-        assert!(output.as_array().map(|items| !items.is_empty()).unwrap_or(false));
-        assert!(ctx.tools.names().iter().any(|name| name == "project_overview"));
+        assert!(output
+            .as_array()
+            .map(|items| !items.is_empty())
+            .unwrap_or(false));
+        assert!(ctx
+            .tools
+            .names()
+            .iter()
+            .any(|name| name == "project_overview"));
     }
 
     #[tokio::test]
@@ -827,7 +848,10 @@ mod tests {
             .expect("codebase_search should succeed");
 
         let rendered = output.to_string().to_lowercase();
-        assert!(rendered.contains("src/llm.rs") || rendered.contains("llmconfig"), "unexpected output: {output}");
+        assert!(
+            rendered.contains("src/llm.rs") || rendered.contains("llmconfig"),
+            "unexpected output: {output}"
+        );
     }
 
     #[tokio::test]
@@ -912,7 +936,10 @@ mod tests {
             "bytes_written must be > 0"
         );
         let content = read_temp(&name);
-        assert!(content.contains("hello Sirin"), "new_str must appear in file");
+        assert!(
+            content.contains("hello Sirin"),
+            "new_str must appear in file"
+        );
         assert!(!content.contains("hello world"), "old_str must be gone");
 
         remove_temp(&name);
@@ -1044,7 +1071,10 @@ mod tests {
 
         assert!(out.get("callers").is_some(), "response must have 'callers'");
         assert!(out.get("callees").is_some(), "response must have 'callees'");
-        assert!(out.get("defined_in").is_some(), "response must have 'defined_in'");
+        assert!(
+            out.get("defined_in").is_some(),
+            "response must have 'defined_in'"
+        );
         assert!(
             out["callers"].as_array().is_some(),
             "'callers' must be an array"
@@ -1161,17 +1191,28 @@ mod tests {
             .await
             .expect("project_overview must succeed");
         assert!(
-            overview.get("summary").and_then(Value::as_str).map(|s| !s.is_empty()).unwrap_or(false),
+            overview
+                .get("summary")
+                .and_then(Value::as_str)
+                .map(|s| !s.is_empty())
+                .unwrap_or(false),
             "overview must contain a summary"
         );
         assert!(
-            overview.get("files").and_then(Value::as_array).map(|v| !v.is_empty()).unwrap_or(false),
+            overview
+                .get("files")
+                .and_then(Value::as_array)
+                .map(|v| !v.is_empty())
+                .unwrap_or(false),
             "overview must list files"
         );
 
         // 2. codebase_search — agent narrows down relevant files.
         let search = ctx
-            .call_tool("codebase_search", json!({ "query": "parse_rust_file", "limit": 3 }))
+            .call_tool(
+                "codebase_search",
+                json!({ "query": "parse_rust_file", "limit": 3 }),
+            )
             .await
             .expect("codebase_search must succeed");
         assert!(
@@ -1185,7 +1226,10 @@ mod tests {
             .await
             .expect("local_file_read must succeed for src/code_graph.rs");
         assert!(
-            file["content"].as_str().map(|s| s.contains("parse_rust_file")).unwrap_or(false),
+            file["content"]
+                .as_str()
+                .map(|s| s.contains("parse_rust_file"))
+                .unwrap_or(false),
             "read content must contain the expected symbol"
         );
 
@@ -1215,23 +1259,38 @@ mod tests {
             )
             .await
             .expect("call_graph_query must succeed");
-        assert!(cg["callers"].as_array().is_some(), "callers must be an array");
-        assert!(cg["callees"].as_array().is_some(), "callees must be an array");
+        assert!(
+            cg["callers"].as_array().is_some(),
+            "callers must be an array"
+        );
+        assert!(
+            cg["callees"].as_array().is_some(),
+            "callees must be an array"
+        );
 
         // 6. symbol_search — agent looks up a symbol by name.
         let syms = ctx
             .call_tool("symbol_search", json!({ "query": "run_react_loop" }))
             .await
             .expect("symbol_search must succeed");
-        assert!(syms.as_array().is_some(), "symbol_search must return an array");
+        assert!(
+            syms.as_array().is_some(),
+            "symbol_search must return an array"
+        );
 
         // 7. git_status — agent checks working tree before committing.
         let gs = ctx
             .call_tool("git_status", json!({}))
             .await
             .expect("git_status must succeed");
-        assert!(gs.get("status").is_some(), "git_status must return 'status' field");
-        assert!(gs.get("clean").is_some(), "git_status must return 'clean' field");
+        assert!(
+            gs.get("status").is_some(),
+            "git_status must return 'status' field"
+        );
+        assert!(
+            gs.get("clean").is_some(),
+            "git_status must return 'clean' field"
+        );
     }
 
     /// Test 13 — file_patch (step 0) succeeds; shell_exec with non-allowlisted

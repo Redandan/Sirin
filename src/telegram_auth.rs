@@ -100,7 +100,11 @@ impl TelegramAuthState {
 
     /// Mark status as `PasswordRequired` and return a receiver similar to
     /// `request_code`.
-    pub async fn request_password(&self, hint: impl Into<String>, timeout_secs: u64) -> Option<String> {
+    pub async fn request_password(
+        &self,
+        hint: impl Into<String>,
+        timeout_secs: u64,
+    ) -> Option<String> {
         let (tx, rx) = oneshot::channel();
         {
             let mut inner = self.0.lock();

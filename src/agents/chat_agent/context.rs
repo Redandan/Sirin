@@ -9,8 +9,8 @@ use crate::adk::AgentContext;
 use crate::memory::load_recent_context;
 use crate::telegram::commands::{extract_search_query, should_search};
 
-use super::ChatRequest;
 use super::intent::{is_simple_meta_request, related_research_snippet};
+use super::ChatRequest;
 
 // ── Context builders ──────────────────────────────────────────────────────────
 
@@ -169,7 +169,10 @@ pub(super) async fn load_local_file_reports(
 
     for path in paths.iter().take(max_files) {
         match ctx
-            .call_tool("local_file_read", json!({ "path": path, "max_chars": max_chars }))
+            .call_tool(
+                "local_file_read",
+                json!({ "path": path, "max_chars": max_chars }),
+            )
             .await
         {
             Ok(result) => {
@@ -213,7 +216,11 @@ pub(super) fn format_search_results(results: &Value) -> Option<String> {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .trim();
-            let url = item.get("url").and_then(Value::as_str).unwrap_or_default().trim();
+            let url = item
+                .get("url")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim();
 
             if title.is_empty() {
                 None

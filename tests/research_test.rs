@@ -7,13 +7,11 @@
 ///
 /// Run with:
 ///   cargo test research -- --nocapture
-
 use serde::{Deserialize, Serialize};
 
 const LM_STUDIO_URL: &str = "http://localhost:1234/v1/chat/completions";
 const DEFAULT_LM_STUDIO_MODEL: &str = "gemma-4-e4b-it";
-const USER_AGENT: &str =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
      (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
 fn lm_studio_model() -> String {
@@ -55,7 +53,10 @@ async fn llm(prompt: &str) -> String {
     let model = lm_studio_model();
     let body = ChatReq {
         model: &model,
-        messages: vec![ChatMsg { role: "user".into(), content: prompt.into() }],
+        messages: vec![ChatMsg {
+            role: "user".into(),
+            content: prompt.into(),
+        }],
         stream: false,
     };
     let resp: ChatResp = client
@@ -100,21 +101,32 @@ async fn ddg_search(query: &str) -> Vec<SearchResult> {
         .expect("DDG body failed");
 
     let doc = scraper::Html::parse_document(&html);
-    let card_sel    = scraper::Selector::parse(".result__body").unwrap();
-    let title_sel   = scraper::Selector::parse(".result__title a").unwrap();
+    let card_sel = scraper::Selector::parse(".result__body").unwrap();
+    let title_sel = scraper::Selector::parse(".result__title a").unwrap();
     let snippet_sel = scraper::Selector::parse(".result__snippet").unwrap();
 
     let mut results = Vec::new();
     for card in doc.select(&card_sel).take(3) {
-        let title_el   = card.select(&title_sel).next();
+        let title_el = card.select(&title_sel).next();
         let snippet_el = card.select(&snippet_sel).next();
 
-        let title   = title_el.map(|el| el.text().collect::<String>().trim().to_string()).unwrap_or_default();
-        let url     = title_el.and_then(|el| el.value().attr("href")).unwrap_or_default().to_string();
-        let snippet = snippet_el.map(|el| el.text().collect::<String>().trim().to_string()).unwrap_or_default();
+        let title = title_el
+            .map(|el| el.text().collect::<String>().trim().to_string())
+            .unwrap_or_default();
+        let url = title_el
+            .and_then(|el| el.value().attr("href"))
+            .unwrap_or_default()
+            .to_string();
+        let snippet = snippet_el
+            .map(|el| el.text().collect::<String>().trim().to_string())
+            .unwrap_or_default();
 
         if !title.is_empty() {
-            results.push(SearchResult { title, snippet, url });
+            results.push(SearchResult {
+                title,
+                snippet,
+                url,
+            });
         }
     }
     results
@@ -152,7 +164,7 @@ async fn fetch_page(url: &str) -> Option<String> {
 #[ignore = "requires local LM Studio at http://localhost:1234"]
 async fn research_full_pipeline() {
     let topic = "AgoraMarket 平台功能分析";
-    let url   = "https://agoramarket.purrtechllc.com/";
+    let url = "https://agoramarket.purrtechllc.com/";
 
     println!("\n╔══════════════════════════════════════════╗");
     println!("║   🔬 Full Research Pipeline Integration  ║");
@@ -165,14 +177,17 @@ async fn research_full_pipeline() {
     let page_text = fetch_page(url).await;
     match &page_text {
         Some(t) => println!("      ✅ {} chars extracted", t.len()),
-        None    => println!("      ⚠️  fetch failed, will use topic only"),
+        None => println!("      ⚠️  fetch failed, will use topic only"),
     }
 
     // ── Phase 2: Overview analysis ────────────────────────────────────────────
     println!("\n[2/5] 🧠 Overview analysis (LLM call 1)...");
     let context = match &page_text {
-        Some(t) => format!("URL: {url}\n\nPage content:\n{}", &t.chars().take(2000).collect::<String>()),
-        None    => format!("Research topic: {topic}"),
+        Some(t) => format!(
+            "URL: {url}\n\nPage content:\n{}",
+            &t.chars().take(2000).collect::<String>()
+        ),
+        None => format!("Research topic: {topic}"),
     };
 
     let overview_prompt = format!(
@@ -184,7 +199,10 @@ async fn research_full_pipeline() {
     let overview = llm(&overview_prompt).await;
     assert!(!overview.trim().is_empty(), "Overview LLM returned empty");
     println!("      ✅ {} chars", overview.len());
-    println!("      Preview: {}...", &overview.chars().take(120).collect::<String>());
+    println!(
+        "      Preview: {}...",
+        &overview.chars().take(120).collect::<String>()
+    );
 
     // ── Phase 3: Generate research questions ──────────────────────────────────
     println!("\n[3/5] 💡 Generating research questions (LLM call 2)...");
@@ -197,12 +215,17 @@ async fn research_full_pipeline() {
     let questions: Vec<String> = q_raw
         .lines()
         .filter_map(|l| {
-            let t = l.trim()
+            let t = l
+                .trim()
                 .trim_start_matches(|c: char| c.is_ascii_digit())
                 .trim_start_matches(['.', ')', ' '])
                 .trim()
                 .to_string();
-            if t.len() > 5 { Some(t) } else { None }
+            if t.len() > 5 {
+                Some(t)
+            } else {
+                None
+            }
         })
         .take(4)
         .collect();
@@ -214,7 +237,10 @@ async fn research_full_pipeline() {
     }
 
     // ── Phase 4: Search + analyse each question ───────────────────────────────
-    println!("\n[4/5] 🔍 Q&A research ({} questions × search + LLM)...", questions.len());
+    println!(
+        "\n[4/5] 🔍 Q&A research ({} questions × search + LLM)...",
+        questions.len()
+    );
     let mut qa_results: Vec<String> = Vec::new();
 
     for (i, question) in questions.iter().enumerate() {
@@ -223,7 +249,9 @@ async fn research_full_pipeline() {
         let search_block = if results.is_empty() {
             "（外部搜尋暫時不可用，請基於既有知識回答並標示可能不完整）".to_string()
         } else {
-            results.iter().take(3)
+            results
+                .iter()
+                .take(3)
                 .map(|r| format!("- {}: {} ({})", r.title, r.snippet, r.url))
                 .collect::<Vec<_>>()
                 .join("\n")
@@ -241,8 +269,11 @@ async fn research_full_pipeline() {
     }
 
     // ── Phase 5: Synthesis ────────────────────────────────────────────────────
-    println!("\n[5/5] 📄 Synthesising final report (LLM call {})...", 2 + questions.len() + 1);
-    let all_qa   = qa_results.join("\n\n---\n\n");
+    println!(
+        "\n[5/5] 📄 Synthesising final report (LLM call {})...",
+        2 + questions.len() + 1
+    );
+    let all_qa = qa_results.join("\n\n---\n\n");
     let ov_snip: String = overview.chars().take(600).collect();
 
     let synth_prompt = format!(

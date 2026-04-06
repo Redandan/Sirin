@@ -49,8 +49,7 @@ use crate::skills::ddg_search;
 
 // ── constants ─────────────────────────────────────────────────────────────────
 
-const USER_AGENT: &str =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
      (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
 /// Max chars extracted from a fetched webpage.
@@ -64,18 +63,13 @@ const MAX_CONTEXT: usize = 2000;
 fn page_content_selector() -> &'static scraper::Selector {
     static SEL: OnceLock<scraper::Selector> = OnceLock::new();
     SEL.get_or_init(|| {
-        scraper::Selector::parse(
-            "body p, body h1, body h2, body h3, body li, body span, body div",
-        )
-        .unwrap()
+        scraper::Selector::parse("body p, body h1, body h2, body h3, body li, body span, body div")
+            .unwrap()
     })
 }
 
 /// Fetch a URL and extract readable text from the HTML body.
-async fn fetch_page_text(
-    http: &reqwest::Client,
-    url: &str,
-) -> Result<String, String> {
+async fn fetch_page_text(http: &reqwest::Client, url: &str) -> Result<String, String> {
     let html = http
         .get(url)
         .header("User-Agent", USER_AGENT)
@@ -312,7 +306,8 @@ pub async fn run_research(topic: String, url: Option<String>) -> ResearchTask {
                 crate::llm::shared_http().as_ref(),
                 &crate::llm::shared_router_llm(),
                 &task,
-            ).await;
+            )
+            .await;
         }
     }
 
@@ -321,11 +316,7 @@ pub async fn run_research(topic: String, url: Option<String>) -> ResearchTask {
 
 /// After every 5th completed research, ask the LLM whether the persona's
 /// objectives should be updated, and write the result back to persona.yaml.
-async fn maybe_reflect_on_objectives(
-    http: &reqwest::Client,
-    llm: &LlmConfig,
-    task: &ResearchTask,
-) {
+async fn maybe_reflect_on_objectives(http: &reqwest::Client, llm: &LlmConfig, task: &ResearchTask) {
     let persona = match Persona::load() {
         Ok(p) => p,
         Err(e) => {
@@ -398,9 +389,7 @@ Output ONLY the JSON array, e.g.: ["Objective 1", "Objective 2"]"#,
         new_objectives
     );
     store_pending_objectives(new_objectives.clone());
-    events::publish(events::AgentEvent::PersonaUpdated {
-        new_objectives,
-    });
+    events::publish(events::AgentEvent::PersonaUpdated { new_objectives });
 }
 
 async fn pipeline(
@@ -462,7 +451,9 @@ async fn pipeline(
          Provide your structured overview:"
     );
 
-    let overview = call_prompt(llm_http, llm, &overview_prompt).await.map_err(|e| e.to_string())?;
+    let overview = call_prompt(llm_http, llm, &overview_prompt)
+        .await
+        .map_err(|e| e.to_string())?;
     sirin_log!("[researcher] Overview done ({} chars)", overview.len());
     task.steps.push(ResearchStep {
         phase: "overview".into(),
@@ -483,19 +474,27 @@ async fn pipeline(
          4 research questions:"
     );
 
-    let questions_raw = call_prompt(llm_http, llm, &questions_prompt).await.map_err(|e| e.to_string())?;
+    let questions_raw = call_prompt(llm_http, llm, &questions_prompt)
+        .await
+        .map_err(|e| e.to_string())?;
     let questions: Vec<String> = questions_raw
         .lines()
         .filter_map(|line| {
             let trimmed = line.trim();
-            if trimmed.is_empty() { return None; }
+            if trimmed.is_empty() {
+                return None;
+            }
             // Strip leading "1. " "2. " etc.
             let q = trimmed
                 .trim_start_matches(|c: char| c.is_ascii_digit())
                 .trim_start_matches(['.', ')', ' '])
                 .trim()
                 .to_string();
-            if q.len() > 5 { Some(q) } else { None }
+            if q.len() > 5 {
+                Some(q)
+            } else {
+                None
+            }
         })
         .take(4)
         .collect();
@@ -605,8 +604,13 @@ async fn pipeline(
         url = task.url.as_deref().unwrap_or("N/A"),
     );
 
-    let report = call_prompt(llm_http, llm, &synthesis_prompt).await.map_err(|e| e.to_string())?;
-    sirin_log!("[researcher] Final report generated ({} chars)", report.len());
+    let report = call_prompt(llm_http, llm, &synthesis_prompt)
+        .await
+        .map_err(|e| e.to_string())?;
+    sirin_log!(
+        "[researcher] Final report generated ({} chars)",
+        report.len()
+    );
 
     task.steps.push(ResearchStep {
         phase: "synthesis".into(),
@@ -690,7 +694,10 @@ mod tests {
         save_research(&task).expect("save failed");
 
         let list = list_research().expect("list failed");
-        assert!(list.iter().any(|t| t.id == id), "saved task not found in list");
+        assert!(
+            list.iter().any(|t| t.id == id),
+            "saved task not found in list"
+        );
         println!("✅ list contains saved task (id={id})");
     }
 
@@ -703,10 +710,7 @@ mod tests {
         println!("🔬 researcher::run_research (topic only)");
         println!("======================================");
 
-        let task = run_research(
-            "Rust async/await 底層工作原理".to_string(),
-            None,
-        ).await;
+        let task = run_research("Rust async/await 底層工作原理".to_string(), None).await;
 
         println!("  id     = {}", task.id);
         println!("  status = {:?}", task.status);
@@ -715,8 +719,12 @@ mod tests {
             println!("    [{}] {} chars", s.phase, s.output.len());
         }
 
-        assert_ne!(task.status, ResearchStatus::Failed,
-            "pipeline failed: {}", task.final_report.as_deref().unwrap_or(""));
+        assert_ne!(
+            task.status,
+            ResearchStatus::Failed,
+            "pipeline failed: {}",
+            task.final_report.as_deref().unwrap_or("")
+        );
         assert!(task.final_report.is_some());
 
         if let Some(report) = &task.final_report {
@@ -738,7 +746,8 @@ mod tests {
         let task = run_research(
             "AgoraMarket 平台功能分析".to_string(),
             Some("https://agoramarket.purrtechllc.com/".to_string()),
-        ).await;
+        )
+        .await;
 
         println!("  id     = {}", task.id);
         println!("  status = {:?}", task.status);
@@ -749,8 +758,12 @@ mod tests {
 
         let has_fetch = task.steps.iter().any(|s| s.phase == "fetch");
         assert!(has_fetch, "fetch phase missing — URL was provided");
-        assert_ne!(task.status, ResearchStatus::Failed,
-            "pipeline failed: {}", task.final_report.as_deref().unwrap_or(""));
+        assert_ne!(
+            task.status,
+            ResearchStatus::Failed,
+            "pipeline failed: {}",
+            task.final_report.as_deref().unwrap_or("")
+        );
 
         if let Some(report) = &task.final_report {
             println!("\n--- report (first 600 chars) ---");

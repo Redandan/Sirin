@@ -26,7 +26,10 @@ pub fn build_ai_reply_prompt(
                 p.response_style.compliance_line.as_str(),
             )
         })
-        .unwrap_or(("natural, polite, professional", "Follow the user's request step by step."));
+        .unwrap_or((
+            "natural, polite, professional",
+            "Follow the user's request step by step.",
+        ));
 
     let execution_block = execution_result
         .map(|v| format!("\nExecution result from internal action layer: {v}"))

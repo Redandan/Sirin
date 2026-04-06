@@ -106,7 +106,10 @@ impl Agent for PlannerAgent {
                         p
                     }
                     None => {
-                        let p = apply_skill_hints(build_family_plan(IntentFamily::GeneralChat), &recommended_skills);
+                        let p = apply_skill_hints(
+                            build_family_plan(IntentFamily::GeneralChat),
+                            &recommended_skills,
+                        );
                         ctx.record_system_event(
                             "adk_planner_plan_ready",
                             Some(preview_text(&request.user_text)),
@@ -132,7 +135,10 @@ impl Agent for PlannerAgent {
 /// Ask the LLM to classify the user message and return a structured plan.
 /// Returns `None` on LLM error or unparseable output so the caller can fall back.
 async fn recommended_skill_ids(ctx: &AgentContext, user_text: &str) -> Vec<String> {
-    match ctx.call_tool("skill_catalog", json!({ "query": user_text })).await {
+    match ctx
+        .call_tool("skill_catalog", json!({ "query": user_text }))
+        .await
+    {
         Ok(value) => value
             .as_array()
             .into_iter()
@@ -150,23 +156,41 @@ async fn recommended_skill_ids(ctx: &AgentContext, user_text: &str) -> Vec<Strin
 fn looks_like_repo_file_reference(text: &str) -> bool {
     text.split_whitespace().any(|token| {
         let cleaned = token
-            .trim_matches(|c: char| matches!(c, '`' | '"' | '\'' | ',' | '，' | '。' | '?' | '？' | ':' | '：' | '(' | ')'))
+            .trim_matches(|c: char| {
+                matches!(
+                    c,
+                    '`' | '"' | '\'' | ',' | '，' | '。' | '?' | '？' | ':' | '：' | '(' | ')'
+                )
+            })
             .replace('\\', "/");
 
         cleaned.starts_with("src/")
             || cleaned.starts_with("app/")
             || cleaned.starts_with("docs/")
-            || [".rs", ".toml", ".md", ".json", ".yaml", ".yml", ".ts", ".tsx"]
-                .iter()
-                .any(|suffix| cleaned.ends_with(suffix))
+            || [
+                ".rs", ".toml", ".md", ".json", ".yaml", ".yml", ".ts", ".tsx",
+            ]
+            .iter()
+            .any(|suffix| cleaned.ends_with(suffix))
     })
 }
 
 fn looks_like_project_overview_query(text: &str) -> bool {
     let lower = text.to_lowercase();
     [
-        "專案", "项目", "項目", "架構", "architecture", "結構", "模組", "module",
-        "檔案", "files", "codebase", "怎麼運作", "如何運作",
+        "專案",
+        "项目",
+        "項目",
+        "架構",
+        "architecture",
+        "結構",
+        "模組",
+        "module",
+        "檔案",
+        "files",
+        "codebase",
+        "怎麼運作",
+        "如何運作",
     ]
     .iter()
     .any(|needle| lower.contains(needle))
@@ -174,21 +198,49 @@ fn looks_like_project_overview_query(text: &str) -> bool {
 
 fn looks_like_skill_query(text: &str) -> bool {
     let lower = text.to_lowercase();
-    lower.contains("skill") || lower.contains("skills.rs") || text.contains("技能") || text.contains("能力目錄")
+    lower.contains("skill")
+        || lower.contains("skills.rs")
+        || text.contains("技能")
+        || text.contains("能力目錄")
 }
 
 fn looks_like_capability_query(text: &str) -> bool {
     let lower = text.to_lowercase();
     let compact = lower.split_whitespace().collect::<String>();
-    let asks_what = ["有哪些", "有什麼", "有什么", "哪些", "會什麼", "会什么", "what", "list"]
-        .iter()
-        .any(|needle| compact.contains(needle));
-    let mentions_skills = compact.contains("skill") || compact.contains("skills") || text.contains("技能") || text.contains("能力");
+    let asks_what = [
+        "有哪些",
+        "有什麼",
+        "有什么",
+        "哪些",
+        "會什麼",
+        "会什么",
+        "what",
+        "list",
+    ]
+    .iter()
+    .any(|needle| compact.contains(needle));
+    let mentions_skills = compact.contains("skill")
+        || compact.contains("skills")
+        || text.contains("技能")
+        || text.contains("能力");
 
     [
-        "你能做什麼", "你可以做什麼", "你可以幫我做什麼", "你能幫我做什麼", "你會做什麼", "你會什麼",
-        "有什麼能力", "有哪些能力", "有什麼功能", "有哪些功能", "能幹嘛", "能做啥",
-        "whatcanyoudo", "howcanyouhelp", "capabilities", "abilities",
+        "你能做什麼",
+        "你可以做什麼",
+        "你可以幫我做什麼",
+        "你能幫我做什麼",
+        "你會做什麼",
+        "你會什麼",
+        "有什麼能力",
+        "有哪些能力",
+        "有什麼功能",
+        "有哪些功能",
+        "能幹嘛",
+        "能做啥",
+        "whatcanyoudo",
+        "howcanyouhelp",
+        "capabilities",
+        "abilities",
     ]
     .iter()
     .any(|needle| compact.contains(needle))
@@ -197,9 +249,11 @@ fn looks_like_capability_query(text: &str) -> bool {
 
 fn looks_like_analysis_request(text: &str) -> bool {
     let lower = text.to_lowercase();
-    ["分析", "解釋", "解释", "說明", "说明", "用途", "作用", "how", "why", "analyze", "explain"]
-        .iter()
-        .any(|needle| lower.contains(needle))
+    [
+        "分析", "解釋", "解释", "說明", "说明", "用途", "作用", "how", "why", "analyze", "explain",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
 }
 
 fn classify_intent_family(user_text: &str, recommended_skills: &[String]) -> IntentFamily {
@@ -207,7 +261,10 @@ fn classify_intent_family(user_text: &str, recommended_skills: &[String]) -> Int
         return IntentFamily::Research;
     }
 
-    if is_identity_question(user_text) || is_code_access_question(user_text) || looks_like_capability_query(user_text) {
+    if is_identity_question(user_text)
+        || is_code_access_question(user_text)
+        || looks_like_capability_query(user_text)
+    {
         return IntentFamily::Capability;
     }
 
@@ -227,7 +284,11 @@ fn classify_intent_family(user_text: &str, recommended_skills: &[String]) -> Int
         || recommended_skills.iter().any(|skill| {
             matches!(
                 skill.as_str(),
-                "code_change_planning" | "symbol_trace" | "grounded_fix" | "test_selector" | "architecture_consistency_check"
+                "code_change_planning"
+                    | "symbol_trace"
+                    | "grounded_fix"
+                    | "test_selector"
+                    | "architecture_consistency_check"
             )
         })
     {
@@ -336,26 +397,53 @@ fn push_step_if_missing(steps: &mut Vec<String>, step: &str) {
 fn apply_skill_hints(mut plan: WorkflowPlan, recommended_skills: &[String]) -> WorkflowPlan {
     plan.recommended_skills = recommended_skills.to_vec();
 
-    if recommended_skills.iter().any(|skill| skill == "project_overview") {
+    if recommended_skills
+        .iter()
+        .any(|skill| skill == "project_overview")
+    {
         push_step_if_missing(&mut plan.steps, "inspect core project files");
     }
-    if recommended_skills.iter().any(|skill| skill == "local_file_read") {
+    if recommended_skills
+        .iter()
+        .any(|skill| skill == "local_file_read")
+    {
         push_step_if_missing(&mut plan.steps, "read the referenced local file");
     }
-    if recommended_skills.iter().any(|skill| skill == "codebase_search" || skill == "symbol_trace") {
+    if recommended_skills
+        .iter()
+        .any(|skill| skill == "codebase_search" || skill == "symbol_trace")
+    {
         push_step_if_missing(&mut plan.steps, "trace affected symbols/modules");
     }
-    if recommended_skills.iter().any(|skill| skill == "code_change_planning") {
+    if recommended_skills
+        .iter()
+        .any(|skill| skill == "code_change_planning")
+    {
         push_step_if_missing(&mut plan.steps, "outline a safe change plan before editing");
     }
-    if recommended_skills.iter().any(|skill| skill == "grounded_fix") {
-        push_step_if_missing(&mut plan.steps, "identify root cause from local code context");
+    if recommended_skills
+        .iter()
+        .any(|skill| skill == "grounded_fix")
+    {
+        push_step_if_missing(
+            &mut plan.steps,
+            "identify root cause from local code context",
+        );
     }
-    if recommended_skills.iter().any(|skill| skill == "test_selector") {
+    if recommended_skills
+        .iter()
+        .any(|skill| skill == "test_selector")
+    {
         push_step_if_missing(&mut plan.steps, "run targeted validation after changes");
     }
-    if recommended_skills.iter().any(|skill| skill == "architecture_consistency_check") {
-        push_step_if_missing(&mut plan.steps, "check architecture consistency after the change");
+    if recommended_skills
+        .iter()
+        .any(|skill| skill == "architecture_consistency_check")
+    {
+        push_step_if_missing(
+            &mut plan.steps,
+            "check architecture consistency after the change",
+        );
     }
 
     if !plan.recommended_skills.is_empty() {
@@ -363,7 +451,11 @@ fn apply_skill_hints(mut plan: WorkflowPlan, recommended_skills: &[String]) -> W
         if plan.summary.is_empty() {
             plan.summary = format!("Recommended skills: {skill_list}");
         } else {
-            plan.summary = format!("{} Recommended skills: {}.", plan.summary.trim_end_matches('.'), skill_list);
+            plan.summary = format!(
+                "{} Recommended skills: {}.",
+                plan.summary.trim_end_matches('.'),
+                skill_list
+            );
         }
     }
 
@@ -372,7 +464,11 @@ fn apply_skill_hints(mut plan: WorkflowPlan, recommended_skills: &[String]) -> W
 
 /// Ask the LLM to classify the user message and return a structured plan.
 /// Returns `None` on LLM error or unparseable output so the caller can fall back.
-async fn llm_plan(ctx: &AgentContext, request: &PlannerRequest, recommended_skills: &[String]) -> Option<WorkflowPlan> {
+async fn llm_plan(
+    ctx: &AgentContext,
+    request: &PlannerRequest,
+    recommended_skills: &[String],
+) -> Option<WorkflowPlan> {
     let context_hint = request
         .context_block
         .as_deref()
@@ -381,7 +477,10 @@ async fn llm_plan(ctx: &AgentContext, request: &PlannerRequest, recommended_skil
     let skill_hint = if recommended_skills.is_empty() {
         String::new()
     } else {
-        format!("\nRelevant local capabilities for this request: {}", recommended_skills.join(", "))
+        format!(
+            "\nRelevant local capabilities for this request: {}",
+            recommended_skills.join(", ")
+        )
     };
 
     let prompt = format!(
@@ -505,8 +604,14 @@ mod tests {
 
         assert_eq!(plan.intent, PlanIntent::Research);
         assert!(plan.should_start_research);
-        assert!(plan.steps.iter().any(|step| step.contains("summarize research result")));
-        assert!(plan.steps.iter().any(|step| step.contains("create follow-up task")));
+        assert!(plan
+            .steps
+            .iter()
+            .any(|step| step.contains("summarize research result")));
+        assert!(plan
+            .steps
+            .iter()
+            .any(|step| step.contains("create follow-up task")));
     }
 
     #[tokio::test]
@@ -527,7 +632,10 @@ mod tests {
         assert_eq!(plan.intent, PlanIntent::Answer);
         assert_eq!(plan.intent_family, IntentFamily::Capability);
         assert!(!plan.should_start_research);
-        assert!(plan.steps.iter().any(|step| step.contains("capability / identity")));
+        assert!(plan
+            .steps
+            .iter()
+            .any(|step| step.contains("capability / identity")));
     }
 
     #[tokio::test]
@@ -547,10 +655,22 @@ mod tests {
 
         assert_eq!(plan.intent, PlanIntent::Answer);
         assert_eq!(plan.intent_family, IntentFamily::CodeAnalysis);
-        assert!(plan.recommended_skills.iter().any(|skill| skill == "code_change_planning"));
-        assert!(plan.recommended_skills.iter().any(|skill| skill == "grounded_fix"));
-        assert!(plan.steps.iter().any(|step| step.contains("safe change plan")));
-        assert!(plan.steps.iter().any(|step| step.contains("targeted validation")));
+        assert!(plan
+            .recommended_skills
+            .iter()
+            .any(|skill| skill == "code_change_planning"));
+        assert!(plan
+            .recommended_skills
+            .iter()
+            .any(|skill| skill == "grounded_fix"));
+        assert!(plan
+            .steps
+            .iter()
+            .any(|step| step.contains("safe change plan")));
+        assert!(plan
+            .steps
+            .iter()
+            .any(|step| step.contains("targeted validation")));
     }
 
     #[tokio::test]
@@ -570,6 +690,9 @@ mod tests {
 
         assert_eq!(plan.intent, PlanIntent::Answer);
         assert_eq!(plan.intent_family, IntentFamily::ProjectOverview);
-        assert!(plan.steps.iter().any(|step| step.contains("inspect core project files")));
+        assert!(plan
+            .steps
+            .iter()
+            .any(|step| step.contains("inspect core project files")));
     }
 }

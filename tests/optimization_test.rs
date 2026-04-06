@@ -27,7 +27,9 @@ fn memory_cache_vs_disk_scan_timing() {
         let mut f = std::fs::File::create(&path).unwrap();
         for i in 0..1000 {
             let e = Entry {
-                text: format!("Rust async optimization benchmark entry number {i} tokio performance"),
+                text: format!(
+                    "Rust async optimization benchmark entry number {i} tokio performance"
+                ),
             };
             writeln!(f, "{}", serde_json::to_string(&e).unwrap()).unwrap();
         }
@@ -77,9 +79,7 @@ fn memory_cache_vs_disk_scan_timing() {
     let speedup = disk_elapsed.as_secs_f64() / cache_elapsed.as_secs_f64().max(0.000_001);
     println!(
         "\n[memory cache] 10× disk scan: {:?}  |  10× cached scan: {:?}  |  speedup: {:.1}×",
-        disk_elapsed,
-        cache_elapsed,
-        speedup
+        disk_elapsed, cache_elapsed, speedup
     );
 
     // On some machines the OS file cache can make repeated disk reads very close
@@ -107,10 +107,8 @@ fn selector_cache_vs_fresh_compile_timing() {
     fn cached_selector() -> &'static Selector {
         static SEL: OnceLock<Selector> = OnceLock::new();
         SEL.get_or_init(|| {
-            Selector::parse(
-                "body p, body h1, body h2, body h3, body li, body span, body div",
-            )
-            .unwrap()
+            Selector::parse("body p, body h1, body h2, body h3, body li, body span, body div")
+                .unwrap()
         })
     }
 
@@ -122,10 +120,9 @@ fn selector_cache_vs_fresh_compile_timing() {
     // Fresh compile on every call.
     let t_fresh = Instant::now();
     for _ in 0..n {
-        let sel = Selector::parse(
-            "body p, body h1, body h2, body h3, body li, body span, body div",
-        )
-        .unwrap();
+        let sel =
+            Selector::parse("body p, body h1, body h2, body h3, body li, body span, body div")
+                .unwrap();
         let doc = Html::parse_document(html);
         let _ = doc.select(&sel).count();
     }

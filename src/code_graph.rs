@@ -137,10 +137,7 @@ fn collect_items(
     match node.kind() {
         "function_item" => {
             if let Some(name_node) = node.child_by_field_name("name") {
-                let symbol = name_node
-                    .utf8_text(src)
-                    .unwrap_or("?")
-                    .to_string();
+                let symbol = name_node.utf8_text(src).unwrap_or("?").to_string();
                 let line = name_node.start_position().row + 1;
 
                 let mut calls = Vec::new();
@@ -167,10 +164,7 @@ fn collect_items(
                 _ => "trait",
             };
             if let Some(name_node) = node.child_by_field_name("name") {
-                let symbol = name_node
-                    .utf8_text(src)
-                    .unwrap_or("?")
-                    .to_string();
+                let symbol = name_node.utf8_text(src).unwrap_or("?").to_string();
                 let line = name_node.start_position().row + 1;
                 entries.push(CallGraphEntry {
                     path: path.to_string(),
@@ -245,10 +239,9 @@ fn callee_name(node: &tree_sitter::Node, src: &[u8]) -> Option<String> {
                 .and_then(|n| n.utf8_text(src).ok().map(str::to_string))
                 .or_else(|| node.utf8_text(src).ok().map(str::to_string))
         }
-        "field_expression" => {
-            node.child_by_field_name("field")
-                .and_then(|n| n.utf8_text(src).ok().map(str::to_string))
-        }
+        "field_expression" => node
+            .child_by_field_name("field")
+            .and_then(|n| n.utf8_text(src).ok().map(str::to_string)),
         _ => None,
     }
 }
@@ -256,7 +249,9 @@ fn callee_name(node: &tree_sitter::Node, src: &[u8]) -> Option<String> {
 // ── Project-wide build ─────────────────────────────────────────────────────────
 
 fn collect_rs_files(root: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(root) else { return };
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
     let skip = [".git", "target", "node_modules", ".next", "dist"];
     for entry in entries.filter_map(|e| e.ok()) {
         let path = entry.path();
@@ -276,8 +271,7 @@ fn collect_rs_files(root: &Path, out: &mut Vec<PathBuf>) {
 /// Parse all `.rs` files under the project root and return the combined list
 /// of `CallGraphEntry` records, ready to be persisted.
 pub fn build_call_graph() -> Result<Vec<CallGraphEntry>, Box<dyn std::error::Error + Send + Sync>> {
-    let root = find_project_root()
-        .ok_or("Cannot determine project root")?;
+    let root = find_project_root().ok_or("Cannot determine project root")?;
 
     let mut rs_files = Vec::new();
     collect_rs_files(&root, &mut rs_files);
@@ -285,7 +279,9 @@ pub fn build_call_graph() -> Result<Vec<CallGraphEntry>, Box<dyn std::error::Err
 
     let mut entries: Vec<CallGraphEntry> = Vec::new();
     for file in &rs_files {
-        let Ok(src) = fs::read_to_string(file) else { continue };
+        let Ok(src) = fs::read_to_string(file) else {
+            continue;
+        };
         let rel = relative_display(file, &root);
         let mut file_entries = parse_rust_file(&rel, &src);
         entries.append(&mut file_entries);
@@ -372,7 +368,13 @@ pub fn query_call_graph(
     let guard = graph_cache().read();
     let entries = match guard.as_deref() {
         Some(e) => e,
-        None => return Ok(CallGraphResult { defined_in: None, callers: Vec::new(), callees: Vec::new() }),
+        None => {
+            return Ok(CallGraphResult {
+                defined_in: None,
+                callers: Vec::new(),
+                callees: Vec::new(),
+            })
+        }
     };
 
     // Build a quick lookup map: symbol → entries.
@@ -385,11 +387,11 @@ pub fn query_call_graph(
     };
 
     // Find the canonical entry for the requested symbol.
-    let root_entries: &[&CallGraphEntry] = by_symbol
-        .get(symbol)
-        .map(|v| v.as_slice())
-        .unwrap_or(&[]);
-    let defined_in = root_entries.first().map(|e| format!("{}:{}", e.path, e.line));
+    let root_entries: &[&CallGraphEntry] =
+        by_symbol.get(symbol).map(|v| v.as_slice()).unwrap_or(&[]);
+    let defined_in = root_entries
+        .first()
+        .map(|e| format!("{}:{}", e.path, e.line));
 
     // Collect callees: everything the symbol calls directly (1-hop).
     let mut callees: Vec<String> = root_entries
@@ -466,7 +468,11 @@ pub fn query_call_graph(
         callers.sort();
     }
 
-    Ok(CallGraphResult { defined_in, callers, callees })
+    Ok(CallGraphResult {
+        defined_in,
+        callers,
+        callees,
+    })
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
@@ -498,7 +504,10 @@ enum Color { Red, Green, Blue }
             .map(|e| e.symbol.as_str())
             .collect();
         assert!(fns.contains(&"greet"), "expected 'greet', got {fns:?}");
-        assert!(fns.contains(&"format_greeting"), "expected 'format_greeting', got {fns:?}");
+        assert!(
+            fns.contains(&"format_greeting"),
+            "expected 'format_greeting', got {fns:?}"
+        );
     }
 
     #[test]
@@ -552,10 +561,19 @@ enum Color { Red, Green, Blue }
     #[test]
     fn build_call_graph_returns_entries_for_real_project() {
         let entries = build_call_graph().expect("build_call_graph should succeed");
-        assert!(!entries.is_empty(), "should parse at least one symbol from the project");
+        assert!(
+            !entries.is_empty(),
+            "should parse at least one symbol from the project"
+        );
         // Every entry must have a non-empty symbol and path.
-        assert!(entries.iter().all(|e| !e.symbol.is_empty()), "all symbols should be non-empty");
-        assert!(entries.iter().all(|e| !e.path.is_empty()), "all paths should be non-empty");
+        assert!(
+            entries.iter().all(|e| !e.symbol.is_empty()),
+            "all symbols should be non-empty"
+        );
+        assert!(
+            entries.iter().all(|e| !e.path.is_empty()),
+            "all paths should be non-empty"
+        );
     }
 
     #[test]
@@ -563,8 +581,14 @@ enum Color { Red, Green, Blue }
         let entries = build_call_graph().expect("build should succeed");
         let symbols: Vec<&str> = entries.iter().map(|e| e.symbol.as_str()).collect();
         // These functions exist in the project and must be detected.
-        assert!(symbols.contains(&"run_react_loop"), "run_react_loop should be in call graph");
-        assert!(symbols.contains(&"memory_store"), "memory_store should be in call graph");
+        assert!(
+            symbols.contains(&"run_react_loop"),
+            "run_react_loop should be in call graph"
+        );
+        assert!(
+            symbols.contains(&"memory_store"),
+            "memory_store should be in call graph"
+        );
     }
 
     // ── refresh_call_graph writes to disk ─────────────────────────────────────
@@ -594,13 +618,13 @@ enum Color { Red, Green, Blue }
         let entries = build_call_graph().expect("build ok");
 
         // Write to a temp file and verify round-trip.
-        let tmp = std::env::temp_dir()
-            .join(format!("sirin_cg_test_{}.jsonl", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("sirin_cg_test_{}.jsonl", std::process::id()));
         {
             use std::io::Write as IoWrite;
             let mut f = std::fs::File::create(&tmp).expect("create tmp ok");
             for e in &entries {
-                writeln!(f, "{}", serde_json::to_string(e).expect("serialize ok")).expect("write ok");
+                writeln!(f, "{}", serde_json::to_string(e).expect("serialize ok"))
+                    .expect("write ok");
             }
         }
         let content = std::fs::read_to_string(&tmp).expect("read ok");

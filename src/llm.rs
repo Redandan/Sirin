@@ -42,7 +42,11 @@ static SHARED_LLM: OnceLock<Arc<LlmConfig>> = OnceLock::new();
 pub(crate) fn shared_llm() -> Arc<LlmConfig> {
     Arc::clone(SHARED_LLM.get_or_init(|| {
         let cfg = LlmConfig::from_env();
-        crate::sirin_log!("[llm] main  backend={} model={}", cfg.backend_name(), cfg.model);
+        crate::sirin_log!(
+            "[llm] main  backend={} model={}",
+            cfg.backend_name(),
+            cfg.model
+        );
         Arc::new(cfg)
     }))
 }
@@ -52,7 +56,11 @@ pub(crate) fn shared_llm() -> Arc<LlmConfig> {
 /// Must be called **before** the first call to [`shared_llm`].  A second call
 /// is a no-op because the underlying `OnceLock` is already set.
 pub(crate) fn init_shared_llm(config: LlmConfig) {
-    crate::sirin_log!("[llm] main  backend={} model={}", config.backend_name(), config.model);
+    crate::sirin_log!(
+        "[llm] main  backend={} model={}",
+        config.backend_name(),
+        config.model
+    );
     let _ = SHARED_LLM.set(Arc::new(config));
 }
 
@@ -88,7 +96,11 @@ pub(crate) fn shared_router_llm() -> Arc<LlmConfig> {
     static ROUTER: OnceLock<Arc<LlmConfig>> = OnceLock::new();
     Arc::clone(ROUTER.get_or_init(|| {
         let cfg = LlmConfig::router_from_env();
-        crate::sirin_log!("[llm] router backend={} model={}", cfg.backend_name(), cfg.model);
+        crate::sirin_log!(
+            "[llm] router backend={} model={}",
+            cfg.backend_name(),
+            cfg.model
+        );
         Arc::new(cfg)
     }))
 }
@@ -174,7 +186,8 @@ impl LlmConfig {
                     .unwrap_or_else(|_| GEMINI_BASE_URL.to_string()),
                 model: std::env::var("GEMINI_MODEL")
                     .unwrap_or_else(|_| DEFAULT_GEMINI_MODEL.to_string()),
-                api_key: std::env::var("GEMINI_API_KEY").ok()
+                api_key: std::env::var("GEMINI_API_KEY")
+                    .ok()
                     .filter(|v| !v.trim().is_empty()),
                 coding_model,
                 router_model,
@@ -184,8 +197,7 @@ impl LlmConfig {
                 backend: LlmBackend::Ollama,
                 base_url: std::env::var("OLLAMA_BASE_URL")
                     .unwrap_or_else(|_| OLLAMA_BASE_URL.to_string()),
-                model: std::env::var("OLLAMA_MODEL")
-                    .unwrap_or_else(|_| DEFAULT_MODEL.to_string()),
+                model: std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_string()),
                 api_key: None,
                 coding_model,
                 router_model,
@@ -245,9 +257,9 @@ impl LlmConfig {
     /// Short label for logging (e.g. `"ollama"` or `"lmstudio"`).
     pub fn backend_name(&self) -> &'static str {
         match self.backend {
-            LlmBackend::Ollama   => "ollama",
+            LlmBackend::Ollama => "ollama",
             LlmBackend::LmStudio => "lmstudio",
-            LlmBackend::Gemini   => "gemini",
+            LlmBackend::Gemini => "gemini",
         }
     }
 
@@ -267,6 +279,18 @@ impl LlmConfig {
     /// Falls back to the general `model` if `LARGE_MODEL` is not set.
     pub fn effective_large_model(&self) -> &str {
         self.large_model.as_deref().unwrap_or(&self.model)
+    }
+
+    /// Concise human-readable summary for task-start logging.
+    pub fn task_log_summary(&self) -> String {
+        format!(
+            "backend={} chat={} router={} coding={} large={}",
+            self.backend_name(),
+            self.model,
+            self.effective_router_model(),
+            self.effective_coding_model(),
+            self.effective_large_model(),
+        )
     }
 }
 
@@ -308,17 +332,26 @@ pub struct LlmMessage {
 impl LlmMessage {
     /// Create a `system` role message.
     pub fn system(content: impl Into<String>) -> Self {
-        Self { role: MessageRole::System, content: content.into() }
+        Self {
+            role: MessageRole::System,
+            content: content.into(),
+        }
     }
 
     /// Create a `user` role message.
     pub fn user(content: impl Into<String>) -> Self {
-        Self { role: MessageRole::User, content: content.into() }
+        Self {
+            role: MessageRole::User,
+            content: content.into(),
+        }
     }
 
     /// Create an `assistant` role message.
     pub fn assistant(content: impl Into<String>) -> Self {
-        Self { role: MessageRole::Assistant, content: content.into() }
+        Self {
+            role: MessageRole::Assistant,
+            content: content.into(),
+        }
     }
 }
 
@@ -406,9 +439,18 @@ async fn call_ollama(
     prompt: String,
     keep_alive: Option<serde_json::Value>,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    crate::sirin_log!("[llm] call  backend=ollama model={} chars={}", model, prompt.len());
+    crate::sirin_log!(
+        "[llm] call  backend=ollama model={} chars={}",
+        model,
+        prompt.len()
+    );
     let url = format!("{}/api/generate", base_url.trim_end_matches('/'));
-    let body = OllamaRequest { model, prompt, stream: false, keep_alive };
+    let body = OllamaRequest {
+        model,
+        prompt,
+        stream: false,
+        keep_alive,
+    };
     let resp: OllamaResponse = client
         .post(&url)
         .json(&body)
@@ -432,7 +474,10 @@ async fn call_openai(
         base_url,
         model,
         api_key,
-        vec![OpenAiMessage { role: "user".into(), content: prompt }],
+        vec![OpenAiMessage {
+            role: "user".into(),
+            content: prompt,
+        }],
     )
     .await
 }
@@ -448,9 +493,18 @@ async fn call_openai_messages(
     messages: Vec<OpenAiMessage>,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let total_chars: usize = messages.iter().map(|m| m.content.len()).sum();
-    crate::sirin_log!("[llm] call  backend=openai-compat model={} msgs={} chars={}", model, messages.len(), total_chars);
+    crate::sirin_log!(
+        "[llm] call  backend=openai-compat model={} msgs={} chars={}",
+        model,
+        messages.len(),
+        total_chars
+    );
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    let body = OpenAiRequest { model, messages, stream: false };
+    let body = OpenAiRequest {
+        model,
+        messages,
+        stream: false,
+    };
 
     let mut attempt = 0u32;
     loop {
@@ -470,14 +524,27 @@ async fn call_openai_messages(
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.parse::<u64>().ok())
                 .unwrap_or(30u64 << attempt); // 30 → 60 → 120
-            crate::sirin_log!("[llm] 429 rate-limited — waiting {}s (attempt {}/3) model={}", wait_secs, attempt + 1, model);
+            crate::sirin_log!(
+                "[llm] 429 rate-limited — waiting {}s (attempt {}/3) model={}",
+                wait_secs,
+                attempt + 1,
+                model
+            );
             tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
             attempt += 1;
             continue;
         }
         let parsed: OpenAiResponse = resp.error_for_status()?.json().await?;
-        let reply = parsed.choices.first().map(|c| c.message.content.trim().to_string()).unwrap_or_default();
-        crate::sirin_log!("[llm] resp  backend=openai-compat model={} reply_chars={}", model, reply.len());
+        let reply = parsed
+            .choices
+            .first()
+            .map(|c| c.message.content.trim().to_string())
+            .unwrap_or_default();
+        crate::sirin_log!(
+            "[llm] resp  backend=openai-compat model={} reply_chars={}",
+            model,
+            reply.len()
+        );
         return Ok(reply);
     }
 }
@@ -494,7 +561,14 @@ pub async fn call_prompt(
     match llm.backend {
         LlmBackend::Ollama => call_ollama(client, &llm.base_url, &llm.model, prompt, None).await,
         LlmBackend::LmStudio | LlmBackend::Gemini => {
-            call_openai(client, &llm.base_url, &llm.model, llm.api_key.as_deref(), prompt).await
+            call_openai(
+                client,
+                &llm.base_url,
+                &llm.model,
+                llm.api_key.as_deref(),
+                prompt,
+            )
+            .await
         }
     }
 }
@@ -528,7 +602,14 @@ pub async fn call_router_prompt(
     let model = llm.effective_router_model();
     match llm.backend {
         LlmBackend::Ollama => {
-            call_ollama(client, &llm.base_url, model, prompt, Some(serde_json::json!(-1))).await
+            call_ollama(
+                client,
+                &llm.base_url,
+                model,
+                prompt,
+                Some(serde_json::json!(-1)),
+            )
+            .await
         }
         LlmBackend::LmStudio | LlmBackend::Gemini => {
             call_openai(client, &llm.base_url, model, llm.api_key.as_deref(), prompt).await
@@ -616,7 +697,14 @@ pub async fn call_prompt_messages(
                     content: m.content.clone(),
                 })
                 .collect();
-            call_openai_messages(client, &llm.base_url, &llm.model, llm.api_key.as_deref(), openai_msgs).await
+            call_openai_messages(
+                client,
+                &llm.base_url,
+                &llm.model,
+                llm.api_key.as_deref(),
+                openai_msgs,
+            )
+            .await
         }
     }
 }
@@ -632,8 +720,18 @@ where
     F: Fn(String) + Send,
 {
     let url = format!("{}/api/generate", base_url.trim_end_matches('/'));
-    let body = OllamaRequest { model, prompt, stream: true, keep_alive: None };
-    let resp = client.post(&url).json(&body).send().await?.error_for_status()?;
+    let body = OllamaRequest {
+        model,
+        prompt,
+        stream: true,
+        keep_alive: None,
+    };
+    let resp = client
+        .post(&url)
+        .json(&body)
+        .send()
+        .await?
+        .error_for_status()?;
 
     let mut stream = resp.bytes_stream();
     let mut full = String::new();
@@ -648,13 +746,17 @@ where
             let line_bytes = buf.drain(..=pos).collect::<Vec<_>>();
             if let Ok(line) = std::str::from_utf8(&line_bytes) {
                 let line = line.trim();
-                if line.is_empty() { continue; }
+                if line.is_empty() {
+                    continue;
+                }
                 if let Ok(chunk) = serde_json::from_str::<OllamaStreamChunk>(line) {
                     if !chunk.response.is_empty() {
                         on_token(chunk.response.clone());
                         full.push_str(&chunk.response);
                     }
-                    if chunk.done { break; }
+                    if chunk.done {
+                        break;
+                    }
                 }
             }
         }
@@ -674,11 +776,18 @@ async fn stream_openai<F>(
 where
     F: Fn(String) + Send,
 {
-    crate::sirin_log!("[llm] stream backend=openai-compat model={} chars={}", model, prompt.len());
+    crate::sirin_log!(
+        "[llm] stream backend=openai-compat model={} chars={}",
+        model,
+        prompt.len()
+    );
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let body = OpenAiStreamRequest {
         model,
-        messages: vec![OpenAiMessage { role: "user".into(), content: prompt }],
+        messages: vec![OpenAiMessage {
+            role: "user".into(),
+            content: prompt,
+        }],
         stream: true,
     };
 
@@ -700,7 +809,12 @@ where
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.parse::<u64>().ok())
                 .unwrap_or(30u64 << attempt);
-            crate::sirin_log!("[llm] 429 rate-limited — waiting {}s (attempt {}/3) model={} (stream)", wait_secs, attempt + 1, model);
+            crate::sirin_log!(
+                "[llm] 429 rate-limited — waiting {}s (attempt {}/3) model={} (stream)",
+                wait_secs,
+                attempt + 1,
+                model
+            );
             tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
             attempt += 1;
             continue;
@@ -722,9 +836,13 @@ where
             if let Ok(line) = std::str::from_utf8(&line_bytes) {
                 for line in line.lines() {
                     let data = line.trim_start_matches("data:").trim();
-                    if data == "[DONE]" || data.is_empty() { continue; }
+                    if data == "[DONE]" || data.is_empty() {
+                        continue;
+                    }
                     if let Ok(ch) = serde_json::from_str::<OpenAiStreamChunk>(data) {
-                        if let Some(content) = ch.choices.first()
+                        if let Some(content) = ch
+                            .choices
+                            .first()
                             .and_then(|c| c.delta.content.as_deref())
                             .filter(|s| !s.is_empty())
                         {
@@ -794,10 +912,7 @@ struct OpenAiModelEntry {
 
 /// Query the Ollama `/api/tags` endpoint and return the available model list.
 /// Returns an empty `Vec` (non-fatal) on any network or parse error.
-async fn list_ollama_models(
-    client: &reqwest::Client,
-    base_url: &str,
-) -> Vec<ModelInfo> {
+async fn list_ollama_models(client: &reqwest::Client, base_url: &str) -> Vec<ModelInfo> {
     let url = format!("{}/api/tags", base_url.trim_end_matches('/'));
     match client
         .get(&url)
@@ -805,17 +920,19 @@ async fn list_ollama_models(
         .send()
         .await
     {
-        Ok(resp) if resp.status().is_success() => {
-            resp.json::<OllamaTagsResponse>()
-                .await
-                .map(|r| {
-                    r.models
-                        .into_iter()
-                        .map(|e| ModelInfo { name: e.name, size_bytes: e.size })
-                        .collect()
-                })
-                .unwrap_or_default()
-        }
+        Ok(resp) if resp.status().is_success() => resp
+            .json::<OllamaTagsResponse>()
+            .await
+            .map(|r| {
+                r.models
+                    .into_iter()
+                    .map(|e| ModelInfo {
+                        name: e.name,
+                        size_bytes: e.size,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
         _ => Vec::new(),
     }
 }
@@ -828,28 +945,27 @@ async fn list_lmstudio_models(
     api_key: Option<&str>,
 ) -> Vec<ModelInfo> {
     let url = format!("{}/models", base_url.trim_end_matches('/'));
-    let mut req = client
-        .get(&url)
-        .timeout(std::time::Duration::from_secs(5));
+    let mut req = client.get(&url).timeout(std::time::Duration::from_secs(5));
     if let Some(key) = api_key {
         req = req.bearer_auth(key);
     }
     match req.send().await {
-        Ok(resp) if resp.status().is_success() => {
-            resp.json::<OpenAiModelsResponse>()
-                .await
-                .map(|r| {
-                    r.data
-                        .into_iter()
-                        .map(|e| ModelInfo { name: e.id, size_bytes: 0 })
-                        .collect()
-                })
-                .unwrap_or_default()
-        }
+        Ok(resp) if resp.status().is_success() => resp
+            .json::<OpenAiModelsResponse>()
+            .await
+            .map(|r| {
+                r.data
+                    .into_iter()
+                    .map(|e| ModelInfo {
+                        name: e.id,
+                        size_bytes: 0,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
         _ => Vec::new(),
     }
 }
-
 
 // ── Model capability classification ──────────────────────────────────────────
 
@@ -948,9 +1064,8 @@ pub fn classify_model_capabilities(model: &ModelInfo) -> Vec<ModelCapability> {
     // ── Large model ───────────────────────────────────────────────────────────
     const LARGE_BYTES: u64 = 20 * 1_073_741_824; // 20 GB
     let large_by_name = [
-        ":70b", "-70b", ":72b", "-72b", ":65b", "-65b",
-        ":34b", "-34b", ":32b", "-32b",
-        "mixtral", "opus",
+        ":70b", "-70b", ":72b", "-72b", ":65b", "-65b", ":34b", "-34b", ":32b", "-32b", "mixtral",
+        "opus",
     ]
     .iter()
     .any(|p| name.contains(p));
@@ -1012,11 +1127,17 @@ pub struct AgentFleet {
 #[allow(dead_code)]
 impl AgentFleet {
     /// Returns `true` when a dedicated fast router/planner model is available.
-    pub fn has_fast_router(&self) -> bool { self.router_model.is_some() }
+    pub fn has_fast_router(&self) -> bool {
+        self.router_model.is_some()
+    }
     /// Returns `true` when a dedicated code model is available.
-    pub fn has_dedicated_coder(&self) -> bool { self.coding_model.is_some() }
+    pub fn has_dedicated_coder(&self) -> bool {
+        self.coding_model.is_some()
+    }
     /// Returns `true` when a dedicated large model is available.
-    pub fn has_large_model(&self) -> bool { self.large_model.is_some() }
+    pub fn has_large_model(&self) -> bool {
+        self.large_model.is_some()
+    }
 
     /// Returns `true` when at least one available model has the given capability.
     pub fn has_capability(&self, cap: &ModelCapability) -> bool {
@@ -1040,19 +1161,35 @@ impl AgentFleet {
     pub fn log_summary(&self) {
         eprintln!("[fleet] Agent fleet configured:");
         eprintln!("  chat   → {} (general conversation)", self.chat_model);
-        eprintln!("  router → {}", self.router_model.as_deref().unwrap_or("(uses chat model)"));
-        eprintln!("  coder  → {}", self.coding_model.as_deref().unwrap_or("(uses chat model)"));
-        eprintln!("  large  → {}", self.large_model.as_deref().unwrap_or("(uses chat model)"));
+        eprintln!(
+            "  router → {}",
+            self.router_model.as_deref().unwrap_or("(uses chat model)")
+        );
+        eprintln!(
+            "  coder  → {}",
+            self.coding_model.as_deref().unwrap_or("(uses chat model)")
+        );
+        eprintln!(
+            "  large  → {}",
+            self.large_model.as_deref().unwrap_or("(uses chat model)")
+        );
 
         if self.has_capability(&ModelCapability::Vision) {
-            let names: Vec<&str> = self.classified_models.iter()
+            let names: Vec<&str> = self
+                .classified_models
+                .iter()
                 .filter(|m| m.has(&ModelCapability::Vision))
                 .map(|m| m.info.name.as_str())
                 .collect();
-            eprintln!("  vision → {} (multimodal — image input capable)", names.join(", "));
+            eprintln!(
+                "  vision → {} (multimodal — image input capable)",
+                names.join(", ")
+            );
         }
         if self.has_capability(&ModelCapability::Embedding) {
-            let names: Vec<&str> = self.classified_models.iter()
+            let names: Vec<&str> = self
+                .classified_models
+                .iter()
                 .filter(|m| m.has(&ModelCapability::Embedding))
                 .map(|m| m.info.name.as_str())
                 .collect();
@@ -1127,8 +1264,14 @@ fn best_for_role(
 
         ModelCapability::Code => {
             let priority = [
-                "qwen2.5-coder", "qwen2.5coder", "deepseek-coder", "devstral",
-                "codellama", "starcoder", "coder", "code-",
+                "qwen2.5-coder",
+                "qwen2.5coder",
+                "deepseek-coder",
+                "devstral",
+                "codellama",
+                "starcoder",
+                "coder",
+                "code-",
             ];
             priority
                 .iter()
@@ -1251,15 +1394,24 @@ pub async fn probe_and_build_fleet(client: &reqwest::Client) -> AgentFleet {
         } else {
             String::new()
         };
-        let cap_labels: Vec<&str> = cm.capabilities.iter().map(|c| match c {
-            ModelCapability::Fast      => "fast",
-            ModelCapability::Chat      => "chat",
-            ModelCapability::Code      => "code",
-            ModelCapability::Large     => "large",
-            ModelCapability::Vision    => "vision",
-            ModelCapability::Embedding => "embed",
-        }).collect();
-        eprintln!("  • {}{} [{}]", cm.info.name, size_str, cap_labels.join(","));
+        let cap_labels: Vec<&str> = cm
+            .capabilities
+            .iter()
+            .map(|c| match c {
+                ModelCapability::Fast => "fast",
+                ModelCapability::Chat => "chat",
+                ModelCapability::Code => "code",
+                ModelCapability::Large => "large",
+                ModelCapability::Vision => "vision",
+                ModelCapability::Embedding => "embed",
+            })
+            .collect();
+        eprintln!(
+            "  • {}{} [{}]",
+            cm.info.name,
+            size_str,
+            cap_labels.join(",")
+        );
     }
 
     // Validate / pick the main chat model.
@@ -1284,16 +1436,25 @@ pub async fn probe_and_build_fleet(client: &reqwest::Client) -> AgentFleet {
 
     // Assign router / coding / large roles.
     let router_model = assign_fleet_role(
-        "router", baseline.router_model, &classified,
-        &ModelCapability::Fast, &chat_model,
+        "router",
+        baseline.router_model,
+        &classified,
+        &ModelCapability::Fast,
+        &chat_model,
     );
     let coding_model = assign_fleet_role(
-        "coding", baseline.coding_model, &classified,
-        &ModelCapability::Code, &chat_model,
+        "coding",
+        baseline.coding_model,
+        &classified,
+        &ModelCapability::Code,
+        &chat_model,
     );
     let large_model = assign_fleet_role(
-        "large", baseline.large_model, &classified,
-        &ModelCapability::Large, &chat_model,
+        "large",
+        baseline.large_model,
+        &classified,
+        &ModelCapability::Large,
+        &chat_model,
     );
 
     AgentFleet {
@@ -1364,15 +1525,58 @@ mod tests {
             ..ollama_cfg()
         };
         assert_eq!(cfg.effective_coding_model(), "qwen-coder:7b");
-        assert_eq!(cfg.effective_router_model(), "llama3.2", "router should fall back");
-        assert_eq!(cfg.effective_large_model(), "llama3.2", "large should fall back");
+        assert_eq!(
+            cfg.effective_router_model(),
+            "llama3.2",
+            "router should fall back"
+        );
+        assert_eq!(
+            cfg.effective_large_model(),
+            "llama3.2",
+            "large should fall back"
+        );
     }
 
     #[test]
     fn backend_name_returns_correct_string() {
         assert_eq!(ollama_cfg().backend_name(), "ollama");
-        let lm = LlmConfig { backend: LlmBackend::LmStudio, ..ollama_cfg() };
+        let lm = LlmConfig {
+            backend: LlmBackend::LmStudio,
+            ..ollama_cfg()
+        };
         assert_eq!(lm.backend_name(), "lmstudio");
+    }
+
+    #[test]
+    fn task_log_summary_lists_effective_models() {
+        let cfg = LlmConfig {
+            coding_model: Some("qwen2.5-coder".to_string()),
+            router_model: Some("phi3-mini".to_string()),
+            large_model: Some("llama3:70b".to_string()),
+            ..ollama_cfg()
+        };
+
+        let summary = cfg.task_log_summary();
+        assert!(
+            summary.contains("backend=ollama"),
+            "unexpected summary: {summary}"
+        );
+        assert!(
+            summary.contains("chat=llama3.2"),
+            "unexpected summary: {summary}"
+        );
+        assert!(
+            summary.contains("router=phi3-mini"),
+            "unexpected summary: {summary}"
+        );
+        assert!(
+            summary.contains("coding=qwen2.5-coder"),
+            "unexpected summary: {summary}"
+        );
+        assert!(
+            summary.contains("large=llama3:70b"),
+            "unexpected summary: {summary}"
+        );
     }
 
     // ── LlmConfig::from_env smoke test (read-only, no mutation) ──────────────
@@ -1381,8 +1585,14 @@ mod tests {
     fn from_env_succeeds_without_panicking() {
         // Should not panic regardless of what env vars are set.
         let cfg = LlmConfig::from_env();
-        assert!(!cfg.model.is_empty(), "model must not be empty after from_env");
-        assert!(!cfg.base_url.is_empty(), "base_url must not be empty after from_env");
+        assert!(
+            !cfg.model.is_empty(),
+            "model must not be empty after from_env"
+        );
+        assert!(
+            !cfg.base_url.is_empty(),
+            "base_url must not be empty after from_env"
+        );
     }
 
     // ── MessageRole ───────────────────────────────────────────────────────────
@@ -1405,4 +1615,3 @@ mod tests {
         assert_eq!(usr.content, "hello");
     }
 }
-

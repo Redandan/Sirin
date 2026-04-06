@@ -24,7 +24,12 @@ pub fn session_path() -> std::path::PathBuf {
 pub fn require_login() -> bool {
     env::var("TG_REQUIRE_LOGIN")
         .ok()
-        .map(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|v| {
+            matches!(
+                v.trim().to_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(false)
 }
 
@@ -57,8 +62,7 @@ impl TelegramConfig {
             .parse()
             .map_err(|e| format!("TG_API_ID must be an integer: {e}"))?;
 
-        let api_hash = env::var("TG_API_HASH")
-            .map_err(|_| "TG_API_HASH not set in environment")?;
+        let api_hash = env::var("TG_API_HASH").map_err(|_| "TG_API_HASH not set in environment")?;
         let phone = env::var("TG_PHONE").ok().and_then(|value| {
             let trimmed = value.trim();
             if trimmed.is_empty() {
@@ -92,12 +96,22 @@ impl TelegramConfig {
 
         let reply_private = env::var("TG_REPLY_PRIVATE")
             .ok()
-            .map(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+            .map(|v| {
+                matches!(
+                    v.trim().to_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
             .unwrap_or(true);
 
         let reply_groups = env::var("TG_REPLY_GROUPS")
             .ok()
-            .map(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+            .map(|v| {
+                matches!(
+                    v.trim().to_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
             .unwrap_or(false);
 
         let group_ids: Vec<i64> = env::var("TG_GROUP_IDS")
@@ -127,7 +141,10 @@ impl TelegramConfig {
         };
 
         let startup_target_raw = env::var("TG_STARTUP_TARGET");
-        eprintln!("[telegram] TG_STARTUP_TARGET env = {:?}", startup_target_raw);
+        eprintln!(
+            "[telegram] TG_STARTUP_TARGET env = {:?}",
+            startup_target_raw
+        );
         let startup_target = startup_target_raw.ok().and_then(|v| {
             let t = v.trim().trim_start_matches('@').to_string();
             if t.is_empty() {
@@ -139,7 +156,12 @@ impl TelegramConfig {
 
         let debug_updates = env::var("TG_DEBUG_UPDATES")
             .ok()
-            .map(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+            .map(|v| {
+                matches!(
+                    v.trim().to_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
             .unwrap_or(true);
 
         Ok(Self {

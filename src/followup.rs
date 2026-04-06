@@ -103,10 +103,7 @@ fn autonomous_max_retries() -> usize {
 fn first_url(text: &str) -> Option<String> {
     text.split_whitespace()
         .find(|t| t.starts_with("https://") || t.starts_with("http://"))
-        .map(|t| {
-            t.trim_matches(|c: char| ",.!?)\"'".contains(c))
-                .to_string()
-        })
+        .map(|t| t.trim_matches(|c: char| ",.!?)\"'".contains(c)).to_string())
 }
 
 fn derive_research_plan(entry: &TaskEntry) -> Option<(String, Option<String>)> {
@@ -274,8 +271,7 @@ fn task_log_max_lines() -> usize {
 pub async fn run_worker(tracker: TaskTracker) {
     let interval_secs = worker_interval_secs();
 
-    let mut interval =
-        tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
 
     // Subscribe to the event bus so we react immediately to ResearchCompleted.
     let mut event_rx = events::subscribe();
@@ -331,7 +327,9 @@ pub async fn run_worker(tracker: TaskTracker) {
             let max = task_log_max_lines();
             match tracker.trim_to_max(max) {
                 Ok(0) => {}
-                Ok(n) => sirin_log!("[followup] Task log trimmed: removed {n} old entries (max={max})"),
+                Ok(n) => {
+                    sirin_log!("[followup] Task log trimmed: removed {n} old entries (max={max})")
+                }
                 Err(e) => sirin_log!("[followup] Task log trim failed: {e}"),
             }
         }
@@ -339,9 +337,7 @@ pub async fn run_worker(tracker: TaskTracker) {
 }
 
 /// Execute one follow-up cycle and return any error encountered.
-async fn run_once(
-    tracker: &TaskTracker,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn run_once(tracker: &TaskTracker) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // 1. Read last N log entries.
     let entries = tracker.read_last_n(TASK_LOOKBACK)?;
 
@@ -473,12 +469,7 @@ async fn run_once(
     // 3. Filter to FOLLOWING / PENDING.
     let actionable: Vec<&TaskEntry> = entries
         .iter()
-        .filter(|e| {
-            matches!(
-                e.status.as_deref(),
-                Some("FOLLOWING") | Some("PENDING")
-            )
-        })
+        .filter(|e| matches!(e.status.as_deref(), Some("FOLLOWING") | Some("PENDING")))
         .collect();
 
     if actionable.is_empty() {
@@ -494,7 +485,10 @@ async fn run_once(
         return Ok(());
     }
 
-    sirin_log!("[followup] Evaluating {} actionable task(s) with rule-based logic", actionable.len());
+    sirin_log!(
+        "[followup] Evaluating {} actionable task(s) with rule-based logic",
+        actionable.len()
+    );
 
     // 4. Rule-based follow-up decision (no LLM needed for binary classify).
     if should_followup_now(&actionable) {
@@ -511,7 +505,10 @@ async fn run_once(
                 None,
                 correlation_id_for(primary),
             );
-            sirin_log!("[followup] Marked task {} as FOLLOWUP_NEEDED (rule)", primary.timestamp);
+            sirin_log!(
+                "[followup] Marked task {} as FOLLOWUP_NEEDED (rule)",
+                primary.timestamp
+            );
 
             // Notify subscribers via event bus.
             events::publish(events::AgentEvent::FollowupTriggered {

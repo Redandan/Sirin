@@ -38,7 +38,12 @@ Search query:"
 
     match crate::llm::call_prompt(client, llm, prompt).await {
         Ok(q) => {
-            let cleaned = q.trim().trim_matches('"').trim_matches('\'').trim().to_string();
+            let cleaned = q
+                .trim()
+                .trim_matches('"')
+                .trim_matches('\'')
+                .trim()
+                .to_string();
             if cleaned.is_empty() {
                 text.chars().take(100).collect()
             } else {
@@ -108,7 +113,14 @@ pub fn detect_research_intent(text: &str) -> Option<(String, Option<String>)> {
         .trim()
         .to_string();
 
-    Some((if topic.is_empty() { normalized.to_string() } else { topic }, url))
+    Some((
+        if topic.is_empty() {
+            normalized.to_string()
+        } else {
+            topic
+        },
+        url,
+    ))
 }
 
 /// Execute simple user commands from Telegram message text and return
@@ -162,7 +174,10 @@ pub fn execute_user_request(
     }
 
     // 2) Query actionable tasks.
-    if normalized.contains("查詢待辦") || normalized.contains("列出待辦") || normalized.contains("看待辦") {
+    if normalized.contains("查詢待辦")
+        || normalized.contains("列出待辦")
+        || normalized.contains("看待辦")
+    {
         let entries = match tracker.read_last_n(100) {
             Ok(v) => v,
             Err(e) => return Some(format!("執行結果：讀取待辦失敗，原因：{e}")),
@@ -170,7 +185,12 @@ pub fn execute_user_request(
 
         let actionable: Vec<&TaskEntry> = entries
             .iter()
-            .filter(|e| matches!(e.status.as_deref(), Some("PENDING") | Some("FOLLOWING") | Some("FOLLOWUP_NEEDED")))
+            .filter(|e| {
+                matches!(
+                    e.status.as_deref(),
+                    Some("PENDING") | Some("FOLLOWING") | Some("FOLLOWUP_NEEDED")
+                )
+            })
             .collect();
 
         if actionable.is_empty() {
@@ -202,10 +222,12 @@ pub fn execute_user_request(
             Err(e) => return Some(format!("執行結果：讀取待辦失敗，原因：{e}")),
         };
 
-        let target = entries
-            .iter()
-            .rev()
-            .find(|e| matches!(e.status.as_deref(), Some("PENDING") | Some("FOLLOWING") | Some("FOLLOWUP_NEEDED")));
+        let target = entries.iter().rev().find(|e| {
+            matches!(
+                e.status.as_deref(),
+                Some("PENDING") | Some("FOLLOWING") | Some("FOLLOWUP_NEEDED")
+            )
+        });
 
         if let Some(item) = target {
             let mut updates = HashMap::new();
@@ -333,8 +355,11 @@ mod tests {
     // ── execute_user_request ─────────────────────────────────────────────────
 
     fn tmp_tracker(suffix: &str) -> (crate::persona::TaskTracker, std::path::PathBuf) {
-        let path = std::env::temp_dir()
-            .join(format!("sirin_cmd_test_{}_{}.jsonl", std::process::id(), suffix));
+        let path = std::env::temp_dir().join(format!(
+            "sirin_cmd_test_{}_{}.jsonl",
+            std::process::id(),
+            suffix
+        ));
         (crate::persona::TaskTracker::new(&path), path)
     }
 
@@ -375,7 +400,10 @@ mod tests {
         execute_user_request("todo 任務A", &tracker, "Sirin");
         let result = execute_user_request("查詢待辦", &tracker, "Sirin");
         let msg = result.unwrap();
-        assert!(msg.contains("PENDING") || msg.contains("待辦"), "should list tasks: {msg}");
+        assert!(
+            msg.contains("PENDING") || msg.contains("待辦"),
+            "should list tasks: {msg}"
+        );
         std::fs::remove_file(&path).ok();
     }
 

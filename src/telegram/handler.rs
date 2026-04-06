@@ -2,10 +2,7 @@ use std::future::Future;
 
 use crate::persona::TaskTracker;
 
-use super::{
-    commands::execute_user_request,
-    config::TelegramConfig,
-};
+use super::{commands::execute_user_request, config::TelegramConfig};
 
 pub struct ReplyPlan {
     /// The `chat_request` JSON object forwarded from the Router, complete with

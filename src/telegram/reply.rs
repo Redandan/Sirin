@@ -99,7 +99,10 @@ pub async fn send_streaming_reply(
         }
     }
 
-    sirin_log!("[telegram:stream] Streaming reply complete ({} chars)", final_text.len());
+    sirin_log!(
+        "[telegram:stream] Streaming reply complete ({} chars)",
+        final_text.len()
+    );
     final_text
 }
 
@@ -123,7 +126,9 @@ pub async fn send_startup_message(client: &Client, cfg: &TelegramConfig) {
                             None
                         }
                         Err(e) => {
-                            sirin_log!("[telegram] Failed to resolve TG_STARTUP_TARGET '@{username}': {e}");
+                            sirin_log!(
+                                "[telegram] Failed to resolve TG_STARTUP_TARGET '@{username}': {e}"
+                            );
                             None
                         }
                     }
@@ -146,7 +151,9 @@ pub async fn send_startup_message(client: &Client, cfg: &TelegramConfig) {
                 } else if cfg.startup_target.is_some() {
                     sirin_log!("[telegram] Could not resolve startup target peer_ref, startup message skipped");
                 } else {
-                    sirin_log!("[telegram] Could not resolve self peer_ref, startup message skipped");
+                    sirin_log!(
+                        "[telegram] Could not resolve self peer_ref, startup message skipped"
+                    );
                 }
             }
             Err(e) => sirin_log!("[telegram] get_me failed: {e}"),

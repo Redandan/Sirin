@@ -4,7 +4,9 @@
 //! follow-up worker) communicate via the same shared-state structs they
 //! always have — no IPC layer needed.
 
-use eframe::egui::{self, Color32, FontData, FontDefinitions, FontFamily, RichText, ScrollArea, TextEdit};
+use eframe::egui::{
+    self, Color32, FontData, FontDefinitions, FontFamily, RichText, ScrollArea, TextEdit,
+};
 use tokio::runtime::Handle;
 use tokio::sync::broadcast;
 
@@ -54,6 +56,7 @@ struct AgentConsoleState {
     route: String,
     intent_family: String,
     summary: String,
+    ai_details: String,
     steps: Vec<String>,
     recommended_skills: Vec<String>,
     tools: Vec<String>,
@@ -68,6 +71,7 @@ impl Default for AgentConsoleState {
             route: String::new(),
             intent_family: String::new(),
             summary: String::new(),
+            ai_details: String::new(),
             steps: Vec::new(),
             recommended_skills: Vec::new(),
             tools: Vec::new(),
@@ -91,11 +95,17 @@ impl AgentConsoleState {
         if !self.summary.is_empty() {
             lines.push(format!("Summary: {}", self.summary));
         }
+        if !self.ai_details.is_empty() {
+            lines.push(format!("AI: {}", self.ai_details));
+        }
         if !self.steps.is_empty() {
             lines.push(format!("Steps: {}", self.steps.join(" → ")));
         }
         if !self.recommended_skills.is_empty() {
-            lines.push(format!("Recommended Skills: {}", self.recommended_skills.join(", ")));
+            lines.push(format!(
+                "Recommended Skills: {}",
+                self.recommended_skills.join(", ")
+            ));
         }
         if !self.tools.is_empty() {
             lines.push(format!("Tools: {}", self.tools.join(", ")));
@@ -105,7 +115,10 @@ impl AgentConsoleState {
             lines.extend(self.trace.iter().map(|item| format!("- {item}")));
         }
         if !self.latest_task_summary.is_empty() {
-            lines.push(format!("Latest Research Summary: {}", self.latest_task_summary));
+            lines.push(format!(
+                "Latest Research Summary: {}",
+                self.latest_task_summary
+            ));
         }
 
         lines.join("\n")
@@ -116,6 +129,7 @@ impl AgentConsoleState {
 struct CodingConsoleState {
     status: String,
     task: String,
+    change_summary: String,
     trace: Vec<String>,
     files_modified: Vec<String>,
     diff: Option<String>,
@@ -134,8 +148,14 @@ impl CodingConsoleState {
         if self.dry_run {
             lines.push("Mode: DRY-RUN (files NOT written)".to_string());
         }
+        if !self.change_summary.is_empty() {
+            lines.push(format!("Change summary: {}", self.change_summary));
+        }
         if !self.files_modified.is_empty() {
-            lines.push(format!("Files modified: {}", self.files_modified.join(", ")));
+            lines.push(format!(
+                "Files modified: {}",
+                self.files_modified.join(", ")
+            ));
         }
         if !self.outcome.is_empty() {
             lines.push(format!("Outcome: {}", self.outcome));
@@ -144,14 +164,20 @@ impl CodingConsoleState {
             lines.push("✅ cargo check: passed".to_string());
         }
         if let Some(ref vout) = self.verification_output {
-            lines.push(format!("Verification: {}", vout.chars().take(200).collect::<String>()));
+            lines.push(format!(
+                "Verification: {}",
+                vout.chars().take(200).collect::<String>()
+            ));
         }
         if !self.trace.is_empty() {
             lines.push("Trace:".to_string());
             lines.extend(self.trace.iter().map(|s| format!("  {s}")));
         }
         if let Some(ref diff) = self.diff {
-            lines.push(format!("Diff preview:\n{}", diff.chars().take(400).collect::<String>()));
+            lines.push(format!(
+                "Diff preview:\n{}",
+                diff.chars().take(400).collect::<String>()
+            ));
         }
         lines.join("\n")
     }
@@ -175,7 +201,42 @@ fn chat_history_snapshot(messages: &[ChatMessage]) -> String {
         .join("\n\n---\n\n")
 }
 
-fn build_console_log_bundle(console: &AgentConsoleState, messages: &[ChatMessage], log_lines: usize) -> String {
+fn extract_ai_details(reason: &str) -> String {
+    reason
+        .split("ai=[")
+        .nth(1)
+        .and_then(|rest| rest.split(']').next())
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn coding_status_text(resp: &crate::agents::coding_agent::CodingAgentResponse) -> String {
+    let outcome_lower = resp.outcome.to_lowercase();
+
+    if resp.verified {
+        "✅ 完成（已驗證）".to_string()
+    } else if resp.outcome.contains("已自動還原") || outcome_lower.contains("rollback") {
+        "↩ 已回滾（待處理）".to_string()
+    } else if resp.outcome.contains("fail-fast")
+        || resp.outcome.contains("FOLLOWUP")
+        || resp.outcome.contains("需要跟進")
+        || resp.outcome.contains("待人工")
+        || resp.outcome.contains("⚠️")
+    {
+        "⚠️ 需要跟進".to_string()
+    } else if resp.dry_run {
+        "Dry-run 完成".to_string()
+    } else {
+        "完成".to_string()
+    }
+}
+
+fn build_console_log_bundle(
+    console: &AgentConsoleState,
+    messages: &[ChatMessage],
+    log_lines: usize,
+) -> String {
     format!(
         "=== Agent Console ===\n{}\n\n=== Chat History ===\n{}\n\n=== Recent Logs ===\n{}",
         console.snapshot_text(),
@@ -283,7 +344,7 @@ impl SirinApp {
     /// Falls back silently if the font file cannot be read.
     pub fn setup_fonts(ctx: &egui::Context) {
         let font_path = std::path::Path::new("C:/Windows/Fonts/msjh.ttc"); // Microsoft JhengHei (繁中)
-        let fallback = std::path::Path::new("C:/Windows/Fonts/msyh.ttc");  // Microsoft YaHei (簡中)
+        let fallback = std::path::Path::new("C:/Windows/Fonts/msyh.ttc"); // Microsoft YaHei (簡中)
 
         let font_data = if font_path.exists() {
             std::fs::read(font_path).ok()
@@ -295,10 +356,9 @@ impl SirinApp {
 
         if let Some(bytes) = font_data {
             let mut fonts = FontDefinitions::default();
-            fonts.font_data.insert(
-                "cjk".to_owned(),
-                FontData::from_owned(bytes).into(),
-            );
+            fonts
+                .font_data
+                .insert("cjk".to_owned(), FontData::from_owned(bytes).into());
             // Put CJK after the built-in proportional font so ASCII stays crisp.
             fonts
                 .families
@@ -349,8 +409,7 @@ impl SirinApp {
                 .map(|p| p.coding_agent.auto_approve_writes)
                 .unwrap_or(false),
             log_visible: true,
-            last_refresh: std::time::Instant::now()
-                - std::time::Duration::from_secs(60),
+            last_refresh: std::time::Instant::now() - std::time::Duration::from_secs(60),
             event_rx: crate::events::subscribe(),
             debug_panel_open: false,
             task_filter: TaskFilter::All,
@@ -372,7 +431,11 @@ impl SirinApp {
                     .rev()
                     .collect();
 
-                if let Some(summary_entry) = self.tasks.iter().find(|task| task.event == "research_summary_ready") {
+                if let Some(summary_entry) = self
+                    .tasks
+                    .iter()
+                    .find(|task| task.event == "research_summary_ready")
+                {
                     self.agent_console.latest_task_summary = summary_entry
                         .reason
                         .as_deref()
@@ -381,6 +444,14 @@ impl SirinApp {
                         .take(220)
                         .collect();
                 }
+
+                self.agent_console.ai_details = self
+                    .tasks
+                    .iter()
+                    .find(|task| task.event.starts_with("adk:") && task.event.ends_with(":start"))
+                    .map(|task| extract_ai_details(task.reason.as_deref().unwrap_or_default()))
+                    .filter(|details| !details.is_empty())
+                    .unwrap_or_else(|| crate::llm::shared_llm().task_log_summary());
             }
             Err(e) => eprintln!("[ui] load tasks: {e}"),
         }
@@ -493,35 +564,54 @@ impl eframe::App for SirinApp {
             self.coding_console.status = update.status_msg.clone();
             if let Some(resp) = update.response {
                 self.coding_console.outcome = resp.outcome.clone();
+                self.coding_console.change_summary = resp.change_summary.clone();
                 self.coding_console.files_modified = resp.files_modified.clone();
                 self.coding_console.trace = resp.trace.clone();
                 self.coding_console.diff = resp.diff.clone();
                 self.coding_console.verified = resp.verified;
                 self.coding_console.verification_output = resp.verification_output.clone();
                 self.coding_console.dry_run = resp.dry_run;
-                self.coding_console.status = if resp.verified {
-                    "✅ 完成（已驗證）".to_string()
-                } else {
-                    "完成".to_string()
-                };
+                self.coding_console.status = coding_status_text(&resp);
+                self.agent_console.status = self.coding_console.status.clone();
+                if !resp.change_summary.is_empty() {
+                    self.agent_console.summary = resp.change_summary.clone();
+                }
                 // Start the auto-dismiss timer for the mini status bar.
                 self.coding_done_at = Some(std::time::Instant::now());
                 // Push the outcome as an assistant message in the chat.
                 let summary = format!(
-                    "**[Coding Agent]** {}\n\n{}{}",
+                    "**[Coding Agent]** {}\n\n{}{}{}",
                     resp.outcome,
-                    if resp.files_modified.is_empty() { String::new() }
-                        else { format!("📁 已修改：{}\n", resp.files_modified.join(", ")) },
-                    if resp.dry_run { "（Dry-run 模式：檔案未寫入）" } else { "" }
+                    if resp.change_summary.is_empty() {
+                        String::new()
+                    } else {
+                        format!("🧾 變更摘要：{}\n", resp.change_summary)
+                    },
+                    if resp.files_modified.is_empty() {
+                        String::new()
+                    } else {
+                        format!("📁 已修改：{}\n", resp.files_modified.join(", "))
+                    },
+                    if resp.dry_run {
+                        "（Dry-run 模式：檔案未寫入）"
+                    } else {
+                        ""
+                    }
                 );
                 if let Some(last) = self.chat_messages.last_mut() {
                     if last.role == ChatRole::Assistant {
                         last.text = summary;
                     } else {
-                        self.chat_messages.push(ChatMessage { role: ChatRole::Assistant, text: summary });
+                        self.chat_messages.push(ChatMessage {
+                            role: ChatRole::Assistant,
+                            text: summary,
+                        });
                     }
                 } else {
-                    self.chat_messages.push(ChatMessage { role: ChatRole::Assistant, text: summary });
+                    self.chat_messages.push(ChatMessage {
+                        role: ChatRole::Assistant,
+                        text: summary,
+                    });
                 }
                 self.chat_pending = false;
             }
@@ -546,10 +636,8 @@ impl eframe::App for SirinApp {
                     }
                     let rt = self.rt.clone();
                     rt.spawn(async move {
-                        let task = crate::agents::research_agent::run_research_via_adk(
-                            topic, url,
-                        )
-                        .await;
+                        let task =
+                            crate::agents::research_agent::run_research_via_adk(topic, url).await;
                         eprintln!("[ui] auto-research '{}' → {:?}", task.id, task.status);
                     });
                     self.research_msg = format!("自動啟動調研：{}", self.research_topic.trim());
@@ -571,9 +659,15 @@ impl eframe::App for SirinApp {
                 ui.selectable_value(&mut self.tab, Tab::Tasks, "📋 活動記錄");
 
                 // Research tab: badge when a task is running.
-                let research_running = self.research_tasks.iter()
+                let research_running = self
+                    .research_tasks
+                    .iter()
                     .any(|t| t.status == ResearchStatus::Running);
-                let research_label = if research_running { "🔬 調研 ●" } else { "🔬 調研" };
+                let research_label = if research_running {
+                    "🔬 調研 ●"
+                } else {
+                    "🔬 調研"
+                };
                 let res_tab = ui.selectable_value(&mut self.tab, Tab::Research, research_label);
                 if research_running {
                     res_tab.on_hover_text("有調研任務進行中");
@@ -581,11 +675,19 @@ impl eframe::App for SirinApp {
 
                 // Telegram tab: badge when connected.
                 let tg_connected = matches!(self.tg_auth.status(), TelegramStatus::Connected);
-                let tg_label = if tg_connected { "✈ Telegram ●" } else { "✈ Telegram" };
+                let tg_label = if tg_connected {
+                    "✈ Telegram ●"
+                } else {
+                    "✈ Telegram"
+                };
                 ui.selectable_value(&mut self.tab, Tab::Telegram, tg_label);
 
                 // Chat tab: badge when pending coding confirmation.
-                let chat_label = if self.pending_coding_confirmation.is_some() { "💬 對話 ⚠" } else { "💬 對話" };
+                let chat_label = if self.pending_coding_confirmation.is_some() {
+                    "💬 對話 ⚠"
+                } else {
+                    "💬 對話"
+                };
                 ui.selectable_value(&mut self.tab, Tab::Chat, chat_label);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("⟳").on_hover_text("立即刷新").clicked() {
@@ -594,7 +696,11 @@ impl eframe::App for SirinApp {
                     let secs = self.last_refresh.elapsed().as_secs();
                     ui.small(format!("{secs}s 前"));
                     ui.separator();
-                    let log_label = if self.log_visible { "📋 隱藏 Log" } else { "📋 顯示 Log" };
+                    let log_label = if self.log_visible {
+                        "📋 隱藏 Log"
+                    } else {
+                        "📋 顯示 Log"
+                    };
                     if ui.small_button(log_label).clicked() {
                         self.log_visible = !self.log_visible;
                     }
@@ -627,7 +733,11 @@ impl eframe::App for SirinApp {
                         .auto_shrink(false)
                         .show(ui, |ui| {
                             for line in log_buffer::recent(200) {
-                                let color = if line.contains("error") || line.contains("Error") || line.contains("failed") || line.contains("Failed") {
+                                let color = if line.contains("error")
+                                    || line.contains("Error")
+                                    || line.contains("failed")
+                                    || line.contains("Failed")
+                                {
                                     Color32::from_rgb(220, 100, 100)
                                 } else if line.contains("[telegram]") {
                                     Color32::from_rgb(100, 180, 255)
@@ -638,7 +748,10 @@ impl eframe::App for SirinApp {
                                 } else {
                                     Color32::GRAY
                                 };
-                                ui.colored_label(color, egui::RichText::new(&line).monospace().small());
+                                ui.colored_label(
+                                    color,
+                                    egui::RichText::new(&line).monospace().small(),
+                                );
                             }
                         });
                 });
@@ -675,10 +788,10 @@ impl SirinApp {
                 ui.add_space(4.0);
                 ui.horizontal_wrapped(|ui| {
                     let items = [
-                        ("記憶 DB",    s.memory_db_bytes),
+                        ("記憶 DB", s.memory_db_bytes),
                         ("Call Graph", s.call_graph_bytes),
-                        ("調研記錄",   s.research_log_bytes),
-                        ("任務記錄",   s.task_log_bytes),
+                        ("調研記錄", s.research_log_bytes),
+                        ("任務記錄", s.task_log_bytes),
                         ("對話 Context", s.context_bytes),
                     ];
                     for (label, bytes) in items {
@@ -688,7 +801,10 @@ impl SirinApp {
                                 .inner_margin(egui::Margin::symmetric(8, 3))
                                 .corner_radius(4.0)
                                 .show(ui, |ui| {
-                                    ui.small(format!("{label}  {}", StorageUsage::fmt_bytes(bytes)));
+                                    ui.small(format!(
+                                        "{label}  {}",
+                                        StorageUsage::fmt_bytes(bytes)
+                                    ));
                                 });
                         }
                     }
@@ -704,10 +820,10 @@ impl SirinApp {
         ui.horizontal(|ui| {
             ui.label(RichText::new("活動記錄").strong());
             ui.separator();
-            ui.selectable_value(&mut self.task_filter, TaskFilter::All,     "全部");
+            ui.selectable_value(&mut self.task_filter, TaskFilter::All, "全部");
             ui.selectable_value(&mut self.task_filter, TaskFilter::Running, "進行中");
-            ui.selectable_value(&mut self.task_filter, TaskFilter::Done,    "完成");
-            ui.selectable_value(&mut self.task_filter, TaskFilter::Failed,  "失敗");
+            ui.selectable_value(&mut self.task_filter, TaskFilter::Done, "完成");
+            ui.selectable_value(&mut self.task_filter, TaskFilter::Failed, "失敗");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let total = self.tasks.len();
                 ui.small(format!("{total} 筆"));
@@ -721,8 +837,14 @@ impl SirinApp {
 
         // Column headers
         ui.horizontal(|ui| {
-            ui.add_sized([col_widths[0], row_height], egui::Label::new(RichText::new("時間").strong().small()));
-            ui.add_sized([col_widths[1], row_height], egui::Label::new(RichText::new("事件").strong().small()));
+            ui.add_sized(
+                [col_widths[0], row_height],
+                egui::Label::new(RichText::new("時間").strong().small()),
+            );
+            ui.add_sized(
+                [col_widths[1], row_height],
+                egui::Label::new(RichText::new("事件").strong().small()),
+            );
             ui.label(RichText::new("狀態").strong().small());
         });
         ui.separator();
@@ -732,21 +854,28 @@ impl SirinApp {
                 let status = task.status.as_deref().unwrap_or("—");
                 // Apply filter.
                 let passes = match filter {
-                    TaskFilter::All     => true,
-                    TaskFilter::Running => status == "PENDING" || status == "RUNNING",
-                    TaskFilter::Done    => status == "DONE",
-                    TaskFilter::Failed  => status == "FAILED" || status == "ERROR",
+                    TaskFilter::All => true,
+                    TaskFilter::Running => matches!(status, "PENDING" | "RUNNING" | "FOLLOWING"),
+                    TaskFilter::Done => status == "DONE",
+                    TaskFilter::Failed => {
+                        matches!(status, "FAILED" | "ERROR" | "FOLLOWUP_NEEDED" | "ROLLBACK")
+                    }
                 };
-                if !passes { continue; }
+                if !passes {
+                    continue;
+                }
 
                 let ts = task.timestamp.get(..19).unwrap_or(&task.timestamp);
                 let is_summary = task.event == "research_summary_ready";
                 let status_color = match status {
                     "DONE" if is_summary => Color32::from_rgb(120, 210, 255),
-                    "DONE"               => Color32::from_rgb(100, 220, 100),
-                    "PENDING" | "RUNNING"=> Color32::from_rgb(255, 200, 60),
-                    "FAILED" | "ERROR"   => Color32::from_rgb(220, 80, 80),
-                    _                    => Color32::GRAY,
+                    "DONE" => Color32::from_rgb(100, 220, 100),
+                    "PENDING" | "RUNNING" => Color32::from_rgb(255, 200, 60),
+                    "FOLLOWING" => Color32::from_rgb(120, 180, 255),
+                    "FOLLOWUP_NEEDED" => Color32::from_rgb(255, 160, 80),
+                    "ROLLBACK" => Color32::from_rgb(190, 150, 255),
+                    "FAILED" | "ERROR" => Color32::from_rgb(220, 80, 80),
+                    _ => Color32::GRAY,
                 };
 
                 ui.horizontal(|ui| {
@@ -754,11 +883,22 @@ impl SirinApp {
                         [col_widths[0], row_height],
                         egui::Label::new(RichText::new(ts).monospace().small()),
                     );
-                    let preview = task.message_preview.as_deref()
+                    let preview = task
+                        .message_preview
+                        .as_deref()
                         .or(task.reason.as_deref())
                         .unwrap_or(&task.event);
-                    let event_label = if is_summary { "research_summary" } else { &task.event };
-                    let label_text = format!("{} — {}",
+                    let event_label = if is_summary {
+                        "research_summary"
+                    } else if task.event == "adk_coding_fail_fast" {
+                        "⚠ coding_fail_fast"
+                    } else if task.event == "adk_coding_rollback" {
+                        "↩ coding_rollback"
+                    } else {
+                        &task.event
+                    };
+                    let label_text = format!(
+                        "{} — {}",
                         event_label,
                         preview.chars().take(80).collect::<String>()
                     );
@@ -769,10 +909,10 @@ impl SirinApp {
                     ui.colored_label(status_color, status);
                 });
 
-                // Inline summary expansion for research events.
-                if is_summary {
+                // Inline summary expansion for research / fail-fast events.
+                if is_summary || matches!(status, "FOLLOWUP_NEEDED" | "ROLLBACK") {
                     if let Some(reason) = task.reason.as_deref() {
-                        let preview: String = reason.chars().take(140).collect();
+                        let preview: String = reason.chars().take(180).collect();
                         ui.add_space(1.0);
                         ui.small(format!("   ↳ {preview}"));
                     }
@@ -797,7 +937,9 @@ impl SirinApp {
                     }
                     ui.horizontal(|ui| {
                         if ui
-                            .button(RichText::new("✅ 套用").color(Color32::from_rgb(100, 220, 100)))
+                            .button(
+                                RichText::new("✅ 套用").color(Color32::from_rgb(100, 220, 100)),
+                            )
                             .clicked()
                         {
                             match crate::persona::Persona::load() {
@@ -805,12 +947,10 @@ impl SirinApp {
                                     p.objectives = proposed.clone();
                                     match p.save() {
                                         Ok(()) => {
-                                            self.research_msg =
-                                                "Persona 目標已更新".to_string();
+                                            self.research_msg = "Persona 目標已更新".to_string();
                                         }
                                         Err(e) => {
-                                            self.research_msg =
-                                                format!("儲存失敗: {e}");
+                                            self.research_msg = format!("儲存失敗: {e}");
                                         }
                                     }
                                 }
@@ -858,7 +998,8 @@ impl SirinApp {
                     };
                     let rt = self.rt.clone();
                     rt.spawn(async move {
-                        let task = crate::agents::research_agent::run_research_via_adk(topic, url).await;
+                        let task =
+                            crate::agents::research_agent::run_research_via_adk(topic, url).await;
                         eprintln!("[ui] research '{}' → {:?}", task.id, task.status);
                     });
                     self.research_msg = format!("已啟動：{}", self.research_topic.trim());
@@ -884,9 +1025,9 @@ impl SirinApp {
                     // ── Header row ────────────────────────────────────────────
                     ui.horizontal(|ui| {
                         let (color, label) = match task.status {
-                            ResearchStatus::Done    => (Color32::from_rgb(100, 220, 100), "完成"),
+                            ResearchStatus::Done => (Color32::from_rgb(100, 220, 100), "完成"),
                             ResearchStatus::Running => (Color32::YELLOW, "進行中"),
-                            ResearchStatus::Failed  => (Color32::from_rgb(220, 80, 80), "失敗"),
+                            ResearchStatus::Failed => (Color32::from_rgb(220, 80, 80), "失敗"),
                         };
                         ui.colored_label(color, label);
                         ui.strong(&task.topic);
@@ -902,16 +1043,26 @@ impl SirinApp {
                     if task.status == ResearchStatus::Running {
                         let phases = ["fetch", "overview", "questions", "search", "synthesis"];
                         // Determine current phase from completed steps.
-                        let completed_phases: Vec<&str> = task.steps.iter().map(|s| s.phase.as_str()).collect();
-                        let current_idx = if completed_phases.is_empty() { 0 } else {
+                        let completed_phases: Vec<&str> =
+                            task.steps.iter().map(|s| s.phase.as_str()).collect();
+                        let current_idx = if completed_phases.is_empty() {
+                            0
+                        } else {
                             let last = *completed_phases.last().unwrap();
-                            if last.starts_with("research_q") { 3 }
-                            else { phases.iter().position(|&p| p == last).map(|i| i + 1).unwrap_or(0) }
+                            if last.starts_with("research_q") {
+                                3
+                            } else {
+                                phases
+                                    .iter()
+                                    .position(|&p| p == last)
+                                    .map(|i| i + 1)
+                                    .unwrap_or(0)
+                            }
                         };
                         ui.add_space(4.0);
                         ui.horizontal(|ui| {
                             for (i, phase) in phases.iter().enumerate() {
-                                let is_done    = i < current_idx;
+                                let is_done = i < current_idx;
                                 let is_current = i == current_idx;
                                 let (color, icon) = if is_done {
                                     (Color32::from_rgb(100, 220, 100), "✓")
@@ -951,8 +1102,13 @@ impl SirinApp {
                     } else if task.status == ResearchStatus::Failed {
                         // Show error reason from steps.
                         if let Some(err_step) = task.steps.iter().find(|s| s.phase == "error") {
-                            ui.colored_label(Color32::from_rgb(220, 100, 100),
-                                format!("❌ {}", err_step.output.chars().take(120).collect::<String>()));
+                            ui.colored_label(
+                                Color32::from_rgb(220, 100, 100),
+                                format!(
+                                    "❌ {}",
+                                    err_step.output.chars().take(120).collect::<String>()
+                                ),
+                            );
                         }
                     }
                 });
@@ -1001,14 +1157,16 @@ TG_GROUP_IDS=             # 選填：只監控特定群組 ID（逗號分隔）\
 # 除錯\n\
 TG_DEBUG_UPDATES=false";
                     let mut guide_display = guide.to_string();
-                    egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
-                        ui.add(
-                            TextEdit::multiline(&mut guide_display)
-                                .code_editor()
-                                .desired_rows(8)
-                                .desired_width(f32::INFINITY),
-                        );
-                    });
+                    egui::ScrollArea::vertical()
+                        .max_height(160.0)
+                        .show(ui, |ui| {
+                            ui.add(
+                                TextEdit::multiline(&mut guide_display)
+                                    .code_editor()
+                                    .desired_rows(8)
+                                    .desired_width(f32::INFINITY),
+                            );
+                        });
                     ui.add_space(4.0);
                     if ui.button("📋 複製 .env 範本").clicked() {
                         ui.ctx().copy_text(guide.to_string());
@@ -1023,21 +1181,19 @@ TG_DEBUG_UPDATES=false";
         egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.label(RichText::new("Telegram 連線狀態").strong());
             let (color, label, detail) = match &status {
-                TelegramStatus::Connected => {
-                    (Color32::from_rgb(100, 220, 100), "已連線", None)
-                }
+                TelegramStatus::Connected => (Color32::from_rgb(100, 220, 100), "已連線", None),
                 TelegramStatus::Disconnected { reason } => {
                     (Color32::GRAY, "未連線", Some(reason.as_str()))
                 }
-                TelegramStatus::CodeRequired => {
-                    (Color32::YELLOW, "需要驗證碼", None)
-                }
+                TelegramStatus::CodeRequired => (Color32::YELLOW, "需要驗證碼", None),
                 TelegramStatus::PasswordRequired { hint } => {
                     (Color32::YELLOW, "需要 2FA 密碼", Some(hint.as_str()))
                 }
-                TelegramStatus::Error { message } => {
-                    (Color32::from_rgb(220, 80, 80), "錯誤", Some(message.as_str()))
-                }
+                TelegramStatus::Error { message } => (
+                    Color32::from_rgb(220, 80, 80),
+                    "錯誤",
+                    Some(message.as_str()),
+                ),
             };
             ui.horizontal(|ui| {
                 ui.colored_label(color, label);
@@ -1057,8 +1213,7 @@ TG_DEBUG_UPDATES=false";
                     .horizontal(|ui| {
                         let r = ui.text_edit_singleline(&mut self.tg_code);
                         let btn = ui.button("提交");
-                        (r.lost_focus()
-                            && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                        (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
                             || btn.clicked()
                     })
                     .inner;
@@ -1072,11 +1227,9 @@ TG_DEBUG_UPDATES=false";
                 ui.label(format!("輸入 2FA 密碼（提示：{hint}）："));
                 let submitted = ui
                     .horizontal(|ui| {
-                        let r = ui
-                            .add(TextEdit::singleline(&mut self.tg_password).password(true));
+                        let r = ui.add(TextEdit::singleline(&mut self.tg_password).password(true));
                         let btn = ui.button("提交");
-                        (r.lost_focus()
-                            && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                        (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
                             || btn.clicked()
                     })
                     .inner;
@@ -1101,18 +1254,49 @@ TG_DEBUG_UPDATES=false";
         egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.label(RichText::new("回覆設定").strong());
             let auto_reply = std::env::var("TG_AUTO_REPLY").unwrap_or_default();
-            let auto_priv  = std::env::var("TG_REPLY_PRIVATE").unwrap_or_default();
-            let auto_grp   = std::env::var("TG_REPLY_GROUPS").unwrap_or_default();
+            let auto_priv = std::env::var("TG_REPLY_PRIVATE").unwrap_or_default();
+            let auto_grp = std::env::var("TG_REPLY_GROUPS").unwrap_or_default();
             ui.horizontal(|ui| {
-                let on_color  = Color32::from_rgb(100, 220, 100);
+                let on_color = Color32::from_rgb(100, 220, 100);
                 let off_color = Color32::from_rgb(140, 140, 140);
-                let reply_color = if auto_reply == "true" { on_color } else { off_color };
-                ui.colored_label(reply_color, if auto_reply == "true" { "● 自動回覆：開" } else { "○ 自動回覆：關" });
+                let reply_color = if auto_reply == "true" {
+                    on_color
+                } else {
+                    off_color
+                };
+                ui.colored_label(
+                    reply_color,
+                    if auto_reply == "true" {
+                        "● 自動回覆：開"
+                    } else {
+                        "○ 自動回覆：關"
+                    },
+                );
                 ui.separator();
-                ui.colored_label(if auto_priv == "true" { on_color } else { off_color },
-                    if auto_priv == "true" { "私訊 ✓" } else { "私訊 ✗" });
-                ui.colored_label(if auto_grp == "true" { on_color } else { off_color },
-                    if auto_grp == "true" { "群組 ✓" } else { "群組 ✗" });
+                ui.colored_label(
+                    if auto_priv == "true" {
+                        on_color
+                    } else {
+                        off_color
+                    },
+                    if auto_priv == "true" {
+                        "私訊 ✓"
+                    } else {
+                        "私訊 ✗"
+                    },
+                );
+                ui.colored_label(
+                    if auto_grp == "true" {
+                        on_color
+                    } else {
+                        off_color
+                    },
+                    if auto_grp == "true" {
+                        "群組 ✓"
+                    } else {
+                        "群組 ✗"
+                    },
+                );
             });
             ui.small("如需更改，請修改 .env 後重啟應用程式。");
         });
@@ -1137,7 +1321,10 @@ TG_DEBUG_UPDATES=false";
                 .auto_shrink(false)
                 .show(ui, |ui| {
                     for line in &tg_lines {
-                        let color = if line.contains("error") || line.contains("Error") || line.contains("failed") {
+                        let color = if line.contains("error")
+                            || line.contains("Error")
+                            || line.contains("failed")
+                        {
                             Color32::from_rgb(220, 100, 100)
                         } else if line.contains("reply") || line.contains("sent") {
                             Color32::from_rgb(150, 220, 150)
@@ -1153,7 +1340,11 @@ TG_DEBUG_UPDATES=false";
     fn show_chat(&mut self, ui: &mut egui::Ui) {
         // ── Top status bar ────────────────────────────────────────────────────
         ui.horizontal(|ui| {
-            let status_color = if self.chat_pending { Color32::YELLOW } else { Color32::from_rgb(100, 220, 100) };
+            let status_color = if self.chat_pending {
+                Color32::YELLOW
+            } else {
+                Color32::from_rgb(100, 220, 100)
+            };
             ui.colored_label(status_color, &self.agent_console.status);
             if !self.agent_console.route.is_empty() && self.agent_console.route != "pending…" {
                 ui.separator();
@@ -1164,11 +1355,16 @@ TG_DEBUG_UPDATES=false";
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button("複製對話").clicked() {
-                    ui.ctx().copy_text(chat_history_snapshot(&self.chat_messages));
+                    ui.ctx()
+                        .copy_text(chat_history_snapshot(&self.chat_messages));
                 }
                 ui.separator();
                 // Debug panel toggle button.
-                let debug_label = if self.debug_panel_open { "🔍 隱藏診斷" } else { "🔍 診斷" };
+                let debug_label = if self.debug_panel_open {
+                    "🔍 隱藏診斷"
+                } else {
+                    "🔍 診斷"
+                };
                 if ui.small_button(debug_label).clicked() {
                     self.debug_panel_open = !self.debug_panel_open;
                 }
@@ -1184,21 +1380,30 @@ TG_DEBUG_UPDATES=false";
                     if !self.agent_console.summary.is_empty() {
                         ui.small(&self.agent_console.summary);
                     }
+                    if !self.agent_console.ai_details.is_empty() {
+                        ui.small(format!("🤖 {}", self.agent_console.ai_details));
+                    }
                     if !self.agent_console.steps.is_empty() {
                         ui.small(format!("Steps: {}", self.agent_console.steps.join(" → ")));
                     }
                     if !self.agent_console.recommended_skills.is_empty() {
-                        ui.small(format!("Skills: {}", self.agent_console.recommended_skills.join(", ")));
+                        ui.small(format!(
+                            "Skills: {}",
+                            self.agent_console.recommended_skills.join(", ")
+                        ));
                     }
                     if !self.agent_console.tools.is_empty() {
                         ui.small(format!("Tools: {}", self.agent_console.tools.join(", ")));
                     }
                     if !self.agent_console.trace.is_empty() {
-                        ui.collapsing(format!("Execution Trace ({} items)", self.agent_console.trace.len()), |ui| {
-                            for item in &self.agent_console.trace {
-                                ui.small(item);
-                            }
-                        });
+                        ui.collapsing(
+                            format!("Execution Trace ({} items)", self.agent_console.trace.len()),
+                            |ui| {
+                                for item in &self.agent_console.trace {
+                                    ui.small(item);
+                                }
+                            },
+                        );
                     }
                     if !self.agent_console.latest_task_summary.is_empty() {
                         ui.collapsing("Latest Research Summary", |ui| {
@@ -1209,30 +1414,56 @@ TG_DEBUG_UPDATES=false";
                     // Coding Console inside debug panel.
                     if !self.coding_console.task.is_empty() {
                         ui.separator();
-                        ui.label(RichText::new("⚙ Coding Console").strong().small().color(Color32::from_rgb(100, 200, 255)));
-                        ui.small(format!("Task: {}", self.coding_console.task.chars().take(100).collect::<String>()));
+                        ui.label(
+                            RichText::new("⚙ Coding Console")
+                                .strong()
+                                .small()
+                                .color(Color32::from_rgb(100, 200, 255)),
+                        );
+                        ui.small(format!(
+                            "Task: {}",
+                            self.coding_console
+                                .task
+                                .chars()
+                                .take(100)
+                                .collect::<String>()
+                        ));
                         if self.coding_console.dry_run {
                             ui.colored_label(Color32::from_rgb(255, 200, 60), "⚠ Dry-run 模式");
                         }
+                        if !self.coding_console.change_summary.is_empty() {
+                            ui.small(format!("🧾 {}", self.coding_console.change_summary));
+                        }
                         if !self.coding_console.files_modified.is_empty() {
-                            ui.small(format!("📁 {}", self.coding_console.files_modified.join(", ")));
+                            ui.small(format!(
+                                "📁 {}",
+                                self.coding_console.files_modified.join(", ")
+                            ));
                         }
                         if self.coding_console.verified {
-                            ui.colored_label(Color32::from_rgb(100, 220, 100), "✅ cargo check passed");
+                            ui.colored_label(
+                                Color32::from_rgb(100, 220, 100),
+                                "✅ cargo check passed",
+                            );
                         }
                         if !self.coding_console.trace.is_empty() {
-                            ui.collapsing(format!("ReAct Trace ({} steps)", self.coding_console.trace.len()), |ui| {
-                                ScrollArea::vertical().max_height(140.0).show(ui, |ui| {
-                                    for step in &self.coding_console.trace {
-                                        egui::Frame::new()
-                                            .fill(Color32::from_rgb(25, 35, 45))
-                                            .inner_margin(egui::Margin::symmetric(6, 4))
-                                            .corner_radius(4.0)
-                                            .show(ui, |ui| { ui.small(step); });
-                                        ui.add_space(2.0);
-                                    }
-                                });
-                            });
+                            ui.collapsing(
+                                format!("ReAct Trace ({} steps)", self.coding_console.trace.len()),
+                                |ui| {
+                                    ScrollArea::vertical().max_height(140.0).show(ui, |ui| {
+                                        for step in &self.coding_console.trace {
+                                            egui::Frame::new()
+                                                .fill(Color32::from_rgb(25, 35, 45))
+                                                .inner_margin(egui::Margin::symmetric(6, 4))
+                                                .corner_radius(4.0)
+                                                .show(ui, |ui| {
+                                                    ui.small(step);
+                                                });
+                                            ui.add_space(2.0);
+                                        }
+                                    });
+                                },
+                            );
                         }
                         if let Some(ref diff) = self.coding_console.diff {
                             if !diff.trim().is_empty() {
@@ -1261,7 +1492,11 @@ TG_DEBUG_UPDATES=false";
                                 ui.ctx().copy_text(self.coding_console.snapshot_text());
                             }
                             if ui.small_button("複製全部 (Console+Log)").clicked() {
-                                let bundle = build_console_log_bundle(&self.agent_console, &self.chat_messages, 250);
+                                let bundle = build_console_log_bundle(
+                                    &self.agent_console,
+                                    &self.chat_messages,
+                                    250,
+                                );
                                 ui.ctx().copy_text(bundle);
                             }
                         });
@@ -1271,11 +1506,17 @@ TG_DEBUG_UPDATES=false";
 
         // ── Mini coding status bar (visible outside debug panel when running) ─
         if !self.coding_console.task.is_empty() && !self.debug_panel_open {
-            let is_done = self.coding_console.status.contains("完成") || self.coding_console.status.contains("✅");
-            let is_err  = self.coding_console.status.contains("錯誤") || self.coding_console.status.contains("Error");
-            let bar_color = if is_done { Color32::from_rgb(100, 220, 100) }
-                            else if is_err { Color32::from_rgb(220, 80, 80) }
-                            else { Color32::YELLOW };
+            let is_done = self.coding_console.status.contains("完成")
+                || self.coding_console.status.contains("✅");
+            let is_err = self.coding_console.status.contains("錯誤")
+                || self.coding_console.status.contains("Error");
+            let bar_color = if is_done {
+                Color32::from_rgb(100, 220, 100)
+            } else if is_err {
+                Color32::from_rgb(220, 80, 80)
+            } else {
+                Color32::YELLOW
+            };
             egui::Frame::new()
                 .fill(Color32::from_rgb(20, 30, 40))
                 .inner_margin(egui::Margin::symmetric(8, 4))
@@ -1285,7 +1526,10 @@ TG_DEBUG_UPDATES=false";
                         ui.colored_label(bar_color, "⚙");
                         ui.small(format!("{}", self.coding_console.status));
                         if !self.coding_console.files_modified.is_empty() {
-                            ui.small(format!("· 📁 {}", self.coding_console.files_modified.join(", ")));
+                            ui.small(format!(
+                                "· 📁 {}",
+                                self.coding_console.files_modified.join(", ")
+                            ));
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.small_button("詳情").clicked() {
@@ -1327,6 +1571,7 @@ TG_DEBUG_UPDATES=false";
                                 task: task_clone.clone(),
                                 ..Default::default()
                             };
+                            self.agent_console.ai_details = crate::llm::shared_llm().task_log_summary();
                             rt.spawn(async move {
                                 let _ = tx.try_send(ChatUiUpdate {
                                     reply: "⚙ Coding Agent 啟動中（允許寫入）…".to_string(),
@@ -1371,6 +1616,7 @@ TG_DEBUG_UPDATES=false";
                                 task: task_clone.clone(),
                                 ..Default::default()
                             };
+                            self.agent_console.ai_details = crate::llm::shared_llm().task_log_summary();
                             rt.spawn(async move {
                                 let resp = crate::agents::coding_agent::run_coding_via_adk(
                                     task_clone, true, None, None,
@@ -1434,10 +1680,13 @@ TG_DEBUG_UPDATES=false";
                                 .inner_margin(egui::Margin::symmetric(10, 5))
                                 .corner_radius(8.0)
                                 .show(ui, |ui| {
-                                    ui.add(egui::Label::new(
-                                        RichText::new(format!("{icon} {prompt}"))
-                                            .color(Color32::from_rgb(180, 190, 210))
-                                    ).sense(egui::Sense::click()))
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(format!("{icon} {prompt}"))
+                                                .color(Color32::from_rgb(180, 190, 210)),
+                                        )
+                                        .sense(egui::Sense::click()),
+                                    )
                                 });
                             if resp.inner.clicked() {
                                 chosen = Some(prompt.to_string());
@@ -1449,11 +1698,7 @@ TG_DEBUG_UPDATES=false";
 
                 for msg in &self.chat_messages {
                     let (bg, label, text_color) = match msg.role {
-                        ChatRole::User => (
-                            Color32::from_rgb(40, 60, 100),
-                            "你",
-                            Color32::WHITE,
-                        ),
+                        ChatRole::User => (Color32::from_rgb(40, 60, 100), "你", Color32::WHITE),
                         ChatRole::Assistant => (
                             Color32::from_rgb(45, 55, 45),
                             "Sirin",
@@ -1477,8 +1722,7 @@ TG_DEBUG_UPDATES=false";
                 if self.chat_pending {
                     // Animate the thinking dots using elapsed time.
                     let dot_count = ((ui.ctx().input(|i| i.time) * 2.0) as usize % 4) + 1;
-                    let dots: String = "●".repeat(dot_count)
-                        + &"○".repeat(4 - dot_count);
+                    let dots: String = "●".repeat(dot_count) + &"○".repeat(4 - dot_count);
                     egui::Frame::new()
                         .fill(Color32::from_rgb(45, 55, 45))
                         .inner_margin(egui::Margin::symmetric(10, 6))
@@ -1487,10 +1731,12 @@ TG_DEBUG_UPDATES=false";
                             ui.colored_label(Color32::GRAY, "Sirin");
                             ui.colored_label(Color32::YELLOW, format!("思考中  {dots}"));
                         });
-                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_millis(500));
                 }
                 chosen
-            }).inner;
+            })
+            .inner;
 
         // Apply chosen example prompt (fills the input and immediately submits).
         if let Some(prompt) = chosen_example {
@@ -1569,7 +1815,10 @@ TG_DEBUG_UPDATES=false";
                 raw
             };
             self.chat_input.clear();
-            self.chat_messages.push(ChatMessage { role: ChatRole::User, text: task.clone() });
+            self.chat_messages.push(ChatMessage {
+                role: ChatRole::User,
+                text: task.clone(),
+            });
             self.chat_pending = true;
             self.coding_console = CodingConsoleState {
                 status: "Coding Agent 啟動中…".to_string(),
@@ -1586,6 +1835,7 @@ TG_DEBUG_UPDATES=false";
                 "verify".to_string(),
             ];
             self.agent_console.recommended_skills = vec!["coding_agent".to_string()];
+            self.agent_console.ai_details = crate::llm::shared_llm().task_log_summary();
             self.agent_console.status = "Coding Agent 執行中…".to_string();
 
             let tx = self.chat_tx.clone();
@@ -1610,9 +1860,9 @@ TG_DEBUG_UPDATES=false";
                         recommended_skills: vec!["coding_agent".to_string()],
                     }),
                 });
-                let result = tokio::task::spawn(
-                    crate::agents::coding_agent::run_coding_via_adk(task, false, None, None),
-                )
+                let result = tokio::task::spawn(crate::agents::coding_agent::run_coding_via_adk(
+                    task, false, None, None,
+                ))
                 .await;
                 match result {
                     Ok(resp) => {
@@ -1626,6 +1876,8 @@ TG_DEBUG_UPDATES=false";
                         let _ = coding_tx.try_send(CodingUiUpdate {
                             response: Some(crate::agents::coding_agent::CodingAgentResponse {
                                 outcome: format!("❌ Coding Agent 崩潰：{e}"),
+                                change_summary: "Coding Agent 執行時發生 panic，請查看 trace。"
+                                    .to_string(),
                                 files_modified: vec![],
                                 iterations_used: 0,
                                 trace: vec![],
@@ -1648,7 +1900,10 @@ TG_DEBUG_UPDATES=false";
             // ── /skill command handling ───────────────────────────────────────
             if user_text.starts_with("/skill") {
                 let arg = user_text["/skill".len()..].trim().to_string();
-                self.chat_messages.push(ChatMessage { role: ChatRole::User, text: user_text.clone() });
+                self.chat_messages.push(ChatMessage {
+                    role: ChatRole::User,
+                    text: user_text.clone(),
+                });
                 self.chat_input.clear();
                 let reply = if arg.is_empty() || arg == "list" {
                     let skills = crate::skills::list_skills();
@@ -1663,10 +1918,15 @@ TG_DEBUG_UPDATES=false";
                             "✅ 技能 `{}` 已觸發\n事件：{}\n",
                             result.skill_id, result.emitted_event
                         ),
-                        Err(e) => format!("❌ 技能執行失敗：{e}\n\n輸入 `/skill list` 查看可用技能。"),
+                        Err(e) => {
+                            format!("❌ 技能執行失敗：{e}\n\n輸入 `/skill list` 查看可用技能。")
+                        }
                     }
                 };
-                self.chat_messages.push(ChatMessage { role: ChatRole::Assistant, text: reply });
+                self.chat_messages.push(ChatMessage {
+                    role: ChatRole::Assistant,
+                    text: reply,
+                });
             } else {
                 // Check if this looks like a coding request that needs pre-flight confirmation.
                 let is_coding_hint = crate::agents::router_agent::is_coding_request(&user_text);
@@ -1678,7 +1938,11 @@ TG_DEBUG_UPDATES=false";
                     // Push a pending indicator message so the user knows we saw the input.
                     self.chat_messages.push(ChatMessage {
                         role: ChatRole::User,
-                        text: self.pending_coding_confirmation.as_deref().unwrap_or("").to_string(),
+                        text: self
+                            .pending_coding_confirmation
+                            .as_deref()
+                            .unwrap_or("")
+                            .to_string(),
                     });
                     self.chat_input.clear();
                 } else {
@@ -1704,15 +1968,22 @@ TG_DEBUG_UPDATES=false";
                         };
                     }
 
-                    let is_meta_request = crate::telegram::language::is_identity_question(&confirmed_user_text)
-                        || crate::telegram::language::is_code_access_question(&confirmed_user_text);
+                    let is_meta_request =
+                        crate::telegram::language::is_identity_question(&confirmed_user_text)
+                            || crate::telegram::language::is_code_access_question(
+                                &confirmed_user_text,
+                            );
 
                     let history: Vec<String> = self
                         .chat_messages
                         .windows(2)
                         .filter_map(|pair| {
-                            if pair[0].role == ChatRole::User && pair[1].role == ChatRole::Assistant {
-                                Some(format!("User: {}\nAssistant: {}", pair[0].text, pair[1].text))
+                            if pair[0].role == ChatRole::User && pair[1].role == ChatRole::Assistant
+                            {
+                                Some(format!(
+                                    "User: {}\nAssistant: {}",
+                                    pair[0].text, pair[1].text
+                                ))
                             } else {
                                 None
                             }
@@ -1739,7 +2010,8 @@ TG_DEBUG_UPDATES=false";
                     if is_meta_request {
                         self.agent_console.route = "chat".to_string();
                         self.agent_console.intent_family = "capability".to_string();
-                        self.agent_console.summary = "直接回答身份 / 看碼能力問題，不啟動 research。".to_string();
+                        self.agent_console.summary =
+                            "直接回答身份 / 看碼能力問題，不啟動 research。".to_string();
                         self.agent_console.steps = vec![
                             "skip planner + router".to_string(),
                             "reply with local identity/capability summary".to_string(),
@@ -1934,27 +2206,24 @@ async fn run_chat_and_send(
     let plan_sent_clone = std::sync::Arc::clone(&plan_sent);
     let plan_update_clone = plan_update.clone();
 
-    let response = crate::agents::chat_agent::stream_chat_response(
-        request,
-        move |token| {
-            if let Ok(mut acc) = acc_clone.lock() {
-                acc.push_str(&token);
-                let preview = format!("{} ▍", acc.trim_end());
-                let plan = if !plan_sent_clone.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                    Some(plan_update_clone.clone())
-                } else {
-                    None
-                };
-                let _ = tx_partial.try_send(ChatUiUpdate {
-                    reply: preview,
-                    tools: vec![],
-                    trace: vec![],
-                    partial: true,
-                    plan,
-                });
-            }
-        },
-    )
+    let response = crate::agents::chat_agent::stream_chat_response(request, move |token| {
+        if let Ok(mut acc) = acc_clone.lock() {
+            acc.push_str(&token);
+            let preview = format!("{} ▍", acc.trim_end());
+            let plan = if !plan_sent_clone.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                Some(plan_update_clone.clone())
+            } else {
+                None
+            };
+            let _ = tx_partial.try_send(ChatUiUpdate {
+                reply: preview,
+                tools: vec![],
+                trace: vec![],
+                partial: true,
+                plan,
+            });
+        }
+    })
     .await;
 
     let _ = crate::memory::append_context(&user_text, &response.reply, Some(0));

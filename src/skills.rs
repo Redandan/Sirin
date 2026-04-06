@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-const USER_AGENT: &str =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
      (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 const DDG_HTML_URL: &str = "https://duckduckgo.com/html/";
 const DDG_INSTANT_URL: &str = "https://api.duckduckgo.com/";
@@ -72,8 +71,16 @@ fn collect_instant_topics(values: &[serde_json::Value], out: &mut Vec<SearchResu
             continue;
         }
 
-        let text = item.get("Text").and_then(|v| v.as_str()).unwrap_or_default().trim();
-        let url = item.get("FirstURL").and_then(|v| v.as_str()).unwrap_or_default().trim();
+        let text = item
+            .get("Text")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .trim();
+        let url = item
+            .get("FirstURL")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .trim();
         if !text.is_empty() && !url.is_empty() {
             out.push(SearchResult {
                 title: trim_snippet(text, 80),
@@ -117,7 +124,11 @@ async fn search_searxng(
             if title.is_empty() || url.is_empty() {
                 None
             } else {
-                Some(SearchResult { title, url, snippet })
+                Some(SearchResult {
+                    title,
+                    url,
+                    snippet,
+                })
             }
         })
         .collect::<Vec<_>>();
@@ -221,7 +232,11 @@ async fn search_ddg_html(
             .unwrap_or_default();
 
         if !title.is_empty() && !url.is_empty() {
-            results.push(SearchResult { title, url, snippet });
+            results.push(SearchResult {
+                title,
+                url,
+                snippet,
+            });
         }
     }
 
@@ -261,7 +276,10 @@ pub async fn ddg_search(query: &str) -> Result<Vec<SearchResult>, String> {
         Ok(results) => Ok(results),
         Err(e) => {
             failures.push(e);
-            Err(format!("All search providers failed: {}", failures.join(" | ")))
+            Err(format!(
+                "All search providers failed: {}",
+                failures.join(" | ")
+            ))
         }
     }
 }
@@ -302,7 +320,10 @@ mod tests {
         let ids: Vec<String> = skills.into_iter().map(|skill| skill.id).collect();
 
         assert!(ids.contains(&"local_file_read".to_string()));
-        assert!(ids.contains(&"codebase_search".to_string()) || ids.contains(&"project_overview".to_string()));
+        assert!(
+            ids.contains(&"codebase_search".to_string())
+                || ids.contains(&"project_overview".to_string())
+        );
     }
 
     #[test]
@@ -474,9 +495,22 @@ pub fn list_skills() -> Vec<SkillDefinition> {
             "啟動本地 ReAct 迴圈，讓 AI 自動讀取、修改、驗證程式碼以完成 coding 任務。",
             "code-modification",
             false,
-            &["file_list", "local_file_read", "file_write", "shell_exec",
-              "codebase_search", "symbol_search", "file_diff", "git_status", "git_log"],
-            &["幫我修 src/llm.rs 的 error handling", "實作一個新功能", "重構 agent 模組"],
+            &[
+                "file_list",
+                "local_file_read",
+                "file_write",
+                "shell_exec",
+                "codebase_search",
+                "symbol_search",
+                "file_diff",
+                "git_status",
+                "git_log",
+            ],
+            &[
+                "幫我修 src/llm.rs 的 error handling",
+                "實作一個新功能",
+                "重構 agent 模組",
+            ],
         ),
         skill(
             "file_write",
@@ -503,9 +537,17 @@ fn score_skill_for_query(skill_id: &str, query: &str) -> i32 {
     let lower = query.to_lowercase();
     match skill_id {
         "project_overview" => {
-            if ["專案", "架構", "結構", "module", "模組", "怎麼運作", "overview"]
-                .iter()
-                .any(|needle| lower.contains(needle))
+            if [
+                "專案",
+                "架構",
+                "結構",
+                "module",
+                "模組",
+                "怎麼運作",
+                "overview",
+            ]
+            .iter()
+            .any(|needle| lower.contains(needle))
             {
                 10
             } else {
@@ -523,9 +565,12 @@ fn score_skill_for_query(skill_id: &str, query: &str) -> i32 {
             }
         }
         "codebase_search" => {
-            if ["哪裡", "在哪", "搜尋", "search", "symbol", "函式", "function", "模組", "src/", ".rs", ".toml"]
-                .iter()
-                .any(|needle| lower.contains(needle))
+            if [
+                "哪裡", "在哪", "搜尋", "search", "symbol", "函式", "function", "模組", "src/",
+                ".rs", ".toml",
+            ]
+            .iter()
+            .any(|needle| lower.contains(needle))
             {
                 9
             } else {
@@ -543,9 +588,18 @@ fn score_skill_for_query(skill_id: &str, query: &str) -> i32 {
             }
         }
         "code_change_planning" => {
-            if ["規劃", "计划", "plan", "重構", "重构", "優化", "优化", "先分析再改"]
-                .iter()
-                .any(|needle| lower.contains(needle))
+            if [
+                "規劃",
+                "计划",
+                "plan",
+                "重構",
+                "重构",
+                "優化",
+                "优化",
+                "先分析再改",
+            ]
+            .iter()
+            .any(|needle| lower.contains(needle))
             {
                 10
             } else {
@@ -553,9 +607,17 @@ fn score_skill_for_query(skill_id: &str, query: &str) -> i32 {
             }
         }
         "symbol_trace" => {
-            if ["呼叫", "调用", "trace", "影響", "影响", "哪裡被用", "在哪裡被用"]
-                .iter()
-                .any(|needle| lower.contains(needle))
+            if [
+                "呼叫",
+                "调用",
+                "trace",
+                "影響",
+                "影响",
+                "哪裡被用",
+                "在哪裡被用",
+            ]
+            .iter()
+            .any(|needle| lower.contains(needle))
             {
                 10
             } else {
@@ -613,11 +675,26 @@ fn score_skill_for_query(skill_id: &str, query: &str) -> i32 {
             }
         }
         "coding_agent" => {
-            if ["幫我寫", "帮我写", "幫我修", "帮我修", "幫我改", "帮我改",
-                "重構", "重构", "實作", "实现", "implement", "refactor",
-                "fix the bug", "add feature", "write code", "加功能"]
-                .iter()
-                .any(|needle| lower.contains(needle))
+            if [
+                "幫我寫",
+                "帮我写",
+                "幫我修",
+                "帮我修",
+                "幫我改",
+                "帮我改",
+                "重構",
+                "重构",
+                "實作",
+                "实现",
+                "implement",
+                "refactor",
+                "fix the bug",
+                "add feature",
+                "write code",
+                "加功能",
+            ]
+            .iter()
+            .any(|needle| lower.contains(needle))
             {
                 13
             } else {
@@ -625,9 +702,17 @@ fn score_skill_for_query(skill_id: &str, query: &str) -> i32 {
             }
         }
         "file_write" => {
-            if ["寫入", "写入", "覆蓋", "覆盖", "file write", "寫檔案", "更新檔案"]
-                .iter()
-                .any(|needle| lower.contains(needle))
+            if [
+                "寫入",
+                "写入",
+                "覆蓋",
+                "覆盖",
+                "file write",
+                "寫檔案",
+                "更新檔案",
+            ]
+            .iter()
+            .any(|needle| lower.contains(needle))
             {
                 7
             } else {
@@ -669,10 +754,7 @@ pub fn ensure_registered(skill_id: &str) -> Result<(), String> {
     }
 }
 
-pub fn execute_skill(
-    skill_id: &str,
-    timestamp: &str,
-) -> Result<SkillExecutionResult, String> {
+pub fn execute_skill(skill_id: &str, timestamp: &str) -> Result<SkillExecutionResult, String> {
     ensure_registered(skill_id)?;
     eprintln!("[skills] Executing skill '{skill_id}' for task at {timestamp}");
     Ok(SkillExecutionResult {

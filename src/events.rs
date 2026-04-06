@@ -31,18 +31,11 @@ pub enum AgentEvent {
         success: bool,
     },
     /// The planner decided the user's message requires deep research.
-    ResearchRequested {
-        topic: String,
-        url: Option<String>,
-    },
+    ResearchRequested { topic: String, url: Option<String> },
     /// The followup worker marked a task as needing attention.
-    FollowupTriggered {
-        source_timestamp: String,
-    },
+    FollowupTriggered { source_timestamp: String },
     /// Persona objectives were updated after reflection.
-    PersonaUpdated {
-        new_objectives: Vec<String>,
-    },
+    PersonaUpdated { new_objectives: Vec<String> },
     /// The coding agent finished a task (success or failure).
     CodingAgentCompleted {
         /// Short task description (truncated to ~80 chars).

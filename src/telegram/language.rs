@@ -137,7 +137,9 @@ mod tests {
         assert!(is_code_access_question("為啥看不到代碼"));
         assert!(is_code_access_question("你現在能看到什麼檔案"));
         assert!(is_code_access_question("這是啥項目"));
-        assert!(is_code_access_question("can you see the code for this app?"));
+        assert!(is_code_access_question(
+            "can you see the code for this app?"
+        ));
         assert!(!is_code_access_question("幫我看看這段市場分析"));
     }
 }

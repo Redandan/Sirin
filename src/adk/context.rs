@@ -80,7 +80,10 @@ impl AgentContext {
     }
 
     pub fn tool_calls_snapshot(&self) -> Vec<String> {
-        let trace = self.trace.lock().expect("AgentContext trace mutex poisoned");
+        let trace = self
+            .trace
+            .lock()
+            .expect("AgentContext trace mutex poisoned");
         let mut seen = HashSet::new();
         trace
             .tool_calls
