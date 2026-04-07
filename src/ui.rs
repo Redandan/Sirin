@@ -23,8 +23,8 @@ use crate::telegram_auth::{TelegramAuthState, TelegramStatus};
 enum Tab {
     Tasks,
     Research,
-    Telegram,
     Chat,
+    Settings,
 }
 
 // ── Task filter ───────────────────────────────────────────────────────────────
@@ -396,6 +396,17 @@ pub struct SirinApp {
     research_msg_at: Option<std::time::Instant>,
     /// Cached storage usage snapshot (refreshed every 5 s alongside other data).
     storage: crate::memory::StorageUsage,
+
+    // Settings tab
+    /// Working copy of persona being edited (loaded lazily).
+    settings_persona: Option<crate::persona::Persona>,
+    /// Status message shown after save / error.
+    settings_msg: String,
+    settings_msg_at: Option<std::time::Instant>,
+    /// Input buffer for adding a new objective.
+    settings_new_objective: String,
+    /// Input buffer for adding a new allowed command.
+    settings_new_command: String,
 }
 
 impl SirinApp {
@@ -476,6 +487,11 @@ impl SirinApp {
             coding_done_at: None,
             research_msg_at: None,
             storage: crate::memory::StorageUsage::default(),
+            settings_persona: None,
+            settings_msg: String::new(),
+            settings_msg_at: None,
+            settings_new_objective: String::new(),
+            settings_new_command: String::new(),
         };
         app.refresh();
         app
@@ -557,6 +573,14 @@ impl eframe::App for SirinApp {
             if msg_at.elapsed() > std::time::Duration::from_secs(4) {
                 self.research_msg.clear();
                 self.research_msg_at = None;
+            }
+        }
+
+        // ── Timed auto-dismiss: settings save message (4 s) ─────────────────
+        if let Some(msg_at) = self.settings_msg_at {
+            if msg_at.elapsed() > std::time::Duration::from_secs(4) {
+                self.settings_msg.clear();
+                self.settings_msg_at = None;
             }
         }
 
@@ -732,15 +756,6 @@ impl eframe::App for SirinApp {
                     res_tab.on_hover_text("有調研任務進行中");
                 }
 
-                // Telegram tab: badge when connected.
-                let tg_connected = matches!(self.tg_auth.status(), TelegramStatus::Connected);
-                let tg_label = if tg_connected {
-                    "✈ Telegram ●"
-                } else {
-                    "✈ Telegram"
-                };
-                ui.selectable_value(&mut self.tab, Tab::Telegram, tg_label);
-
                 // Chat tab: badge when pending coding confirmation.
                 let chat_label = if self.pending_coding_confirmation.is_some() {
                     "💬 對話 ⚠"
@@ -748,6 +763,26 @@ impl eframe::App for SirinApp {
                     "💬 對話"
                 };
                 ui.selectable_value(&mut self.tab, Tab::Chat, chat_label);
+
+                // Settings tab: show Telegram connection badge.
+                let tg_connected = matches!(self.tg_auth.status(), TelegramStatus::Connected);
+                let tg_needs_auth = matches!(
+                    self.tg_auth.status(),
+                    TelegramStatus::CodeRequired | TelegramStatus::PasswordRequired { .. }
+                );
+                let settings_label = if tg_needs_auth {
+                    "⚙ 設定 ⚠"
+                } else if tg_connected {
+                    "⚙ 設定 ✈●"
+                } else {
+                    "⚙ 設定"
+                };
+                let settings_tab = ui.selectable_value(&mut self.tab, Tab::Settings, settings_label);
+                if tg_connected {
+                    settings_tab.on_hover_text("Telegram 已連線");
+                } else if tg_needs_auth {
+                    settings_tab.on_hover_text("Telegram 需要認證");
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("⟳").on_hover_text("立即刷新").clicked() {
                         self.refresh();
@@ -820,8 +855,8 @@ impl eframe::App for SirinApp {
         egui::CentralPanel::default().show(ctx, |ui| match self.tab {
             Tab::Tasks => self.show_tasks(ui),
             Tab::Research => self.show_research(ui),
-            Tab::Telegram => self.show_telegram(ui),
             Tab::Chat => self.show_chat(ui),
+            Tab::Settings => self.show_settings(ui),
         });
     }
 }
@@ -906,6 +941,16 @@ impl SirinApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let total = self.tasks.len();
                 ui.small(format!("{total} 筆"));
+                if ui
+                    .button(RichText::new("🗑 清除").small().color(Color32::from_rgb(200, 80, 80)))
+                    .on_hover_text("清除所有活動紀錄（檔案將被截空）")
+                    .clicked()
+                {
+                    if let Err(e) = self.tracker.clear() {
+                        eprintln!("[ui] clear task log: {e}");
+                    }
+                    self.tasks.clear();
+                }
             });
         });
         ui.separator();
@@ -1094,7 +1139,22 @@ impl SirinApp {
         });
 
         ui.separator();
-        ui.label(format!("{} 筆調研記錄", self.research_tasks.len()));
+        ui.horizontal(|ui| {
+            ui.label(format!("{} 筆調研記錄", self.research_tasks.len()));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .button(RichText::new("🗑 清除").small().color(Color32::from_rgb(200, 80, 80)))
+                    .on_hover_text("清除所有調研紀錄（檔案將被截空）")
+                    .clicked()
+                {
+                    if let Err(e) = researcher::clear_research() {
+                        eprintln!("[ui] clear research: {e}");
+                    }
+                    self.research_tasks.clear();
+                    self.research_expanded.clear();
+                }
+            });
+        });
 
         // Collect IDs to expand/collapse without borrowing self during the loop.
         let mut toggle_expand: Option<String> = None;
@@ -1205,217 +1265,7 @@ impl SirinApp {
         }
     }
 
-    fn show_telegram(&mut self, ui: &mut egui::Ui) {
-        let status = self.tg_auth.status();
 
-        // ── Setup guide when env vars are not configured ──────────────────────
-        let has_api_id = std::env::var("TG_API_ID").is_ok();
-        let has_api_hash = std::env::var("TG_API_HASH").is_ok();
-        if !has_api_id || !has_api_hash {
-            egui::Frame::group(ui.style())
-                .fill(Color32::from_rgb(25, 30, 45))
-                .show(ui, |ui| {
-                    ui.label(
-                        RichText::new("⚙ 尚未設定 Telegram API 憑證")
-                            .color(Color32::YELLOW)
-                            .strong(),
-                    );
-                    ui.add_space(4.0);
-                    ui.label("請在專案根目錄建立 .env 檔案，填入以下設定：");
-                    ui.add_space(4.0);
-                    let guide = "# 從 https://my.telegram.org 取得\n\
-TG_API_ID=12345678\n\
-TG_API_HASH=your_api_hash_here\n\
-TG_PHONE=+886912345678    # 選填：自動登入用\n\
-\n\
-# 回覆設定\n\
-TG_AUTO_REPLY=true        # 啟用 AI 自動回覆\n\
-TG_REPLY_PRIVATE=true     # 回覆私訊\n\
-TG_REPLY_GROUPS=false     # 是否回覆群組\n\
-TG_GROUP_IDS=             # 選填：只監控特定群組 ID（逗號分隔）\n\
-\n\
-# 除錯\n\
-TG_DEBUG_UPDATES=false";
-                    let mut guide_display = guide.to_string();
-                    egui::ScrollArea::vertical()
-                        .max_height(160.0)
-                        .show(ui, |ui| {
-                            ui.add(
-                                TextEdit::multiline(&mut guide_display)
-                                    .code_editor()
-                                    .desired_rows(8)
-                                    .desired_width(f32::INFINITY),
-                            );
-                        });
-                    ui.add_space(4.0);
-                    if ui.button("📋 複製 .env 範本").clicked() {
-                        ui.ctx().copy_text(guide.to_string());
-                    }
-                    ui.add_space(2.0);
-                    ui.small("設定完成後重新啟動應用程式，Telegram 監聽器將自動連線。");
-                });
-            ui.separator();
-        }
-
-        // Status badge
-        egui::Frame::group(ui.style()).show(ui, |ui| {
-            ui.label(RichText::new("Telegram 連線狀態").strong());
-            let (color, label, detail) = match &status {
-                TelegramStatus::Connected => (Color32::from_rgb(100, 220, 100), "已連線", None),
-                TelegramStatus::Disconnected { reason } => {
-                    (Color32::GRAY, "未連線", Some(reason.as_str()))
-                }
-                TelegramStatus::CodeRequired => (Color32::YELLOW, "需要驗證碼", None),
-                TelegramStatus::PasswordRequired { hint } => {
-                    (Color32::YELLOW, "需要 2FA 密碼", Some(hint.as_str()))
-                }
-                TelegramStatus::Error { message } => (
-                    Color32::from_rgb(220, 80, 80),
-                    "錯誤",
-                    Some(message.as_str()),
-                ),
-            };
-            ui.horizontal(|ui| {
-                ui.colored_label(color, label);
-                if let Some(d) = detail {
-                    ui.small(d);
-                }
-            });
-        });
-
-        ui.separator();
-
-        // Input forms based on current state
-        match &status {
-            TelegramStatus::CodeRequired => {
-                ui.label("輸入 Telegram 驗證碼：");
-                let submitted = ui
-                    .horizontal(|ui| {
-                        let r = ui.text_edit_singleline(&mut self.tg_code);
-                        let btn = ui.button("提交");
-                        (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
-                            || btn.clicked()
-                    })
-                    .inner;
-                if submitted && !self.tg_code.trim().is_empty() {
-                    self.tg_auth.submit_code(self.tg_code.trim().to_string());
-                    self.tg_code.clear();
-                    self.tg_msg = "驗證碼已提交".to_string();
-                }
-            }
-            TelegramStatus::PasswordRequired { hint } => {
-                ui.label(format!("輸入 2FA 密碼（提示：{hint}）："));
-                let submitted = ui
-                    .horizontal(|ui| {
-                        let r = ui.add(TextEdit::singleline(&mut self.tg_password).password(true));
-                        let btn = ui.button("提交");
-                        (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
-                            || btn.clicked()
-                    })
-                    .inner;
-                if submitted && !self.tg_password.trim().is_empty() {
-                    self.tg_auth.submit_password(self.tg_password.clone());
-                    self.tg_password.clear();
-                    self.tg_msg = "密碼已提交".to_string();
-                }
-            }
-            _ => {
-                ui.label("目前不需要輸入任何認證資訊。");
-            }
-        }
-
-        if !self.tg_msg.is_empty() {
-            ui.colored_label(Color32::from_rgb(100, 220, 100), &self.tg_msg);
-        }
-
-        ui.separator();
-
-        // ── Auto-reply toggle ─────────────────────────────────────────────────
-        egui::Frame::group(ui.style()).show(ui, |ui| {
-            ui.label(RichText::new("回覆設定").strong());
-            let auto_reply = std::env::var("TG_AUTO_REPLY").unwrap_or_default();
-            let auto_priv = std::env::var("TG_REPLY_PRIVATE").unwrap_or_default();
-            let auto_grp = std::env::var("TG_REPLY_GROUPS").unwrap_or_default();
-            ui.horizontal(|ui| {
-                let on_color = Color32::from_rgb(100, 220, 100);
-                let off_color = Color32::from_rgb(140, 140, 140);
-                let reply_color = if auto_reply == "true" {
-                    on_color
-                } else {
-                    off_color
-                };
-                ui.colored_label(
-                    reply_color,
-                    if auto_reply == "true" {
-                        "● 自動回覆：開"
-                    } else {
-                        "○ 自動回覆：關"
-                    },
-                );
-                ui.separator();
-                ui.colored_label(
-                    if auto_priv == "true" {
-                        on_color
-                    } else {
-                        off_color
-                    },
-                    if auto_priv == "true" {
-                        "私訊 ✓"
-                    } else {
-                        "私訊 ✗"
-                    },
-                );
-                ui.colored_label(
-                    if auto_grp == "true" {
-                        on_color
-                    } else {
-                        off_color
-                    },
-                    if auto_grp == "true" {
-                        "群組 ✓"
-                    } else {
-                        "群組 ✗"
-                    },
-                );
-            });
-            ui.small("如需更改，請修改 .env 後重啟應用程式。");
-        });
-
-        ui.separator();
-
-        // ── Recent Telegram activity from log buffer ──────────────────────────
-        ui.label(RichText::new("近期 Telegram 活動").strong());
-        let tg_lines: Vec<String> = log_buffer::recent(300)
-            .into_iter()
-            .filter(|l| l.contains("[telegram]") || l.contains("[tg]"))
-            .take(60)
-            .collect();
-
-        if tg_lines.is_empty() {
-            ui.colored_label(Color32::GRAY, "（尚無 Telegram 活動記錄）");
-        } else {
-            ScrollArea::vertical()
-                .id_salt("tg_log")
-                .stick_to_bottom(true)
-                .max_height(280.0)
-                .auto_shrink(false)
-                .show(ui, |ui| {
-                    for line in &tg_lines {
-                        let color = if line.contains("error")
-                            || line.contains("Error")
-                            || line.contains("failed")
-                        {
-                            Color32::from_rgb(220, 100, 100)
-                        } else if line.contains("reply") || line.contains("sent") {
-                            Color32::from_rgb(150, 220, 150)
-                        } else {
-                            Color32::from_rgb(100, 180, 255)
-                        };
-                        ui.colored_label(color, RichText::new(line).monospace().small());
-                    }
-                });
-        }
-    }
 
     fn show_chat(&mut self, ui: &mut egui::Ui) {
         // ── Top status bar ────────────────────────────────────────────────────
@@ -2272,6 +2122,417 @@ TG_DEBUG_UPDATES=false";
                     });
                 }
             } // end else (not /skill command)
+        }
+    }
+
+    fn show_settings(&mut self, ui: &mut egui::Ui) {
+        use crate::persona::{Persona, ProfessionalTone};
+
+        // Lazy-load the persona into the working copy when the tab is first opened.
+        if self.settings_persona.is_none() {
+            self.settings_persona = Persona::load().ok();
+        }
+
+        if self.settings_persona.is_none() {
+            ui.colored_label(Color32::from_rgb(220, 80, 80), "無法載入 config/persona.yaml");
+            if ui.button("重試").clicked() {
+                self.settings_persona = Persona::load().ok();
+            }
+            return;
+        }
+
+        // ── Action flags (set inside scroll closure, executed after) ──────────
+        let mut do_save = false;
+        let mut do_reload = false;
+
+        // Move input buffers out of self so the closure can capture both `p`
+        // (from self.settings_persona) and these buffers without conflicting borrows.
+        let mut new_obj = std::mem::take(&mut self.settings_new_objective);
+        let mut new_cmd = std::mem::take(&mut self.settings_new_command);
+        let settings_msg = self.settings_msg.clone();
+
+        // Telegram state extracted before closure (tg_auth is Arc-Clone, cheap).
+        let mut tg_code = std::mem::take(&mut self.tg_code);
+        let mut tg_password = std::mem::take(&mut self.tg_password);
+        let tg_msg = self.tg_msg.clone();
+        let tg_auth = self.tg_auth.clone();
+        let mut tg_msg_update: Option<String> = None;
+
+        let p = self.settings_persona.as_mut().unwrap();
+
+        ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+            // ── 身份 ─────────────────────────────────────────────────────────
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.label(RichText::new("身份").strong());
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label("名稱：");
+                    ui.text_edit_singleline(&mut p.identity.name);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("語氣：");
+                    ui.selectable_value(
+                        &mut p.identity.professional_tone,
+                        ProfessionalTone::Brief,
+                        "Brief（簡潔）",
+                    );
+                    ui.selectable_value(
+                        &mut p.identity.professional_tone,
+                        ProfessionalTone::Detailed,
+                        "Detailed（詳細）",
+                    );
+                    ui.selectable_value(
+                        &mut p.identity.professional_tone,
+                        ProfessionalTone::Casual,
+                        "Casual（輕鬆）",
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label("描述：");
+                    ui.text_edit_singleline(&mut p.description);
+                });
+            });
+
+            ui.add_space(6.0);
+
+            // ── 回覆風格 ──────────────────────────────────────────────────────
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.label(RichText::new("回覆風格").strong());
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label("語音風格：");
+                    ui.text_edit_singleline(&mut p.response_style.voice);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("確認前綴：");
+                    ui.text_edit_singleline(&mut p.response_style.ack_prefix);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("合規提示：");
+                    ui.text_edit_singleline(&mut p.response_style.compliance_line);
+                });
+            });
+
+            ui.add_space(6.0);
+
+            // ── 目標 ─────────────────────────────────────────────────────────
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.label(RichText::new("Persona 目標").strong());
+                ui.separator();
+                let mut remove_idx: Option<usize> = None;
+                for (i, obj) in p.objectives.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("{}.  {obj}", i + 1));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .small_button(RichText::new("✕").color(Color32::from_rgb(200, 80, 80)))
+                                .clicked()
+                            {
+                                remove_idx = Some(i);
+                            }
+                        });
+                    });
+                }
+                if let Some(idx) = remove_idx {
+                    p.objectives.remove(idx);
+                }
+                ui.horizontal(|ui| {
+                    ui.text_edit_singleline(&mut new_obj);
+                    if ui.button("＋ 新增目標").clicked() && !new_obj.trim().is_empty() {
+                        p.objectives.push(new_obj.trim().to_string());
+                        new_obj.clear();
+                    }
+                });
+            });
+
+            ui.add_space(6.0);
+
+            // ── ROI 閾值 ──────────────────────────────────────────────────────
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.label(RichText::new("ROI 閾值").strong());
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label("最低通知金額（USD）：");
+                    ui.add(
+                        egui::DragValue::new(&mut p.roi_thresholds.min_usd_to_notify)
+                            .range(0.0..=10000.0)
+                            .speed(0.5),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label("最低遠端 LLM 調用金額（USD）：");
+                    ui.add(
+                        egui::DragValue::new(&mut p.roi_thresholds.min_usd_to_call_remote_llm)
+                            .range(0.0..=10000.0)
+                            .speed(1.0),
+                    );
+                });
+            });
+
+            ui.add_space(6.0);
+
+            // ── Coding Agent ──────────────────────────────────────────────────
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.label(RichText::new("Coding Agent").strong());
+                ui.separator();
+                ui.checkbox(&mut p.coding_agent.enabled, "啟用 Coding Agent");
+                ui.horizontal(|ui| {
+                    ui.label("專案根目錄：");
+                    ui.text_edit_singleline(&mut p.coding_agent.project_root);
+                });
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut p.coding_agent.auto_approve_reads, "自動允許讀取操作");
+                    ui.checkbox(
+                        &mut p.coding_agent.auto_approve_writes,
+                        "自動允許寫入操作（不詢問確認）",
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label("最大迭代次數：");
+                    ui.add(egui::DragValue::new(&mut p.coding_agent.max_iterations).range(1..=50));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("最大寫入位元組（bytes）：");
+                    ui.add(
+                        egui::DragValue::new(&mut p.coding_agent.max_file_write_bytes)
+                            .range(1024..=10485760)
+                            .speed(1024.0),
+                    );
+                });
+                ui.label(RichText::new("允許執行的指令：").small());
+                let mut remove_cmd: Option<usize> = None;
+                for (i, cmd) in p.coding_agent.allowed_commands.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.monospace(cmd);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .small_button(RichText::new("✕").color(Color32::from_rgb(200, 80, 80)))
+                                .clicked()
+                            {
+                                remove_cmd = Some(i);
+                            }
+                        });
+                    });
+                }
+                if let Some(idx) = remove_cmd {
+                    p.coding_agent.allowed_commands.remove(idx);
+                }
+                ui.horizontal(|ui| {
+                    ui.text_edit_singleline(&mut new_cmd);
+                    if ui.button("＋ 新增指令").clicked() && !new_cmd.trim().is_empty() {
+                        p.coding_agent.allowed_commands.push(new_cmd.trim().to_string());
+                        new_cmd.clear();
+                    }
+                });
+            });
+
+            ui.add_space(10.0);
+
+            // ── Telegram ─────────────────────────────────────────────────────
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.label(RichText::new("Telegram").strong());
+                ui.separator();
+
+                // Connection status
+                let tg_status = tg_auth.status();
+                let (status_color, status_label, status_detail) = match &tg_status {
+                    TelegramStatus::Connected =>
+                        (Color32::from_rgb(100, 220, 100), "✈ 已連線", None),
+                    TelegramStatus::Disconnected { reason } =>
+                        (Color32::GRAY, "○ 未連線", Some(reason.clone())),
+                    TelegramStatus::CodeRequired =>
+                        (Color32::YELLOW, "⏳ 需要驗證碼", None),
+                    TelegramStatus::PasswordRequired { hint } =>
+                        (Color32::YELLOW, "⏳ 需要 2FA 密碼", Some(hint.clone())),
+                    TelegramStatus::Error { message } =>
+                        (Color32::from_rgb(220, 80, 80), "❌ 錯誤", Some(message.clone())),
+                };
+                ui.horizontal(|ui| {
+                    ui.colored_label(status_color, status_label);
+                    if let Some(d) = status_detail {
+                        ui.small(&d);
+                    }
+                });
+
+                // Auth input forms
+                match &tg_status {
+                    TelegramStatus::CodeRequired => {
+                        ui.add_space(4.0);
+                        ui.label("輸入 Telegram 驗證碼：");
+                        let submitted = ui.horizontal(|ui| {
+                            let r = ui.text_edit_singleline(&mut tg_code);
+                            let btn = ui.button("提交");
+                            (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                                || btn.clicked()
+                        }).inner;
+                        if submitted && !tg_code.trim().is_empty() {
+                            tg_auth.submit_code(tg_code.trim().to_string());
+                            tg_code.clear();
+                            tg_msg_update = Some("驗證碼已提交".to_string());
+                        }
+                    }
+                    TelegramStatus::PasswordRequired { hint } => {
+                        ui.add_space(4.0);
+                        ui.label(format!("輸入 2FA 密碼（提示：{hint}）："));
+                        let submitted = ui.horizontal(|ui| {
+                            let r = ui.add(
+                                TextEdit::singleline(&mut tg_password).password(true),
+                            );
+                            let btn = ui.button("提交");
+                            (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                                || btn.clicked()
+                        }).inner;
+                        if submitted && !tg_password.trim().is_empty() {
+                            tg_auth.submit_password(tg_password.clone());
+                            tg_password.clear();
+                            tg_msg_update = Some("密碼已提交".to_string());
+                        }
+                    }
+                    _ => {}
+                }
+
+                if !tg_msg.is_empty() {
+                    ui.colored_label(Color32::from_rgb(100, 220, 100), &tg_msg);
+                }
+
+                ui.add_space(4.0);
+
+                // Env var status (read-only)
+                let auto_reply = std::env::var("TG_AUTO_REPLY").unwrap_or_default();
+                let auto_priv  = std::env::var("TG_REPLY_PRIVATE").unwrap_or_default();
+                let auto_grp   = std::env::var("TG_REPLY_GROUPS").unwrap_or_default();
+                let on  = Color32::from_rgb(100, 220, 100);
+                let off = Color32::from_rgb(140, 140, 140);
+                ui.horizontal(|ui| {
+                    ui.colored_label(
+                        if auto_reply == "true" { on } else { off },
+                        if auto_reply == "true" { "● 自動回覆：開" } else { "○ 自動回覆：關" },
+                    );
+                    ui.separator();
+                    ui.colored_label(
+                        if auto_priv == "true" { on } else { off },
+                        if auto_priv == "true" { "私訊 ✓" } else { "私訊 ✗" },
+                    );
+                    ui.colored_label(
+                        if auto_grp == "true" { on } else { off },
+                        if auto_grp == "true" { "群組 ✓" } else { "群組 ✗" },
+                    );
+                });
+
+                // .env not configured guide
+                let has_creds = std::env::var("TG_API_ID").is_ok()
+                    && std::env::var("TG_API_HASH").is_ok();
+                if !has_creds {
+                    ui.add_space(4.0);
+                    ui.colored_label(Color32::YELLOW, "⚙ 尚未設定 TG_API_ID / TG_API_HASH");
+                    ui.label("請在 .env 加入：");
+                    let snippet = "TG_API_ID=12345678\nTG_API_HASH=your_hash\nTG_PHONE=+886...";
+                    let mut s = snippet.to_string();
+                    ui.add(TextEdit::multiline(&mut s).code_editor().desired_rows(3).desired_width(f32::INFINITY));
+                    if ui.small_button("📋 複製").clicked() {
+                        ui.ctx().copy_text(snippet.to_string());
+                    }
+                }
+
+                ui.add_space(4.0);
+
+                // Recent Telegram activity log
+                ui.label(RichText::new("近期活動").small().strong());
+                let tg_lines: Vec<String> = log_buffer::recent(300)
+                    .into_iter()
+                    .filter(|l| l.contains("[telegram]") || l.contains("[tg]"))
+                    .take(40)
+                    .collect();
+                if tg_lines.is_empty() {
+                    ui.colored_label(Color32::GRAY, "（尚無 Telegram 活動記錄）");
+                } else {
+                    ScrollArea::vertical()
+                        .id_salt("tg_log_settings")
+                        .stick_to_bottom(true)
+                        .max_height(180.0)
+                        .show(ui, |ui| {
+                            for line in &tg_lines {
+                                let color = if line.contains("error") || line.contains("Error") || line.contains("failed") {
+                                    Color32::from_rgb(220, 100, 100)
+                                } else if line.contains("reply") || line.contains("sent") {
+                                    Color32::from_rgb(150, 220, 150)
+                                } else {
+                                    Color32::from_rgb(100, 180, 255)
+                                };
+                                ui.colored_label(color, RichText::new(line).monospace().small());
+                            }
+                        });
+                }
+            });
+
+            ui.add_space(10.0);
+
+            // ── 動作按鈕（flags — 實際執行在 closure 外面）────────────────────
+            ui.horizontal(|ui| {
+                if ui.button(RichText::new("💾 儲存設定").strong()).clicked() {
+                    do_save = true;
+                }
+                if ui
+                    .button("↺ 重新載入")
+                    .on_hover_text("丟棄未儲存的變更，重新從磁碟讀取")
+                    .clicked()
+                {
+                    do_reload = true;
+                }
+                if !settings_msg.is_empty() {
+                    let color = if settings_msg.starts_with('❌') {
+                        Color32::from_rgb(220, 80, 80)
+                    } else {
+                        Color32::from_rgb(100, 220, 100)
+                    };
+                    ui.colored_label(color, &settings_msg);
+                }
+            });
+
+            ui.add_space(6.0);
+            ui.separator();
+            ui.label(
+                RichText::new("⚠ LLM 後端（端點/模型）等環境變數需編輯 .env 檔案後重啟生效。")
+                    .small()
+                    .color(Color32::GRAY),
+            );
+        });
+
+        // Write all extracted buffers back after closure releases the borrow on p.
+        self.settings_new_objective = new_obj;
+        self.settings_new_command = new_cmd;
+        self.tg_code = tg_code;
+        self.tg_password = tg_password;
+        if let Some(msg) = tg_msg_update {
+            self.tg_msg = msg;
+        }
+
+        // ── Execute deferred actions ──────────────────────────────────────────
+        if do_save {
+            let p = self.settings_persona.as_ref().unwrap();
+            match p.save() {
+                Ok(()) => {
+                    self.auto_approve_writes = p.coding_agent.auto_approve_writes;
+                    self.settings_msg = "✅ 設定已儲存並立即生效".to_string();
+                }
+                Err(e) => {
+                    self.settings_msg = format!("❌ 儲存失敗：{e}");
+                }
+            }
+            self.settings_msg_at = Some(std::time::Instant::now());
+        }
+
+        if do_reload {
+            match Persona::load() {
+                Ok(fresh) => {
+                    self.settings_persona = Some(fresh);
+                    self.settings_msg = "已重新載入".to_string();
+                }
+                Err(e) => {
+                    self.settings_msg = format!("❌ 載入失敗：{e}");
+                }
+            }
+            self.settings_msg_at = Some(std::time::Instant::now());
         }
     }
 }

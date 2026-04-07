@@ -129,7 +129,7 @@ identity:
   name: Sirin
 
 response_style:
-  voice: 自然、親切、年輕女生口吻
+  voice: 自然、親切、口吻
 
 objectives:
   - Monitor Agora

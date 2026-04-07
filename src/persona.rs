@@ -9,7 +9,7 @@ use std::{
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProfessionalTone {
     Brief,
@@ -577,6 +577,19 @@ impl TaskTracker {
         }
         fs::rename(&tmp_path, &path)?;
         Ok(removed)
+    }
+
+    /// Truncate the task log file to empty, removing all entries.
+    pub fn clear(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let path = self
+            .path
+            .lock()
+            .expect("TaskTracker mutex poisoned")
+            .clone();
+        if path.exists() {
+            OpenOptions::new().write(true).truncate(true).open(&path)?;
+        }
+        Ok(())
     }
 }
 
