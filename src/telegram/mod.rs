@@ -55,14 +55,16 @@ async fn ensure_user_authorized(
     client: &Client,
     cfg: &TelegramConfig,
     auth: &TelegramAuthState,
+    force_login: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if client.is_authorized().await? {
         return Ok(());
     }
 
-    if !require_login() {
+    // Skip auth flow unless explicitly requested (TG_REQUIRE_LOGIN=1 or manual trigger).
+    if !require_login() && !force_login {
         auth.set_disconnected(
-            "telegram login optional; set TG_REQUIRE_LOGIN=1 to enable auth flow",
+            "session not authorized; click 立即連線 or set TG_REQUIRE_LOGIN=1",
         );
         sirin_log!("[telegram] Session not authorized; login is optional, skipping sign-in flow");
         return Ok(());
@@ -114,6 +116,10 @@ async fn run_listener_once(
     tracker: &TaskTracker,
     auth: &TelegramAuthState,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Reload .env so credentials edited after startup are picked up.
+    let _ = dotenvy::dotenv_override();
+
+    let force_login = auth.take_force_login();
     let cfg = TelegramConfig::from_env()?;
     let llm = crate::llm::shared_llm();
 
@@ -134,7 +140,7 @@ async fn run_listener_once(
     let client = Client::new(handle.clone());
     let pool_task = tokio::spawn(runner.run());
 
-    if let Err(err) = ensure_user_authorized(&client, &cfg, auth).await {
+    if let Err(err) = ensure_user_authorized(&client, &cfg, auth, force_login).await {
         sirin_log!("[telegram] {err}");
         handle.quit();
         let _ = pool_task.await;
@@ -427,7 +433,13 @@ pub async fn run_listener(tracker: TaskTracker, auth: TelegramAuthState) {
             }
         }
 
-        tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
+        // Wait for the backoff timer OR an immediate reconnect signal from the UI.
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)) => {}
+            _ = auth.reconnect_notified().notified() => {
+                sirin_log!("[telegram] Reconnect triggered by user — skipping backoff");
+            }
+        }
 
         // Exponential back-off capped at 5 minutes.
         backoff_secs = (backoff_secs * 2).min(300);

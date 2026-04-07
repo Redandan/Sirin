@@ -92,14 +92,21 @@ impl Agent for ChatAgent {
 
             let client = Arc::clone(&ctx.http);
             let llm_arc = Arc::clone(&ctx.llm);
+            let persona = Persona::load().ok();
+
+            // Respect the persona's remote-AI kill-switch: if disable_remote_ai is
+            // set, fall back to the main (local) LLM even when the router requested
+            // the large-model path.
+            let remote_disabled = persona.as_ref().map_or(false, |p| p.disable_remote_ai);
+            let use_large = request.use_large_model && !remote_disabled;
+
             // When use_large_model is requested, use the process-wide large-model
             // config (cached; avoids cloning on every request).
-            let llm: Arc<crate::llm::LlmConfig> = if request.use_large_model {
+            let llm: Arc<crate::llm::LlmConfig> = if use_large {
                 crate::llm::shared_large_llm()
             } else {
                 llm_arc
             };
-            let persona = Persona::load().ok();
 
             let behavior = ctx
                 .call_tool(

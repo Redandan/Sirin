@@ -126,6 +126,10 @@ pub struct Persona {
     pub description: String,
     #[serde(default)]
     pub coding_agent: CodingAgentConfig,
+    /// When true, escalation to a remote/large model is suppressed at runtime.
+    /// The main LLM backend (set via `LLM_PROVIDER` env var) is still used.
+    #[serde(default)]
+    pub disable_remote_ai: bool,
 }
 
 fn default_version() -> String {

@@ -263,6 +263,11 @@ impl LlmConfig {
         }
     }
 
+    /// Returns true when this config points to a cloud/remote backend (Gemini).
+    pub fn is_remote(&self) -> bool {
+        self.backend == LlmBackend::Gemini
+    }
+
     /// The model name to use for coding tasks.
     /// Falls back to the general `model` if `CODING_MODEL` is not set.
     pub fn effective_coding_model(&self) -> &str {

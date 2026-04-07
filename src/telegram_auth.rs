@@ -14,8 +14,8 @@
 
 use parking_lot::Mutex;
 use serde::Serialize;
-use std::sync::Arc;
-use tokio::sync::oneshot;
+use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
+use tokio::sync::{oneshot, Notify};
 
 // ── Public status type ────────────────────────────────────────────────────────
 
@@ -57,27 +57,55 @@ impl Inner {
 // ── Shared handle ─────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
-pub struct TelegramAuthState(Arc<Mutex<Inner>>);
+pub struct TelegramAuthState {
+    inner: Arc<Mutex<Inner>>,
+    /// Fired by the UI to skip the backoff sleep and immediately retry.
+    reconnect_notify: Arc<Notify>,
+    /// Set by the UI when manually triggering reconnect; bypasses the
+    /// `TG_REQUIRE_LOGIN` default-false gate so login actually runs.
+    force_login: Arc<AtomicBool>,
+}
 
 impl TelegramAuthState {
     pub fn new() -> Self {
-        Self(Arc::new(Mutex::new(Inner::new())))
+        Self {
+            inner: Arc::new(Mutex::new(Inner::new())),
+            reconnect_notify: Arc::new(Notify::new()),
+            force_login: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Signal the background listener to skip its backoff sleep and reconnect now.
+    /// Also sets the force-login flag so the auth flow is not skipped.
+    pub fn trigger_reconnect(&self) {
+        self.force_login.store(true, Ordering::Release);
+        self.reconnect_notify.notify_one();
+    }
+
+    /// Return a reference to the notify so the listener can await it.
+    pub fn reconnect_notified(&self) -> &Notify {
+        &self.reconnect_notify
+    }
+
+    /// Consume and return the force-login flag.  Called once per connection attempt.
+    pub fn take_force_login(&self) -> bool {
+        self.force_login.swap(false, Ordering::AcqRel)
     }
 
     // ── Called from the listener task ─────────────────────────────────────────
 
     pub fn set_connected(&self) {
-        self.0.lock().status = TelegramStatus::Connected;
+        self.inner.lock().status = TelegramStatus::Connected;
     }
 
     pub fn set_disconnected(&self, reason: impl Into<String>) {
-        self.0.lock().status = TelegramStatus::Disconnected {
+        self.inner.lock().status = TelegramStatus::Disconnected {
             reason: reason.into(),
         };
     }
 
     pub fn set_error(&self, message: impl Into<String>) {
-        self.0.lock().status = TelegramStatus::Error {
+        self.inner.lock().status = TelegramStatus::Error {
             message: message.into(),
         };
     }
@@ -88,7 +116,7 @@ impl TelegramAuthState {
     pub async fn request_code(&self, timeout_secs: u64) -> Option<String> {
         let (tx, rx) = oneshot::channel();
         {
-            let mut inner = self.0.lock();
+            let mut inner = self.inner.lock();
             inner.status = TelegramStatus::CodeRequired;
             inner.code_tx = Some(tx);
         }
@@ -107,7 +135,7 @@ impl TelegramAuthState {
     ) -> Option<String> {
         let (tx, rx) = oneshot::channel();
         {
-            let mut inner = self.0.lock();
+            let mut inner = self.inner.lock();
             inner.status = TelegramStatus::PasswordRequired { hint: hint.into() };
             inner.password_tx = Some(tx);
         }
@@ -121,13 +149,13 @@ impl TelegramAuthState {
 
     /// Return the current status (serialisable snapshot).
     pub fn status(&self) -> TelegramStatus {
-        self.0.lock().status.clone()
+        self.inner.lock().status.clone()
     }
 
     /// Feed a login code from the UI into the waiting listener.
     /// Returns `true` when there was a pending receiver, `false` otherwise.
     pub fn submit_code(&self, code: String) -> bool {
-        let mut inner = self.0.lock();
+        let mut inner = self.inner.lock();
         if let Some(tx) = inner.code_tx.take() {
             let _ = tx.send(code);
             true
@@ -138,7 +166,7 @@ impl TelegramAuthState {
 
     /// Feed a 2-FA password from the UI.
     pub fn submit_password(&self, password: String) -> bool {
-        let mut inner = self.0.lock();
+        let mut inner = self.inner.lock();
         if let Some(tx) = inner.password_tx.take() {
             let _ = tx.send(password);
             true
