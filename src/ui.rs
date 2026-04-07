@@ -1860,11 +1860,11 @@ TG_DEBUG_UPDATES=false";
                 .checkbox(&mut auto_approve_local, "自動允許寫入")
                 .on_hover_text("關閉時，Coding Agent 寫入檔案前會彈出確認對話框（對應 persona.yaml 中的 auto_approve_writes）");
 
-            // Plain Enter = send; Shift+Enter = newline.
+            // Plain Enter = newline; Shift+Enter = send.
             let enter_send = input.has_focus()
                 && ui.input_mut(|i| {
-                    if i.key_pressed(egui::Key::Enter) && !i.modifiers.shift {
-                        i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+                    if i.key_pressed(egui::Key::Enter) && i.modifiers.shift {
+                        i.consume_key(egui::Modifiers::SHIFT, egui::Key::Enter);
                         true
                     } else {
                         false

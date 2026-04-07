@@ -474,14 +474,6 @@ async fn run_once(tracker: &TaskTracker) -> Result<(), Box<dyn std::error::Error
 
     if actionable.is_empty() {
         sirin_log!("[followup] No FOLLOWING/PENDING tasks found — skipping LLM call");
-        record_optimization_log(
-            tracker,
-            "optimization_cycle_idle",
-            Some("no actionable FOLLOWING/PENDING tasks".to_string()),
-            Some("IDLE"),
-            None,
-            None,
-        );
         return Ok(());
     }
 
