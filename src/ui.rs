@@ -463,6 +463,8 @@ pub struct SirinApp {
     pending_draft_edits: std::collections::HashMap<String, String>,
     /// KPI values cached in memory: agent_id → metric_key → value_str.
     kpi_values: std::collections::HashMap<String, std::collections::HashMap<String, String>>,
+    /// Pending reply counts cached per agent (refreshed every 5 s).  Avoids disk reads every frame.
+    pending_count_cache: std::collections::HashMap<String, usize>,
 }
 
 impl SirinApp {
@@ -569,6 +571,7 @@ impl SirinApp {
             pending_replies_loaded_for: String::new(),
             pending_draft_edits: std::collections::HashMap::new(),
             kpi_values: std::collections::HashMap::new(),
+            pending_count_cache: std::collections::HashMap::new(),
         };
         app.refresh();
         app
@@ -623,6 +626,16 @@ impl SirinApp {
             .map(|p| p.coding_agent.auto_approve_writes)
             .unwrap_or(false);
         self.storage = crate::memory::storage_usage();
+        // Refresh pending reply counts for all configured agents (avoids per-frame disk reads).
+        if let Some(f) = &self.settings_agents {
+            for agent in &f.agents {
+                let count = crate::pending_reply::load_pending(&agent.id)
+                    .into_iter()
+                    .filter(|r| r.status == crate::pending_reply::PendingStatus::Pending)
+                    .count();
+                self.pending_count_cache.insert(agent.id.clone(), count);
+            }
+        }
         self.last_refresh = std::time::Instant::now();
     }
 }
@@ -939,51 +952,6 @@ impl eframe::App for SirinApp {
 
 impl SirinApp {
     fn show_tasks(&mut self, ui: &mut egui::Ui) {
-        // ── Storage usage panel ───────────────────────────────────────────────
-        use crate::memory::StorageUsage;
-        let s = &self.storage;
-        egui::Frame::group(ui.style())
-            .fill(Color32::from_rgb(22, 28, 38))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("💾 儲存空間").strong());
-                    ui.separator();
-                    ui.colored_label(
-                        Color32::from_rgb(130, 200, 255),
-                        format!("總計 {}", StorageUsage::fmt_bytes(s.total_bytes)),
-                    );
-                });
-                ui.add_space(4.0);
-                ui.horizontal_wrapped(|ui| {
-                    let items = [
-                        ("記憶 DB", s.memory_db_bytes),
-                        ("Call Graph", s.call_graph_bytes),
-                        ("調研記錄", s.research_log_bytes),
-                        ("任務記錄", s.task_log_bytes),
-                        ("對話 Context", s.context_bytes),
-                    ];
-                    for (label, bytes) in items {
-                        if bytes > 0 {
-                            egui::Frame::new()
-                                .fill(Color32::from_rgb(32, 40, 55))
-                                .inner_margin(egui::Margin::symmetric(8, 3))
-                                .corner_radius(4.0)
-                                .show(ui, |ui| {
-                                    ui.small(format!(
-                                        "{label}  {}",
-                                        StorageUsage::fmt_bytes(bytes)
-                                    ));
-                                });
-                        }
-                    }
-                    if s.total_bytes == 0 {
-                        ui.colored_label(Color32::GRAY, "尚無資料");
-                    }
-                });
-            });
-
-        ui.add_space(4.0);
-
         // ── Filter bar ────────────────────────────────────────────────────────
         let running_count = self
             .tasks
@@ -1208,47 +1176,9 @@ impl SirinApp {
             ui.separator();
         }
 
-        // ── New research form ──────────────────────────────────────────────────
-        egui::Frame::group(ui.style()).show(ui, |ui| {
-            ui.label(RichText::new("新調研任務").strong());
-            ui.horizontal(|ui| {
-                ui.label("主題：");
-                ui.text_edit_singleline(&mut self.research_topic);
-            });
-            ui.horizontal(|ui| {
-                ui.label("URL：");
-                ui.text_edit_singleline(&mut self.research_url);
-                ui.small("（選填）");
-            });
-            ui.horizontal(|ui| {
-                let can_start = !self.research_topic.trim().is_empty();
-                if ui
-                    .add_enabled(can_start, egui::Button::new("▶ 開始調研"))
-                    .clicked()
-                {
-                    let topic = self.research_topic.trim().to_string();
-                    let url = if self.research_url.trim().is_empty() {
-                        None
-                    } else {
-                        Some(self.research_url.trim().to_string())
-                    };
-                    let rt = self.rt.clone();
-                    rt.spawn(async move {
-                        let task =
-                            crate::agents::research_agent::run_research_via_adk(topic, url).await;
-                        eprintln!("[ui] research '{}' → {:?}", task.id, task.status);
-                    });
-                    self.research_msg = format!("已啟動：{}", self.research_topic.trim());
-                    self.research_msg_at = Some(std::time::Instant::now());
-                    self.research_topic.clear();
-                    self.research_url.clear();
-                }
-                if !self.research_msg.is_empty() {
-                    ui.colored_label(Color32::from_rgb(100, 220, 100), &self.research_msg);
-                }
-            });
-        });
-
+        ui.colored_label(Color32::GRAY,
+            "ℹ 啟動調研請至「🗂 調度台」→ 操作區 → 🔬 先調研再回");
+        ui.add_space(4.0);
         ui.separator();
         ui.horizontal(|ui| {
             ui.label(format!("{} 筆調研記錄", self.research_tasks.len()));
@@ -2352,16 +2282,7 @@ impl SirinApp {
                                     ui.label(RichText::new(&row.name).strong());
                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                         if let Some(ref st) = row.tg_status {
-                                            match st {
-                                                TelegramStatus::Connected =>
-                                                    { ui.colored_label(Color32::from_rgb(80, 200, 100), "✈●"); }
-                                                TelegramStatus::CodeRequired | TelegramStatus::PasswordRequired { .. } =>
-                                                    { ui.colored_label(Color32::YELLOW, "✈⚠"); }
-                                                TelegramStatus::Error { .. } =>
-                                                    { ui.colored_label(Color32::from_rgb(220, 80, 80), "✈✗"); }
-                                                TelegramStatus::Disconnected { .. } =>
-                                                    { ui.colored_label(Color32::GRAY, "✈○"); }
-                                            }
+                                            tg_status_badge(ui, st);
                                         }
                                     });
                                 });
@@ -2518,7 +2439,6 @@ impl SirinApp {
     fn show_dispatch(&mut self, ui: &mut egui::Ui) {
         use crate::agent_config::AgentsFile;
         use crate::pending_reply::PendingStatus;
-        use crate::telegram_auth::TelegramStatus;
 
         // Lazy-load agents config.
         if self.settings_agents.is_none() {
@@ -2584,11 +2504,8 @@ impl SirinApp {
                         let tg_status = self.agent_auth_states.iter()
                             .find(|(id, _)| id == &agent.id)
                             .map(|(_, s)| s.status());
-                        // Count pending confirmations for badge.
-                        let pending_count = crate::pending_reply::load_pending(&agent.id)
-                            .into_iter()
-                            .filter(|r| r.status == PendingStatus::Pending)
-                            .count();
+                        // Pending count from 5s cache (avoids disk read every frame).
+                        let pending_count = *self.pending_count_cache.get(&agent.id).unwrap_or(&0);
 
                         let is_selected = self.dispatch_selected_agent == Some(agent_idx);
                         let card_bg = if is_selected {
@@ -2623,18 +2540,9 @@ impl SirinApp {
 
                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                         if let Some(ref st) = tg_status {
-                                            match st {
-                                                TelegramStatus::Connected =>
-                                                    ui.colored_label(Color32::from_rgb(80, 200, 100), "✈●"),
-                                                TelegramStatus::CodeRequired | TelegramStatus::PasswordRequired { .. } =>
-                                                    ui.colored_label(Color32::YELLOW, "✈⚠"),
-                                                TelegramStatus::Error { .. } =>
-                                                    ui.colored_label(Color32::from_rgb(220, 80, 80), "✈✗"),
-                                                TelegramStatus::Disconnected { .. } =>
-                                                    ui.colored_label(Color32::GRAY, "✈○"),
-                                            }
+                                            tg_status_badge(ui, st);
                                         } else {
-                                            ui.colored_label(Color32::DARK_GRAY, "—")
+                                            ui.colored_label(Color32::DARK_GRAY, "—");
                                         }
                                     });
                                 });
@@ -3110,8 +3018,6 @@ fn show_agent_detail(
     other_tg_phones: &[(String, String)],
     active_tab: &mut usize,
 ) {
-    use crate::telegram_auth::TelegramStatus;
-
     // ── Agent header ──────────────────────────────────────────────────────
     ui.horizontal(|ui| {
         let enabled_color = if agent.enabled { Color32::from_rgb(80, 200, 100) } else { Color32::GRAY };
@@ -3128,16 +3034,8 @@ fn show_agent_detail(
                 agent.enabled = !agent.enabled;
             }
             if let Some(a) = auth {
-                match a.status() {
-                    TelegramStatus::Connected =>
-                        { ui.colored_label(Color32::from_rgb(80, 200, 100), "✈●"); }
-                    TelegramStatus::CodeRequired | TelegramStatus::PasswordRequired { .. } =>
-                        { ui.colored_label(Color32::YELLOW, "✈⚠"); }
-                    TelegramStatus::Error { .. } =>
-                        { ui.colored_label(Color32::from_rgb(220, 80, 80), "✈✗"); }
-                    TelegramStatus::Disconnected { .. } =>
-                        { ui.colored_label(Color32::GRAY, "✈○"); }
-                }
+                let st = a.status();
+                tg_status_badge(ui, &st);
             }
         });
     });
@@ -3395,6 +3293,21 @@ fn show_tab_actions(
                 "📝 詳細 coding 設定（project_root、max_iterations、auto_approve 等）\n請修改 config/persona.yaml → coding_agent。",
             );
         });
+}
+
+/// Renders a compact Telegram connection status icon (✈●/✈⚠/✈✗/✈○).
+fn tg_status_badge(ui: &mut egui::Ui, status: &crate::telegram_auth::TelegramStatus) {
+    use crate::telegram_auth::TelegramStatus;
+    match status {
+        TelegramStatus::Connected =>
+            { ui.colored_label(Color32::from_rgb(80, 200, 100), "✈●"); }
+        TelegramStatus::CodeRequired | TelegramStatus::PasswordRequired { .. } =>
+            { ui.colored_label(Color32::YELLOW, "✈⚠"); }
+        TelegramStatus::Error { .. } =>
+            { ui.colored_label(Color32::from_rgb(220, 80, 80), "✈✗"); }
+        TelegramStatus::Disconnected { .. } =>
+            { ui.colored_label(Color32::GRAY, "✈○"); }
+    }
 }
 
 fn show_tab_behavior(ui: &mut egui::Ui, agent: &mut crate::agent_config::AgentConfig) {
