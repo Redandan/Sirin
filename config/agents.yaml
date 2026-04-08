@@ -1,3 +1,4 @@
+max_agents: 2
 agents:
   - id: sirin
     enabled: true
@@ -22,8 +23,76 @@ agents:
         reply_groups: false
         group_ids: []
         auto_reply: false
+        require_confirmation: false
     actions:
       coding_agent:
         enabled: true
       research_agent:
         enabled: true
+    human_behavior:
+      enabled: false
+      min_reply_delay_secs: 30
+      max_reply_delay_secs: 180
+      max_messages_per_hour: 20
+      max_messages_per_day: 100
+    kpi:
+      metrics:
+        - key: conversion_rate
+          label: 轉化率
+          unit: "%"
+          source: manual
+        - key: merchants_contacted
+          label: 本月商戶聯繫
+          unit: 次
+          source: manual
+        - key: followups_done
+          label: 成功跟進
+          unit: 次
+          source: manual
+
+  - id: redan_ai
+    enabled: false
+    identity:
+      name: RedanAI
+      professional_tone: brief
+    response_style:
+      voice: 專業、簡潔
+      ack_prefix: 已收到。
+      compliance_line: 我會協助處理。
+    disable_remote_ai: false
+    objectives:
+      - Handle colleague queries
+      - Draft professional replies
+    channel:
+      teams:
+        webhook_url: "${TEAMS_WEBHOOK_URL}"
+    actions:
+      coding_agent:
+        enabled: false
+      research_agent:
+        enabled: true
+    human_behavior:
+      enabled: true
+      min_reply_delay_secs: 60
+      max_reply_delay_secs: 300
+      max_messages_per_hour: 10
+      max_messages_per_day: 50
+      work_schedule:
+        utc_offset_hours: 8
+        work_start: "09:00"
+        work_end: "18:00"
+        work_days: [1, 2, 3, 4, 5]
+        breaks:
+          - name: 午休
+            start: "12:00"
+            end: "13:30"
+    kpi:
+      metrics:
+        - key: queries_handled
+          label: 處理查詢數
+          unit: 次
+          source: manual
+        - key: avg_response_time
+          label: 平均回覆時間
+          unit: 分鐘
+          source: manual

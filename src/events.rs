@@ -52,6 +52,18 @@ pub enum AgentEvent {
         /// First ~80 chars of the reply.
         preview: String,
     },
+    /// An AI draft is waiting for human approval before being sent
+    /// (triggered when `require_confirmation = true` on the channel).
+    ReplyPendingApproval {
+        /// Agent that produced the draft.
+        agent_id: String,
+        /// ID of the [`crate::pending_reply::PendingReply`] record.
+        pending_id: String,
+        /// Human-readable sender / conversation name.
+        peer_name: String,
+        /// First ~60 chars of the draft reply for the notification badge.
+        draft_preview: String,
+    },
 }
 
 // ── Internal bus ──────────────────────────────────────────────────────────────

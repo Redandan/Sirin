@@ -33,7 +33,10 @@ use grammers_client::{Client, SenderPool};
 use grammers_session::storages::SqliteSession;
 use grammers_session::types::{PeerId, PeerKind};
 
+use crate::events;
+use crate::human_behavior;
 use crate::memory::ensure_codebase_index;
+use crate::pending_reply;
 use crate::persona::{Persona, TaskTracker};
 use crate::researcher;
 use crate::sirin_log;
@@ -464,6 +467,12 @@ async fn run_agent_listener_once(
 
     reply::send_startup_message(&client, &cfg).await;
 
+    // ── Per-agent frequency counters (in-memory, reset on window rollover) ────
+    let mut sent_this_hour: u32 = 0;
+    let mut sent_this_day: u32 = 0;
+    let mut hour_reset_at = Utc::now();
+    let mut day_reset_at = Utc::now();
+
     loop {
         let update = match updates.next().await {
             Ok(u) => u,
@@ -475,6 +484,19 @@ async fn run_agent_listener_once(
         };
 
         let Update::NewMessage(message) = update else { continue };
+
+        // Roll over frequency counters when the window expires.
+        {
+            let now = Utc::now();
+            if (now - hour_reset_at).num_seconds() >= 3600 {
+                sent_this_hour = 0;
+                hour_reset_at = now;
+            }
+            if (now - day_reset_at).num_seconds() >= 86400 {
+                sent_this_day = 0;
+                day_reset_at = now;
+            }
+        }
 
         if message.outgoing() { continue; }
         if message.sender_id() == Some(PeerId::self_user()) { continue; }
@@ -587,8 +609,50 @@ async fn run_agent_listener_once(
                 Some(tracker.clone()),
             )
             .await;
-            reply::send_final_reply(&client, &message, is_private, final_reply.as_str()).await;
-            reply::persist_reply_context(&text, &final_reply, peer_bare_id, Some(agent_cfg.id.as_str()));
+
+            // ── Human behavior check ──────────────────────────────────────────
+            let delay_dec = human_behavior::compute_delay(
+                &agent_cfg.human_behavior,
+                sent_this_hour,
+                sent_this_day,
+            );
+            if !delay_dec.should_reply {
+                sirin_log!("[telegram/{agent_id}] 跳過回覆：{}", delay_dec.reason);
+            } else {
+                if delay_dec.delay_secs > 0 {
+                    sirin_log!("[telegram/{agent_id}] {}", delay_dec.reason);
+                    tokio::time::sleep(std::time::Duration::from_secs(delay_dec.delay_secs)).await;
+                }
+                // ── require_confirmation check ────────────────────────────────
+                if channel.require_confirmation {
+                    let peer_name = peer_bare_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| "unknown".to_string());
+                    let draft_preview: String = final_reply.chars().take(60).collect();
+                    let pending = pending_reply::PendingReply::new(
+                        agent_cfg.id.clone(),
+                        "telegram",
+                        peer_bare_id.map(|id| id as i64),
+                        peer_name.clone(),
+                        text.clone(),
+                        final_reply.clone(),
+                    );
+                    let pending_id = pending.id.clone();
+                    pending_reply::append_pending(pending);
+                    events::publish(events::AgentEvent::ReplyPendingApproval {
+                        agent_id: agent_cfg.id.clone(),
+                        pending_id,
+                        peer_name,
+                        draft_preview,
+                    });
+                    sirin_log!("[telegram/{agent_id}] 草稿已保存，等待人工確認");
+                } else {
+                    reply::send_final_reply(&client, &message, is_private, final_reply.as_str()).await;
+                    sent_this_hour += 1;
+                    sent_this_day += 1;
+                }
+                reply::persist_reply_context(&text, &final_reply, peer_bare_id, Some(agent_cfg.id.as_str()));
+            }
         }
 
         reply::record_ai_decision_if_needed(tracker, persona_name, &text, should_record_ai_decision);

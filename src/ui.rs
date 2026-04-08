@@ -32,6 +32,7 @@ enum Tab {
 // ── Dispatch task type ────────────────────────────────────────────────────────
 
 #[derive(PartialEq, Clone, Copy, Default)]
+#[allow(dead_code)]
 enum DispatchTaskType {
     #[default]
     Chat,
@@ -437,6 +438,7 @@ pub struct SirinApp {
     /// Currently selected agent id for dispatch ("" = first agent).
     dispatch_target_agent: String,
     /// Task type to dispatch.
+    #[allow(dead_code)]
     dispatch_task_type: DispatchTaskType,
     /// Text input buffer for dispatch.
     dispatch_task_input: String,
@@ -445,6 +447,22 @@ pub struct SirinApp {
     dispatch_msg_at: Option<std::time::Instant>,
     // Per-agent filter for the Tasks tab ("" = all agents).
     task_agent_filter: String,
+
+    // ── Dispatch detail panel ─────────────────────────────────────────────────
+    /// Fleet grid selected agent index (None = none).
+    dispatch_selected_agent: Option<usize>,
+    /// Active tab in the detail panel: 0=活動, 1=記憶, 2=KPI, 3=待確認.
+    dispatch_detail_tab: usize,
+    /// Peer name/ID for manual dispatch operations.
+    dispatch_manual_peer: String,
+    /// Pending replies cached for the currently selected agent.
+    pending_replies: Vec<crate::pending_reply::PendingReply>,
+    /// Agent ID for which pending_replies was last loaded.
+    pending_replies_loaded_for: String,
+    /// Editable draft text per pending reply ID.
+    pending_draft_edits: std::collections::HashMap<String, String>,
+    /// KPI values cached in memory: agent_id → metric_key → value_str.
+    kpi_values: std::collections::HashMap<String, std::collections::HashMap<String, String>>,
 }
 
 impl SirinApp {
@@ -544,6 +562,13 @@ impl SirinApp {
             dispatch_msg: String::new(),
             dispatch_msg_at: None,
             task_agent_filter: String::new(),
+            dispatch_selected_agent: None,
+            dispatch_detail_tab: 0,
+            dispatch_manual_peer: String::new(),
+            pending_replies: Vec::new(),
+            pending_replies_loaded_for: String::new(),
+            pending_draft_edits: std::collections::HashMap::new(),
+            kpi_values: std::collections::HashMap::new(),
         };
         app.refresh();
         app
@@ -808,6 +833,19 @@ impl eframe::App for SirinApp {
                             self.coding_done_at = Some(std::time::Instant::now());
                         }
                     }
+                }
+                Ok(AgentEvent::ReplyPendingApproval { agent_id, .. }) => {
+                    // Reload pending replies if the currently selected agent matches.
+                    let sel_id = self.dispatch_selected_agent
+                        .and_then(|i| self.settings_agents.as_ref()?.agents.get(i))
+                        .map(|a| a.id.clone());
+                    if sel_id.as_deref() == Some(agent_id.as_str()) {
+                        self.pending_replies = crate::pending_reply::load_pending(&agent_id);
+                        self.pending_replies_loaded_for = agent_id.clone();
+                    }
+                    // Switch focus to dispatch → 待確認 tab.
+                    self.tab = Tab::Dispatch;
+                    self.dispatch_detail_tab = 3;
                 }
                 Ok(_) => {} // other events (ResearchCompleted, FollowupTriggered, ChatAgentReplied)
                 Err(broadcast::error::TryRecvError::Lagged(_)) => {} // skip lagged events
@@ -2479,9 +2517,10 @@ impl SirinApp {
 
     fn show_dispatch(&mut self, ui: &mut egui::Ui) {
         use crate::agent_config::AgentsFile;
+        use crate::pending_reply::PendingStatus;
         use crate::telegram_auth::TelegramStatus;
 
-        // Lazy-load agents config (same as Settings).
+        // Lazy-load agents config.
         if self.settings_agents.is_none() {
             self.settings_agents = AgentsFile::load().ok().or_else(|| Some(AgentsFile::default()));
         }
@@ -2490,10 +2529,16 @@ impl SirinApp {
             None => Vec::new(),
         };
 
-        // Default target agent to first agent id.
-        if self.dispatch_target_agent.is_empty() {
-            if let Some(first) = agents.first() {
-                self.dispatch_target_agent = first.id.clone();
+        // Default selection to the first agent.
+        if self.dispatch_selected_agent.is_none() && !agents.is_empty() {
+            self.dispatch_selected_agent = Some(0);
+        }
+        // Keep legacy dispatch_target_agent in sync.
+        if let Some(idx) = self.dispatch_selected_agent {
+            if let Some(agent) = agents.get(idx) {
+                if self.dispatch_target_agent != agent.id {
+                    self.dispatch_target_agent = agent.id.clone();
+                }
             }
         }
 
@@ -2511,9 +2556,6 @@ impl SirinApp {
                 };
                 ui.colored_label(color, &self.dispatch_msg);
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.small("派發後自動切換至「💬 對話」頁籤");
-            });
         });
         ui.separator();
 
@@ -2525,7 +2567,7 @@ impl SirinApp {
                 ui.label(RichText::new("Agent 艦隊").strong().small());
                 ui.add_space(4.0);
                 ui.horizontal_wrapped(|ui| {
-                    for agent in &agents {
+                    for (agent_idx, agent) in agents.iter().enumerate() {
                         // Count tasks for this agent from the activity log.
                         let persona_name = &agent.identity.name;
                         let running = self.tasks.iter()
@@ -2542,8 +2584,13 @@ impl SirinApp {
                         let tg_status = self.agent_auth_states.iter()
                             .find(|(id, _)| id == &agent.id)
                             .map(|(_, s)| s.status());
+                        // Count pending confirmations for badge.
+                        let pending_count = crate::pending_reply::load_pending(&agent.id)
+                            .into_iter()
+                            .filter(|r| r.status == PendingStatus::Pending)
+                            .count();
 
-                        let is_selected = self.dispatch_target_agent == agent.id;
+                        let is_selected = self.dispatch_selected_agent == Some(agent_idx);
                         let card_bg = if is_selected {
                             Color32::from_rgb(30, 60, 100)
                         } else {
@@ -2595,53 +2642,56 @@ impl SirinApp {
                                 ui.colored_label(Color32::DARK_GRAY, RichText::new(&agent.id).small().monospace());
                                 ui.add_space(4.0);
 
-                                // Task counters
+                                // Task counters + pending badge
                                 ui.horizontal(|ui| {
                                     if running > 0 {
                                         egui::Frame::new()
                                             .fill(Color32::from_rgb(70, 54, 18))
                                             .corner_radius(3.0)
                                             .inner_margin(egui::Margin::symmetric(5, 2))
-                                            .show(ui, |ui| {
-                                                ui.small(format!("⏳ {}", running));
-                                            });
+                                            .show(ui, |ui| { ui.small(format!("⏳ {}", running)); });
                                     }
                                     if failed > 0 {
                                         egui::Frame::new()
                                             .fill(Color32::from_rgb(72, 24, 24))
                                             .corner_radius(3.0)
                                             .inner_margin(egui::Margin::symmetric(5, 2))
+                                            .show(ui, |ui| { ui.small(format!("❌ {}", failed)); });
+                                    }
+                                    if pending_count > 0 {
+                                        egui::Frame::new()
+                                            .fill(Color32::from_rgb(70, 40, 10))
+                                            .corner_radius(3.0)
+                                            .inner_margin(egui::Margin::symmetric(5, 2))
                                             .show(ui, |ui| {
-                                                ui.small(format!("❌ {}", failed));
+                                                ui.colored_label(Color32::from_rgb(255, 160, 60),
+                                                    format!("📬 {}", pending_count));
                                             });
                                     }
                                     egui::Frame::new()
                                         .fill(Color32::from_rgb(22, 48, 24))
                                         .corner_radius(3.0)
                                         .inner_margin(egui::Margin::symmetric(5, 2))
-                                        .show(ui, |ui| {
-                                            ui.small(format!("✅ {}", done));
-                                        });
+                                        .show(ui, |ui| { ui.small(format!("✅ {}", done)); });
                                 });
 
-                                // Latest activity
-                                if let Some(latest) = self.tasks.iter().find(|t| &t.persona == persona_name) {
-                                    let preview = latest.message_preview.as_deref()
-                                        .or(latest.reason.as_deref())
-                                        .unwrap_or(&latest.event);
-                                    ui.add_space(2.0);
-                                    ui.colored_label(
-                                        Color32::GRAY,
-                                        RichText::new(preview.chars().take(40).collect::<String>()).small(),
-                                    );
-                                }
+                                // Platform badge
+                                let platform_label = match agent.platform() {
+                                    crate::agent_config::AgentPlatform::Telegram => "✈ Telegram",
+                                    crate::agent_config::AgentPlatform::Teams    => "💼 Teams",
+                                    crate::agent_config::AgentPlatform::UiOnly   => "🖥 UI",
+                                };
+                                ui.colored_label(Color32::DARK_GRAY, RichText::new(platform_label).small());
                             })
                             .response
                             .interact(egui::Sense::click())
                             .clicked();
 
                         if clicked {
+                            self.dispatch_selected_agent = Some(agent_idx);
                             self.dispatch_target_agent = agent.id.clone();
+                            // Reset pending cache so it reloads for the new selection.
+                            self.pending_replies_loaded_for.clear();
                         }
                     }
 
@@ -2672,202 +2722,381 @@ impl SirinApp {
 
         ui.add_space(6.0);
 
-        // ── Bottom: Dispatch form (left) + Activity feed (right) ─────────────
-        let available = ui.available_width();
-        let left_width = (available * 0.48).min(480.0);
+        // ── Agent Detail Panel (tabs for selected agent) ──────────────────────
+        if let Some(sel_idx) = self.dispatch_selected_agent {
+            if let Some(agent) = agents.get(sel_idx) {
+                let agent_id = agent.id.clone();
+                let agent_name = agent.identity.name.clone();
+                let kpi_defs = agent.kpi.metrics.clone();
 
-        egui::SidePanel::left("dispatch_left")
-            .resizable(true)
-            .default_width(left_width)
-            .min_width(260.0)
-            .show_inside(ui, |ui| {
-                // ── Dispatch Form ─────────────────────────────────────────────
+                // Reload pending replies when agent selection changes.
+                if self.pending_replies_loaded_for != agent_id {
+                    self.pending_replies = crate::pending_reply::load_pending(&agent_id);
+                    self.pending_replies_loaded_for = agent_id.clone();
+                }
+                let pending_count = self.pending_replies.iter()
+                    .filter(|r| r.status == PendingStatus::Pending)
+                    .count();
+
                 egui::Frame::group(ui.style())
-                    .fill(Color32::from_rgb(22, 28, 40))
+                    .fill(Color32::from_rgb(18, 25, 38))
                     .show(ui, |ui| {
-                        ui.label(RichText::new("任務派發").strong());
-                        ui.add_space(4.0);
-
-                        // Target agent selector
+                        // ── Tab bar ───────────────────────────────────────────
                         ui.horizontal(|ui| {
-                            ui.label("目標 Agent：");
-                            egui::ComboBox::from_id_salt("dispatch_agent_combo")
-                                .selected_text(&self.dispatch_target_agent)
-                                .show_ui(ui, |ui| {
-                                    for agent in &agents {
-                                        let led = if agent.enabled { "● " } else { "○ " };
-                                        ui.selectable_value(
-                                            &mut self.dispatch_target_agent,
-                                            agent.id.clone(),
-                                            format!("{}{}", led, agent.identity.name),
-                                        );
-                                    }
-                                });
-                        });
-
-                        // Task type selector
-                        ui.horizontal(|ui| {
-                            ui.label("任務類型：");
-                            ui.selectable_value(&mut self.dispatch_task_type, DispatchTaskType::Chat, "💬 對話");
-                            ui.selectable_value(&mut self.dispatch_task_type, DispatchTaskType::Research, "🔬 調研");
-                            ui.selectable_value(&mut self.dispatch_task_type, DispatchTaskType::Coding, "⚙ 編碼");
-                        });
-
-                        ui.add_space(4.0);
-
-                        // Task text input
-                        let hint = match self.dispatch_task_type {
-                            DispatchTaskType::Chat => "輸入指令或問題…",
-                            DispatchTaskType::Research => "輸入調研主題…",
-                            DispatchTaskType::Coding => "描述編碼任務…",
-                        };
-                        let input_height = 80.0;
-                        let available_w = ui.available_width();
-                        ui.add(
-                            egui::TextEdit::multiline(&mut self.dispatch_task_input)
-                                .hint_text(hint)
-                                .desired_width(available_w)
-                                .desired_rows(4)
-                                .min_size(egui::vec2(available_w, input_height)),
-                        );
-
-                        ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            let can_send = !self.dispatch_task_input.trim().is_empty()
-                                && !self.dispatch_target_agent.is_empty();
-
-                            let send_label = match self.dispatch_task_type {
-                                DispatchTaskType::Chat => "▶ 派發對話",
-                                DispatchTaskType::Research => "🔬 啟動調研",
-                                DispatchTaskType::Coding => "⚙ 執行編碼",
-                            };
-
-                            if ui
-                                .add_enabled(
-                                    can_send,
-                                    egui::Button::new(RichText::new(send_label).strong())
-                                        .fill(Color32::from_rgb(30, 70, 130)),
-                                )
-                                .clicked()
-                            {
-                                let task_text = self.dispatch_task_input.trim().to_string();
-                                let agent_id = self.dispatch_target_agent.clone();
-
-                                match self.dispatch_task_type {
-                                    DispatchTaskType::Research => {
-                                        // Research: spawn directly + switch to Research tab.
-                                        let topic = task_text.clone();
-                                        let rt = self.rt.clone();
-                                        rt.spawn(async move {
-                                            crate::agents::research_agent::run_research_via_adk(
-                                                topic, None,
-                                            )
-                                            .await;
-                                        });
-                                        self.tab = Tab::Research;
-                                        self.dispatch_msg = format!("✅ 已啟動調研：{}", task_text.chars().take(40).collect::<String>());
-                                        self.dispatch_msg_at = Some(std::time::Instant::now());
-                                    }
-                                    DispatchTaskType::Chat | DispatchTaskType::Coding => {
-                                        // Chat/Coding: pre-fill chat_input and switch to Chat tab.
-                                        let prefix = match self.dispatch_task_type {
-                                            DispatchTaskType::Coding => format!("[{}] ⚙ ", agent_id),
-                                            _ => format!("[{}] ", agent_id),
-                                        };
-                                        self.chat_input = format!("{}{}", prefix, task_text);
-                                        self.tab = Tab::Chat;
-                                    }
+                            ui.label(RichText::new(format!("● {}", agent_name)).strong().small());
+                            ui.separator();
+                            let tabs: &[(&str, Option<usize>)] = &[
+                                ("活動記錄", None),
+                                ("記憶管理", None),
+                                ("KPI 報表", None),
+                                ("待確認", if pending_count > 0 { Some(pending_count) } else { None }),
+                            ];
+                            for (i, (label, badge)) in tabs.iter().enumerate() {
+                                let is_active = self.dispatch_detail_tab == i;
+                                let display = if let Some(n) = badge {
+                                    format!("{} ({}) ⚠", label, n)
+                                } else {
+                                    label.to_string()
+                                };
+                                let btn = egui::Button::new(
+                                    RichText::new(&display).small()
+                                        .color(if is_active { Color32::WHITE } else { Color32::GRAY })
+                                ).fill(if is_active { Color32::from_rgb(35, 65, 110) } else { Color32::TRANSPARENT });
+                                if ui.add(btn).clicked() {
+                                    self.dispatch_detail_tab = i;
                                 }
-                                self.dispatch_task_input.clear();
                             }
                         });
-                    });
-            });
+                        ui.separator();
 
-        // ── Right: Per-Agent Activity Feed ───────────────────────────────────
-        ScrollArea::vertical()
-            .id_salt("dispatch_activity")
-            .auto_shrink(false)
-            .show(ui, |ui| {
-                ui.label(RichText::new("活動快覽").strong().small());
-                ui.separator();
-
-                // Find selected agent's persona name.
-                let selected_persona = agents
-                    .iter()
-                    .find(|a| a.id == self.dispatch_target_agent)
-                    .map(|a| a.identity.name.clone())
-                    .unwrap_or_default();
-
-                // Summary stats for selected agent.
-                let running = self.tasks.iter()
-                    .filter(|t| t.persona == selected_persona
-                        && matches!(t.status.as_deref(), Some("PENDING") | Some("RUNNING") | Some("FOLLOWING")))
-                    .count();
-                let done = self.tasks.iter()
-                    .filter(|t| t.persona == selected_persona && t.status.as_deref() == Some("DONE"))
-                    .count();
-                let failed = self.tasks.iter()
-                    .filter(|t| t.persona == selected_persona
-                        && matches!(t.status.as_deref(), Some("FAILED") | Some("ERROR") | Some("FOLLOWUP_NEEDED")))
-                    .count();
-
-                if !selected_persona.is_empty() {
-                    ui.horizontal_wrapped(|ui| {
-                        let items = [
-                            ("⏳ 進行中", running, Color32::from_rgb(255, 200, 60)),
-                            ("✅ 完成", done, Color32::from_rgb(100, 220, 100)),
-                            ("❌ 失敗", failed, Color32::from_rgb(220, 80, 80)),
-                        ];
-                        for (label, count, color) in items {
-                            egui::Frame::new()
-                                .fill(Color32::from_rgb(22, 28, 40))
-                                .corner_radius(4.0)
-                                .inner_margin(egui::Margin::symmetric(8, 3))
-                                .show(ui, |ui| {
-                                    ui.colored_label(color, format!("{} {}", label, count));
-                                });
-                        }
-                    });
-                    ui.add_space(6.0);
-                }
-
-                // Filter tasks to selected agent.
-                let filtered: Vec<_> = self.tasks.iter()
-                    .filter(|t| selected_persona.is_empty() || t.persona == selected_persona)
-                    .take(60)
-                    .collect();
-
-                if filtered.is_empty() {
-                    ui.colored_label(Color32::GRAY, "尚無活動記錄。");
-                }
-
-                for task in filtered {
-                    let status = task.status.as_deref().unwrap_or("—");
-                    let is_summary = task.event == "research_summary_ready";
-                    let (badge_text, badge_fg, badge_bg) =
-                        task_status_badge(status, task.reason.as_deref(), is_summary);
-
-                    let ts = task.timestamp.get(11..19).unwrap_or("—"); // HH:MM:SS
-                    let preview = task.message_preview.as_deref()
-                        .or(task.reason.as_deref())
-                        .unwrap_or(&task.event);
-
-                    ui.horizontal(|ui| {
-                        ui.colored_label(Color32::DARK_GRAY, RichText::new(ts).small().monospace());
-                        egui::Frame::new()
-                            .fill(badge_bg)
-                            .stroke(egui::Stroke::new(1.0, badge_fg))
-                            .inner_margin(egui::Margin::symmetric(5, 1))
-                            .corner_radius(4.0)
+                        // ── Tab content ───────────────────────────────────────
+                        ScrollArea::vertical()
+                            .id_salt("dispatch_detail")
+                            .max_height(280.0)
+                            .auto_shrink(false)
                             .show(ui, |ui| {
-                                ui.label(RichText::new(badge_text).small().strong().color(badge_fg));
+                                match self.dispatch_detail_tab {
+                                    // ── Tab 0: 活動記錄 ──────────────────────
+                                    0 => {
+                                        let filtered: Vec<_> = self.tasks.iter()
+                                            .filter(|t| t.persona == agent_name)
+                                            .take(40)
+                                            .collect();
+                                        if filtered.is_empty() {
+                                            ui.colored_label(Color32::GRAY, "尚無活動記錄。");
+                                        }
+                                        for task in filtered {
+                                            let status = task.status.as_deref().unwrap_or("—");
+                                            let is_summary = task.event == "research_summary_ready";
+                                            let (badge_text, badge_fg, badge_bg) =
+                                                task_status_badge(status, task.reason.as_deref(), is_summary);
+                                            let ts = task.timestamp.get(11..19).unwrap_or("—");
+                                            let preview = task.message_preview.as_deref()
+                                                .or(task.reason.as_deref())
+                                                .unwrap_or(&task.event);
+                                            ui.horizontal(|ui| {
+                                                ui.colored_label(Color32::DARK_GRAY,
+                                                    RichText::new(ts).small().monospace());
+                                                egui::Frame::new()
+                                                    .fill(badge_bg)
+                                                    .stroke(egui::Stroke::new(1.0, badge_fg))
+                                                    .inner_margin(egui::Margin::symmetric(4, 1))
+                                                    .corner_radius(4.0)
+                                                    .show(ui, |ui| {
+                                                        ui.label(RichText::new(badge_text)
+                                                            .small().strong().color(badge_fg));
+                                                    });
+                                                ui.label(RichText::new(
+                                                    preview.chars().take(60).collect::<String>()).small());
+                                            });
+                                        }
+                                    }
+
+                                    // ── Tab 1: 記憶管理 ──────────────────────
+                                    1 => {
+                                        use crate::memory::StorageUsage;
+                                        let s = &self.storage;
+                                        egui::Grid::new("dispatch_mem_grid")
+                                            .num_columns(3)
+                                            .spacing([12.0, 4.0])
+                                            .show(ui, |ui| {
+                                                let rows: &[(&str, u64, bool)] = &[
+                                                    ("對話 DB", s.memory_db_bytes, true),
+                                                    ("代碼索引", s.call_graph_bytes, false),
+                                                    ("調研記錄", s.research_log_bytes, true),
+                                                    ("任務記錄", s.task_log_bytes, true),
+                                                ];
+                                                for (label, bytes, can_clear) in rows {
+                                                    ui.label(*label);
+                                                    ui.colored_label(
+                                                        Color32::from_rgb(130, 200, 255),
+                                                        StorageUsage::fmt_bytes(*bytes),
+                                                    );
+                                                    if *can_clear {
+                                                        if ui.small_button("清除").clicked() {
+                                                            // TODO: per-agent clear (currently global)
+                                                            eprintln!("[ui] clear {label} — TODO: per-agent isolation");
+                                                        }
+                                                    } else {
+                                                        ui.label("—");
+                                                    }
+                                                    ui.end_row();
+                                                }
+                                                ui.separator();
+                                                ui.end_row();
+                                                ui.label("總計");
+                                                ui.colored_label(
+                                                    Color32::WHITE,
+                                                    StorageUsage::fmt_bytes(s.total_bytes),
+                                                );
+                                                ui.label("");
+                                                ui.end_row();
+                                            });
+                                    }
+
+                                    // ── Tab 2: KPI 報表 ──────────────────────
+                                    2 => {
+                                        ui.horizontal(|ui| {
+                                            if ui.button("📊 從 API 更新 (TODO)").clicked() {
+                                                self.dispatch_msg = "TODO: Agora API 未接線".to_string();
+                                                self.dispatch_msg_at = Some(std::time::Instant::now());
+                                            }
+                                        });
+                                        ui.add_space(4.0);
+
+                                        // Load KPI values from disk if not cached.
+                                        if !self.kpi_values.contains_key(&agent_id) {
+                                            let vals = load_kpi_values(&agent_id);
+                                            self.kpi_values.insert(agent_id.clone(), vals);
+                                        }
+                                        let kpi_vals = self.kpi_values.entry(agent_id.clone()).or_default();
+
+                                        let mut save_kpi = false;
+                                        if kpi_defs.is_empty() {
+                                            ui.colored_label(Color32::GRAY,
+                                                "尚未設定 KPI 指標。請在 ⚙ 設定 → Agent → KPI 新增。");
+                                        } else {
+                                            egui::Grid::new("dispatch_kpi_grid")
+                                                .num_columns(3)
+                                                .spacing([12.0, 4.0])
+                                                .show(ui, |ui| {
+                                                    ui.label(RichText::new("指標").strong().small());
+                                                    ui.label(RichText::new("當前值").strong().small());
+                                                    ui.label(RichText::new("操作").strong().small());
+                                                    ui.end_row();
+                                                    for def in &kpi_defs {
+                                                        let val = kpi_vals.entry(def.key.clone()).or_default();
+                                                        ui.label(&def.label);
+                                                        let resp = ui.add(
+                                                            egui::TextEdit::singleline(val)
+                                                                .desired_width(80.0)
+                                                                .hint_text("—"),
+                                                        );
+                                                        if resp.changed() { save_kpi = true; }
+                                                        ui.label(RichText::new(&def.unit).small());
+                                                        ui.end_row();
+                                                    }
+                                                });
+                                        }
+                                        if save_kpi {
+                                            let vals_snapshot = kpi_vals.clone();
+                                            save_kpi_values(&agent_id, &vals_snapshot);
+                                        }
+                                    }
+
+                                    // ── Tab 3: 待確認 ────────────────────────
+                                    3 => {
+                                        let pending: Vec<_> = self.pending_replies.iter()
+                                            .filter(|r| r.status == PendingStatus::Pending)
+                                            .cloned()
+                                            .collect();
+                                        if pending.is_empty() {
+                                            ui.colored_label(Color32::GRAY, "沒有待確認的草稿。");
+                                        }
+                                        // Collect actions to avoid borrow conflict.
+                                        let mut approve_id: Option<String> = None;
+                                        let mut reject_id: Option<String> = None;
+                                        let mut delete_id: Option<String> = None;
+
+                                        for pr in &pending {
+                                            egui::Frame::new()
+                                                .fill(Color32::from_rgb(24, 30, 44))
+                                                .stroke(egui::Stroke::new(1.0, Color32::from_rgb(60, 80, 110)))
+                                                .corner_radius(6.0)
+                                                .inner_margin(egui::Margin::symmetric(10, 6))
+                                                .show(ui, |ui| {
+                                                    ui.horizontal(|ui| {
+                                                        ui.label(RichText::new(format!(
+                                                            "💬 {}  {}  {}",
+                                                            pr.peer_name, pr.platform,
+                                                            pr.created_at.get(11..16).unwrap_or("—")
+                                                        )).small().strong());
+                                                    });
+                                                    ui.colored_label(Color32::GRAY,
+                                                        RichText::new(format!(
+                                                            "原始: \"{}\"",
+                                                            pr.original_message.chars().take(80).collect::<String>()
+                                                        )).small());
+                                                    ui.separator();
+                                                    ui.label(RichText::new("草稿：").small());
+                                                    let draft = self.pending_draft_edits
+                                                        .entry(pr.id.clone())
+                                                        .or_insert_with(|| pr.draft_reply.clone());
+                                                    let available_w = ui.available_width();
+                                                    ui.add(
+                                                        egui::TextEdit::multiline(draft)
+                                                            .desired_width(available_w)
+                                                            .desired_rows(3),
+                                                    );
+                                                    ui.add_space(4.0);
+                                                    ui.horizontal(|ui| {
+                                                        if ui.add(egui::Button::new(
+                                                            RichText::new("✅ 確認發送").small())
+                                                            .fill(Color32::from_rgb(25, 70, 35)))
+                                                            .clicked()
+                                                        {
+                                                            approve_id = Some(pr.id.clone());
+                                                        }
+                                                        if ui.add(egui::Button::new(
+                                                            RichText::new("❌ 拒絕").small())
+                                                            .fill(Color32::from_rgb(72, 24, 24)))
+                                                            .clicked()
+                                                        {
+                                                            reject_id = Some(pr.id.clone());
+                                                        }
+                                                        if ui.add(egui::Button::new(
+                                                            RichText::new("🗑 刪除").small())
+                                                            .fill(Color32::TRANSPARENT))
+                                                            .clicked()
+                                                        {
+                                                            delete_id = Some(pr.id.clone());
+                                                        }
+                                                    });
+                                                });
+                                            ui.add_space(4.0);
+                                        }
+
+                                        // Apply actions.
+                                        if let Some(id) = approve_id {
+                                            // Apply any edited draft text before approving.
+                                            if let Some(edited) = self.pending_draft_edits.get(&id) {
+                                                let mut replies = crate::pending_reply::load_pending(&agent_id);
+                                                if let Some(r) = replies.iter_mut().find(|r| r.id == id) {
+                                                    r.draft_reply = edited.clone();
+                                                    r.status = PendingStatus::Approved;
+                                                }
+                                                let _ = crate::pending_reply::save_pending(&agent_id, &replies);
+                                                self.pending_draft_edits.remove(&id);
+                                            } else {
+                                                crate::pending_reply::update_status(&agent_id, &id, PendingStatus::Approved);
+                                            }
+                                            self.dispatch_msg = "✅ 已批准（TODO: 實際發送需 Telegram session）".to_string();
+                                            self.dispatch_msg_at = Some(std::time::Instant::now());
+                                            self.pending_replies = crate::pending_reply::load_pending(&agent_id);
+                                        }
+                                        if let Some(id) = reject_id {
+                                            crate::pending_reply::update_status(&agent_id, &id, PendingStatus::Rejected);
+                                            self.pending_draft_edits.remove(&id);
+                                            self.pending_replies = crate::pending_reply::load_pending(&agent_id);
+                                        }
+                                        if let Some(id) = delete_id {
+                                            crate::pending_reply::delete_pending(&agent_id, &id);
+                                            self.pending_draft_edits.remove(&id);
+                                            self.pending_replies = crate::pending_reply::load_pending(&agent_id);
+                                        }
+                                    }
+                                    _ => {}
+                                }
                             });
-                        ui.label(
-                            RichText::new(preview.chars().take(60).collect::<String>()).small(),
-                        );
                     });
-                }
+            }
+        }
+
+        ui.add_space(4.0);
+        ui.separator();
+
+        // ── Operations area (Dispatch form) ──────────────────────────────────
+        egui::Frame::group(ui.style())
+            .fill(Color32::from_rgb(18, 24, 36))
+            .show(ui, |ui| {
+                ui.label(RichText::new("操作").strong().small());
+                ui.add_space(4.0);
+
+                ui.horizontal(|ui| {
+                    // Target agent selector
+                    ui.label("目標：");
+                    egui::ComboBox::from_id_salt("dispatch_agent_combo")
+                        .selected_text(&self.dispatch_target_agent)
+                        .width(140.0)
+                        .show_ui(ui, |ui| {
+                            for agent in &agents {
+                                let led = if agent.enabled { "● " } else { "○ " };
+                                ui.selectable_value(
+                                    &mut self.dispatch_target_agent,
+                                    agent.id.clone(),
+                                    format!("{}{}", led, agent.identity.name),
+                                );
+                            }
+                        });
+                    ui.separator();
+                    ui.label("對象：");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.dispatch_manual_peer)
+                            .hint_text("peer 名稱 / ID（選填）")
+                            .desired_width(160.0),
+                    );
+                });
+
+                let available_w = ui.available_width();
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.dispatch_task_input)
+                        .hint_text("輸入訊息、任務或調研主題…")
+                        .desired_width(available_w)
+                        .desired_rows(3),
+                );
+
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    let can_send = !self.dispatch_task_input.trim().is_empty();
+                    if ui.add_enabled(can_send,
+                        egui::Button::new(RichText::new("▶ 手動發送").strong())
+                            .fill(Color32::from_rgb(30, 70, 130)))
+                        .clicked()
+                    {
+                        let task_text = self.dispatch_task_input.trim().to_string();
+                        let agent_id = self.dispatch_target_agent.clone();
+                        let prefix = format!("[{}] ", agent_id);
+                        self.chat_input = format!("{}{}", prefix, task_text);
+                        self.tab = Tab::Chat;
+                        self.dispatch_task_input.clear();
+                    }
+                    if ui.add_enabled(can_send,
+                        egui::Button::new(RichText::new("🔬 先調研再回").small())
+                            .fill(Color32::TRANSPARENT))
+                        .clicked()
+                    {
+                        let topic = self.dispatch_task_input.trim().to_string();
+                        let rt = self.rt.clone();
+                        rt.spawn(async move {
+                            crate::agents::research_agent::run_research_via_adk(topic, None).await;
+                        });
+                        self.tab = Tab::Research;
+                        self.dispatch_msg = "✅ 已啟動調研".to_string();
+                        self.dispatch_msg_at = Some(std::time::Instant::now());
+                        self.dispatch_task_input.clear();
+                    }
+                    if ui.add_enabled(can_send,
+                        egui::Button::new(RichText::new("⚙ 編碼任務").small())
+                            .fill(Color32::TRANSPARENT))
+                        .clicked()
+                    {
+                        let task_text = self.dispatch_task_input.trim().to_string();
+                        let agent_id = self.dispatch_target_agent.clone();
+                        self.chat_input = format!("[{}] ⚙ {}", agent_id, task_text);
+                        self.tab = Tab::Chat;
+                        self.dispatch_task_input.clear();
+                    }
+                });
             });
     }
 }
@@ -2915,7 +3144,7 @@ fn show_agent_detail(
     ui.separator();
 
     // ── Tab bar ───────────────────────────────────────────────────────────
-    let tabs = ["身分", "風格", "目標", "通訊", "能力"];
+    let tabs = ["身分", "風格", "目標", "通訊", "能力", "行為"];
     ui.horizontal(|ui| {
         for (i, tab_name) in tabs.iter().enumerate() {
             let is_active = *active_tab == i;
@@ -2941,6 +3170,7 @@ fn show_agent_detail(
         2 => show_tab_goals(ui, agent, scratch),
         3 => show_tab_channel(ui, agent, auth, other_tg_phones),
         4 => show_tab_actions(ui, agent, scratch),
+        5 => show_tab_behavior(ui, agent),
         _ => {}
     }
 }
@@ -3167,6 +3397,140 @@ fn show_tab_actions(
         });
 }
 
+fn show_tab_behavior(ui: &mut egui::Ui, agent: &mut crate::agent_config::AgentConfig) {
+    use crate::agent_config::{BreakPeriod, WorkSchedule};
+    let hb = &mut agent.human_behavior;
+
+    ui.checkbox(&mut hb.enabled, "啟用人類行為模擬");
+    if !hb.enabled {
+        ui.add_space(4.0);
+        ui.colored_label(Color32::GRAY, "（停用時 AI 會即時回覆，不套用任何限制）");
+        return;
+    }
+
+    ui.add_space(8.0);
+    ui.separator();
+    ui.label(RichText::new("回覆延遲").strong().small());
+    egui::Grid::new("hb_delay_grid").num_columns(4).spacing([8.0, 4.0]).show(ui, |ui| {
+        ui.label("最短");
+        let mut min_s = hb.min_reply_delay_secs as i64;
+        if ui.add(egui::DragValue::new(&mut min_s).range(0..=3600).suffix("秒")).changed() {
+            hb.min_reply_delay_secs = min_s.max(0) as u64;
+            if hb.min_reply_delay_secs > hb.max_reply_delay_secs {
+                hb.max_reply_delay_secs = hb.min_reply_delay_secs;
+            }
+        }
+        ui.label("最長");
+        let mut max_s = hb.max_reply_delay_secs as i64;
+        if ui.add(egui::DragValue::new(&mut max_s).range(0..=3600).suffix("秒")).changed() {
+            hb.max_reply_delay_secs = max_s.max(0) as u64;
+            if hb.max_reply_delay_secs < hb.min_reply_delay_secs {
+                hb.min_reply_delay_secs = hb.max_reply_delay_secs;
+            }
+        }
+        ui.end_row();
+    });
+
+    ui.add_space(8.0);
+    ui.label(RichText::new("訊息頻率限制").strong().small());
+    egui::Grid::new("hb_freq_grid").num_columns(4).spacing([8.0, 4.0]).show(ui, |ui| {
+        ui.label("每小時最多");
+        ui.add(egui::DragValue::new(&mut hb.max_messages_per_hour).range(0..=1000).suffix("則"));
+        ui.label("每天最多");
+        ui.add(egui::DragValue::new(&mut hb.max_messages_per_day).range(0..=10000).suffix("則"));
+        ui.end_row();
+    });
+
+    ui.add_space(8.0);
+    ui.separator();
+
+    // Work schedule toggle
+    let has_schedule = hb.work_schedule.is_some();
+    let mut enable_sched = has_schedule;
+    ui.checkbox(&mut enable_sched, "啟用工作時間限制");
+    if enable_sched && !has_schedule {
+        hb.work_schedule = Some(WorkSchedule::default());
+    } else if !enable_sched && has_schedule {
+        hb.work_schedule = None;
+    }
+
+    if let Some(ref mut sched) = hb.work_schedule {
+        ui.add_space(4.0);
+        egui::Grid::new("hb_sched_grid").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
+            ui.label("時區偏移 UTC");
+            ui.add(egui::DragValue::new(&mut sched.utc_offset_hours)
+                .range(-12..=14).prefix("+"));
+            ui.end_row();
+            ui.label("上班時間");
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut sched.work_start).desired_width(60.0));
+                ui.label("—");
+                ui.add(egui::TextEdit::singleline(&mut sched.work_end).desired_width(60.0));
+            });
+            ui.end_row();
+        });
+
+        // Work days checkboxes
+        ui.horizontal(|ui| {
+            ui.label("工作日：");
+            let day_names = ["一", "二", "三", "四", "五", "六", "日"];
+            for (i, name) in day_names.iter().enumerate() {
+                let day_num = (i + 1) as u8;
+                let mut checked = sched.work_days.contains(&day_num);
+                if ui.checkbox(&mut checked, *name).changed() {
+                    if checked {
+                        if !sched.work_days.contains(&day_num) {
+                            sched.work_days.push(day_num);
+                            sched.work_days.sort();
+                        }
+                    } else {
+                        sched.work_days.retain(|&d| d != day_num);
+                    }
+                }
+            }
+        });
+
+        // Break periods
+        ui.add_space(8.0);
+        ui.label(RichText::new("休息時段").strong().small());
+        let mut remove_idx: Option<usize> = None;
+        for (i, brk) in sched.breaks.iter_mut().enumerate() {
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut brk.name).desired_width(60.0).hint_text("名稱"));
+                ui.add(egui::TextEdit::singleline(&mut brk.start).desired_width(55.0).hint_text("HH:MM"));
+                ui.label("—");
+                ui.add(egui::TextEdit::singleline(&mut brk.end).desired_width(55.0).hint_text("HH:MM"));
+                if ui.small_button("✕").clicked() {
+                    remove_idx = Some(i);
+                }
+            });
+        }
+        if let Some(i) = remove_idx {
+            sched.breaks.remove(i);
+        }
+        if ui.small_button("＋ 新增休息時段").clicked() {
+            sched.breaks.push(BreakPeriod {
+                name: "休息".to_string(),
+                start: "12:00".to_string(),
+                end:   "13:00".to_string(),
+            });
+        }
+    }
+
+    // require_confirmation
+    ui.add_space(8.0);
+    ui.separator();
+    ui.label(RichText::new("人工確認").strong().small());
+    let tg_require = agent.channel.as_mut()
+        .and_then(|c| c.telegram.as_mut())
+        .map(|t| &mut t.require_confirmation);
+    if let Some(require_conf) = tg_require {
+        ui.checkbox(require_conf, "需要人工確認回覆（AI 草稿不直接發送，等待確認）");
+    } else {
+        ui.colored_label(Color32::GRAY, "（此 Agent 未配置 Telegram 頻道）");
+    }
+}
+
 fn show_system_panel(
     ui: &mut egui::Ui,
     tg_auth: &crate::telegram_auth::TelegramAuthState,
@@ -3286,6 +3650,30 @@ fn show_system_panel(
 
     if !tg_msg.is_empty() {
         ui.colored_label(Color32::from_rgb(100, 220, 100), tg_msg);
+    }
+}
+
+// ── KPI persistence helpers ───────────────────────────────────────────────────
+
+fn kpi_path(agent_id: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from("data").join("kpi").join(format!("{agent_id}.json"))
+}
+
+fn load_kpi_values(agent_id: &str) -> std::collections::HashMap<String, String> {
+    let path = kpi_path(agent_id);
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_kpi_values(agent_id: &str, vals: &std::collections::HashMap<String, String>) {
+    let path = kpi_path(agent_id);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string_pretty(vals) {
+        let _ = std::fs::write(&path, json);
     }
 }
 
