@@ -499,6 +499,22 @@ async fn run_agent_listener_once(
         let peer_bare_id = Some(message.peer_id().bare_id());
         let mut should_record_ai_decision = false;
 
+        // ── Per-agent objective matching ──────────────────────────────────────
+        // If the agent has objectives configured, check whether this message
+        // matches any of them.  A match marks the message as high-priority (⭐).
+        // If no objectives are configured, all messages are treated equally.
+        let objective_match: Option<String> = if !agent_cfg.objectives.is_empty() {
+            let lower = text.to_lowercase();
+            agent_cfg.objectives.iter()
+                .find(|obj| lower.contains(&obj.to_lowercase()))
+                .cloned()
+        } else {
+            None
+        };
+        if let Some(ref obj) = objective_match {
+            sirin_log!("[telegram/{agent_id}] ⭐ 高優先訊息，命中目標：「{obj}」");
+        }
+
         if cfg.auto_reply_enabled {
 
             let reply_plan = handler::prepare_reply_plan(
@@ -576,6 +592,18 @@ async fn run_agent_listener_once(
         }
 
         reply::record_ai_decision_if_needed(tracker, persona_name, &text, should_record_ai_decision);
+        // Record objective match as a separate high-priority task entry.
+        if let Some(ref obj) = objective_match {
+            let entry = crate::persona::TaskEntry::system_event(
+                persona_name,
+                "objective_match",
+                Some(crate::telegram::commands::message_preview(&text, 100)),
+                Some("DONE"),
+                Some(format!("matched_objective={obj}")),
+                None,
+            );
+            let _ = tracker.record(&entry);
+        }
     }
 }
 

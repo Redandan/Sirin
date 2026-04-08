@@ -1,14 +1,14 @@
 //! Multi-agent configuration — `config/agents.yaml`.
 //!
 //! Each [`AgentConfig`] entry represents one independently-running AI agent
-//! with its own identity, goals, optional channel bindings, capability flags,
-//! and memory path.  The [`AgentsFile`] wrapper is the top-level YAML document.
+//! with its own identity, goals, optional channel bindings, capability flags.
+//! The [`AgentsFile`] wrapper is the top-level YAML document.
 
 use std::fs;
 
 use serde::{Deserialize, Serialize};
 
-use crate::persona::{CodingAgentConfig, Identity, ProfessionalTone, ResponseStyle, RoiThresholds};
+use crate::persona::{Identity, ProfessionalTone, ResponseStyle};
 
 // ── Channel ───────────────────────────────────────────────────────────────────
 
@@ -60,8 +60,6 @@ impl Default for TelegramChannelConfig {
 }
 
 /// Collection of channels an agent may communicate through.
-/// All fields are optional — an agent with no channels runs in "headless" mode
-/// (UI-only or test-only).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ChannelConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -83,30 +81,27 @@ impl Default for ResearchAgentConfig {
     }
 }
 
+/// Per-agent coding-agent enable flag.
+/// (Detailed coding config lives in config/persona.yaml → coding_agent.)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodingEnabledConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+impl Default for CodingEnabledConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
 /// Capability flags for a single agent.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ActionsConfig {
     #[serde(default)]
-    pub coding_agent: CodingAgentConfig,
+    pub coding_agent: CodingEnabledConfig,
     #[serde(default)]
     pub research_agent: ResearchAgentConfig,
-}
-
-// ── Memory ────────────────────────────────────────────────────────────────────
-
-/// Per-agent memory / vector-DB configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MemoryConfig {
-    /// Path to the LanceDB directory for this agent.
-    pub db_path: String,
-}
-
-impl Default for MemoryConfig {
-    fn default() -> Self {
-        Self {
-            db_path: "data/memory/default".to_string(),
-        }
-    }
 }
 
 // ── Agent ─────────────────────────────────────────────────────────────────────
@@ -123,29 +118,26 @@ pub struct AgentConfig {
     // ── 1. 身分 Identity ──────────────────────────────────────────────────────
     pub identity: Identity,
     #[serde(default)]
-    pub description: String,
-    #[serde(default)]
     pub response_style: ResponseStyle,
-    pub roi_thresholds: RoiThresholds,
-    #[serde(default)]
-    pub disable_remote_ai: bool,
 
-    // ── 2. 目標 Goals ─────────────────────────────────────────────────────────
-    #[serde(default)]
-    pub objectives: Vec<String>,
-
-    // ── 3. 通訊平台 Channel ────────────────────────────────────────────────────
+    // ── 2. 通訊平台 Channel ────────────────────────────────────────────────────
     /// Optional channel config.  `None` = no external channel (UI / test only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<ChannelConfig>,
 
-    // ── 4. 能力 Actions ───────────────────────────────────────────────────────
+    // ── 3. 能力 Actions ───────────────────────────────────────────────────────
     #[serde(default)]
     pub actions: ActionsConfig,
 
-    // ── 5. 記憶 Memory ────────────────────────────────────────────────────────
+    // ── 4. 遠端 AI 控制 ────────────────────────────────────────────────────────
     #[serde(default)]
-    pub memory: MemoryConfig,
+    pub disable_remote_ai: bool,
+
+    // ── 5. 目標 Objectives ────────────────────────────────────────────────────
+    /// Per-agent objectives used by the behavior engine.
+    /// If empty, falls back to the global Persona.objectives.
+    #[serde(default)]
+    pub objectives: Vec<String>,
 }
 
 impl AgentConfig {
@@ -158,19 +150,11 @@ impl AgentConfig {
                 name: name.into(),
                 professional_tone: ProfessionalTone::Brief,
             },
-            description: String::new(),
             response_style: ResponseStyle::default(),
-            roi_thresholds: RoiThresholds {
-                min_usd_to_notify: 5.0,
-                min_usd_to_call_remote_llm: 25.0,
-            },
             disable_remote_ai: false,
             objectives: Vec::new(),
             channel: None,
             actions: ActionsConfig::default(),
-            memory: MemoryConfig {
-                db_path: "data/memory/new_agent".to_string(),
-            },
         }
     }
 }

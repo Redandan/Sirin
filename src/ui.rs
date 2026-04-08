@@ -21,11 +21,22 @@ use crate::telegram_auth::{TelegramAuthState, TelegramStatus};
 
 #[derive(PartialEq, Clone, Copy)]
 enum Tab {
+    Dispatch,
     Tasks,
     Research,
     Chat,
     Settings,
     Log,
+}
+
+// ── Dispatch task type ────────────────────────────────────────────────────────
+
+#[derive(PartialEq, Clone, Copy, Default)]
+enum DispatchTaskType {
+    #[default]
+    Chat,
+    Research,
+    Coding,
 }
 
 // ── Task filter ───────────────────────────────────────────────────────────────
@@ -339,7 +350,6 @@ struct CodingUiUpdate {
 #[derive(Default)]
 struct AgentUiScratch {
     new_objective: String,
-    new_command: String,
 }
 
 // ── App state ─────────────────────────────────────────────────────────────────
@@ -422,6 +432,19 @@ pub struct SirinApp {
     settings_selected_agent: Option<usize>,
     /// Active tab index in the right panel (0=身分, 1=風格, 2=目標, 3=通訊, 4=能力).
     settings_active_tab: usize,
+
+    // ── Dispatch tab ──────────────────────────────────────────────────────────
+    /// Currently selected agent id for dispatch ("" = first agent).
+    dispatch_target_agent: String,
+    /// Task type to dispatch.
+    dispatch_task_type: DispatchTaskType,
+    /// Text input buffer for dispatch.
+    dispatch_task_input: String,
+    /// Feedback message shown after dispatching.
+    dispatch_msg: String,
+    dispatch_msg_at: Option<std::time::Instant>,
+    // Per-agent filter for the Tasks tab ("" = all agents).
+    task_agent_filter: String,
 }
 
 impl SirinApp {
@@ -475,7 +498,7 @@ impl SirinApp {
             tracker,
             tg_auth,
             rt,
-            tab: Tab::Tasks,
+            tab: Tab::Dispatch,
             tasks: Vec::new(),
             research_tasks: Vec::new(),
             research_topic: String::new(),
@@ -515,6 +538,12 @@ impl SirinApp {
             settings_selected_agent: Some(0),
             settings_active_tab: 0,
             agent_auth_states,
+            dispatch_target_agent: String::new(),
+            dispatch_task_type: DispatchTaskType::default(),
+            dispatch_task_input: String::new(),
+            dispatch_msg: String::new(),
+            dispatch_msg_at: None,
+            task_agent_filter: String::new(),
         };
         app.refresh();
         app
@@ -604,6 +633,14 @@ impl eframe::App for SirinApp {
             if msg_at.elapsed() > std::time::Duration::from_secs(4) {
                 self.settings_msg.clear();
                 self.settings_msg_at = None;
+            }
+        }
+
+        // ── Timed auto-dismiss: dispatch feedback message (4 s) ──────────────
+        if let Some(msg_at) = self.dispatch_msg_at {
+            if msg_at.elapsed() > std::time::Duration::from_secs(4) {
+                self.dispatch_msg.clear();
+                self.dispatch_msg_at = None;
             }
         }
 
@@ -751,7 +788,28 @@ impl eframe::App for SirinApp {
                     self.research_topic.clear();
                     self.research_url.clear();
                 }
-                Ok(_) => {} // other events — ignored in UI for now
+                Ok(AgentEvent::PersonaUpdated { new_objectives }) => {
+                    // Mirror what the Research tab's pending_objectives gate does,
+                    // but triggered by event instead of polling.
+                    if self.pending_objectives.is_none() {
+                        self.pending_objectives = Some(new_objectives);
+                    }
+                }
+                Ok(AgentEvent::CodingAgentCompleted { task, success, files_modified }) => {
+                    // Refresh task list immediately so the result shows without waiting 5 s.
+                    self.refresh();
+                    // Also update the coding console status bar so the Chat tab shows it.
+                    if self.coding_console.task.is_empty() || self.coding_console.task == task {
+                        let status = if success { "✅ 完成（事件觸發）" } else { "❌ 失敗（事件觸發）" };
+                        self.coding_console.status = status.to_string();
+                        self.coding_console.task = task;
+                        self.coding_console.files_modified = files_modified;
+                        if success {
+                            self.coding_done_at = Some(std::time::Instant::now());
+                        }
+                    }
+                }
+                Ok(_) => {} // other events (ResearchCompleted, FollowupTriggered, ChatAgentReplied)
                 Err(broadcast::error::TryRecvError::Lagged(_)) => {} // skip lagged events
                 Err(_) => break, // Empty or Closed
             }
@@ -762,6 +820,7 @@ impl eframe::App for SirinApp {
             ui.horizontal(|ui| {
                 ui.heading("Sirin");
                 ui.separator();
+                ui.selectable_value(&mut self.tab, Tab::Dispatch, "🗂 調度台");
                 ui.selectable_value(&mut self.tab, Tab::Tasks, "📋 活動記錄");
 
                 // Research tab: badge when a task is running.
@@ -828,6 +887,7 @@ impl eframe::App for SirinApp {
 
         // ── Central panel ─────────────────────────────────────────────────────
         egui::CentralPanel::default().show(ctx, |ui| match self.tab {
+            Tab::Dispatch => self.show_dispatch(ui),
             Tab::Tasks => self.show_tasks(ui),
             Tab::Research => self.show_research(ui),
             Tab::Chat => self.show_chat(ui),
@@ -903,6 +963,25 @@ impl SirinApp {
             .filter(|t| t.status.as_deref() == Some("DONE"))
             .count();
 
+        // Build agent name list for filter dropdown (lazy from settings_agents or task log).
+        let agent_names: Vec<String> = {
+            use crate::agent_config::AgentsFile;
+            if self.settings_agents.is_none() {
+                self.settings_agents = AgentsFile::load().ok().or_else(|| Some(AgentsFile::default()));
+            }
+            let mut names: Vec<String> = self.settings_agents.as_ref()
+                .map(|f| f.agents.iter().map(|a| a.identity.name.clone()).collect())
+                .unwrap_or_default();
+            // Also include names seen in task log but not in agents config.
+            for t in &self.tasks {
+                if !names.contains(&t.persona) {
+                    names.push(t.persona.clone());
+                }
+            }
+            names.dedup();
+            names
+        };
+
         ui.horizontal(|ui| {
             ui.label(RichText::new("活動記錄").strong());
             ui.separator();
@@ -910,6 +989,21 @@ impl SirinApp {
             ui.selectable_value(&mut self.task_filter, TaskFilter::Running, "進行中");
             ui.selectable_value(&mut self.task_filter, TaskFilter::Done, "完成");
             ui.selectable_value(&mut self.task_filter, TaskFilter::Failed, "需處理");
+            ui.separator();
+            // Agent filter dropdown.
+            let agent_label = if self.task_agent_filter.is_empty() {
+                "全部 Agent".to_string()
+            } else {
+                self.task_agent_filter.clone()
+            };
+            egui::ComboBox::from_id_salt("task_agent_filter")
+                .selected_text(RichText::new(&agent_label).small())
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.task_agent_filter, String::new(), "全部 Agent");
+                    for name in &agent_names {
+                        ui.selectable_value(&mut self.task_agent_filter, name.clone(), name.as_str());
+                    }
+                });
             ui.separator();
             ui.small(format!("⏳ {}", running_count));
             ui.small(format!("⚠️ {}", attention_count));
@@ -932,6 +1026,7 @@ impl SirinApp {
         ui.separator();
 
         let filter = self.task_filter;
+        let agent_filter = self.task_agent_filter.clone();
         let row_height = 18.0;
         let col_widths = [120.0_f32, 230.0, 50.0];
 
@@ -952,7 +1047,7 @@ impl SirinApp {
         ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
             for task in &self.tasks {
                 let status = task.status.as_deref().unwrap_or("—");
-                // Apply filter.
+                // Apply status filter.
                 let passes = match filter {
                     TaskFilter::All => true,
                     TaskFilter::Running => matches!(status, "PENDING" | "RUNNING" | "FOLLOWING"),
@@ -961,7 +1056,9 @@ impl SirinApp {
                         matches!(status, "FAILED" | "ERROR" | "FOLLOWUP_NEEDED" | "ROLLBACK")
                     }
                 };
-                if !passes {
+                // Apply agent filter.
+                let agent_passes = agent_filter.is_empty() || task.persona == agent_filter;
+                if !passes || !agent_passes {
                     continue;
                 }
 
@@ -2377,6 +2474,402 @@ impl SirinApp {
                 }
             });
     }
+
+    // ── Multi-Agent Dispatch / Management Panel ───────────────────────────────
+
+    fn show_dispatch(&mut self, ui: &mut egui::Ui) {
+        use crate::agent_config::AgentsFile;
+        use crate::telegram_auth::TelegramStatus;
+
+        // Lazy-load agents config (same as Settings).
+        if self.settings_agents.is_none() {
+            self.settings_agents = AgentsFile::load().ok().or_else(|| Some(AgentsFile::default()));
+        }
+        let agents = match self.settings_agents.as_ref() {
+            Some(f) => f.agents.clone(),
+            None => Vec::new(),
+        };
+
+        // Default target agent to first agent id.
+        if self.dispatch_target_agent.is_empty() {
+            if let Some(first) = agents.first() {
+                self.dispatch_target_agent = first.id.clone();
+            }
+        }
+
+        // ── Header ────────────────────────────────────────────────────────────
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("🗂 多 Agent 調度台").heading().strong());
+            ui.separator();
+            ui.small(format!("{} 個 Agent 已配置", agents.len()));
+            if !self.dispatch_msg.is_empty() {
+                ui.separator();
+                let color = if self.dispatch_msg.starts_with('❌') {
+                    Color32::from_rgb(220, 80, 80)
+                } else {
+                    Color32::from_rgb(100, 220, 100)
+                };
+                ui.colored_label(color, &self.dispatch_msg);
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.small("派發後自動切換至「💬 對話」頁籤");
+            });
+        });
+        ui.separator();
+
+        // ── Agent Fleet Grid ─────────────────────────────────────────────────
+        egui::Frame::group(ui.style())
+            .fill(Color32::from_rgb(18, 24, 36))
+            .inner_margin(egui::Margin::symmetric(8, 6))
+            .show(ui, |ui| {
+                ui.label(RichText::new("Agent 艦隊").strong().small());
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    for agent in &agents {
+                        // Count tasks for this agent from the activity log.
+                        let persona_name = &agent.identity.name;
+                        let running = self.tasks.iter()
+                            .filter(|t| &t.persona == persona_name
+                                && matches!(t.status.as_deref(), Some("PENDING") | Some("RUNNING") | Some("FOLLOWING")))
+                            .count();
+                        let done = self.tasks.iter()
+                            .filter(|t| &t.persona == persona_name && t.status.as_deref() == Some("DONE"))
+                            .count();
+                        let failed = self.tasks.iter()
+                            .filter(|t| &t.persona == persona_name
+                                && matches!(t.status.as_deref(), Some("FAILED") | Some("ERROR") | Some("FOLLOWUP_NEEDED")))
+                            .count();
+                        let tg_status = self.agent_auth_states.iter()
+                            .find(|(id, _)| id == &agent.id)
+                            .map(|(_, s)| s.status());
+
+                        let is_selected = self.dispatch_target_agent == agent.id;
+                        let card_bg = if is_selected {
+                            Color32::from_rgb(30, 60, 100)
+                        } else {
+                            Color32::from_rgb(26, 32, 46)
+                        };
+                        let card_stroke = if is_selected {
+                            egui::Stroke::new(1.5, Color32::from_rgb(80, 160, 255))
+                        } else {
+                            egui::Stroke::new(1.0, Color32::from_rgb(50, 60, 80))
+                        };
+
+                        let clicked = egui::Frame::new()
+                            .fill(card_bg)
+                            .stroke(card_stroke)
+                            .corner_radius(6.0)
+                            .inner_margin(egui::Margin::symmetric(12, 8))
+                            .show(ui, |ui| {
+                                ui.set_min_width(160.0);
+                                ui.set_max_width(220.0);
+
+                                // Agent name + status LED
+                                ui.horizontal(|ui| {
+                                    let led = if agent.enabled {
+                                        Color32::from_rgb(80, 200, 100)
+                                    } else {
+                                        Color32::GRAY
+                                    };
+                                    ui.colored_label(led, "●");
+                                    ui.label(RichText::new(&agent.identity.name).strong());
+
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        if let Some(ref st) = tg_status {
+                                            match st {
+                                                TelegramStatus::Connected =>
+                                                    ui.colored_label(Color32::from_rgb(80, 200, 100), "✈●"),
+                                                TelegramStatus::CodeRequired | TelegramStatus::PasswordRequired { .. } =>
+                                                    ui.colored_label(Color32::YELLOW, "✈⚠"),
+                                                TelegramStatus::Error { .. } =>
+                                                    ui.colored_label(Color32::from_rgb(220, 80, 80), "✈✗"),
+                                                TelegramStatus::Disconnected { .. } =>
+                                                    ui.colored_label(Color32::GRAY, "✈○"),
+                                            }
+                                        } else {
+                                            ui.colored_label(Color32::DARK_GRAY, "—")
+                                        }
+                                    });
+                                });
+
+                                ui.colored_label(Color32::DARK_GRAY, RichText::new(&agent.id).small().monospace());
+                                ui.add_space(4.0);
+
+                                // Task counters
+                                ui.horizontal(|ui| {
+                                    if running > 0 {
+                                        egui::Frame::new()
+                                            .fill(Color32::from_rgb(70, 54, 18))
+                                            .corner_radius(3.0)
+                                            .inner_margin(egui::Margin::symmetric(5, 2))
+                                            .show(ui, |ui| {
+                                                ui.small(format!("⏳ {}", running));
+                                            });
+                                    }
+                                    if failed > 0 {
+                                        egui::Frame::new()
+                                            .fill(Color32::from_rgb(72, 24, 24))
+                                            .corner_radius(3.0)
+                                            .inner_margin(egui::Margin::symmetric(5, 2))
+                                            .show(ui, |ui| {
+                                                ui.small(format!("❌ {}", failed));
+                                            });
+                                    }
+                                    egui::Frame::new()
+                                        .fill(Color32::from_rgb(22, 48, 24))
+                                        .corner_radius(3.0)
+                                        .inner_margin(egui::Margin::symmetric(5, 2))
+                                        .show(ui, |ui| {
+                                            ui.small(format!("✅ {}", done));
+                                        });
+                                });
+
+                                // Latest activity
+                                if let Some(latest) = self.tasks.iter().find(|t| &t.persona == persona_name) {
+                                    let preview = latest.message_preview.as_deref()
+                                        .or(latest.reason.as_deref())
+                                        .unwrap_or(&latest.event);
+                                    ui.add_space(2.0);
+                                    ui.colored_label(
+                                        Color32::GRAY,
+                                        RichText::new(preview.chars().take(40).collect::<String>()).small(),
+                                    );
+                                }
+                            })
+                            .response
+                            .interact(egui::Sense::click())
+                            .clicked();
+
+                        if clicked {
+                            self.dispatch_target_agent = agent.id.clone();
+                        }
+                    }
+
+                    // Quick-add shortcut to Settings
+                    let add_clicked = egui::Frame::new()
+                        .fill(Color32::from_rgb(22, 28, 40))
+                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(50, 60, 80)))
+                        .corner_radius(6.0)
+                        .inner_margin(egui::Margin::symmetric(12, 8))
+                        .show(ui, |ui| {
+                            ui.set_min_width(80.0);
+                            ui.set_min_height(60.0);
+                            ui.centered_and_justified(|ui| {
+                                ui.colored_label(Color32::GRAY, "＋ 新增\nAgent");
+                            });
+                        })
+                        .response
+                        .interact(egui::Sense::click())
+                        .clicked();
+                    if add_clicked {
+                        self.tab = Tab::Settings;
+                        self.settings_selected_agent = Some(
+                            self.settings_agents.as_ref().map(|f| f.agents.len()).unwrap_or(0).saturating_sub(1)
+                        );
+                    }
+                });
+            });
+
+        ui.add_space(6.0);
+
+        // ── Bottom: Dispatch form (left) + Activity feed (right) ─────────────
+        let available = ui.available_width();
+        let left_width = (available * 0.48).min(480.0);
+
+        egui::SidePanel::left("dispatch_left")
+            .resizable(true)
+            .default_width(left_width)
+            .min_width(260.0)
+            .show_inside(ui, |ui| {
+                // ── Dispatch Form ─────────────────────────────────────────────
+                egui::Frame::group(ui.style())
+                    .fill(Color32::from_rgb(22, 28, 40))
+                    .show(ui, |ui| {
+                        ui.label(RichText::new("任務派發").strong());
+                        ui.add_space(4.0);
+
+                        // Target agent selector
+                        ui.horizontal(|ui| {
+                            ui.label("目標 Agent：");
+                            egui::ComboBox::from_id_salt("dispatch_agent_combo")
+                                .selected_text(&self.dispatch_target_agent)
+                                .show_ui(ui, |ui| {
+                                    for agent in &agents {
+                                        let led = if agent.enabled { "● " } else { "○ " };
+                                        ui.selectable_value(
+                                            &mut self.dispatch_target_agent,
+                                            agent.id.clone(),
+                                            format!("{}{}", led, agent.identity.name),
+                                        );
+                                    }
+                                });
+                        });
+
+                        // Task type selector
+                        ui.horizontal(|ui| {
+                            ui.label("任務類型：");
+                            ui.selectable_value(&mut self.dispatch_task_type, DispatchTaskType::Chat, "💬 對話");
+                            ui.selectable_value(&mut self.dispatch_task_type, DispatchTaskType::Research, "🔬 調研");
+                            ui.selectable_value(&mut self.dispatch_task_type, DispatchTaskType::Coding, "⚙ 編碼");
+                        });
+
+                        ui.add_space(4.0);
+
+                        // Task text input
+                        let hint = match self.dispatch_task_type {
+                            DispatchTaskType::Chat => "輸入指令或問題…",
+                            DispatchTaskType::Research => "輸入調研主題…",
+                            DispatchTaskType::Coding => "描述編碼任務…",
+                        };
+                        let input_height = 80.0;
+                        let available_w = ui.available_width();
+                        ui.add(
+                            egui::TextEdit::multiline(&mut self.dispatch_task_input)
+                                .hint_text(hint)
+                                .desired_width(available_w)
+                                .desired_rows(4)
+                                .min_size(egui::vec2(available_w, input_height)),
+                        );
+
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            let can_send = !self.dispatch_task_input.trim().is_empty()
+                                && !self.dispatch_target_agent.is_empty();
+
+                            let send_label = match self.dispatch_task_type {
+                                DispatchTaskType::Chat => "▶ 派發對話",
+                                DispatchTaskType::Research => "🔬 啟動調研",
+                                DispatchTaskType::Coding => "⚙ 執行編碼",
+                            };
+
+                            if ui
+                                .add_enabled(
+                                    can_send,
+                                    egui::Button::new(RichText::new(send_label).strong())
+                                        .fill(Color32::from_rgb(30, 70, 130)),
+                                )
+                                .clicked()
+                            {
+                                let task_text = self.dispatch_task_input.trim().to_string();
+                                let agent_id = self.dispatch_target_agent.clone();
+
+                                match self.dispatch_task_type {
+                                    DispatchTaskType::Research => {
+                                        // Research: spawn directly + switch to Research tab.
+                                        let topic = task_text.clone();
+                                        let rt = self.rt.clone();
+                                        rt.spawn(async move {
+                                            crate::agents::research_agent::run_research_via_adk(
+                                                topic, None,
+                                            )
+                                            .await;
+                                        });
+                                        self.tab = Tab::Research;
+                                        self.dispatch_msg = format!("✅ 已啟動調研：{}", task_text.chars().take(40).collect::<String>());
+                                        self.dispatch_msg_at = Some(std::time::Instant::now());
+                                    }
+                                    DispatchTaskType::Chat | DispatchTaskType::Coding => {
+                                        // Chat/Coding: pre-fill chat_input and switch to Chat tab.
+                                        let prefix = match self.dispatch_task_type {
+                                            DispatchTaskType::Coding => format!("[{}] ⚙ ", agent_id),
+                                            _ => format!("[{}] ", agent_id),
+                                        };
+                                        self.chat_input = format!("{}{}", prefix, task_text);
+                                        self.tab = Tab::Chat;
+                                    }
+                                }
+                                self.dispatch_task_input.clear();
+                            }
+                        });
+                    });
+            });
+
+        // ── Right: Per-Agent Activity Feed ───────────────────────────────────
+        ScrollArea::vertical()
+            .id_salt("dispatch_activity")
+            .auto_shrink(false)
+            .show(ui, |ui| {
+                ui.label(RichText::new("活動快覽").strong().small());
+                ui.separator();
+
+                // Find selected agent's persona name.
+                let selected_persona = agents
+                    .iter()
+                    .find(|a| a.id == self.dispatch_target_agent)
+                    .map(|a| a.identity.name.clone())
+                    .unwrap_or_default();
+
+                // Summary stats for selected agent.
+                let running = self.tasks.iter()
+                    .filter(|t| t.persona == selected_persona
+                        && matches!(t.status.as_deref(), Some("PENDING") | Some("RUNNING") | Some("FOLLOWING")))
+                    .count();
+                let done = self.tasks.iter()
+                    .filter(|t| t.persona == selected_persona && t.status.as_deref() == Some("DONE"))
+                    .count();
+                let failed = self.tasks.iter()
+                    .filter(|t| t.persona == selected_persona
+                        && matches!(t.status.as_deref(), Some("FAILED") | Some("ERROR") | Some("FOLLOWUP_NEEDED")))
+                    .count();
+
+                if !selected_persona.is_empty() {
+                    ui.horizontal_wrapped(|ui| {
+                        let items = [
+                            ("⏳ 進行中", running, Color32::from_rgb(255, 200, 60)),
+                            ("✅ 完成", done, Color32::from_rgb(100, 220, 100)),
+                            ("❌ 失敗", failed, Color32::from_rgb(220, 80, 80)),
+                        ];
+                        for (label, count, color) in items {
+                            egui::Frame::new()
+                                .fill(Color32::from_rgb(22, 28, 40))
+                                .corner_radius(4.0)
+                                .inner_margin(egui::Margin::symmetric(8, 3))
+                                .show(ui, |ui| {
+                                    ui.colored_label(color, format!("{} {}", label, count));
+                                });
+                        }
+                    });
+                    ui.add_space(6.0);
+                }
+
+                // Filter tasks to selected agent.
+                let filtered: Vec<_> = self.tasks.iter()
+                    .filter(|t| selected_persona.is_empty() || t.persona == selected_persona)
+                    .take(60)
+                    .collect();
+
+                if filtered.is_empty() {
+                    ui.colored_label(Color32::GRAY, "尚無活動記錄。");
+                }
+
+                for task in filtered {
+                    let status = task.status.as_deref().unwrap_or("—");
+                    let is_summary = task.event == "research_summary_ready";
+                    let (badge_text, badge_fg, badge_bg) =
+                        task_status_badge(status, task.reason.as_deref(), is_summary);
+
+                    let ts = task.timestamp.get(11..19).unwrap_or("—"); // HH:MM:SS
+                    let preview = task.message_preview.as_deref()
+                        .or(task.reason.as_deref())
+                        .unwrap_or(&task.event);
+
+                    ui.horizontal(|ui| {
+                        ui.colored_label(Color32::DARK_GRAY, RichText::new(ts).small().monospace());
+                        egui::Frame::new()
+                            .fill(badge_bg)
+                            .stroke(egui::Stroke::new(1.0, badge_fg))
+                            .inner_margin(egui::Margin::symmetric(5, 1))
+                            .corner_radius(4.0)
+                            .show(ui, |ui| {
+                                ui.label(RichText::new(badge_text).small().strong().color(badge_fg));
+                            });
+                        ui.label(
+                            RichText::new(preview.chars().take(60).collect::<String>()).small(),
+                        );
+                    });
+                }
+            });
+    }
 }
 // ── Agent detail (right panel) ────────────────────────────────────────────────
 
@@ -2470,10 +2963,6 @@ fn show_tab_identity(ui: &mut egui::Ui, agent: &mut crate::agent_config::AgentCo
             });
             ui.end_row();
 
-            ui.label("描述");
-            ui.add(egui::TextEdit::multiline(&mut agent.description)
-                .desired_width(f32::INFINITY).desired_rows(3));
-            ui.end_row();
         });
 }
 
@@ -2653,105 +3142,28 @@ fn show_tab_channel(
 fn show_tab_actions(
     ui: &mut egui::Ui,
     agent: &mut crate::agent_config::AgentConfig,
-    scratch: &mut AgentUiScratch,
+    _scratch: &mut AgentUiScratch,
 ) {
-    // ── Remote AI toggle ──────────────────────────────────────────────────
-    ui.checkbox(&mut agent.disable_remote_ai, "關閉遠端 AI（強制使用本地 LLM）");
-    ui.add_space(8.0);
-    ui.separator();
-
-    // ── Agents ────────────────────────────────────────────────────────────
+    // ── Capability toggles ────────────────────────────────────────────────
     ui.add_space(4.0);
-    ui.checkbox(&mut agent.actions.research_agent.enabled, "Research Agent");
-    ui.add_space(6.0);
-    ui.checkbox(&mut agent.actions.coding_agent.enabled, "Coding Agent");
-    if agent.actions.coding_agent.enabled {
-        ui.indent("coding_indent", |ui| {
-            egui::Grid::new("coding_grid")
-                .num_columns(2)
-                .spacing([10.0, 4.0])
-                .show(ui, |ui| {
-                    ui.label("專案根目錄");
-                    ui.add(egui::TextEdit::singleline(&mut agent.actions.coding_agent.project_root)
-                        .desired_width(f32::INFINITY));
-                    ui.end_row();
-                    ui.label("最大迭代次數");
-                    ui.add(egui::DragValue::new(&mut agent.actions.coding_agent.max_iterations)
-                        .range(1..=50));
-                    ui.end_row();
-                    ui.label("最大寫入 (bytes)");
-                    ui.add(egui::DragValue::new(&mut agent.actions.coding_agent.max_file_write_bytes)
-                        .range(1024..=10485760).speed(1024.0));
-                    ui.end_row();
-                });
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut agent.actions.coding_agent.auto_approve_reads, "自動允許讀取");
-                ui.checkbox(&mut agent.actions.coding_agent.auto_approve_writes, "自動允許寫入");
-            });
-            let mut remove_cmd: Option<usize> = None;
-            for (j, cmd) in agent.actions.coding_agent.allowed_commands.iter().enumerate() {
-                ui.horizontal(|ui| {
-                    ui.colored_label(Color32::from_rgb(150, 220, 150), "▸");
-                    ui.monospace(cmd);
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button(RichText::new("✕").color(Color32::from_rgb(180, 70, 70))).clicked() {
-                            remove_cmd = Some(j);
-                        }
-                    });
-                });
-            }
-            if let Some(j) = remove_cmd { agent.actions.coding_agent.allowed_commands.remove(j); }
-            ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut scratch.new_command)
-                    .hint_text("指令前綴…").desired_width(240.0));
-                if ui.button("＋").clicked() && !scratch.new_command.trim().is_empty() {
-                    agent.actions.coding_agent.allowed_commands.push(scratch.new_command.trim().to_string());
-                    scratch.new_command.clear();
-                }
-            });
-        });
-    }
+    ui.checkbox(&mut agent.actions.research_agent.enabled, "🔬 Research Agent");
+    ui.add_space(4.0);
+    ui.checkbox(&mut agent.actions.coding_agent.enabled, "⚙ Coding Agent");
+    ui.add_space(4.0);
+    ui.checkbox(&mut agent.disable_remote_ai, "🖥 關閉遠端 AI（強制使用本地 LLM）");
 
-    // ── Memory DB ─────────────────────────────────────────────────────────
-    ui.add_space(8.0);
+    ui.add_space(12.0);
     ui.separator();
     ui.add_space(4.0);
-    ui.label(RichText::new("記憶 Memory").strong());
-    ui.add_space(2.0);
-    egui::Grid::new("memory_grid")
-        .num_columns(2)
-        .spacing([10.0, 4.0])
+    egui::Frame::new()
+        .fill(Color32::from_rgb(28, 32, 44))
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::symmetric(10, 6))
         .show(ui, |ui| {
-            ui.label("DB 路徑");
-            ui.add(egui::TextEdit::singleline(&mut agent.memory.db_path)
-                .desired_width(f32::INFINITY));
-            ui.end_row();
-        });
-
-    // ── ROI thresholds (advanced, collapsed) ──────────────────────────────
-    ui.add_space(8.0);
-    egui::CollapsingHeader::new(RichText::new("進階 — ROI 閾值").color(Color32::GRAY))
-        .default_open(false)
-        .show(ui, |ui| {
-            egui::Grid::new("roi_grid")
-                .num_columns(2)
-                .spacing([12.0, 5.0])
-                .show(ui, |ui| {
-                    ui.label("通知閾值").on_hover_text("超過此 ROI 值才推送通知");
-                    ui.horizontal(|ui| {
-                        ui.add(egui::DragValue::new(&mut agent.roi_thresholds.min_usd_to_notify)
-                            .range(0.0..=10000.0).speed(0.5));
-                        ui.small("USD");
-                    });
-                    ui.end_row();
-                    ui.label("遠端 LLM 閾值").on_hover_text("超過此值才允許呼叫遠端模型");
-                    ui.horizontal(|ui| {
-                        ui.add(egui::DragValue::new(&mut agent.roi_thresholds.min_usd_to_call_remote_llm)
-                            .range(0.0..=10000.0).speed(1.0));
-                        ui.small("USD");
-                    });
-                    ui.end_row();
-                });
+            ui.colored_label(
+                Color32::GRAY,
+                "📝 詳細 coding 設定（project_root、max_iterations、auto_approve 等）\n請修改 config/persona.yaml → coding_agent。",
+            );
         });
 }
 
