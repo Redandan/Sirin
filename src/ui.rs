@@ -1986,6 +1986,7 @@ impl SirinApp {
                                 planner_skills: Vec::new(),
                                 use_large_model: false,
                                 agent_id: None,
+                                disable_remote_ai: false,
                             };
                             run_chat_and_send(request, plan_update, user_text_spawn, tx).await;
                             return;
@@ -2089,6 +2090,7 @@ impl SirinApp {
                                     planner_skills: Vec::new(),
                                     use_large_model: false,
                                     agent_id: None,
+                                    disable_remote_ai: false,
                                 });
                             run_chat_and_send(request, plan_update, user_text_spawn, tx).await;
                         }

@@ -616,6 +616,7 @@ mod tests {
             version: "1.0".to_string(),
             description: "test".to_string(),
             coding_agent: CodingAgentConfig::default(),
+            disable_remote_ai: false,
         }
     }
 

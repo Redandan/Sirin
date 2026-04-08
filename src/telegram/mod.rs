@@ -373,6 +373,7 @@ async fn run_listener_once(
                     planner_skills: Vec::new(),
                     use_large_model: false,
                     agent_id: None,
+                    disable_remote_ai: false,
                 });
 
             // Side-command results (todo creation, task queries) take priority
@@ -547,6 +548,7 @@ async fn run_agent_listener_once(
                     planner_skills: Vec::new(),
                     use_large_model: false,
                     agent_id: Some(agent_cfg.id.clone()),
+                    disable_remote_ai: agent_cfg.disable_remote_ai,
                 });
 
             if let Some(cmd_result) = reply_plan.command_execution_result {
@@ -558,6 +560,10 @@ async fn run_agent_listener_once(
             // Ensure agent_id is always set for per-agent memory isolation.
             if chat_request.agent_id.is_none() {
                 chat_request.agent_id = Some(agent_cfg.id.clone());
+            }
+            // Apply per-agent remote-AI kill-switch.
+            if agent_cfg.disable_remote_ai {
+                chat_request.disable_remote_ai = true;
             }
 
             let final_reply = crate::agents::chat_agent::run_chat_via_adk_with_tracker(

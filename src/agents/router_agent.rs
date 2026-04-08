@@ -198,6 +198,7 @@ impl Agent for RouterAgent {
                         planner_skills,
                         use_large_model: false,
                         agent_id: request.agent_id,
+                        disable_remote_ai: false,
                     }
                 })),
                 RouteTarget::LargeModel => Ok(json!({
@@ -215,6 +216,7 @@ impl Agent for RouterAgent {
                         planner_skills,
                         use_large_model: true,
                         agent_id: request.agent_id,
+                        disable_remote_ai: false,
                     }
                 })),
             }
@@ -450,6 +452,7 @@ mod tests {
                 peer_id: None,
                 fallback_reply: None,
                 execution_result: None,
+                agent_id: None,
             },
             None,
         )
@@ -483,6 +486,7 @@ mod tests {
                 peer_id: None,
                 fallback_reply: None,
                 execution_result: None,
+                agent_id: None,
             },
             None,
         )
@@ -505,6 +509,7 @@ mod tests {
                 peer_id: None,
                 fallback_reply: None,
                 execution_result: None,
+                agent_id: None,
             },
             None,
         )

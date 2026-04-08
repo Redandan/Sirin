@@ -58,6 +58,10 @@ pub struct ChatRequest {
     /// Agent ID for memory isolation — scopes conversation context to this agent.
     #[serde(default)]
     pub agent_id: Option<String>,
+    /// When true, force local LLM even if the router requested the large/remote model.
+    /// Mirrors `AgentConfig.disable_remote_ai` for per-agent override.
+    #[serde(default)]
+    pub disable_remote_ai: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -97,10 +101,10 @@ impl Agent for ChatAgent {
             let llm_arc = Arc::clone(&ctx.llm);
             let persona = Persona::load().ok();
 
-            // Respect the persona's remote-AI kill-switch: if disable_remote_ai is
-            // set, fall back to the main (local) LLM even when the router requested
-            // the large-model path.
-            let remote_disabled = persona.as_ref().map_or(false, |p| p.disable_remote_ai);
+            // Respect the remote-AI kill-switch: per-request flag (from AgentConfig)
+            // takes priority, then falls back to persona.yaml setting.
+            let remote_disabled = request.disable_remote_ai
+                || persona.as_ref().map_or(false, |p| p.disable_remote_ai);
             let use_large = request.use_large_model && !remote_disabled;
 
             // When use_large_model is requested, use the process-wide large-model
@@ -620,6 +624,8 @@ mod tests {
                 planner_intent_family: None,
                 planner_skills: Vec::new(),
                 use_large_model: false,
+                agent_id: None,
+                disable_remote_ai: false,
             },
             None,
         )
@@ -648,6 +654,8 @@ mod tests {
                 planner_intent_family: None,
                 planner_skills: Vec::new(),
                 use_large_model: false,
+                agent_id: None,
+                disable_remote_ai: false,
             },
             None,
         )
@@ -672,6 +680,8 @@ mod tests {
                 planner_intent_family: None,
                 planner_skills: Vec::new(),
                 use_large_model: false,
+                agent_id: None,
+                disable_remote_ai: false,
             },
             None,
         )
@@ -689,6 +699,8 @@ mod tests {
                 planner_intent_family: None,
                 planner_skills: Vec::new(),
                 use_large_model: false,
+                agent_id: None,
+                disable_remote_ai: false,
             },
             None,
         )
@@ -719,6 +731,8 @@ mod tests {
                 planner_intent_family: None,
                 planner_skills: Vec::new(),
                 use_large_model: false,
+                agent_id: None,
+                disable_remote_ai: false,
             },
             None,
         )
@@ -747,6 +761,8 @@ mod tests {
                 planner_intent_family: None,
                 planner_skills: Vec::new(),
                 use_large_model: false,
+                agent_id: None,
+                disable_remote_ai: false,
             },
             None,
         )
@@ -771,6 +787,8 @@ mod tests {
                 planner_intent_family: None,
                 planner_skills: Vec::new(),
                 use_large_model: false,
+                agent_id: None,
+                disable_remote_ai: false,
             },
             None,
         )
@@ -799,6 +817,8 @@ mod tests {
                 planner_intent_family: None,
                 planner_skills: Vec::new(),
                 use_large_model: false,
+                agent_id: None,
+                disable_remote_ai: false,
             },
             None,
         )
