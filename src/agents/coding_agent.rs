@@ -1706,7 +1706,7 @@ pub async fn run_coding_via_adk(
     context_block: Option<String>,
 ) -> CodingAgentResponse {
     // Load recent conversation context (UI session, peer_id=None).
-    let context_hint = load_recent_context(5, None)
+    let context_hint = load_recent_context(5, None, None)
         .ok()
         .filter(|v| !v.is_empty())
         .map(|entries| {

@@ -1,4 +1,7 @@
 //! Telegram configuration — reads all env vars and resolves the session path.
+//!
+//! Also provides `from_agent_channel` for building a config from a per-agent
+//! `TelegramChannelConfig` (stored in `agents.yaml`) instead of env vars.
 
 use std::env;
 
@@ -50,6 +53,39 @@ pub struct TelegramConfig {
     /// Emit verbose Telegram update diagnostics.
     pub debug_updates: bool,
 }
+
+// ── Env-var reference resolver ────────────────────────────────────────────────
+
+/// Replace every `${VAR_NAME}` placeholder in `s` with the corresponding
+/// environment variable value.  Unknown variables are replaced with an empty
+/// string.  Literal values (no `${…}`) are returned unchanged.
+pub fn resolve_env_refs(s: &str) -> String {
+    let mut result = s.to_string();
+    loop {
+        let Some(start) = result.find("${") else { break };
+        let Some(rel_end) = result[start..].find('}') else { break };
+        let end = start + rel_end;
+        let var_name = &result[start + 2..end];
+        let value = env::var(var_name).unwrap_or_default();
+        result = format!("{}{}{}", &result[..start], value, &result[end + 1..]);
+    }
+    result
+}
+
+// ── Session path ──────────────────────────────────────────────────────────────
+
+/// Resolve a session file path from an agent config value.
+///
+/// - Empty string → use the system default (`session_path()`).
+/// - Any string with `${VAR}` placeholders → resolve them first.
+pub fn resolve_session_path(configured: &str) -> std::path::PathBuf {
+    if configured.trim().is_empty() {
+        return session_path();
+    }
+    std::path::PathBuf::from(resolve_env_refs(configured))
+}
+
+// ── Config constructors ───────────────────────────────────────────────────────
 
 impl TelegramConfig {
     /// Read configuration from environment variables.
@@ -176,6 +212,47 @@ impl TelegramConfig {
             startup_msg,
             startup_target,
             debug_updates,
+        })
+    }
+
+    /// Build a `TelegramConfig` from a per-agent channel config.
+    ///
+    /// `${VAR}` references in string fields are resolved at call time so that
+    /// agents can store references to env vars (e.g. `"${TG_API_ID}"`) without
+    /// hard-coding credentials in `agents.yaml`.
+    pub fn from_agent_channel(
+        ch: &crate::agent_config::TelegramChannelConfig,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let api_id_str = resolve_env_refs(&ch.api_id);
+        let api_id: i32 = api_id_str
+            .trim()
+            .parse()
+            .map_err(|e| format!("agent channel api_id '{}' is not an integer: {e}", api_id_str))?;
+
+        let api_hash = resolve_env_refs(&ch.api_hash);
+        if api_hash.trim().is_empty() || api_hash.starts_with("${") {
+            return Err("agent channel api_hash not resolved (env var missing?)".into());
+        }
+
+        let phone_raw = resolve_env_refs(&ch.phone);
+        let phone = if phone_raw.trim().is_empty() || phone_raw.starts_with("${") {
+            None
+        } else {
+            Some(phone_raw.trim().to_string())
+        };
+
+        Ok(Self {
+            api_id,
+            api_hash,
+            phone,
+            auto_reply_enabled: ch.auto_reply,
+            auto_reply_text: "{ack_prefix} 我會先幫你處理這件事。".to_string(),
+            reply_private: ch.reply_private,
+            reply_groups: ch.reply_groups,
+            group_ids: ch.group_ids.clone(),
+            startup_msg: ch.startup_msg.clone(),
+            startup_target: None,
+            debug_updates: true,
         })
     }
 }

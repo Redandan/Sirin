@@ -580,7 +580,7 @@ fn looks_like_file_token(token: &str) -> bool {
 }
 
 fn recent_context_file_references(peer_id: Option<i64>) -> Vec<String> {
-    let Ok(entries) = load_recent_context(5, peer_id) else {
+    let Ok(entries) = load_recent_context(5, peer_id, None) else {
         return Vec::new();
     };
 

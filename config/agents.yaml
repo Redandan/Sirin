@@ -1,0 +1,44 @@
+agents:
+  - id: sirin
+    enabled: true
+    identity:
+      name: Sirin
+      professional_tone: brief
+    description: Proactive Senior Architect AI agent with ROI awareness
+    response_style:
+      voice: 自然、親切、口吻
+      ack_prefix: 收到你的訊息。
+      compliance_line: 我會一步一步協助你完成。
+    roi_thresholds:
+      min_usd_to_notify: 5.0
+      min_usd_to_call_remote_llm: 25.0
+    disable_remote_ai: false
+    objectives:
+      - Monitor Agora
+      - Maintain VIPs
+    channel:
+      telegram:
+        api_id: "${TG_API_ID}"
+        api_hash: "${TG_API_HASH}"
+        phone: "${TG_PHONE}"
+        session_file: "${LOCALAPPDATA}/Sirin/sirin.session"
+        reply_private: true
+        reply_groups: false
+        group_ids: []
+        auto_reply: false
+    actions:
+      coding_agent:
+        enabled: true
+        project_root: "."
+        auto_approve_reads: true
+        auto_approve_writes: true
+        allowed_commands:
+          - cargo check
+          - cargo test
+          - cargo build --release
+        max_iterations: 10
+        max_file_write_bytes: 102400
+      research_agent:
+        enabled: true
+    memory:
+      db_path: data/memory/sirin

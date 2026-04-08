@@ -26,6 +26,10 @@ pub async fn prepare_reply_plan<F, Fut>(
     compliance: &str,
     tracker: &TaskTracker,
     cfg: &TelegramConfig,
+    // Per-agent capability flags.  `None` = all capabilities enabled (legacy path).
+    actions: Option<&crate::agent_config::ActionsConfig>,
+    // Agent ID for memory isolation.  `None` = legacy single-agent path.
+    agent_id: Option<&str>,
     start_research: F,
 ) -> ReplyPlan
 where
@@ -39,17 +43,27 @@ where
             peer_id,
             fallback_reply: None,
             execution_result: None,
+            agent_id: agent_id.map(|s| s.to_string()),
         },
         Some(tracker.clone()),
     )
     .await
     .ok();
 
-    let route = routed
+    let raw_route = routed
         .as_ref()
         .and_then(|value| value.get("route"))
         .and_then(serde_json::Value::as_str)
         .unwrap_or("chat");
+
+    // Apply per-agent capability gating: if the agent has a capability disabled,
+    // fall back to "chat" even when the router recommends another route.
+    let research_enabled = actions.map(|a| a.research_agent.enabled).unwrap_or(true);
+    let route = if raw_route == "research" && !research_enabled {
+        "chat"
+    } else {
+        raw_route
+    };
 
     // Extract the router-built chat_request (carries planner hints + execution_result).
     let router_chat_request = routed

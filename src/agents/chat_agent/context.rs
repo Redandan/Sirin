@@ -27,7 +27,7 @@ pub(super) fn resolve_context_block(request: &ChatRequest, ctx: &AgentContext) -
         return None;
     }
 
-    match load_recent_context(5, request.peer_id) {
+    match load_recent_context(5, request.peer_id, request.agent_id.as_deref()) {
         Ok(entries) if !entries.is_empty() => {
             ctx.record_system_event(
                 "adk_chat_context_loaded",

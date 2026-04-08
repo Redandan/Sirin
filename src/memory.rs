@@ -991,10 +991,12 @@ pub fn looks_like_code_query(text: &str) -> bool {
 
 // ── Conversation context (per-peer) ──────────────────────────────────────────
 
-fn context_log_path(peer_id: Option<i64>) -> std::path::PathBuf {
-    let filename = match peer_id {
-        Some(id) => format!("sirin_context_{id}.jsonl"),
-        None => "sirin_context.jsonl".to_string(),
+fn context_log_path(peer_id: Option<i64>, agent_id: Option<&str>) -> std::path::PathBuf {
+    let filename = match (agent_id, peer_id) {
+        (Some(aid), Some(pid)) => format!("sirin_context_{aid}_{pid}.jsonl"),
+        (Some(aid), None) => format!("sirin_context_{aid}.jsonl"),
+        (None, Some(pid)) => format!("sirin_context_{pid}.jsonl"),
+        (None, None) => "sirin_context.jsonl".to_string(),
     };
     if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
         return std::path::Path::new(&local_app_data)
@@ -1019,8 +1021,9 @@ pub fn append_context(
     user_msg: &str,
     assistant_reply: &str,
     peer_id: Option<i64>,
+    agent_id: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let path = context_log_path(peer_id);
+    let path = context_log_path(peer_id, agent_id);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -1039,8 +1042,9 @@ pub fn append_context(
 pub fn load_recent_context(
     limit: usize,
     peer_id: Option<i64>,
+    agent_id: Option<&str>,
 ) -> Result<Vec<ContextEntry>, Box<dyn std::error::Error + Send + Sync>> {
-    let path = context_log_path(peer_id);
+    let path = context_log_path(peer_id, agent_id);
     if !path.exists() {
         return Ok(Vec::new());
     }

@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod adk;
+mod agent_config;
 mod agents;
 mod code_graph;
 mod events;
@@ -76,17 +77,58 @@ fn main() {
         llm::init_agent_fleet(fleet);
     }
 
+    // Per-agent auth states collected here and moved into SirinApp below.
+    let mut agent_auth_states: Vec<(String, TelegramAuthState)> = Vec::new();
+
     // Spawn all background tasks onto the runtime.
     {
         let _guard = rt.enter();
 
         rt.spawn(background_loop(tracker.clone()));
 
-        let tg_tracker = tracker.clone();
-        let tg_auth_spawn = tg_auth.clone();
-        rt.spawn(async move {
-            telegram::run_listener(tg_tracker, tg_auth_spawn).await;
-        });
+        // ── Per-agent Telegram listeners ──────────────────────────────────────
+        // Load agents.yaml and spawn an independent Tokio task for each enabled
+        // agent that has a Telegram channel configured.  The first such agent
+        // receives the primary `tg_auth` (shown in the Settings → System panel).
+        // Additional agents get standalone auth states (no UI feedback yet).
+        let agents = agent_config::AgentsFile::load().unwrap_or_default();
+        let mut primary_auth_assigned = false;
+
+        for agent in agents.agents.iter().filter(|a| a.enabled) {
+            let Some(ch_cfg) = agent.channel.as_ref().and_then(|c| c.telegram.as_ref()) else {
+                continue; // no Telegram channel — UI/test-only agent, nothing to spawn
+            };
+
+            let agent_auth = if !primary_auth_assigned {
+                // Wire the first agent's auth to the UI status display.
+                primary_auth_assigned = true;
+                tg_auth.clone()
+            } else {
+                TelegramAuthState::new()
+            };
+
+            agent_auth_states.push((agent.id.clone(), agent_auth.clone()));
+
+            let tg_tracker  = tracker.clone();
+            let agent_cfg   = agent.clone();   // Phase 3a: pass full config
+            let tg_channel  = ch_cfg.clone();
+            let auth_clone  = agent_auth;
+            rt.spawn(async move {
+                telegram::run_agent_listener(agent_cfg, tg_channel, tg_tracker, auth_clone).await;
+            });
+        }
+
+        // Fallback: if no agent in agents.yaml has a Telegram channel,
+        // fall back to the legacy env-var driven listener so existing setups
+        // keep working without needing to edit agents.yaml.
+        if !primary_auth_assigned {
+            eprintln!("[main] No Telegram channel configured in agents.yaml — falling back to env-var listener");
+            let tg_tracker    = tracker.clone();
+            let tg_auth_spawn = tg_auth.clone();
+            rt.spawn(async move {
+                telegram::run_listener(tg_tracker, tg_auth_spawn).await;
+            });
+        }
 
         rt.spawn(followup::run_worker(tracker.clone()));
     }
@@ -109,7 +151,7 @@ fn main() {
         options,
         Box::new(move |cc| {
             ui::SirinApp::setup_fonts(&cc.egui_ctx);
-            Ok(Box::new(ui::SirinApp::new(tracker, tg_auth, rt_handle)))
+            Ok(Box::new(ui::SirinApp::new(tracker, tg_auth, rt_handle, agent_auth_states)))
         }),
     )
     .expect("Failed to run Sirin UI");

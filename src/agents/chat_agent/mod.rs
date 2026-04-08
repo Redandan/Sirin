@@ -55,6 +55,9 @@ pub struct ChatRequest {
     /// of the default model.  Set by the Router when deep reasoning is needed.
     #[serde(default)]
     pub use_large_model: bool,
+    /// Agent ID for memory isolation — scopes conversation context to this agent.
+    #[serde(default)]
+    pub agent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -673,7 +676,7 @@ mod tests {
             None,
         )
         .await;
-        append_context("這個專案大概是怎麼運作的？", &first.reply, peer_id)
+        append_context("這個專案大概是怎麼運作的？", &first.reply, peer_id, None)
             .expect("should store the prior assistant reply for follow-up testing");
 
         let second = run_chat_response_via_adk_with_tracker(

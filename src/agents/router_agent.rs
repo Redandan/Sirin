@@ -29,6 +29,10 @@ pub struct RouterRequest {
     pub fallback_reply: Option<String>,
     #[serde(default)]
     pub execution_result: Option<String>,
+    /// Agent ID for memory isolation — forwarded into ChatRequest and used for
+    /// context log path selection.
+    #[serde(default)]
+    pub agent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -145,6 +149,7 @@ impl Agent for RouterAgent {
                             "peer_id": request.peer_id,
                             "planner_intent_family": planner_family_str,
                             "planner_skills": &planner_skills,
+                            "agent_id": request.agent_id,
                         },
                         "research_request": ResearchRequest { topic, url }
                     }))
@@ -161,7 +166,7 @@ impl Agent for RouterAgent {
                     };
                     // Inject recent conversation memory so the coding agent has
                     // awareness of what the user was just discussing.
-                    let context_block = load_recent_context(5, request.peer_id)
+                    let context_block = load_recent_context(5, request.peer_id, request.agent_id.as_deref())
                         .ok()
                         .filter(|v| !v.is_empty())
                         .map(|entries| format_context_block(&entries));
@@ -192,6 +197,7 @@ impl Agent for RouterAgent {
                         planner_intent_family: planner_family_str,
                         planner_skills,
                         use_large_model: false,
+                        agent_id: request.agent_id,
                     }
                 })),
                 RouteTarget::LargeModel => Ok(json!({
@@ -208,6 +214,7 @@ impl Agent for RouterAgent {
                         planner_intent_family: planner_family_str,
                         planner_skills,
                         use_large_model: true,
+                        agent_id: request.agent_id,
                     }
                 })),
             }

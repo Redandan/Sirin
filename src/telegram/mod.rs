@@ -39,7 +39,7 @@ use crate::researcher;
 use crate::sirin_log;
 use crate::telegram_auth::TelegramAuthState;
 
-use config::{require_login, session_path, TelegramConfig, AUTH_INPUT_TIMEOUT_SECS};
+use config::{require_login, resolve_session_path, session_path, TelegramConfig, AUTH_INPUT_TIMEOUT_SECS};
 
 // ── Auth helper ───────────────────────────────────────────────────────────────
 
@@ -304,6 +304,8 @@ async fn run_listener_once(
                 compliance,
                 tracker,
                 &cfg,
+                None, // legacy path: all capabilities enabled
+                None, // legacy path: no agent_id isolation
                 |topic, url| {
                     let adk_tracker = tracker.clone();
                     let notify_handle = handle.clone();
@@ -370,6 +372,7 @@ async fn run_listener_once(
                     planner_intent_family: None,
                     planner_skills: Vec::new(),
                     use_large_model: false,
+                    agent_id: None,
                 });
 
             // Side-command results (todo creation, task queries) take priority
@@ -389,7 +392,7 @@ async fn run_listener_once(
             )
             .await;
             reply::send_final_reply(&client, &message, is_private, final_reply.as_str()).await;
-            reply::persist_reply_context(&text, &final_reply, peer_bare_id);
+            reply::persist_reply_context(&text, &final_reply, peer_bare_id, None);
         } else if cfg.debug_updates {
             sirin_log!("[telegram] skip: auto-reply disabled by TG_AUTO_REPLY");
         }
@@ -400,6 +403,214 @@ async fn run_listener_once(
             &text,
             should_record_ai_decision,
         );
+    }
+}
+
+// ── Per-agent listener ────────────────────────────────────────────────────────
+
+/// Single-attempt listener driven by a per-agent `TelegramChannelConfig`.
+///
+/// Functionally identical to `run_listener_once` but derives the Telegram
+/// config and session path from the agent config rather than env vars.
+async fn run_agent_listener_once(
+    agent_cfg: &crate::agent_config::AgentConfig,
+    channel: &crate::agent_config::TelegramChannelConfig,
+    tracker: &TaskTracker,
+    auth: &TelegramAuthState,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let agent_id = agent_cfg.identity.name.as_str();
+    let _ = dotenvy::dotenv_override();
+
+    let force_login = auth.take_force_login();
+    let cfg = TelegramConfig::from_agent_channel(channel)?;
+    let llm = crate::llm::shared_llm();
+
+    if let Err(e) = ensure_codebase_index() {
+        sirin_log!("[telegram/{agent_id}] Codebase index refresh skipped: {e}");
+    }
+
+    let sess_path = resolve_session_path(&channel.session_file);
+    if let Some(parent) = sess_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let session = Arc::new(SqliteSession::open(sess_path).await?);
+    let SenderPool { runner, updates, handle } = SenderPool::new(Arc::clone(&session), cfg.api_id);
+    let client = Client::new(handle.clone());
+    let pool_task = tokio::spawn(runner.run());
+
+    if let Err(err) = ensure_user_authorized(&client, &cfg, auth, force_login).await {
+        sirin_log!("[telegram/{agent_id}] {err}");
+        handle.quit();
+        let _ = pool_task.await;
+        return Ok(());
+    }
+
+    if !client.is_authorized().await.unwrap_or(false) {
+        sirin_log!("[telegram/{agent_id}] Session remains unauthorized; skipping listener run");
+        handle.quit();
+        let _ = pool_task.await;
+        return Ok(());
+    }
+
+    let mut updates = client
+        .stream_updates(updates, UpdatesConfiguration { catch_up: false, ..Default::default() })
+        .await;
+
+    sirin_log!("[telegram/{agent_id}] Connected to Telegram");
+    auth.set_connected();
+    sirin_log!("[telegram/{agent_id}] AI reply backend={} model='{}'", llm.backend_name(), llm.model);
+    let listener_started_at = Utc::now();
+
+    reply::send_startup_message(&client, &cfg).await;
+
+    loop {
+        let update = match updates.next().await {
+            Ok(u) => u,
+            Err(e) => {
+                sirin_log!("[telegram/{agent_id}] Error receiving update: {e}");
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                continue;
+            }
+        };
+
+        let Update::NewMessage(message) = update else { continue };
+
+        if message.outgoing() { continue; }
+        if message.sender_id() == Some(PeerId::self_user()) { continue; }
+
+        let is_private = matches!(message.peer_id().kind(), PeerKind::User | PeerKind::UserSelf);
+        if is_private && !cfg.reply_private { continue; }
+        if !is_private && !cfg.reply_groups { continue; }
+        if !is_private && !cfg.group_ids.is_empty() {
+            let peer_id = message.peer_id().bare_id();
+            if !cfg.group_ids.contains(&peer_id) { continue; }
+        }
+        if message.date() < listener_started_at { continue; }
+
+        let text = message.text().to_owned();
+        if text.is_empty() { continue; }
+
+        // Use the agent's own identity — no longer falls back to persona.yaml.
+        let persona_name = agent_cfg.identity.name.as_str();
+        let voice        = agent_cfg.response_style.voice.as_str();
+        let ack_prefix   = agent_cfg.response_style.ack_prefix.as_str();
+        let compliance   = agent_cfg.response_style.compliance_line.as_str();
+        let peer_bare_id = Some(message.peer_id().bare_id());
+        let mut should_record_ai_decision = false;
+
+        if cfg.auto_reply_enabled {
+
+            let reply_plan = handler::prepare_reply_plan(
+                &text,
+                peer_bare_id.map(|id| id as i64),
+                persona_name,
+                voice,
+                ack_prefix,
+                compliance,
+                tracker,
+                &cfg,
+                Some(&agent_cfg.actions), // per-agent capability gating
+                Some(agent_cfg.id.as_str()), // per-agent memory isolation
+                |topic, url| {
+                    let adk_tracker = tracker.clone();
+                    let notify_handle = handle.clone();
+                    let notify_peer_fut = message.peer_ref();
+                    async move {
+                        let notify_peer = notify_peer_fut.await;
+                        tokio::spawn(async move {
+                            let task = crate::agents::research_agent::run_research_via_adk_with_tracker(topic, url, Some(adk_tracker)).await;
+                            if task.status == crate::researcher::ResearchStatus::Done {
+                                if let (Some(ref report), Some(peer)) = (&task.final_report, notify_peer) {
+                                    let summary: String = report.chars().take(500).collect();
+                                    let msg = format!("✅ 調研完成：{}\n\n{}", task.topic, summary);
+                                    let notify_client = Client::new(notify_handle);
+                                    let _ = notify_client.send_message(peer, msg.as_str()).await;
+                                }
+                            }
+                        });
+                    }
+                },
+            )
+            .await;
+            should_record_ai_decision = reply_plan.should_record_ai_decision;
+
+            let mut chat_request = reply_plan
+                .router_chat_request
+                .and_then(|v| serde_json::from_value::<crate::agents::chat_agent::ChatRequest>(v).ok())
+                .unwrap_or_else(|| crate::agents::chat_agent::ChatRequest {
+                    user_text: text.clone(),
+                    execution_result: None,
+                    context_block: None,
+                    fallback_reply: Some(reply_plan.fallback_reply.clone()),
+                    peer_id: peer_bare_id,
+                    planner_intent_family: None,
+                    planner_skills: Vec::new(),
+                    use_large_model: false,
+                    agent_id: Some(agent_cfg.id.clone()),
+                });
+
+            if let Some(cmd_result) = reply_plan.command_execution_result {
+                chat_request.execution_result = Some(cmd_result);
+            }
+            if chat_request.peer_id.is_none() {
+                chat_request.peer_id = peer_bare_id;
+            }
+            // Ensure agent_id is always set for per-agent memory isolation.
+            if chat_request.agent_id.is_none() {
+                chat_request.agent_id = Some(agent_cfg.id.clone());
+            }
+
+            let final_reply = crate::agents::chat_agent::run_chat_via_adk_with_tracker(
+                chat_request,
+                Some(tracker.clone()),
+            )
+            .await;
+            reply::send_final_reply(&client, &message, is_private, final_reply.as_str()).await;
+            reply::persist_reply_context(&text, &final_reply, peer_bare_id, Some(agent_cfg.id.as_str()));
+        }
+
+        reply::record_ai_decision_if_needed(tracker, persona_name, &text, should_record_ai_decision);
+    }
+}
+
+/// Public entry-point for per-agent Telegram listeners.
+///
+/// Wraps `run_agent_listener_once` with the same exponential back-off retry
+/// policy as [`run_listener`].  Each enabled agent with a Telegram channel
+/// calls this from its own Tokio task.
+pub async fn run_agent_listener(
+    agent_cfg: crate::agent_config::AgentConfig,
+    channel: crate::agent_config::TelegramChannelConfig,
+    tracker: TaskTracker,
+    auth: TelegramAuthState,
+) {
+    let agent_id = agent_cfg.identity.name.clone();
+    let mut backoff_secs: u64 = 30;
+    let mut attempt: u32 = 0;
+
+    loop {
+        attempt += 1;
+        sirin_log!("[telegram/{agent_id}] Starting listener attempt #{attempt}");
+        auth.set_disconnected(format!("attempt #{attempt}"));
+
+        match run_agent_listener_once(&agent_cfg, &channel, &tracker, &auth).await {
+            Ok(()) => {
+                sirin_log!("[telegram/{agent_id}] Listener exited cleanly; retrying in {backoff_secs}s");
+            }
+            Err(e) => {
+                sirin_log!("[telegram/{agent_id}] Listener error: {e}; retrying in {backoff_secs}s");
+                auth.set_error(e.to_string());
+            }
+        }
+
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)) => {}
+            _ = auth.reconnect_notified().notified() => {
+                sirin_log!("[telegram/{agent_id}] Reconnect triggered — skipping backoff");
+            }
+        }
+
+        backoff_secs = (backoff_secs * 2).min(300);
     }
 }
 

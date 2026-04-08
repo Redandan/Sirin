@@ -194,8 +194,8 @@ pub async fn send_final_reply(
     }
 }
 
-pub fn persist_reply_context(user_text: &str, assistant_reply: &str, peer_bare_id: Option<i64>) {
-    if let Err(e) = append_context(user_text, assistant_reply, peer_bare_id) {
+pub fn persist_reply_context(user_text: &str, assistant_reply: &str, peer_bare_id: Option<i64>, agent_id: Option<&str>) {
+    if let Err(e) = append_context(user_text, assistant_reply, peer_bare_id, agent_id) {
         sirin_log!("[telegram] Failed to save context: {e}");
     }
 }
