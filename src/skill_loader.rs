@@ -8,6 +8,9 @@ use std::sync::Mutex;
 use crate::skills::SkillDefinition;
 
 static CACHE: Mutex<Option<Vec<SkillDefinition>>> = Mutex::new(None);
+/// Tracks skill IDs that have already emitted a "no trigger_keywords" warning,
+/// so the message only appears once per process lifetime.
+static WARNED_NO_TRIGGERS: Mutex<Option<std::collections::HashSet<String>>> = Mutex::new(None);
 
 /// Return all enabled skills from `config/skills/*.yaml`, using an in-memory cache.
 pub fn load_yaml_skills() -> Vec<SkillDefinition> {
@@ -47,14 +50,17 @@ fn scan_skills_dir() -> Vec<SkillDefinition> {
         }
         match load_one(&path) {
             Ok(skill) if skill.enabled => {
-                // Warn about skills with script_file but no trigger_keywords —
-                // they'll never be recommended by the planner.
+                // Warn once per process lifetime when a script skill has no trigger_keywords.
                 if skill.script_file.is_some() && skill.trigger_keywords.is_empty() {
-                    eprintln!(
-                        "[skill_loader] ⚠ '{}' has script_file but no trigger_keywords — \
-                         it won't be auto-triggered by the planner",
-                        skill.id
-                    );
+                    let mut warned = WARNED_NO_TRIGGERS.lock().unwrap();
+                    let set = warned.get_or_insert_with(std::collections::HashSet::new);
+                    if set.insert(skill.id.clone()) {
+                        eprintln!(
+                            "[skill_loader] ⚠ '{}' has script_file but no trigger_keywords — \
+                             it won't be auto-triggered by the planner",
+                            skill.id
+                        );
+                    }
                 }
                 skills.push(skill);
             }

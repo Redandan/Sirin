@@ -12,6 +12,12 @@ example_prompts:
   - "客戶關係分析"
   - "哪些 VIP 需要主動聯繫"
   - "跟進 VIP 客戶"
+trigger_keywords:
+  - "vip"
+  - "VIP"
+  - "客戶維護"
+  - "跟進客戶"
+  - "客戶關係"
 # 腳本路徑（相對於項目根目錄）。
 # 腳本從 stdin 讀取 JSON，結果輸出到 stdout。
 script_file: "config/scripts/vip_maintain.py"
