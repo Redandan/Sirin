@@ -857,6 +857,50 @@ impl SirinApp {
         ui.separator();
 
         // ── Sub-tab content ───────────────────────────────────────────────────
+        self.workspace_tab = self.workspace_tab.min(2); // guard: clamp to valid range
+
+        // ── AI 建議目標確認橫幅（出現於任何 tab 頂部）──────────────────────────
+        if let Some(proposed) = self.pending_objectives.clone() {
+            egui::Frame::new()
+                .fill(Color32::from_rgb(30, 50, 20))
+                .stroke(egui::Stroke::new(1.0, Color32::from_rgb(80, 160, 60)))
+                .corner_radius(4.0)
+                .inner_margin(egui::Margin::symmetric(10, 6))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.colored_label(Color32::from_rgb(120, 220, 80),
+                            RichText::new("🎯 AI 建議更新目標").small().strong());
+                        ui.add_space(6.0);
+                        ui.colored_label(Color32::from_rgb(160, 200, 120),
+                            RichText::new(proposed.iter().take(3)
+                                .map(|o| format!("• {o}")).collect::<Vec<_>>().join("  ")).small());
+                    });
+                    ui.add_space(2.0);
+                    ui.horizontal(|ui| {
+                        if ui.add(egui::Button::new(RichText::new("✅ 採用").small())
+                            .fill(Color32::from_rgb(30, 80, 20))).clicked()
+                        {
+                            // Write proposed objectives to the current agent's config
+                            if let Some(f) = self.settings_agents.as_mut() {
+                                if let Some(a) = f.agents.get_mut(sel) {
+                                    a.objectives = proposed;
+                                    let _ = f.save();
+                                }
+                            }
+                            self.pending_objectives = None;
+                        }
+                        if ui.add(egui::Button::new(RichText::new("✖ 忽略").small())
+                            .fill(Color32::TRANSPARENT)).clicked()
+                        {
+                            self.pending_objectives = None;
+                        }
+                        ui.colored_label(Color32::DARK_GRAY,
+                            RichText::new("（調研完成後的建議，採用將覆蓋目標清單）").small());
+                    });
+                });
+            ui.add_space(4.0);
+        }
+
         match self.workspace_tab {
             // ── 思考流 ────────────────────────────────────────────────────────
             0 => {
@@ -974,8 +1018,13 @@ impl SirinApp {
                     } else {
                         crate::pending_reply::update_status(&agent_id, &id, PendingStatus::Approved);
                     }
-                    // P1：Teams 草稿核准後立即通知 run_poller() 發送
-                    if agent_id == "teams" {
+                    // P1：若此 Agent 使用 Teams 頻道，立即通知 run_poller() 發送
+                    let is_teams_agent = self.settings_agents.as_ref()
+                        .and_then(|f| f.agents.iter().find(|a| a.id == agent_id))
+                        .and_then(|a| a.channel.as_ref())
+                        .map(|c| c.teams.is_some())
+                        .unwrap_or(false);
+                    if is_teams_agent {
                         crate::teams::notify_approved(id.clone());
                         self.dispatch_msg = "✅ 已批准，正在發送至 Teams…".to_string();
                     } else {
@@ -1059,8 +1108,9 @@ impl SirinApp {
                     .filter(|(id, _)| id != &agent.id)
                     .cloned()
                     .collect();
+                let rt = self.rt.clone();
                 ScrollArea::vertical().id_salt("ws_agent_cfg").auto_shrink(false).show(ui, |ui| {
-                    show_agent_detail(ui, agent, scratch_entry, auth_state, &other_tg_phones, &mut active_tab);
+                    show_agent_detail(ui, agent, scratch_entry, auth_state, &other_tg_phones, &mut active_tab, &rt);
                 });
             }
         }
@@ -1328,6 +1378,7 @@ fn show_agent_detail(
     auth: Option<&crate::telegram_auth::TelegramAuthState>,
     other_tg_phones: &[(String, String)],
     active_tab: &mut usize,
+    rt: &tokio::runtime::Handle,
 ) {
     // ── Tab bar ───────────────────────────────────────────────────────────
     let tabs = ["身分", "目標", "通訊"];
@@ -1353,14 +1404,14 @@ fn show_agent_detail(
     match *active_tab {
         0 => show_tab_identity(ui, agent),
         1 => show_tab_goals(ui, agent, scratch),
-        _ => show_tab_channel(ui, agent, auth, other_tg_phones),
+        _ => show_tab_channel(ui, agent, auth, other_tg_phones, rt),
     }
 }
 
 fn show_tab_identity(ui: &mut egui::Ui, agent: &mut crate::agent_config::AgentConfig) {
     use crate::persona::ProfessionalTone;
 
-    // ── 名稱（大字顯示 + 可編輯）────────────────────────────────────────────
+    // ── 名稱 ─────────────────────────────────────────────────────────────────
     ui.label(RichText::new("顯示名稱").strong().small());
     ui.add_space(2.0);
     ui.add(
@@ -1368,10 +1419,8 @@ fn show_tab_identity(ui: &mut egui::Ui, agent: &mut crate::agent_config::AgentCo
             .desired_width(280.0)
             .font(egui::TextStyle::Heading),
     );
-    ui.colored_label(
-        Color32::DARK_GRAY,
-        RichText::new("修改後點「💾 儲存」生效，對話對象看不到此名稱").small(),
-    );
+    ui.colored_label(Color32::DARK_GRAY,
+        RichText::new("修改後點「💾 儲存」生效，對話對象看不到此名稱").small());
     ui.add_space(10.0);
 
     egui::Grid::new("tab_identity")
@@ -1390,6 +1439,47 @@ fn show_tab_identity(ui: &mut egui::Ui, agent: &mut crate::agent_config::AgentCo
             });
             ui.end_row();
         });
+
+    // ── 回覆風格 ─────────────────────────────────────────────────────────────
+    ui.add_space(10.0);
+    ui.separator();
+    ui.label(RichText::new("回覆風格").strong().small());
+    ui.add_space(4.0);
+    egui::Grid::new("tab_style")
+        .num_columns(2)
+        .spacing([12.0, 5.0])
+        .show(ui, |ui| {
+            ui.label(RichText::new("聲調").small())
+                .on_hover_text("AI 的說話風格描述，影響 LLM 生成語氣");
+            ui.add(egui::TextEdit::singleline(&mut agent.response_style.voice)
+                .desired_width(220.0).hint_text("自然、親切…"));
+            ui.end_row();
+
+            ui.label(RichText::new("收到前綴").small())
+                .on_hover_text("每次回覆開頭附加的確認語句");
+            ui.add(egui::TextEdit::singleline(&mut agent.response_style.ack_prefix)
+                .desired_width(220.0).hint_text("收到你的訊息。"));
+            ui.end_row();
+
+            ui.label(RichText::new("遵從語").small())
+                .on_hover_text("表達會協助的固定結尾語");
+            ui.add(egui::TextEdit::singleline(&mut agent.response_style.compliance_line)
+                .desired_width(220.0).hint_text("我會一步一步協助你完成。"));
+            ui.end_row();
+        });
+
+    // ── 能力開關 ─────────────────────────────────────────────────────────────
+    ui.add_space(10.0);
+    ui.separator();
+    ui.label(RichText::new("能力").strong().small());
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut agent.actions.coding_agent.enabled,   "🔧 Coding Agent");
+        ui.add_space(10.0);
+        ui.checkbox(&mut agent.actions.research_agent.enabled, "🔬 Research Agent");
+    });
+    ui.add_space(4.0);
+    ui.checkbox(&mut agent.disable_remote_ai, "禁止呼叫遠端 LLM（僅用本機模型）");
 }
 
 fn show_tab_goals(
@@ -1426,80 +1516,101 @@ fn show_tab_channel(
     agent: &mut crate::agent_config::AgentConfig,
     auth: Option<&crate::telegram_auth::TelegramAuthState>,
     other_tg_phones: &[(String, String)],
+    rt: &tokio::runtime::Handle,
 ) {
     use crate::telegram_auth::TelegramStatus;
-    use crate::agent_config::{ChannelConfig, TelegramChannelConfig};
+    use crate::agent_config::{ChannelConfig, TelegramChannelConfig, TeamsChannelConfig};
 
-    // ── Live status (buttons only, no duplicated text from header badge) ──
-    if let Some(a) = auth {
-        ui.horizontal(|ui| {
-            match &a.status() {
-                TelegramStatus::Connected => {
-                    ui.colored_label(Color32::from_rgb(80, 200, 100), "● 已連線");
-                }
-                TelegramStatus::Disconnected { reason } => {
-                    ui.colored_label(Color32::GRAY, format!("○ 未連線（{reason}）"));
-                    if ui.small_button("🔌 連線").clicked() { a.trigger_reconnect(); }
-                }
-                TelegramStatus::Error { message } => {
-                    ui.colored_label(Color32::from_rgb(220, 80, 80), format!("✗ 錯誤：{message}"));
-                    if ui.small_button("🔌 重試").clicked() { a.trigger_reconnect(); }
-                }
-                TelegramStatus::CodeRequired => {
-                    ui.colored_label(Color32::YELLOW, "⚠ 等待驗證碼（至系統面板輸入）");
-                }
-                TelegramStatus::PasswordRequired { hint } => {
-                    ui.colored_label(Color32::YELLOW, format!("⚠ 等待 2FA（提示：{hint}）"));
-                }
-            }
-        });
-        ui.separator();
-    }
+    let has_tg     = agent.channel.as_ref().and_then(|c| c.telegram.as_ref()).is_some();
+    let has_teams  = agent.channel.as_ref().and_then(|c| c.teams.as_ref()).is_some();
+    let has_any    = has_tg || has_teams;
 
-    // ── Telegram toggle ───────────────────────────────────────────────────
-    let has_tg = agent.channel.as_ref().and_then(|c| c.telegram.as_ref()).is_some();
-    let mut tg_enabled = has_tg;
-    if ui.checkbox(&mut tg_enabled, "Telegram").changed() {
-        if tg_enabled {
+    // ── 頻道選擇器（互斥：每個 Agent 只能有一個頻道）──────────────────────
+    ui.label(RichText::new("通訊頻道").strong().small());
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        // Telegram 按鈕
+        let tg_btn = egui::Button::new(RichText::new("✈ Telegram").small())
+            .fill(if has_tg { Color32::from_rgb(30, 70, 130) } else { Color32::TRANSPARENT });
+        if ui.add(tg_btn).clicked() && !has_tg {
+            // 切換到 Telegram，清除 Teams
             let id_slug = agent.id.clone();
             let cfg = agent.channel.get_or_insert_with(ChannelConfig::default);
+            cfg.teams = None;
             cfg.telegram = Some(TelegramChannelConfig {
                 session_file: format!("data/sessions/{id_slug}.session"),
                 ..TelegramChannelConfig::default()
             });
-        } else if let Some(c) = agent.channel.as_mut() {
-            c.telegram = None;
-            if c.telegram.is_none() { agent.channel = None; }
-        }
-    }
-
-    if let Some(tg) = agent.channel.as_mut().and_then(|c| c.telegram.as_mut()) {
-        // ── Conflict check ────────────────────────────────────────────────
-        let phone_trimmed = tg.phone.trim().to_string();
-        let conflict_agent = if !phone_trimmed.is_empty() && !phone_trimmed.starts_with("${") {
-            other_tg_phones.iter().find(|(_, p)| p.trim() == phone_trimmed).map(|(id, _)| id.clone())
-        } else {
-            None
-        };
-        if let Some(ref other_id) = conflict_agent {
-            ui.add_space(4.0);
-            egui::Frame::new()
-                .fill(Color32::from_rgb(80, 40, 10))
-                .corner_radius(4.0)
-                .inner_margin(egui::Margin::symmetric(8, 4))
-                .show(ui, |ui| {
-                    ui.colored_label(
-                        Color32::from_rgb(255, 180, 60),
-                        format!("⚠ 電話號碼已被 Agent「{other_id}」使用"),
-                    );
-                });
         }
 
-        ui.add_space(6.0);
-        egui::Grid::new("tg_cfg")
-            .num_columns(2)
-            .spacing([12.0, 5.0])
-            .show(ui, |ui| {
+        // Teams 按鈕
+        let tm_btn = egui::Button::new(RichText::new("💼 Teams").small())
+            .fill(if has_teams { Color32::from_rgb(0, 60, 120) } else { Color32::TRANSPARENT });
+        if ui.add(tm_btn).clicked() && !has_teams {
+            // 切換到 Teams，清除 Telegram
+            let cfg = agent.channel.get_or_insert_with(ChannelConfig::default);
+            cfg.telegram = None;
+            cfg.teams = Some(TeamsChannelConfig::default());
+        }
+
+        // 無頻道按鈕
+        let none_btn = egui::Button::new(RichText::new("無").small())
+            .fill(if !has_any { Color32::from_rgb(50, 50, 50) } else { Color32::TRANSPARENT });
+        if ui.add(none_btn).clicked() && has_any {
+            agent.channel = None;
+        }
+    });
+    ui.add_space(8.0);
+    ui.separator();
+    ui.add_space(6.0);
+
+    // ── Telegram 設定 ─────────────────────────────────────────────────────
+    if has_tg {
+        // Live status
+        if let Some(a) = auth {
+            ui.horizontal(|ui| {
+                match &a.status() {
+                    TelegramStatus::Connected => {
+                        ui.colored_label(Color32::from_rgb(80, 200, 100), "● 已連線");
+                    }
+                    TelegramStatus::Disconnected { reason } => {
+                        ui.colored_label(Color32::GRAY, format!("○ 未連線（{reason}）"));
+                        if ui.small_button("🔌 連線").clicked() { a.trigger_reconnect(); }
+                    }
+                    TelegramStatus::Error { message } => {
+                        ui.colored_label(Color32::from_rgb(220, 80, 80), format!("✗ {message}"));
+                        if ui.small_button("🔌 重試").clicked() { a.trigger_reconnect(); }
+                    }
+                    TelegramStatus::CodeRequired => {
+                        ui.colored_label(Color32::YELLOW, "⚠ 等待驗證碼（至系統面板輸入）");
+                    }
+                    TelegramStatus::PasswordRequired { hint } => {
+                        ui.colored_label(Color32::YELLOW, format!("⚠ 等待 2FA（{hint}）"));
+                    }
+                }
+            });
+            ui.add_space(6.0);
+        }
+
+        if let Some(tg) = agent.channel.as_mut().and_then(|c| c.telegram.as_mut()) {
+            let phone_trimmed = tg.phone.trim().to_string();
+            let conflict_agent = if !phone_trimmed.is_empty() && !phone_trimmed.starts_with("${") {
+                other_tg_phones.iter().find(|(_, p)| p.trim() == phone_trimmed).map(|(id, _)| id.clone())
+            } else { None };
+
+            if let Some(ref other_id) = conflict_agent {
+                egui::Frame::new()
+                    .fill(Color32::from_rgb(80, 40, 10))
+                    .corner_radius(4.0)
+                    .inner_margin(egui::Margin::symmetric(8, 4))
+                    .show(ui, |ui| {
+                        ui.colored_label(Color32::from_rgb(255, 180, 60),
+                            format!("⚠ 電話號碼已被「{other_id}」使用"));
+                    });
+                ui.add_space(4.0);
+            }
+
+            egui::Grid::new("tg_cfg").num_columns(2).spacing([12.0, 5.0]).show(ui, |ui| {
                 ui.label("API ID");
                 ui.add(egui::TextEdit::singleline(&mut tg.api_id)
                     .desired_width(200.0).hint_text("${TG_API_ID}"));
@@ -1520,35 +1631,129 @@ fn show_tab_channel(
                 }
                 ui.end_row();
 
-                ui.label("Session 路徑");
+                ui.label("Session");
                 ui.add(egui::TextEdit::singleline(&mut tg.session_file)
                     .desired_width(f32::INFINITY));
                 ui.end_row();
+
+                // group_ids: edit as comma-separated string
+                ui.label(RichText::new("監聽群組 ID").small())
+                    .on_hover_text("逗號分隔的群組 ID；留空則監聽所有可存取群組");
+                let mut group_ids_str = tg.group_ids
+                    .iter().map(|id| id.to_string()).collect::<Vec<_>>().join(", ");
+                let changed = ui.add(
+                    egui::TextEdit::singleline(&mut group_ids_str)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("-1001234567890, …"),
+                ).changed();
+                if changed {
+                    tg.group_ids = group_ids_str
+                        .split(',')
+                        .filter_map(|s| s.trim().parse::<i64>().ok())
+                        .collect();
+                }
+                ui.end_row();
+
+                ui.label(RichText::new("啟動訊息").small())
+                    .on_hover_text("啟動時發送到「已儲存訊息」的通知（留空不發送）");
+                let mut startup = tg.startup_msg.clone().unwrap_or_default();
+                if ui.add(egui::TextEdit::singleline(&mut startup)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("Sirin 已啟動 — {time}")).changed()
+                {
+                    tg.startup_msg = if startup.trim().is_empty() { None } else { Some(startup) };
+                }
+                ui.end_row();
             });
 
-        ui.add_space(4.0);
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut tg.reply_private, "回覆私訊");
+                ui.checkbox(&mut tg.reply_groups, "回覆群組");
+                ui.checkbox(&mut tg.auto_reply, "自動回覆");
+            });
+            ui.add_space(6.0);
+            ui.colored_label(Color32::GRAY,
+                RichText::new("ℹ 每個 Telegram 帳號只能綁定一個 Agent").small());
+            ui.add_space(6.0);
+            ui.checkbox(&mut tg.require_confirmation,
+                "需要人工確認（AI 草稿不直接發送）");
+        }
+    }
+
+    // ── Teams 設定 ────────────────────────────────────────────────────────
+    if has_teams {
+        use crate::teams::SessionStatus;
+        let teams_status = crate::teams::session_status();
+
+        // 連線狀態
         ui.horizontal(|ui| {
-            ui.checkbox(&mut tg.reply_private, "回覆私訊");
-            ui.checkbox(&mut tg.reply_groups, "回覆群組");
-            ui.checkbox(&mut tg.auto_reply, "自動回覆");
+            let (col, txt) = match &teams_status {
+                SessionStatus::NotStarted      => (Color32::GRAY,                    "○ 未連線"),
+                SessionStatus::WaitingForLogin => (Color32::YELLOW,                  "⏳ 等待登入…"),
+                SessionStatus::Running         => (Color32::from_rgb(80, 200, 100),  "● 監聽中"),
+                SessionStatus::Error(_)        => (Color32::from_rgb(220, 80, 80),   "✗ 錯誤"),
+            };
+            ui.colored_label(col, txt);
+            if let SessionStatus::Error(msg) = &teams_status {
+                ui.colored_label(Color32::GRAY, RichText::new(format!(" {msg}")).small());
+            }
         });
         ui.add_space(6.0);
-        ui.colored_label(
-            Color32::GRAY,
-            "ℹ 每個 Telegram 帳號（電話號碼）只能綁定一個 Agent",
-        );
+
+        // 說明 + 快捷入口
+        egui::Frame::new()
+            .fill(Color32::from_rgb(18, 28, 42))
+            .corner_radius(4.0)
+            .inner_margin(egui::Margin::symmetric(10, 8))
+            .show(ui, |ui| {
+                ui.colored_label(Color32::from_rgb(100, 160, 220),
+                    RichText::new("💼 Teams 使用瀏覽器自動化（CDP）").small().strong());
+                ui.add_space(3.0);
+                ui.colored_label(Color32::GRAY,
+                    RichText::new("• 收到訊息 → 自動回「稍等」→ 草稿進「待確認」").small());
+                ui.colored_label(Color32::GRAY,
+                    RichText::new("• 點「✅ 確認發送」立即送出，無需等待").small());
+                ui.colored_label(Color32::GRAY,
+                    RichText::new("• 首次需手動完成學校 SSO，後續自動登入").small());
+            });
+
         ui.add_space(8.0);
-        ui.separator();
-        ui.label(RichText::new("回覆確認").strong().small());
-        let tg_require = agent.channel.as_mut()
-            .and_then(|c| c.telegram.as_mut())
-            .map(|t| &mut t.require_confirmation);
-        if let Some(require_conf) = tg_require {
-            ui.checkbox(require_conf, "需要人工確認（AI 草稿不直接發送，等待確認）");
+
+        match &teams_status {
+            SessionStatus::NotStarted | SessionStatus::Error(_) => {
+                ui.horizontal(|ui| {
+                    let btn = egui::Button::new(
+                        RichText::new("  開始連線 Teams  ").small().strong()
+                    ).fill(Color32::from_rgb(0, 80, 160));
+                    if ui.add(btn).clicked() {
+                        rt.spawn(crate::teams::run_poller());
+                    }
+                });
+                ui.add_space(4.0);
+                ui.colored_label(Color32::DARK_GRAY,
+                    RichText::new("首次需在彈出的 Chrome 完成 Microsoft SSO 登入").small());
+            }
+            SessionStatus::WaitingForLogin => {
+                ui.colored_label(Color32::YELLOW,
+                    RichText::new("▸ 請在跳出的 Chrome 視窗完成 Microsoft 登入").small());
+            }
+            SessionStatus::Running => {
+                ui.colored_label(Color32::from_rgb(80, 200, 100),
+                    RichText::new("▸ 已連線，正在監聽新訊息").small());
+            }
         }
-    } else {
-        ui.add_space(8.0);
-        ui.colored_label(Color32::GRAY, "（無 Channel — UI / 測試模式）");
+
+        // Chrome profile 路徑（唯讀顯示）
+        ui.add_space(6.0);
+        ui.colored_label(Color32::DARK_GRAY,
+            RichText::new("登入 Cookie 儲存於 data/teams_profile/").small().monospace());
+    }
+
+    // ── 無頻道提示 ────────────────────────────────────────────────────────
+    if !has_any {
+        ui.colored_label(Color32::DARK_GRAY,
+            "點上方按鈕選擇通訊頻道（Telegram 或 Teams）");
     }
 
     // ── 仿人類行為 ────────────────────────────────────────────────────────
@@ -1564,6 +1769,7 @@ fn show_tab_channel(
     if hb.enabled {
         ui.add_space(4.0);
         egui::Grid::new("hb_mini").num_columns(4).spacing([8.0, 4.0]).show(ui, |ui| {
+            // 回覆延遲
             ui.label(RichText::new("延遲").small());
             let mut min_s = hb.min_reply_delay_secs as i64;
             if ui.add(egui::DragValue::new(&mut min_s).range(0..=3600).suffix("s")).changed() {
@@ -1581,13 +1787,28 @@ fn show_tab_channel(
                 }
             }
             ui.end_row();
+
+            // 速率上限
+            ui.label(RichText::new("每小時上限").small())
+                .on_hover_text("0 = 不限制");
+            let mut per_hour = hb.max_messages_per_hour as i64;
+            if ui.add(egui::DragValue::new(&mut per_hour).range(0..=999).suffix(" 則")).changed() {
+                hb.max_messages_per_hour = per_hour.max(0) as u32;
+            }
+            ui.label(RichText::new("每日上限").small())
+                .on_hover_text("0 = 不限制");
+            let mut per_day = hb.max_messages_per_day as i64;
+            if ui.add(egui::DragValue::new(&mut per_day).range(0..=9999).suffix(" 則")).changed() {
+                hb.max_messages_per_day = per_day.max(0) as u32;
+            }
+            ui.end_row();
         });
     }
 }
 
 /// Renders a tiny pill badge in the sidebar card.
 fn badge(ui: &mut egui::Ui, label: &str, color: Color32, tooltip: &str) {
-    let resp = egui::Frame::none()
+    let resp = egui::Frame::new()
         .fill(Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 30))
         .stroke(egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 100)))
         .corner_radius(3.0)
@@ -1683,10 +1904,10 @@ fn show_system_panel(
     match &teams_status {
         SessionStatus::NotStarted | SessionStatus::Error(_) => {
             // ── 流程說明 ─────────────────────────────────────────────────────
-            egui::Frame::none()
+            egui::Frame::new()
                 .fill(Color32::from_rgb(28, 32, 38))
                 .inner_margin(egui::Margin::symmetric(10, 8))
-                .rounding(4.0)
+                .corner_radius(4.0)
                 .show(ui, |ui| {
                     ui.label(RichText::new("連線流程").small().strong());
                     ui.add_space(3.0);
@@ -1719,10 +1940,10 @@ fn show_system_panel(
         }
 
         SessionStatus::WaitingForLogin => {
-            egui::Frame::none()
+            egui::Frame::new()
                 .fill(Color32::from_rgb(40, 36, 10))
                 .inner_margin(egui::Margin::symmetric(10, 8))
-                .rounding(4.0)
+                .corner_radius(4.0)
                 .show(ui, |ui| {
                     ui.colored_label(Color32::YELLOW,
                         RichText::new("請在跳出的 Chrome 視窗完成 Microsoft 登入").small());
@@ -1737,10 +1958,10 @@ fn show_system_panel(
         }
 
         SessionStatus::Running => {
-            egui::Frame::none()
+            egui::Frame::new()
                 .fill(Color32::from_rgb(10, 36, 14))
                 .inner_margin(egui::Margin::symmetric(10, 8))
-                .rounding(4.0)
+                .corner_radius(4.0)
                 .show(ui, |ui| {
                     ui.colored_label(Color32::from_rgb(100, 220, 100),
                         RichText::new("Teams 已連線，正在監聽新訊息").small());
