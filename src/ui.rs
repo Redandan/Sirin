@@ -27,17 +27,6 @@ enum View {
     Log,
 }
 
-// ── Task filter ───────────────────────────────────────────────────────────────
-
-#[derive(PartialEq, Clone, Copy)]
-enum TaskFilter {
-    All,
-    Running,
-    Done,
-    Failed,
-}
-
-
 fn task_status_badge(
     status: &str,
     reason: Option<&str>,
@@ -134,8 +123,6 @@ pub struct SirinApp {
     event_rx: broadcast::Receiver<AgentEvent>,
 
     // ── UI state ──────────────────────────────────────────────────────────────
-    /// Filter applied in the workspace 思考流 sub-tab.
-    task_filter: TaskFilter,
     /// Set of research task IDs whose full report is expanded.
     research_expanded: std::collections::HashSet<String>,
 
@@ -226,7 +213,6 @@ impl SirinApp {
             tg_msg: String::new(),
             last_refresh: std::time::Instant::now() - std::time::Duration::from_secs(60),
             event_rx: crate::events::subscribe(),
-            task_filter: TaskFilter::All,
             research_expanded: std::collections::HashSet::new(),
             settings_agents: None,
             settings_msg: String::new(),
@@ -609,46 +595,11 @@ impl SirinApp {
         match self.workspace_tab {
             // ── 思考流 ────────────────────────────────────────────────────────
             0 => {
-                // Filter bar
-                ui.horizontal(|ui| {
-                    for (label, filter) in [
-                        ("全部", TaskFilter::All),
-                        ("進行中", TaskFilter::Running),
-                        ("完成", TaskFilter::Done),
-                        ("失敗", TaskFilter::Failed),
-                    ] {
-                        let active = self.task_filter == filter;
-                        let btn = egui::Button::new(
-                            RichText::new(label)
-                                .small()
-                                .color(if active { Color32::WHITE } else { Color32::GRAY }),
-                        )
-                        .fill(if active { Color32::from_rgb(35, 65, 110) } else { Color32::TRANSPARENT });
-                        if ui.add(btn).clicked() {
-                            self.task_filter = filter;
-                        }
-                    }
-                });
-                ui.add_space(4.0);
-                let filter = self.task_filter;
-                let tasks: Vec<_> = self.tasks.iter()
-                    .filter(|t| {
-                        let status = t.status.as_deref().unwrap_or("");
-                        match filter {
-                            TaskFilter::All => true,
-                            TaskFilter::Running => matches!(status, "PENDING" | "RUNNING" | "FOLLOWING"),
-                            TaskFilter::Done => status == "DONE",
-                            TaskFilter::Failed => matches!(status, "FAILED" | "ERROR"),
-                        }
-                    })
-                    .cloned()
-                    .collect();
-
-                if tasks.is_empty() {
-                    ui.colored_label(Color32::GRAY, "沒有符合條件的任務記錄。");
+                if self.tasks.is_empty() {
+                    ui.colored_label(Color32::GRAY, "尚無任務記錄。");
                 } else {
                     ScrollArea::vertical().id_salt("ws_tasks").auto_shrink(false).show(ui, |ui| {
-                        for task in &tasks {
+                        for task in &self.tasks {
                             let is_summary = task.event == "research_summary_ready";
                             let status = task.status.as_deref().unwrap_or("");
                             let (badge, fg, bg) = task_status_badge(status, task.reason.as_deref(), is_summary);
@@ -1063,7 +1014,7 @@ fn show_agent_detail(
     ui.separator();
 
     // ── Tab bar ───────────────────────────────────────────────────────────
-    let tabs = ["身分", "風格", "目標", "通訊", "能力", "行為"];
+    let tabs = ["身分", "目標", "通訊"];
     ui.horizontal(|ui| {
         for (i, tab_name) in tabs.iter().enumerate() {
             let is_active = *active_tab == i;
@@ -1085,12 +1036,8 @@ fn show_agent_detail(
     ui.add_space(4.0);
     match *active_tab {
         0 => show_tab_identity(ui, agent),
-        1 => show_tab_style(ui, agent),
-        2 => show_tab_goals(ui, agent, scratch),
-        3 => show_tab_channel(ui, agent, auth, other_tg_phones),
-        4 => show_tab_actions(ui, agent, scratch),
-        5 => show_tab_behavior(ui, agent),
-        _ => {}
+        1 => show_tab_goals(ui, agent, scratch),
+        _ => show_tab_channel(ui, agent, auth, other_tg_phones),
     }
 }
 
@@ -1112,28 +1059,6 @@ fn show_tab_identity(ui: &mut egui::Ui, agent: &mut crate::agent_config::AgentCo
             });
             ui.end_row();
 
-        });
-}
-
-fn show_tab_style(ui: &mut egui::Ui, agent: &mut crate::agent_config::AgentConfig) {
-    egui::Grid::new("tab_style")
-        .num_columns(2)
-        .spacing([12.0, 6.0])
-        .show(ui, |ui| {
-            ui.label("語音風格").on_hover_text("AI 回覆的整體語氣描述，嵌入系統提示");
-            ui.add(egui::TextEdit::singleline(&mut agent.response_style.voice)
-                .desired_width(f32::INFINITY));
-            ui.end_row();
-
-            ui.label("確認前綴").on_hover_text("收到訊息時的開頭確認語（{ack_prefix} 佔位符）");
-            ui.add(egui::TextEdit::singleline(&mut agent.response_style.ack_prefix)
-                .desired_width(f32::INFINITY));
-            ui.end_row();
-
-            ui.label("合規提示").on_hover_text("附加在自動回覆模板的合規聲明");
-            ui.add(egui::TextEdit::singleline(&mut agent.response_style.compliance_line)
-                .desired_width(f32::INFINITY));
-            ui.end_row();
         });
 }
 
@@ -1282,38 +1207,19 @@ fn show_tab_channel(
             Color32::GRAY,
             "ℹ 每個 Telegram 帳號（電話號碼）只能綁定一個 Agent",
         );
+        ui.add_space(8.0);
+        ui.separator();
+        ui.label(RichText::new("回覆確認").strong().small());
+        let tg_require = agent.channel.as_mut()
+            .and_then(|c| c.telegram.as_mut())
+            .map(|t| &mut t.require_confirmation);
+        if let Some(require_conf) = tg_require {
+            ui.checkbox(require_conf, "需要人工確認（AI 草稿不直接發送，等待確認）");
+        }
     } else {
         ui.add_space(8.0);
         ui.colored_label(Color32::GRAY, "（無 Channel — UI / 測試模式）");
     }
-}
-
-fn show_tab_actions(
-    ui: &mut egui::Ui,
-    agent: &mut crate::agent_config::AgentConfig,
-    _scratch: &mut AgentUiScratch,
-) {
-    // ── Capability toggles ────────────────────────────────────────────────
-    ui.add_space(4.0);
-    ui.checkbox(&mut agent.actions.research_agent.enabled, "🔬 Research Agent");
-    ui.add_space(4.0);
-    ui.checkbox(&mut agent.actions.coding_agent.enabled, "⚙ Coding Agent");
-    ui.add_space(4.0);
-    ui.checkbox(&mut agent.disable_remote_ai, "🖥 關閉遠端 AI（強制使用本地 LLM）");
-
-    ui.add_space(12.0);
-    ui.separator();
-    ui.add_space(4.0);
-    egui::Frame::new()
-        .fill(Color32::from_rgb(28, 32, 44))
-        .corner_radius(4.0)
-        .inner_margin(egui::Margin::symmetric(10, 6))
-        .show(ui, |ui| {
-            ui.colored_label(
-                Color32::GRAY,
-                "📝 詳細 coding 設定（project_root、max_iterations、auto_approve 等）\n請修改 config/persona.yaml → coding_agent。",
-            );
-        });
 }
 
 /// Renders a compact Telegram connection status icon (✈●/✈⚠/✈✗/✈○).
@@ -1331,139 +1237,6 @@ fn tg_status_badge(ui: &mut egui::Ui, status: &crate::telegram_auth::TelegramSta
     }
 }
 
-fn show_tab_behavior(ui: &mut egui::Ui, agent: &mut crate::agent_config::AgentConfig) {
-    use crate::agent_config::{BreakPeriod, WorkSchedule};
-    let hb = &mut agent.human_behavior;
-
-    ui.checkbox(&mut hb.enabled, "啟用人類行為模擬");
-    if !hb.enabled {
-        ui.add_space(4.0);
-        ui.colored_label(Color32::GRAY, "（停用時 AI 會即時回覆，不套用任何限制）");
-        return;
-    }
-
-    ui.add_space(8.0);
-    ui.separator();
-    ui.label(RichText::new("回覆延遲").strong().small());
-    egui::Grid::new("hb_delay_grid").num_columns(4).spacing([8.0, 4.0]).show(ui, |ui| {
-        ui.label("最短");
-        let mut min_s = hb.min_reply_delay_secs as i64;
-        if ui.add(egui::DragValue::new(&mut min_s).range(0..=3600).suffix("秒")).changed() {
-            hb.min_reply_delay_secs = min_s.max(0) as u64;
-            if hb.min_reply_delay_secs > hb.max_reply_delay_secs {
-                hb.max_reply_delay_secs = hb.min_reply_delay_secs;
-            }
-        }
-        ui.label("最長");
-        let mut max_s = hb.max_reply_delay_secs as i64;
-        if ui.add(egui::DragValue::new(&mut max_s).range(0..=3600).suffix("秒")).changed() {
-            hb.max_reply_delay_secs = max_s.max(0) as u64;
-            if hb.max_reply_delay_secs < hb.min_reply_delay_secs {
-                hb.min_reply_delay_secs = hb.max_reply_delay_secs;
-            }
-        }
-        ui.end_row();
-    });
-
-    ui.add_space(8.0);
-    ui.label(RichText::new("訊息頻率限制").strong().small());
-    egui::Grid::new("hb_freq_grid").num_columns(4).spacing([8.0, 4.0]).show(ui, |ui| {
-        ui.label("每小時最多");
-        ui.add(egui::DragValue::new(&mut hb.max_messages_per_hour).range(0..=1000).suffix("則"));
-        ui.label("每天最多");
-        ui.add(egui::DragValue::new(&mut hb.max_messages_per_day).range(0..=10000).suffix("則"));
-        ui.end_row();
-    });
-
-    ui.add_space(8.0);
-    ui.separator();
-
-    // Work schedule toggle
-    let has_schedule = hb.work_schedule.is_some();
-    let mut enable_sched = has_schedule;
-    ui.checkbox(&mut enable_sched, "啟用工作時間限制");
-    if enable_sched && !has_schedule {
-        hb.work_schedule = Some(WorkSchedule::default());
-    } else if !enable_sched && has_schedule {
-        hb.work_schedule = None;
-    }
-
-    if let Some(ref mut sched) = hb.work_schedule {
-        ui.add_space(4.0);
-        egui::Grid::new("hb_sched_grid").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
-            ui.label("時區偏移 UTC");
-            ui.add(egui::DragValue::new(&mut sched.utc_offset_hours)
-                .range(-12..=14).prefix("+"));
-            ui.end_row();
-            ui.label("上班時間");
-            ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut sched.work_start).desired_width(60.0));
-                ui.label("—");
-                ui.add(egui::TextEdit::singleline(&mut sched.work_end).desired_width(60.0));
-            });
-            ui.end_row();
-        });
-
-        // Work days checkboxes
-        ui.horizontal(|ui| {
-            ui.label("工作日：");
-            let day_names = ["一", "二", "三", "四", "五", "六", "日"];
-            for (i, name) in day_names.iter().enumerate() {
-                let day_num = (i + 1) as u8;
-                let mut checked = sched.work_days.contains(&day_num);
-                if ui.checkbox(&mut checked, *name).changed() {
-                    if checked {
-                        if !sched.work_days.contains(&day_num) {
-                            sched.work_days.push(day_num);
-                            sched.work_days.sort();
-                        }
-                    } else {
-                        sched.work_days.retain(|&d| d != day_num);
-                    }
-                }
-            }
-        });
-
-        // Break periods
-        ui.add_space(8.0);
-        ui.label(RichText::new("休息時段").strong().small());
-        let mut remove_idx: Option<usize> = None;
-        for (i, brk) in sched.breaks.iter_mut().enumerate() {
-            ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut brk.name).desired_width(60.0).hint_text("名稱"));
-                ui.add(egui::TextEdit::singleline(&mut brk.start).desired_width(55.0).hint_text("HH:MM"));
-                ui.label("—");
-                ui.add(egui::TextEdit::singleline(&mut brk.end).desired_width(55.0).hint_text("HH:MM"));
-                if ui.small_button("✕").clicked() {
-                    remove_idx = Some(i);
-                }
-            });
-        }
-        if let Some(i) = remove_idx {
-            sched.breaks.remove(i);
-        }
-        if ui.small_button("＋ 新增休息時段").clicked() {
-            sched.breaks.push(BreakPeriod {
-                name: "休息".to_string(),
-                start: "12:00".to_string(),
-                end:   "13:00".to_string(),
-            });
-        }
-    }
-
-    // require_confirmation
-    ui.add_space(8.0);
-    ui.separator();
-    ui.label(RichText::new("人工確認").strong().small());
-    let tg_require = agent.channel.as_mut()
-        .and_then(|c| c.telegram.as_mut())
-        .map(|t| &mut t.require_confirmation);
-    if let Some(require_conf) = tg_require {
-        ui.checkbox(require_conf, "需要人工確認回覆（AI 草稿不直接發送，等待確認）");
-    } else {
-        ui.colored_label(Color32::GRAY, "（此 Agent 未配置 Telegram 頻道）");
-    }
-}
 
 fn show_system_panel(
     ui: &mut egui::Ui,
