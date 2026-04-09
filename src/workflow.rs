@@ -31,7 +31,11 @@ pub fn stage_by_id(id: &str) -> Option<&'static StageInfo> {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowState {
+    /// Short display name of the skill being built.
     pub feature: String,
+    /// Longer user-written description of what the skill does.
+    #[serde(default)]
+    pub description: String,
     /// The skill_id this workflow is building (e.g. "vip_maintain").
     #[serde(default)]
     pub skill_id: String,
@@ -52,9 +56,14 @@ pub enum StageStatus {
 const STATE_PATH: &str = "data/workflow.json";
 
 impl WorkflowState {
-    pub fn new(feature: impl Into<String>, skill_id: impl Into<String>) -> Self {
+    pub fn new(
+        feature: impl Into<String>,
+        description: impl Into<String>,
+        skill_id: impl Into<String>,
+    ) -> Self {
         Self {
             feature: feature.into(),
+            description: description.into(),
             skill_id: skill_id.into(),
             current_stage: "define".to_string(),
             completed: Vec::new(),
@@ -118,11 +127,18 @@ pub fn stage_context(
     stage_id: &str,
     skill_id: &str,
     feature: &str,
+    description: &str,
     stage_outputs: &HashMap<String, String>,
 ) -> String {
+    let desc_line = if description.trim().is_empty() {
+        String::new()
+    } else {
+        format!("\n功能描述：{description}")
+    };
     let mut parts: Vec<String> = vec![format!(
         "你是 Sirin 的 AI Skill 開發助手。\n\
-         目標：開發 AI Skill `{skill_id}`，功能描述：{feature}。"
+         目標：開發 AI Skill `{skill_id}`。\n\
+         功能名稱：{feature}{desc_line}"
     )];
 
     // Inject previous stage outputs as context
@@ -142,14 +158,16 @@ pub fn stage_context(
     }
 
     let instr: String = match stage_id {
-        "define" => format!(
-            "\n## 當前任務：Define（規格撰寫）\n\
-             請為 `{skill_id}` 撰寫詳細規格：\n\
-             1. 功能說明（2-3 句話）\n\
-             2. 觸發場景（用戶何時會需要這個技能）\n\
-             3. 預期輸出格式\n\
-             4. 5-10 個 example_prompts（YAML list 格式）"
-        ),
+        "define" => "\n## 當前任務：Define — 理解確認\n\
+             用戶描述了他想要的 AI Skill。\n\
+             請用繁體中文、口語化的方式確認你的理解，格式如下：\n\n\
+             **我的理解**\n\
+             - 功能：<一句話說明>\n\
+             - 觸發場景：<用戶什麼時候會說這個>\n\
+             - 預期輸出：<腳本輸出什麼給用戶>\n\
+             - 建議觸發詞：<3-5 個關鍵詞>\n\n\
+             最後問一句：「以上理解正確嗎？有需要補充或調整的地方嗎？」"
+            .to_string(),
         "plan" => format!(
             "\n## 當前任務：Plan（實作規劃）\n\
              根據 Define 規格，規劃 Python 腳本 `config/scripts/{skill_id}.py` 的實作：\n\
@@ -201,6 +219,51 @@ pub fn stage_context(
     };
     parts.push(instr);
     parts.join("")
+}
+
+/// Build the prompt for Define Phase 2: generate formal spec based on confirmed understanding.
+pub fn define_spec_prompt(
+    skill_id: &str,
+    feature: &str,
+    description: &str,
+    understanding: &str,
+    user_additions: &str,
+) -> String {
+    let desc_line = if description.trim().is_empty() {
+        String::new()
+    } else {
+        format!("\n功能描述：{description}")
+    };
+    let additions = if user_additions.trim().is_empty() {
+        String::new()
+    } else {
+        format!("\n\n用戶補充說明：{user_additions}")
+    };
+    format!(
+        "你是 Sirin 的 AI Skill 開發助手。\n\
+         目標：開發 AI Skill `{skill_id}`。\n\
+         功能名稱：{feature}{desc_line}\n\n\
+         ## 已確認的理解\n{understanding}{additions}\n\n\
+         ## 任務：生成正式規格\n\
+         基於上述已確認的理解，請生成詳細的技能規格：\n\
+         1. 功能說明（2-3 句話）\n\
+         2. 觸發場景\n\
+         3. 預期輸出格式\n\
+         4. 5-10 個 example_prompts（YAML list 格式）\n\
+         5. 建議 trigger_keywords（3-5 個詞）"
+    )
+}
+
+/// Build the prompt to ask AI to generate a snake_case skill_id.
+pub fn skill_id_gen_prompt(feature: &str, description: &str) -> String {
+    format!(
+        "根據以下技能名稱和描述，生成一個英文的 snake_case skill_id。\n\
+         要求：只使用小寫字母、數字、底線，2-4 個英文詞，不要標點或空格。\n\
+         名稱：{feature}\n\
+         描述：{description}\n\n\
+         只輸出 skill_id，不要任何其他文字或解釋。\n\
+         範例格式：vip_maintain"
+    )
 }
 
 /// Extract a fenced code block of the given language tag from text.
