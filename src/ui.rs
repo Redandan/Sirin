@@ -164,6 +164,11 @@ pub struct SirinApp {
     /// URL of the last captured screenshot.
     browser_screenshot_url: String,
 
+    // ── Inline rename (sidebar) ───────────────────────────────────────────────
+    /// Index of the agent currently being renamed; None = no rename in progress.
+    renaming_agent_idx: Option<usize>,
+    /// Temporary edit buffer while renaming.
+    renaming_agent_buf: String,
 }
 
 impl SirinApp {
@@ -267,6 +272,8 @@ impl SirinApp {
             llm_config_msg_at: None,
             browser_screenshot: None,
             browser_screenshot_url: String::new(),
+            renaming_agent_idx: None,
+            renaming_agent_buf: String::new(),
         };
         app.refresh();
         app
@@ -454,7 +461,7 @@ impl eframe::App for SirinApp {
                 .exact_width(172.0)
                 .show(ctx, |ui| {
                     ui.add_space(6.0);
-                    ui.label(RichText::new("Sirin").heading().strong());
+                    ui.label(RichText::new("助手").heading().strong());
                     ui.add_space(2.0);
                     ui.separator();
 
@@ -462,15 +469,16 @@ impl eframe::App for SirinApp {
                         .id_salt("sidebar_agents")
                         .max_height(ui.available_height() - 82.0)
                         .show(ui, |ui| {
+                            let mut commit_rename: Option<(usize, String)> = None;
+                            let mut cancel_rename = false;
+
                             for (i, (agent_id, agent_name, enabled)) in agents.iter().enumerate() {
-                                let is_sel = cur_view == View::Agent(Some(i));
-                                let led = if *enabled {
-                                    Color32::from_rgb(80, 200, 100)
-                                } else {
-                                    Color32::GRAY
-                                };
+                                let is_sel   = cur_view == View::Agent(Some(i));
+                                let renaming = self.renaming_agent_idx == Some(i);
+                                let led      = if *enabled { Color32::from_rgb(80, 200, 100) } else { Color32::GRAY };
                                 let pending_n = *pending_count_cache.get(agent_id).unwrap_or(&0);
-                                let clicked = egui::Frame::new()
+
+                                egui::Frame::new()
                                     .fill(if is_sel { Color32::from_rgb(35, 55, 80) } else { Color32::TRANSPARENT })
                                     .corner_radius(4.0)
                                     .inner_margin(egui::Margin::symmetric(6, 3))
@@ -478,24 +486,78 @@ impl eframe::App for SirinApp {
                                         ui.set_min_width(ui.available_width());
                                         ui.horizontal(|ui| {
                                             ui.colored_label(led, "●");
-                                            ui.label(RichText::new(agent_name).strong());
-                                            if pending_n > 0 {
-                                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                                    ui.colored_label(
-                                                        Color32::from_rgb(255, 160, 60),
-                                                        format!("📬{}", pending_n),
-                                                    );
-                                                });
+
+                                            if renaming {
+                                                // ── Inline text editor ───────────────────────
+                                                let edit_id = egui::Id::new(("rename", i));
+                                                let resp = ui.add(
+                                                    egui::TextEdit::singleline(&mut self.renaming_agent_buf)
+                                                        .desired_width(ui.available_width() - 4.0)
+                                                        .id(edit_id),
+                                                );
+                                                // Request focus on the first frame it appears
+                                                if resp.gained_focus() || resp.clicked() {
+                                                    resp.request_focus();
+                                                }
+                                                ctx.memory_mut(|m| m.request_focus(edit_id));
+
+                                                let pressed_enter = ui.input(|inp| inp.key_pressed(egui::Key::Enter));
+                                                let pressed_esc   = ui.input(|inp| inp.key_pressed(egui::Key::Escape));
+
+                                                if pressed_enter || resp.lost_focus() {
+                                                    let name = self.renaming_agent_buf.trim().to_string();
+                                                    if !name.is_empty() {
+                                                        commit_rename = Some((i, name));
+                                                    } else {
+                                                        cancel_rename = true;
+                                                    }
+                                                } else if pressed_esc {
+                                                    cancel_rename = true;
+                                                }
+                                            } else {
+                                                // ── Normal label (single-click = select, double-click = rename) ──
+                                                let lbl_resp = ui.add(
+                                                    egui::Label::new(RichText::new(agent_name).strong())
+                                                        .sense(egui::Sense::click()),
+                                                );
+                                                if lbl_resp.double_clicked() {
+                                                    self.renaming_agent_idx = Some(i);
+                                                    self.renaming_agent_buf = agent_name.clone();
+                                                    self.view = View::Agent(Some(i));
+                                                    self.pending_replies_loaded_for.clear();
+                                                } else if lbl_resp.clicked() {
+                                                    self.view = View::Agent(Some(i));
+                                                    self.pending_replies_loaded_for.clear();
+                                                }
+                                                lbl_resp.on_hover_text("雙擊重新命名");
+
+                                                if pending_n > 0 {
+                                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                        ui.colored_label(
+                                                            Color32::from_rgb(255, 160, 60),
+                                                            format!("📬{}", pending_n),
+                                                        );
+                                                    });
+                                                }
                                             }
                                         });
-                                    })
-                                    .response
-                                    .interact(egui::Sense::click())
-                                    .clicked();
-                                if clicked {
-                                    self.view = View::Agent(Some(i));
-                                    self.pending_replies_loaded_for.clear();
+                                    });
+                            }
+
+                            // Apply rename outside the loop to avoid borrow conflict
+                            if let Some((idx, new_name)) = commit_rename {
+                                if let Some(f) = self.settings_agents.as_mut() {
+                                    if let Some(a) = f.agents.get_mut(idx) {
+                                        a.identity.name = new_name;
+                                    }
+                                    let _ = f.save();
                                 }
+                                self.renaming_agent_idx = None;
+                                self.renaming_agent_buf.clear();
+                            }
+                            if cancel_rename {
+                                self.renaming_agent_idx = None;
+                                self.renaming_agent_buf.clear();
                             }
                         });
 
@@ -1153,22 +1215,36 @@ fn show_agent_detail(
 
 fn show_tab_identity(ui: &mut egui::Ui, agent: &mut crate::agent_config::AgentConfig) {
     use crate::persona::ProfessionalTone;
+
+    // ── 名稱（大字顯示 + 可編輯）────────────────────────────────────────────
+    ui.label(RichText::new("顯示名稱").strong().small());
+    ui.add_space(2.0);
+    ui.add(
+        egui::TextEdit::singleline(&mut agent.identity.name)
+            .desired_width(280.0)
+            .font(egui::TextStyle::Heading),
+    );
+    ui.colored_label(
+        Color32::DARK_GRAY,
+        RichText::new("修改後點「💾 儲存」生效，對話對象看不到此名稱").small(),
+    );
+    ui.add_space(10.0);
+
     egui::Grid::new("tab_identity")
         .num_columns(2)
         .spacing([12.0, 6.0])
         .show(ui, |ui| {
-            ui.label("名稱");
-            ui.add(egui::TextEdit::singleline(&mut agent.identity.name).desired_width(240.0));
+            ui.label(RichText::new("內部 ID").small());
+            ui.colored_label(Color32::GRAY, RichText::new(&agent.id).small().monospace());
             ui.end_row();
 
-            ui.label("語氣");
+            ui.label(RichText::new("語氣").small());
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut agent.identity.professional_tone, ProfessionalTone::Brief, "簡潔");
                 ui.selectable_value(&mut agent.identity.professional_tone, ProfessionalTone::Detailed, "詳細");
                 ui.selectable_value(&mut agent.identity.professional_tone, ProfessionalTone::Casual, "輕鬆");
             });
             ui.end_row();
-
         });
 }
 
