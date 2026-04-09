@@ -142,8 +142,7 @@ fn main() {
         // ── Local WebSocket RPC server ─────────────────────────────────────────
         rt.spawn(rpc_server::start_rpc_server());
 
-        // ── Teams 瀏覽器輪詢 ──────────────────────────────────────────────────
-        rt.spawn(crate::teams::run_poller());
+        // Teams browser poller is started on demand from the Settings UI.
     }
 
     // Keep the runtime alive by storing it; drop order matters on Windows.

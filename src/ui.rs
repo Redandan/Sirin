@@ -1056,7 +1056,7 @@ impl SirinApp {
         let tg_auth         = self.tg_auth.clone();
         let mut tg_msg_update: Option<String> = None;
 
-        show_system_panel(ui, &tg_auth, &mut tg_code, &mut tg_password, &tg_msg, &mut tg_msg_update);
+        show_system_panel(ui, &self.rt, &tg_auth, &mut tg_code, &mut tg_password, &tg_msg, &mut tg_msg_update);
 
         self.tg_code     = tg_code;
         self.tg_password = tg_password;
@@ -1383,6 +1383,7 @@ fn tg_status_badge(ui: &mut egui::Ui, status: &crate::telegram_auth::TelegramSta
 
 fn show_system_panel(
     ui: &mut egui::Ui,
+    rt: &tokio::runtime::Handle,
     tg_auth: &crate::telegram_auth::TelegramAuthState,
     tg_code: &mut String,
     tg_password: &mut String,
@@ -1417,6 +1418,108 @@ fn show_system_panel(
             ui.colored_label(Color32::GRAY, RichText::new("○ 未啟動").small());
         }
     });
+
+    ui.add_space(12.0);
+    ui.separator();
+    ui.add_space(6.0);
+
+    // ── Teams 整合 ────────────────────────────────────────────────────────
+    ui.label(RichText::new("💼  Microsoft Teams").strong());
+    ui.add_space(4.0);
+
+    use crate::teams::SessionStatus;
+    let teams_status = crate::teams::session_status();
+
+    // 狀態列
+    ui.horizontal(|ui| {
+        let (col, txt) = match &teams_status {
+            SessionStatus::NotStarted      => (Color32::GRAY,                    "○ 未連線"),
+            SessionStatus::WaitingForLogin => (Color32::YELLOW,                  "⏳ 等待登入…"),
+            SessionStatus::Running         => (Color32::from_rgb(100, 220, 100), "● 監聽中"),
+            SessionStatus::Error(_)        => (Color32::from_rgb(220, 80, 80),   "✗ 錯誤"),
+        };
+        ui.colored_label(col, txt);
+        if let SessionStatus::Error(msg) = &teams_status {
+            ui.colored_label(Color32::GRAY, RichText::new(format!("  {msg}")).small());
+        }
+    });
+
+    ui.add_space(6.0);
+
+    match &teams_status {
+        SessionStatus::NotStarted | SessionStatus::Error(_) => {
+            // ── 流程說明 ─────────────────────────────────────────────────────
+            egui::Frame::none()
+                .fill(Color32::from_rgb(28, 32, 38))
+                .inner_margin(egui::Margin::symmetric(10, 8))
+                .rounding(4.0)
+                .show(ui, |ui| {
+                    ui.label(RichText::new("連線流程").small().strong());
+                    ui.add_space(3.0);
+                    for (n, line) in [
+                        ("1", "點「開始連線」→ Chrome 視窗跳出"),
+                        ("2", "若已有登入記錄（data/teams_profile）→ 自動進入 Teams"),
+                        ("3", "若第一次或 session 過期 → 手動完成學校 SSO / MFA"),
+                        ("4", "登入後狀態變為「● 監聽中」，無需再次操作"),
+                        ("5", "收到訊息時 Sirin 自動回「稍等」並在此建立草稿"),
+                        ("6", "草稿確認後點「✅ 確認發送」立即送出至 Teams"),
+                    ] {
+                        ui.horizontal(|ui| {
+                            ui.colored_label(Color32::from_rgb(100,160,220),
+                                RichText::new(n).small().monospace());
+                            ui.colored_label(Color32::GRAY, RichText::new(line).small());
+                        });
+                    }
+                    ui.add_space(3.0);
+                    ui.colored_label(Color32::DARK_GRAY,
+                        RichText::new("登入狀態儲存於 data/teams_profile（重啟後免重新登入）").small());
+                });
+
+            ui.add_space(8.0);
+            let btn = egui::Button::new(
+                RichText::new("  開始連線 Teams  ").small()
+            ).fill(Color32::from_rgb(0, 80, 160));
+            if ui.add(btn).clicked() {
+                rt.spawn(crate::teams::run_poller());
+            }
+        }
+
+        SessionStatus::WaitingForLogin => {
+            egui::Frame::none()
+                .fill(Color32::from_rgb(40, 36, 10))
+                .inner_margin(egui::Margin::symmetric(10, 8))
+                .rounding(4.0)
+                .show(ui, |ui| {
+                    ui.colored_label(Color32::YELLOW,
+                        RichText::new("請在跳出的 Chrome 視窗完成 Microsoft 登入").small());
+                    ui.add_space(2.0);
+                    ui.colored_label(Color32::GRAY,
+                        RichText::new("• 學校帳號請選「Use another account」或直接輸入學校 email").small());
+                    ui.colored_label(Color32::GRAY,
+                        RichText::new("• 完成 MFA / SSO 後此狀態將自動更新（最長等待 5 分鐘）").small());
+                    ui.colored_label(Color32::GRAY,
+                        RichText::new("• 首次登入後 cookie 將永久保存，下次免登入").small());
+                });
+        }
+
+        SessionStatus::Running => {
+            egui::Frame::none()
+                .fill(Color32::from_rgb(10, 36, 14))
+                .inner_margin(egui::Margin::symmetric(10, 8))
+                .rounding(4.0)
+                .show(ui, |ui| {
+                    ui.colored_label(Color32::from_rgb(100, 220, 100),
+                        RichText::new("Teams 已連線，正在監聽新訊息").small());
+                    ui.add_space(2.0);
+                    ui.colored_label(Color32::GRAY,
+                        RichText::new("• 偵測延遲 < 100ms（CDP MutationObserver 事件驅動）").small());
+                    ui.colored_label(Color32::GRAY,
+                        RichText::new("• 收到訊息 → 自動回「稍等」→ 在「待確認」tab 建草稿").small());
+                    ui.colored_label(Color32::GRAY,
+                        RichText::new("• 點「✅ 確認發送」後立即送出，無需等待").small());
+                });
+        }
+    }
 
     ui.add_space(12.0);
     ui.separator();

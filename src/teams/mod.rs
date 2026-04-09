@@ -18,6 +18,8 @@
 
 pub mod browser_client;
 
+pub use browser_client::{SessionStatus, session_status};
+
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, OnceLock};
 
