@@ -346,6 +346,7 @@ where
             None
         };
 
+        let skill_ctx = crate::skills::build_skill_context(&request.planner_skills);
         let prompt = build_ai_reply_prompt(
             persona.as_ref(),
             &request.user_text,
@@ -356,6 +357,7 @@ where
             None,
             direct_answer_request,
             false,
+            skill_ctx.as_deref(),
         );
 
         call_prompt_stream(client.as_ref(), llm.as_ref(), prompt, on_token)

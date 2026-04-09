@@ -187,6 +187,7 @@ pub(super) async fn dispatch_by_understanding(
 ) -> Option<String> {
     let persona_name = persona.map(|p| p.name()).unwrap_or("Sirin");
     let direct_answer = is_direct_answer_request(&request.user_text);
+    let skill_ctx = crate::skills::build_skill_context(&request.planner_skills);
 
     match &understanding.intent {
         // ── Read a specific local file ────────────────────────────────────────
@@ -238,6 +239,7 @@ pub(super) async fn dispatch_by_understanding(
                             Some(&code_ctx),
                             direct_answer,
                             false,
+                            skill_ctx.as_deref(),
                         )
                         .await
                         .ok()
@@ -353,6 +355,7 @@ pub(super) async fn dispatch_by_understanding(
                 Some(&code_ctx),
                 direct_answer,
                 false,
+                skill_ctx.as_deref(),
             )
             .await
             .ok()
@@ -459,6 +462,7 @@ pub(super) async fn dispatch_by_understanding(
                             Some(&catalog_ctx),
                             direct_answer,
                             false,
+                            skill_ctx.as_deref(),
                         )
                         .await
                         .ok()
@@ -520,6 +524,7 @@ pub(super) async fn dispatch_by_understanding(
                 None,
                 direct_answer,
                 false,
+                skill_ctx.as_deref(),
             )
             .await
             .ok()

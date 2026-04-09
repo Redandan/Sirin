@@ -17,6 +17,7 @@ pub fn build_ai_reply_prompt(
     code_context: Option<&str>,
     direct_answer_request: bool,
     force_traditional_chinese: bool,
+    skill_context: Option<&str>,
 ) -> String {
     let persona_name = persona.map(|p| p.name()).unwrap_or("Sirin");
     let (voice, compliance) = persona
@@ -49,6 +50,10 @@ pub fn build_ai_reply_prompt(
 
     let code_block = code_context
         .map(|v| format!("\nProject codebase context (use when the user asks about this app or its implementation):\n{v}"))
+        .unwrap_or_default();
+
+    let skill_block = skill_context
+        .map(|s| format!("\n{s}\n"))
         .unwrap_or_default();
 
     let language_override = if force_traditional_chinese {
@@ -87,7 +92,7 @@ Constraints:\n\
 {language_override}
 {direct_mode_constraints}
 - If an internal action already ran, include a short result summary.\n\
-\n\
+{skill_block}\n\
 User message: {user_text}\n\
 {execution_block}{search_block}{history_block}{memory_block}{code_block}\n\
 \n\
@@ -109,6 +114,7 @@ pub async fn generate_ai_reply(
     code_context: Option<&str>,
     direct_answer_request: bool,
     force_traditional_chinese: bool,
+    skill_context: Option<&str>,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let prompt = build_ai_reply_prompt(
         persona,
@@ -120,6 +126,7 @@ pub async fn generate_ai_reply(
         code_context,
         direct_answer_request,
         force_traditional_chinese,
+        skill_context,
     );
     call_prompt(client, llm, prompt).await
 }
@@ -140,6 +147,7 @@ mod tests {
             None,
             false,
             true,
+            None,
         );
 
         assert!(prompt.contains("If the user asks who you are"));

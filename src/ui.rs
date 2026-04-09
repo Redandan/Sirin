@@ -25,6 +25,7 @@ enum View {
     Agent(Option<usize>),
     Settings,
     Log,
+    Workflow,
 }
 
 // ── Log severity filter ───────────────────────────────────────────────────────
@@ -241,6 +242,27 @@ pub struct SirinApp {
 
     // ── Toast notifications ───────────────────────────────────────────────────
     toasts: std::collections::VecDeque<Toast>,
+
+    // ── Workflow tracker ──────────────────────────────────────────────────────
+    workflow_state: Option<crate::workflow::WorkflowState>,
+    /// Feature name input in the start form.
+    workflow_new_feature: String,
+    /// Skill ID input in the start form (e.g. "vip_maintain").
+    workflow_skill_id: String,
+    /// User's supplementary notes/context typed in the current stage.
+    workflow_user_input: String,
+    /// AI-generated output for the current stage (editable before accepting).
+    workflow_ai_output: String,
+    /// True while an LLM call is in flight.
+    workflow_ai_loading: bool,
+    /// Channel receiving the LLM response text.
+    workflow_ai_rx: Option<std::sync::mpsc::Receiver<String>>,
+    /// Output of the Verify stage script run.
+    workflow_verify_output: String,
+    /// True while Verify script is running.
+    workflow_verify_loading: bool,
+    /// Channel receiving Verify script result.
+    workflow_verify_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
 }
 
 impl SirinApp {
@@ -348,6 +370,16 @@ impl SirinApp {
             persona_sync_suggestion: None,
             persona_sync_rx: None,
             toasts: std::collections::VecDeque::new(),
+            workflow_state: crate::workflow::WorkflowState::load(),
+            workflow_new_feature: String::new(),
+            workflow_skill_id: String::new(),
+            workflow_user_input: String::new(),
+            workflow_ai_output: String::new(),
+            workflow_ai_loading: false,
+            workflow_ai_rx: None,
+            workflow_verify_output: String::new(),
+            workflow_verify_loading: false,
+            workflow_verify_rx: None,
         };
         app.refresh();
         app
@@ -775,6 +807,20 @@ impl eframe::App for SirinApp {
                             ).fill(if sett_sel { Color32::from_rgb(35, 55, 80) } else { Color32::TRANSPARENT });
                             if ui.add(sett_btn).clicked() { self.view = View::Settings; }
 
+                            // ── 工作流程 button ───────────────────────────────
+                            let wf_sel = cur_view == View::Workflow;
+                            let wf_has = self.workflow_state.is_some();
+                            let wf_label = RichText::new(if wf_has { "🔧 開發 ●" } else { "🔧 開發" })
+                                .small()
+                                .color(if wf_sel { Color32::WHITE }
+                                       else if wf_has { Color32::from_rgb(100, 180, 100) }
+                                       else { Color32::GRAY });
+                            let wf_btn = egui::Button::new(wf_label)
+                                .fill(if wf_sel { Color32::from_rgb(35, 55, 80) } else { Color32::TRANSPARENT });
+                            if ui.add(wf_btn).on_hover_text("開發工作流程（系統級）").clicked() {
+                                self.view = View::Workflow;
+                            }
+
                             // ── Refresh (right-aligned) ───────────────────────
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 let secs = self.last_refresh.elapsed().as_secs();
@@ -798,6 +844,7 @@ impl eframe::App for SirinApp {
             View::Agent(idx) => self.show_agent_workspace(ui, idx),
             View::Settings   => self.show_settings(ui),
             View::Log        => self.show_log(ui),
+            View::Workflow   => show_workflow_tab(ui, self),
         });
 
         // ── Toast overlay (bottom-right corner) ───────────────────────────────
@@ -2525,6 +2572,381 @@ fn show_system_panel(
         TelegramStatus::Connected => {}
     }
 
+}
+
+// ── Workflow tab ──────────────────────────────────────────────────────────────
+
+fn show_workflow_tab(ui: &mut egui::Ui, app: &mut SirinApp) {
+    use crate::workflow::{StageStatus, STAGES};
+
+    // ── Drain background channels each frame ──────────────────────────────────
+    if let Some(rx) = &app.workflow_ai_rx {
+        if let Ok(text) = rx.try_recv() {
+            app.workflow_ai_output  = text;
+            app.workflow_ai_rx      = None;
+            app.workflow_ai_loading = false;
+        }
+    }
+    if let Some(rx) = &app.workflow_verify_rx {
+        if let Ok(result) = rx.try_recv() {
+            app.workflow_verify_output = match result {
+                Ok(out) => out,
+                Err(e)  => format!("❌ {e}"),
+            };
+            app.workflow_verify_rx      = None;
+            app.workflow_verify_loading = false;
+        }
+    }
+
+    let dim   = Color32::from_gray(110);
+    let green = Color32::from_rgb(70, 190, 70);
+    let blue  = Color32::from_rgb(80, 150, 240);
+    let amber = Color32::from_rgb(230, 180, 50);
+
+    // ── No feature: show start form ───────────────────────────────────────────
+    if app.workflow_state.is_none() {
+        ui.add_space(24.0);
+        ui.vertical_centered(|ui| {
+            ui.colored_label(dim, "尚無進行中的技能開發");
+            ui.add_space(16.0);
+            egui::Grid::new("wf_start_grid")
+                .num_columns(2)
+                .spacing([8.0, 6.0])
+                .show(ui, |ui| {
+                    ui.label("功能名稱：");
+                    ui.text_edit_singleline(&mut app.workflow_new_feature);
+                    ui.end_row();
+                    ui.label("Skill ID：");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut app.workflow_skill_id)
+                            .hint_text("e.g. vip_maintain"),
+                    );
+                    ui.end_row();
+                });
+            ui.add_space(12.0);
+            let can_start = !app.workflow_new_feature.trim().is_empty()
+                && !app.workflow_skill_id.trim().is_empty();
+            if ui.add_enabled(can_start, egui::Button::new("▶ 開始開發")).clicked() {
+                let state = crate::workflow::WorkflowState::new(
+                    app.workflow_new_feature.trim(),
+                    app.workflow_skill_id.trim(),
+                );
+                state.save();
+                app.workflow_state = Some(state);
+                app.workflow_new_feature.clear();
+                app.workflow_skill_id.clear();
+                app.workflow_user_input.clear();
+                app.workflow_ai_output.clear();
+            }
+        });
+        return;
+    }
+
+    // ── Feature active — take ownership to avoid split-borrow ─────────────────
+    let Some(mut state) = app.workflow_state.take() else { return };
+
+    let mut abandon      = false;
+    let mut accept       = false;  // Save AI output → stage_outputs, then advance
+    let mut run_verify   = false;  // Verify: run the script
+    let mut ask_ai       = false;  // Trigger LLM call
+
+    // ── Header ────────────────────────────────────────────────────────────────
+    ui.horizontal(|ui| {
+        ui.strong(&state.feature);
+        ui.add_space(4.0);
+        ui.colored_label(dim, RichText::new(format!("[{}]", state.skill_id)).small());
+        ui.add_space(4.0);
+        ui.colored_label(dim, RichText::new(format!("開始：{}", state.started_at)).small());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.small_button("✖ 放棄").on_hover_text("刪除當前工作流程狀態").clicked() {
+                abandon = true;
+            }
+        });
+    });
+    ui.add_space(4.0);
+
+    // ── Stage progress bar ────────────────────────────────────────────────────
+    ui.horizontal(|ui| {
+        for stage in STAGES {
+            let (fg, bg, prefix) = match state.stage_status(stage.id) {
+                StageStatus::Done    => (green, Color32::from_rgb(20, 45, 20), "✅ "),
+                StageStatus::Current => (blue,  Color32::from_rgb(15, 30, 60), "▶ "),
+                StageStatus::Pending => (dim,   Color32::TRANSPARENT,          "○ "),
+            };
+            egui::Frame::new()
+                .fill(bg)
+                .corner_radius(4.0)
+                .inner_margin(egui::Margin::symmetric(7, 3))
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new(format!("{prefix}{}", stage.label))
+                            .small()
+                            .color(fg),
+                    );
+                });
+            ui.add_space(2.0);
+        }
+    });
+    ui.add_space(4.0);
+    ui.separator();
+    ui.add_space(4.0);
+
+    // ── All done ──────────────────────────────────────────────────────────────
+    if state.all_done() {
+        ui.add_space(16.0);
+        ui.vertical_centered(|ui| {
+            ui.colored_label(
+                green,
+                RichText::new(format!("🎉 `{}` 已發布！所有階段完成。", state.skill_id)).strong(),
+            );
+            ui.add_space(10.0);
+            if ui.button("開始新技能").clicked() {
+                abandon = true;
+            }
+        });
+    } else if let Some(stage) = state.current_stage_info() {
+        // ── Stage header ──────────────────────────────────────────────────────
+        ui.horizontal(|ui| {
+            ui.colored_label(blue, RichText::new(stage.label).strong());
+            ui.add_space(4.0);
+            ui.colored_label(dim, RichText::new(format!("— {}", stage.desc)).small());
+        });
+        ui.add_space(6.0);
+
+        // ── Verify stage: run script, no AI ──────────────────────────────────
+        if stage.id == "verify" {
+            ui.horizontal(|ui| {
+                let loading = app.workflow_verify_loading;
+                if ui
+                    .add_enabled(
+                        !loading,
+                        egui::Button::new(if loading { "執行中…" } else { "▶ 執行腳本" }),
+                    )
+                    .clicked()
+                {
+                    run_verify = true;
+                }
+                ui.add_space(10.0);
+                if ui
+                    .add_enabled(
+                        !app.workflow_verify_output.is_empty(),
+                        egui::Button::new("✅ 驗證通過，下一步"),
+                    )
+                    .clicked()
+                {
+                    accept = true;
+                }
+            });
+            ui.add_space(4.0);
+            if !app.workflow_verify_output.is_empty() {
+                let avail = (ui.available_height() - 8.0).max(60.0);
+                egui::ScrollArea::vertical()
+                    .id_salt("wf_verify_scroll")
+                    .max_height(avail)
+                    .show(ui, |ui| {
+                        let mut buf = app.workflow_verify_output.clone();
+                        ui.add(
+                            egui::TextEdit::multiline(&mut buf)
+                                .desired_width(f32::INFINITY)
+                                .font(egui::TextStyle::Monospace)
+                                .interactive(false),
+                        );
+                    });
+            }
+        } else {
+            // ── AI-assisted stages: Define / Plan / Build / Review / Ship ─────
+
+            // User input area
+            let placeholder = match stage.id {
+                "define" => "描述你想要的技能功能（可以是中文口語描述）…",
+                "plan"   => "補充說明：有什麼特殊需求或限制？",
+                "build"  => "補充說明：有什麼邊界情況需要處理？",
+                "review" => "補充說明：特別關注哪方面（安全、效能、可讀性）？",
+                "ship"   => "補充說明：YAML 有需要特別設定的欄位嗎？",
+                _        => "補充說明…",
+            };
+            ui.label(RichText::new("你的說明：").small().color(dim));
+            ui.add(
+                egui::TextEdit::multiline(&mut app.workflow_user_input)
+                    .hint_text(placeholder)
+                    .desired_rows(3)
+                    .desired_width(f32::INFINITY),
+            );
+            ui.add_space(4.0);
+
+            // Action buttons row
+            ui.horizontal(|ui| {
+                let ai_loading = app.workflow_ai_loading;
+                if ui
+                    .add_enabled(
+                        !ai_loading,
+                        egui::Button::new(if ai_loading { "AI 思考中…" } else { "🤖 Ask AI" })
+                            .fill(Color32::from_rgb(30, 60, 120)),
+                    )
+                    .clicked()
+                {
+                    ask_ai = true;
+                }
+                ui.add_space(10.0);
+
+                // Accept button (stage-specific label)
+                if !app.workflow_ai_output.is_empty() {
+                    let accept_label = match stage.id {
+                        "build" => "✅ 接受腳本並寫入文件",
+                        "ship"  => "✅ 發布 YAML 並重載",
+                        _       => "✅ 接受，進入下一步",
+                    };
+                    if ui.button(accept_label).clicked() {
+                        accept = true;
+                    }
+                }
+            });
+            ui.add_space(4.0);
+
+            // AI output area (editable so user can tweak before accepting)
+            if !app.workflow_ai_output.is_empty() {
+                ui.colored_label(amber, RichText::new("AI 輸出（可編輯）：").small());
+                let avail = (ui.available_height() - 8.0).max(60.0);
+                egui::ScrollArea::vertical()
+                    .id_salt("wf_ai_scroll")
+                    .max_height(avail)
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut app.workflow_ai_output)
+                                .desired_width(f32::INFINITY)
+                                .font(egui::TextStyle::Monospace),
+                        );
+                    });
+            }
+        }
+    }
+
+    // ── Apply deferred actions ────────────────────────────────────────────────
+    if abandon {
+        let _ = std::fs::remove_file("data/workflow.json");
+        app.workflow_ai_output.clear();
+        app.workflow_verify_output.clear();
+        // state is dropped — don't restore
+    } else {
+        // Ask AI: spawn LLM call in background
+        if ask_ai {
+            if let Some(stage) = state.current_stage_info() {
+                let sys_prompt = crate::workflow::stage_context(
+                    stage.id,
+                    &state.skill_id,
+                    &state.feature,
+                    &state.stage_outputs,
+                );
+                let user_msg = app.workflow_user_input.clone();
+                let full_prompt = if user_msg.trim().is_empty() {
+                    sys_prompt
+                } else {
+                    format!("{sys_prompt}\n\n---\n用戶補充：{user_msg}")
+                };
+                let (tx, rx) = std::sync::mpsc::channel::<String>();
+                app.workflow_ai_rx      = Some(rx);
+                app.workflow_ai_loading = true;
+                app.workflow_ai_output.clear();
+                app.rt.spawn(async move {
+                    let result = crate::llm::call_llm_simple(&full_prompt).await;
+                    let _ = tx.send(result.unwrap_or_else(|e| format!("❌ LLM 錯誤：{e}")));
+                });
+            }
+        }
+
+        // Run Verify script
+        if run_verify {
+            let skill_id  = state.skill_id.clone();
+            let (tx, rx)  = std::sync::mpsc::channel();
+            app.workflow_verify_rx      = Some(rx);
+            app.workflow_verify_loading = true;
+            app.workflow_verify_output.clear();
+            std::thread::spawn(move || {
+                // Run script with empty user_input to test default output
+                let stage_info = crate::workflow::stage_by_id("verify");
+                if let Some(si) = stage_info {
+                    let _ = tx.send(crate::workflow::run_stage_script(si, &skill_id));
+                } else {
+                    // Fallback: run the built script directly
+                    let script = format!("config/scripts/{skill_id}.py");
+                    let output = std::process::Command::new("python")
+                        .arg(&script)
+                        .stdin(std::process::Stdio::piped())
+                        .stdout(std::process::Stdio::piped())
+                        .stderr(std::process::Stdio::piped())
+                        .spawn()
+                        .and_then(|mut c| {
+                            use std::io::Write;
+                            if let Some(mut s) = c.stdin.take() {
+                                let _ = s.write_all(
+                                    br#"{"skill_id":"test","user_input":"test","agent_id":null}"#,
+                                );
+                            }
+                            c.wait_with_output()
+                        });
+                    let res = match output {
+                        Ok(o) if o.status.success() => {
+                            Ok(String::from_utf8_lossy(&o.stdout).trim().to_string())
+                        }
+                        Ok(o) => Err(format!(
+                            "exit {:?}: {}",
+                            o.status.code(),
+                            String::from_utf8_lossy(&o.stderr).trim()
+                        )),
+                        Err(e) => Err(e.to_string()),
+                    };
+                    let _ = tx.send(res);
+                }
+            });
+        }
+
+        // Accept: save AI output to stage_outputs, do stage-specific action, advance
+        if accept {
+            let stage_id = state.current_stage.clone();
+            let output   = app.workflow_ai_output.clone();
+
+            // Stage-specific file write actions
+            match stage_id.as_str() {
+                "build" => {
+                    if let Some(code) = crate::workflow::extract_code_block(&output, "python") {
+                        let path = format!("config/scripts/{}.py", state.skill_id);
+                        match std::fs::write(&path, &code) {
+                            Ok(_)  => app.push_toast(ToastLevel::Info, format!("已寫入 {path}")),
+                            Err(e) => app.push_toast(ToastLevel::Error, format!("寫入失敗：{e}")),
+                        }
+                    } else {
+                        app.push_toast(ToastLevel::Error, "未找到 ```python 代碼塊，請確認 AI 輸出格式");
+                    }
+                }
+                "ship" => {
+                    if let Some(yaml) = crate::workflow::extract_code_block(&output, "yaml") {
+                        let path = format!("config/skills/{}.yaml", state.skill_id);
+                        match std::fs::write(&path, &yaml) {
+                            Ok(_) => {
+                                crate::skill_loader::invalidate_cache();
+                                app.push_toast(ToastLevel::Info, format!("已發布 {path}，技能已重載"));
+                            }
+                            Err(e) => app.push_toast(ToastLevel::Error, format!("寫入失敗：{e}")),
+                        }
+                    } else {
+                        app.push_toast(ToastLevel::Error, "未找到 ```yaml 代碼塊，請確認 AI 輸出格式");
+                    }
+                }
+                _ => {}
+            }
+
+            // Save output as context for next stages, advance
+            if !output.is_empty() {
+                state.stage_outputs.insert(stage_id, output);
+            }
+            state.advance();
+            app.workflow_ai_output.clear();
+            app.workflow_user_input.clear();
+            app.workflow_verify_output.clear();
+        }
+
+        app.workflow_state = Some(state);
+    }
 }
 
 // ── KPI persistence helpers ───────────────────────────────────────────────────

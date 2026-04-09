@@ -21,6 +21,7 @@ mod rpc_server;
 mod teams;
 mod skill_loader;
 mod skills;
+mod workflow;
 mod telegram;
 mod telegram_auth;
 mod ui;
@@ -45,10 +46,11 @@ fn ensure_first_run_dirs() {
         let _ = fs::create_dir_all(data.join(sub));
     }
 
-    // Local data directories (pending replies, sessions, teams profile)
+    // Local data directories (pending replies, sessions, teams profile, workflow)
     for sub in &["data/pending_replies", "data/sessions", "data/teams_profile"] {
         let _ = fs::create_dir_all(sub);
     }
+    let _ = fs::create_dir_all("data");
 
     // config/ directory
     let _ = fs::create_dir_all("config");

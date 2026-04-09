@@ -450,6 +450,47 @@ pub fn recommended_skills(query: &str, available: &[SkillDefinition]) -> Vec<Ski
     scored.into_iter().map(|(_, s)| s.clone()).take(4).collect()
 }
 
+/// Build a skill context block to inject into the LLM system prompt.
+///
+/// For each recommended skill:
+/// - Script-based (`script_file` present): auto-generates a `skill_execute` call instruction.
+/// - Tool-based (`backed_by_tools` non-empty + `prompt_template`): uses the template directly.
+///
+/// Returns `None` when there is nothing actionable to inject.
+pub fn build_skill_context(planner_skill_ids: &[String]) -> Option<String> {
+    if planner_skill_ids.is_empty() {
+        return None;
+    }
+    let all = list_skills();
+    let mut parts: Vec<String> = Vec::new();
+
+    for id in planner_skill_ids {
+        let Some(skill) = all.iter().find(|s| &s.id == id) else { continue };
+
+        let instruction = if skill.script_file.is_some() {
+            format!(
+                "**{}**：呼叫 `skill_execute` 工具，\
+                 參數 `skill_id = \"{}\"`, `user_input = <用戶原始請求>`。\
+                 腳本輸出即為最終結果，無需二次加工。",
+                skill.name, skill.id
+            )
+        } else if let Some(tmpl) = &skill.prompt_template {
+            format!("**{}**：{}", skill.name, tmpl.trim())
+        } else {
+            continue;
+        };
+        parts.push(instruction);
+    }
+
+    if parts.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "## 本次請求的可用能力（優先使用這些）\n\n{}",
+        parts.join("\n\n")
+    ))
+}
+
 pub fn ensure_registered(skill_id: &str) -> Result<(), String> {
     if list_skills().iter().any(|skill| skill.id == skill_id) {
         Ok(())
