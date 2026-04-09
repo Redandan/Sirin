@@ -15,6 +15,7 @@ mod pending_reply;
 mod persona;
 mod researcher;
 mod rpc_server;
+mod teams;
 mod skill_loader;
 mod skills;
 mod telegram;
@@ -139,6 +140,9 @@ fn main() {
 
         // ── Local WebSocket RPC server ─────────────────────────────────────────
         rt.spawn(rpc_server::start_rpc_server());
+
+        // ── Teams 瀏覽器輪詢 ──────────────────────────────────────────────────
+        rt.spawn(crate::teams::run_poller());
     }
 
     // Keep the runtime alive by storing it; drop order matters on Windows.

@@ -163,6 +163,7 @@ pub struct SirinApp {
     browser_screenshot: Option<egui::TextureHandle>,
     /// URL of the last captured screenshot.
     browser_screenshot_url: String,
+
 }
 
 impl SirinApp {
@@ -1102,6 +1103,7 @@ impl SirinApp {
                     ui.colored_label(color, egui::RichText::new(&line).monospace().small());
                 }
             });
+
     }
 
 }

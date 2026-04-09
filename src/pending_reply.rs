@@ -39,6 +39,9 @@ pub struct PendingReply {
     /// Telegram peer ID (chat_id) — `None` for Teams or UI-only agents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub peer_id: Option<i64>,
+    /// Teams conversation ID (data-convid) — `None` for Telegram agents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_id: Option<String>,
     /// Human-readable sender / conversation name.
     pub peer_name: String,
     /// The original incoming message that triggered this draft.
@@ -76,6 +79,7 @@ impl PendingReply {
             agent_id,
             platform: platform.into(),
             peer_id,
+            chat_id: None,
             peer_name: peer_name.into(),
             original_message: original_message.into(),
             draft_reply: draft_reply.into(),
