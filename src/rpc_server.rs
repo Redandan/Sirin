@@ -33,9 +33,11 @@ pub fn is_running() -> bool {
     RUNNING.load(Ordering::Relaxed)
 }
 
-/// Bind the WebSocket server and serve forever. Spawn this as a Tokio task.
+/// Bind the WebSocket + MCP server and serve forever. Spawn this as a Tokio task.
 pub async fn start_rpc_server() {
-    let app = Router::new().route("/", get(ws_upgrade_handler));
+    let app = Router::new()
+        .route("/", get(ws_upgrade_handler))
+        .merge(crate::mcp_server::mcp_router());
 
     let listener = match tokio::net::TcpListener::bind("127.0.0.1:7700").await {
         Ok(l) => l,

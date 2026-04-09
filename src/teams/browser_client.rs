@@ -1,94 +1,102 @@
-//! Teams Web 瀏覽器自動化客戶端。
+//! Teams Web 瀏覽器自動化客戶端（事件驅動版）。
 //!
-//! 透過 headless_chrome 操作 teams.microsoft.com：
-//! - 一次性手動登入後保留 session（cookie 存活數天）
-//! - 每 30 秒掃描未讀訊息
-//! - 送出訊息（在用戶確認後由 pending_reply 觸發）
+//! 使用 CDP `Runtime.addBinding` + JS `MutationObserver`，
+//! DOM 出現新未讀徽章時立即通知 Rust，無輪詢。
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use headless_chrome::protocol::cdp::types::Event;
+use headless_chrome::protocol::cdp::Runtime::AddBinding;
 use headless_chrome::{Browser, LaunchOptions, Tab};
 
-// ── Teams Web selectors ───────────────────────────────────────────────────────
-// These may need updating if Teams Web changes its DOM structure.
-
-/// 未讀對話列表項目（sidebar chat list）
-const SEL_CHAT_ITEM: &str = "[data-tid='chat-list-item']";
-/// 未讀徽章（紅點/數字）
-const SEL_UNREAD_BADGE: &str = "[data-tid='chat-list-item-unread-count']";
-/// 訊息輸入框
 const SEL_MSG_INPUT: &str = "[data-tid='ckeditor']";
-/// 最新訊息氣泡文字
-const SEL_MSG_BUBBLE: &str = "[data-tid='message-body-content']";
-/// 對話人名稱
-const SEL_CHAT_TITLE: &str = "[data-tid='chat-header-title']";
+const TEAMS_URL: &str     = "https://teams.microsoft.com";
+const BINDING_NAME: &str  = "sirinCallback";
 
-const TEAMS_URL: &str = "https://teams.microsoft.com";
+/// JS 注入：MutationObserver 監聽未讀徽章變化，用 sirinCallback 通知 Rust。
+const JS_OBSERVER: &str = r#"
+(function() {
+    if (window.__sirinObserverActive) return;
+    window.__sirinObserverActive = true;
+
+    let lastSeen = new Set();
+
+    function collectUnread() {
+        const items = document.querySelectorAll("[data-tid='chat-list-item']");
+        const result = [];
+        for (const item of items) {
+            if (!item.querySelector("[data-tid='chat-list-item-unread-count']")) continue;
+            const convid  = item.getAttribute('data-convid') || '';
+            const titleEl = item.querySelector("[data-tid='chat-list-item-title']");
+            const title   = titleEl ? titleEl.innerText.trim() : '未知';
+            if (convid) result.push({ convid, title });
+        }
+        return result;
+    }
+
+    const observer = new MutationObserver(() => {
+        const unread = collectUnread();
+        const newItems = unread.filter(u => !lastSeen.has(u.convid));
+        if (newItems.length > 0) {
+            newItems.forEach(u => lastSeen.add(u.convid));
+            window.sirinCallback(JSON.stringify(newItems));
+        }
+    });
+
+    observer.observe(document.body, {
+        subtree: true, childList: true,
+        attributes: true, attributeFilter: ['data-tid', 'class'],
+    });
+
+    console.log('[sirin] MutationObserver ready');
+})()
+"#;
 
 // ── Session 狀態 ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum SessionStatus {
-    /// 瀏覽器尚未啟動
-    NotStarted,
-    /// 等待用戶手動登入
-    WaitingForLogin,
-    /// 已登入，正常運行
-    Running,
-    /// 錯誤（訊息）
-    Error(String),
-}
+pub enum SessionStatus { NotStarted, WaitingForLogin, Running, Error(String) }
 
-// Process-wide session status（供 UI 查詢）
-static SESSION_STATUS: std::sync::OnceLock<Mutex<SessionStatus>> = std::sync::OnceLock::new();
-
+static STATUS: std::sync::OnceLock<Mutex<SessionStatus>> = std::sync::OnceLock::new();
 fn status_cell() -> &'static Mutex<SessionStatus> {
-    SESSION_STATUS.get_or_init(|| Mutex::new(SessionStatus::NotStarted))
+    STATUS.get_or_init(|| Mutex::new(SessionStatus::NotStarted))
 }
+pub fn session_status() -> SessionStatus { status_cell().lock().unwrap().clone() }
+fn set_status(s: SessionStatus) { *status_cell().lock().unwrap() = s; }
 
-pub fn session_status() -> SessionStatus {
-    status_cell().lock().unwrap().clone()
-}
+// ── 資料結構 ──────────────────────────────────────────────────────────────────
 
-fn set_status(s: SessionStatus) {
-    *status_cell().lock().unwrap() = s;
-}
+#[derive(Debug, Clone)]
+pub struct UnreadChat { pub chat_id: String, pub peer_name: String }
 
 // ── TeamsClient ───────────────────────────────────────────────────────────────
 
 pub struct TeamsClient {
     _browser: Browser,
-    tab: Arc<Tab>,
+    pub tab: Arc<Tab>,
 }
 
 impl TeamsClient {
-    /// 啟動有頭（visible）Chrome，讓用戶完成登入。
-    /// `headless(false)` 讓用戶看到視窗並手動通過 SSO / MFA。
+    /// 啟動有頭 Chrome 並等待用戶登入（SSO/MFA）。
     pub fn launch_and_login() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         set_status(SessionStatus::WaitingForLogin);
-
         let browser = Browser::new(
             LaunchOptions::default_builder()
-                .headless(false)   // 顯示瀏覽器讓用戶登入
+                .headless(false)
                 .build()
                 .map_err(|e| format!("LaunchOptions: {e}"))?,
         )?;
-
         let tab = browser.new_tab()?;
         tab.navigate_to(TEAMS_URL)?.wait_until_navigated()?;
-
         Ok(Self { _browser: browser, tab })
     }
 
-    /// 等待登入完成（URL 離開 login.microsoftonline.com）。
-    /// 最多等 `timeout_secs` 秒。
+    /// 等待 URL 離開 microsoftonline.com（最多 `timeout_secs` 秒）。
     pub fn wait_for_login(&self, timeout_secs: u64) -> bool {
         let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
         loop {
-            if std::time::Instant::now() > deadline {
-                return false;
-            }
+            if std::time::Instant::now() > deadline { return false; }
             let url = self.tab.get_url();
             if !url.contains("login.microsoftonline") && !url.contains("login.live") {
                 set_status(SessionStatus::Running);
@@ -98,86 +106,83 @@ impl TeamsClient {
         }
     }
 
-    /// 掃描聊天列表，返回有未讀訊息的對話（(chat_element_id, sender_hint)）。
-    pub fn scan_unread_chats(&self) -> Vec<UnreadChat> {
-        let mut result = Vec::new();
+    /// 安裝 CDP binding + MutationObserver。
+    /// 返回 `sync_channel` receiver；每當 Teams 出現新未讀，receiver 收到一批 UnreadChat。
+    pub fn install_event_listener(
+        &self,
+    ) -> Result<std::sync::mpsc::Receiver<Vec<UnreadChat>>, Box<dyn std::error::Error + Send + Sync>>
+    {
+        // 1. 啟用 Runtime CDP domain
+        self.tab.enable_runtime()?;
 
-        // 取得所有聊天列表項目
-        let items = match self.tab.find_elements(SEL_CHAT_ITEM) {
-            Ok(els) => els,
-            Err(_) => return result,
-        };
-
-        for item in items {
-            // 有未讀徽章？
-            let has_unread = item
-                .find_element(SEL_UNREAD_BADGE)
-                .is_ok();
-            if !has_unread {
-                continue;
-            }
-
-            // 取得聊天標題作為 peer_name
-            let peer_name = item
-                .find_element("[data-tid='chat-list-item-title']")
-                .ok()
-                .and_then(|el| el.get_inner_text().ok())
-                .unwrap_or_else(|| "未知".to_string());
-
-            // 用 data attribute 或位置當做穩定 ID
-            let chat_id = item
-                .get_attribute_value("data-convid")
-                .ok()
-                .flatten()
-                .unwrap_or_else(|| peer_name.clone());
-
-            result.push(UnreadChat { chat_id, peer_name });
-        }
-
-        result
-    }
-
-    /// 點進指定對話，讀取最新一則訊息文字。
-    pub fn read_latest_message(&self, chat: &UnreadChat) -> Option<String> {
-        // 點擊對話項目
-        let items = self.tab.find_elements(SEL_CHAT_ITEM).ok()?;
-        let target = items.iter().find(|el| {
-            el.get_attribute_value("data-convid")
-                .ok()
-                .flatten()
-                .as_deref() == Some(&chat.chat_id)
+        // 2. 註冊 JS → Rust binding
+        self.tab.call_method(AddBinding {
+            name: BINDING_NAME.to_string(),
+            execution_context_id:   None,
+            execution_context_name: None,
         })?;
-        target.click().ok()?;
-        std::thread::sleep(Duration::from_millis(800));
 
-        // 取最後一則訊息氣泡
-        let bubbles = self.tab.find_elements(SEL_MSG_BUBBLE).ok()?;
-        let last = bubbles.last()?;
-        last.get_inner_text().ok()
+        // 3. std::sync channel（CDP callback 在同步執行緒）
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<UnreadChat>>(32);
+
+        // 4. add_event_listener 接受 Fn(&Event)（closure 自動實作 EventListener<Event>）
+        self.tab.add_event_listener(Arc::new(move |event: &Event| {
+            let Event::RuntimeBindingCalled(ev) = event else { return };
+            if ev.params.name != BINDING_NAME { return; }
+
+            let chats: Vec<UnreadChat> =
+                serde_json::from_str::<Vec<serde_json::Value>>(&ev.params.payload)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|obj| Some(UnreadChat {
+                        chat_id:   obj["convid"].as_str()?.to_string(),
+                        peer_name: obj["title"].as_str().unwrap_or("未知").to_string(),
+                    }))
+                    .collect();
+
+            if !chats.is_empty() {
+                let _ = tx.try_send(chats);
+            }
+        }))?;
+
+        // 5. 注入 MutationObserver
+        self.tab.evaluate(JS_OBSERVER, false)?;
+
+        Ok(rx)
     }
 
-    /// 在目前開啟的對話中送出文字訊息。
+    /// 點進對話並讀取最新一則訊息文字。
+    pub fn read_latest_message(&self, chat: &UnreadChat) -> Option<String> {
+        let js = format!(
+            r#"(function(){{
+                for(const item of document.querySelectorAll("[data-tid='chat-list-item']")){{
+                    if(item.getAttribute('data-convid')==='{}'){{item.click();return true;}}
+                }}
+                return false;
+            }})()"#,
+            chat.chat_id.replace('\'', "\\'")
+        );
+        self.tab.evaluate(&js, false).ok()?;
+        std::thread::sleep(Duration::from_millis(600));
+
+        self.tab.evaluate(r#"(function(){
+            const bs=document.querySelectorAll("[data-tid='message-body-content']");
+            return bs.length?bs[bs.length-1].innerText.trim():'';
+        })()"#, false)
+            .ok()
+            .and_then(|v| v.value)
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .filter(|s| !s.is_empty())
+    }
+
+    /// 在當前對話中送出訊息。
     pub fn send_message(&self, text: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let input = self.tab.find_element(SEL_MSG_INPUT)?;
         input.click()?;
-        std::thread::sleep(Duration::from_millis(200));
-
-        // type_into 逐字元輸入（避免貼上觸發特殊行為）
+        std::thread::sleep(Duration::from_millis(150));
         input.type_into(text)?;
-        std::thread::sleep(Duration::from_millis(300));
-
-        // Enter 送出
+        std::thread::sleep(Duration::from_millis(200));
         self.tab.press_key("Return")?;
         Ok(())
     }
-}
-
-// ── 資料結構 ──────────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone)]
-pub struct UnreadChat {
-    /// Teams 內部對話 ID（data-convid）
-    pub chat_id: String,
-    /// 顯示名稱（對方姓名或群組名）
-    pub peer_name: String,
 }
