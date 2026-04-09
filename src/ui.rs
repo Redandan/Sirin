@@ -271,6 +271,8 @@ pub struct SirinApp {
     workflow_verify_loading: bool,
     /// Channel receiving Verify script result.
     workflow_verify_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
+    /// Skill ID whose script is currently shown ("" = none).
+    workflow_script_view_id: String,
     /// Skill ID currently shown in the skill-list test panel ("" = none expanded).
     workflow_skill_test_id: String,
     /// Test input for the skill-list test panel.
@@ -402,6 +404,7 @@ impl SirinApp {
             workflow_verify_output: String::new(),
             workflow_verify_loading: false,
             workflow_verify_rx: None,
+            workflow_script_view_id: String::new(),
             workflow_skill_test_id: String::new(),
             workflow_skill_test_input: String::new(),
             workflow_skill_test_output: String::new(),
@@ -2678,8 +2681,10 @@ fn show_workflow_tab(ui: &mut egui::Ui, app: &mut SirinApp) {
             let mut run_skill_test: Option<(String, String)> = None; // (skill_id, script_path)
 
             for skill in &script_skills {
-                let is_expanded = app.workflow_skill_test_id == skill.id;
-                let frame_color = if is_expanded {
+                let is_test_expanded   = app.workflow_skill_test_id == skill.id;
+                let is_script_expanded = app.workflow_script_view_id == skill.id;
+                let is_any_expanded    = is_test_expanded || is_script_expanded;
+                let frame_color = if is_any_expanded {
                     Color32::from_rgb(28, 38, 55)
                 } else {
                     Color32::from_gray(22)
@@ -2689,20 +2694,32 @@ fn show_workflow_tab(ui: &mut egui::Ui, app: &mut SirinApp) {
                     .corner_radius(6.0)
                     .inner_margin(egui::Margin::symmetric(10, 7))
                     .show(ui, |ui| {
+                        // ── Header row ───────────────────────────────────────
                         ui.horizontal(|ui| {
                             ui.strong(&skill.name);
                             ui.add_space(4.0);
                             ui.colored_label(blue, RichText::new(format!("[{}]", skill.id)).small().monospace());
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                let loading = app.workflow_skill_test_loading && is_expanded;
-                                let btn_label = if loading { "執行中…" } else if is_expanded { "▼ 收起" } else { "▶ 測試" };
-                                if ui.add_enabled(!loading, egui::Button::new(btn_label)).clicked() {
-                                    if is_expanded {
+                                // Test button
+                                let loading = app.workflow_skill_test_loading && is_test_expanded;
+                                let test_label = if loading { "執行中…" } else if is_test_expanded { "▼ 測試" } else { "▶ 測試" };
+                                if ui.add_enabled(!loading, egui::Button::new(test_label)).clicked() {
+                                    if is_test_expanded {
                                         app.workflow_skill_test_id.clear();
                                         app.workflow_skill_test_output.clear();
                                     } else {
                                         app.workflow_skill_test_id = skill.id.clone();
                                         app.workflow_skill_test_output.clear();
+                                    }
+                                }
+                                ui.add_space(4.0);
+                                // Script view button
+                                let script_label = if is_script_expanded { "▼ 腳本" } else { "📄 腳本" };
+                                if ui.button(script_label).clicked() {
+                                    if is_script_expanded {
+                                        app.workflow_script_view_id.clear();
+                                    } else {
+                                        app.workflow_script_view_id = skill.id.clone();
                                     }
                                 }
                             });
@@ -2711,8 +2728,35 @@ fn show_workflow_tab(ui: &mut egui::Ui, app: &mut SirinApp) {
                             ui.colored_label(dim, RichText::new(&skill.description).small());
                         }
 
-                        // Expanded test panel
-                        if is_expanded {
+                        // ── Script viewer ────────────────────────────────────
+                        if is_script_expanded {
+                            if let Some(path) = &skill.script_file {
+                                ui.add_space(6.0);
+                                ui.separator();
+                                ui.add_space(2.0);
+                                ui.horizontal(|ui| {
+                                    ui.colored_label(dim, RichText::new(path).small().monospace());
+                                });
+                                ui.add_space(4.0);
+                                let code = std::fs::read_to_string(path)
+                                    .unwrap_or_else(|e| format!("// 讀取失敗：{e}"));
+                                let mut code_display = code.clone();
+                                egui::ScrollArea::vertical()
+                                    .id_salt(format!("script_view_{}", skill.id))
+                                    .max_height(240.0)
+                                    .show(ui, |ui| {
+                                        ui.add(
+                                            egui::TextEdit::multiline(&mut code_display)
+                                                .desired_width(f32::INFINITY)
+                                                .font(egui::TextStyle::Monospace)
+                                                .interactive(false),
+                                        );
+                                    });
+                            }
+                        }
+
+                        // ── Test panel ───────────────────────────────────────
+                        if is_test_expanded {
                             ui.add_space(6.0);
                             ui.separator();
                             ui.add_space(4.0);
@@ -2736,7 +2780,7 @@ fn show_workflow_tab(ui: &mut egui::Ui, app: &mut SirinApp) {
                                 ui.add_space(6.0);
                                 let avail = (ui.available_height() - 8.0).max(60.0).min(200.0);
                                 egui::ScrollArea::vertical()
-                                    .id_salt("skill_test_out")
+                                    .id_salt(format!("skill_test_out_{}", skill.id))
                                     .max_height(avail)
                                     .show(ui, |ui| {
                                         ui.add(

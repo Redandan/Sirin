@@ -231,10 +231,13 @@ pub fn stage_context(
              requires_approval: false\n\
              script_file: config/scripts/{skill_id}.rhai\n\
              example_prompts:\n\
-               - <從 Define 階段複製觸發語句>\n\
+               - <完整觸發句子1>\n\
+               - <完整觸發句子2>\n\
              trigger_keywords:\n\
-               - <關鍵詞>\n\
+               - <單詞關鍵字1>\n\
+               - <單詞關鍵字2>\n\
              ```\n\n\
+             注意：所有欄位必須符合 schema，不可加入未列出的欄位。\n\n\
              請用 ```yaml 代碼塊輸出完整配置。"
         ),
         _ => String::new(),

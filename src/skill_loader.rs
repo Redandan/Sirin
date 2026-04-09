@@ -46,7 +46,18 @@ fn scan_skills_dir() -> Vec<SkillDefinition> {
             continue;
         }
         match load_one(&path) {
-            Ok(skill) if skill.enabled => skills.push(skill),
+            Ok(skill) if skill.enabled => {
+                // Warn about skills with script_file but no trigger_keywords —
+                // they'll never be recommended by the planner.
+                if skill.script_file.is_some() && skill.trigger_keywords.is_empty() {
+                    eprintln!(
+                        "[skill_loader] ⚠ '{}' has script_file but no trigger_keywords — \
+                         it won't be auto-triggered by the planner",
+                        skill.id
+                    );
+                }
+                skills.push(skill);
+            }
             Ok(_) => {}
             Err(e) => eprintln!("[skill_loader] Skipping {:?}: {e}", path.file_name().unwrap_or_default()),
         }

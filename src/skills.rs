@@ -358,6 +358,7 @@ mod tests {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SkillDefinition {
     pub id: String,
     pub name: String,
@@ -370,6 +371,9 @@ pub struct SkillDefinition {
     pub backed_by_tools: Vec<String>,
     #[serde(default)]
     pub example_prompts: Vec<String>,
+    /// Keywords that trigger this skill (high-weight exact match in scoring).
+    #[serde(default)]
+    pub trigger_keywords: Vec<String>,
     /// Whether this skill is active (YAML skills can set this to false).
     #[serde(default = "skill_enabled_default")]
     pub enabled: bool,
@@ -425,6 +429,10 @@ fn hardcoded_skills() -> Vec<SkillDefinition> {
 /// 不再依賴硬編碼 skill ID，讓 YAML 的 example_prompts 自我描述。
 fn score_skill_for_query(skill: &SkillDefinition, query: &str) -> i32 {
     let lower = query.to_lowercase();
+    // Trigger keywords — high weight, any match is a strong signal
+    let trigger_score: i32 = skill.trigger_keywords.iter()
+        .filter(|kw| !kw.is_empty() && lower.contains(kw.to_lowercase().as_str()))
+        .count() as i32 * 8;
     // Name match bonus
     let name_score = if lower.contains(&skill.name.to_lowercase()) { 5 } else { 0 };
     // Example prompt word overlap
@@ -435,7 +443,7 @@ fn score_skill_for_query(skill: &SkillDefinition, query: &str) -> i32 {
                 .count() as i32
         })
         .sum::<i32>() * 3;
-    name_score + prompt_score
+    trigger_score + name_score + prompt_score
 }
 
 /// 從給定技能清單中，根據 query 關鍵字推薦最相關的技能（最多 4 個）。
