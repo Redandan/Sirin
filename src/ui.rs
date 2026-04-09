@@ -37,184 +37,6 @@ enum TaskFilter {
     Failed,
 }
 
-// ── Chat types ────────────────────────────────────────────────────────────────
-
-#[derive(Clone, PartialEq)]
-enum ChatRole {
-    User,
-    Assistant,
-}
-
-#[derive(Clone)]
-struct ChatMessage {
-    role: ChatRole,
-    text: String,
-}
-
-#[derive(Clone)]
-struct AgentConsoleState {
-    route: String,
-    intent_family: String,
-    summary: String,
-    ai_details: String,
-    steps: Vec<String>,
-    recommended_skills: Vec<String>,
-    tools: Vec<String>,
-    trace: Vec<String>,
-    latest_task_summary: String,
-    status: String,
-}
-
-impl Default for AgentConsoleState {
-    fn default() -> Self {
-        Self {
-            route: String::new(),
-            intent_family: String::new(),
-            summary: String::new(),
-            ai_details: String::new(),
-            steps: Vec::new(),
-            recommended_skills: Vec::new(),
-            tools: Vec::new(),
-            trace: Vec::new(),
-            latest_task_summary: String::new(),
-            status: "Idle".to_string(),
-        }
-    }
-}
-
-impl AgentConsoleState {
-    fn snapshot_text(&self) -> String {
-        let mut lines = vec![
-            format!("Status: {}", self.status),
-            format!("Route: {}", self.route),
-        ];
-
-        if !self.intent_family.is_empty() {
-            lines.push(format!("Intent Family: {}", self.intent_family));
-        }
-        if !self.summary.is_empty() {
-            lines.push(format!("Summary: {}", self.summary));
-        }
-        if !self.ai_details.is_empty() {
-            lines.push(format!("AI: {}", self.ai_details));
-        }
-        if !self.steps.is_empty() {
-            lines.push(format!("Steps: {}", self.steps.join(" → ")));
-        }
-        if !self.recommended_skills.is_empty() {
-            lines.push(format!(
-                "Recommended Skills: {}",
-                self.recommended_skills.join(", ")
-            ));
-        }
-        if !self.tools.is_empty() {
-            lines.push(format!("Tools: {}", self.tools.join(", ")));
-        }
-        if !self.trace.is_empty() {
-            lines.push("Trace:".to_string());
-            lines.extend(self.trace.iter().map(|item| format!("- {item}")));
-        }
-        if !self.latest_task_summary.is_empty() {
-            lines.push(format!(
-                "Latest Research Summary: {}",
-                self.latest_task_summary
-            ));
-        }
-
-        lines.join("\n")
-    }
-}
-
-#[derive(Clone, Default)]
-struct CodingConsoleState {
-    status: String,
-    task: String,
-    change_summary: String,
-    trace: Vec<String>,
-    files_modified: Vec<String>,
-    diff: Option<String>,
-    verified: bool,
-    verification_output: Option<String>,
-    dry_run: bool,
-    outcome: String,
-}
-
-impl CodingConsoleState {
-    fn snapshot_text(&self) -> String {
-        let mut lines = vec![
-            format!("Status: {}", self.status),
-            format!("Task: {}", self.task),
-        ];
-        if self.dry_run {
-            lines.push("Mode: DRY-RUN (files NOT written)".to_string());
-        }
-        if !self.change_summary.is_empty() {
-            lines.push(format!("Change summary: {}", self.change_summary));
-        }
-        if !self.files_modified.is_empty() {
-            lines.push(format!(
-                "Files modified: {}",
-                self.files_modified.join(", ")
-            ));
-        }
-        if !self.outcome.is_empty() {
-            lines.push(format!("Outcome: {}", self.outcome));
-        }
-        if self.verified {
-            lines.push("✅ cargo check: passed".to_string());
-        }
-        if let Some(ref vout) = self.verification_output {
-            lines.push(format!(
-                "Verification: {}",
-                vout.chars().take(200).collect::<String>()
-            ));
-        }
-        if !self.trace.is_empty() {
-            lines.push("Trace:".to_string());
-            lines.extend(self.trace.iter().map(|s| format!("  {s}")));
-        }
-        if let Some(ref diff) = self.diff {
-            lines.push(format!(
-                "Diff preview:\n{}",
-                diff.chars().take(400).collect::<String>()
-            ));
-        }
-        lines.join("\n")
-    }
-}
-
-fn extract_ai_details(reason: &str) -> String {
-    reason
-        .split("ai=[")
-        .nth(1)
-        .and_then(|rest| rest.split(']').next())
-        .map(str::trim)
-        .unwrap_or_default()
-        .to_string()
-}
-
-fn coding_status_text(resp: &crate::agents::coding_agent::CodingAgentResponse) -> String {
-    match resp.result_status {
-        crate::agents::coding_agent::CodingResultStatus::Verified => {
-            "✅ 完成（已驗證）".to_string()
-        }
-        crate::agents::coding_agent::CodingResultStatus::DryRunDone => "Dry-run 完成".to_string(),
-        crate::agents::coding_agent::CodingResultStatus::Rollback => {
-            "↩ 已回滾（待處理）".to_string()
-        }
-        crate::agents::coding_agent::CodingResultStatus::FollowupNeeded => {
-            "⚠️ 需要跟進".to_string()
-        }
-        crate::agents::coding_agent::CodingResultStatus::Error => "❌ 執行失敗".to_string(),
-        crate::agents::coding_agent::CodingResultStatus::Done => {
-            if resp.dry_run {
-                "Dry-run 完成".to_string()
-            } else {
-                "完成".to_string()
-            }
-        }
-    }
-}
 
 fn task_status_badge(
     status: &str,
@@ -274,34 +96,6 @@ fn task_status_badge(
 }
 
 
-#[derive(Clone)]
-struct ChatUiUpdate {
-    reply: String,
-    tools: Vec<String>,
-    trace: Vec<String>,
-    /// If true, this is a streaming partial — update the last assistant bubble
-    /// in-place instead of pushing a new message.
-    partial: bool,
-    /// If Some, apply planner result to agent_console before the reply arrives.
-    plan: Option<ChatPlanUpdate>,
-}
-
-#[derive(Clone)]
-struct ChatPlanUpdate {
-    route: String,
-    intent_family: String,
-    summary: String,
-    steps: Vec<String>,
-    recommended_skills: Vec<String>,
-}
-
-#[derive(Clone)]
-struct CodingUiUpdate {
-    /// Final coding agent response (None while still running).
-    response: Option<crate::agents::coding_agent::CodingAgentResponse>,
-    /// Partial status message shown while the agent is running.
-    status_msg: String,
-}
 
 // ── Per-agent UI scratch buffers ──────────────────────────────────────────────
 
@@ -318,38 +112,21 @@ pub struct SirinApp {
     rt: Handle,
     view: View,
 
-    // Tasks tab
+    // Activity log (all agents)
     tasks: Vec<TaskEntry>,
 
-    // Research tab
+    // Research records
     research_tasks: Vec<ResearchTask>,
     research_topic: String,
     research_url: String,
     research_msg: String,
+    research_msg_at: Option<std::time::Instant>,
     pending_objectives: Option<Vec<String>>,
 
-    // Telegram tab
+    // Telegram OTP input (system panel)
     tg_code: String,
     tg_password: String,
     tg_msg: String,
-
-    // Chat / operations
-    chat_messages: Vec<ChatMessage>,
-    chat_pending: bool,
-    agent_console: AgentConsoleState,
-    chat_tx: std::sync::mpsc::SyncSender<ChatUiUpdate>,
-    chat_rx: std::sync::mpsc::Receiver<ChatUiUpdate>,
-
-    // Coding Console
-    coding_console: CodingConsoleState,
-    coding_tx: std::sync::mpsc::SyncSender<CodingUiUpdate>,
-    coding_rx: std::sync::mpsc::Receiver<CodingUiUpdate>,
-    /// When true, show a confirmation dialog before running the coding agent
-    /// (because auto_approve_writes = false in persona config).
-    pending_coding_confirmation: Option<String>,
-    /// Cached value of `persona.coding_agent.auto_approve_writes`.
-    /// Refreshed from disk on every `refresh()` call (every 5 s) and on toggle.
-    auto_approve_writes: bool,
 
     last_refresh: std::time::Instant,
 
@@ -357,60 +134,33 @@ pub struct SirinApp {
     event_rx: broadcast::Receiver<AgentEvent>,
 
     // ── UI state ──────────────────────────────────────────────────────────────
-    /// Filter applied in the workspace 活動 sub-tab.
+    /// Filter applied in the workspace 思考流 sub-tab.
     task_filter: TaskFilter,
     /// Set of research task IDs whose full report is expanded.
     research_expanded: std::collections::HashSet<String>,
-    /// When the last coding task completed (for auto-dismissing the mini bar).
-    coding_done_at: Option<std::time::Instant>,
-    /// When the research startup message was set (auto-clears after 4 s).
-    research_msg_at: Option<std::time::Instant>,
-    /// Cached storage usage snapshot (refreshed every 5 s alongside other data).
-    storage: crate::memory::StorageUsage,
 
-    // Settings tab (multi-agent)
-    /// Working copy of agents file being edited (loaded lazily).
+    // Settings
     settings_agents: Option<crate::agent_config::AgentsFile>,
-    /// Per-agent Telegram auth states (agent_id → TelegramAuthState).
-    /// Populated at startup from agents.yaml; order matches agents list.
     agent_auth_states: Vec<(String, crate::telegram_auth::TelegramAuthState)>,
-    /// Status message shown after save / error.
     settings_msg: String,
     settings_msg_at: Option<std::time::Instant>,
-    /// Per-agent scratch buffers for inline "add objective / add command" inputs.
-    /// Index matches `settings_agents.agents[i]`.
     settings_agent_scratch: Vec<AgentUiScratch>,
-    /// Input buffers for the "new agent" quick-add row.
     settings_new_agent_id: String,
     settings_new_agent_name: String,
-    /// Index of the currently selected agent in the left sidebar.  None = System panel.
     settings_selected_agent: Option<usize>,
-    /// Active tab index in the right panel (0=身分, 1=風格, 2=目標, 3=通訊, 4=能力).
     settings_active_tab: usize,
 
-    // ── Operations / Dispatch state ───────────────────────────────────────────
-    /// Currently selected agent id for operations ("" = first agent).
-    dispatch_target_agent: String,
-    /// Text input buffer for manual dispatch / chat.
-    dispatch_task_input: String,
-    /// Feedback message shown after dispatching.
+    // ── Agent workspace ───────────────────────────────────────────────────────
+    /// Active sub-tab: 0=思考流, 1=待確認.
+    workspace_tab: usize,
+    /// Feedback message (approve/reject result).
     dispatch_msg: String,
     dispatch_msg_at: Option<std::time::Instant>,
-
-    // ── Agent workspace ───────────────────────────────────────────────────────
-    /// Active sub-tab in the workspace: 0=活動, 1=調研, 2=KPI, 3=待確認, 4=操作.
-    workspace_tab: usize,
-    /// Peer name/ID for manual dispatch operations.
-    dispatch_manual_peer: String,
     /// Pending replies cached for the currently selected agent.
     pending_replies: Vec<crate::pending_reply::PendingReply>,
-    /// Agent ID for which pending_replies was last loaded.
     pending_replies_loaded_for: String,
-    /// Editable draft text per pending reply ID.
     pending_draft_edits: std::collections::HashMap<String, String>,
-    /// KPI values cached in memory: agent_id → metric_key → value_str.
-    kpi_values: std::collections::HashMap<String, std::collections::HashMap<String, String>>,
-    /// Pending reply counts cached per agent (refreshed every 5 s).  Avoids disk reads every frame.
+    /// Pending reply counts cached per agent (refreshed every 5 s).
     pending_count_cache: std::collections::HashMap<String, usize>,
 }
 
@@ -459,8 +209,6 @@ impl SirinApp {
     ) -> Self {
         let _ = ensure_codebase_index();
 
-        let (chat_tx, chat_rx) = std::sync::mpsc::sync_channel(8);
-        let (coding_tx, coding_rx) = std::sync::mpsc::sync_channel(4);
         let mut app = Self {
             tracker,
             tg_auth,
@@ -471,29 +219,15 @@ impl SirinApp {
             research_topic: String::new(),
             research_url: String::new(),
             research_msg: String::new(),
+            research_msg_at: None,
             pending_objectives: None,
             tg_code: String::new(),
             tg_password: String::new(),
             tg_msg: String::new(),
-            chat_messages: Vec::new(),
-            chat_pending: false,
-            agent_console: AgentConsoleState::default(),
-            chat_tx,
-            chat_rx,
-            coding_console: CodingConsoleState::default(),
-            coding_tx,
-            coding_rx,
-            pending_coding_confirmation: None,
-            auto_approve_writes: crate::persona::Persona::load()
-                .map(|p| p.coding_agent.auto_approve_writes)
-                .unwrap_or(false),
             last_refresh: std::time::Instant::now() - std::time::Duration::from_secs(60),
             event_rx: crate::events::subscribe(),
             task_filter: TaskFilter::All,
             research_expanded: std::collections::HashSet::new(),
-            coding_done_at: None,
-            research_msg_at: None,
-            storage: crate::memory::StorageUsage::default(),
             settings_agents: None,
             settings_msg: String::new(),
             settings_msg_at: None,
@@ -503,16 +237,12 @@ impl SirinApp {
             settings_selected_agent: Some(0),
             settings_active_tab: 0,
             agent_auth_states,
-            dispatch_target_agent: String::new(),
-            dispatch_task_input: String::new(),
+            workspace_tab: 0,
             dispatch_msg: String::new(),
             dispatch_msg_at: None,
-            workspace_tab: 4,
-            dispatch_manual_peer: String::new(),
             pending_replies: Vec::new(),
             pending_replies_loaded_for: String::new(),
             pending_draft_edits: std::collections::HashMap::new(),
-            kpi_values: std::collections::HashMap::new(),
             pending_count_cache: std::collections::HashMap::new(),
         };
         app.refresh();
@@ -528,27 +258,6 @@ impl SirinApp {
                     .rev()
                     .collect();
 
-                if let Some(summary_entry) = self
-                    .tasks
-                    .iter()
-                    .find(|task| task.event == "research_summary_ready")
-                {
-                    self.agent_console.latest_task_summary = summary_entry
-                        .reason
-                        .as_deref()
-                        .unwrap_or_default()
-                        .chars()
-                        .take(220)
-                        .collect();
-                }
-
-                self.agent_console.ai_details = self
-                    .tasks
-                    .iter()
-                    .find(|task| task.event.starts_with("adk:") && task.event.ends_with(":start"))
-                    .map(|task| extract_ai_details(task.reason.as_deref().unwrap_or_default()))
-                    .filter(|details| !details.is_empty())
-                    .unwrap_or_else(|| crate::llm::shared_llm().task_log_summary());
             }
             Err(e) => eprintln!("[ui] load tasks: {e}"),
         }
@@ -563,11 +272,6 @@ impl SirinApp {
         if let Some(proposed) = researcher::take_pending_objectives() {
             self.pending_objectives = Some(proposed);
         }
-        // Sync the cached auto_approve_writes from persona config.
-        self.auto_approve_writes = crate::persona::Persona::load()
-            .map(|p| p.coding_agent.auto_approve_writes)
-            .unwrap_or(false);
-        self.storage = crate::memory::storage_usage();
         // Refresh pending reply counts for all configured agents (avoids per-frame disk reads).
         if let Some(f) = &self.settings_agents {
             for agent in &f.agents {
@@ -590,14 +294,6 @@ impl eframe::App for SirinApp {
         if ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-        }
-
-        // ── Timed auto-dismiss: coding mini bar (8 s after completion) ──────────
-        if let Some(done_at) = self.coding_done_at {
-            if done_at.elapsed() > std::time::Duration::from_secs(8) {
-                self.coding_console = CodingConsoleState::default();
-                self.coding_done_at = None;
-            }
         }
 
         // ── Timed auto-dismiss: research startup message (4 s) ───────────────
@@ -624,123 +320,6 @@ impl eframe::App for SirinApp {
             }
         }
 
-        // Poll for LLM reply from background chat task.
-        if self.chat_pending {
-            // Drain all pending updates this frame (may receive multiple partials).
-            let mut got_final = false;
-            while let Ok(update) = self.chat_rx.try_recv() {
-                // Apply plan update whenever it arrives (first partial or final).
-                if let Some(plan) = update.plan {
-                    self.agent_console.route = plan.route;
-                    self.agent_console.intent_family = plan.intent_family;
-                    self.agent_console.summary = plan.summary;
-                    self.agent_console.steps = plan.steps;
-                    self.agent_console.recommended_skills = plan.recommended_skills;
-                    self.agent_console.status = "Executing…".to_string();
-                }
-
-                // Update the chat bubble (partial: in-place; final: complete).
-                let bubble_text = update.reply.clone();
-                if !bubble_text.is_empty() {
-                    if let Some(last) = self.chat_messages.last_mut() {
-                        if last.role == ChatRole::Assistant {
-                            last.text = bubble_text;
-                        } else {
-                            self.chat_messages.push(ChatMessage {
-                                role: ChatRole::Assistant,
-                                text: bubble_text,
-                            });
-                        }
-                    } else {
-                        self.chat_messages.push(ChatMessage {
-                            role: ChatRole::Assistant,
-                            text: bubble_text,
-                        });
-                    }
-                }
-
-                if !update.partial {
-                    self.agent_console.tools = update.tools;
-                    self.agent_console.trace = update
-                        .trace
-                        .into_iter()
-                        .rev()
-                        .take(6)
-                        .collect::<Vec<_>>()
-                        .into_iter()
-                        .rev()
-                        .collect();
-                    self.agent_console.status = "Idle".to_string();
-                    got_final = true;
-                }
-            }
-            if got_final {
-                self.chat_pending = false;
-            } else {
-                // Keep repainting frequently while streaming.
-                ctx.request_repaint_after(std::time::Duration::from_millis(100));
-            }
-        }
-
-        // Poll for coding agent result from background task.
-        while let Ok(update) = self.coding_rx.try_recv() {
-            self.coding_console.status = update.status_msg.clone();
-            if let Some(resp) = update.response {
-                self.coding_console.outcome = resp.outcome.clone();
-                self.coding_console.change_summary = resp.change_summary.clone();
-                self.coding_console.files_modified = resp.files_modified.clone();
-                self.coding_console.trace = resp.trace.clone();
-                self.coding_console.diff = resp.diff.clone();
-                self.coding_console.verified = resp.verified;
-                self.coding_console.verification_output = resp.verification_output.clone();
-                self.coding_console.dry_run = resp.dry_run;
-                self.coding_console.status = coding_status_text(&resp);
-                self.agent_console.status = self.coding_console.status.clone();
-                if !resp.change_summary.is_empty() {
-                    self.agent_console.summary = resp.change_summary.clone();
-                }
-                // Start the auto-dismiss timer for the mini status bar.
-                self.coding_done_at = Some(std::time::Instant::now());
-                // Push the outcome as an assistant message in the chat.
-                let summary = format!(
-                    "**[Coding Agent]** {}\n\n{}{}{}",
-                    resp.outcome,
-                    if resp.change_summary.is_empty() {
-                        String::new()
-                    } else {
-                        format!("🧾 變更摘要：{}\n", resp.change_summary)
-                    },
-                    if resp.files_modified.is_empty() {
-                        String::new()
-                    } else {
-                        format!("📁 已修改：{}\n", resp.files_modified.join(", "))
-                    },
-                    if resp.dry_run {
-                        "（Dry-run 模式：檔案未寫入）"
-                    } else {
-                        ""
-                    }
-                );
-                if let Some(last) = self.chat_messages.last_mut() {
-                    if last.role == ChatRole::Assistant {
-                        last.text = summary;
-                    } else {
-                        self.chat_messages.push(ChatMessage {
-                            role: ChatRole::Assistant,
-                            text: summary,
-                        });
-                    }
-                } else {
-                    self.chat_messages.push(ChatMessage {
-                        role: ChatRole::Assistant,
-                        text: summary,
-                    });
-                }
-                self.chat_pending = false;
-            }
-            ctx.request_repaint();
-        }
-
         // Auto-refresh every 5 s.
         if self.last_refresh.elapsed() > std::time::Duration::from_secs(5) {
             self.refresh();
@@ -751,9 +330,9 @@ impl eframe::App for SirinApp {
         loop {
             match self.event_rx.try_recv() {
                 Ok(AgentEvent::ResearchRequested { topic, url }) => {
-                    // Switch to workspace → 調研 sub-tab and kick off the research run.
+                    // Switch to workspace → 思考流 sub-tab and kick off the research run.
                     self.view = View::Agent(self.view_agent_idx());
-                    self.workspace_tab = 1;
+                    self.workspace_tab = 0;
                     self.research_topic = topic.clone();
                     if let Some(ref u) = url {
                         self.research_url = u.clone();
@@ -776,19 +355,9 @@ impl eframe::App for SirinApp {
                         self.pending_objectives = Some(new_objectives);
                     }
                 }
-                Ok(AgentEvent::CodingAgentCompleted { task, success, files_modified }) => {
+                Ok(AgentEvent::CodingAgentCompleted { .. }) => {
                     // Refresh task list immediately so the result shows without waiting 5 s.
                     self.refresh();
-                    // Also update the coding console status bar so the Chat tab shows it.
-                    if self.coding_console.task.is_empty() || self.coding_console.task == task {
-                        let status = if success { "✅ 完成（事件觸發）" } else { "❌ 失敗（事件觸發）" };
-                        self.coding_console.status = status.to_string();
-                        self.coding_console.task = task;
-                        self.coding_console.files_modified = files_modified;
-                        if success {
-                            self.coding_done_at = Some(std::time::Instant::now());
-                        }
-                    }
                 }
                 Ok(AgentEvent::ReplyPendingApproval { agent_id, .. }) => {
                     // Reload pending replies if the currently selected agent matches.
@@ -801,7 +370,7 @@ impl eframe::App for SirinApp {
                     }
                     // Switch focus to workspace → 待確認 sub-tab.
                     self.view = View::Agent(self.view_agent_idx());
-                    self.workspace_tab = 3;
+                    self.workspace_tab = 1;
                 }
                 Ok(_) => {} // other events (ResearchCompleted, FollowupTriggered, ChatAgentReplied)
                 Err(broadcast::error::TryRecvError::Lagged(_)) => {} // skip lagged events
@@ -868,8 +437,6 @@ impl eframe::App for SirinApp {
                                 if clicked {
                                     self.view = View::Agent(Some(i));
                                     self.pending_replies_loaded_for.clear();
-                                    // Sync dispatch_target_agent
-                                    self.dispatch_target_agent = agent_id.clone();
                                 }
                             }
                         });
@@ -974,15 +541,11 @@ impl SirinApp {
         let agent = agents[sel].clone();
         let agent_id = agent.id.clone();
         let agent_name = agent.identity.name.clone();
-        let kpi_defs = agent.kpi.metrics.clone();
 
         // Keep workspace selection in sync.
         if self.pending_replies_loaded_for != agent_id {
             self.pending_replies = crate::pending_reply::load_pending(&agent_id);
             self.pending_replies_loaded_for = agent_id.clone();
-        }
-        if self.dispatch_target_agent != agent_id {
-            self.dispatch_target_agent = agent_id.clone();
         }
         let pending_count = self.pending_replies.iter()
             .filter(|r| r.status == PendingStatus::Pending)
@@ -1017,14 +580,11 @@ impl SirinApp {
         }
         ui.separator();
 
-        // ── Sub-tab bar ───────────────────────────────────────────────────────
+        // ── Sub-tab bar (2 tabs) ──────────────────────────────────────────────
         ui.horizontal(|ui| {
             let tabs: &[(&str, Option<usize>)] = &[
-                ("活動", None),
-                ("調研", None),
-                ("KPI",  None),
+                ("思考流", None),
                 ("待確認", if pending_count > 0 { Some(pending_count) } else { None }),
-                ("操作",  None),
             ];
             for (i, (label, badge)) in tabs.iter().enumerate() {
                 let is_active = self.workspace_tab == i;
@@ -1047,60 +607,78 @@ impl SirinApp {
 
         // ── Sub-tab content ───────────────────────────────────────────────────
         match self.workspace_tab {
-            // ── 活動 ──────────────────────────────────────────────────────────
-            0 => self.show_tasks_for_agent(ui, &agent_name.clone()),
-
-            // ── 調研 ──────────────────────────────────────────────────────────
-            1 => self.show_research_workspace(ui),
-
-            // ── KPI ───────────────────────────────────────────────────────────
-            2 => {
+            // ── 思考流 ────────────────────────────────────────────────────────
+            0 => {
+                // Filter bar
                 ui.horizontal(|ui| {
-                    if ui.button("📊 從 API 更新 (TODO)").clicked() {
-                        self.dispatch_msg = "TODO: Agora API 未接線".to_string();
-                        self.dispatch_msg_at = Some(std::time::Instant::now());
+                    for (label, filter) in [
+                        ("全部", TaskFilter::All),
+                        ("進行中", TaskFilter::Running),
+                        ("完成", TaskFilter::Done),
+                        ("失敗", TaskFilter::Failed),
+                    ] {
+                        let active = self.task_filter == filter;
+                        let btn = egui::Button::new(
+                            RichText::new(label)
+                                .small()
+                                .color(if active { Color32::WHITE } else { Color32::GRAY }),
+                        )
+                        .fill(if active { Color32::from_rgb(35, 65, 110) } else { Color32::TRANSPARENT });
+                        if ui.add(btn).clicked() {
+                            self.task_filter = filter;
+                        }
                     }
                 });
                 ui.add_space(4.0);
-                if !self.kpi_values.contains_key(&agent_id) {
-                    let vals = load_kpi_values(&agent_id);
-                    self.kpi_values.insert(agent_id.clone(), vals);
-                }
-                let kpi_vals = self.kpi_values.entry(agent_id.clone()).or_default();
-                let mut save_kpi = false;
-                if kpi_defs.is_empty() {
-                    ui.colored_label(Color32::GRAY,
-                        "尚未設定 KPI 指標。請在 ⚙ 設定 → Agent → KPI 新增。");
+                let filter = self.task_filter;
+                let tasks: Vec<_> = self.tasks.iter()
+                    .filter(|t| {
+                        let status = t.status.as_deref().unwrap_or("");
+                        match filter {
+                            TaskFilter::All => true,
+                            TaskFilter::Running => matches!(status, "PENDING" | "RUNNING" | "FOLLOWING"),
+                            TaskFilter::Done => status == "DONE",
+                            TaskFilter::Failed => matches!(status, "FAILED" | "ERROR"),
+                        }
+                    })
+                    .cloned()
+                    .collect();
+
+                if tasks.is_empty() {
+                    ui.colored_label(Color32::GRAY, "沒有符合條件的任務記錄。");
                 } else {
-                    egui::Grid::new("ws_kpi_grid")
-                        .num_columns(3)
-                        .spacing([12.0, 4.0])
-                        .show(ui, |ui| {
-                            ui.label(RichText::new("指標").strong().small());
-                            ui.label(RichText::new("當前值").strong().small());
-                            ui.label(RichText::new("單位").strong().small());
-                            ui.end_row();
-                            for def in &kpi_defs {
-                                let val = kpi_vals.entry(def.key.clone()).or_default();
-                                ui.label(&def.label);
-                                if ui.add(
-                                    egui::TextEdit::singleline(val)
-                                        .desired_width(80.0)
-                                        .hint_text("—"),
-                                ).changed() { save_kpi = true; }
-                                ui.label(RichText::new(&def.unit).small());
-                                ui.end_row();
-                            }
-                        });
-                }
-                if save_kpi {
-                    let vals_snapshot = kpi_vals.clone();
-                    save_kpi_values(&agent_id, &vals_snapshot);
+                    ScrollArea::vertical().id_salt("ws_tasks").auto_shrink(false).show(ui, |ui| {
+                        for task in &tasks {
+                            let is_summary = task.event == "research_summary_ready";
+                            let status = task.status.as_deref().unwrap_or("");
+                            let (badge, fg, bg) = task_status_badge(status, task.reason.as_deref(), is_summary);
+                            egui::Frame::new()
+                                .fill(bg)
+                                .corner_radius(4.0)
+                                .inner_margin(egui::Margin::symmetric(6, 3))
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.colored_label(fg, badge);
+                                        ui.colored_label(Color32::GRAY, RichText::new(&task.event).small());
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            ui.colored_label(Color32::DARK_GRAY, RichText::new(
+                                                task.timestamp.get(11..16).unwrap_or("—")
+                                            ).small());
+                                        });
+                                    });
+                                    if let Some(r) = &task.reason {
+                                        let snippet: String = r.chars().take(160).collect();
+                                        ui.colored_label(Color32::GRAY, RichText::new(snippet).small());
+                                    }
+                                });
+                            ui.add_space(2.0);
+                        }
+                    });
                 }
             }
 
             // ── 待確認 ────────────────────────────────────────────────────────
-            3 => {
+            _ => {
                 let pending: Vec<_> = self.pending_replies.iter()
                     .filter(|r| r.status == PendingStatus::Pending)
                     .cloned()
@@ -1183,621 +761,9 @@ impl SirinApp {
                 }
             }
 
-            // ── 操作 (chat + dispatch) ────────────────────────────────────────
-            4 | _ => {
-                self.show_operations_tab(ui, &agents);
-            }
         }
     }
 
-    /// 操作 sub-tab: dispatch form + chat input + chat messages.
-    fn show_operations_tab(&mut self, ui: &mut egui::Ui, agents: &[crate::agent_config::AgentConfig]) {
-        // ── Dispatch form ─────────────────────────────────────────────────────
-        ui.horizontal(|ui| {
-            ui.label("目標：");
-            egui::ComboBox::from_id_salt("ws_agent_combo")
-                .selected_text(&self.dispatch_target_agent)
-                .width(140.0)
-                .show_ui(ui, |ui| {
-                    for agent in agents {
-                        let led = if agent.enabled { "● " } else { "○ " };
-                        ui.selectable_value(
-                            &mut self.dispatch_target_agent,
-                            agent.id.clone(),
-                            format!("{}{}", led, agent.identity.name),
-                        );
-                    }
-                });
-            ui.separator();
-            ui.label("對象：");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.dispatch_manual_peer)
-                    .hint_text("peer 名稱 / ID（選填）")
-                    .desired_width(150.0),
-            );
-        });
-
-        let available_w = ui.available_width();
-        let input = ui.add(
-            egui::TextEdit::multiline(&mut self.dispatch_task_input)
-                .hint_text("輸入訊息、任務或調研主題…（Enter 送出，Shift+Enter 換行）")
-                .desired_width(available_w)
-                .desired_rows(2),
-        );
-
-        let mut auto_approve_local = self.auto_approve_writes;
-        let (submit, do_research, force_coding, toggle_changed) = ui.horizontal(|ui| {
-            let can_act = !self.dispatch_task_input.trim().is_empty() && !self.chat_pending;
-            let send = ui.add_enabled(
-                can_act,
-                egui::Button::new(RichText::new("▶ 送出").strong())
-                    .min_size([70.0, 28.0].into())
-                    .fill(Color32::from_rgb(30, 70, 130)),
-            );
-            let research_btn = ui.add_enabled(
-                can_act,
-                egui::Button::new(RichText::new("🔬 調研").small())
-                    .fill(Color32::TRANSPARENT),
-            );
-            let code_btn = ui.add_enabled(
-                can_act,
-                egui::Button::new(RichText::new("⚙ 編碼").small())
-                    .fill(Color32::TRANSPARENT),
-            ).on_hover_text("強制以 Coding Agent 執行");
-            ui.separator();
-            let toggle = ui
-                .checkbox(&mut auto_approve_local, "自動允許寫入")
-                .on_hover_text("關閉時，Coding Agent 寫入前會確認（persona.yaml auto_approve_writes）");
-            let enter_send = input.has_focus()
-                && ui.input_mut(|i| {
-                    if i.key_pressed(egui::Key::Enter) && i.modifiers.shift {
-                        i.consume_key(egui::Modifiers::SHIFT, egui::Key::Enter);
-                        true
-                    } else { false }
-                });
-            (send.clicked() || enter_send, research_btn.clicked(), code_btn.clicked(), toggle.changed())
-        }).inner;
-
-        if toggle_changed {
-            self.auto_approve_writes = auto_approve_local;
-            if let Ok(mut p) = crate::persona::Persona::load() {
-                p.coding_agent.auto_approve_writes = auto_approve_local;
-                let _ = p.save();
-            }
-        }
-
-        // ── 🔬 Research path ──────────────────────────────────────────────────
-        if do_research && !self.dispatch_task_input.trim().is_empty() {
-            let topic = self.dispatch_task_input.trim().to_string();
-            let rt = self.rt.clone();
-            rt.spawn(async move {
-                crate::agents::research_agent::run_research_via_adk(topic, None).await;
-            });
-            self.workspace_tab = 1; // switch to 調研 sub-tab
-            self.dispatch_msg = "✅ 已啟動調研".to_string();
-            self.dispatch_msg_at = Some(std::time::Instant::now());
-            self.dispatch_task_input.clear();
-        }
-
-        // ── ⚙ Force-coding path ───────────────────────────────────────────────
-        if force_coding && !self.dispatch_task_input.trim().is_empty() {
-            let task = self.dispatch_task_input.trim().to_string();
-            self.dispatch_task_input.clear();
-            self.chat_messages.push(ChatMessage { role: ChatRole::User, text: task.clone() });
-            self.chat_pending = true;
-            self.coding_console = CodingConsoleState {
-                status: "Coding Agent 啟動中…".to_string(),
-                task: task.clone(),
-                ..Default::default()
-            };
-            self.agent_console.route = "coding".to_string();
-            self.agent_console.status = "Coding Agent 執行中…".to_string();
-            self.agent_console.ai_details = crate::llm::shared_llm().task_log_summary();
-            let coding_tx = self.coding_tx.clone();
-            let tx = self.chat_tx.clone();
-            let rt = self.rt.clone();
-            rt.spawn(async move {
-                let _ = tx.try_send(ChatUiUpdate {
-                    reply: "⚙ Coding Agent 啟動中…".to_string(),
-                    tools: vec![], trace: vec![], partial: true,
-                    plan: Some(ChatPlanUpdate {
-                        route: "coding".to_string(),
-                        intent_family: "code_modification".to_string(),
-                        summary: "Coding Agent（強制觸發）".to_string(),
-                        steps: vec!["gather context".to_string(), "plan".to_string(), "ReAct loop".to_string(), "verify".to_string()],
-                        recommended_skills: vec!["coding_agent".to_string()],
-                    }),
-                });
-                let result = tokio::task::spawn(
-                    crate::agents::coding_agent::run_coding_via_adk(task, false, None, None)
-                ).await;
-                let resp = match result {
-                    Ok(r) => r,
-                    Err(e) => crate::agents::coding_agent::CodingAgentResponse {
-                        outcome: format!("❌ Coding Agent 崩潰：{e}"),
-                        result_status: crate::agents::coding_agent::CodingResultStatus::Error,
-                        change_summary: String::new(),
-                        files_modified: vec![], iterations_used: 0, trace: vec![],
-                        diff: None, verified: false, verification_output: None, dry_run: false,
-                    },
-                };
-                let _ = coding_tx.try_send(CodingUiUpdate { response: Some(resp), status_msg: "完成".to_string() });
-            });
-        }
-
-        // ── ▶ Normal submit path ──────────────────────────────────────────────
-        if submit && !self.dispatch_task_input.trim().is_empty() {
-            let user_text = self.dispatch_task_input.trim().to_string();
-            let is_coding_hint = crate::agents::router_agent::is_coding_request(&user_text);
-            let needs_confirm = is_coding_hint && !self.auto_approve_writes;
-
-            if needs_confirm && self.pending_coding_confirmation.is_none() {
-                self.pending_coding_confirmation = Some(user_text.clone());
-                self.chat_messages.push(ChatMessage { role: ChatRole::User, text: user_text });
-                self.dispatch_task_input.clear();
-            } else {
-                let confirmed_text = user_text.clone();
-                self.chat_messages.push(ChatMessage { role: ChatRole::User, text: confirmed_text.clone() });
-                self.dispatch_task_input.clear();
-                self.chat_pending = true;
-                if is_coding_hint {
-                    self.coding_console = CodingConsoleState {
-                        status: "計畫中…".to_string(),
-                        task: confirmed_text.clone(),
-                        ..Default::default()
-                    };
-                }
-                let is_meta = crate::telegram::language::is_identity_question(&confirmed_text)
-                    || crate::telegram::language::is_code_access_question(&confirmed_text);
-                let history: Vec<String> = self.chat_messages.windows(2)
-                    .filter_map(|p| {
-                        if p[0].role == ChatRole::User && p[1].role == ChatRole::Assistant {
-                            Some(format!("User: {}\nAssistant: {}", p[0].text, p[1].text))
-                        } else { None }
-                    })
-                    .rev().take(5).collect::<Vec<_>>().into_iter().rev().collect();
-                let context_block = if is_meta || history.is_empty() { None } else { Some(history.join("\n---\n")) };
-                let tx = self.chat_tx.clone();
-                let coding_tx = self.coding_tx.clone();
-                let rt = self.rt.clone();
-                self.agent_console.tools.clear();
-                self.agent_console.trace.clear();
-                self.agent_console.recommended_skills.clear();
-                self.agent_console.intent_family.clear();
-                self.agent_console.route = "pending…".to_string();
-                self.agent_console.status = "計畫中…".to_string();
-                self.agent_console.ai_details = crate::llm::shared_llm().task_log_summary();
-                let user_text_spawn = confirmed_text.clone();
-                rt.spawn(async move {
-                    let plan_update = if is_meta {
-                        ChatPlanUpdate {
-                            route: "chat".to_string(), intent_family: "capability".to_string(),
-                            summary: "Direct capability/identity answer.".to_string(),
-                            steps: vec!["skip planner + router".to_string()],
-                            recommended_skills: Vec::new(),
-                        }
-                    } else {
-                        let plan = crate::agents::planner_agent::run_planner_via_adk(
-                            crate::agents::planner_agent::PlannerRequest {
-                                user_text: user_text_spawn.clone(),
-                                context_block: context_block.clone(),
-                                peer_id: Some(0), fallback_reply: None, execution_result: None,
-                            }, None,
-                        ).await.ok();
-                        plan.map(|p| ChatPlanUpdate {
-                            route: match p.intent {
-                                crate::agents::planner_agent::PlanIntent::Research => "research".to_string(),
-                                crate::agents::planner_agent::PlanIntent::Answer => "chat".to_string(),
-                            },
-                            intent_family: serde_json::to_value(&p.intent_family).ok()
-                                .and_then(|v| v.as_str().map(|s| s.to_string()))
-                                .unwrap_or_else(|| "general_chat".to_string()),
-                            summary: p.summary, steps: p.steps,
-                            recommended_skills: p.recommended_skills,
-                        }).unwrap_or_else(|| ChatPlanUpdate {
-                            route: "chat".to_string(), intent_family: "general_chat".to_string(),
-                            summary: "Planner unavailable.".to_string(),
-                            steps: vec!["route request".to_string()],
-                            recommended_skills: Vec::new(),
-                        })
-                    };
-
-                    if is_meta {
-                        let request = crate::agents::chat_agent::ChatRequest {
-                            user_text: user_text_spawn.clone(), execution_result: None,
-                            context_block: None, fallback_reply: None, peer_id: Some(0),
-                            planner_intent_family: None, planner_skills: Vec::new(),
-                            use_large_model: false, agent_id: None, disable_remote_ai: false,
-                        };
-                        run_chat_and_send(request, plan_update, user_text_spawn, tx).await;
-                        return;
-                    }
-
-                    let routed = crate::agents::router_agent::run_router_via_adk(
-                        crate::agents::router_agent::RouterRequest {
-                            user_text: user_text_spawn.clone(), context_block,
-                            peer_id: Some(0), fallback_reply: None,
-                            execution_result: None, agent_id: None,
-                        }, None,
-                    ).await;
-
-                    let output = match routed {
-                        Ok(o) => o,
-                        Err(err) => {
-                            let _ = tx.send(ChatUiUpdate {
-                                reply: format!("路由錯誤：{err}"), tools: vec![], trace: vec![],
-                                partial: false, plan: Some(plan_update),
-                            });
-                            return;
-                        }
-                    };
-                    let route = output.get("route").and_then(serde_json::Value::as_str).unwrap_or("chat");
-                    if route == "coding" {
-                        let _ = tx.send(ChatUiUpdate {
-                            reply: "⚙ Coding Agent 啟動中…".to_string(), tools: vec![], trace: vec![],
-                            partial: true,
-                            plan: Some(ChatPlanUpdate {
-                                route: "coding".to_string(), intent_family: "code_modification".to_string(),
-                                summary: "Running Coding Agent…".to_string(),
-                                steps: vec!["gather context".to_string(), "plan".to_string(), "ReAct loop".to_string(), "verify".to_string()],
-                                recommended_skills: vec!["coding_agent".to_string()],
-                            }),
-                        });
-                        let coding_request: crate::agents::coding_agent::CodingRequest =
-                            output.get("coding_request")
-                                .and_then(|v| serde_json::from_value(v.clone()).ok())
-                                .unwrap_or(crate::agents::coding_agent::CodingRequest {
-                                    task: user_text_spawn.clone(),
-                                    max_iterations: None, dry_run: false, context_block: None,
-                                });
-                        let _ = coding_tx.try_send(CodingUiUpdate {
-                            response: None,
-                            status_msg: format!("🔄 執行中：{}", &coding_request.task),
-                        });
-                        let resp = crate::agents::coding_agent::run_coding_via_adk(
-                            coding_request.task, coding_request.dry_run, None, coding_request.context_block,
-                        ).await;
-                        let _ = coding_tx.try_send(CodingUiUpdate {
-                            response: Some(resp), status_msg: "完成".to_string(),
-                        });
-                    } else {
-                        let chat_request = output.get("chat_request").cloned().unwrap_or_default();
-                        let request = serde_json::from_value(chat_request)
-                            .unwrap_or(crate::agents::chat_agent::ChatRequest {
-                                user_text: user_text_spawn.clone(), execution_result: None,
-                                context_block: None, fallback_reply: None, peer_id: Some(0),
-                                planner_intent_family: None, planner_skills: Vec::new(),
-                                use_large_model: false, agent_id: None, disable_remote_ai: false,
-                            });
-                        run_chat_and_send(request, plan_update, user_text_spawn, tx).await;
-                    }
-                });
-            }
-        }
-
-        ui.add_space(6.0);
-        ui.separator();
-
-        // ── Coding pre-flight confirmation dialog ─────────────────────────────
-        if let Some(ref pending_task) = self.pending_coding_confirmation.clone() {
-            egui::Frame::group(ui.style())
-                .fill(Color32::from_rgb(40, 30, 10))
-                .show(ui, |ui| {
-                    ui.label(RichText::new("⚠ Coding Agent 需要寫入檔案權限").color(Color32::YELLOW).strong());
-                    ui.small(pending_task.chars().take(100).collect::<String>());
-                    ui.horizontal(|ui| {
-                        if ui.button(RichText::new("✅ 允許寫入").color(Color32::from_rgb(100, 220, 100))).clicked() {
-                            let task_clone = pending_task.clone();
-                            self.pending_coding_confirmation = None;
-                            let coding_tx = self.coding_tx.clone();
-                            let tx = self.chat_tx.clone();
-                            let rt = self.rt.clone();
-                            self.chat_pending = true;
-                            self.coding_console = CodingConsoleState {
-                                status: "執行中（允許寫入）…".to_string(),
-                                task: task_clone.clone(), ..Default::default()
-                            };
-                            self.agent_console.ai_details = crate::llm::shared_llm().task_log_summary();
-                            rt.spawn(async move {
-                                let _ = tx.try_send(ChatUiUpdate {
-                                    reply: "⚙ Coding Agent 啟動中（允許寫入）…".to_string(),
-                                    tools: vec![], trace: vec![], partial: true,
-                                    plan: Some(ChatPlanUpdate {
-                                        route: "coding".to_string(),
-                                        intent_family: "code_modification".to_string(),
-                                        summary: "Running Coding Agent with write permission…".to_string(),
-                                        steps: vec!["gather context".to_string(), "plan".to_string(), "ReAct loop".to_string(), "verify".to_string()],
-                                        recommended_skills: vec!["coding_agent".to_string()],
-                                    }),
-                                });
-                                let resp = crate::agents::coding_agent::run_coding_via_adk(task_clone, false, None, None).await;
-                                let _ = coding_tx.try_send(CodingUiUpdate { response: Some(resp), status_msg: "完成".to_string() });
-                            });
-                        }
-                        if ui.button(RichText::new("👁 Dry-run").color(Color32::from_rgb(100, 180, 255))).clicked() {
-                            let task_clone = pending_task.clone();
-                            self.pending_coding_confirmation = None;
-                            let coding_tx = self.coding_tx.clone();
-                            let rt = self.rt.clone();
-                            self.chat_pending = true;
-                            self.coding_console = CodingConsoleState {
-                                status: "Dry-run 執行中…".to_string(),
-                                task: task_clone.clone(), ..Default::default()
-                            };
-                            rt.spawn(async move {
-                                let resp = crate::agents::coding_agent::run_coding_via_adk(task_clone, true, None, None).await;
-                                let _ = coding_tx.try_send(CodingUiUpdate { response: Some(resp), status_msg: "Dry-run 完成".to_string() });
-                            });
-                        }
-                        if ui.button(RichText::new("❌ 取消").color(Color32::from_rgb(220, 80, 80))).clicked() {
-                            self.pending_coding_confirmation = None;
-                            if let Some(last) = self.chat_messages.last() {
-                                if last.role == ChatRole::User { self.chat_messages.pop(); }
-                            }
-                        }
-                    });
-                });
-            ui.add_space(4.0);
-        }
-
-        // ── Coding mini status bar ────────────────────────────────────────────
-        if !self.coding_console.task.is_empty() {
-            let is_done = self.coding_console.status.contains("完成") || self.coding_console.status.contains("✅");
-            let is_err  = self.coding_console.status.contains("錯誤") || self.coding_console.status.contains("Error");
-            let bar_color = if is_done { Color32::from_rgb(100, 220, 100) }
-                else if is_err { Color32::from_rgb(220, 80, 80) }
-                else { Color32::YELLOW };
-            egui::Frame::new()
-                .fill(Color32::from_rgb(20, 30, 40))
-                .inner_margin(egui::Margin::symmetric(8, 4))
-                .corner_radius(4.0)
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.colored_label(bar_color, "⚙");
-                        ui.small(&self.coding_console.status);
-                        if !self.coding_console.files_modified.is_empty() {
-                            ui.small(format!("· 📁 {}", self.coding_console.files_modified.join(", ")));
-                        }
-                    });
-                });
-            ui.add_space(2.0);
-        }
-
-        // ── Chat message history ──────────────────────────────────────────────
-        let available = ui.available_height();
-        ScrollArea::vertical()
-            .id_salt("ws_chat")
-            .max_height(available.max(100.0))
-            .stick_to_bottom(true)
-            .auto_shrink(false)
-            .show(ui, |ui| {
-                if self.chat_messages.is_empty() {
-                    ui.colored_label(Color32::GRAY, "輸入上方文字框開始對話…");
-                }
-                for msg in &self.chat_messages {
-                    let (bg, label, text_color) = match msg.role {
-                        ChatRole::User => (Color32::from_rgb(40, 60, 100), "你", Color32::WHITE),
-                        ChatRole::Assistant => (
-                            Color32::from_rgb(45, 55, 45), "Sirin",
-                            Color32::from_rgb(200, 240, 200),
-                        ),
-                    };
-                    egui::Frame::new()
-                        .fill(bg)
-                        .inner_margin(egui::Margin::symmetric(10, 6))
-                        .corner_radius(6.0)
-                        .show(ui, |ui| {
-                            ui.colored_label(Color32::GRAY, label);
-                            ui.colored_label(text_color, &msg.text);
-                        });
-                    ui.add_space(4.0);
-                }
-                if self.chat_pending {
-                    let dot_count = ((ui.ctx().input(|i| i.time) * 2.0) as usize % 4) + 1;
-                    let dots: String = "●".repeat(dot_count) + &"○".repeat(4 - dot_count);
-                    egui::Frame::new()
-                        .fill(Color32::from_rgb(45, 55, 45))
-                        .inner_margin(egui::Margin::symmetric(10, 6))
-                        .corner_radius(6.0)
-                        .show(ui, |ui| {
-                            ui.colored_label(Color32::GRAY, "Sirin");
-                            ui.colored_label(Color32::YELLOW, format!("思考中  {dots}"));
-                        });
-                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
-                }
-            });
-    }
-
-    /// 活動 sub-tab: task log filtered to a specific agent.
-    fn show_tasks_for_agent(&mut self, ui: &mut egui::Ui, agent_name: &str) {
-        let running_count = self.tasks.iter()
-            .filter(|t| t.persona == agent_name && matches!(t.status.as_deref(), Some("PENDING") | Some("RUNNING") | Some("FOLLOWING")))
-            .count();
-        let attention_count = self.tasks.iter()
-            .filter(|t| t.persona == agent_name && matches!(t.status.as_deref(), Some("FOLLOWUP_NEEDED") | Some("FAILED") | Some("ERROR") | Some("ROLLBACK")))
-            .count();
-        let done_count = self.tasks.iter()
-            .filter(|t| t.persona == agent_name && t.status.as_deref() == Some("DONE"))
-            .count();
-
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("活動記錄").strong());
-            ui.separator();
-            ui.selectable_value(&mut self.task_filter, TaskFilter::All, "全部");
-            ui.selectable_value(&mut self.task_filter, TaskFilter::Running, "進行中");
-            ui.selectable_value(&mut self.task_filter, TaskFilter::Done, "完成");
-            ui.selectable_value(&mut self.task_filter, TaskFilter::Failed, "需處理");
-            ui.separator();
-            ui.small(format!("⏳ {}", running_count));
-            ui.small(format!("⚠️ {}", attention_count));
-            ui.small(format!("✅ {}", done_count));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let total = self.tasks.iter().filter(|t| t.persona == agent_name).count();
-                ui.small(format!("{total} 筆"));
-                if ui.button(RichText::new("🗑 清除").small().color(Color32::from_rgb(200, 80, 80)))
-                    .on_hover_text("清除所有活動紀錄").clicked()
-                {
-                    if let Err(e) = self.tracker.clear() { eprintln!("[ui] clear task log: {e}"); }
-                    self.tasks.clear();
-                }
-            });
-        });
-        ui.separator();
-
-        let filter = self.task_filter;
-        let row_height = 18.0;
-        let col_widths = [120.0_f32, 230.0, 50.0];
-        ui.horizontal(|ui| {
-            ui.add_sized([col_widths[0], row_height], egui::Label::new(RichText::new("時間").strong().small()));
-            ui.add_sized([col_widths[1], row_height], egui::Label::new(RichText::new("事件").strong().small()));
-            ui.label(RichText::new("狀態").strong().small());
-        });
-        ui.separator();
-
-        ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-            for task in &self.tasks {
-                if task.persona != agent_name { continue; }
-                let status = task.status.as_deref().unwrap_or("—");
-                let passes = match filter {
-                    TaskFilter::All => true,
-                    TaskFilter::Running => matches!(status, "PENDING" | "RUNNING" | "FOLLOWING"),
-                    TaskFilter::Done => status == "DONE",
-                    TaskFilter::Failed => matches!(status, "FAILED" | "ERROR" | "FOLLOWUP_NEEDED" | "ROLLBACK"),
-                };
-                if !passes { continue; }
-
-                let ts = task.timestamp.get(..19).unwrap_or(&task.timestamp);
-                let is_summary = task.event == "research_summary_ready";
-                let (badge_text, badge_fg, badge_bg) =
-                    task_status_badge(status, task.reason.as_deref(), is_summary);
-
-                ui.horizontal(|ui| {
-                    ui.add_sized([col_widths[0], row_height],
-                        egui::Label::new(RichText::new(ts).monospace().small()));
-                    let preview = task.message_preview.as_deref()
-                        .or(task.reason.as_deref())
-                        .unwrap_or(&task.event);
-                    let event_label = if is_summary { "🧠 research_summary" }
-                        else if task.event == "adk_coding_fail_fast" { "⚠ coding_fail_fast" }
-                        else if task.event == "adk_coding_rollback" { "↩ coding_rollback" }
-                        else if task.event == "adk_coding_agent_done" { "⚙ coding_done" }
-                        else { &task.event };
-                    let label_text = format!("{} — {}", event_label, preview.chars().take(80).collect::<String>());
-                    ui.add_sized([col_widths[1], row_height], egui::Label::new(&label_text).truncate());
-                    egui::Frame::new()
-                        .fill(badge_bg)
-                        .stroke(egui::Stroke::new(1.0, badge_fg))
-                        .inner_margin(egui::Margin::symmetric(8, 3))
-                        .corner_radius(6.0)
-                        .show(ui, |ui| {
-                            ui.label(RichText::new(badge_text).small().strong().color(badge_fg));
-                        });
-                });
-                if is_summary || matches!(status, "FOLLOWUP_NEEDED" | "ROLLBACK" | "FAILED" | "ERROR") {
-                    if let Some(reason) = task.reason.as_deref() {
-                        let preview: String = reason.chars().take(180).collect();
-                        ui.add_space(1.0);
-                        ui.colored_label(badge_fg, format!("   ↳ {preview}"));
-                    }
-                }
-            }
-        });
-    }
-
-    /// 調研 sub-tab: research log + pending persona objective gate.
-    fn show_research_workspace(&mut self, ui: &mut egui::Ui) {
-        // Persona objective gate
-        if let Some(proposed) = self.pending_objectives.clone() {
-            egui::Frame::group(ui.style())
-                .fill(Color32::from_rgb(40, 35, 15))
-                .show(ui, |ui| {
-                    ui.label(RichText::new("⚠ AI 提議更新 Persona 目標（需您確認）")
-                        .color(Color32::YELLOW).strong());
-                    for (i, obj) in proposed.iter().enumerate() {
-                        ui.label(format!("  {}. {}", i + 1, obj));
-                    }
-                    ui.horizontal(|ui| {
-                        if ui.button(RichText::new("✅ 套用").color(Color32::from_rgb(100, 220, 100))).clicked() {
-                            match crate::persona::Persona::load() {
-                                Ok(mut p) => {
-                                    p.objectives = proposed.clone();
-                                    match p.save() {
-                                        Ok(()) => { self.research_msg = "Persona 目標已更新".to_string(); }
-                                        Err(e) => { self.research_msg = format!("儲存失敗: {e}"); }
-                                    }
-                                }
-                                Err(e) => { self.research_msg = format!("載入 Persona 失敗: {e}"); }
-                            }
-                            self.pending_objectives = None;
-                        }
-                        if ui.button(RichText::new("❌ 拒絕").color(Color32::from_rgb(220, 80, 80))).clicked() {
-                            self.pending_objectives = None;
-                            self.research_msg = "已拒絕 AI 目標提議".to_string();
-                        }
-                    });
-                });
-            ui.separator();
-        }
-        if !self.research_msg.is_empty() {
-            ui.colored_label(Color32::from_rgb(100, 220, 100), &self.research_msg);
-            ui.add_space(2.0);
-        }
-
-        ui.horizontal(|ui| {
-            ui.label(format!("{} 筆調研記錄", self.research_tasks.len()));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button(RichText::new("🗑 清除").small().color(Color32::from_rgb(200, 80, 80)))
-                    .on_hover_text("清除所有調研紀錄").clicked()
-                {
-                    if let Err(e) = crate::researcher::clear_research() { eprintln!("[ui] clear research: {e}"); }
-                    self.research_tasks.clear();
-                    self.research_expanded.clear();
-                }
-            });
-        });
-
-        let mut toggle_expand: Option<String> = None;
-        ScrollArea::vertical().id_salt("ws_research").auto_shrink(false).show(ui, |ui| {
-            for task in &self.research_tasks {
-                egui::Frame::group(ui.style()).show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        let (color, label) = match task.status {
-                            crate::researcher::ResearchStatus::Done => (Color32::from_rgb(100, 220, 100), "完成"),
-                            crate::researcher::ResearchStatus::Running => (Color32::YELLOW, "進行中"),
-                            crate::researcher::ResearchStatus::Failed => (Color32::from_rgb(220, 80, 80), "失敗"),
-                        };
-                        ui.colored_label(color, label);
-                        ui.strong(&task.topic);
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.small(task.started_at.get(..10).unwrap_or(&task.started_at));
-                        });
-                    });
-                    if let Some(ref report) = task.final_report {
-                        let is_expanded = self.research_expanded.contains(&task.id);
-                        if is_expanded {
-                            ScrollArea::vertical().id_salt(format!("rpt_{}", task.id)).max_height(280.0).show(ui, |ui| {
-                                ui.label(report.as_str() as &str);
-                            });
-                            if ui.small_button("▲ 收起").clicked() { toggle_expand = Some(task.id.clone()); }
-                        } else {
-                            let preview: String = report.chars().take(200).collect();
-                            ui.small(format!("{}…", preview.trim_end()));
-                            if ui.small_button("▼ 展開").clicked() { toggle_expand = Some(task.id.clone()); }
-                        }
-                    } else if task.status == crate::researcher::ResearchStatus::Failed {
-                        if let Some(err_step) = task.steps.iter().find(|s| s.phase == "error") {
-                            ui.colored_label(Color32::from_rgb(220, 100, 100),
-                                format!("❌ {}", err_step.output.chars().take(120).collect::<String>()));
-                        }
-                    }
-                });
-            }
-        });
-        if let Some(id) = toggle_expand {
-            if self.research_expanded.contains(&id) { self.research_expanded.remove(&id); }
-            else { self.research_expanded.insert(id); }
-        }
-    }
 
     fn show_settings(&mut self, ui: &mut egui::Ui) {
         use crate::agent_config::AgentsFile;
@@ -2622,73 +1588,3 @@ fn show_system_panel(
 }
 
 // ── KPI persistence helpers ───────────────────────────────────────────────────
-
-fn kpi_path(agent_id: &str) -> std::path::PathBuf {
-    std::path::PathBuf::from("data").join("kpi").join(format!("{agent_id}.json"))
-}
-
-fn load_kpi_values(agent_id: &str) -> std::collections::HashMap<String, String> {
-    let path = kpi_path(agent_id);
-    std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
-}
-
-fn save_kpi_values(agent_id: &str, vals: &std::collections::HashMap<String, String>) {
-    let path = kpi_path(agent_id);
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Ok(json) = serde_json::to_string_pretty(vals) {
-        let _ = std::fs::write(&path, json);
-    }
-}
-
-async fn run_chat_and_send(
-    request: crate::agents::chat_agent::ChatRequest,
-    plan_update: ChatPlanUpdate,
-    user_text: String,
-    tx: std::sync::mpsc::SyncSender<ChatUiUpdate>,
-) {
-    let tx_partial = tx.clone();
-    let accumulated = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-    let acc_clone = std::sync::Arc::clone(&accumulated);
-    let plan_sent = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let plan_sent_clone = std::sync::Arc::clone(&plan_sent);
-    let plan_update_clone = plan_update.clone();
-
-    let response = crate::agents::chat_agent::stream_chat_response(request, move |token| {
-        if let Ok(mut acc) = acc_clone.lock() {
-            acc.push_str(&token);
-            let preview = format!("{} ▍", acc.trim_end());
-            let plan = if !plan_sent_clone.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                Some(plan_update_clone.clone())
-            } else {
-                None
-            };
-            let _ = tx_partial.try_send(ChatUiUpdate {
-                reply: preview,
-                tools: vec![],
-                trace: vec![],
-                partial: true,
-                plan,
-            });
-        }
-    })
-    .await;
-
-    let _ = crate::memory::append_context(&user_text, &response.reply, Some(0), None);
-    let final_plan = if !plan_sent.load(std::sync::atomic::Ordering::Relaxed) {
-        Some(plan_update)
-    } else {
-        None
-    };
-    let _ = tx.send(ChatUiUpdate {
-        reply: response.reply,
-        tools: response.tools_used,
-        trace: response.trace,
-        partial: false,
-        plan: final_plan,
-    });
-}
