@@ -1,3 +1,6 @@
+// Utility library for structured log filtering — available for future integrations.
+#![allow(dead_code)]
+
 use std::cmp::Ordering;
 
 /// Represents different levels of logging severity.
@@ -140,16 +143,17 @@ mod tests {
             vec!["[ERROR] Error 2".to_string()]
         );
 
-        // Filter for Debug, last 5
+        // Filter for Debug, last 5 — all 8 lines qualify; the 5 most-recent
+        // in chronological order are: Error1, Debug2, Info2, Warn2, Error2.
         let result = filtered_recent(&logs, LogLevel::Debug, 5);
         assert_eq!(
             result,
             vec![
+                "[ERROR] Error 1".to_string(),
+                "[DEBUG] Debug 2".to_string(),
                 "[INFO] Info 2".to_string(),
                 "[WARN] Warn 2".to_string(),
-                "[ERROR] Error 2".to_string(),
-                "[DEBUG] Debug 2".to_string(),
-                "[INFO] Info 1".to_string()
+                "[ERROR] Error 2".to_string()
             ]
         );
 

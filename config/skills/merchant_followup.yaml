@@ -1,0 +1,22 @@
+id: merchant_followup
+name: "商戶跟進"
+description: "整理待跟進商戶清單，草擬跟進訊息，追蹤聯繫進度與轉化狀態。"
+category: "research"
+enabled: true
+requires_approval: true
+backed_by_tools:
+  - memory_search
+  - local_file_read
+example_prompts:
+  - "哪些商戶還沒跟進"
+  - "幫我草擬跟進訊息"
+  - "商戶聯繫記錄"
+  - "追蹤跟進狀態"
+  - "本月跟進了幾個商戶"
+  - "需要跟進的商家"
+prompt_template: |
+  從記憶庫中搜尋商戶相關記錄，整理：
+  1. 尚未跟進或超過 3 天未聯繫的商戶名單
+  2. 每個商戶的最後互動內容與未解決問題
+  3. 針對每個商戶草擬一條個性化跟進訊息
+  最後統計本月已聯繫商戶數量。

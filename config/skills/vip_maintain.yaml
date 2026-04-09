@@ -1,0 +1,20 @@
+id: vip_maintain
+name: "VIP 維護"
+description: "分析 VIP 客戶的歷史互動記錄，生成個性化維護建議與跟進計劃。"
+category: "research"
+enabled: true
+requires_approval: false
+backed_by_tools:
+  - memory_search
+  - local_file_read
+example_prompts:
+  - "幫我看一下 VIP 的情況"
+  - "這個客戶最近有沒有互動"
+  - "VIP 維護建議"
+  - "客戶關係分析"
+  - "哪些 VIP 需要主動聯繫"
+  - "跟進 VIP 客戶"
+prompt_template: |
+  從記憶庫搜尋此客戶的歷史互動記錄，
+  分析最近一次聯繫時間、互動頻率與未解決事項，
+  生成個性化的維護建議，包括：下次聯繫時機、話題切入點、注意事項。

@@ -1,0 +1,20 @@
+id: context_summary
+name: "記憶摘要"
+description: "從記憶庫提取對話歷史，生成結構化摘要，快速重建對話上下文。"
+category: "memory"
+enabled: true
+requires_approval: false
+backed_by_tools:
+  - memory_search
+  - memory_list
+example_prompts:
+  - "幫我回顧一下之前聊了什麼"
+  - "這個人之前說過什麼"
+  - "回顧上次對話"
+  - "記憶摘要"
+  - "對話歷史整理"
+  - "之前有沒有提到過"
+prompt_template: |
+  從記憶庫搜尋與當前對話相關的歷史記錄，
+  整理成結構化摘要：背景、關鍵決策、未解決事項、下一步行動，
+  幫助快速重建對話上下文。

@@ -12,6 +12,10 @@
 //! 4. **Verify** with `cargo check` (if allowed) and collect `git diff`.
 //! 5. Return a [`CodingAgentResponse`].
 
+// The ReAct loop helpers are called via dynamic ADK dispatch (runtime.run(&CodingAgent, …));
+// Rust's static analysis cannot trace through the trait object, so suppress dead_code warnings.
+#![allow(dead_code)]
+
 use futures::FutureExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};

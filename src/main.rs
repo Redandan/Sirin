@@ -2,6 +2,7 @@
 
 mod adk;
 mod agent_config;
+mod log_manager;
 mod platform;
 mod browser;
 mod agents;

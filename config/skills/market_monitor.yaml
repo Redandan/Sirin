@@ -1,0 +1,19 @@
+id: market_monitor
+name: "市場監控"
+description: "查詢 Agora 市場平台的最新動態、商戶活躍度與成交趨勢。"
+category: "web"
+enabled: true
+requires_approval: false
+backed_by_tools:
+  - web_search
+  - local_file_read
+example_prompts:
+  - "幫我查一下 Agora 最新情況"
+  - "市場有什麼新動態"
+  - "Agora 平台今天怎麼樣"
+  - "查詢市場趨勢"
+  - "有什麼新的商機"
+prompt_template: |
+  使用 web_search 搜尋 Agora 市場平台的最新資訊，
+  整理商戶活躍度、成交量趨勢與值得關注的新機會，
+  以簡潔的中文摘要回報。
