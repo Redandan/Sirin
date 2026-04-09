@@ -340,6 +340,9 @@ mod tests {
             example_prompts: vec!["分析 PR".to_string(), "幫我看 diff".to_string()],
             enabled: true,
             prompt_template: None,
+            script_file: None,
+            script_interpreter: None,
+            script_timeout_secs: 30,
         };
         let available = vec![fake.clone()];
         // Query matching example_prompts should surface the skill
@@ -369,12 +372,32 @@ pub struct SkillDefinition {
     /// Whether this skill is active (YAML skills can set this to false).
     #[serde(default = "skill_enabled_default")]
     pub enabled: bool,
-    /// Prompt template injected into CodingAgent for YAML-defined skills.
+    /// Prompt template injected into LLM context when this skill is active.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_template: Option<String>,
+    /// Path to an external script (relative to project root).
+    /// e.g. "config/scripts/vip_maintain.py"
+    /// Supported extensions: .py (python3), .sh (bash), .js (node).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script_file: Option<String>,
+    /// Override the interpreter; auto-inferred from extension if absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script_interpreter: Option<String>,
+    /// Maximum seconds the script may run before being killed (default 30).
+    #[serde(default = "default_script_timeout")]
+    pub script_timeout_secs: u64,
 }
 
 fn skill_enabled_default() -> bool { true }
+fn default_script_timeout() -> u64 { 30 }
+
+/// Infer the script interpreter from the file extension.
+fn infer_interpreter(path: &str) -> &'static str {
+    if path.ends_with(".py")  { "python3" }
+    else if path.ends_with(".sh")  { "bash" }
+    else if path.ends_with(".js")  { "node" }
+    else { "sh" }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillExecutionResult {
@@ -435,12 +458,87 @@ pub fn ensure_registered(skill_id: &str) -> Result<(), String> {
     }
 }
 
-pub fn execute_skill(skill_id: &str, timestamp: &str) -> Result<SkillExecutionResult, String> {
-    ensure_registered(skill_id)?;
-    eprintln!("[skills] Executing skill '{skill_id}' for task at {timestamp}");
-    Ok(SkillExecutionResult {
-        skill_id: skill_id.to_string(),
-        emitted_event: format!("skill:{skill_id}"),
-        accepted: true,
-    })
+/// Execute a skill's external script.
+///
+/// The script receives a JSON object on stdin:
+/// ```json
+/// { "skill_id": "…", "user_input": "…", "agent_id": "…" }
+/// ```
+/// stdout is captured and returned as the result string.
+/// stderr is logged. Non-zero exit code is treated as an error.
+pub async fn execute_skill(
+    skill_id: &str,
+    user_input: &str,
+    agent_id: Option<&str>,
+) -> Result<String, String> {
+    let skill = list_skills()
+        .into_iter()
+        .find(|s| s.id == skill_id)
+        .ok_or_else(|| format!("Unknown skill: {skill_id}"))?;
+
+    let script_path = skill.script_file.as_deref().ok_or_else(|| {
+        format!("Skill '{skill_id}' has no script_file configured")
+    })?;
+
+    if !std::path::Path::new(script_path).exists() {
+        return Err(format!("Script not found: {script_path}"));
+    }
+
+    let interpreter = skill
+        .script_interpreter
+        .as_deref()
+        .unwrap_or_else(|| infer_interpreter(script_path));
+
+    let stdin_payload = serde_json::json!({
+        "skill_id": skill_id,
+        "user_input": user_input,
+        "agent_id": agent_id,
+    });
+    let stdin_bytes =
+        serde_json::to_vec(&stdin_payload).map_err(|e| format!("Serialize error: {e}"))?;
+
+    use std::process::Stdio;
+    use tokio::io::AsyncWriteExt;
+    use tokio::process::Command;
+
+    let mut child = Command::new(interpreter)
+        .arg(script_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn '{interpreter}': {e}"))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(&stdin_bytes)
+            .await
+            .map_err(|e| format!("Failed to write stdin: {e}"))?;
+    }
+
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(skill.script_timeout_secs),
+        child.wait_with_output(),
+    )
+    .await
+    .map_err(|_| format!("Script '{skill_id}' timed out after {}s", skill.script_timeout_secs))?
+    .map_err(|e| format!("Script execution error: {e}"))?;
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.is_empty() {
+        crate::sirin_log!("[skill] '{}' stderr: {}", skill_id, stderr.trim());
+    }
+
+    if !output.status.success() {
+        return Err(format!(
+            "Script '{}' exited {:?}: {}",
+            skill_id,
+            output.status.code(),
+            stderr.trim()
+        ));
+    }
+
+    let result = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    crate::sirin_log!("[skill] '{}' → {} chars", skill_id, result.len());
+    Ok(result)
 }

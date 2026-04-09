@@ -53,6 +53,7 @@ fn ensure_first_run_dirs() {
     // config/ directory
     let _ = fs::create_dir_all("config");
     let _ = fs::create_dir_all("config/skills");
+    let _ = fs::create_dir_all("config/scripts");
 
     // Write default agents.yaml if absent
     if !std::path::Path::new("config/agents.yaml").exists() {

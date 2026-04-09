@@ -251,11 +251,16 @@ fn build_full_registry() -> ToolRegistry {
             Ok(json!(all))
         })
         .register_fn("skill_execute", |input| async move {
-            let skill_id = required_string_field(&input, "skill_id")?;
-            let timestamp = optional_string_field(&input, "timestamp")
-                .unwrap_or_else(|| Utc::now().to_rfc3339());
-            let result = crate::skills::execute_skill(&skill_id, &timestamp)?;
-            Ok(json!(result))
+            let skill_id   = required_string_field(&input, "skill_id")?;
+            let user_input = optional_string_field(&input, "user_input").unwrap_or_default();
+            let agent_id   = optional_string_field(&input, "agent_id");
+            let result = crate::skills::execute_skill(
+                &skill_id,
+                &user_input,
+                agent_id.as_deref(),
+            )
+            .await?;
+            Ok(json!({ "skill_id": skill_id, "result": result }))
         })
         .register_ctx_fn("behavior_evaluate", |ctx, input| {
             async move {
