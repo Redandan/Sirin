@@ -545,7 +545,7 @@ async fn run_agent_listener_once(
                 compliance,
                 tracker,
                 &cfg,
-                Some(&agent_cfg.actions), // per-agent capability gating
+                Some(agent_cfg.disabled_skills.as_slice()), // per-agent skill blacklist gating
                 Some(agent_cfg.id.as_str()), // per-agent memory isolation
                 |topic, url| {
                     let adk_tracker = tracker.clone();

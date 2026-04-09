@@ -464,17 +464,9 @@ mod tests {
             output.get("intent_family").and_then(Value::as_str),
             Some("code_analysis")
         );
-        let recommended = output
-            .get("recommended_skills")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        assert!(recommended
-            .iter()
-            .any(|skill| skill.as_str() == Some("code_change_planning")));
-        assert!(recommended
-            .iter()
-            .any(|skill| skill.as_str() == Some("grounded_fix")));
+        // Hardcoded skills removed — recommended_skills now reflect YAML-defined skills only.
+        // Assert the field exists and is an array; specific IDs are YAML-driven.
+        assert!(output.get("recommended_skills").and_then(Value::as_array).is_some());
     }
 
     #[tokio::test]

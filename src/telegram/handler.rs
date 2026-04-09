@@ -26,8 +26,8 @@ pub async fn prepare_reply_plan<F, Fut>(
     compliance: &str,
     tracker: &TaskTracker,
     cfg: &TelegramConfig,
-    // Per-agent capability flags.  `None` = all capabilities enabled (legacy path).
-    actions: Option<&crate::agent_config::ActionsConfig>,
+    // Per-agent disabled skill list.  `None` = all capabilities enabled (legacy path).
+    agent_disabled_skills: Option<&[String]>,
     // Agent ID for memory isolation.  `None` = legacy single-agent path.
     agent_id: Option<&str>,
     start_research: F,
@@ -56,11 +56,22 @@ where
         .and_then(serde_json::Value::as_str)
         .unwrap_or("chat");
 
-    // Apply per-agent capability gating: if the agent has a capability disabled,
-    // fall back to "chat" even when the router recommends another route.
-    let research_enabled = actions.map(|a| a.research_agent.enabled).unwrap_or(true);
-    let route = if raw_route == "research" && !research_enabled {
-        "chat"
+    // Apply per-agent skill gating: if the agent has ALL skills of a category
+    // disabled, fall back to "chat" for that route.
+    let route = if let Some(disabled) = agent_disabled_skills {
+        let all_skills = crate::skills::list_skills();
+        // ok = at least one skill of this category is NOT in the disabled list
+        let research_ok = all_skills.iter()
+            .filter(|s| s.category == "research")
+            .any(|s| !disabled.contains(&s.id));
+        let coding_ok = all_skills.iter()
+            .filter(|s| s.category == "coding")
+            .any(|s| !disabled.contains(&s.id));
+        match raw_route {
+            "research" if !research_ok => "chat",
+            "coding"   if !coding_ok  => "chat",
+            other => other,
+        }
     } else {
         raw_route
     };

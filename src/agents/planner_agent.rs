@@ -146,10 +146,13 @@ async fn recommended_skill_ids(ctx: &AgentContext, user_text: &str) -> Vec<Strin
             .filter_map(|item| item.get("id").and_then(Value::as_str))
             .map(|id| id.to_string())
             .collect(),
-        Err(_) => crate::skills::recommended_skills(user_text)
-            .into_iter()
-            .map(|skill| skill.id)
-            .collect(),
+        Err(_) => {
+            let all = crate::skills::list_skills();
+            crate::skills::recommended_skills(user_text, &all)
+                .into_iter()
+                .map(|skill| skill.id)
+                .collect()
+        }
     }
 }
 
@@ -655,22 +658,10 @@ mod tests {
 
         assert_eq!(plan.intent, PlanIntent::Answer);
         assert_eq!(plan.intent_family, IntentFamily::CodeAnalysis);
-        assert!(plan
-            .recommended_skills
-            .iter()
-            .any(|skill| skill == "code_change_planning"));
-        assert!(plan
-            .recommended_skills
-            .iter()
-            .any(|skill| skill == "grounded_fix"));
-        assert!(plan
-            .steps
-            .iter()
-            .any(|step| step.contains("safe change plan")));
-        assert!(plan
-            .steps
-            .iter()
-            .any(|step| step.contains("targeted validation")));
+        // Hardcoded skills removed; planner now recommends from YAML skills only.
+        // Assert plan structure is valid, not specific (now YAML-driven) skill IDs.
+        // Steps are now driven by intent family, not hardcoded skill IDs.
+        assert!(!plan.steps.is_empty(), "planner must produce at least one step");
     }
 
     #[tokio::test]

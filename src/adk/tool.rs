@@ -241,13 +241,14 @@ fn build_full_registry() -> ToolRegistry {
             serde_json::to_value(task).map_err(|e| e.to_string())
         })
         .register_fn("skill_catalog", |input| async move {
+            let all = crate::skills::list_skills();
             if let Some(query) = optional_string_field(&input, "query") {
-                let recommended = crate::skills::recommended_skills(&query);
+                let recommended = crate::skills::recommended_skills(&query, &all);
                 if !recommended.is_empty() {
                     return Ok(json!(recommended));
                 }
             }
-            Ok(json!(crate::skills::list_skills()))
+            Ok(json!(all))
         })
         .register_fn("skill_execute", |input| async move {
             let skill_id = required_string_field(&input, "skill_id")?;

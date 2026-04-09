@@ -221,41 +221,6 @@ pub struct KpiConfig {
 
 // ── Actions ───────────────────────────────────────────────────────────────────
 
-/// Per-agent research-agent toggle.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ResearchAgentConfig {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-}
-
-impl Default for ResearchAgentConfig {
-    fn default() -> Self {
-        Self { enabled: true }
-    }
-}
-
-/// Per-agent coding-agent enable flag.
-/// (Detailed coding config lives in config/persona.yaml → coding_agent.)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CodingEnabledConfig {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-}
-
-impl Default for CodingEnabledConfig {
-    fn default() -> Self {
-        Self { enabled: true }
-    }
-}
-
-/// Capability flags for a single agent.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ActionsConfig {
-    #[serde(default)]
-    pub coding_agent: CodingEnabledConfig,
-    #[serde(default)]
-    pub research_agent: ResearchAgentConfig,
-}
 
 // ── Agent ─────────────────────────────────────────────────────────────────────
 
@@ -278,9 +243,11 @@ pub struct AgentConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<ChannelConfig>,
 
-    // ── 3. 能力 Actions ───────────────────────────────────────────────────────
+    // ── 3. 技能黑名單 Skills ──────────────────────────────────────────────────
+    /// 此 agent 被停用的技能 ID 清單（對應 config/skills/*.yaml 的 id）。
+    /// 空（預設）= 使用所有可用技能；列出的 ID = 此助手無法使用該技能。
     #[serde(default)]
-    pub actions: ActionsConfig,
+    pub disabled_skills: Vec<String>,
 
     // ── 4. 遠端 AI 控制 ────────────────────────────────────────────────────────
     #[serde(default)]
@@ -315,10 +282,26 @@ impl AgentConfig {
             disable_remote_ai: false,
             objectives: Vec::new(),
             channel: None,
-            actions: ActionsConfig::default(),
+            disabled_skills: Vec::new(),
             human_behavior: HumanBehaviorConfig::default(),
             kpi: KpiConfig::default(),
         }
+    }
+
+    /// Returns true if at least one coding skill exists and is not disabled.
+    pub fn can_code(&self) -> bool {
+        let all = crate::skills::list_skills();
+        all.iter()
+            .filter(|s| s.category == "coding")
+            .any(|s| !self.disabled_skills.contains(&s.id))
+    }
+
+    /// Returns true if at least one research skill exists and is not disabled.
+    pub fn can_research(&self) -> bool {
+        let all = crate::skills::list_skills();
+        all.iter()
+            .filter(|s| s.category == "research")
+            .any(|s| !self.disabled_skills.contains(&s.id))
     }
 
     /// Infer the primary platform from channel config (not stored in YAML).

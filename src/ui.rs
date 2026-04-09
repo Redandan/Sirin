@@ -676,11 +676,11 @@ impl eframe::App for SirinApp {
                                             // ── 行 5：能力標籤 ─────────────────────────
                                             ui.add_space(2.0);
                                             ui.horizontal(|ui| {
-                                                if agent.actions.coding_agent.enabled {
-                                                    badge(ui, "🔧", Color32::from_rgb(160, 120, 255), "Coding Agent");
+                                                if agent.can_code() {
+                                                    badge(ui, "🔧", Color32::from_rgb(160, 120, 255), "Coding");
                                                 }
-                                                if agent.actions.research_agent.enabled {
-                                                    badge(ui, "🔬", Color32::from_rgb(100, 200, 180), "Research Agent");
+                                                if agent.can_research() {
+                                                    badge(ui, "🔬", Color32::from_rgb(100, 200, 180), "Research");
                                                 }
                                                 if agent.human_behavior.enabled {
                                                     badge(ui, "👤", Color32::from_rgb(200, 160, 80), "仿人類行為");
@@ -1548,16 +1548,35 @@ fn show_tab_identity(ui: &mut egui::Ui, agent: &mut crate::agent_config::AgentCo
             ui.end_row();
         });
 
-    // ── 能力開關 ─────────────────────────────────────────────────────────────
+    // ── 技能黑名單 ────────────────────────────────────────────────────────────
     ui.add_space(10.0);
     ui.separator();
-    ui.label(RichText::new("能力").strong().small());
+    ui.label(RichText::new("技能授權").strong().small());
+    ui.add_space(2.0);
+    ui.colored_label(Color32::DARK_GRAY,
+        RichText::new("預設全部啟用，取消勾選可停用該技能（來自 config/skills/*.yaml）").small());
     ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        ui.checkbox(&mut agent.actions.coding_agent.enabled,   "🔧 Coding Agent");
-        ui.add_space(10.0);
-        ui.checkbox(&mut agent.actions.research_agent.enabled, "🔬 Research Agent");
-    });
+    let all_skills = crate::skills::list_skills();
+    if all_skills.is_empty() {
+        ui.colored_label(Color32::DARK_GRAY,
+            RichText::new("尚無可用技能，請在 config/skills/ 新增 YAML 檔案").small());
+    } else {
+        for sk in &all_skills {
+            // checked = skill is ENABLED (not in disabled list)
+            let mut checked = !agent.disabled_skills.contains(&sk.id);
+            if ui.checkbox(&mut checked, format!("{} — {}", sk.name, sk.description)).changed() {
+                if checked {
+                    // re-enable: remove from disabled list
+                    agent.disabled_skills.retain(|id| id != &sk.id);
+                } else {
+                    // disable: add to disabled list
+                    if !agent.disabled_skills.contains(&sk.id) {
+                        agent.disabled_skills.push(sk.id.clone());
+                    }
+                }
+            }
+        }
+    }
     ui.add_space(4.0);
     ui.checkbox(&mut agent.disable_remote_ai, "禁止呼叫遠端 LLM（僅用本機模型）");
 }
@@ -1893,7 +1912,8 @@ fn show_overview_tab(
     agent: &crate::agent_config::AgentConfig,
     app: &mut crate::ui::SirinApp,
 ) {
-    let skills = crate::skills::list_skills();
+    // 顯示所有技能，disabled_skills 中的以灰色顯示
+    let skills: Vec<_> = crate::skills::list_skills();
 
     ScrollArea::vertical().id_salt("ws_overview").auto_shrink(false).show(ui, |ui| {
         // ── 雙欄主區域 ────────────────────────────────────────────────────────
@@ -1942,6 +1962,11 @@ fn show_overview_tab(
 
             // 2. 技能清單
             section_header(ui, "🔧 技能");
+            if skills.is_empty() {
+                ui.colored_label(Color32::DARK_GRAY,
+                    RichText::new("尚無可用技能\n（在 config/skills/ 新增 YAML 檔案）").small());
+                ui.add_space(4.0);
+            }
             let enabled: Vec<_> = skills.iter().filter(|s| s.enabled).collect();
             let categories: &[(&str, &str, Color32)] = &[
                 ("coding",   "💻",  Color32::from_rgb(80, 160, 255)),
@@ -1961,17 +1986,35 @@ fn show_overview_tab(
                 if group.is_empty() { continue; }
                 // Category icon on its own row
                 ui.colored_label(*color, RichText::new(*cat_icon).small());
-                // Badges in wrapped flow — use Button (single widget, correct sizing)
+                // Badges in wrapped flow — disabled ones appear dimmed
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(4.0, 3.0);
                     for sk in &group {
-                        let fill   = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 22);
-                        let stroke = egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 90));
+                        let is_disabled = agent.disabled_skills.contains(&sk.id);
+                        let (badge_color, fill, stroke) = if is_disabled {
+                            let dim = Color32::from_rgb(80, 80, 80);
+                            (dim,
+                             Color32::from_rgba_unmultiplied(60, 60, 60, 30),
+                             egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(80, 80, 80, 60)))
+                        } else {
+                            (*color,
+                             Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 22),
+                             egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 90)))
+                        };
+                        let label = if is_disabled {
+                            format!("╌{}", sk.name)
+                        } else {
+                            sk.name.clone()
+                        };
                         ui.add(
-                            egui::Button::new(RichText::new(&sk.name).small().color(*color))
+                            egui::Button::new(RichText::new(label).small().color(badge_color))
                                 .fill(fill)
                                 .stroke(stroke)
-                        ).on_hover_text(&sk.description);
+                        ).on_hover_text(if is_disabled {
+                            format!("[停用] {}", sk.description)
+                        } else {
+                            sk.description.clone()
+                        });
                     }
                 });
                 ui.add_space(4.0);

@@ -315,35 +315,42 @@ mod tests {
     }
 
     #[test]
-    fn recommended_skills_for_code_question_include_local_tools() {
-        let skills = recommended_skills("幫我看 src/main.rs");
-        let ids: Vec<String> = skills.into_iter().map(|skill| skill.id).collect();
-
-        assert!(ids.contains(&"local_file_read".to_string()));
-        assert!(
-            ids.contains(&"codebase_search".to_string())
-                || ids.contains(&"project_overview".to_string())
-        );
-    }
-
-    #[test]
-    fn skill_catalog_exposes_grounded_code_capabilities() {
+    fn skill_catalog_loads_yaml_skills() {
+        // Hardcoded skills are removed; all skills come from config/skills/*.yaml.
+        // In test environment there may be 0 YAML skills (config dir absent), which is fine.
         let skills = list_skills();
-        assert!(skills.iter().any(|skill| skill.id == "local_file_read"));
-        assert!(skills.iter().any(|skill| skill.id == "project_overview"));
-        assert!(skills.iter().any(|skill| skill.id == "memory_search"));
-        assert!(skills.iter().any(|skill| skill.id == "grounded_fix"));
-        assert!(skills.iter().any(|skill| skill.id == "symbol_trace"));
+        // All returned skills must have non-empty id and name.
+        for s in &skills {
+            assert!(!s.id.is_empty(), "skill id must not be empty");
+            assert!(!s.name.is_empty(), "skill name must not be empty");
+        }
     }
 
     #[test]
-    fn recommended_skills_for_optimization_question_surface_planning_and_fixing() {
-        let skills = recommended_skills("先分析再改，幫我安全優化這段 code 並跑測試");
-        let ids: Vec<String> = skills.into_iter().map(|skill| skill.id).collect();
-
-        assert!(ids.contains(&"code_change_planning".to_string()));
-        assert!(ids.contains(&"grounded_fix".to_string()));
-        assert!(ids.contains(&"test_selector".to_string()));
+    fn recommended_skills_respects_available_filter() {
+        use crate::skills::{SkillDefinition, recommended_skills};
+        // Build a minimal fake skill with example_prompts
+        let fake = SkillDefinition {
+            id: "test_skill".to_string(),
+            name: "Test Skill".to_string(),
+            description: "A test skill".to_string(),
+            requires_approval: false,
+            category: "coding".to_string(),
+            backed_by_tools: vec![],
+            example_prompts: vec!["分析 PR".to_string(), "幫我看 diff".to_string()],
+            enabled: true,
+            prompt_template: None,
+        };
+        let available = vec![fake.clone()];
+        // Query matching example_prompts should surface the skill
+        let result = recommended_skills("分析 PR", &available);
+        assert!(result.iter().any(|s| s.id == "test_skill"));
+        // Query with no overlap → empty result
+        let empty = recommended_skills("完全不相關的查詢 xyz", &available);
+        assert!(empty.is_empty());
+        // Empty available list → always empty
+        let none = recommended_skills("分析 PR", &[]);
+        assert!(none.is_empty());
     }
 }
 
@@ -376,27 +383,6 @@ pub struct SkillExecutionResult {
     pub accepted: bool,
 }
 
-fn skill(
-    id: &str,
-    name: &str,
-    description: &str,
-    category: &str,
-    requires_approval: bool,
-    backed_by_tools: &[&str],
-    example_prompts: &[&str],
-) -> SkillDefinition {
-    SkillDefinition {
-        id: id.to_string(),
-        name: name.to_string(),
-        description: description.to_string(),
-        requires_approval,
-        category: category.to_string(),
-        backed_by_tools: backed_by_tools.iter().map(|v| v.to_string()).collect(),
-        example_prompts: example_prompts.iter().map(|v| v.to_string()).collect(),
-        enabled: true,
-        prompt_template: None,
-    }
-}
 
 pub fn list_skills() -> Vec<SkillDefinition> {
     let mut skills = hardcoded_skills();
@@ -405,361 +391,40 @@ pub fn list_skills() -> Vec<SkillDefinition> {
 }
 
 fn hardcoded_skills() -> Vec<SkillDefinition> {
-    vec![
-        skill(
-            "project_overview",
-            "Project Overview",
-            "先查看幾個核心檔案，整理專案架構、主要模組與工作方式。",
-            "code-understanding",
-            false,
-            &["project_overview", "local_file_read"],
-            &["這個專案大概是怎麼運作的？", "列出這個 repo 的核心模組"],
-        ),
-        skill(
-            "local_file_read",
-            "Local File Read",
-            "讀取真實本地檔案內容，回覆檔案用途、片段與重點。",
-            "code-understanding",
-            false,
-            &["local_file_read"],
-            &["幫我看 src/main.rs", "解釋 src/ui.rs"],
-        ),
-        skill(
-            "codebase_search",
-            "Codebase Search",
-            "在本地程式碼索引中找出相關檔案、模組與符號，再交由 agent 組織答案。",
-            "code-understanding",
-            false,
-            &["codebase_search"],
-            &["找出 chat flow 在哪裡", "哪個檔案負責 Telegram listener"],
-        ),
-        skill(
-            "memory_search",
-            "Memory Recall",
-            "查詢近期對話、研究摘要與記憶內容，協助回答承接型問題。",
-            "context-retrieval",
-            false,
-            &["memory_search"],
-            &["剛剛提到的那些檔案是做什麼的", "延續上個問題"],
-        ),
-        skill(
-            "code_change_planning",
-            "Code Change Planning",
-            "在修改前先整理受影響檔案、預期改動步驟、風險與驗證方式。",
-            "code-optimization",
-            false,
-            &["project_overview", "codebase_search", "memory_search"],
-            &["先分析再改", "幫我規劃這次重構", "這段要怎麼安全優化"],
-        ),
-        skill(
-            "symbol_trace",
-            "Symbol Trace",
-            "追蹤函式、struct 或模組的呼叫鏈與影響範圍，避免改一處壞多處。",
-            "code-optimization",
-            false,
-            &["codebase_search", "local_file_read"],
-            &["這個 function 在哪裡被呼叫", "改這個會影響哪些地方"],
-        ),
-        skill(
-            "grounded_fix",
-            "Grounded Fix",
-            "修 bug 或優化前，先查相關檔案與上下文，再根據本地證據做最小修改。",
-            "code-optimization",
-            false,
-            &["codebase_search", "local_file_read", "memory_search"],
-            &["幫我找 root cause 再修", "不要亂改，先看上下文"],
-        ),
-        skill(
-            "test_selector",
-            "Targeted Test Selection",
-            "根據改動範圍挑出應該先跑的測試或檢查命令，提升本地迭代效率。",
-            "code-optimization",
-            false,
-            &[],
-            &["改完幫我測一下", "只驗證聊天流程", "先跑相關測試"],
-        ),
-        skill(
-            "architecture_consistency_check",
-            "Architecture Consistency Check",
-            "確認修改是否仍符合目前的 agent / ADK 分層與整體專案架構。",
-            "code-optimization",
-            false,
-            &["project_overview", "codebase_search", "local_file_read"],
-            &["這樣改會不會破壞架構", "檢查這次重構是否一致"],
-        ),
-        skill(
-            "web_search",
-            "Resilient Web Search",
-            "透過 SearXNG / DuckDuckGo fallback 搜尋外部資訊，不需額外 API key。",
-            "external-research",
-            false,
-            &["web_search"],
-            &["查一下某個函式庫用法", "幫我搜尋 Gemma 4 模型資訊"],
-        ),
-        skill(
-            "send_tg_reply",
-            "Send Telegram Reply",
-            "發出技能事件，交給 Telegram 模組送出回覆；屬於需要明確授權的動作。",
-            "external-action",
-            true,
-            &[],
-            &["回覆 Telegram 訊息", "發一則通知"],
-        ),
-        skill(
-            "coding_agent",
-            "Local AI Coding Agent",
-            "啟動本地 ReAct 迴圈，讓 AI 自動讀取、修改、驗證程式碼以完成 coding 任務。",
-            "code-modification",
-            false,
-            &[
-                "file_list",
-                "local_file_read",
-                "file_write",
-                "shell_exec",
-                "codebase_search",
-                "symbol_search",
-                "file_diff",
-                "git_status",
-                "git_log",
-            ],
-            &[
-                "幫我修 src/llm.rs 的 error handling",
-                "實作一個新功能",
-                "重構 agent 模組",
-            ],
-        ),
-        skill(
-            "file_write",
-            "File Write",
-            "直接寫入或覆蓋本地檔案；屬於需要明確授權的破壞性操作。",
-            "code-modification",
-            true,
-            &["file_write"],
-            &["把這段 code 寫入 src/foo.rs", "更新 config/persona.yaml"],
-        ),
-        skill(
-            "shell_exec",
-            "Shell Exec (Whitelisted)",
-            "在白名單內執行 shell 指令（如 cargo check / cargo test）。",
-            "code-modification",
-            true,
-            &["shell_exec"],
-            &["跑 cargo check", "執行測試", "build release"],
-        ),
-    ]
+    // 技能全部由 config/skills/*.yaml 定義，hardcoded list 已清空。
+    // 底層工具（file_read、shell_exec、memory_search 等）是 agent 的基本能力，
+    // 不作為可授權的「技能」展示。
+    vec![]
 }
 
-fn score_skill_for_query(skill_id: &str, query: &str) -> i32 {
+/// 通用評分：根據技能的 example_prompts 與 query 的關鍵字重疊度給分。
+/// 不再依賴硬編碼 skill ID，讓 YAML 的 example_prompts 自我描述。
+fn score_skill_for_query(skill: &SkillDefinition, query: &str) -> i32 {
     let lower = query.to_lowercase();
-    match skill_id {
-        "project_overview" => {
-            if [
-                "專案",
-                "架構",
-                "結構",
-                "module",
-                "模組",
-                "怎麼運作",
-                "overview",
-            ]
-            .iter()
-            .any(|needle| lower.contains(needle))
-            {
-                10
-            } else {
-                0
-            }
-        }
-        "local_file_read" => {
-            if ["src/", ".rs", ".toml", ".md", "檔案", "文件", "file"]
-                .iter()
-                .any(|needle| lower.contains(needle))
-            {
-                12
-            } else {
-                0
-            }
-        }
-        "codebase_search" => {
-            if [
-                "哪裡", "在哪", "搜尋", "search", "symbol", "函式", "function", "模組", "src/",
-                ".rs", ".toml",
-            ]
-            .iter()
-            .any(|needle| lower.contains(needle))
-            {
-                9
-            } else {
-                0
-            }
-        }
-        "memory_search" => {
-            if ["剛剛", "上面", "這些", "那些", "前面", "延續"]
-                .iter()
-                .any(|needle| lower.contains(needle))
-            {
-                9
-            } else {
-                0
-            }
-        }
-        "code_change_planning" => {
-            if [
-                "規劃",
-                "计划",
-                "plan",
-                "重構",
-                "重构",
-                "優化",
-                "优化",
-                "先分析再改",
-            ]
-            .iter()
-            .any(|needle| lower.contains(needle))
-            {
-                10
-            } else {
-                0
-            }
-        }
-        "symbol_trace" => {
-            if [
-                "呼叫",
-                "调用",
-                "trace",
-                "影響",
-                "影响",
-                "哪裡被用",
-                "在哪裡被用",
-            ]
-            .iter()
-            .any(|needle| lower.contains(needle))
-            {
-                10
-            } else {
-                0
-            }
-        }
-        "grounded_fix" => {
-            if ["bug", "修", "fix", "root cause", "問題", "优化", "優化"]
-                .iter()
-                .any(|needle| lower.contains(needle))
-            {
-                11
-            } else {
-                0
-            }
-        }
-        "test_selector" => {
-            if ["測試", "测试", "test", "驗證", "验证", "check"]
-                .iter()
-                .any(|needle| lower.contains(needle))
-            {
-                9
-            } else {
-                0
-            }
-        }
-        "architecture_consistency_check" => {
-            if ["架構", "架构", "architecture", "一致", "分層", "分层"]
-                .iter()
-                .any(|needle| lower.contains(needle))
-            {
-                9
-            } else {
-                0
-            }
-        }
-        "web_search" => {
-            if ["google", "搜尋", "search", "網路", "最新", "查一下"]
-                .iter()
-                .any(|needle| lower.contains(needle))
-            {
-                8
-            } else {
-                0
-            }
-        }
-        "send_tg_reply" => {
-            if ["telegram", "回覆", "通知", "發送", "send"]
-                .iter()
-                .any(|needle| lower.contains(needle))
-            {
-                6
-            } else {
-                0
-            }
-        }
-        "coding_agent" => {
-            if [
-                "幫我寫",
-                "帮我写",
-                "幫我修",
-                "帮我修",
-                "幫我改",
-                "帮我改",
-                "重構",
-                "重构",
-                "實作",
-                "实现",
-                "implement",
-                "refactor",
-                "fix the bug",
-                "add feature",
-                "write code",
-                "加功能",
-            ]
-            .iter()
-            .any(|needle| lower.contains(needle))
-            {
-                13
-            } else {
-                0
-            }
-        }
-        "file_write" => {
-            if [
-                "寫入",
-                "写入",
-                "覆蓋",
-                "覆盖",
-                "file write",
-                "寫檔案",
-                "更新檔案",
-            ]
-            .iter()
-            .any(|needle| lower.contains(needle))
-            {
-                7
-            } else {
-                0
-            }
-        }
-        "shell_exec" => {
-            if ["cargo", "build", "test", "check", "執行", "跑"]
-                .iter()
-                .any(|needle| lower.contains(needle))
-            {
-                7
-            } else {
-                0
-            }
-        }
-        _ => 0,
-    }
+    // Name match bonus
+    let name_score = if lower.contains(&skill.name.to_lowercase()) { 5 } else { 0 };
+    // Example prompt word overlap
+    let prompt_score: i32 = skill.example_prompts.iter()
+        .map(|p| {
+            p.split_whitespace()
+                .filter(|w| w.len() >= 2 && lower.contains(&w.to_lowercase()))
+                .count() as i32
+        })
+        .sum::<i32>() * 3;
+    name_score + prompt_score
 }
 
-pub fn recommended_skills(query: &str) -> Vec<SkillDefinition> {
-    let mut scored: Vec<(i32, SkillDefinition)> = list_skills()
-        .into_iter()
+/// 從給定技能清單中，根據 query 關鍵字推薦最相關的技能（最多 4 個）。
+/// `available` 已經過 per-agent 白名單過濾。
+pub fn recommended_skills(query: &str, available: &[SkillDefinition]) -> Vec<SkillDefinition> {
+    let mut scored: Vec<(i32, &SkillDefinition)> = available.iter()
         .filter_map(|skill| {
-            let score = score_skill_for_query(&skill.id, query);
+            let score = score_skill_for_query(skill, query);
             (score > 0).then_some((score, skill))
         })
         .collect();
-
     scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.id.cmp(&b.1.id)));
-    scored.into_iter().map(|(_, skill)| skill).take(4).collect()
+    scored.into_iter().map(|(_, s)| s.clone()).take(4).collect()
 }
 
 pub fn ensure_registered(skill_id: &str) -> Result<(), String> {

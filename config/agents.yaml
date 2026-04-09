@@ -19,11 +19,7 @@ agents:
       group_ids: []
       auto_reply: false
       require_confirmation: false
-  actions:
-    coding_agent:
-      enabled: true
-    research_agent:
-      enabled: true
+  disabled_skills: []
   disable_remote_ai: false
   objectives:
   - Monitor Agora
@@ -60,11 +56,7 @@ agents:
   channel:
     teams:
       webhook_url: ${TEAMS_WEBHOOK_URL}
-  actions:
-    coding_agent:
-      enabled: false
-    research_agent:
-      enabled: true
+  disabled_skills: []
   disable_remote_ai: false
   objectives:
   - Handle colleague queries
