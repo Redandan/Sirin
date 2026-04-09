@@ -2617,16 +2617,21 @@ fn show_workflow_tab(ui: &mut egui::Ui, app: &mut SirinApp) {
 
     // ── No feature: show start form ───────────────────────────────────────────
     if app.workflow_state.is_none() {
-        // Drain skill_id generation channel
+        // Drain skill generation channel — parse JSON {"name":"…","skill_id":"…"}
         if let Some(rx) = &app.workflow_skill_id_rx {
-            if let Ok(id) = rx.try_recv() {
-                // Clean up the AI-generated id: trim, lowercase, replace spaces with _
-                let cleaned: String = id.trim()
-                    .chars()
-                    .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c.to_ascii_lowercase() } else { '_' })
-                    .collect();
-                app.workflow_skill_id     = cleaned;
-                app.workflow_skill_id_rx  = None;
+            if let Ok(raw) = rx.try_recv() {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw.trim()) {
+                    if let Some(name) = v["name"].as_str() {
+                        app.workflow_new_feature = name.trim().to_string();
+                    }
+                    if let Some(id) = v["skill_id"].as_str() {
+                        let cleaned: String = id.trim().chars()
+                            .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c.to_ascii_lowercase() } else { '_' })
+                            .collect();
+                        app.workflow_skill_id = cleaned.trim_matches('_').to_string();
+                    }
+                }
+                app.workflow_skill_id_rx      = None;
                 app.workflow_skill_id_loading = false;
             }
         }
@@ -2635,89 +2640,111 @@ fn show_workflow_tab(ui: &mut egui::Ui, app: &mut SirinApp) {
         ui.colored_label(dim, "新技能開發");
         ui.add_space(10.0);
 
-        // Name
-        ui.label(RichText::new("功能名稱").small().color(dim));
-        ui.add(
-            egui::TextEdit::singleline(&mut app.workflow_new_feature)
-                .hint_text("簡短名稱，例如：VIP 維護")
-                .desired_width(f32::INFINITY),
-        );
-        ui.add_space(6.0);
-
-        // Description
-        ui.label(RichText::new("功能描述").small().color(dim));
+        // Description (only required input)
+        ui.label(RichText::new("技能描述").small().color(dim));
         ui.add(
             egui::TextEdit::multiline(&mut app.workflow_new_description)
-                .hint_text("詳細說明這個技能要做什麼，AI 會根據這個生成 Skill ID")
-                .desired_rows(3)
+                .hint_text("描述這個技能要做什麼，AI 會自動生成名稱和 ID")
+                .desired_rows(4)
                 .desired_width(f32::INFINITY),
         );
         ui.add_space(8.0);
 
-        // AI generates Skill ID
+        // Generate button
         let id_loading = app.workflow_skill_id_loading;
-        let can_gen = !app.workflow_new_feature.trim().is_empty()
-            && !app.workflow_new_description.trim().is_empty()
-            && !id_loading;
-        ui.horizontal(|ui| {
+        let can_gen    = !app.workflow_new_description.trim().is_empty() && !id_loading;
+        if ui
+            .add_enabled(
+                can_gen,
+                egui::Button::new(if id_loading { "生成中…" } else { "🤖 自動生成名稱和 ID" }),
+            )
+            .on_disabled_hover_text("請先輸入技能描述")
+            .clicked()
+        {
+            let prompt = crate::workflow::skill_id_gen_prompt(app.workflow_new_description.trim());
+            let (tx, rx) = std::sync::mpsc::channel::<String>();
+            app.workflow_skill_id_rx      = Some(rx);
+            app.workflow_skill_id_loading = true;
+            app.rt.spawn(async move {
+                let result = crate::llm::call_llm_simple(&prompt).await;
+                let _ = tx.send(result.unwrap_or_default());
+            });
+        }
+
+        // Show generated fields (always visible so user can edit)
+        if !app.workflow_new_feature.is_empty() || !app.workflow_skill_id.is_empty() {
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(6.0);
+
+            ui.label(RichText::new("功能名稱（可修改）").small().color(dim));
+            ui.add(
+                egui::TextEdit::singleline(&mut app.workflow_new_feature)
+                    .desired_width(f32::INFINITY),
+            );
+            ui.add_space(4.0);
+
+            ui.label(RichText::new("Skill ID（可修改）").small().color(dim));
+            ui.add(
+                egui::TextEdit::singleline(&mut app.workflow_skill_id)
+                    .hint_text("e.g. vip_maintain"),
+            );
+
+            let skill_id_raw = app.workflow_skill_id.trim().to_string();
+            let skill_id_valid = !skill_id_raw.is_empty()
+                && skill_id_raw.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+            if !skill_id_raw.is_empty() && !skill_id_valid {
+                ui.colored_label(Color32::from_rgb(230, 100, 100), "⚠ 只能使用小寫字母、數字、底線");
+            }
+
+            // Collision detection
+            let py_exists   = skill_id_valid && std::path::Path::new(&format!("config/scripts/{skill_id_raw}.py")).exists();
+            let yaml_exists = skill_id_valid && std::path::Path::new(&format!("config/skills/{skill_id_raw}.yaml")).exists();
+            let has_collision = py_exists || yaml_exists;
+            if has_collision {
+                ui.add_space(6.0);
+                egui::Frame::new()
+                    .fill(Color32::from_rgb(60, 25, 10))
+                    .corner_radius(4.0)
+                    .inner_margin(egui::Margin::symmetric(10, 6))
+                    .show(ui, |ui| {
+                        ui.colored_label(Color32::from_rgb(240, 120, 60),
+                            format!("⚠ `{skill_id_raw}` 已存在，繼續將覆蓋以下文件："));
+                        if py_exists {
+                            ui.colored_label(Color32::from_gray(180),
+                                format!("  • config/scripts/{skill_id_raw}.py"));
+                        }
+                        if yaml_exists {
+                            ui.colored_label(Color32::from_gray(180),
+                                format!("  • config/skills/{skill_id_raw}.yaml"));
+                        }
+                    });
+            }
+            ui.add_space(10.0);
+
+            let can_start = !app.workflow_new_feature.trim().is_empty() && skill_id_valid;
+            let (btn_label, btn_color) = if has_collision {
+                ("▶ 覆蓋並重新開發", Color32::from_rgb(160, 70, 20))
+            } else {
+                ("▶ 開始開發", Color32::from_rgb(30, 80, 30))
+            };
             if ui
-                .add_enabled(
-                    can_gen,
-                    egui::Button::new(if id_loading { "生成中…" } else { "🤖 生成 Skill ID" }),
-                )
-                .on_disabled_hover_text("請先填寫名稱和描述")
+                .add_enabled(can_start, egui::Button::new(btn_label).fill(btn_color))
                 .clicked()
             {
-                let prompt = crate::workflow::skill_id_gen_prompt(
+                let state = crate::workflow::WorkflowState::new(
                     app.workflow_new_feature.trim(),
                     app.workflow_new_description.trim(),
+                    app.workflow_skill_id.trim(),
                 );
-                let (tx, rx) = std::sync::mpsc::channel::<String>();
-                app.workflow_skill_id_rx      = Some(rx);
-                app.workflow_skill_id_loading = true;
-                app.rt.spawn(async move {
-                    let result = crate::llm::call_llm_simple(&prompt).await;
-                    let _ = tx.send(result.unwrap_or_default());
-                });
+                state.save();
+                app.workflow_state            = Some(state);
+                app.workflow_new_feature      .clear();
+                app.workflow_new_description  .clear();
+                app.workflow_skill_id         .clear();
+                app.workflow_user_input       .clear();
+                app.workflow_ai_output        .clear();
             }
-        });
-        ui.add_space(6.0);
-
-        // Skill ID field (editable, auto-filled by AI)
-        ui.label(RichText::new("Skill ID（可手動修改）").small().color(dim));
-        ui.add(
-            egui::TextEdit::singleline(&mut app.workflow_skill_id)
-                .hint_text("由 AI 生成，或手動輸入 e.g. vip_maintain"),
-        );
-
-        // Validation feedback
-        let skill_id_raw = app.workflow_skill_id.trim().to_string();
-        let skill_id_valid = !skill_id_raw.is_empty()
-            && skill_id_raw.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
-        if !skill_id_raw.is_empty() && !skill_id_valid {
-            ui.colored_label(
-                Color32::from_rgb(230, 100, 100),
-                "⚠ Skill ID 只能使用小寫字母、數字、底線",
-            );
-        }
-        ui.add_space(12.0);
-
-        let can_start = !app.workflow_new_feature.trim().is_empty()
-            && !app.workflow_new_description.trim().is_empty()
-            && skill_id_valid;
-        if ui.add_enabled(can_start, egui::Button::new("▶ 開始開發").fill(Color32::from_rgb(30, 80, 30))).clicked() {
-            let state = crate::workflow::WorkflowState::new(
-                app.workflow_new_feature.trim(),
-                app.workflow_new_description.trim(),
-                app.workflow_skill_id.trim(),
-            );
-            state.save();
-            app.workflow_state = Some(state);
-            app.workflow_new_feature.clear();
-            app.workflow_new_description.clear();
-            app.workflow_skill_id.clear();
-            app.workflow_user_input.clear();
-            app.workflow_ai_output.clear();
         }
         return;
     }
@@ -2859,11 +2886,16 @@ fn show_workflow_tab(ui: &mut egui::Ui, app: &mut SirinApp) {
 
             if !app.workflow_define_confirmed {
                 // ── Phase 1：理解確認 ─────────────────────────────────────────
-                ui.label(RichText::new("描述你想要的技能：").small().color(dim));
+                // AI already has state.description from stage_context(); user input is optional
+                ui.colored_label(dim, RichText::new(
+                    format!("AI 將根據描述「{}」確認理解。如有補充可在下方輸入。", state.description)
+                ).small());
+                ui.add_space(4.0);
+                ui.label(RichText::new("補充說明（選填）：").small().color(dim));
                 ui.add(
                     egui::TextEdit::multiline(&mut app.workflow_user_input)
-                        .hint_text("用口語描述就好，例如：「我想要一個可以查看 VIP 用戶狀態的技能」")
-                        .desired_rows(4)
+                        .hint_text("有需要額外說明的細節嗎？（可留空直接確認）")
+                        .desired_rows(3)
                         .desired_width(f32::INFINITY),
                 );
                 ui.add_space(6.0);
@@ -2871,11 +2903,10 @@ fn show_workflow_tab(ui: &mut egui::Ui, app: &mut SirinApp) {
                 ui.horizontal(|ui| {
                     if ui
                         .add_enabled(
-                            !ai_loading && !app.workflow_user_input.trim().is_empty(),
+                            !ai_loading,
                             egui::Button::new(if ai_loading { "AI 思考中…" } else { "🤖 確認理解" })
                                 .fill(Color32::from_rgb(30, 60, 120)),
                         )
-                        .on_disabled_hover_text("請先輸入技能描述")
                         .clicked()
                     {
                         ask_ai = true;
@@ -3045,7 +3076,14 @@ fn show_workflow_tab(ui: &mut egui::Ui, app: &mut SirinApp) {
             });
             ui.add_space(4.0);
 
-            // Ship — warn if YAML already exists
+            // Build/Ship — warn if target file already exists
+            if stage.id == "build" {
+                let py_path = format!("config/scripts/{}.py", state.skill_id);
+                if std::path::Path::new(&py_path).exists() {
+                    ui.colored_label(amber, format!("⚠ {py_path} 已存在，接受腳本後將覆蓋"));
+                    ui.add_space(2.0);
+                }
+            }
             if stage.id == "ship" {
                 let yaml_path = format!("config/skills/{}.yaml", state.skill_id);
                 if std::path::Path::new(&yaml_path).exists() {

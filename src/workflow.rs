@@ -142,7 +142,8 @@ pub fn stage_context(
     )];
 
     // Inject previous stage outputs as context
-    let order = ["define", "plan", "build", "verify", "review"];
+    // "ship" must be last so it sees all prior stages
+    let order = ["define", "plan", "build", "verify", "review", "ship"];
     let current_idx = order.iter().position(|&s| s == stage_id).unwrap_or(0);
     let mut ctx_parts: Vec<String> = Vec::new();
     for prev in &order[..current_idx] {
@@ -155,6 +156,16 @@ pub fn stage_context(
     }
     if !ctx_parts.is_empty() {
         parts.push(format!("\n## 前置階段參考\n\n{}", ctx_parts.join("\n\n")));
+    }
+
+    // M1: For Review, inject the actual .py file from disk (overrides stale AI output)
+    if stage_id == "review" {
+        let script_path = format!("config/scripts/{skill_id}.py");
+        if let Ok(code) = std::fs::read_to_string(&script_path) {
+            parts.push(format!(
+                "\n## 待審查腳本（磁碟最新版，以此為準）\n```python\n{code}\n```"
+            ));
+        }
     }
 
     let instr: String = match stage_id {
@@ -254,15 +265,17 @@ pub fn define_spec_prompt(
     )
 }
 
-/// Build the prompt to ask AI to generate a snake_case skill_id.
-pub fn skill_id_gen_prompt(feature: &str, description: &str) -> String {
+/// Build the prompt to ask AI to generate both a short name and a snake_case skill_id
+/// from a user-written description. Returns a JSON string: {"name":"…","skill_id":"…"}.
+pub fn skill_id_gen_prompt(description: &str) -> String {
     format!(
-        "根據以下技能名稱和描述，生成一個英文的 snake_case skill_id。\n\
-         要求：只使用小寫字母、數字、底線，2-4 個英文詞，不要標點或空格。\n\
-         名稱：{feature}\n\
+        "根據以下技能描述，生成技能的短名稱和 ID。\n\
          描述：{description}\n\n\
-         只輸出 skill_id，不要任何其他文字或解釋。\n\
-         範例格式：vip_maintain"
+         只輸出以下 JSON，不要任何其他文字：\n\
+         {{\"name\": \"2-6 個中文字的簡短名稱\", \"skill_id\": \"snake_case_id\"}}\n\n\
+         要求：\n\
+         - name：2-6 個中文字\n\
+         - skill_id：2-4 個英文詞，snake_case，只用小寫字母和底線"
     )
 }
 
