@@ -186,6 +186,23 @@ pub fn memory_store(
     Ok(())
 }
 
+/// Return the N most-recently stored memory entries (no query required).
+pub fn memory_list_recent(
+    limit: usize,
+) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+    let conn = memory_db()
+        .lock()
+        .map_err(|e| format!("memory DB lock poisoned: {e}"))?;
+    let mut stmt = conn.prepare(
+        "SELECT text FROM memories_fts ORDER BY rowid DESC LIMIT ?1",
+    )?;
+    let results: Vec<String> = stmt
+        .query_map(rusqlite::params![limit as i64], |row| row.get(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(results)
+}
+
 /// Full-text search the memory store using SQLite FTS5.
 ///
 /// Results are ranked by FTS5 relevance (BM25) and capped at `limit`.
