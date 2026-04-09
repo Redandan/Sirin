@@ -2623,9 +2623,18 @@ fn show_workflow_tab(ui: &mut egui::Ui, app: &mut SirinApp) {
                     );
                     ui.end_row();
                 });
-            ui.add_space(12.0);
-            let can_start = !app.workflow_new_feature.trim().is_empty()
-                && !app.workflow_skill_id.trim().is_empty();
+            ui.add_space(8.0);
+            let skill_id_raw = app.workflow_skill_id.trim().to_string();
+            let skill_id_valid = !skill_id_raw.is_empty()
+                && skill_id_raw.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+            if !skill_id_raw.is_empty() && !skill_id_valid {
+                ui.colored_label(
+                    Color32::from_rgb(230, 100, 100),
+                    "⚠ Skill ID 只能使用小寫字母、數字、底線（e.g. vip_maintain）",
+                );
+            }
+            ui.add_space(8.0);
+            let can_start = !app.workflow_new_feature.trim().is_empty() && skill_id_valid;
             if ui.add_enabled(can_start, egui::Button::new("▶ 開始開發")).clicked() {
                 let state = crate::workflow::WorkflowState::new(
                     app.workflow_new_feature.trim(),
@@ -2806,7 +2815,7 @@ fn show_workflow_tab(ui: &mut egui::Ui, app: &mut SirinApp) {
             // AI output area (editable so user can tweak before accepting)
             if !app.workflow_ai_output.is_empty() {
                 ui.colored_label(amber, RichText::new("AI 輸出（可編輯）：").small());
-                let avail = (ui.available_height() - 8.0).max(60.0);
+                let avail = (ui.available_height() - 120.0).max(80.0);
                 egui::ScrollArea::vertical()
                     .id_salt("wf_ai_scroll")
                     .max_height(avail)
@@ -2817,6 +2826,31 @@ fn show_workflow_tab(ui: &mut egui::Ui, app: &mut SirinApp) {
                                 .font(egui::TextStyle::Monospace),
                         );
                     });
+            }
+
+            // ── Previous stage outputs (reference, collapsible) ───────────────
+            ui.add_space(6.0);
+            for done_id in &state.completed {
+                let Some(prev_out) = state.stage_outputs.get(done_id) else { continue };
+                if prev_out.trim().is_empty() { continue }
+                let lbl = crate::workflow::stage_by_id(done_id)
+                    .map(|s| s.label)
+                    .unwrap_or(done_id.as_str());
+                egui::CollapsingHeader::new(
+                    RichText::new(format!("📋 {lbl} 階段成果")).small().color(dim),
+                )
+                .id_salt(format!("wf_hist_{done_id}"))
+                .default_open(false)
+                .show(ui, |ui| {
+                    let mut buf = prev_out.clone();
+                    ui.add(
+                        egui::TextEdit::multiline(&mut buf)
+                            .desired_width(f32::INFINITY)
+                            .font(egui::TextStyle::Monospace)
+                            .desired_rows(5)
+                            .interactive(false),
+                    );
+                });
             }
         }
     }
@@ -2854,95 +2888,121 @@ fn show_workflow_tab(ui: &mut egui::Ui, app: &mut SirinApp) {
             }
         }
 
-        // Run Verify script
+        // Run Verify script — always run config/scripts/{skill_id}.py directly
         if run_verify {
-            let skill_id  = state.skill_id.clone();
-            let (tx, rx)  = std::sync::mpsc::channel();
+            let skill_id = state.skill_id.clone();
+            let (tx, rx) = std::sync::mpsc::channel();
             app.workflow_verify_rx      = Some(rx);
             app.workflow_verify_loading = true;
             app.workflow_verify_output.clear();
             std::thread::spawn(move || {
-                // Run script with empty user_input to test default output
-                let stage_info = crate::workflow::stage_by_id("verify");
-                if let Some(si) = stage_info {
-                    let _ = tx.send(crate::workflow::run_stage_script(si, &skill_id));
-                } else {
-                    // Fallback: run the built script directly
-                    let script = format!("config/scripts/{skill_id}.py");
-                    let output = std::process::Command::new("python")
+                use std::io::Write;
+                let script = format!("config/scripts/{skill_id}.py");
+                if !std::path::Path::new(&script).exists() {
+                    let _ = tx.send(Err(format!("腳本不存在：{script}（請先完成 Build 階段）")));
+                    return;
+                }
+                let test_input =
+                    format!(r#"{{"skill_id":"{skill_id}","user_input":"測試","agent_id":null}}"#);
+                let run = |interp: &str| -> std::io::Result<std::process::Output> {
+                    let mut child = std::process::Command::new(interp)
                         .arg(&script)
                         .stdin(std::process::Stdio::piped())
                         .stdout(std::process::Stdio::piped())
                         .stderr(std::process::Stdio::piped())
-                        .spawn()
-                        .and_then(|mut c| {
-                            use std::io::Write;
-                            if let Some(mut s) = c.stdin.take() {
-                                let _ = s.write_all(
-                                    br#"{"skill_id":"test","user_input":"test","agent_id":null}"#,
-                                );
-                            }
-                            c.wait_with_output()
-                        });
-                    let res = match output {
-                        Ok(o) if o.status.success() => {
-                            Ok(String::from_utf8_lossy(&o.stdout).trim().to_string())
+                        .spawn()?;
+                    if let Some(mut s) = child.stdin.take() {
+                        let _ = s.write_all(test_input.as_bytes());
+                    }
+                    child.wait_with_output()
+                };
+                let output = run("python").or_else(|_| run("python3"));
+                let res = match output {
+                    Ok(o) if o.status.success() => {
+                        let stdout = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                        let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
+                        let mut out = stdout;
+                        if !stderr.is_empty() {
+                            out.push_str(&format!("\n\n[stderr]\n{stderr}"));
                         }
-                        Ok(o) => Err(format!(
-                            "exit {:?}: {}",
-                            o.status.code(),
-                            String::from_utf8_lossy(&o.stderr).trim()
-                        )),
-                        Err(e) => Err(e.to_string()),
-                    };
-                    let _ = tx.send(res);
-                }
+                        Ok(out)
+                    }
+                    Ok(o) => Err(format!(
+                        "exit {:?}:\nstdout: {}\nstderr: {}",
+                        o.status.code(),
+                        String::from_utf8_lossy(&o.stdout).trim(),
+                        String::from_utf8_lossy(&o.stderr).trim(),
+                    )),
+                    Err(e) => Err(format!("無法啟動 Python：{e}")),
+                };
+                let _ = tx.send(res);
             });
         }
 
-        // Accept: save AI output to stage_outputs, do stage-specific action, advance
+        // Accept: save output to stage_outputs, do stage-specific action, advance only on success
         if accept {
             let stage_id = state.current_stage.clone();
-            let output   = app.workflow_ai_output.clone();
+            // Verify stage uses verify_output; all others use ai_output
+            let output = if stage_id == "verify" {
+                app.workflow_verify_output.clone()
+            } else {
+                app.workflow_ai_output.clone()
+            };
 
-            // Stage-specific file write actions
+            // Stage-specific file write — sets should_advance = false on failure
+            let mut should_advance = true;
             match stage_id.as_str() {
                 "build" => {
-                    if let Some(code) = crate::workflow::extract_code_block(&output, "python") {
-                        let path = format!("config/scripts/{}.py", state.skill_id);
-                        match std::fs::write(&path, &code) {
-                            Ok(_)  => app.push_toast(ToastLevel::Info, format!("已寫入 {path}")),
-                            Err(e) => app.push_toast(ToastLevel::Error, format!("寫入失敗：{e}")),
+                    match crate::workflow::extract_code_block(&output, "python") {
+                        Some(code) => {
+                            let path = format!("config/scripts/{}.py", state.skill_id);
+                            match std::fs::write(&path, &code) {
+                                Ok(_)  => app.push_toast(ToastLevel::Info, format!("已寫入 {path}")),
+                                Err(e) => {
+                                    app.push_toast(ToastLevel::Error, format!("寫入失敗：{e}"));
+                                    should_advance = false;
+                                }
+                            }
                         }
-                    } else {
-                        app.push_toast(ToastLevel::Error, "未找到 ```python 代碼塊，請確認 AI 輸出格式");
+                        None => {
+                            app.push_toast(ToastLevel::Error, "未找到 ```python 代碼塊，請確認 AI 輸出格式");
+                            should_advance = false;
+                        }
                     }
                 }
                 "ship" => {
-                    if let Some(yaml) = crate::workflow::extract_code_block(&output, "yaml") {
-                        let path = format!("config/skills/{}.yaml", state.skill_id);
-                        match std::fs::write(&path, &yaml) {
-                            Ok(_) => {
-                                crate::skill_loader::invalidate_cache();
-                                app.push_toast(ToastLevel::Info, format!("已發布 {path}，技能已重載"));
+                    match crate::workflow::extract_code_block(&output, "yaml") {
+                        Some(yaml) => {
+                            let path = format!("config/skills/{}.yaml", state.skill_id);
+                            match std::fs::write(&path, &yaml) {
+                                Ok(_) => {
+                                    crate::skill_loader::invalidate_cache();
+                                    app.push_toast(ToastLevel::Info, format!("已發布 {path}，技能已重載"));
+                                }
+                                Err(e) => {
+                                    app.push_toast(ToastLevel::Error, format!("寫入失敗：{e}"));
+                                    should_advance = false;
+                                }
                             }
-                            Err(e) => app.push_toast(ToastLevel::Error, format!("寫入失敗：{e}")),
                         }
-                    } else {
-                        app.push_toast(ToastLevel::Error, "未找到 ```yaml 代碼塊，請確認 AI 輸出格式");
+                        None => {
+                            app.push_toast(ToastLevel::Error, "未找到 ```yaml 代碼塊，請確認 AI 輸出格式");
+                            should_advance = false;
+                        }
                     }
                 }
                 _ => {}
             }
 
-            // Save output as context for next stages, advance
-            if !output.is_empty() {
-                state.stage_outputs.insert(stage_id, output);
+            if should_advance {
+                if !output.is_empty() {
+                    state.stage_outputs.insert(stage_id, output);
+                }
+                state.advance();
+                app.workflow_ai_output.clear();
+                app.workflow_user_input.clear();
+                app.workflow_verify_output.clear();
             }
-            state.advance();
-            app.workflow_ai_output.clear();
-            app.workflow_user_input.clear();
-            app.workflow_verify_output.clear();
         }
 
         app.workflow_state = Some(state);
