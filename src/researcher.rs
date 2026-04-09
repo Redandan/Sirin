@@ -222,21 +222,6 @@ pub fn get_research(id: &str) -> Result<Option<ResearchTask>, String> {
     Ok(list_research()?.into_iter().find(|t| t.id == id))
 }
 
-/// Truncate the research log file to empty, removing all records.
-pub fn clear_research() -> Result<(), String> {
-    let _guard = research_store_lock()
-        .lock()
-        .map_err(|_| "research store lock poisoned".to_string())?;
-    let path = research_log_path();
-    if path.exists() {
-        OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .open(&path)
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
 
 // ── Pipeline ──────────────────────────────────────────────────────────────────
 

@@ -155,13 +155,6 @@ impl Persona {
         Ok(persona)
     }
 
-    /// Persist the current Persona state back to `config/persona.yaml`.
-    pub fn save(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let yaml = serde_yaml::to_string(self)?;
-        fs::write("config/persona.yaml", yaml)?;
-        Ok(())
-    }
-
     pub fn name(&self) -> &str {
         &self.identity.name
     }
@@ -583,19 +576,8 @@ impl TaskTracker {
         Ok(removed)
     }
 
-    /// Truncate the task log file to empty, removing all entries.
-    pub fn clear(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let path = self
-            .path
-            .lock()
-            .expect("TaskTracker mutex poisoned")
-            .clone();
-        if path.exists() {
-            OpenOptions::new().write(true).truncate(true).open(&path)?;
-        }
-        Ok(())
-    }
 }
+
 
 #[cfg(test)]
 mod tests {

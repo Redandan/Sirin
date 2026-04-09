@@ -20,7 +20,7 @@ trigger_keywords:
   - "客戶關係"
 # 腳本路徑（相對於項目根目錄）。
 # 腳本從 stdin 讀取 JSON，結果輸出到 stdout。
-script_file: "config/scripts/vip_maintain.py"
+script_file: "config/scripts/vip_maintain.rhai"
 script_timeout_secs: 30
 prompt_template: |
   使用 skill_execute 工具，skill_id = "vip_maintain"，

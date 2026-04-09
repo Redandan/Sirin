@@ -11,16 +11,15 @@ pub struct StageInfo {
     pub id: &'static str,
     pub label: &'static str,
     pub desc: &'static str,
-    pub script: &'static str,
 }
 
 pub const STAGES: &[StageInfo] = &[
-    StageInfo { id: "define", label: "Define", desc: "規格撰寫",  script: "config/scripts/workflow_define.py" },
-    StageInfo { id: "plan",   label: "Plan",   desc: "任務拆解",  script: "config/scripts/workflow_plan.py"   },
-    StageInfo { id: "build",  label: "Build",  desc: "TDD 實作",  script: "config/scripts/workflow_build.py"  },
-    StageInfo { id: "verify", label: "Verify", desc: "系統驗證",  script: "config/scripts/workflow_verify.py" },
-    StageInfo { id: "review", label: "Review", desc: "程式碼審查", script: "config/scripts/workflow_review.py" },
-    StageInfo { id: "ship",   label: "Ship",   desc: "上線發布",  script: "config/scripts/workflow_ship.py"   },
+    StageInfo { id: "define", label: "Define", desc: "規格撰寫"  },
+    StageInfo { id: "plan",   label: "Plan",   desc: "任務拆解"  },
+    StageInfo { id: "build",  label: "Build",  desc: "TDD 實作"  },
+    StageInfo { id: "verify", label: "Verify", desc: "系統驗證"  },
+    StageInfo { id: "review", label: "Review", desc: "程式碼審查" },
+    StageInfo { id: "ship",   label: "Ship",   desc: "上線發布"  },
 ];
 
 pub fn stage_by_id(id: &str) -> Option<&'static StageInfo> {
@@ -303,46 +302,3 @@ pub fn extract_code_block(text: &str, lang: &str) -> Option<String> {
     Some(rest[..end].trim().to_string())
 }
 
-// ── Script runner ─────────────────────────────────────────────────────────────
-
-/// Run the stage's Python script in a blocking call.
-/// Tries `python` (Windows) then `python3` (Unix/macOS).
-/// stdin: JSON `{ skill_id, user_input }` → stdout: markdown template.
-pub fn run_stage_script(stage: &StageInfo, feature: &str) -> Result<String, String> {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-
-    let payload = serde_json::json!({
-        "skill_id": format!("workflow_{}", stage.id),
-        "user_input": feature,
-        "agent_id": null,
-    });
-    let bytes = serde_json::to_vec(&payload).map_err(|e| e.to_string())?;
-
-    let try_run = |interp: &str| -> std::io::Result<std::process::Output> {
-        let mut child = Command::new(interp)
-            .arg(stage.script)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(&bytes);
-        }
-        child.wait_with_output()
-    };
-
-    let output = try_run("python")
-        .or_else(|_| try_run("python3"))
-        .map_err(|e| format!("無法啟動 Python：{e}"))?;
-
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    } else {
-        Err(format!(
-            "腳本錯誤（exit {:?}）：{}",
-            output.status.code(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        ))
-    }
-}

@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 
-use chrono::Utc;
 use futures::{future::BoxFuture, FutureExt};
 use serde_json::{json, Value};
 
@@ -634,7 +633,7 @@ fn build_full_registry() -> ToolRegistry {
             let action = optional_string_field(&input, "action")
                 .unwrap_or_else(|| "goto".to_string());
             let target = required_string_field(&input, "target")?;
-            let text = optional_string_field(&input, "text").unwrap_or_default();
+            let _text = optional_string_field(&input, "text").unwrap_or_default();
 
             let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
                 use crate::browser::BrowserSession;

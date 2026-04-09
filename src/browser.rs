@@ -30,21 +30,7 @@ impl BrowserSession {
         Ok(())
     }
 
-    /// Click the first element matching a CSS selector.
-    pub fn click(&self, selector: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.tab.find_element(selector)?.click()?;
-        Ok(())
-    }
 
-    /// Type text into the first element matching a CSS selector.
-    pub fn type_text(
-        &self,
-        selector: &str,
-        text: &str,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.tab.find_element(selector)?.type_into(text)?;
-        Ok(())
-    }
 
     /// Capture a full-page PNG screenshot and return the raw bytes.
     pub fn screenshot(&self) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {

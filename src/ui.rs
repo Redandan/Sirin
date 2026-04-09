@@ -174,10 +174,6 @@ pub struct SirinApp {
     /// Subscriber for the process-wide agent event bus.  Drained every frame.
     event_rx: broadcast::Receiver<AgentEvent>,
 
-    // ── UI state ──────────────────────────────────────────────────────────────
-    /// Set of research task IDs whose full report is expanded.
-    research_expanded: std::collections::HashSet<String>,
-
     // Settings
     settings_agents: Option<crate::agent_config::AgentsFile>,
     agent_auth_states: Vec<(String, crate::telegram_auth::TelegramAuthState)>,
@@ -344,7 +340,6 @@ impl SirinApp {
             tg_password: String::new(),
             last_refresh: std::time::Instant::now() - std::time::Duration::from_secs(60),
             event_rx: crate::events::subscribe(),
-            research_expanded: std::collections::HashSet::new(),
             settings_agents: None,
             settings_agent_scratch: Vec::new(),
             settings_new_agent_id: String::new(),

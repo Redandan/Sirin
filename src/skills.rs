@@ -404,13 +404,6 @@ fn infer_interpreter(path: &str) -> &'static str {
     else { "sh" }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SkillExecutionResult {
-    pub skill_id: String,
-    pub emitted_event: String,
-    pub accepted: bool,
-}
-
 
 pub fn list_skills() -> Vec<SkillDefinition> {
     let mut skills = hardcoded_skills();
@@ -500,13 +493,6 @@ pub fn build_skill_context(planner_skill_ids: &[String]) -> Option<String> {
     ))
 }
 
-pub fn ensure_registered(skill_id: &str) -> Result<(), String> {
-    if list_skills().iter().any(|skill| skill.id == skill_id) {
-        Ok(())
-    } else {
-        Err(format!("Unknown skill: {skill_id}"))
-    }
-}
 
 /// Execute a skill's external script.
 ///

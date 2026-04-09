@@ -9,7 +9,6 @@
 //! The public entry points are:
 //! * [`run_chat_response_via_adk_with_tracker`] — standard async call
 //! * [`run_chat_via_adk_with_tracker`] — convenience wrapper returning only the reply string
-//! * [`stream_chat_response`] — streaming variant for the GUI chat tab
 
 mod context;
 mod dispatch;
@@ -275,9 +274,8 @@ pub async fn run_chat_via_adk_with_tracker(
 
 /// Streaming variant for the GUI chat tab.
 ///
-/// All intents except `General` produce a complete reply (non-streaming) via
-/// `dispatch_by_understanding`.  Only `General` streams tokens progressively so
-/// the chat bubble updates as the LLM writes.
+// Streaming variant kept for future GUI chat tab integration.
+#[allow(dead_code)]
 pub async fn stream_chat_response<F>(request: ChatRequest, on_token: F) -> ChatAgentResponse
 where
     F: Fn(String) + Send + 'static,

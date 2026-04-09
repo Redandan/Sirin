@@ -35,10 +35,6 @@ pub fn recent(n: usize) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Return the last `n` log lines joined as plain text.
-pub fn snapshot_text(n: usize) -> String {
-    recent(n).join("\n")
-}
 
 /// Clear the in-memory ring buffer.
 pub fn clear() {
