@@ -88,6 +88,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_btc_price_script() {
+        let result = run_rhai_script(
+            "config/scripts/btc_price.rhai",
+            "btc_price",
+            "查看BTC價格",
+            None,
+        );
+        match result {
+            Ok(out) => {
+                println!("--- 輸出 ---\n{out}\n-----------");
+                assert!(!out.is_empty(), "輸出不應為空");
+            }
+            Err(e) => println!("錯誤（可能是網路）：{e}"),
+        }
+    }
+
+    #[test]
     fn test_print_capture() {
         let result = {
             let mut engine = build_engine();

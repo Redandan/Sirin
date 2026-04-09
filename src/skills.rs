@@ -362,6 +362,7 @@ pub struct SkillDefinition {
     pub id: String,
     pub name: String,
     pub description: String,
+    #[serde(default)]
     pub requires_approval: bool,
     #[serde(default)]
     pub category: String,

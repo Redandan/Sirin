@@ -228,6 +228,7 @@ pub fn stage_context(
              id: {skill_id}\n\
              name: <技能中文名稱>\n\
              description: <功能描述>\n\
+             requires_approval: false\n\
              script_file: config/scripts/{skill_id}.rhai\n\
              example_prompts:\n\
                - <從 Define 階段複製觸發語句>\n\
