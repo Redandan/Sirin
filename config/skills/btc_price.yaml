@@ -1,0 +1,15 @@
+id: btc_price
+name: BTC 價格查詢
+description: 即時查詢 Bitcoin 當前市場價格（USD 和 TWD），資料來源 CoinGecko。
+script_file: config/scripts/btc_price.rhai
+example_prompts:
+  - 查看 BTC 現在多少錢
+  - 比特幣現在價格
+  - BTC 現在幾塊
+  - 幫我看一下 BTC 價格
+  - 現在 Bitcoin 多少美金
+trigger_keywords:
+  - btc
+  - bitcoin
+  - 比特幣
+  - 幣價

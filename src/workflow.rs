@@ -158,12 +158,12 @@ pub fn stage_context(
         parts.push(format!("\n## 前置階段參考\n\n{}", ctx_parts.join("\n\n")));
     }
 
-    // M1: For Review, inject the actual .py file from disk (overrides stale AI output)
+    // M1: For Review, inject the actual script from disk (overrides stale AI output)
     if stage_id == "review" {
-        let script_path = format!("config/scripts/{skill_id}.py");
+        let script_path = format!("config/scripts/{skill_id}.rhai");
         if let Ok(code) = std::fs::read_to_string(&script_path) {
             parts.push(format!(
-                "\n## 待審查腳本（磁碟最新版，以此為準）\n```python\n{code}\n```"
+                "\n## 待審查腳本（磁碟最新版，以此為準）\n```rhai\n{code}\n```"
             ));
         }
     }
@@ -189,13 +189,23 @@ pub fn stage_context(
         ),
         "build" => format!(
             "\n## 當前任務：Build（撰寫腳本）\n\
-             請撰寫完整的 Python 腳本 `config/scripts/{skill_id}.py`。\n\n\
+             請撰寫完整的 Rhai 腳本 `config/scripts/{skill_id}.rhai`。\n\n\
              規範：\n\
-             - 從 stdin 讀取 JSON：`import json, sys; data = json.load(sys.stdin)`\n\
-             - 通過 stdout 輸出結果（純文字或 Markdown）\n\
-             - 通過 stderr 輸出調試訊息（前綴 `sirin_log:`）\n\
-             - 腳本應自包含，只用標準庫或常見套件\n\n\
-             請用 ```python 代碼塊輸出完整腳本。"
+             - 腳本執行時已有全域變數：`skill_id`、`user_input`、`agent_id`（字串）\n\
+             - 使用 `print(\"...\")` 輸出結果（Markdown 格式）\n\
+             - 使用 `log(\"...\")` 輸出調試訊息（寫入 stderr）\n\
+             - 使用 `http_get(url)` 發送 HTTP GET，回傳 body 字串\n\
+             - 使用 `parse_json(str)` 將 JSON 字串解析為 Rhai map\n\
+             - 使用 `read_file(path)` 讀取本機檔案\n\n\
+             Rhai 語法範例：\n\
+             ```rhai\n\
+             log(\"Script started\");\n\
+             let body = http_get(\"https://api.example.com/data\");\n\
+             let data = parse_json(body);\n\
+             print(\"## 結果\");\n\
+             print(`值：${{data[\"key\"]}}`);  // 字串插值用反引號\n\
+             ```\n\n\
+             請用 ```rhai 代碼塊輸出完整腳本。"
         ),
         "verify" => format!(
             "\n## 當前任務：Verify（驗證）\n\
@@ -218,7 +228,7 @@ pub fn stage_context(
              id: {skill_id}\n\
              name: <技能中文名稱>\n\
              description: <功能描述>\n\
-             script_file: config/scripts/{skill_id}.py\n\
+             script_file: config/scripts/{skill_id}.rhai\n\
              example_prompts:\n\
                - <從 Define 階段複製觸發語句>\n\
              trigger_keywords:\n\

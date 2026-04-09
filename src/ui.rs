@@ -271,6 +271,16 @@ pub struct SirinApp {
     workflow_verify_loading: bool,
     /// Channel receiving Verify script result.
     workflow_verify_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
+    /// Skill ID currently shown in the skill-list test panel ("" = none expanded).
+    workflow_skill_test_id: String,
+    /// Test input for the skill-list test panel.
+    workflow_skill_test_input: String,
+    /// Output from the last skill-list test run.
+    workflow_skill_test_output: String,
+    /// True while a skill-list test is running.
+    workflow_skill_test_loading: bool,
+    /// Channel receiving skill-list test result.
+    workflow_skill_test_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
 }
 
 impl SirinApp {
@@ -392,6 +402,11 @@ impl SirinApp {
             workflow_verify_output: String::new(),
             workflow_verify_loading: false,
             workflow_verify_rx: None,
+            workflow_skill_test_id: String::new(),
+            workflow_skill_test_input: String::new(),
+            workflow_skill_test_output: String::new(),
+            workflow_skill_test_loading: false,
+            workflow_skill_test_rx: None,
         };
         app.refresh();
         app
@@ -2609,6 +2624,16 @@ fn show_workflow_tab(ui: &mut egui::Ui, app: &mut SirinApp) {
             app.workflow_verify_loading = false;
         }
     }
+    if let Some(rx) = &app.workflow_skill_test_rx {
+        if let Ok(result) = rx.try_recv() {
+            app.workflow_skill_test_output = match result {
+                Ok(out) => out,
+                Err(e)  => format!("❌ {e}"),
+            };
+            app.workflow_skill_test_rx      = None;
+            app.workflow_skill_test_loading = false;
+        }
+    }
 
     let dim   = Color32::from_gray(110);
     let green = Color32::from_rgb(70, 190, 70);
@@ -2634,6 +2659,116 @@ fn show_workflow_tab(ui: &mut egui::Ui, app: &mut SirinApp) {
                 app.workflow_skill_id_rx      = None;
                 app.workflow_skill_id_loading = false;
             }
+        }
+
+        // ── 已開發技能列表 ────────────────────────────────────────────────────
+        let all_skills = crate::skills::list_skills();
+        let script_skills: Vec<_> = all_skills.iter()
+            .filter(|s| s.script_file.is_some())
+            .collect();
+
+        if !script_skills.is_empty() {
+            ui.add_space(16.0);
+            ui.horizontal(|ui| {
+                ui.strong("已開發技能");
+                ui.colored_label(dim, RichText::new(format!("（{}）", script_skills.len())).small());
+            });
+            ui.add_space(6.0);
+
+            let mut run_skill_test: Option<(String, String)> = None; // (skill_id, script_path)
+
+            for skill in &script_skills {
+                let is_expanded = app.workflow_skill_test_id == skill.id;
+                let frame_color = if is_expanded {
+                    Color32::from_rgb(28, 38, 55)
+                } else {
+                    Color32::from_gray(22)
+                };
+                egui::Frame::new()
+                    .fill(frame_color)
+                    .corner_radius(6.0)
+                    .inner_margin(egui::Margin::symmetric(10, 7))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.strong(&skill.name);
+                            ui.add_space(4.0);
+                            ui.colored_label(blue, RichText::new(format!("[{}]", skill.id)).small().monospace());
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                let loading = app.workflow_skill_test_loading && is_expanded;
+                                let btn_label = if loading { "執行中…" } else if is_expanded { "▼ 收起" } else { "▶ 測試" };
+                                if ui.add_enabled(!loading, egui::Button::new(btn_label)).clicked() {
+                                    if is_expanded {
+                                        app.workflow_skill_test_id.clear();
+                                        app.workflow_skill_test_output.clear();
+                                    } else {
+                                        app.workflow_skill_test_id = skill.id.clone();
+                                        app.workflow_skill_test_output.clear();
+                                    }
+                                }
+                            });
+                        });
+                        if !skill.description.is_empty() {
+                            ui.colored_label(dim, RichText::new(&skill.description).small());
+                        }
+
+                        // Expanded test panel
+                        if is_expanded {
+                            ui.add_space(6.0);
+                            ui.separator();
+                            ui.add_space(4.0);
+                            ui.label(RichText::new("測試輸入：").small().color(dim));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut app.workflow_skill_test_input)
+                                    .hint_text("輸入測試訊息")
+                                    .desired_width(f32::INFINITY),
+                            );
+                            ui.add_space(4.0);
+                            let loading = app.workflow_skill_test_loading;
+                            if ui.add_enabled(!loading, egui::Button::new(if loading { "執行中…" } else { "▶ 執行" })
+                                .fill(Color32::from_rgb(30, 70, 30)))
+                                .clicked()
+                            {
+                                if let Some(path) = &skill.script_file {
+                                    run_skill_test = Some((skill.id.clone(), path.clone()));
+                                }
+                            }
+                            if !app.workflow_skill_test_output.is_empty() {
+                                ui.add_space(6.0);
+                                let avail = (ui.available_height() - 8.0).max(60.0).min(200.0);
+                                egui::ScrollArea::vertical()
+                                    .id_salt("skill_test_out")
+                                    .max_height(avail)
+                                    .show(ui, |ui| {
+                                        ui.add(
+                                            egui::TextEdit::multiline(&mut app.workflow_skill_test_output.clone())
+                                                .desired_width(f32::INFINITY)
+                                                .font(egui::TextStyle::Monospace),
+                                        );
+                                    });
+                            }
+                        }
+                    });
+                ui.add_space(4.0);
+            }
+
+            // Trigger skill test outside borrow
+            if let Some((sid, spath)) = run_skill_test {
+                let user_test = {
+                    let raw = app.workflow_skill_test_input.trim().to_string();
+                    if raw.is_empty() { "測試".to_string() } else { raw }
+                };
+                let (tx, rx) = std::sync::mpsc::channel();
+                app.workflow_skill_test_rx      = Some(rx);
+                app.workflow_skill_test_loading = true;
+                app.workflow_skill_test_output.clear();
+                std::thread::spawn(move || {
+                    let res = crate::rhai_engine::run_rhai_script(&spath, &sid, &user_test, None);
+                    let _ = tx.send(res);
+                });
+            }
+
+            ui.add_space(10.0);
+            ui.separator();
         }
 
         ui.add_space(16.0);
@@ -2698,7 +2833,7 @@ fn show_workflow_tab(ui: &mut egui::Ui, app: &mut SirinApp) {
             }
 
             // Collision detection
-            let py_exists   = skill_id_valid && std::path::Path::new(&format!("config/scripts/{skill_id_raw}.py")).exists();
+            let py_exists   = skill_id_valid && std::path::Path::new(&format!("config/scripts/{skill_id_raw}.rhai")).exists();
             let yaml_exists = skill_id_valid && std::path::Path::new(&format!("config/skills/{skill_id_raw}.yaml")).exists();
             let has_collision = py_exists || yaml_exists;
             if has_collision {
@@ -2712,7 +2847,7 @@ fn show_workflow_tab(ui: &mut egui::Ui, app: &mut SirinApp) {
                             format!("⚠ `{skill_id_raw}` 已存在，繼續將覆蓋以下文件："));
                         if py_exists {
                             ui.colored_label(Color32::from_gray(180),
-                                format!("  • config/scripts/{skill_id_raw}.py"));
+                                format!("  • config/scripts/{skill_id_raw}.rhai"));
                         }
                         if yaml_exists {
                             ui.colored_label(Color32::from_gray(180),
@@ -3078,7 +3213,7 @@ fn show_workflow_tab(ui: &mut egui::Ui, app: &mut SirinApp) {
 
             // Build/Ship — warn if target file already exists
             if stage.id == "build" {
-                let py_path = format!("config/scripts/{}.py", state.skill_id);
+                let py_path = format!("config/scripts/{}.rhai", state.skill_id);
                 if std::path::Path::new(&py_path).exists() {
                     ui.colored_label(amber, format!("⚠ {py_path} 已存在，接受腳本後將覆蓋"));
                     ui.add_space(2.0);
@@ -3217,7 +3352,7 @@ fn show_workflow_tab(ui: &mut egui::Ui, app: &mut SirinApp) {
             }
         }
 
-        // Run Verify script — always run config/scripts/{skill_id}.py directly
+        // Run Verify script — run config/scripts/{skill_id}.rhai via embedded Rhai engine
         if run_verify {
             let skill_id  = state.skill_id.clone();
             // P3: use user-supplied test input; fall back to "測試"
@@ -3230,48 +3365,17 @@ fn show_workflow_tab(ui: &mut egui::Ui, app: &mut SirinApp) {
             app.workflow_verify_loading = true;
             app.workflow_verify_output.clear();
             std::thread::spawn(move || {
-                use std::io::Write;
-                let script = format!("config/scripts/{skill_id}.py");
+                let script = format!("config/scripts/{skill_id}.rhai");
                 if !std::path::Path::new(&script).exists() {
                     let _ = tx.send(Err(format!("腳本不存在：{script}（請先完成 Build 階段）")));
                     return;
                 }
-                let test_input = serde_json::json!({
-                    "skill_id": skill_id,
-                    "user_input": user_test,
-                    "agent_id": null,
-                }).to_string();
-                let run = |interp: &str| -> std::io::Result<std::process::Output> {
-                    let mut child = std::process::Command::new(interp)
-                        .arg(&script)
-                        .stdin(std::process::Stdio::piped())
-                        .stdout(std::process::Stdio::piped())
-                        .stderr(std::process::Stdio::piped())
-                        .spawn()?;
-                    if let Some(mut s) = child.stdin.take() {
-                        let _ = s.write_all(test_input.as_bytes());
-                    }
-                    child.wait_with_output()
-                };
-                let output = run("python").or_else(|_| run("python3"));
-                let res = match output {
-                    Ok(o) if o.status.success() => {
-                        let stdout = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                        let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
-                        let mut out = stdout;
-                        if !stderr.is_empty() {
-                            out.push_str(&format!("\n\n[stderr]\n{stderr}"));
-                        }
-                        Ok(out)
-                    }
-                    Ok(o) => Err(format!(
-                        "exit {:?}:\nstdout: {}\nstderr: {}",
-                        o.status.code(),
-                        String::from_utf8_lossy(&o.stdout).trim(),
-                        String::from_utf8_lossy(&o.stderr).trim(),
-                    )),
-                    Err(e) => Err(format!("無法啟動 Python：{e}")),
-                };
+                let res = crate::rhai_engine::run_rhai_script(
+                    &script,
+                    &skill_id,
+                    &user_test,
+                    None,
+                );
                 let _ = tx.send(res);
             });
         }
@@ -3290,9 +3394,9 @@ fn show_workflow_tab(ui: &mut egui::Ui, app: &mut SirinApp) {
             let mut should_advance = true;
             match stage_id.as_str() {
                 "build" => {
-                    match crate::workflow::extract_code_block(&output, "python") {
+                    match crate::workflow::extract_code_block(&output, "rhai") {
                         Some(code) => {
-                            let path = format!("config/scripts/{}.py", state.skill_id);
+                            let path = format!("config/scripts/{}.rhai", state.skill_id);
                             match std::fs::write(&path, &code) {
                                 Ok(_)  => app.push_toast(ToastLevel::Info, format!("已寫入 {path}")),
                                 Err(e) => {
@@ -3302,7 +3406,7 @@ fn show_workflow_tab(ui: &mut egui::Ui, app: &mut SirinApp) {
                             }
                         }
                         None => {
-                            app.push_toast(ToastLevel::Error, "未找到 ```python 代碼塊，請確認 AI 輸出格式");
+                            app.push_toast(ToastLevel::Error, "未找到 ```rhai 代碼塊，請確認 AI 輸出格式");
                             should_advance = false;
                         }
                     }

@@ -17,6 +17,7 @@ mod pending_reply;
 mod persona;
 mod researcher;
 mod mcp_server;
+mod rhai_engine;
 mod rpc_server;
 mod teams;
 mod skill_loader;

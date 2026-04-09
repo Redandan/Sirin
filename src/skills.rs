@@ -377,10 +377,10 @@ pub struct SkillDefinition {
     pub prompt_template: Option<String>,
     /// Path to an external script (relative to project root).
     /// e.g. "config/scripts/vip_maintain.py"
-    /// Supported extensions: .py (python3), .sh (bash), .js (node).
+    /// Supported extensions: .rhai (embedded, no install needed), .py (python3), .sh (bash).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub script_file: Option<String>,
-    /// Override the interpreter; auto-inferred from extension if absent.
+    /// Override the interpreter for non-.rhai scripts; auto-inferred from extension if absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub script_interpreter: Option<String>,
     /// Maximum seconds the script may run before being killed (default 30).
@@ -525,6 +525,24 @@ pub async fn execute_skill(
         return Err(format!("Script not found: {script_path}"));
     }
 
+    // ── Rhai scripts run in-process (no external runtime needed) ─────────────
+    if script_path.ends_with(".rhai") {
+        let path = script_path.to_string();
+        let sid = skill_id.to_string();
+        let input = user_input.to_string();
+        let aid = agent_id.map(str::to_string);
+
+        let result = tokio::task::spawn_blocking(move || {
+            crate::rhai_engine::run_rhai_script(&path, &sid, &input, aid.as_deref())
+        })
+        .await
+        .map_err(|e| format!("Thread error: {e}"))??;
+
+        crate::sirin_log!("[skill] '{}' → {} chars", skill_id, result.len());
+        return Ok(result);
+    }
+
+    // ── External interpreter (python3, bash, etc.) ────────────────────────────
     let interpreter = skill
         .script_interpreter
         .as_deref()
