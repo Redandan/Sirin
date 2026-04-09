@@ -1921,29 +1921,21 @@ fn show_overview_tab(
             }).collect();
             if group.is_empty() { continue; }
 
-            ui.horizontal(|ui| {
-                ui.colored_label(*color, RichText::new(*cat_label).small().strong());
-                ui.add_space(4.0);
-                // Horizontal scroll for overflow within this row
-                egui::ScrollArea::horizontal()
-                    .id_salt(format!("skill_row_{cat_key}"))
-                    .max_height(24.0)
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            for sk in &group {
-                                egui::Frame::new()
-                                    .fill(Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 25))
-                                    .stroke(egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 90)))
-                                    .corner_radius(4.0)
-                                    .inner_margin(egui::Margin::symmetric(6, 2))
-                                    .show(ui, |ui| {
-                                        ui.colored_label(*color, RichText::new(&sk.name).small())
-                                            .on_hover_text(&sk.description);
-                                    });
-                                ui.add_space(2.0);
-                            }
+            ui.colored_label(*color, RichText::new(*cat_label).small().strong());
+            ui.horizontal_wrapped(|ui| {
+                ui.add_space(8.0); // indent under label
+                for sk in &group {
+                    egui::Frame::new()
+                        .fill(Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 25))
+                        .stroke(egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 90)))
+                        .corner_radius(4.0)
+                        .inner_margin(egui::Margin::symmetric(6, 2))
+                        .show(ui, |ui| {
+                            ui.colored_label(*color, RichText::new(&sk.name).small())
+                                .on_hover_text(&sk.description);
                         });
-                    });
+                    ui.add_space(2.0);
+                }
             });
             ui.add_space(3.0);
         }
