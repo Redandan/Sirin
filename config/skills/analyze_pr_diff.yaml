@@ -1,0 +1,16 @@
+id: analyze_pr_diff
+name: "PR Diff 分析"
+description: "讀取最近的 git diff 並生成摘要，標記潛在的 breaking change。"
+category: "coding"
+enabled: true
+requires_approval: false
+backed_by_tools:
+  - git_log
+  - local_file_read
+example_prompts:
+  - "分析這個 PR 的改動"
+  - "git diff 摘要"
+  - "最近改了哪些東西"
+prompt_template: |
+  使用 git_log 取得最近 5 個 commit，再用 local_file_read 讀取相關檔案，
+  最後生成一份改動摘要，標記潛在的 breaking change。

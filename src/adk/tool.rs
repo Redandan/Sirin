@@ -621,6 +621,44 @@ fn build_full_registry() -> ToolRegistry {
             let log = String::from_utf8_lossy(&out.stdout).to_string();
             Ok(json!({ "log": log }))
         })
+        .register_fn("web_navigate", |input| async move {
+            // action: "goto" | "click" | "type" | "screenshot"
+            // target: URL (for goto/screenshot) or CSS selector (for click/type)
+            // text:   text to type (only for "type" action)
+            let action = optional_string_field(&input, "action")
+                .unwrap_or_else(|| "goto".to_string());
+            let target = required_string_field(&input, "target")?;
+            let text = optional_string_field(&input, "text").unwrap_or_default();
+
+            let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
+                use crate::browser::BrowserSession;
+                match action.as_str() {
+                    "screenshot" | "goto" => {
+                        let png = BrowserSession::navigate_and_screenshot(&target)
+                            .map_err(|e| e.to_string())?;
+                        // Publish event so the UI can display the screenshot.
+                        crate::events::publish(crate::events::AgentEvent::BrowserScreenshotReady {
+                            png_bytes: png,
+                            url: target.clone(),
+                        });
+                        Ok(json!({ "status": "screenshot captured", "url": target }))
+                    }
+                    "click" => {
+                        // Stateless click: launch, navigate (no URL given → error),
+                        // then click. Callers should prefer a goto first then click.
+                        Err("'click' requires an active session; use 'goto' first".to_string())
+                    }
+                    "type" => {
+                        Err("'type' requires an active session; use 'goto' first".to_string())
+                    }
+                    other => Err(format!("Unknown web_navigate action: {other}")),
+                }
+            })
+            .await
+            .map_err(|e| format!("spawn_blocking: {e}"))??;
+
+            Ok(result)
+        })
 }
 
 /// Full registry (write tools included). Cached process-wide — cheap to clone.

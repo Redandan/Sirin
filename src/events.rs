@@ -52,6 +52,13 @@ pub enum AgentEvent {
         /// First ~80 chars of the reply.
         preview: String,
     },
+    /// A headless browser screenshot is ready to display.
+    BrowserScreenshotReady {
+        /// PNG-encoded screenshot bytes.
+        png_bytes: Vec<u8>,
+        /// URL that was captured.
+        url: String,
+    },
     /// An AI draft is waiting for human approval before being sent
     /// (triggered when `require_confirmation = true` on the channel).
     ReplyPendingApproval {

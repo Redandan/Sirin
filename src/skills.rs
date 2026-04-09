@@ -359,7 +359,15 @@ pub struct SkillDefinition {
     pub backed_by_tools: Vec<String>,
     #[serde(default)]
     pub example_prompts: Vec<String>,
+    /// Whether this skill is active (YAML skills can set this to false).
+    #[serde(default = "skill_enabled_default")]
+    pub enabled: bool,
+    /// Prompt template injected into CodingAgent for YAML-defined skills.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_template: Option<String>,
 }
+
+fn skill_enabled_default() -> bool { true }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillExecutionResult {
@@ -385,10 +393,18 @@ fn skill(
         category: category.to_string(),
         backed_by_tools: backed_by_tools.iter().map(|v| v.to_string()).collect(),
         example_prompts: example_prompts.iter().map(|v| v.to_string()).collect(),
+        enabled: true,
+        prompt_template: None,
     }
 }
 
 pub fn list_skills() -> Vec<SkillDefinition> {
+    let mut skills = hardcoded_skills();
+    skills.extend(crate::skill_loader::load_yaml_skills());
+    skills
+}
+
+fn hardcoded_skills() -> Vec<SkillDefinition> {
     vec![
         skill(
             "project_overview",

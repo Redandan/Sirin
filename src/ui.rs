@@ -157,6 +157,12 @@ pub struct SirinApp {
     llm_scan_rx: Option<std::sync::mpsc::Receiver<Vec<String>>>,
     llm_config_msg: String,
     llm_config_msg_at: Option<std::time::Instant>,
+
+    // ── Browser screenshot ────────────────────────────────────────────────────
+    /// Last screenshot captured by the web_navigate tool (shown in 思考流 tab).
+    browser_screenshot: Option<egui::TextureHandle>,
+    /// URL of the last captured screenshot.
+    browser_screenshot_url: String,
 }
 
 impl SirinApp {
@@ -258,6 +264,8 @@ impl SirinApp {
             llm_scan_rx: None,
             llm_config_msg: String::new(),
             llm_config_msg_at: None,
+            browser_screenshot: None,
+            browser_screenshot_url: String::new(),
         };
         app.refresh();
         app
@@ -296,6 +304,7 @@ impl SirinApp {
                 self.pending_count_cache.insert(agent.id.clone(), count);
             }
         }
+        crate::skill_loader::invalidate_cache();
         self.last_refresh = std::time::Instant::now();
     }
 }
@@ -402,6 +411,23 @@ impl eframe::App for SirinApp {
                     // Switch focus to workspace → 待確認 sub-tab.
                     self.view = View::Agent(self.view_agent_idx());
                     self.workspace_tab = 1;
+                }
+                Ok(AgentEvent::BrowserScreenshotReady { png_bytes, url }) => {
+                    // Decode PNG and upload as egui texture for display.
+                    if let Ok(img) = image::load_from_memory(&png_bytes) {
+                        let rgba = img.to_rgba8();
+                        let (w, h) = rgba.dimensions();
+                        let color_image = egui::ColorImage::from_rgba_unmultiplied(
+                            [w as usize, h as usize],
+                            &rgba,
+                        );
+                        self.browser_screenshot = Some(ctx.load_texture(
+                            "browser_screenshot",
+                            color_image,
+                            egui::TextureOptions::LINEAR,
+                        ));
+                        self.browser_screenshot_url = url;
+                    }
                 }
                 Ok(_) => {} // other events (ResearchCompleted, FollowupTriggered, ChatAgentReplied)
                 Err(broadcast::error::TryRecvError::Lagged(_)) => {} // skip lagged events
@@ -688,6 +714,19 @@ impl SirinApp {
                             ui.add_space(2.0);
                         }
                     });
+                }
+                // ── Browser screenshot (shown when web_navigate captures a page) ──
+                if let Some(tex) = &self.browser_screenshot {
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("🌐 截圖").strong().small());
+                        ui.colored_label(Color32::GRAY, RichText::new(&self.browser_screenshot_url).small());
+                    });
+                    let max_w = ui.available_width();
+                    let size = tex.size_vec2();
+                    let scale = (max_w / size.x).min(1.0);
+                    ui.image((tex.id(), size * scale));
                 }
             }
 
@@ -1358,6 +1397,18 @@ fn show_system_panel(
         ui.colored_label(Color32::GRAY, RichText::new(format!("{} / {}", llm.backend_name(), llm.model)).small().monospace());
     });
     ui.colored_label(Color32::DARK_GRAY, RichText::new("（啟動時載入，重啟後生效）").small());
+
+    ui.add_space(8.0);
+    // ── RPC server status ─────────────────────────────────────────────────
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("⚡  RPC").strong().small());
+        if crate::rpc_server::is_running() {
+            ui.colored_label(Color32::from_rgb(100, 220, 100),
+                RichText::new(format!("{} ● 監聽中", crate::rpc_server::RPC_ADDR)).small().monospace());
+        } else {
+            ui.colored_label(Color32::GRAY, RichText::new("○ 未啟動").small());
+        }
+    });
 
     ui.add_space(12.0);
     ui.separator();

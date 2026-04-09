@@ -41,7 +41,8 @@ static SHARED_LLM: OnceLock<Arc<LlmConfig>> = OnceLock::new();
 /// probed/validated config.  Otherwise falls back to `LlmConfig::from_env()`.
 pub(crate) fn shared_llm() -> Arc<LlmConfig> {
     Arc::clone(SHARED_LLM.get_or_init(|| {
-        let cfg = LlmConfig::from_env();
+        let mut cfg = LlmConfig::from_env();
+        cfg.apply_yaml_overrides();
         crate::sirin_log!(
             "[llm] main  backend={} model={}",
             cfg.backend_name(),
@@ -246,6 +247,36 @@ impl LlmConfig {
                 router_model,
                 large_model,
             },
+        }
+    }
+
+    /// Apply non-empty overrides from `config/llm.yaml` (saved by the settings UI).
+    ///
+    /// Fields left blank in the YAML are silently ignored so env-var defaults remain active.
+    pub fn apply_yaml_overrides(&mut self) {
+        let ui = LlmUiConfig::load();
+        if !ui.provider.is_empty() {
+            match ui.provider.to_lowercase().as_str() {
+                "lmstudio" | "lm_studio" | "openai" => self.backend = LlmBackend::LmStudio,
+                "gemini" | "google" => self.backend = LlmBackend::Gemini,
+                "ollama" => self.backend = LlmBackend::Ollama,
+                _ => {}
+            }
+        }
+        if !ui.base_url.is_empty() {
+            self.base_url = ui.base_url;
+        }
+        if !ui.main_model.is_empty() {
+            self.model = ui.main_model;
+        }
+        if !ui.router_model.is_empty() {
+            self.router_model = Some(ui.router_model);
+        }
+        if !ui.coding_model.is_empty() {
+            self.coding_model = Some(ui.coding_model);
+        }
+        if !ui.large_model.is_empty() {
+            self.large_model = Some(ui.large_model);
         }
     }
 
