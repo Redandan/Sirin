@@ -69,7 +69,6 @@ async fn ensure_user_authorized(
         auth.set_disconnected(
             "session not authorized; click 立即連線 or set TG_REQUIRE_LOGIN=1",
         );
-        sirin_log!("[telegram] Session not authorized; login is optional, skipping sign-in flow");
         return Ok(());
     }
 
@@ -151,7 +150,6 @@ async fn run_listener_once(
     }
 
     if !client.is_authorized().await.unwrap_or(false) {
-        sirin_log!("[telegram] Session remains unauthorized; skipping listener run");
         handle.quit();
         let _ = pool_task.await;
         return Ok(());
@@ -450,7 +448,6 @@ async fn run_agent_listener_once(
     }
 
     if !client.is_authorized().await.unwrap_or(false) {
-        sirin_log!("[telegram/{agent_id}] Session remains unauthorized; skipping listener run");
         handle.quit();
         let _ = pool_task.await;
         return Ok(());
@@ -688,12 +685,14 @@ pub async fn run_agent_listener(
 
     loop {
         attempt += 1;
-        sirin_log!("[telegram/{agent_id}] Starting listener attempt #{attempt}");
+        if attempt == 1 {
+            sirin_log!("[telegram/{agent_id}] Starting listener");
+        }
         auth.set_disconnected(format!("attempt #{attempt}"));
 
         match run_agent_listener_once(&agent_cfg, &channel, &tracker, &auth).await {
             Ok(()) => {
-                sirin_log!("[telegram/{agent_id}] Listener exited cleanly; retrying in {backoff_secs}s");
+                // Silent retry for unauthorized sessions — status visible in UI.
             }
             Err(e) => {
                 sirin_log!("[telegram/{agent_id}] Listener error: {e}; retrying in {backoff_secs}s");
@@ -727,14 +726,14 @@ pub async fn run_listener(tracker: TaskTracker, auth: TelegramAuthState) {
 
     loop {
         attempt += 1;
-        sirin_log!("[telegram] Starting listener attempt #{attempt}");
+        if attempt == 1 {
+            sirin_log!("[telegram] Starting listener");
+        }
         auth.set_disconnected(format!("attempt #{attempt}"));
 
         match run_listener_once(&tracker, &auth).await {
             Ok(()) => {
-                // run_listener_once returned Ok when auth was unavailable or
-                // env vars were absent — wait before retrying.
-                sirin_log!("[telegram] Listener exited cleanly; retrying in {backoff_secs}s");
+                // Silent retry for unauthorized sessions — status visible in UI.
             }
             Err(e) => {
                 sirin_log!("[telegram] Listener error: {e}; retrying in {backoff_secs}s");

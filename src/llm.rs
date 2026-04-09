@@ -1497,31 +1497,6 @@ pub async fn probe_and_build_fleet(client: &reqwest::Client) -> AgentFleet {
         baseline.backend_name(),
         baseline.base_url,
     );
-    for cm in &classified {
-        let size_str = if cm.info.size_bytes > 0 {
-            format!(" [{:.1} GB]", cm.info.size_bytes as f64 / 1_073_741_824.0)
-        } else {
-            String::new()
-        };
-        let cap_labels: Vec<&str> = cm
-            .capabilities
-            .iter()
-            .map(|c| match c {
-                ModelCapability::Fast => "fast",
-                ModelCapability::Chat => "chat",
-                ModelCapability::Code => "code",
-                ModelCapability::Large => "large",
-                ModelCapability::Vision => "vision",
-                ModelCapability::Embedding => "embed",
-            })
-            .collect();
-        eprintln!(
-            "  • {}{} [{}]",
-            cm.info.name,
-            size_str,
-            cap_labels.join(",")
-        );
-    }
 
     // Validate / pick the main chat model.
     let chat_model = if is_model_available(&baseline.model, &classified) {

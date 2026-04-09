@@ -473,7 +473,6 @@ async fn run_once(tracker: &TaskTracker) -> Result<(), Box<dyn std::error::Error
         .collect();
 
     if actionable.is_empty() {
-        sirin_log!("[followup] No FOLLOWING/PENDING tasks found — skipping LLM call");
         return Ok(());
     }
 
