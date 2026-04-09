@@ -344,8 +344,15 @@ pub struct AgentsFile {
 
 impl Default for AgentsFile {
     fn default() -> Self {
+        // Provide a sensible first-run skeleton so the sidebar is never empty.
+        let mut agent = AgentConfig::new_default("assistant_1", "助手1");
+        agent.enabled = true;
+        agent.channel = Some(ChannelConfig {
+            telegram: Some(TelegramChannelConfig::default()),
+            teams: None,
+        });
         Self {
-            agents: Vec::new(),
+            agents: vec![agent],
             max_agents: default_max_agents(),
         }
     }

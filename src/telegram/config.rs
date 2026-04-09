@@ -11,13 +11,7 @@ pub const AUTH_INPUT_TIMEOUT_SECS: u64 = 300;
 /// Resolve a persistent Telegram session path outside the workspace so
 /// runtime writes do not trigger Tauri's file watcher.
 pub fn session_path() -> std::path::PathBuf {
-    if let Ok(local_app_data) = env::var("LOCALAPPDATA") {
-        return std::path::Path::new(&local_app_data)
-            .join("Sirin")
-            .join("sirin.session");
-    }
-
-    std::path::Path::new("data").join("sirin.session")
+    crate::platform::app_data_dir().join("sirin.session")
 }
 
 /// Whether Telegram sign-in is required at startup.

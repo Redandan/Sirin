@@ -2,6 +2,7 @@
 
 mod adk;
 mod agent_config;
+mod platform;
 mod browser;
 mod agents;
 mod code_graph;
@@ -29,15 +30,48 @@ use persona::TaskTracker;
 use telegram_auth::TelegramAuthState;
 
 fn task_log_path() -> PathBuf {
-    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-        return std::path::Path::new(&local_app_data)
-            .join("Sirin")
-            .join("tracking")
-            .join("task.jsonl");
+    platform::app_data_dir().join("tracking").join("task.jsonl")
+}
+
+/// Ensure all required directories and default config files exist.
+/// Called once at startup — safe to call repeatedly (all operations are idempotent).
+fn ensure_first_run_dirs() {
+    use std::fs;
+
+    // App-data subdirectories
+    let data = platform::app_data_dir();
+    for sub in &["tracking", "memory", "code_graph", "context"] {
+        let _ = fs::create_dir_all(data.join(sub));
     }
-    std::path::Path::new("data")
-        .join("tracking")
-        .join("task.jsonl")
+
+    // Local data directories (pending replies, sessions, teams profile)
+    for sub in &["data/pending_replies", "data/sessions", "data/teams_profile"] {
+        let _ = fs::create_dir_all(sub);
+    }
+
+    // config/ directory
+    let _ = fs::create_dir_all("config");
+    let _ = fs::create_dir_all("config/skills");
+
+    // Write default agents.yaml if absent
+    if !std::path::Path::new("config/agents.yaml").exists() {
+        let default_file = agent_config::AgentsFile::default();
+        if let Ok(yaml) = serde_yaml::to_string(&default_file) {
+            let _ = fs::write("config/agents.yaml", yaml);
+            eprintln!("[main] Created default config/agents.yaml");
+        }
+    }
+
+    // Write default persona.yaml if absent
+    if !std::path::Path::new("config/persona.yaml").exists() {
+        let default_yaml = "\
+identity:\n  name: 助手1\n  professional_tone: brief\n\
+response_style:\n  voice: 自然、親切\n  ack_prefix: 收到。\n  compliance_line: 我來協助你。\n\
+objectives: []\nroi_thresholds:\n  min_usd_to_notify: 5.0\n  min_usd_to_call_remote_llm: 25.0\n\
+coding_agent:\n  enabled: true\n  auto_approve_writes: true\n  max_iterations: 10\n";
+        let _ = fs::write("config/persona.yaml", default_yaml);
+        eprintln!("[main] Created default config/persona.yaml");
+    }
 }
 
 async fn background_loop(tracker: TaskTracker) {
@@ -58,6 +92,8 @@ fn main() {
         Ok(path) => eprintln!("[main] Loaded .env from {path:?}"),
         Err(e) => eprintln!("[main] .env not loaded: {e}"),
     }
+
+    ensure_first_run_dirs();
 
     match memory::ensure_codebase_index() {
         Ok(count) if count > 0 => eprintln!("[main] Refreshed codebase index ({count} files)"),

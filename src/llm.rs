@@ -1012,7 +1012,7 @@ async fn list_ollama_models(client: &reqwest::Client, base_url: &str) -> Vec<Mod
     let url = format!("{}/api/tags", base_url.trim_end_matches('/'));
     match client
         .get(&url)
-        .timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(2))
         .send()
         .await
     {

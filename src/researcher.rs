@@ -137,15 +137,7 @@ pub struct ResearchTask {
 // ── Persistence ───────────────────────────────────────────────────────────────
 
 fn research_log_path() -> PathBuf {
-    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-        return std::path::Path::new(&local_app_data)
-            .join("Sirin")
-            .join("tracking")
-            .join("research.jsonl");
-    }
-    std::path::Path::new("data")
-        .join("tracking")
-        .join("research.jsonl")
+    crate::platform::app_data_dir().join("tracking").join("research.jsonl")
 }
 
 fn research_store_lock() -> &'static Mutex<()> {

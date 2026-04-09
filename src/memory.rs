@@ -66,11 +66,7 @@ fn dir_size(path: &Path) -> u64 {
 
 /// Collect on-disk storage sizes for all Sirin data files.
 pub fn storage_usage() -> StorageUsage {
-    let base = if let Ok(local) = std::env::var("LOCALAPPDATA") {
-        Path::new(&local).join("Sirin")
-    } else {
-        Path::new("data").to_path_buf()
-    };
+    let base = crate::platform::app_data_dir();
 
     let memory_db_bytes = file_size(&base.join("memory").join("memories.db"));
     let call_graph_bytes = file_size(&base.join("call_graph.jsonl"));
@@ -93,24 +89,12 @@ pub fn storage_usage() -> StorageUsage {
 // ── Memory store (SQLite FTS5 backend) ───────────────────────────────────────
 
 fn memory_db_path() -> PathBuf {
-    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-        return Path::new(&local_app_data)
-            .join("Sirin")
-            .join("memory")
-            .join("memories.db");
-    }
-    Path::new("data").join("memory").join("memories.db")
+    crate::platform::app_data_dir().join("memory").join("memories.db")
 }
 
 /// Legacy JSONL path — used only for one-time migration on first startup.
 fn memory_index_path() -> PathBuf {
-    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-        return Path::new(&local_app_data)
-            .join("Sirin")
-            .join("memory")
-            .join("index.jsonl");
-    }
-    Path::new("data").join("memory").join("index.jsonl")
+    crate::platform::app_data_dir().join("memory").join("index.jsonl")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -316,15 +300,7 @@ fn score_entry(text: &str, query_terms: &[String]) -> f64 {
 // ── Project codebase index ───────────────────────────────────────────────────
 
 fn codebase_index_path() -> PathBuf {
-    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-        return Path::new(&local_app_data)
-            .join("Sirin")
-            .join("memory")
-            .join("codebase_index.jsonl");
-    }
-    Path::new("data")
-        .join("memory")
-        .join("codebase_index.jsonl")
+    crate::platform::app_data_dir().join("memory").join("codebase_index.jsonl")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -998,15 +974,7 @@ fn context_log_path(peer_id: Option<i64>, agent_id: Option<&str>) -> std::path::
         (None, Some(pid)) => format!("sirin_context_{pid}.jsonl"),
         (None, None) => "sirin_context.jsonl".to_string(),
     };
-    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-        return std::path::Path::new(&local_app_data)
-            .join("Sirin")
-            .join("tracking")
-            .join(&filename);
-    }
-    std::path::Path::new("data")
-        .join("tracking")
-        .join(&filename)
+    crate::platform::app_data_dir().join("tracking").join(&filename)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -26,6 +26,17 @@ headless_chrome = "1.0"
 image = { version = "0.25", default-features = false, features = ["png"] }
 axum = { version = "0.8", features = ["ws"] }
 
+[package.metadata.bundle]
+name = "Sirin"
+identifier = "com.sirin.app"
+version = "0.1.0"
+copyright = "Copyright (c) 2025 Sirin"
+category = "Productivity"
+short_description = "Pure-Rust desktop AI Agent platform"
+long_description = "Multi-agent desktop AI platform with Telegram, Teams integration and LLM-powered automation."
+icon = ["assets/icon.icns", "assets/icon.png"]
+osx_minimum_system_version = "12.0"
+
 [build-dependencies]
 
 [profile.release]

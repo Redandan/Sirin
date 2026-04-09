@@ -69,13 +69,7 @@ pub fn invalidate_cache() {
 // ── File-system paths ──────────────────────────────────────────────────────────
 
 fn graph_file_path() -> PathBuf {
-    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-        return Path::new(&local_app_data)
-            .join("Sirin")
-            .join("code_graph")
-            .join("graph.jsonl");
-    }
-    Path::new("data").join("code_graph").join("graph.jsonl")
+    crate::platform::app_data_dir().join("code_graph").join("graph.jsonl")
 }
 
 fn relative_display(path: &Path, root: &Path) -> String {
