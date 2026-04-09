@@ -1959,23 +1959,22 @@ fn show_overview_tab(
                     }
                 }).collect();
                 if group.is_empty() { continue; }
+                // Category icon on its own row
+                ui.colored_label(*color, RichText::new(*cat_icon).small());
+                // Badges in wrapped flow — use Button (single widget, correct sizing)
                 ui.horizontal_wrapped(|ui| {
-                    ui.colored_label(*color, RichText::new(*cat_icon).small());
-                    ui.add_space(2.0);
+                    ui.spacing_mut().item_spacing = egui::vec2(4.0, 3.0);
                     for sk in &group {
-                        egui::Frame::new()
-                            .fill(Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 22))
-                            .stroke(egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 80)))
-                            .corner_radius(4.0)
-                            .inner_margin(egui::Margin::symmetric(5, 1))
-                            .show(ui, |ui| {
-                                ui.colored_label(*color, RichText::new(&sk.name).small())
-                                    .on_hover_text(&sk.description);
-                            });
-                        ui.add_space(2.0);
+                        let fill   = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 22);
+                        let stroke = egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 90));
+                        ui.add(
+                            egui::Button::new(RichText::new(&sk.name).small().color(*color))
+                                .fill(fill)
+                                .stroke(stroke)
+                        ).on_hover_text(&sk.description);
                     }
                 });
-                ui.add_space(2.0);
+                ui.add_space(4.0);
             }
             ui.add_space(2.0);
             ui.colored_label(Color32::DARK_GRAY, RichText::new(
