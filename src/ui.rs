@@ -27,6 +27,29 @@ enum View {
     Log,
 }
 
+// ── Log severity filter ───────────────────────────────────────────────────────
+
+#[derive(PartialEq, Clone, Copy)]
+enum LogFilter { All, WarnPlus, ErrorOnly }
+
+/// Returns true if a log line matches a given filter level.
+fn line_matches(line: &str, filter: LogFilter) -> bool {
+    match filter {
+        LogFilter::All => true,
+        LogFilter::WarnPlus => {
+            line.contains("[ERROR]") || line.contains("[WARN]")
+                || line.to_lowercase().contains("error")
+                || line.to_lowercase().contains("warn")
+                || line.to_lowercase().contains("failed")
+        }
+        LogFilter::ErrorOnly => {
+            line.contains("[ERROR]")
+                || line.to_lowercase().contains("error")
+                || line.to_lowercase().contains("failed")
+        }
+    }
+}
+
 fn task_status_badge(
     status: &str,
     reason: Option<&str>,
@@ -169,6 +192,9 @@ pub struct SirinApp {
     renaming_agent_idx: Option<usize>,
     /// Temporary edit buffer while renaming.
     renaming_agent_buf: String,
+
+    // ── Log filter ────────────────────────────────────────────────────────────
+    log_filter: LogFilter,
 }
 
 impl SirinApp {
@@ -274,6 +300,7 @@ impl SirinApp {
             browser_screenshot_url: String::new(),
             renaming_agent_idx: None,
             renaming_agent_buf: String::new(),
+            log_filter: LogFilter::All,
         };
         app.refresh();
         app
@@ -445,20 +472,22 @@ impl eframe::App for SirinApp {
 
         // ── Left sidebar ──────────────────────────────────────────────────────
         {
-            // Lazy-load agents for the sidebar list.
+            use crate::persona::ProfessionalTone;
+
             if self.settings_agents.is_none() {
                 use crate::agent_config::AgentsFile;
                 self.settings_agents = AgentsFile::load().ok().or_else(|| Some(AgentsFile::default()));
             }
-            let agents: Vec<_> = self.settings_agents.as_ref()
-                .map(|f| f.agents.iter().map(|a| (a.id.clone(), a.identity.name.clone(), a.enabled)).collect())
+            // Clone full AgentConfig for sidebar rendering
+            let agents: Vec<crate::agent_config::AgentConfig> = self.settings_agents.as_ref()
+                .map(|f| f.agents.clone())
                 .unwrap_or_default();
             let pending_count_cache = self.pending_count_cache.clone();
             let cur_view = self.view.clone();
 
             egui::SidePanel::left("main_sidebar")
                 .resizable(false)
-                .exact_width(172.0)
+                .exact_width(215.0)
                 .show(ctx, |ui| {
                     ui.add_space(6.0);
                     ui.label(RichText::new("助手").heading().strong());
@@ -472,79 +501,157 @@ impl eframe::App for SirinApp {
                             let mut commit_rename: Option<(usize, String)> = None;
                             let mut cancel_rename = false;
 
-                            for (i, (agent_id, agent_name, enabled)) in agents.iter().enumerate() {
-                                let is_sel   = cur_view == View::Agent(Some(i));
-                                let renaming = self.renaming_agent_idx == Some(i);
-                                let led      = if *enabled { Color32::from_rgb(80, 200, 100) } else { Color32::GRAY };
-                                let pending_n = *pending_count_cache.get(agent_id).unwrap_or(&0);
+                            for (i, agent) in agents.iter().enumerate() {
+                                let is_sel    = cur_view == View::Agent(Some(i));
+                                let renaming  = self.renaming_agent_idx == Some(i);
+                                let pending_n = *pending_count_cache.get(&agent.id).unwrap_or(&0);
 
-                                egui::Frame::new()
-                                    .fill(if is_sel { Color32::from_rgb(35, 55, 80) } else { Color32::TRANSPARENT })
-                                    .corner_radius(4.0)
-                                    .inner_margin(egui::Margin::symmetric(6, 3))
+                                // Card background: selected > enabled > default
+                                let card_fill = if is_sel {
+                                    Color32::from_rgb(30, 55, 90)
+                                } else if agent.enabled {
+                                    Color32::from_rgb(22, 30, 42)
+                                } else {
+                                    Color32::from_rgb(18, 20, 24)
+                                };
+
+                                let card_resp = egui::Frame::new()
+                                    .fill(card_fill)
+                                    .stroke(egui::Stroke::new(
+                                        1.0,
+                                        if is_sel { Color32::from_rgb(70, 120, 200) }
+                                        else { Color32::from_rgb(38, 44, 54) },
+                                    ))
+                                    .corner_radius(6.0)
+                                    .inner_margin(egui::Margin::symmetric(8, 6))
                                     .show(ui, |ui| {
                                         ui.set_min_width(ui.available_width());
+
+                                        // ── 行 1：名稱 + 狀態 ──────────────────────────
                                         ui.horizontal(|ui| {
+                                            let led = if agent.enabled {
+                                                Color32::from_rgb(80, 200, 100)
+                                            } else {
+                                                Color32::from_rgb(90, 90, 90)
+                                            };
                                             ui.colored_label(led, "●");
 
                                             if renaming {
-                                                // ── Inline text editor ───────────────────────
                                                 let edit_id = egui::Id::new(("rename", i));
                                                 let resp = ui.add(
                                                     egui::TextEdit::singleline(&mut self.renaming_agent_buf)
                                                         .desired_width(ui.available_width() - 4.0)
                                                         .id(edit_id),
                                                 );
-                                                // Request focus on the first frame it appears
-                                                if resp.gained_focus() || resp.clicked() {
-                                                    resp.request_focus();
-                                                }
                                                 ctx.memory_mut(|m| m.request_focus(edit_id));
-
-                                                let pressed_enter = ui.input(|inp| inp.key_pressed(egui::Key::Enter));
-                                                let pressed_esc   = ui.input(|inp| inp.key_pressed(egui::Key::Escape));
-
-                                                if pressed_enter || resp.lost_focus() {
+                                                let enter = ui.input(|inp| inp.key_pressed(egui::Key::Enter));
+                                                let esc   = ui.input(|inp| inp.key_pressed(egui::Key::Escape));
+                                                if enter || resp.lost_focus() {
                                                     let name = self.renaming_agent_buf.trim().to_string();
-                                                    if !name.is_empty() {
-                                                        commit_rename = Some((i, name));
-                                                    } else {
-                                                        cancel_rename = true;
-                                                    }
-                                                } else if pressed_esc {
-                                                    cancel_rename = true;
-                                                }
+                                                    if !name.is_empty() { commit_rename = Some((i, name)); }
+                                                    else { cancel_rename = true; }
+                                                } else if esc { cancel_rename = true; }
                                             } else {
-                                                // ── Normal label (single-click = select, double-click = rename) ──
-                                                let lbl_resp = ui.add(
-                                                    egui::Label::new(RichText::new(agent_name).strong())
-                                                        .sense(egui::Sense::click()),
+                                                let lbl = ui.add(
+                                                    egui::Label::new(
+                                                        RichText::new(&agent.identity.name).strong()
+                                                    ).sense(egui::Sense::click()),
                                                 );
-                                                if lbl_resp.double_clicked() {
+                                                if lbl.double_clicked() {
                                                     self.renaming_agent_idx = Some(i);
-                                                    self.renaming_agent_buf = agent_name.clone();
-                                                    self.view = View::Agent(Some(i));
-                                                    self.pending_replies_loaded_for.clear();
-                                                } else if lbl_resp.clicked() {
-                                                    self.view = View::Agent(Some(i));
-                                                    self.pending_replies_loaded_for.clear();
+                                                    self.renaming_agent_buf = agent.identity.name.clone();
                                                 }
-                                                lbl_resp.on_hover_text("雙擊重新命名");
+                                                lbl.on_hover_text("雙擊重新命名");
 
+                                                // 待確認 badge 靠右
                                                 if pending_n > 0 {
                                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                                         ui.colored_label(
                                                             Color32::from_rgb(255, 160, 60),
-                                                            format!("📬{}", pending_n),
+                                                            RichText::new(format!("📬{pending_n}")).small(),
                                                         );
                                                     });
                                                 }
                                             }
                                         });
-                                    });
+
+                                        if !renaming {
+                                            ui.add_space(3.0);
+
+                                            // ── 行 2：通訊頻道（只在真實有頻道時顯示）+ 語氣 ──
+                                            let channel_info: Option<(&str, &str, Color32)> =
+                                                agent.channel.as_ref().and_then(|ch| {
+                                                    if ch.telegram.is_some() {
+                                                        Some(("✈", "Telegram", Color32::from_rgb(100, 180, 255)))
+                                                    } else if ch.teams.is_some() {
+                                                        Some(("💼", "Teams", Color32::from_rgb(100, 160, 220)))
+                                                    } else {
+                                                        None  // ChannelConfig 存在但兩個頻道都空
+                                                    }
+                                                });
+
+                                            ui.horizontal(|ui| {
+                                                if let Some((icon, name, col)) = channel_info {
+                                                    ui.colored_label(col, RichText::new(icon).small());
+                                                    ui.colored_label(col, RichText::new(name).small());
+                                                    ui.colored_label(Color32::DARK_GRAY, RichText::new("·").small());
+                                                }
+                                                let tone_txt = match agent.identity.professional_tone {
+                                                    ProfessionalTone::Brief    => "簡",
+                                                    ProfessionalTone::Detailed => "詳",
+                                                    ProfessionalTone::Casual   => "輕",
+                                                };
+                                                ui.colored_label(Color32::from_rgb(160, 160, 160), RichText::new(tone_txt).small());
+                                            });
+
+                                            // ── 行 3：聲調 ─────────────────────────────
+                                            if !agent.response_style.voice.is_empty() {
+                                                let voice: String = agent.response_style.voice
+                                                    .chars().take(12).collect();
+                                                ui.colored_label(
+                                                    Color32::from_rgb(110, 110, 110),
+                                                    RichText::new(format!("「{voice}」")).small().italics(),
+                                                );
+                                            }
+
+                                            // ── 行 4：首要目標 ─────────────────────────
+                                            if let Some(obj) = agent.objectives.first() {
+                                                let obj_short: String = obj.chars().take(18).collect();
+                                                ui.horizontal(|ui| {
+                                                    ui.colored_label(Color32::from_rgb(80, 180, 130), RichText::new("🎯").small());
+                                                    ui.colored_label(Color32::from_rgb(140, 200, 160), RichText::new(obj_short).small());
+                                                });
+                                            }
+
+                                            // ── 行 5：能力標籤 ─────────────────────────
+                                            ui.add_space(2.0);
+                                            ui.horizontal(|ui| {
+                                                if agent.actions.coding_agent.enabled {
+                                                    badge(ui, "🔧", Color32::from_rgb(160, 120, 255), "Coding Agent");
+                                                }
+                                                if agent.actions.research_agent.enabled {
+                                                    badge(ui, "🔬", Color32::from_rgb(100, 200, 180), "Research Agent");
+                                                }
+                                                if agent.human_behavior.enabled {
+                                                    badge(ui, "👤", Color32::from_rgb(200, 160, 80), "仿人類行為");
+                                                }
+                                                if !agent.enabled {
+                                                    badge(ui, "OFF", Color32::from_rgb(80, 80, 80), "已停用");
+                                                }
+                                            });
+                                        }
+                                    })
+                                    .response
+                                    .interact(egui::Sense::click());
+
+                                if card_resp.clicked() && !renaming {
+                                    self.view = View::Agent(Some(i));
+                                    self.pending_replies_loaded_for.clear();
+                                }
+
+                                ui.add_space(4.0);
                             }
 
-                            // Apply rename outside the loop to avoid borrow conflict
                             if let Some((idx, new_name)) = commit_rename {
                                 if let Some(f) = self.settings_agents.as_mut() {
                                     if let Some(a) = f.agents.get_mut(idx) {
@@ -563,21 +670,27 @@ impl eframe::App for SirinApp {
 
                     // Bottom nav items
                     ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                        let has_err = log_buffer::recent(50)
-                            .iter()
-                            .any(|l| l.contains("[ERROR]") || l.contains("error") || l.contains("failed"));
-                        let log_sel = cur_view == View::Log;
+                        let recent_logs = log_buffer::recent(100);
+                        let has_err  = recent_logs.iter().any(|l| line_matches(l, LogFilter::ErrorOnly));
+                        let has_warn = !has_err && recent_logs.iter().any(|l| line_matches(l, LogFilter::WarnPlus));
+                        let log_sel  = cur_view == View::Log;
                         if egui::Frame::new()
                             .fill(if log_sel { Color32::from_rgb(35, 55, 80) } else { Color32::TRANSPARENT })
                             .corner_radius(4.0)
                             .inner_margin(egui::Margin::symmetric(6, 3))
                             .show(ui, |ui| {
                                 ui.set_min_width(ui.available_width());
-                                let lbl = if has_err { "📋 Log ●" } else { "📋 Log" };
-                                ui.colored_label(
-                                    if log_sel { Color32::WHITE } else { Color32::GRAY },
-                                    lbl,
-                                );
+                                ui.horizontal(|ui| {
+                                    ui.colored_label(
+                                        if log_sel { Color32::WHITE } else { Color32::GRAY },
+                                        "📋 Log",
+                                    );
+                                    if has_err {
+                                        ui.colored_label(Color32::from_rgb(220, 80, 80), "●");
+                                    } else if has_warn {
+                                        ui.colored_label(Color32::from_rgb(220, 180, 60), "●");
+                                    }
+                                });
                             })
                             .response
                             .interact(egui::Sense::click())
@@ -1126,17 +1239,45 @@ impl SirinApp {
     }
 
     fn show_log(&mut self, ui: &mut egui::Ui) {
+        let all_lines = log_buffer::recent(300);
+        let filtered: Vec<&String> = all_lines.iter()
+            .filter(|l| line_matches(l, self.log_filter))
+            .collect();
+
         // ── Header ────────────────────────────────────────────────────────────
         ui.horizontal(|ui| {
             ui.label(RichText::new("系統 Log").strong());
             ui.separator();
-            ui.small(format!("{} 行", log_buffer::recent(300).len()));
+
+            // 篩選器按鈕
+            for (label, filter, active_col) in [
+                ("全部",   LogFilter::All,       Color32::from_rgb(80, 130, 200)),
+                ("⚠ 警告+", LogFilter::WarnPlus,  Color32::from_rgb(200, 160, 40)),
+                ("✗ 錯誤",  LogFilter::ErrorOnly, Color32::from_rgb(200, 70, 70)),
+            ] {
+                let is_active = self.log_filter == filter;
+                let btn = egui::Button::new(RichText::new(label).small())
+                    .fill(if is_active { active_col } else { Color32::TRANSPARENT });
+                if ui.add(btn).clicked() {
+                    self.log_filter = filter;
+                }
+            }
+
+            ui.separator();
+            let label = if self.log_filter == LogFilter::All {
+                format!("{} 行", filtered.len())
+            } else {
+                format!("{} / {} 行", filtered.len(), all_lines.len())
+            };
+            ui.colored_label(Color32::DARK_GRAY, RichText::new(label).small());
+
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button("🗑 清除").clicked() {
                     log_buffer::clear();
                 }
-                if ui.small_button("📋 複製全部").clicked() {
-                    ui.ctx().copy_text(log_buffer::snapshot_text(300));
+                if ui.small_button("📋 複製").clicked() {
+                    let text = filtered.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n");
+                    ui.ctx().copy_text(text);
                 }
             });
         });
@@ -1147,15 +1288,17 @@ impl SirinApp {
             .stick_to_bottom(true)
             .auto_shrink(false)
             .show(ui, |ui| {
-                for line in log_buffer::recent(300) {
-                    let color = if line.contains("[ERROR]")
-                        || line.contains("error")
-                        || line.contains("Error")
-                        || line.contains("failed")
-                        || line.contains("Failed")
-                    {
+                if filtered.is_empty() {
+                    ui.centered_and_justified(|ui| {
+                        ui.colored_label(Color32::DARK_GRAY, "目前沒有符合條件的 Log");
+                    });
+                    return;
+                }
+                for line in &filtered {
+                    let lower = line.to_lowercase();
+                    let color = if line.contains("[ERROR]") || lower.contains("error") || lower.contains("failed") {
                         Color32::from_rgb(220, 100, 100)
-                    } else if line.contains("[WARN]") || line.contains("warn") {
+                    } else if line.contains("[WARN]") || lower.contains("warn") {
                         Color32::from_rgb(220, 180, 80)
                     } else if line.contains("[telegram]") || line.contains("[tg]") {
                         Color32::from_rgb(100, 180, 255)
@@ -1165,13 +1308,14 @@ impl SirinApp {
                         Color32::from_rgb(220, 180, 100)
                     } else if line.contains("[coding]") || line.contains("[adk]") {
                         Color32::from_rgb(180, 150, 255)
+                    } else if line.contains("[teams]") {
+                        Color32::from_rgb(100, 200, 220)
                     } else {
                         Color32::GRAY
                     };
-                    ui.colored_label(color, egui::RichText::new(&line).monospace().small());
+                    ui.colored_label(color, egui::RichText::new(line.as_str()).monospace().small());
                 }
             });
-
     }
 
 }
@@ -1439,6 +1583,20 @@ fn show_tab_channel(
             ui.end_row();
         });
     }
+}
+
+/// Renders a tiny pill badge in the sidebar card.
+fn badge(ui: &mut egui::Ui, label: &str, color: Color32, tooltip: &str) {
+    let resp = egui::Frame::none()
+        .fill(Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 30))
+        .stroke(egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 100)))
+        .corner_radius(3.0)
+        .inner_margin(egui::Margin::symmetric(4, 1))
+        .show(ui, |ui| {
+            ui.colored_label(color, RichText::new(label).small());
+        })
+        .response;
+    resp.on_hover_text(tooltip);
 }
 
 /// Renders a compact Telegram connection status icon (✈●/✈⚠/✈✗/✈○).
