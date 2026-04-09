@@ -109,6 +109,49 @@ const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/
 const DEFAULT_MODEL: &str = "llama3.2";
 const DEFAULT_GEMINI_MODEL: &str = "gemini-2.0-flash";
 
+// ── UI-editable LLM config (persisted to config/llm.yaml) ────────────────────
+
+/// Stores the user's model-role assignments.
+/// Saved to `config/llm.yaml`; loaded on startup to override env-var defaults.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LlmUiConfig {
+    /// "ollama" | "lmstudio" | "gemini"  (empty = keep env default)
+    #[serde(default)]
+    pub provider: String,
+    /// Base URL for the backend  (empty = keep env default)
+    #[serde(default)]
+    pub base_url: String,
+    /// Main chat model  (empty = keep env default)
+    #[serde(default)]
+    pub main_model: String,
+    /// Router/planner model  (empty = use main)
+    #[serde(default)]
+    pub router_model: String,
+    /// Coding model  (empty = use main)
+    #[serde(default)]
+    pub coding_model: String,
+    /// Large/reasoning model  (empty = use main)
+    #[serde(default)]
+    pub large_model: String,
+}
+
+impl LlmUiConfig {
+    const PATH: &'static str = "config/llm.yaml";
+
+    pub fn load() -> Self {
+        std::fs::read_to_string(Self::PATH)
+            .ok()
+            .and_then(|s| serde_yaml::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let content = serde_yaml::to_string(self)?;
+        std::fs::write(Self::PATH, content)?;
+        Ok(())
+    }
+}
+
 // ── Backend enum ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -987,6 +1030,19 @@ async fn list_lmstudio_models(
             .unwrap_or_default(),
         _ => Vec::new(),
     }
+}
+
+/// Query the local backend (Ollama or LM Studio) and return available model names.
+/// Non-blocking; returns empty vec on any error.
+pub async fn list_local_models(base_url: &str, provider: &str) -> Vec<String> {
+    let client = shared_http();
+    let infos = match provider {
+        "lmstudio" | "lm_studio" | "openai" => {
+            list_lmstudio_models(&client, base_url, None).await
+        }
+        _ => list_ollama_models(&client, base_url).await,
+    };
+    infos.into_iter().map(|m| m.name).collect()
 }
 
 // ── Model capability classification ──────────────────────────────────────────

@@ -134,7 +134,6 @@ pub struct SirinApp {
     settings_agent_scratch: Vec<AgentUiScratch>,
     settings_new_agent_id: String,
     settings_new_agent_name: String,
-    settings_selected_agent: Option<usize>,
     settings_active_tab: usize,
 
     // ── Agent workspace ───────────────────────────────────────────────────────
@@ -149,6 +148,15 @@ pub struct SirinApp {
     pending_draft_edits: std::collections::HashMap<String, String>,
     /// Pending reply counts cached per agent (refreshed every 5 s).
     pending_count_cache: std::collections::HashMap<String, usize>,
+
+    // ── LLM 配置（本地模型選擇）─────────────────────────────────────────────
+    llm_ui_config: crate::llm::LlmUiConfig,
+    /// Models discovered by the last scan (Ollama/LM Studio query).
+    llm_available_models: Vec<String>,
+    /// Pending background scan result channel.
+    llm_scan_rx: Option<std::sync::mpsc::Receiver<Vec<String>>>,
+    llm_config_msg: String,
+    llm_config_msg_at: Option<std::time::Instant>,
 }
 
 impl SirinApp {
@@ -220,7 +228,6 @@ impl SirinApp {
             settings_agent_scratch: Vec::new(),
             settings_new_agent_id: String::new(),
             settings_new_agent_name: String::new(),
-            settings_selected_agent: Some(0),
             settings_active_tab: 0,
             agent_auth_states,
             workspace_tab: 0,
@@ -230,6 +237,27 @@ impl SirinApp {
             pending_replies_loaded_for: String::new(),
             pending_draft_edits: std::collections::HashMap::new(),
             pending_count_cache: std::collections::HashMap::new(),
+            llm_ui_config: {
+                let cfg = crate::llm::LlmUiConfig::load();
+                if cfg.provider.is_empty() && cfg.main_model.is_empty() {
+                    // Bootstrap from current active singleton
+                    let llm = crate::llm::shared_llm();
+                    crate::llm::LlmUiConfig {
+                        provider:      llm.backend_name().to_string(),
+                        base_url:      llm.base_url.clone(),
+                        main_model:    llm.model.clone(),
+                        router_model:  llm.router_model.clone().unwrap_or_default(),
+                        coding_model:  llm.coding_model.clone().unwrap_or_default(),
+                        large_model:   llm.large_model.clone().unwrap_or_default(),
+                    }
+                } else {
+                    cfg
+                }
+            },
+            llm_available_models: Vec::new(),
+            llm_scan_rx: None,
+            llm_config_msg: String::new(),
+            llm_config_msg_at: None,
         };
         app.refresh();
         app
@@ -280,6 +308,23 @@ impl eframe::App for SirinApp {
         if ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        }
+
+        // ── Poll background model scan result ────────────────────────────────
+        if let Some(ref rx) = self.llm_scan_rx {
+            if let Ok(models) = rx.try_recv() {
+                self.llm_available_models = models;
+                self.llm_scan_rx = None;
+                ctx.request_repaint();
+            }
+        }
+
+        // ── Timed auto-dismiss: LLM config message (4 s) ─────────────────────
+        if let Some(at) = self.llm_config_msg_at {
+            if at.elapsed() > std::time::Duration::from_secs(4) {
+                self.llm_config_msg.clear();
+                self.llm_config_msg_at = None;
+            }
         }
 
         // ── Timed auto-dismiss: research startup message (4 s) ───────────────
@@ -461,7 +506,7 @@ impl eframe::App for SirinApp {
                                 ui.set_min_width(ui.available_width());
                                 ui.colored_label(
                                     if sett_sel { Color32::WHITE } else { Color32::GRAY },
-                                    "⚙ 設定",
+                                    "⚙ 系統",
                                 );
                             })
                             .response
@@ -538,16 +583,25 @@ impl SirinApp {
             .count();
 
         // ── Agent header ──────────────────────────────────────────────────────
-        ui.horizontal(|ui| {
+        let toggle_clicked = ui.horizontal(|ui| {
             let led = if agent.enabled { Color32::from_rgb(80, 200, 100) } else { Color32::GRAY };
             ui.colored_label(led, "●");
             ui.label(RichText::new(&agent_name).heading().strong());
             ui.colored_label(Color32::GRAY, format!("  {}", agent_id));
+            let mut clicked = false;
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let tg_status = self.agent_auth_states.iter()
                     .find(|(id, _)| id == &agent_id)
                     .map(|(_, s)| s.status());
                 if let Some(ref st) = tg_status { tg_status_badge(ui, st); }
+                let (label, color) = if agent.enabled {
+                    ("ON", Color32::from_rgb(80, 200, 100))
+                } else {
+                    ("OFF", Color32::GRAY)
+                };
+                if ui.add(egui::Button::new(RichText::new(label).color(color)).frame(true)).clicked() {
+                    clicked = true;
+                }
                 let platform_label = match agent.platform() {
                     crate::agent_config::AgentPlatform::Telegram => "✈ Telegram",
                     crate::agent_config::AgentPlatform::Teams    => "💼 Teams",
@@ -555,7 +609,15 @@ impl SirinApp {
                 };
                 ui.colored_label(Color32::DARK_GRAY, RichText::new(platform_label).small());
             });
-        });
+            clicked
+        }).inner;
+        if toggle_clicked {
+            if let Some(f) = self.settings_agents.as_mut() {
+                if let Some(a) = f.agents.get_mut(sel) {
+                    a.enabled = !a.enabled;
+                }
+            }
+        }
         if !self.dispatch_msg.is_empty() {
             let color = if self.dispatch_msg.starts_with('❌') {
                 Color32::from_rgb(220, 80, 80)
@@ -566,11 +628,12 @@ impl SirinApp {
         }
         ui.separator();
 
-        // ── Sub-tab bar (2 tabs) ──────────────────────────────────────────────
+        // ── Sub-tab bar (3 tabs) ──────────────────────────────────────────────
         ui.horizontal(|ui| {
             let tabs: &[(&str, Option<usize>)] = &[
                 ("思考流", None),
                 ("待確認", if pending_count > 0 { Some(pending_count) } else { None }),
+                ("⚙ 設定",  None),
             ];
             for (i, (label, badge)) in tabs.iter().enumerate() {
                 let is_active = self.workspace_tab == i;
@@ -629,7 +692,7 @@ impl SirinApp {
             }
 
             // ── 待確認 ────────────────────────────────────────────────────────
-            _ => {
+            1 => {
                 let pending: Vec<_> = self.pending_replies.iter()
                     .filter(|r| r.status == PendingStatus::Pending)
                     .cloned()
@@ -712,223 +775,246 @@ impl SirinApp {
                 }
             }
 
+            // ── ⚙ 設定 ────────────────────────────────────────────────────────
+            _ => self.show_agent_settings_tab(ui, sel),
         }
     }
 
-
-    fn show_settings(&mut self, ui: &mut egui::Ui) {
+    fn show_agent_settings_tab(&mut self, ui: &mut egui::Ui, sel: usize) {
         use crate::agent_config::AgentsFile;
-        use crate::telegram_auth::TelegramStatus;
 
-        // ── Lazy-load ─────────────────────────────────────────────────────────
         if self.settings_agents.is_none() {
             self.settings_agents = AgentsFile::load().ok().or_else(|| Some(AgentsFile::default()));
         }
 
-        let mut do_save      = false;
-        let mut do_reload    = false;
-        let mut do_add_agent = false;
-        let settings_msg = self.settings_msg.clone();
+        let mut do_save   = false;
+        let mut do_reload = false;
+        let settings_msg  = self.settings_msg.clone();
+        let mut active_tab = self.settings_active_tab;
 
+        // Take scratch out to avoid simultaneous &mut self borrows.
+        let mut scratch = std::mem::take(&mut self.settings_agent_scratch);
+        let agent_auth_states: Vec<_> = self.agent_auth_states.iter()
+            .map(|(id, s)| (id.clone(), s.clone())).collect();
+        let all_tg_phones: Vec<(String, String)> = self.settings_agents.as_ref()
+            .map(|f| f.agents.iter()
+                .filter_map(|a| {
+                    let phone = a.channel.as_ref()?.telegram.as_ref().map(|t| t.phone.clone())?;
+                    Some((a.id.clone(), phone))
+                })
+                .collect())
+            .unwrap_or_default();
+
+        {
+            let agents_file = self.settings_agents.as_mut().unwrap();
+            scratch.resize_with(agents_file.agents.len(), Default::default);
+
+            if sel < agents_file.agents.len() {
+                // Toolbar
+                egui::Frame::new()
+                    .fill(ui.visuals().extreme_bg_color)
+                    .inner_margin(egui::Margin::symmetric(8, 6))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            if ui.add(egui::Button::new(RichText::new("💾 儲存").strong())
+                                .fill(Color32::from_rgb(30, 90, 50))).clicked() { do_save = true; }
+                            if ui.button("↺ 重新載入").clicked() { do_reload = true; }
+                            if !settings_msg.is_empty() {
+                                let color = if settings_msg.starts_with('❌') {
+                                    Color32::from_rgb(220, 80, 80)
+                                } else { Color32::from_rgb(100, 220, 100) };
+                                ui.colored_label(color, &settings_msg);
+                            }
+                        });
+                    });
+                ui.separator();
+
+                let agent = &mut agents_file.agents[sel];
+                let scratch_entry = &mut scratch[sel];
+                let auth_state = agent_auth_states.iter()
+                    .find(|(id, _)| id == &agent.id)
+                    .map(|(_, s)| s);
+                let other_tg_phones: Vec<_> = all_tg_phones.iter()
+                    .filter(|(id, _)| id != &agent.id)
+                    .cloned()
+                    .collect();
+                ScrollArea::vertical().id_salt("ws_agent_cfg").auto_shrink(false).show(ui, |ui| {
+                    show_agent_detail(ui, agent, scratch_entry, auth_state, &other_tg_phones, &mut active_tab);
+                });
+            }
+        }
+
+        self.settings_agent_scratch = scratch;
+        self.settings_active_tab    = active_tab;
+
+        if do_save {
+            match self.settings_agents.as_ref().unwrap().save() {
+                Ok(()) => { self.settings_msg = "✅ 已儲存".to_string(); self.refresh(); }
+                Err(e) => { self.settings_msg = format!("❌ 儲存失敗：{e}"); }
+            }
+            self.settings_msg_at = Some(std::time::Instant::now());
+        }
+        if do_reload {
+            match AgentsFile::load() {
+                Ok(fresh) => { self.settings_agents = Some(fresh); self.settings_agent_scratch.clear(); self.settings_msg = "已重新載入".to_string(); }
+                Err(e)    => { self.settings_msg = format!("❌ 載入失敗：{e}"); }
+            }
+            self.settings_msg_at = Some(std::time::Instant::now());
+        }
+    }
+
+    fn show_settings(&mut self, ui: &mut egui::Ui) {
+        use crate::agent_config::AgentsFile;
+
+        if self.settings_agents.is_none() {
+            self.settings_agents = AgentsFile::load().ok().or_else(|| Some(AgentsFile::default()));
+        }
+
+        // ── Add agent row ─────────────────────────────────────────────────────
+        let mut new_id   = std::mem::take(&mut self.settings_new_agent_id);
+        let mut new_name = std::mem::take(&mut self.settings_new_agent_name);
+        let mut do_add   = false;
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("新增 Agent").strong().small());
+            ui.add(egui::TextEdit::singleline(&mut new_id).hint_text("id").desired_width(70.0));
+            ui.add(egui::TextEdit::singleline(&mut new_name).hint_text("名稱").desired_width(90.0));
+            let can_add = !new_id.trim().is_empty() && !new_name.trim().is_empty();
+            if ui.add_enabled(can_add, egui::Button::new("＋")).clicked() { do_add = true; }
+        });
+        if do_add {
+            let id   = new_id.trim().to_string();
+            let name = if new_name.trim().is_empty() { id.clone() } else { new_name.trim().to_string() };
+            if let Some(f) = self.settings_agents.as_mut() {
+                let new_idx = f.agents.len();
+                f.agents.push(crate::agent_config::AgentConfig::new_default(&id, name));
+                // Switch to new agent's workspace
+                self.view = View::Agent(Some(new_idx));
+                self.workspace_tab = 2; // ⚙ 設定 tab
+            }
+            new_id.clear();
+            new_name.clear();
+        }
+        self.settings_new_agent_id   = new_id;
+        self.settings_new_agent_name = new_name;
+
+        ui.separator();
+
+        // ── 本地模型配置 ──────────────────────────────────────────────────────
+        {
+            let cfg = &mut self.llm_ui_config;
+
+            ui.label(RichText::new("本地模型配置").strong());
+            ui.add_space(4.0);
+
+            // Provider selector
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("後端").small());
+                for (label, val) in [("Ollama", "ollama"), ("LM Studio", "lmstudio"), ("Gemini", "gemini")] {
+                    let active = cfg.provider == val;
+                    let btn = egui::Button::new(RichText::new(label).small())
+                        .fill(if active { Color32::from_rgb(35, 65, 110) } else { Color32::TRANSPARENT });
+                    if ui.add(btn).clicked() { cfg.provider = val.to_string(); }
+                }
+            });
+
+            // Base URL
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Base URL").small());
+                ui.add(egui::TextEdit::singleline(&mut cfg.base_url)
+                    .hint_text(if cfg.provider == "lmstudio" { "http://localhost:1234/v1" } else { "http://localhost:11434" })
+                    .desired_width(220.0));
+
+                let scanning = self.llm_scan_rx.is_some();
+                let btn = egui::Button::new(RichText::new(if scanning { "⏳" } else { "🔍 掃描" }).small());
+                if ui.add_enabled(!scanning, btn).on_hover_text("查詢可用模型").clicked() {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    self.llm_scan_rx = Some(rx);
+                    let base_url = cfg.base_url.clone();
+                    let provider = cfg.provider.clone();
+                    self.rt.spawn(async move {
+                        let models = crate::llm::list_local_models(&base_url, &provider).await;
+                        let _ = tx.send(models);
+                    });
+                }
+            });
+
+            // Available models list (populated after scan)
+            if !self.llm_available_models.is_empty() {
+                let names = self.llm_available_models.clone();
+                ui.add_space(4.0);
+                ui.colored_label(Color32::GRAY, RichText::new(
+                    format!("掃描到 {} 個模型", names.len())
+                ).small());
+
+                // Helper: draw a model combobox
+                fn model_combo<'a>(
+                    ui: &mut egui::Ui,
+                    id: &str,
+                    label: &str,
+                    current: &mut String,
+                    options: &[String],
+                    fallback_hint: &str,
+                ) {
+                    ui.label(RichText::new(label).small());
+                    egui::ComboBox::from_id_salt(id)
+                        .selected_text(if current.is_empty() { fallback_hint } else { current.as_str() })
+                        .width(160.0)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(current, String::new(), format!("（{fallback_hint}）"));
+                            for m in options {
+                                ui.selectable_value(current, m.clone(), m.as_str());
+                            }
+                        });
+                }
+
+                let cfg = &mut self.llm_ui_config;
+                egui::Grid::new("llm_model_grid").num_columns(4).spacing([8.0, 4.0]).show(ui, |ui| {
+                    model_combo(ui, "llm_main",   "主模型",   &mut cfg.main_model,   &names, "必填");
+                    model_combo(ui, "llm_router", "路由",     &mut cfg.router_model, &names, "同主模型");
+                    ui.end_row();
+                    model_combo(ui, "llm_coding", "Coding",  &mut cfg.coding_model, &names, "同主模型");
+                    model_combo(ui, "llm_large",  "大模型",   &mut cfg.large_model,  &names, "同主模型");
+                    ui.end_row();
+                });
+            } else if self.llm_scan_rx.is_some() {
+                ui.colored_label(Color32::GRAY, RichText::new("掃描中…").small());
+            }
+
+            // Save button
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.add(egui::Button::new(RichText::new("💾 儲存模型配置").small())
+                    .fill(Color32::from_rgb(30, 90, 50))).clicked()
+                {
+                    match self.llm_ui_config.save() {
+                        Ok(()) => { self.llm_config_msg = "✅ 已儲存 config/llm.yaml，重啟後生效".to_string(); }
+                        Err(e) => { self.llm_config_msg = format!("❌ 儲存失敗：{e}"); }
+                    }
+                    self.llm_config_msg_at = Some(std::time::Instant::now());
+                }
+                if !self.llm_config_msg.is_empty() {
+                    let color = if self.llm_config_msg.starts_with('❌') {
+                        Color32::from_rgb(220, 80, 80)
+                    } else { Color32::from_rgb(100, 220, 100) };
+                    ui.colored_label(color, RichText::new(&self.llm_config_msg).small());
+                }
+            });
+        }
+
+        ui.separator();
+
+        // ── System panel (LLM summary + Telegram auth) ───────────────────────
         let mut tg_code     = std::mem::take(&mut self.tg_code);
         let mut tg_password = std::mem::take(&mut self.tg_password);
         let tg_msg          = self.tg_msg.clone();
         let tg_auth         = self.tg_auth.clone();
         let mut tg_msg_update: Option<String> = None;
 
-        let mut scratch        = std::mem::take(&mut self.settings_agent_scratch);
-        let mut new_agent_id   = std::mem::take(&mut self.settings_new_agent_id);
-        let mut new_agent_name = std::mem::take(&mut self.settings_new_agent_name);
-        let mut selected_agent = self.settings_selected_agent;
-        let mut selected_tab   = self.settings_active_tab;
+        show_system_panel(ui, &tg_auth, &mut tg_code, &mut tg_password, &tg_msg, &mut tg_msg_update);
 
-        let agents_file = self.settings_agents.as_mut().unwrap();
-        scratch.resize_with(agents_file.agents.len(), Default::default);
-
-        let agent_auth_states: Vec<(String, crate::telegram_auth::TelegramAuthState)> =
-            self.agent_auth_states.iter().map(|(id, s)| (id.clone(), s.clone())).collect();
-
-        // ── Pre-collect sidebar rows (avoids borrow conflict with mut right panel) ──
-        struct AgentRow { name: String, _id: String, enabled: bool, tg_status: Option<TelegramStatus> }
-        let agent_rows: Vec<AgentRow> = agents_file.agents.iter().map(|a| {
-            let tg_status = agent_auth_states.iter()
-                .find(|(id, _)| id == &a.id)
-                .map(|(_, s)| s.status());
-            AgentRow { name: a.identity.name.clone(), _id: a.id.clone(), enabled: a.enabled, tg_status }
-        }).collect();
-
-        // Phone conflict map for channel tab
-        let all_tg_phones: Vec<(String, String)> = agents_file.agents.iter()
-            .filter_map(|a| {
-                let phone = a.channel.as_ref()?.telegram.as_ref().map(|t| t.phone.clone())?;
-                Some((a.id.clone(), phone))
-            })
-            .collect();
-
-        // ── Toolbar ───────────────────────────────────────────────────────────
-        egui::Frame::new()
-            .fill(ui.visuals().extreme_bg_color)
-            .inner_margin(egui::Margin::symmetric(8, 6))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    if ui.add(
-                        egui::Button::new(RichText::new("💾  儲存").strong())
-                            .fill(Color32::from_rgb(30, 90, 50)),
-                    ).clicked() { do_save = true; }
-                    if ui.button("↺  重新載入")
-                        .on_hover_text("丟棄未儲存的變更，重新從磁碟讀取")
-                        .clicked() { do_reload = true; }
-                    if !settings_msg.is_empty() {
-                        ui.separator();
-                        let color = if settings_msg.starts_with('❌') {
-                            Color32::from_rgb(220, 80, 80)
-                        } else {
-                            Color32::from_rgb(100, 220, 100)
-                        };
-                        ui.colored_label(color, &settings_msg);
-                    }
-                });
-            });
-        ui.separator();
-
-        // ── Left sidebar ──────────────────────────────────────────────────────
-        egui::SidePanel::left("settings_agents_sidebar")
-            .resizable(true)
-            .default_width(210.0)
-            .min_width(150.0)
-            .max_width(320.0)
-            .show_inside(ui, |ui| {
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut new_agent_id)
-                        .hint_text("id").desired_width(65.0));
-                    ui.add(egui::TextEdit::singleline(&mut new_agent_name)
-                        .hint_text("名稱").desired_width(82.0));
-                    let can_add = !new_agent_id.trim().is_empty() && !new_agent_name.trim().is_empty();
-                    if ui.add_enabled(can_add, egui::Button::new("＋"))
-                        .on_hover_text("新增 Agent").clicked() {
-                        do_add_agent = true;
-                    }
-                });
-                ui.separator();
-
-                ScrollArea::vertical().id_salt("sidebar_scroll").show(ui, |ui| {
-                    for (i, row) in agent_rows.iter().enumerate() {
-                        let is_sel = selected_agent == Some(i);
-                        let led_color = if row.enabled { Color32::from_rgb(80, 200, 100) } else { Color32::GRAY };
-                        let clicked = egui::Frame::new()
-                            .fill(if is_sel { Color32::from_rgb(35, 55, 80) } else { Color32::TRANSPARENT })
-                            .corner_radius(4.0)
-                            .inner_margin(egui::Margin::symmetric(6, 3))
-                            .show(ui, |ui| {
-                                ui.set_min_width(ui.available_width());
-                                ui.horizontal(|ui| {
-                                    ui.colored_label(led_color, if row.enabled { "●" } else { "○" });
-                                    ui.label(RichText::new(&row.name).strong());
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        if let Some(ref st) = row.tg_status {
-                                            tg_status_badge(ui, st);
-                                        }
-                                    });
-                                });
-                            })
-                            .response.interact(egui::Sense::click()).clicked();
-                        if clicked { selected_agent = Some(i); }
-                    }
-
-                    ui.add_space(8.0);
-                    ui.separator();
-
-                    let is_sys = selected_agent.is_none();
-                    if egui::Frame::new()
-                        .fill(if is_sys { Color32::from_rgb(35, 55, 80) } else { Color32::TRANSPARENT })
-                        .corner_radius(4.0)
-                        .inner_margin(egui::Margin::symmetric(6, 3))
-                        .show(ui, |ui| {
-                            ui.set_min_width(ui.available_width());
-                            ui.colored_label(Color32::GRAY, "⚙  系統");
-                        })
-                        .response.interact(egui::Sense::click()).clicked()
-                    {
-                        selected_agent = None;
-                    }
-                });
-            });
-
-        // ── Right panel ───────────────────────────────────────────────────────
-        ScrollArea::vertical().id_salt("settings_right").auto_shrink(false).show(ui, |ui| {
-            ui.add_space(8.0);
-            match selected_agent {
-                None => {
-                    show_system_panel(
-                        ui, &tg_auth, &mut tg_code, &mut tg_password,
-                        &tg_msg, &mut tg_msg_update,
-                    );
-                }
-                Some(idx) if idx < agents_file.agents.len() => {
-                    let agent = &mut agents_file.agents[idx];
-                    let scratch_entry = &mut scratch[idx];
-                    let auth_state = agent_auth_states.iter()
-                        .find(|(id, _)| id == &agent.id)
-                        .map(|(_, s)| s);
-                    let other_tg_phones: Vec<(String, String)> = all_tg_phones.iter()
-                        .filter(|(id, _)| id != &agent.id)
-                        .cloned()
-                        .collect();
-                    show_agent_detail(
-                        ui, agent, scratch_entry, auth_state,
-                        &other_tg_phones, &mut selected_tab,
-                    );
-                }
-                _ => {
-                    ui.centered_and_justified(|ui| {
-                        ui.colored_label(Color32::GRAY, "← 選擇左側 Agent 以編輯設定");
-                    });
-                }
-            }
-        });
-
-        // ── Write-back ────────────────────────────────────────────────────────
-        self.settings_agent_scratch  = scratch;
-        self.settings_selected_agent = selected_agent;
-        self.settings_active_tab     = selected_tab;
-        self.tg_code                 = tg_code;
-        self.tg_password             = tg_password;
+        self.tg_code     = tg_code;
+        self.tg_password = tg_password;
         if let Some(msg) = tg_msg_update { self.tg_msg = msg; }
-
-        if do_add_agent {
-            let id   = new_agent_id.trim().to_string();
-            let name = if new_agent_name.trim().is_empty() { id.clone() } else { new_agent_name.trim().to_string() };
-            if let Some(f) = self.settings_agents.as_mut() {
-                let new_idx = f.agents.len();
-                f.agents.push(crate::agent_config::AgentConfig::new_default(&id, name));
-                self.settings_selected_agent = Some(new_idx);
-                self.settings_active_tab = 0;
-            }
-            new_agent_id.clear();
-            new_agent_name.clear();
-        }
-        self.settings_new_agent_id   = new_agent_id;
-        self.settings_new_agent_name = new_agent_name;
-
-        if do_save {
-            match self.settings_agents.as_ref().unwrap().save() {
-                Ok(()) => self.settings_msg = "✅ 設定已儲存".to_string(),
-                Err(e) => self.settings_msg = format!("❌ 儲存失敗：{e}"),
-            }
-            self.settings_msg_at = Some(std::time::Instant::now());
-        }
-        if do_reload {
-            match AgentsFile::load() {
-                Ok(fresh) => {
-                    self.settings_agents = Some(fresh);
-                    self.settings_agent_scratch.clear();
-                    self.settings_msg = "已重新載入".to_string();
-                }
-                Err(e) => self.settings_msg = format!("❌ 載入失敗：{e}"),
-            }
-            self.settings_msg_at = Some(std::time::Instant::now());
-        }
     }
 
     fn show_log(&mut self, ui: &mut egui::Ui) {
@@ -990,29 +1076,6 @@ fn show_agent_detail(
     other_tg_phones: &[(String, String)],
     active_tab: &mut usize,
 ) {
-    // ── Agent header ──────────────────────────────────────────────────────
-    ui.horizontal(|ui| {
-        let enabled_color = if agent.enabled { Color32::from_rgb(80, 200, 100) } else { Color32::GRAY };
-        ui.colored_label(enabled_color, if agent.enabled { "●" } else { "○" });
-        ui.label(RichText::new(&agent.identity.name).heading().strong());
-        ui.colored_label(Color32::GRAY, format!("  {}", agent.id));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let (label, color) = if agent.enabled {
-                ("ON", Color32::from_rgb(80, 200, 100))
-            } else {
-                ("OFF", Color32::from_rgb(120, 120, 120))
-            };
-            if ui.add(egui::Button::new(RichText::new(label).color(color)).frame(true)).clicked() {
-                agent.enabled = !agent.enabled;
-            }
-            if let Some(a) = auth {
-                let st = a.status();
-                tg_status_badge(ui, &st);
-            }
-        });
-    });
-    ui.separator();
-
     // ── Tab bar ───────────────────────────────────────────────────────────
     let tabs = ["身分", "目標", "通訊"];
     ui.horizontal(|ui| {
@@ -1220,6 +1283,39 @@ fn show_tab_channel(
         ui.add_space(8.0);
         ui.colored_label(Color32::GRAY, "（無 Channel — UI / 測試模式）");
     }
+
+    // ── 仿人類行為 ────────────────────────────────────────────────────────
+    ui.add_space(10.0);
+    ui.separator();
+    let hb = &mut agent.human_behavior;
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut hb.enabled, RichText::new("仿人類行為").strong().small());
+        if hb.enabled {
+            ui.colored_label(Color32::from_rgb(255, 200, 60), RichText::new("（延遲回覆中）").small());
+        }
+    });
+    if hb.enabled {
+        ui.add_space(4.0);
+        egui::Grid::new("hb_mini").num_columns(4).spacing([8.0, 4.0]).show(ui, |ui| {
+            ui.label(RichText::new("延遲").small());
+            let mut min_s = hb.min_reply_delay_secs as i64;
+            if ui.add(egui::DragValue::new(&mut min_s).range(0..=3600).suffix("s")).changed() {
+                hb.min_reply_delay_secs = min_s.max(0) as u64;
+                if hb.min_reply_delay_secs > hb.max_reply_delay_secs {
+                    hb.max_reply_delay_secs = hb.min_reply_delay_secs;
+                }
+            }
+            ui.label(RichText::new("—").small());
+            let mut max_s = hb.max_reply_delay_secs as i64;
+            if ui.add(egui::DragValue::new(&mut max_s).range(0..=3600).suffix("s")).changed() {
+                hb.max_reply_delay_secs = max_s.max(0) as u64;
+                if hb.max_reply_delay_secs < hb.min_reply_delay_secs {
+                    hb.min_reply_delay_secs = hb.max_reply_delay_secs;
+                }
+            }
+            ui.end_row();
+        });
+    }
 }
 
 /// Renders a compact Telegram connection status icon (✈●/✈⚠/✈✗/✈○).
@@ -1252,33 +1348,16 @@ fn show_system_panel(
     ui.separator();
     ui.add_space(6.0);
 
-    // ── LLM backend ───────────────────────────────────────────────────────
-    ui.label(RichText::new("LLM 後端").strong());
+    // ── Active LLM summary (read-only) ───────────────────────────────────
+    ui.label(RichText::new("目前使用中").strong().small());
     ui.add_space(2.0);
-    let main_llm  = crate::llm::shared_llm();
-    let large_llm = crate::llm::shared_large_llm();
-    egui::Grid::new("sys_ai_grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-        ui.label("主模型");
-        let (c, icon) = if main_llm.is_remote() {
-            (Color32::from_rgb(255, 160, 60), "☁")
-        } else {
-            (Color32::from_rgb(100, 220, 100), "🖥")
-        };
-        ui.colored_label(c, format!("{icon}  {} / {}", main_llm.backend_name(), main_llm.model));
-        ui.end_row();
-        if large_llm.model != main_llm.model {
-            ui.label("大模型");
-            let (c, icon) = if large_llm.is_remote() {
-                (Color32::from_rgb(255, 160, 60), "☁")
-            } else {
-                (Color32::from_rgb(100, 220, 100), "🖥")
-            };
-            ui.colored_label(c, format!("{icon}  {} / {}", large_llm.backend_name(), large_llm.model));
-            ui.end_row();
-        }
+    let llm = crate::llm::shared_llm();
+    let (c, icon) = if llm.is_remote() { (Color32::from_rgb(255,160,60), "☁") } else { (Color32::from_rgb(100,220,100), "🖥") };
+    ui.horizontal(|ui| {
+        ui.colored_label(c, icon);
+        ui.colored_label(Color32::GRAY, RichText::new(format!("{} / {}", llm.backend_name(), llm.model)).small().monospace());
     });
-    ui.add_space(2.0);
-    ui.colored_label(Color32::GRAY, "LLM 後端與 env vars 需修改 .env 後重啟生效");
+    ui.colored_label(Color32::DARK_GRAY, RichText::new("（啟動時載入，重啟後生效）").small());
 
     ui.add_space(12.0);
     ui.separator();
