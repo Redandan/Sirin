@@ -209,6 +209,16 @@ pub struct SirinApp {
     overview_sim_loading: bool,
     /// Channel receiving the simulate-reply result from the background task.
     overview_sim_rx: Option<std::sync::mpsc::Receiver<String>>,
+
+    // ── Persona sync ──────────────────────────────────────────────────────────
+    /// Whether persona analysis LLM call is in flight.
+    persona_sync_loading: bool,
+    /// LLM-suggested persona fields: (voice, ack_prefix, compliance_line).
+    persona_sync_suggestion: Option<(String, String, String)>,
+    /// Status/error message for the persona sync feature.
+    persona_sync_msg: String,
+    /// Channel receiving persona sync result.
+    persona_sync_rx: Option<std::sync::mpsc::Receiver<Result<(String, String, String), String>>>,
 }
 
 impl SirinApp {
@@ -321,6 +331,10 @@ impl SirinApp {
             overview_sim_result: String::new(),
             overview_sim_loading: false,
             overview_sim_rx: None,
+            persona_sync_loading: false,
+            persona_sync_suggestion: None,
+            persona_sync_msg: String::new(),
+            persona_sync_rx: None,
         };
         app.refresh();
         app
@@ -389,6 +403,24 @@ impl eframe::App for SirinApp {
                 self.overview_sim_result = reply;
                 self.overview_sim_loading = false;
                 self.overview_sim_rx = None;
+                ctx.request_repaint();
+            }
+        }
+
+        // ── Persona sync: poll LLM analysis result ───────────────────────────
+        if let Some(ref rx) = self.persona_sync_rx {
+            if let Ok(result) = rx.try_recv() {
+                self.persona_sync_loading = false;
+                self.persona_sync_rx = None;
+                match result {
+                    Ok(suggestion) => {
+                        self.persona_sync_suggestion = Some(suggestion);
+                        self.persona_sync_msg = "✅ 分析完成，請確認後套用".to_string();
+                    }
+                    Err(e) => {
+                        self.persona_sync_msg = format!("❌ {e}");
+                    }
+                }
                 ctx.request_repaint();
             }
         }
@@ -2047,6 +2079,131 @@ fn show_overview_tab(
                 .show(ui, |ui| {
                     ui.colored_label(Color32::from_rgb(120, 220, 100),
                         RichText::new(&app.overview_sim_result).small());
+                });
+        }
+        ui.add_space(12.0);
+
+        // ── 5. 人格同步 ───────────────────────────────────────────────────────
+        ui.separator();
+        ui.add_space(6.0);
+        section_header(ui, "🎭 人格同步");
+        ui.colored_label(Color32::DARK_GRAY,
+            RichText::new("分析此助手在通訊軟件上的歷史回覆，自動提取溝通風格並更新人格設定").small());
+        ui.add_space(6.0);
+
+        ui.horizontal(|ui| {
+            let loading = app.persona_sync_loading;
+            let label = if loading { "⏳ 分析中…" } else { "🔍 分析歷史回覆" };
+            let btn = egui::Button::new(RichText::new(label).small().strong())
+                .fill(if loading { Color32::from_rgb(40, 30, 60) } else { Color32::from_rgb(70, 30, 110) });
+            if ui.add(btn).clicked() && !loading {
+                let agent_id = agent.id.clone();
+                let (tx, rx) = std::sync::mpsc::channel();
+                app.persona_sync_rx = Some(rx);
+                app.persona_sync_loading = true;
+                app.persona_sync_suggestion = None;
+                app.persona_sync_msg = "正在收集歷史回覆…".to_string();
+                app.rt.spawn(async move {
+                    let samples = crate::memory::collect_reply_samples(&agent_id, 40);
+                    if samples.is_empty() {
+                        let _ = tx.send(Err("尚無歷史回覆記錄，請先讓助手回覆一些訊息後再試".to_string()));
+                        return;
+                    }
+                    let sample_text = samples.iter()
+                        .enumerate()
+                        .map(|(i, s)| format!("{}. {}", i + 1, s.chars().take(120).collect::<String>()))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let prompt = format!(
+                        "以下是一個AI助手的歷史回覆訊息樣本（共{}條）：\n\n{}\n\n\
+                         請分析這些回覆的溝通風格，只輸出以下JSON格式，不要其他內容：\n\
+                         {{\"voice\":\"語氣描述（10字以內，例如：自然親切、簡潔專業）\",\
+                         \"ack_prefix\":\"開場白（15字以內，例如：收到你的訊息。）\",\
+                         \"compliance_line\":\"表示協助的慣用語（20字以內）\"}}",
+                        samples.len(), sample_text
+                    );
+                    match crate::llm::call_llm_simple(&prompt).await {
+                        Ok(raw) => {
+                            // Extract JSON from response
+                            let json_str = raw.trim()
+                                .trim_start_matches("```json").trim_start_matches("```")
+                                .trim_end_matches("```").trim();
+                            match serde_json::from_str::<serde_json::Value>(json_str) {
+                                Ok(v) => {
+                                    let voice = v["voice"].as_str().unwrap_or("自然、親切").to_string();
+                                    let ack   = v["ack_prefix"].as_str().unwrap_or("收到。").to_string();
+                                    let comp  = v["compliance_line"].as_str().unwrap_or("我來協助你。").to_string();
+                                    let _ = tx.send(Ok((voice, ack, comp)));
+                                }
+                                Err(_) => {
+                                    // LLM didn't produce valid JSON — return raw as fallback voice
+                                    let _ = tx.send(Err(format!("JSON 解析失敗，LLM 原始回覆：{}", raw.chars().take(200).collect::<String>())));
+                                }
+                            }
+                        }
+                        Err(e) => { let _ = tx.send(Err(format!("LLM 錯誤：{e}"))); }
+                    }
+                });
+            }
+
+            if !app.persona_sync_msg.is_empty() {
+                let color = if app.persona_sync_msg.starts_with('❌') {
+                    Color32::from_rgb(220, 80, 80)
+                } else if app.persona_sync_msg.starts_with('✅') {
+                    Color32::from_rgb(100, 220, 100)
+                } else {
+                    Color32::GRAY
+                };
+                ui.colored_label(color, RichText::new(&app.persona_sync_msg).small());
+            }
+        });
+
+        // Preview + apply
+        if let Some((voice, ack, comp)) = app.persona_sync_suggestion.clone() {
+            ui.add_space(6.0);
+            egui::Frame::new()
+                .fill(Color32::from_rgb(28, 20, 45))
+                .stroke(egui::Stroke::new(1.0, Color32::from_rgb(100, 60, 160)))
+                .corner_radius(6.0)
+                .inner_margin(egui::Margin::symmetric(12, 8))
+                .show(ui, |ui| {
+                    ui.colored_label(Color32::from_rgb(170, 120, 240),
+                        RichText::new("📊 分析結果").small().strong());
+                    ui.add_space(4.0);
+                    egui::Grid::new("persona_preview").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
+                        ui.colored_label(Color32::GRAY, RichText::new("語氣").small());
+                        ui.label(RichText::new(&voice).small());
+                        ui.end_row();
+                        ui.colored_label(Color32::GRAY, RichText::new("開場白").small());
+                        ui.label(RichText::new(&ack).small());
+                        ui.end_row();
+                        ui.colored_label(Color32::GRAY, RichText::new("協助語").small());
+                        ui.label(RichText::new(&comp).small());
+                        ui.end_row();
+                    });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        let apply_btn = egui::Button::new(RichText::new("✅ 套用到此助手").small().strong())
+                            .fill(Color32::from_rgb(50, 30, 80));
+                        if ui.add(apply_btn).clicked() {
+                            if let Some(f) = app.settings_agents.as_mut() {
+                                if let Some(a) = f.agents.iter_mut().find(|a| a.id == agent.id) {
+                                    a.response_style.voice            = voice.clone();
+                                    a.response_style.ack_prefix       = ack.clone();
+                                    a.response_style.compliance_line  = comp.clone();
+                                }
+                                match f.save() {
+                                    Ok(()) => app.persona_sync_msg = "✅ 已套用並儲存".to_string(),
+                                    Err(e) => app.persona_sync_msg = format!("❌ 儲存失敗：{e}"),
+                                }
+                            }
+                            app.persona_sync_suggestion = None;
+                        }
+                        if ui.small_button("✖ 捨棄").clicked() {
+                            app.persona_sync_suggestion = None;
+                            app.persona_sync_msg.clear();
+                        }
+                    });
                 });
         }
         ui.add_space(8.0);

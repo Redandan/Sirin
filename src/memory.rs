@@ -1052,6 +1052,32 @@ pub fn load_recent_context(
     Ok(ring.into_iter().collect())
 }
 
+/// Collect the most-recent `limit` assistant replies across ALL context files
+/// belonging to the given agent.  Used for persona-learning analysis.
+pub fn collect_reply_samples(agent_id: &str, limit: usize) -> Vec<String> {
+    let dir = crate::platform::app_data_dir().join("tracking");
+    let prefix = format!("sirin_context_{agent_id}");
+    let mut samples: Vec<(String, String)> = Vec::new(); // (timestamp, reply)
+
+    let Ok(entries) = fs::read_dir(&dir) else { return Vec::new() };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with(&prefix) || !name.ends_with(".jsonl") { continue; }
+        let Ok(file) = fs::File::open(entry.path()) else { continue };
+        for line in BufReader::new(file).lines().filter_map(|l| l.ok()) {
+            if let Ok(ctx) = serde_json::from_str::<ContextEntry>(&line) {
+                if !ctx.assistant_reply.trim().is_empty() {
+                    samples.push((ctx.timestamp, ctx.assistant_reply));
+                }
+            }
+        }
+    }
+    // Sort by timestamp descending, take the most recent N
+    samples.sort_by(|a, b| b.0.cmp(&a.0));
+    samples.into_iter().take(limit).map(|(_, r)| r).collect()
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
