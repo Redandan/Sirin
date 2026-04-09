@@ -799,7 +799,13 @@ impl SirinApp {
                     } else {
                         crate::pending_reply::update_status(&agent_id, &id, PendingStatus::Approved);
                     }
-                    self.dispatch_msg = "✅ 已批准（TODO: 實際發送需 Telegram session）".to_string();
+                    // P1：Teams 草稿核准後立即通知 run_poller() 發送
+                    if agent_id == "teams" {
+                        crate::teams::notify_approved(id.clone());
+                        self.dispatch_msg = "✅ 已批准，正在發送至 Teams…".to_string();
+                    } else {
+                        self.dispatch_msg = "✅ 已批准".to_string();
+                    }
                     self.dispatch_msg_at = Some(std::time::Instant::now());
                     self.pending_replies = crate::pending_reply::load_pending(&agent_id);
                 }
