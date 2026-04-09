@@ -1,0 +1,20 @@
+id: workflow_plan
+name: "Plan（任務拆解）"
+description: "開發第二步：把規格拆解成小粒度、可獨立驗證的任務。每個任務應在 1-2 小時內可完成。"
+category: "coding"
+enabled: true
+requires_approval: false
+backed_by_tools: []
+example_prompts:
+  - "plan 這個任務"
+  - "幫我拆解任務"
+  - "把工作拆小"
+  - "任務規劃"
+  - "開始 plan"
+  - "拆解成小步驟"
+script_file: "config/scripts/workflow_plan.py"
+script_timeout_secs: 15
+prompt_template: |
+  使用 skill_execute，skill_id = "workflow_plan"，user_input = 規格或任務描述。
+  腳本輸出拆解後的任務清單與依賴順序。
+  完成後提示用戶：進入 Build 階段。

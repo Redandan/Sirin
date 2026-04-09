@@ -1,0 +1,20 @@
+id: workflow_review
+name: "Review（程式碼審查）"
+description: "開發第五步：程式碼品質審查。安全性、可讀性、效能、Hyrum's Law 合規性、Chesterton's Fence 檢查。"
+category: "coding"
+enabled: true
+requires_approval: false
+backed_by_tools: []
+example_prompts:
+  - "review 程式碼"
+  - "程式碼審查"
+  - "開始 review"
+  - "檢查程式碼品質"
+  - "code review"
+  - "幫我看看這段程式"
+script_file: "config/scripts/workflow_review.py"
+script_timeout_secs: 15
+prompt_template: |
+  使用 skill_execute，skill_id = "workflow_review"，user_input = 要審查的模組或 diff 描述。
+  腳本輸出結構化審查清單，涵蓋安全、效能、可維護性三個面向。
+  審查通過後才可進入 Ship。

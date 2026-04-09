@@ -1,0 +1,20 @@
+id: workflow_build
+name: "Build（實作）"
+description: "開發第三步：以 TDD 為核心、增量實作。先寫測試再寫實作，保持 API 乾淨，每步可驗證。"
+category: "coding"
+enabled: true
+requires_approval: false
+backed_by_tools: []
+example_prompts:
+  - "開始 build"
+  - "開始實作"
+  - "幫我寫程式"
+  - "build 這個功能"
+  - "進入實作階段"
+  - "TDD 開始"
+script_file: "config/scripts/workflow_build.py"
+script_timeout_secs: 15
+prompt_template: |
+  使用 skill_execute，skill_id = "workflow_build"，user_input = 當前任務描述。
+  腳本輸出實作檢查清單與 TDD 步驟引導。
+  每完成一個子任務後提示驗證，避免一次性大量修改。

@@ -1,0 +1,20 @@
+id: workflow_verify
+name: "Verify（驗證）"
+description: "開發第四步：系統化驗證。跑測試、檢查邊界條件、確認行為符合規格，不跳過任何驗證步驟。"
+category: "coding"
+enabled: true
+requires_approval: false
+backed_by_tools: []
+example_prompts:
+  - "verify 一下"
+  - "跑測試"
+  - "驗證功能"
+  - "開始 verify"
+  - "測試這個"
+  - "確認是否正確"
+script_file: "config/scripts/workflow_verify.py"
+script_timeout_secs: 15
+prompt_template: |
+  使用 skill_execute，skill_id = "workflow_verify"，user_input = 要驗證的功能或模組。
+  腳本輸出完整的驗證清單：測試項目、邊界條件、回歸測試。
+  全部綠燈後才可進入 Review。

@@ -1,0 +1,20 @@
+id: workflow_define
+name: "Define（規格撰寫）"
+description: "開發第一步：撰寫規格說明。先理解需求、定義驗收條件、劃清邊界，再開始任何程式碼。"
+category: "coding"
+enabled: true
+requires_approval: false
+backed_by_tools: []
+example_prompts:
+  - "define 這個功能"
+  - "幫我寫規格"
+  - "先定義需求"
+  - "spec 一下"
+  - "開始 define"
+  - "把需求整理清楚"
+script_file: "config/scripts/workflow_define.py"
+script_timeout_secs: 15
+prompt_template: |
+  使用 skill_execute，skill_id = "workflow_define"，user_input = 用戶描述的需求。
+  腳本會輸出一份規格模板，根據模板引導用戶填寫完整規格。
+  輸出規格後，提示用戶下一步：執行 Plan（拆解任務）。

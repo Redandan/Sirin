@@ -1,0 +1,20 @@
+id: workflow_ship
+name: "Ship（上線）"
+description: "開發最終步：整合 Git 工作流、安全強化、效能確認、架構決策紀錄（ADR）與上線清單。"
+category: "coding"
+enabled: true
+requires_approval: true
+backed_by_tools: []
+example_prompts:
+  - "ship 這個功能"
+  - "準備上線"
+  - "開始 ship"
+  - "提交並上線"
+  - "commit 並部署"
+  - "完成開發準備發布"
+script_file: "config/scripts/workflow_ship.py"
+script_timeout_secs: 15
+prompt_template: |
+  使用 skill_execute，skill_id = "workflow_ship"，user_input = 要上線的功能描述。
+  腳本輸出完整的上線清單：Git commit 格式、CI/CD 確認、安全掃描、ADR 記錄。
+  requires_approval = true：上線前需人工確認清單全部打勾。
