@@ -109,6 +109,37 @@ fn task_status_badge(
 
 
 
+// ── Toast notification system ─────────────────────────────────────────────────
+
+#[derive(Clone, Copy, PartialEq)]
+enum ToastLevel { Info, Success, Error }
+
+struct Toast {
+    text:    String,
+    level:   ToastLevel,
+    expires: std::time::Instant,
+}
+
+impl Toast {
+    fn new(level: ToastLevel, text: impl Into<String>) -> Self {
+        Self { text: text.into(), level, expires: std::time::Instant::now() + std::time::Duration::from_secs(4) }
+    }
+    fn color(&self) -> Color32 {
+        match self.level {
+            ToastLevel::Success => Color32::from_rgb(80, 200, 120),
+            ToastLevel::Error   => Color32::from_rgb(220, 80, 80),
+            ToastLevel::Info    => Color32::from_rgb(160, 200, 255),
+        }
+    }
+    fn bg_color(&self) -> Color32 {
+        match self.level {
+            ToastLevel::Success => Color32::from_rgb(18, 50, 28),
+            ToastLevel::Error   => Color32::from_rgb(60, 18, 18),
+            ToastLevel::Info    => Color32::from_rgb(20, 35, 60),
+        }
+    }
+}
+
 // ── Per-agent UI scratch buffers ──────────────────────────────────────────────
 
 #[derive(Default)]
@@ -131,14 +162,11 @@ pub struct SirinApp {
     research_tasks: Vec<ResearchTask>,
     research_topic: String,
     research_url: String,
-    research_msg: String,
-    research_msg_at: Option<std::time::Instant>,
     pending_objectives: Option<Vec<String>>,
 
     // Telegram OTP input (system panel)
     tg_code: String,
     tg_password: String,
-    tg_msg: String,
 
     last_refresh: std::time::Instant,
 
@@ -152,19 +180,14 @@ pub struct SirinApp {
     // Settings
     settings_agents: Option<crate::agent_config::AgentsFile>,
     agent_auth_states: Vec<(String, crate::telegram_auth::TelegramAuthState)>,
-    settings_msg: String,
-    settings_msg_at: Option<std::time::Instant>,
     settings_agent_scratch: Vec<AgentUiScratch>,
     settings_new_agent_id: String,
     settings_new_agent_name: String,
     settings_active_tab: usize,
 
     // ── Agent workspace ───────────────────────────────────────────────────────
-    /// Active sub-tab: 0=思考流, 1=待確認.
+    /// Active sub-tab: 0=總覽, 1=思考流, 2=待確認, 3=設定.
     workspace_tab: usize,
-    /// Feedback message (approve/reject result).
-    dispatch_msg: String,
-    dispatch_msg_at: Option<std::time::Instant>,
     /// Pending replies cached for the currently selected agent.
     pending_replies: Vec<crate::pending_reply::PendingReply>,
     pending_replies_loaded_for: String,
@@ -178,8 +201,6 @@ pub struct SirinApp {
     llm_available_models: Vec<String>,
     /// Pending background scan result channel.
     llm_scan_rx: Option<std::sync::mpsc::Receiver<Vec<String>>>,
-    llm_config_msg: String,
-    llm_config_msg_at: Option<std::time::Instant>,
 
     // ── Browser screenshot ────────────────────────────────────────────────────
     /// Last screenshot captured by the web_navigate tool (shown in 思考流 tab).
@@ -215,10 +236,11 @@ pub struct SirinApp {
     persona_sync_loading: bool,
     /// LLM-suggested persona fields: (voice, ack_prefix, compliance_line).
     persona_sync_suggestion: Option<(String, String, String)>,
-    /// Status/error message for the persona sync feature.
-    persona_sync_msg: String,
     /// Channel receiving persona sync result.
     persona_sync_rx: Option<std::sync::mpsc::Receiver<Result<(String, String, String), String>>>,
+
+    // ── Toast notifications ───────────────────────────────────────────────────
+    toasts: std::collections::VecDeque<Toast>,
 }
 
 impl SirinApp {
@@ -275,26 +297,19 @@ impl SirinApp {
             research_tasks: Vec::new(),
             research_topic: String::new(),
             research_url: String::new(),
-            research_msg: String::new(),
-            research_msg_at: None,
             pending_objectives: None,
             tg_code: String::new(),
             tg_password: String::new(),
-            tg_msg: String::new(),
             last_refresh: std::time::Instant::now() - std::time::Duration::from_secs(60),
             event_rx: crate::events::subscribe(),
             research_expanded: std::collections::HashSet::new(),
             settings_agents: None,
-            settings_msg: String::new(),
-            settings_msg_at: None,
             settings_agent_scratch: Vec::new(),
             settings_new_agent_id: String::new(),
             settings_new_agent_name: String::new(),
             settings_active_tab: 0,
             agent_auth_states,
             workspace_tab: 0,
-            dispatch_msg: String::new(),
-            dispatch_msg_at: None,
             pending_replies: Vec::new(),
             pending_replies_loaded_for: String::new(),
             pending_draft_edits: std::collections::HashMap::new(),
@@ -318,8 +333,6 @@ impl SirinApp {
             },
             llm_available_models: Vec::new(),
             llm_scan_rx: None,
-            llm_config_msg: String::new(),
-            llm_config_msg_at: None,
             browser_screenshot: None,
             browser_screenshot_url: String::new(),
             renaming_agent_idx: None,
@@ -333,8 +346,8 @@ impl SirinApp {
             overview_sim_rx: None,
             persona_sync_loading: false,
             persona_sync_suggestion: None,
-            persona_sync_msg: String::new(),
             persona_sync_rx: None,
+            toasts: std::collections::VecDeque::new(),
         };
         app.refresh();
         app
@@ -376,6 +389,10 @@ impl SirinApp {
         crate::skill_loader::invalidate_cache();
         self.last_refresh = std::time::Instant::now();
     }
+
+    fn push_toast(&mut self, level: ToastLevel, text: impl Into<String>) {
+        self.toasts.push_back(Toast::new(level, text));
+    }
 }
 
 // ── eframe App impl ───────────────────────────────────────────────────────────
@@ -415,47 +432,19 @@ impl eframe::App for SirinApp {
                 match result {
                     Ok(suggestion) => {
                         self.persona_sync_suggestion = Some(suggestion);
-                        self.persona_sync_msg = "✅ 分析完成，請確認後套用".to_string();
+                        self.push_toast(ToastLevel::Success, "分析完成，請確認後套用");
                     }
                     Err(e) => {
-                        self.persona_sync_msg = format!("❌ {e}");
+                        self.push_toast(ToastLevel::Error, format!("人格同步失敗：{e}"));
                     }
                 }
                 ctx.request_repaint();
             }
         }
 
-        // ── Timed auto-dismiss: LLM config message (4 s) ─────────────────────
-        if let Some(at) = self.llm_config_msg_at {
-            if at.elapsed() > std::time::Duration::from_secs(4) {
-                self.llm_config_msg.clear();
-                self.llm_config_msg_at = None;
-            }
-        }
-
-        // ── Timed auto-dismiss: research startup message (4 s) ───────────────
-        if let Some(msg_at) = self.research_msg_at {
-            if msg_at.elapsed() > std::time::Duration::from_secs(4) {
-                self.research_msg.clear();
-                self.research_msg_at = None;
-            }
-        }
-
-        // ── Timed auto-dismiss: settings save message (4 s) ─────────────────
-        if let Some(msg_at) = self.settings_msg_at {
-            if msg_at.elapsed() > std::time::Duration::from_secs(4) {
-                self.settings_msg.clear();
-                self.settings_msg_at = None;
-            }
-        }
-
-        // ── Timed auto-dismiss: dispatch feedback message (4 s) ──────────────
-        if let Some(msg_at) = self.dispatch_msg_at {
-            if msg_at.elapsed() > std::time::Duration::from_secs(4) {
-                self.dispatch_msg.clear();
-                self.dispatch_msg_at = None;
-            }
-        }
+        // ── Expire old toasts ─────────────────────────────────────────────────
+        let now = std::time::Instant::now();
+        self.toasts.retain(|t| t.expires > now);
 
         // Auto-refresh every 5 s.
         if self.last_refresh.elapsed() > std::time::Duration::from_secs(5) {
@@ -480,8 +469,7 @@ impl eframe::App for SirinApp {
                             crate::agents::research_agent::run_research_via_adk(topic, url).await;
                         eprintln!("[ui] auto-research '{}' → {:?}", task.id, task.status);
                     });
-                    self.research_msg = format!("自動啟動調研：{}", self.research_topic.trim());
-                    self.research_msg_at = Some(std::time::Instant::now());
+                    self.push_toast(ToastLevel::Info, format!("自動啟動調研：{}", self.research_topic.trim()));
                     self.research_topic.clear();
                     self.research_url.clear();
                 }
@@ -577,7 +565,7 @@ impl eframe::App for SirinApp {
                                     Color32::from_rgb(18, 20, 24)
                                 };
 
-                                let card_resp = egui::Frame::new()
+                                let frame_out = egui::Frame::new()
                                     .fill(card_fill)
                                     .stroke(egui::Stroke::new(
                                         1.0,
@@ -702,9 +690,30 @@ impl eframe::App for SirinApp {
                                                 }
                                             });
                                         }
-                                    })
-                                    .response
-                                    .interact(egui::Sense::click());
+                                    });
+
+                                let card_resp = frame_out.response.interact(egui::Sense::click());
+
+                                // Hover overlay (light blue tint)
+                                if card_resp.hovered() && !is_sel && !renaming {
+                                    ui.painter().rect_filled(
+                                        card_resp.rect,
+                                        6.0,
+                                        Color32::from_rgba_unmultiplied(80, 130, 210, 18),
+                                    );
+                                }
+                                // Selected: left-side 3px accent bar
+                                if is_sel {
+                                    let r = card_resp.rect;
+                                    ui.painter().rect_filled(
+                                        egui::Rect::from_min_size(
+                                            r.min,
+                                            egui::Vec2::new(3.0, r.height()),
+                                        ),
+                                        egui::CornerRadius::same(3),
+                                        Color32::from_rgb(60, 130, 220),
+                                    );
+                                }
 
                                 if card_resp.clicked() && !renaming {
                                     self.view = View::Agent(Some(i));
@@ -730,63 +739,55 @@ impl eframe::App for SirinApp {
                             }
                         });
 
-                    // Bottom nav items
+                    // ── Bottom nav bar ─────────────────────────────────────────
                     ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                        let recent_logs = log_buffer::recent(100);
-                        let has_err  = recent_logs.iter().any(|l| line_matches(l, LogFilter::ErrorOnly));
-                        let has_warn = !has_err && recent_logs.iter().any(|l| line_matches(l, LogFilter::WarnPlus));
-                        let log_sel  = cur_view == View::Log;
-                        if egui::Frame::new()
-                            .fill(if log_sel { Color32::from_rgb(35, 55, 80) } else { Color32::TRANSPARENT })
-                            .corner_radius(4.0)
-                            .inner_margin(egui::Margin::symmetric(6, 3))
-                            .show(ui, |ui| {
-                                ui.set_min_width(ui.available_width());
-                                ui.horizontal(|ui| {
-                                    ui.colored_label(
-                                        if log_sel { Color32::WHITE } else { Color32::GRAY },
-                                        "📋 Log",
-                                    );
-                                    if has_err {
-                                        ui.colored_label(Color32::from_rgb(220, 80, 80), "●");
-                                    } else if has_warn {
-                                        ui.colored_label(Color32::from_rgb(220, 180, 60), "●");
-                                    }
-                                });
-                            })
-                            .response
-                            .interact(egui::Sense::click())
-                            .clicked()
-                        {
-                            self.view = View::Log;
-                        }
-
-                        let sett_sel = cur_view == View::Settings;
-                        if egui::Frame::new()
-                            .fill(if sett_sel { Color32::from_rgb(35, 55, 80) } else { Color32::TRANSPARENT })
-                            .corner_radius(4.0)
-                            .inner_margin(egui::Margin::symmetric(6, 3))
-                            .show(ui, |ui| {
-                                ui.set_min_width(ui.available_width());
-                                ui.colored_label(
-                                    if sett_sel { Color32::WHITE } else { Color32::GRAY },
-                                    "⚙ 系統",
-                                );
-                            })
-                            .response
-                            .interact(egui::Sense::click())
-                            .clicked()
-                        {
-                            self.view = View::Settings;
-                        }
-
+                        ui.add_space(4.0);
                         ui.separator();
+
+                        // Single compact toolbar row
                         ui.horizontal(|ui| {
-                            if ui.small_button("⟳").on_hover_text("立即刷新").clicked() {
-                                self.refresh();
-                            }
-                            let secs = self.last_refresh.elapsed().as_secs();
-                            ui.small(format!("{secs}s 前"));
+                            // ── Log button ────────────────────────────────────
+                            let recent_logs = log_buffer::recent(50);
+                            let has_err  = recent_logs.iter().any(|l| line_matches(l, LogFilter::ErrorOnly));
+                            let has_warn = !has_err && recent_logs.iter().any(|l| line_matches(l, LogFilter::WarnPlus));
+                            let log_sel  = cur_view == View::Log;
+
+                            let dot_col = if has_err  { Some(Color32::from_rgb(220, 80, 80)) }
+                                          else if has_warn { Some(Color32::from_rgb(220, 180, 60)) }
+                                          else { None };
+
+                            let log_label = if let Some(col) = dot_col {
+                                RichText::new(format!("📋 Log {}", if has_err { "●" } else { "○" }))
+                                    .small().color(col)
+                            } else {
+                                RichText::new("📋 Log").small()
+                                    .color(if log_sel { Color32::WHITE } else { Color32::GRAY })
+                            };
+                            let log_btn = egui::Button::new(log_label)
+                                .fill(if log_sel { Color32::from_rgb(35, 55, 80) } else { Color32::TRANSPARENT });
+                            if ui.add(log_btn).clicked() { self.view = View::Log; }
+
+                            // ── 系統 button ───────────────────────────────────
+                            let sett_sel = cur_view == View::Settings;
+                            let sett_btn = egui::Button::new(
+                                RichText::new("⚙ 系統").small()
+                                    .color(if sett_sel { Color32::WHITE } else { Color32::GRAY })
+                            ).fill(if sett_sel { Color32::from_rgb(35, 55, 80) } else { Color32::TRANSPARENT });
+                            if ui.add(sett_btn).clicked() { self.view = View::Settings; }
+
+                            // ── Refresh (right-aligned) ───────────────────────
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                let secs = self.last_refresh.elapsed().as_secs();
+                                let rel  = if secs < 5 { "剛剛".to_string() } else { format!("{secs}s 前") };
+                                ui.colored_label(Color32::DARK_GRAY, RichText::new(rel).small());
+                                if ui.add(egui::Button::new(RichText::new("⟳").small())
+                                    .fill(Color32::TRANSPARENT))
+                                    .on_hover_text("立即刷新")
+                                    .clicked()
+                                {
+                                    self.refresh();
+                                }
+                            });
                         });
                     });
                 });
@@ -798,6 +799,54 @@ impl eframe::App for SirinApp {
             View::Settings   => self.show_settings(ui),
             View::Log        => self.show_log(ui),
         });
+
+        // ── Toast overlay (bottom-right corner) ───────────────────────────────
+        if !self.toasts.is_empty() {
+            let screen = ctx.screen_rect();
+            let margin = 14.0_f32;
+            let toast_w = 280.0_f32;
+            let toast_h = 36.0_f32;
+            let gap     =  6.0_f32;
+            let count   = self.toasts.len().min(5);
+
+            egui::Area::new(egui::Id::new("toasts_overlay"))
+                .fixed_pos(egui::pos2(
+                    screen.right()  - toast_w - margin,
+                    screen.bottom() - margin  - (toast_h + gap) * count as f32,
+                ))
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
+                    ui.set_width(toast_w);
+                    for toast in self.toasts.iter().take(5) {
+                        let rect = egui::Rect::from_min_size(
+                            ui.cursor().min,
+                            egui::vec2(toast_w, toast_h),
+                        );
+                        ui.painter().rect_filled(rect, 6.0, toast.bg_color());
+                        ui.painter().rect_stroke(rect, 6.0,
+                            egui::Stroke::new(1.0, toast.color().gamma_multiply(0.5)),
+                            egui::StrokeKind::Inside);
+
+                        // Time remaining pill
+                        let remain = toast.expires.saturating_duration_since(std::time::Instant::now());
+                        let frac = (remain.as_secs_f32() / 4.0).clamp(0.0, 1.0);
+                        let bar_rect = egui::Rect::from_min_size(
+                            rect.min,
+                            egui::vec2(toast_w * frac, 3.0),
+                        );
+                        ui.painter().rect_filled(bar_rect, 0.0, toast.color().gamma_multiply(0.7));
+
+                        ui.allocate_ui_at_rect(rect, |ui| {
+                            ui.centered_and_justified(|ui| {
+                                ui.colored_label(toast.color(),
+                                    RichText::new(&toast.text).small().strong());
+                            });
+                        });
+                        ui.add_space(gap);
+                    }
+                });
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
     }
 }
 
@@ -882,18 +931,11 @@ impl SirinApp {
                 }
             }
         }
-        if !self.dispatch_msg.is_empty() {
-            let color = if self.dispatch_msg.starts_with('❌') {
-                Color32::from_rgb(220, 80, 80)
-            } else {
-                Color32::from_rgb(100, 220, 100)
-            };
-            ui.colored_label(color, &self.dispatch_msg);
-        }
         ui.separator();
 
         // ── Sub-tab bar (4 tabs) ──────────────────────────────────────────────
         ui.horizontal(|ui| {
+            ui.add_space(4.0);
             let tabs: &[(&str, Option<usize>)] = &[
                 ("總覽",   None),
                 ("思考流", None),
@@ -901,22 +943,13 @@ impl SirinApp {
                 ("⚙ 設定",  None),
             ];
             for (i, (label, badge)) in tabs.iter().enumerate() {
-                let is_active = self.workspace_tab == i;
-                let display = if let Some(n) = badge {
-                    format!("{} ({}) ⚠", label, n)
-                } else {
-                    label.to_string()
-                };
-                let btn = egui::Button::new(
-                    RichText::new(&display)
-                        .color(if is_active { Color32::WHITE } else { Color32::GRAY }),
-                )
-                .fill(if is_active { Color32::from_rgb(35, 65, 110) } else { Color32::TRANSPARENT });
-                if ui.add(btn).clicked() {
+                if tab_button(ui, label, *badge, self.workspace_tab == i) {
                     self.workspace_tab = i;
                 }
+                ui.add_space(6.0);
             }
         });
+        ui.add_space(1.0);
         ui.separator();
 
         // ── Sub-tab content ───────────────────────────────────────────────────
@@ -1094,11 +1127,10 @@ impl SirinApp {
                         .unwrap_or(false);
                     if is_teams_agent {
                         crate::teams::notify_approved(id.clone());
-                        self.dispatch_msg = "✅ 已批准，正在發送至 Teams…".to_string();
+                        self.push_toast(ToastLevel::Success, "已批准，正在發送至 Teams…");
                     } else {
-                        self.dispatch_msg = "✅ 已批准".to_string();
+                        self.push_toast(ToastLevel::Success, "已批准");
                     }
-                    self.dispatch_msg_at = Some(std::time::Instant::now());
                     self.pending_replies = crate::pending_reply::load_pending(&agent_id);
                 }
                 if let Some(id) = reject_id {
@@ -1127,7 +1159,6 @@ impl SirinApp {
 
         let mut do_save   = false;
         let mut do_reload = false;
-        let settings_msg  = self.settings_msg.clone();
         let mut active_tab = self.settings_active_tab;
 
         // Take scratch out to avoid simultaneous &mut self borrows.
@@ -1157,12 +1188,6 @@ impl SirinApp {
                             if ui.add(egui::Button::new(RichText::new("💾 儲存").strong())
                                 .fill(Color32::from_rgb(30, 90, 50))).clicked() { do_save = true; }
                             if ui.button("↺ 重新載入").clicked() { do_reload = true; }
-                            if !settings_msg.is_empty() {
-                                let color = if settings_msg.starts_with('❌') {
-                                    Color32::from_rgb(220, 80, 80)
-                                } else { Color32::from_rgb(100, 220, 100) };
-                                ui.colored_label(color, &settings_msg);
-                            }
                         });
                     });
                 ui.separator();
@@ -1188,17 +1213,19 @@ impl SirinApp {
 
         if do_save {
             match self.settings_agents.as_ref().unwrap().save() {
-                Ok(()) => { self.settings_msg = "✅ 已儲存".to_string(); self.refresh(); }
-                Err(e) => { self.settings_msg = format!("❌ 儲存失敗：{e}"); }
+                Ok(()) => { self.push_toast(ToastLevel::Success, "已儲存"); self.refresh(); }
+                Err(e) => { self.push_toast(ToastLevel::Error, format!("儲存失敗：{e}")); }
             }
-            self.settings_msg_at = Some(std::time::Instant::now());
         }
         if do_reload {
             match AgentsFile::load() {
-                Ok(fresh) => { self.settings_agents = Some(fresh); self.settings_agent_scratch.clear(); self.settings_msg = "已重新載入".to_string(); }
-                Err(e)    => { self.settings_msg = format!("❌ 載入失敗：{e}"); }
+                Ok(fresh) => {
+                    self.settings_agents = Some(fresh);
+                    self.settings_agent_scratch.clear();
+                    self.push_toast(ToastLevel::Info, "已重新載入");
+                }
+                Err(e) => { self.push_toast(ToastLevel::Error, format!("載入失敗：{e}")); }
             }
-            self.settings_msg_at = Some(std::time::Instant::now());
         }
     }
 
@@ -1326,16 +1353,9 @@ impl SirinApp {
                     .fill(Color32::from_rgb(30, 90, 50))).clicked()
                 {
                     match self.llm_ui_config.save() {
-                        Ok(()) => { self.llm_config_msg = "✅ 已儲存 config/llm.yaml，重啟後生效".to_string(); }
-                        Err(e) => { self.llm_config_msg = format!("❌ 儲存失敗：{e}"); }
+                        Ok(()) => { self.push_toast(ToastLevel::Success, "已儲存 config/llm.yaml，重啟後生效"); }
+                        Err(e) => { self.push_toast(ToastLevel::Error, format!("儲存失敗：{e}")); }
                     }
-                    self.llm_config_msg_at = Some(std::time::Instant::now());
-                }
-                if !self.llm_config_msg.is_empty() {
-                    let color = if self.llm_config_msg.starts_with('❌') {
-                        Color32::from_rgb(220, 80, 80)
-                    } else { Color32::from_rgb(100, 220, 100) };
-                    ui.colored_label(color, RichText::new(&self.llm_config_msg).small());
                 }
             });
         }
@@ -1345,15 +1365,12 @@ impl SirinApp {
         // ── System panel (LLM summary + Telegram auth) ───────────────────────
         let mut tg_code     = std::mem::take(&mut self.tg_code);
         let mut tg_password = std::mem::take(&mut self.tg_password);
-        let tg_msg          = self.tg_msg.clone();
         let tg_auth         = self.tg_auth.clone();
-        let mut tg_msg_update: Option<String> = None;
 
-        show_system_panel(ui, &self.rt, &tg_auth, &mut tg_code, &mut tg_password, &tg_msg, &mut tg_msg_update);
+        show_system_panel(ui, &self.rt, &tg_auth, &mut tg_code, &mut tg_password, &mut self.toasts);
 
         self.tg_code     = tg_code;
         self.tg_password = tg_password;
-        if let Some(msg) = tg_msg_update { self.tg_msg = msg; }
     }
 
     fn show_log(&mut self, ui: &mut egui::Ui) {
@@ -1451,20 +1468,15 @@ fn show_agent_detail(
     // ── Tab bar ───────────────────────────────────────────────────────────
     let tabs = ["身分", "目標", "通訊"];
     ui.horizontal(|ui| {
+        ui.add_space(4.0);
         for (i, tab_name) in tabs.iter().enumerate() {
-            let is_active = *active_tab == i;
-            let text = if is_active {
-                RichText::new(*tab_name).strong()
-            } else {
-                RichText::new(*tab_name).color(Color32::GRAY)
-            };
-            let btn = egui::Button::new(text)
-                .fill(if is_active { Color32::from_rgb(40, 80, 130) } else { Color32::TRANSPARENT });
-            if ui.add(btn).clicked() {
+            if tab_button(ui, tab_name, None, *active_tab == i) {
                 *active_tab = i;
             }
+            ui.add_space(6.0);
         }
     });
+    ui.add_space(1.0);
     ui.separator();
 
     // ── Tab content ───────────────────────────────────────────────────────
@@ -1881,331 +1893,305 @@ fn show_overview_tab(
     agent: &crate::agent_config::AgentConfig,
     app: &mut crate::ui::SirinApp,
 ) {
+    let skills = crate::skills::list_skills();
+
     ScrollArea::vertical().id_salt("ws_overview").auto_shrink(false).show(ui, |ui| {
-        // ── 1. 助手概覽 ───────────────────────────────────────────────────────
-        section_header(ui, "📋 助手概覽");
-        egui::Frame::new()
-            .fill(Color32::from_rgb(20, 28, 40))
-            .corner_radius(6.0)
-            .inner_margin(egui::Margin::symmetric(12, 8))
-            .show(ui, |ui| {
-                egui::Grid::new("ov_info").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
-                    ui.colored_label(Color32::GRAY, RichText::new("名稱").small());
-                    ui.label(RichText::new(&agent.identity.name).strong().small());
-                    ui.end_row();
+        // ── 雙欄主區域 ────────────────────────────────────────────────────────
+        ui.columns(2, |cols| {
+            // ── 左欄：概覽 + 技能 ─────────────────────────────────────────────
+            let ui = &mut cols[0];
+            ui.add_space(4.0);
 
-                    ui.colored_label(Color32::GRAY, RichText::new("ID").small());
-                    ui.colored_label(Color32::DARK_GRAY, RichText::new(&agent.id).small().monospace());
-                    ui.end_row();
-
-                    ui.colored_label(Color32::GRAY, RichText::new("頻道").small());
-                    let ch = match agent.platform() {
-                        crate::agent_config::AgentPlatform::Telegram => "✈ Telegram",
-                        crate::agent_config::AgentPlatform::Teams    => "💼 Teams",
-                        crate::agent_config::AgentPlatform::UiOnly   => "🖥 UI Only",
-                    };
-                    ui.colored_label(Color32::from_rgb(100, 170, 240), RichText::new(ch).small());
-                    ui.end_row();
-
-                    ui.colored_label(Color32::GRAY, RichText::new("語氣").small());
-                    ui.colored_label(Color32::GRAY, RichText::new(
-                        format!("{:?}", agent.identity.professional_tone)
-                    ).small());
-                    ui.end_row();
-
-                    ui.colored_label(Color32::GRAY, RichText::new("口吻").small());
-                    ui.colored_label(Color32::GRAY, RichText::new(
-                        &agent.response_style.voice
-                    ).small().italics());
-                    ui.end_row();
-
-                    if !agent.objectives.is_empty() {
-                        ui.colored_label(Color32::GRAY, RichText::new("目標").small());
-                        ui.colored_label(Color32::from_rgb(120, 200, 120), RichText::new(
-                            agent.objectives.iter().take(3).cloned().collect::<Vec<_>>().join(" · ")
-                        ).small());
+            // 1. 助手概覽
+            section_header(ui, "📋 助手概覽");
+            egui::Frame::new()
+                .fill(Color32::from_rgb(20, 28, 40))
+                .corner_radius(6.0)
+                .inner_margin(egui::Margin::symmetric(10, 7))
+                .show(ui, |ui| {
+                    egui::Grid::new("ov_info").num_columns(2).spacing([10.0, 4.0]).show(ui, |ui| {
+                        ui.colored_label(Color32::GRAY, RichText::new("名稱").small());
+                        ui.label(RichText::new(&agent.identity.name).strong().small());
                         ui.end_row();
+                        ui.colored_label(Color32::GRAY, RichText::new("ID").small());
+                        ui.colored_label(Color32::DARK_GRAY, RichText::new(&agent.id).small().monospace());
+                        ui.end_row();
+                        ui.colored_label(Color32::GRAY, RichText::new("頻道").small());
+                        let ch = match agent.platform() {
+                            crate::agent_config::AgentPlatform::Telegram => "✈ Telegram",
+                            crate::agent_config::AgentPlatform::Teams    => "💼 Teams",
+                            crate::agent_config::AgentPlatform::UiOnly   => "🖥 UI Only",
+                        };
+                        ui.colored_label(Color32::from_rgb(100, 170, 240), RichText::new(ch).small());
+                        ui.end_row();
+                        ui.colored_label(Color32::GRAY, RichText::new("口吻").small());
+                        ui.colored_label(Color32::from_rgb(130,130,130),
+                            RichText::new(&agent.response_style.voice).small().italics());
+                        ui.end_row();
+                        if !agent.objectives.is_empty() {
+                            ui.colored_label(Color32::GRAY, RichText::new("目標").small());
+                            let goals = agent.objectives.iter().take(2)
+                                .cloned().collect::<Vec<_>>().join(" · ");
+                            ui.colored_label(Color32::from_rgb(120, 200, 120),
+                                RichText::new(goals).small());
+                            ui.end_row();
+                        }
+                    });
+                });
+            ui.add_space(10.0);
+
+            // 2. 技能清單
+            section_header(ui, "🔧 技能");
+            let enabled: Vec<_> = skills.iter().filter(|s| s.enabled).collect();
+            let categories: &[(&str, &str, Color32)] = &[
+                ("coding",   "💻",  Color32::from_rgb(80, 160, 255)),
+                ("research", "🔬",  Color32::from_rgb(80, 220, 160)),
+                ("memory",   "🧠",  Color32::from_rgb(200, 140, 80)),
+                ("web",      "🌐",  Color32::from_rgb(160, 120, 220)),
+                ("",         "⚙",  Color32::from_rgb(150, 150, 150)),
+            ];
+            for (cat_key, cat_icon, color) in categories {
+                let group: Vec<_> = enabled.iter().filter(|s| {
+                    if cat_key.is_empty() {
+                        !["coding","research","memory","web"].contains(&s.category.as_str())
+                    } else {
+                        s.category.as_str() == *cat_key
+                    }
+                }).collect();
+                if group.is_empty() { continue; }
+                ui.horizontal_wrapped(|ui| {
+                    ui.colored_label(*color, RichText::new(*cat_icon).small());
+                    ui.add_space(2.0);
+                    for sk in &group {
+                        egui::Frame::new()
+                            .fill(Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 22))
+                            .stroke(egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 80)))
+                            .corner_radius(4.0)
+                            .inner_margin(egui::Margin::symmetric(5, 1))
+                            .show(ui, |ui| {
+                                ui.colored_label(*color, RichText::new(&sk.name).small())
+                                    .on_hover_text(&sk.description);
+                            });
+                        ui.add_space(2.0);
                     }
                 });
-            });
-        ui.add_space(10.0);
+                ui.add_space(2.0);
+            }
+            ui.add_space(2.0);
+            ui.colored_label(Color32::DARK_GRAY, RichText::new(
+                format!("共 {} 個（{} 內建 + {} YAML）",
+                    skills.len(),
+                    skills.iter().filter(|s| s.prompt_template.is_none()).count(),
+                    skills.iter().filter(|s| s.prompt_template.is_some()).count(),
+                )
+            ).small());
 
-        // ── 2. 技能清單 ───────────────────────────────────────────────────────
-        section_header(ui, "🔧 技能");
-        let skills = crate::skills::list_skills();
-        let enabled: Vec<_> = skills.iter().filter(|s| s.enabled).collect();
+            // ── 右欄：記憶 + 模擬回覆 ────────────────────────────────────────
+            let ui = &mut cols[1];
+            ui.add_space(4.0);
 
-        // Group by category and render each group on its own wrapped row.
-        let categories: &[(&str, &str, Color32)] = &[
-            ("coding",   "💻 程式",  Color32::from_rgb(80, 160, 255)),
-            ("research", "🔬 調研",  Color32::from_rgb(80, 220, 160)),
-            ("memory",   "🧠 記憶",  Color32::from_rgb(200, 140, 80)),
-            ("web",      "🌐 網路",  Color32::from_rgb(160, 120, 220)),
-            ("",         "⚙ 其他",  Color32::from_rgb(150, 150, 150)),
-        ];
-        for (cat_key, cat_label, color) in categories {
-            let group: Vec<_> = enabled.iter().filter(|s| {
-                if cat_key.is_empty() {
-                    !["coding","research","memory","web"].contains(&s.category.as_str())
-                } else {
-                    s.category.as_str() == *cat_key
+            // 3. 記憶庫
+            section_header(ui, "🧠 記憶");
+            ui.horizontal(|ui| {
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut app.overview_mem_query)
+                        .desired_width(ui.available_width() - 70.0)
+                        .hint_text("搜尋記憶…"),
+                );
+                let search = ui.small_button("🔍").clicked();
+                if search || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+                    let q = app.overview_mem_query.trim().to_string();
+                    app.overview_mem_results = if q.is_empty() {
+                        crate::memory::memory_list_recent(8).unwrap_or_default()
+                    } else {
+                        crate::memory::memory_search(&q, 8).unwrap_or_default()
+                    };
                 }
-            }).collect();
-            if group.is_empty() { continue; }
-
-            ui.colored_label(*color, RichText::new(*cat_label).small().strong());
-            ui.horizontal_wrapped(|ui| {
-                ui.add_space(8.0); // indent under label
-                for sk in &group {
-                    egui::Frame::new()
-                        .fill(Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 25))
-                        .stroke(egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 90)))
-                        .corner_radius(4.0)
-                        .inner_margin(egui::Margin::symmetric(6, 2))
-                        .show(ui, |ui| {
-                            ui.colored_label(*color, RichText::new(&sk.name).small())
-                                .on_hover_text(&sk.description);
-                        });
-                    ui.add_space(2.0);
+                if ui.small_button("近").on_hover_text("顯示最近記憶").clicked() {
+                    app.overview_mem_query.clear();
+                    app.overview_mem_results = crate::memory::memory_list_recent(8).unwrap_or_default();
                 }
             });
             ui.add_space(3.0);
-        }
-
-        ui.add_space(2.0);
-        ui.colored_label(Color32::DARK_GRAY, RichText::new(
-            format!("共 {} 個技能（{} 內建 + {} YAML）",
-                skills.len(),
-                skills.iter().filter(|s| s.prompt_template.is_none()).count(),
-                skills.iter().filter(|s| s.prompt_template.is_some()).count(),
-            )
-        ).small());
-        ui.add_space(10.0);
-
-        // ── 3. 記憶庫 ────────────────────────────────────────────────────────
-        section_header(ui, "🧠 記憶");
-        ui.horizontal(|ui| {
-            let resp = ui.add(
-                egui::TextEdit::singleline(&mut app.overview_mem_query)
-                    .desired_width(240.0)
-                    .hint_text("搜尋記憶…"),
-            );
-            let search_clicked = ui.button("🔍").clicked();
-            if search_clicked || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
-                let q = app.overview_mem_query.trim().to_string();
-                app.overview_mem_results = if q.is_empty() {
-                    crate::memory::memory_list_recent(10).unwrap_or_default()
-                } else {
-                    crate::memory::memory_search(&q, 10).unwrap_or_default()
-                };
-            }
-            if ui.small_button("最近").clicked() {
-                app.overview_mem_query.clear();
-                app.overview_mem_results = crate::memory::memory_list_recent(10).unwrap_or_default();
-            }
-        });
-        ui.add_space(4.0);
-        if app.overview_mem_results.is_empty() {
-            ui.colored_label(Color32::DARK_GRAY, RichText::new("無記憶記錄，或尚未搜尋").small());
-        } else {
-            for (i, mem) in app.overview_mem_results.iter().enumerate() {
-                egui::Frame::new()
-                    .fill(Color32::from_rgb(18, 24, 34))
-                    .corner_radius(4.0)
-                    .inner_margin(egui::Margin::symmetric(8, 4))
-                    .show(ui, |ui| {
-                        let snippet: String = mem.chars().take(200).collect();
-                        ui.colored_label(Color32::GRAY,
-                            RichText::new(format!("{}. {}", i + 1, snippet)).small());
-                    });
-                ui.add_space(2.0);
-            }
-        }
-        ui.add_space(10.0);
-
-        // ── 4. 模擬回覆 ──────────────────────────────────────────────────────
-        section_header(ui, "💬 模擬回覆");
-        ui.colored_label(Color32::DARK_GRAY,
-            RichText::new("輸入一則訊息，以此助手的口吻生成模擬回覆").small());
-        ui.add_space(4.0);
-        let aw = ui.available_width();
-        ui.add(egui::TextEdit::multiline(&mut app.overview_sim_input)
-            .desired_width(aw).desired_rows(2).hint_text("你好，請幫我…"));
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            let loading = app.overview_sim_loading;
-            let label = if loading { "⏳ 生成中…" } else { "▶ 模擬" };
-            let btn = egui::Button::new(RichText::new(label).small().strong())
-                .fill(if loading {
-                    Color32::from_rgb(20, 40, 70)
-                } else {
-                    Color32::from_rgb(30, 90, 160)
-                });
-            if ui.add(btn).clicked() && !loading {
-                let msg = app.overview_sim_input.trim().to_string();
-                if msg.is_empty() { return; }
-                let msg     = msg;
-                let voice   = agent.response_style.voice.clone();
-                let name    = agent.identity.name.clone();
-                let ack     = agent.response_style.ack_prefix.clone();
-                let (tx, rx) = std::sync::mpsc::channel();
-                app.overview_sim_rx     = Some(rx);
-                app.overview_sim_loading = true;
-                app.overview_sim_result  = String::new();
-                app.rt.spawn(async move {
-                    let prompt = format!(
-                        "你是「{name}」，口吻：{voice}。\n\
-                         開頭請使用：「{ack}」\n\
-                         對以下訊息生成一段簡短的回覆（50字以內）：\n{msg}"
-                    );
-                    let result = crate::llm::call_llm_simple(&prompt).await
-                        .unwrap_or_else(|e| format!("（LLM 錯誤：{e}）"));
-                    let _ = tx.send(result);
+            if app.overview_mem_results.is_empty() {
+                ui.colored_label(Color32::DARK_GRAY, RichText::new("尚未搜尋或無記錄").small());
+            } else {
+                ScrollArea::vertical().id_salt("ov_mem").max_height(160.0).show(ui, |ui| {
+                    for (i, mem) in app.overview_mem_results.iter().enumerate() {
+                        egui::Frame::new()
+                            .fill(Color32::from_rgb(18, 24, 34))
+                            .corner_radius(4.0)
+                            .inner_margin(egui::Margin::symmetric(6, 3))
+                            .show(ui, |ui| {
+                                let snippet: String = mem.chars().take(120).collect();
+                                ui.colored_label(Color32::GRAY,
+                                    RichText::new(format!("{}. {}", i + 1, snippet)).small());
+                            });
+                        ui.add_space(2.0);
+                    }
                 });
             }
-            if !app.overview_sim_result.is_empty() {
-                if ui.small_button("清除").clicked() {
-                    app.overview_sim_result.clear();
-                }
-            }
-        });
-        if !app.overview_sim_result.is_empty() {
+            ui.add_space(10.0);
+
+            // 4. 模擬回覆
+            section_header(ui, "💬 模擬回覆");
+            let aw = ui.available_width();
+            ui.add(egui::TextEdit::multiline(&mut app.overview_sim_input)
+                .desired_width(aw).desired_rows(2).hint_text("輸入訊息，以此助手口吻回覆…"));
             ui.add_space(4.0);
-            egui::Frame::new()
-                .fill(Color32::from_rgb(20, 35, 25))
-                .stroke(egui::Stroke::new(1.0, Color32::from_rgb(60, 120, 70)))
-                .corner_radius(6.0)
-                .inner_margin(egui::Margin::symmetric(10, 8))
-                .show(ui, |ui| {
-                    ui.colored_label(Color32::from_rgb(120, 220, 100),
-                        RichText::new(&app.overview_sim_result).small());
-                });
-        }
-        ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                let loading = app.overview_sim_loading;
+                let label = if loading { "⏳ 生成中…" } else { "▶ 模擬" };
+                let btn = egui::Button::new(RichText::new(label).small().strong())
+                    .fill(if loading { Color32::from_rgb(20, 40, 70) } else { Color32::from_rgb(30, 90, 160) });
+                if ui.add(btn).clicked() && !loading {
+                    let msg = app.overview_sim_input.trim().to_string();
+                    if !msg.is_empty() {
+                        let voice = agent.response_style.voice.clone();
+                        let name  = agent.identity.name.clone();
+                        let ack   = agent.response_style.ack_prefix.clone();
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        app.overview_sim_rx      = Some(rx);
+                        app.overview_sim_loading  = true;
+                        app.overview_sim_result   = String::new();
+                        app.rt.spawn(async move {
+                            let prompt = format!(
+                                "你是「{name}」，口吻：{voice}。\n\
+                                 開頭請使用：「{ack}」\n\
+                                 對以下訊息生成一段簡短的回覆（50字以內）：\n{msg}"
+                            );
+                            let result = crate::llm::call_llm_simple(&prompt).await
+                                .unwrap_or_else(|e| format!("（LLM 錯誤：{e}）"));
+                            let _ = tx.send(result);
+                        });
+                    }
+                }
+                if !app.overview_sim_result.is_empty() {
+                    if ui.small_button("清除").clicked() { app.overview_sim_result.clear(); }
+                }
+            });
+            if !app.overview_sim_result.is_empty() {
+                ui.add_space(4.0);
+                egui::Frame::new()
+                    .fill(Color32::from_rgb(20, 35, 25))
+                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(60, 120, 70)))
+                    .corner_radius(6.0)
+                    .inner_margin(egui::Margin::symmetric(8, 6))
+                    .show(ui, |ui| {
+                        ui.colored_label(Color32::from_rgb(120, 220, 100),
+                            RichText::new(&app.overview_sim_result).small());
+                    });
+            }
+        }); // end columns
 
-        // ── 5. 人格同步 ───────────────────────────────────────────────────────
+        // ── 5. 人格同步（全寬，可摺疊）────────────────────────────────────────
+        ui.add_space(8.0);
         ui.separator();
-        ui.add_space(6.0);
-        section_header(ui, "🎭 人格同步");
-        ui.colored_label(Color32::DARK_GRAY,
-            RichText::new("分析此助手在通訊軟件上的歷史回覆，自動提取溝通風格並更新人格設定").small());
-        ui.add_space(6.0);
-
-        ui.horizontal(|ui| {
-            let loading = app.persona_sync_loading;
-            let label = if loading { "⏳ 分析中…" } else { "🔍 分析歷史回覆" };
-            let btn = egui::Button::new(RichText::new(label).small().strong())
-                .fill(if loading { Color32::from_rgb(40, 30, 60) } else { Color32::from_rgb(70, 30, 110) });
-            if ui.add(btn).clicked() && !loading {
-                let agent_id = agent.id.clone();
-                let (tx, rx) = std::sync::mpsc::channel();
-                app.persona_sync_rx = Some(rx);
-                app.persona_sync_loading = true;
-                app.persona_sync_suggestion = None;
-                app.persona_sync_msg = "正在收集歷史回覆…".to_string();
-                app.rt.spawn(async move {
-                    let samples = crate::memory::collect_reply_samples(&agent_id, 40);
-                    if samples.is_empty() {
-                        let _ = tx.send(Err("尚無歷史回覆記錄，請先讓助手回覆一些訊息後再試".to_string()));
-                        return;
-                    }
-                    let sample_text = samples.iter()
-                        .enumerate()
-                        .map(|(i, s)| format!("{}. {}", i + 1, s.chars().take(120).collect::<String>()))
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    let prompt = format!(
-                        "以下是一個AI助手的歷史回覆訊息樣本（共{}條）：\n\n{}\n\n\
-                         請分析這些回覆的溝通風格，只輸出以下JSON格式，不要其他內容：\n\
-                         {{\"voice\":\"語氣描述（10字以內，例如：自然親切、簡潔專業）\",\
-                         \"ack_prefix\":\"開場白（15字以內，例如：收到你的訊息。）\",\
-                         \"compliance_line\":\"表示協助的慣用語（20字以內）\"}}",
-                        samples.len(), sample_text
-                    );
-                    match crate::llm::call_llm_simple(&prompt).await {
-                        Ok(raw) => {
-                            // Extract JSON from response
-                            let json_str = raw.trim()
-                                .trim_start_matches("```json").trim_start_matches("```")
-                                .trim_end_matches("```").trim();
-                            match serde_json::from_str::<serde_json::Value>(json_str) {
-                                Ok(v) => {
-                                    let voice = v["voice"].as_str().unwrap_or("自然、親切").to_string();
-                                    let ack   = v["ack_prefix"].as_str().unwrap_or("收到。").to_string();
-                                    let comp  = v["compliance_line"].as_str().unwrap_or("我來協助你。").to_string();
-                                    let _ = tx.send(Ok((voice, ack, comp)));
-                                }
-                                Err(_) => {
-                                    // LLM didn't produce valid JSON — return raw as fallback voice
-                                    let _ = tx.send(Err(format!("JSON 解析失敗，LLM 原始回覆：{}", raw.chars().take(200).collect::<String>())));
-                                }
-                            }
-                        }
-                        Err(e) => { let _ = tx.send(Err(format!("LLM 錯誤：{e}"))); }
-                    }
-                });
-            }
-
-            if !app.persona_sync_msg.is_empty() {
-                let color = if app.persona_sync_msg.starts_with('❌') {
-                    Color32::from_rgb(220, 80, 80)
-                } else if app.persona_sync_msg.starts_with('✅') {
-                    Color32::from_rgb(100, 220, 100)
-                } else {
-                    Color32::GRAY
-                };
-                ui.colored_label(color, RichText::new(&app.persona_sync_msg).small());
-            }
-        });
-
-        // Preview + apply
-        if let Some((voice, ack, comp)) = app.persona_sync_suggestion.clone() {
+        egui::CollapsingHeader::new(
+            RichText::new("🎭 人格同步").strong().small()
+        )
+        .id_salt("persona_sync_collapse")
+        .show(ui, |ui| {
+            ui.add_space(4.0);
+            ui.colored_label(Color32::DARK_GRAY,
+                RichText::new("分析歷史回覆，自動提取溝通風格並更新人格設定").small());
             ui.add_space(6.0);
-            egui::Frame::new()
-                .fill(Color32::from_rgb(28, 20, 45))
-                .stroke(egui::Stroke::new(1.0, Color32::from_rgb(100, 60, 160)))
-                .corner_radius(6.0)
-                .inner_margin(egui::Margin::symmetric(12, 8))
-                .show(ui, |ui| {
-                    ui.colored_label(Color32::from_rgb(170, 120, 240),
-                        RichText::new("📊 分析結果").small().strong());
-                    ui.add_space(4.0);
-                    egui::Grid::new("persona_preview").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
-                        ui.colored_label(Color32::GRAY, RichText::new("語氣").small());
-                        ui.label(RichText::new(&voice).small());
-                        ui.end_row();
-                        ui.colored_label(Color32::GRAY, RichText::new("開場白").small());
-                        ui.label(RichText::new(&ack).small());
-                        ui.end_row();
-                        ui.colored_label(Color32::GRAY, RichText::new("協助語").small());
-                        ui.label(RichText::new(&comp).small());
-                        ui.end_row();
-                    });
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        let apply_btn = egui::Button::new(RichText::new("✅ 套用到此助手").small().strong())
-                            .fill(Color32::from_rgb(50, 30, 80));
-                        if ui.add(apply_btn).clicked() {
-                            if let Some(f) = app.settings_agents.as_mut() {
-                                if let Some(a) = f.agents.iter_mut().find(|a| a.id == agent.id) {
-                                    a.response_style.voice            = voice.clone();
-                                    a.response_style.ack_prefix       = ack.clone();
-                                    a.response_style.compliance_line  = comp.clone();
-                                }
-                                match f.save() {
-                                    Ok(()) => app.persona_sync_msg = "✅ 已套用並儲存".to_string(),
-                                    Err(e) => app.persona_sync_msg = format!("❌ 儲存失敗：{e}"),
+
+            ui.horizontal(|ui| {
+                let loading = app.persona_sync_loading;
+                let label = if loading { "⏳ 分析中…" } else { "🔍 分析歷史回覆" };
+                let btn = egui::Button::new(RichText::new(label).small().strong())
+                    .fill(if loading { Color32::from_rgb(40, 30, 60) } else { Color32::from_rgb(70, 30, 110) });
+                if ui.add(btn).clicked() && !loading {
+                    let agent_id = agent.id.clone();
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    app.persona_sync_rx = Some(rx);
+                    app.persona_sync_loading = true;
+                    app.persona_sync_suggestion = None;
+                    app.push_toast(ToastLevel::Info, "正在收集歷史回覆…");
+                    app.rt.spawn(async move {
+                        let samples = crate::memory::collect_reply_samples(&agent_id, 40);
+                        if samples.is_empty() {
+                            let _ = tx.send(Err("尚無歷史回覆記錄".to_string()));
+                            return;
+                        }
+                        let sample_text = samples.iter().enumerate()
+                            .map(|(i, s)| format!("{}. {}", i + 1, s.chars().take(120).collect::<String>()))
+                            .collect::<Vec<_>>().join("\n");
+                        let prompt = format!(
+                            "以下是一個AI助手的歷史回覆訊息樣本（共{}條）：\n\n{}\n\n\
+                             請分析溝通風格，只輸出JSON：\n\
+                             {{\"voice\":\"語氣描述（10字以內）\",\
+                             \"ack_prefix\":\"開場白（15字以內）\",\
+                             \"compliance_line\":\"協助慣用語（20字以內）\"}}",
+                            samples.len(), sample_text
+                        );
+                        match crate::llm::call_llm_simple(&prompt).await {
+                            Ok(raw) => {
+                                let json_str = raw.trim()
+                                    .trim_start_matches("```json").trim_start_matches("```")
+                                    .trim_end_matches("```").trim();
+                                match serde_json::from_str::<serde_json::Value>(json_str) {
+                                    Ok(v) => {
+                                        let voice = v["voice"].as_str().unwrap_or("自然、親切").to_string();
+                                        let ack   = v["ack_prefix"].as_str().unwrap_or("收到。").to_string();
+                                        let comp  = v["compliance_line"].as_str().unwrap_or("我來協助你。").to_string();
+                                        let _ = tx.send(Ok((voice, ack, comp)));
+                                    }
+                                    Err(_) => { let _ = tx.send(Err(format!("JSON 解析失敗：{}", raw.chars().take(100).collect::<String>()))); }
                                 }
                             }
-                            app.persona_sync_suggestion = None;
-                        }
-                        if ui.small_button("✖ 捨棄").clicked() {
-                            app.persona_sync_suggestion = None;
-                            app.persona_sync_msg.clear();
+                            Err(e) => { let _ = tx.send(Err(format!("LLM 錯誤：{e}"))); }
                         }
                     });
-                });
-        }
+                }
+                if app.persona_sync_loading {
+                    ui.colored_label(Color32::GRAY, RichText::new("分析中…").small());
+                }
+            });
+
+            if let Some((voice, ack, comp)) = app.persona_sync_suggestion.clone() {
+                ui.add_space(6.0);
+                egui::Frame::new()
+                    .fill(Color32::from_rgb(28, 20, 45))
+                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(100, 60, 160)))
+                    .corner_radius(6.0)
+                    .inner_margin(egui::Margin::symmetric(10, 7))
+                    .show(ui, |ui| {
+                        egui::Grid::new("persona_preview").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
+                            ui.colored_label(Color32::GRAY, RichText::new("語氣").small());
+                            ui.label(RichText::new(&voice).small()); ui.end_row();
+                            ui.colored_label(Color32::GRAY, RichText::new("開場白").small());
+                            ui.label(RichText::new(&ack).small()); ui.end_row();
+                            ui.colored_label(Color32::GRAY, RichText::new("協助語").small());
+                            ui.label(RichText::new(&comp).small()); ui.end_row();
+                        });
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            if ui.add(egui::Button::new(RichText::new("✅ 套用").small().strong())
+                                .fill(Color32::from_rgb(50, 30, 80))).clicked()
+                            {
+                                if let Some(f) = app.settings_agents.as_mut() {
+                                    if let Some(a) = f.agents.iter_mut().find(|a| a.id == agent.id) {
+                                        a.response_style.voice           = voice.clone();
+                                        a.response_style.ack_prefix      = ack.clone();
+                                        a.response_style.compliance_line = comp.clone();
+                                    }
+                                    match f.save() {
+                                        Ok(())  => app.push_toast(ToastLevel::Success, "已套用並儲存"),
+                                        Err(e)  => app.push_toast(ToastLevel::Error, format!("儲存失敗：{e}")),
+                                    }
+                                }
+                                app.persona_sync_suggestion = None;
+                            }
+                            if ui.small_button("✖ 捨棄").clicked() {
+                                app.persona_sync_suggestion = None;
+                            }
+                        });
+                    });
+            }
+            ui.add_space(4.0);
+        });
         ui.add_space(8.0);
     });
 }
@@ -2214,6 +2200,43 @@ fn show_overview_tab(
 fn section_header(ui: &mut egui::Ui, label: &str) {
     ui.label(RichText::new(label).strong().small());
     ui.add_space(4.0);
+}
+
+/// Renders a tab button with an underline indicator for the active state
+/// and an optional orange badge (e.g. pending count).
+/// Returns `true` when clicked.
+fn tab_button(ui: &mut egui::Ui, label: &str, badge: Option<usize>, active: bool) -> bool {
+    let text = RichText::new(label)
+        .color(if active { Color32::WHITE } else { Color32::from_rgb(140, 140, 140) });
+    let resp = ui.add(
+        egui::Button::new(text)
+            .frame(false)
+            .min_size(egui::Vec2::new(0.0, 26.0)),
+    );
+    // Underline for active tab
+    if active {
+        let r = resp.rect;
+        ui.painter().line_segment(
+            [r.left_bottom() + egui::Vec2::new(2.0, 1.0),
+             r.right_bottom() + egui::Vec2::new(-2.0, 1.0)],
+            egui::Stroke::new(2.0, Color32::from_rgb(60, 130, 220)),
+        );
+    }
+    // Orange badge bubble
+    if let Some(n) = badge {
+        let r = resp.rect;
+        let badge_center = r.right_top() + egui::Vec2::new(6.0, 2.0);
+        let radius = 7.0_f32;
+        ui.painter().circle_filled(badge_center, radius, Color32::from_rgb(210, 100, 20));
+        ui.painter().text(
+            badge_center,
+            egui::Align2::CENTER_CENTER,
+            n.to_string(),
+            egui::FontId::proportional(9.0),
+            Color32::WHITE,
+        );
+    }
+    resp.clicked()
 }
 
 /// Renders a tiny pill badge in the sidebar card.
@@ -2252,8 +2275,7 @@ fn show_system_panel(
     tg_auth: &crate::telegram_auth::TelegramAuthState,
     tg_code: &mut String,
     tg_password: &mut String,
-    tg_msg: &str,
-    tg_msg_update: &mut Option<String>,
+    toasts: &mut std::collections::VecDeque<Toast>,
 ) {
     use crate::telegram_auth::TelegramStatus;
 
@@ -2422,7 +2444,7 @@ fn show_system_panel(
             if submitted && !tg_code.trim().is_empty() {
                 tg_auth.submit_code(tg_code.trim().to_string());
                 tg_code.clear();
-                *tg_msg_update = Some("驗證碼已提交".to_string());
+                toasts.push_back(Toast::new(ToastLevel::Info, "驗證碼已提交"));
             }
         }
         TelegramStatus::PasswordRequired { hint } => {
@@ -2436,7 +2458,7 @@ fn show_system_panel(
             if submitted && !tg_password.trim().is_empty() {
                 tg_auth.submit_password(tg_password.clone());
                 tg_password.clear();
-                *tg_msg_update = Some("密碼已提交".to_string());
+                toasts.push_back(Toast::new(ToastLevel::Info, "密碼已提交"));
             }
         }
         TelegramStatus::Disconnected { .. } | TelegramStatus::Error { .. } => {
@@ -2455,15 +2477,12 @@ fn show_system_panel(
                     .fill(Color32::from_rgb(25, 60, 100)),
             ).clicked() {
                 tg_auth.trigger_reconnect();
-                *tg_msg_update = Some("已觸發連線，等待驗證碼…".to_string());
+                toasts.push_back(Toast::new(ToastLevel::Info, "已觸發連線，等待驗證碼…"));
             }
         }
         TelegramStatus::Connected => {}
     }
 
-    if !tg_msg.is_empty() {
-        ui.colored_label(Color32::from_rgb(100, 220, 100), tg_msg);
-    }
 }
 
 // ── KPI persistence helpers ───────────────────────────────────────────────────
