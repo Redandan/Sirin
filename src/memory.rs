@@ -462,7 +462,6 @@ fn role_hint_for_path(rel: &str) -> Option<&'static str> {
             Some("router agent，決定要走 chat、research 或 follow-up 路線。")
         }
         "src/agents/research_agent.rs" => Some("research agent，負責調研、摘要與結果記錄。"),
-        "src/agents/followup_agent.rs" => Some("follow-up agent，背景處理待辦與後續任務。"),
         "docs/ARCHITECTURE.md" => Some("架構設計說明文件。"),
         "docs/QUICKSTART.md" => Some("快速上手與執行說明。"),
         _ if rel.starts_with("src/adk/") => {

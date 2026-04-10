@@ -11,12 +11,10 @@ use crate::telegram::language::{
 
 use super::{
     chat_agent::ChatRequest,
-    coding_agent::CodingRequest,
     planner_agent::{IntentFamily, PlanIntent, PlannerRequest},
     research_agent::ResearchRequest,
 };
 
-use crate::memory::load_recent_context;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouterRequest {
@@ -40,9 +38,8 @@ pub struct RouterRequest {
 pub enum RouteTarget {
     Chat,
     Research,
-    Coding,
     /// Route to ChatAgent but with the large/powerful model.
-    /// Used when the planner detects deep reasoning or multi-step analysis skills.
+    /// Used when the planner detects deep reasoning, coding, or multi-step analysis.
     LargeModel,
 }
 
@@ -93,7 +90,7 @@ impl Agent for RouterAgent {
                 route_target_from_plan(plan, &request.user_text)
             } else if is_coding_request(&request.user_text) {
                 // No planner result → fall back to keyword heuristic.
-                RouteTarget::Coding
+                RouteTarget::LargeModel
             } else {
                 classify_route(&request.user_text)
             };
@@ -101,9 +98,8 @@ impl Agent for RouterAgent {
             let route_name = match route {
                 RouteTarget::Chat => "chat",
                 RouteTarget::Research => "research",
-                RouteTarget::Coding => "coding",
                 RouteTarget::LargeModel => "large_model",
-};
+            };
             let plan_summary = plan
                 .as_ref()
                 .map(|p| p.summary.clone())
@@ -152,35 +148,6 @@ impl Agent for RouterAgent {
                             "agent_id": request.agent_id,
                         },
                         "research_request": ResearchRequest { topic, url }
-                    }))
-                }
-                RouteTarget::Coding => {
-                    // Truncate oversized task strings — long inputs (e.g. pasted
-                    // chat history) confuse the LLM about which file/function to target.
-                    const MAX_TASK_CHARS: usize = 800;
-                    let task = if request.user_text.chars().count() > MAX_TASK_CHARS {
-                        let truncated: String = request.user_text.chars().take(MAX_TASK_CHARS).collect();
-                        format!("{truncated}…（已截斷，請縮短任務描述）")
-                    } else {
-                        request.user_text.clone()
-                    };
-                    // Inject recent conversation memory so the coding agent has
-                    // awareness of what the user was just discussing.
-                    let context_block = load_recent_context(5, request.peer_id, request.agent_id.as_deref())
-                        .ok()
-                        .filter(|v| !v.is_empty())
-                        .map(|entries| format_context_block(&entries));
-                    Ok(json!({
-                        "route": route,
-                        "planner_summary": plan_summary,
-                        "intent_family": plan.as_ref().map(|p| p.intent_family.clone()).unwrap_or(IntentFamily::CodeAnalysis),
-                        "recommended_skills": &planner_skills,
-                        "coding_request": CodingRequest {
-                            task,
-                            max_iterations: None,
-                            dry_run: false,
-                            context_block,
-                        }
                     }))
                 }
                 RouteTarget::Chat => Ok(json!({
@@ -264,14 +231,6 @@ fn should_prefer_chat_from_skills(skills: &[String]) -> bool {
     })
 }
 
-fn format_context_block(entries: &[crate::memory::ContextEntry]) -> String {
-    entries
-        .iter()
-        .map(|e| format!("User: {}\nAssistant: {}", e.user_msg, e.assistant_reply))
-        .collect::<Vec<_>>()
-        .join("\n---\n")
-}
-
 /// Skills that indicate the request benefits from the large/powerful model.
 const LARGE_MODEL_SKILLS: &[&str] = &[
     "deep_reasoning",
@@ -301,7 +260,7 @@ fn route_target_from_plan(plan: &super::planner_agent::WorkflowPlan, text: &str)
         // Use keyword check to distinguish "讀/解釋" from "改/重構/實作".
         IntentFamily::LocalFile | IntentFamily::CodeAnalysis => {
             if is_coding_request(text) {
-                RouteTarget::Coding
+                RouteTarget::LargeModel
             } else {
                 RouteTarget::Chat
             }
@@ -381,7 +340,7 @@ pub fn classify_route(text: &str) -> RouteTarget {
     {
         RouteTarget::Chat
     } else if is_coding_request(text) {
-        RouteTarget::Coding
+        RouteTarget::LargeModel
     } else if detect_research_intent(text).is_some() {
         RouteTarget::Research
     } else {
@@ -420,16 +379,16 @@ mod tests {
     fn classifies_coding_requests() {
         assert_eq!(
             classify_route("幫我修改 src/llm.rs 的 error handling"),
-            RouteTarget::Coding
+            RouteTarget::LargeModel
         );
-        assert_eq!(classify_route("幫我重構 router_agent"), RouteTarget::Coding);
+        assert_eq!(classify_route("幫我重構 router_agent"), RouteTarget::LargeModel);
         assert_eq!(
             classify_route("implement a new feature"),
-            RouteTarget::Coding
+            RouteTarget::LargeModel
         );
         assert_eq!(
             classify_route("refactor the chat module"),
-            RouteTarget::Coding
+            RouteTarget::LargeModel
         );
     }
 
@@ -508,6 +467,6 @@ mod tests {
         .await
         .expect("router should succeed");
 
-        assert_eq!(output.get("route").and_then(Value::as_str), Some("coding"));
+        assert_eq!(output.get("route").and_then(Value::as_str), Some("large_model"));
     }
 }
