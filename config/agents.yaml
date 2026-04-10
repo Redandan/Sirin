@@ -13,7 +13,7 @@ agents:
       api_id: ${TG_API_ID}
       api_hash: ${TG_API_HASH}
       phone: ${TG_PHONE}
-      session_file: ${LOCALAPPDATA}/sirin/assistant_1.session
+      session_file: data/sessions/assistant_1.session
       reply_private: true
       reply_groups: false
       group_ids: []

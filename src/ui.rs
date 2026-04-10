@@ -295,19 +295,32 @@ pub struct SirinApp {
 }
 
 impl SirinApp {
-    /// Load a CJK-capable font from the Windows system font directory.
-    /// Falls back silently if the font file cannot be read.
+    /// Load a CJK-capable font from the system font directory.
+    /// Supports Windows, macOS, and Linux.  Falls back silently if no font is found.
     pub fn setup_fonts(ctx: &egui::Context) {
-        let font_path = std::path::Path::new("C:/Windows/Fonts/msjh.ttc"); // Microsoft JhengHei (繁中)
-        let fallback = std::path::Path::new("C:/Windows/Fonts/msyh.ttc"); // Microsoft YaHei (簡中)
+        // Candidate paths ordered by preference per platform.
+        #[cfg(target_os = "macos")]
+        let candidates: &[&str] = &[
+            "/System/Library/Fonts/STHeiti Medium.ttc",   // macOS 10.x
+            "/System/Library/Fonts/PingFang.ttc",          // macOS 10.11+
+            "/Library/Fonts/Arial Unicode MS.ttf",
+        ];
+        #[cfg(target_os = "windows")]
+        let candidates: &[&str] = &[
+            "C:/Windows/Fonts/msjh.ttc",   // Microsoft JhengHei (繁中)
+            "C:/Windows/Fonts/msyh.ttc",   // Microsoft YaHei (簡中)
+        ];
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        let candidates: &[&str] = &[
+            "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/arphic/uming.ttc",
+        ];
 
-        let font_data = if font_path.exists() {
-            std::fs::read(font_path).ok()
-        } else if fallback.exists() {
-            std::fs::read(fallback).ok()
-        } else {
-            None
-        };
+        let font_data = candidates
+            .iter()
+            .find(|p| std::path::Path::new(p).exists())
+            .and_then(|p| std::fs::read(p).ok());
 
         if let Some(bytes) = font_data {
             let mut fonts = FontDefinitions::default();
@@ -327,7 +340,7 @@ impl SirinApp {
                 .push("cjk".to_owned());
             ctx.set_fonts(fonts);
         } else {
-            eprintln!("[ui] Warning: no CJK font found in C:/Windows/Fonts — Chinese text may appear as boxes");
+            eprintln!("[ui] Warning: no CJK font found — Chinese text may appear as boxes. Install a CJK font or set a custom path.");
         }
     }
 

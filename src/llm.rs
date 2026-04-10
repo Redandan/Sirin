@@ -1499,6 +1499,40 @@ fn assign_fleet_role(
 
 // ── Public probe entry points ─────────────────────────────────────────────────
 
+/// Candidate local LLM services tried in order when the configured backend
+/// returns no models.  Each entry is `(backend, base_url)`.
+const LOCAL_FALLBACK_BACKENDS: &[(LlmBackend, &str)] = &[
+    (LlmBackend::Ollama,   "http://localhost:11434"),
+    (LlmBackend::LmStudio, "http://localhost:1234/v1"),
+];
+
+/// Try every entry in [`LOCAL_FALLBACK_BACKENDS`] and return the first one
+/// that responds with at least one model.  Returns `None` when all fail.
+async fn auto_probe_local_backends(
+    client: &reqwest::Client,
+) -> Option<(LlmBackend, String, Vec<ModelInfo>)> {
+    for &(backend, url) in LOCAL_FALLBACK_BACKENDS {
+        let models = match backend {
+            LlmBackend::Ollama => list_ollama_models(client, url).await,
+            _ => list_lmstudio_models(client, url, None).await,
+        };
+        if !models.is_empty() {
+            eprintln!(
+                "[fleet] auto-detected {} at '{}' ({} model(s))",
+                match backend {
+                    LlmBackend::Ollama   => "Ollama",
+                    LlmBackend::LmStudio => "LM Studio",
+                    _                    => "unknown",
+                },
+                url,
+                models.len(),
+            );
+            return Some((backend, url.to_string(), models));
+        }
+    }
+    None
+}
+
 /// Probe the configured LLM backend at startup, classify every available model
 /// by its capabilities, and build an [`AgentFleet`] describing which agents
 /// Sirin will run.
@@ -1508,31 +1542,67 @@ fn assign_fleet_role(
 /// 2. Env var set **but** model absent → warn + clear (falls back to chat model).
 /// 3. Env var not set → auto-detect using [`best_for_role`].
 ///
-/// Non-fatal: on any network error, returns a minimal fleet from env vars only.
+/// ## Auto-detection fallback
+/// If the configured backend returns no models (service not running or not
+/// configured), the function automatically probes Ollama → LM Studio in order
+/// and uses the first responding service.  This lets Sirin start correctly
+/// without a pre-configured `.env`.
+///
+/// Non-fatal: if no local LLM service is found, returns a minimal fleet so
+/// the GUI still launches.
 pub async fn probe_and_build_fleet(client: &reqwest::Client) -> AgentFleet {
     let baseline = LlmConfig::from_env();
 
-    let raw_models: Vec<ModelInfo> = match baseline.backend {
+    // Try the configured backend first.
+    let mut raw_models: Vec<ModelInfo> = match baseline.backend {
         LlmBackend::Ollama => list_ollama_models(client, &baseline.base_url).await,
         LlmBackend::LmStudio | LlmBackend::Gemini | LlmBackend::Anthropic => {
             list_lmstudio_models(client, &baseline.base_url, baseline.api_key.as_deref()).await
         }
     };
 
+    // If the configured backend is unreachable or empty, auto-probe local services.
+    let (active_backend, active_url, active_api_key) =
+        if raw_models.is_empty() && matches!(baseline.backend, LlmBackend::Ollama | LlmBackend::LmStudio) {
+            eprintln!(
+                "[fleet] {} at '{}' returned no models — probing local services…",
+                baseline.backend_name(),
+                baseline.base_url,
+            );
+            if let Some((b, url, models)) = auto_probe_local_backends(client).await {
+                raw_models = models;
+                (b, url, None)
+            } else {
+                eprintln!("[fleet] No local LLM service found. Start Ollama or LM Studio to enable AI.");
+                return AgentFleet {
+                    backend:           baseline.backend,
+                    base_url:          baseline.base_url,
+                    api_key:           baseline.api_key,
+                    chat_model:        baseline.model,
+                    router_model:      baseline.router_model,
+                    coding_model:      baseline.coding_model,
+                    large_model:       baseline.large_model,
+                    classified_models: Vec::new(),
+                };
+            }
+        } else {
+            (baseline.backend, baseline.base_url.clone(), baseline.api_key.clone())
+        };
+
     if raw_models.is_empty() {
         eprintln!(
             "[fleet] {} at '{}' returned no models — using env-only config",
             baseline.backend_name(),
-            baseline.base_url,
+            active_url,
         );
         return AgentFleet {
-            backend: baseline.backend,
-            base_url: baseline.base_url,
-            api_key: baseline.api_key,
-            chat_model: baseline.model,
-            router_model: baseline.router_model,
-            coding_model: baseline.coding_model,
-            large_model: baseline.large_model,
+            backend:           active_backend,
+            base_url:          active_url,
+            api_key:           active_api_key,
+            chat_model:        baseline.model,
+            router_model:      baseline.router_model,
+            coding_model:      baseline.coding_model,
+            large_model:       baseline.large_model,
             classified_models: Vec::new(),
         };
     }
@@ -1598,9 +1668,9 @@ pub async fn probe_and_build_fleet(client: &reqwest::Client) -> AgentFleet {
     );
 
     AgentFleet {
-        backend: baseline.backend,
-        base_url: baseline.base_url,
-        api_key: baseline.api_key,
+        backend:           active_backend,
+        base_url:          active_url,
+        api_key:           active_api_key,
         chat_model,
         router_model,
         coding_model,

@@ -67,6 +67,15 @@ fn ensure_first_run_dirs() {
         }
     }
 
+    // Bootstrap .env from .env.example if neither exists
+    if !std::path::Path::new(".env").exists() {
+        if std::path::Path::new(".env.example").exists() {
+            if fs::copy(".env.example", ".env").is_ok() {
+                eprintln!("[main] Created .env from .env.example — edit it to configure Telegram / API keys");
+            }
+        }
+    }
+
     // Write default persona.yaml if absent
     if !std::path::Path::new("config/persona.yaml").exists() {
         let default_yaml = "\
