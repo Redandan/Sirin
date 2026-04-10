@@ -3569,6 +3569,12 @@ impl SirinApp {
             .map(|f| f.agents.clone())
             .unwrap_or_default();
 
+        let ext_providers = self
+            .settings_agents
+            .as_ref()
+            .map(|f| f.external_providers.clone())
+            .unwrap_or_default();
+
         if crate::meeting::current_meeting_id().is_none() {
             // ── Invite screen ───────────────────────────────────────────────────
             ui.heading("⚑ 建立會議室");
@@ -3588,6 +3594,22 @@ impl SirinApp {
                         self.meeting_invited.insert(agent.id.clone());
                     } else {
                         self.meeting_invited.remove(&agent.id);
+                    }
+                }
+            }
+
+            if !ext_providers.is_empty() {
+                ui.add_space(6.0);
+                ui.label("外部 AI 參與者：");
+                ui.add_space(4.0);
+                for ep in &ext_providers {
+                    let mut checked = self.meeting_invited.contains(&ep.id);
+                    if ui.checkbox(&mut checked, &ep.name).changed() {
+                        if checked {
+                            self.meeting_invited.insert(ep.id.clone());
+                        } else {
+                            self.meeting_invited.remove(&ep.id);
+                        }
                     }
                 }
             }
@@ -3615,7 +3637,11 @@ impl SirinApp {
                         let names = ids.iter().map(|pid| {
                             agents.iter().find(|a| &a.id == pid)
                                 .map(|a| a.identity.name.clone())
-                                .unwrap_or_else(|| pid.clone())
+                                .unwrap_or_else(|| {
+                                    ext_providers.iter().find(|ep| &ep.id == pid)
+                                        .map(|ep| ep.name.clone())
+                                        .unwrap_or_else(|| pid.clone())
+                                })
                         }).collect();
                         (ids, names)
                     })
@@ -3752,7 +3778,12 @@ impl SirinApp {
                                 agents.iter()
                                     .find(|a| a.id == turn.speaker)
                                     .map(|a| a.identity.name.clone())
-                                    .unwrap_or_else(|| turn.speaker.clone())
+                                    .unwrap_or_else(|| {
+                                        ext_providers.iter()
+                                            .find(|ep| ep.id == turn.speaker)
+                                            .map(|ep| ep.name.clone())
+                                            .unwrap_or_else(|| turn.speaker.clone())
+                                    })
                             };
                             let col = if is_op {
                                 Color32::LIGHT_GRAY
@@ -3848,11 +3879,16 @@ impl SirinApp {
                                 handoff_clause,
                             ));
 
-                            // Resolve per-agent LLM override (e.g. Claude).
+                            // Resolve per-agent LLM override (regular agent or external AI provider).
                             let llm_override = agents
                                 .iter()
                                 .find(|a| a.id == agent_id)
                                 .and_then(|a| a.resolve_llm_override())
+                                .or_else(|| {
+                                    ext_providers.iter()
+                                        .find(|ep| ep.id == agent_id)
+                                        .map(|ep| ep.resolve_llm_config())
+                                })
                                 .map(|cfg| crate::agents::chat_agent::LlmOverride {
                                     backend:  cfg.backend_name().to_string(),
                                     base_url: cfg.base_url.clone(),

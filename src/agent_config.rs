@@ -251,6 +251,35 @@ pub struct AgentLlmOverride {
     pub api_key_env: Option<String>,
 }
 
+/// An external cloud AI provider that can participate in meetings but is NOT
+/// a regular agent (no Telegram channel, KPI tracking, or sidebar card).
+///
+/// Configured under `external_providers:` in `config/agents.yaml`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalAiProvider {
+    /// Unique slug identifier (e.g. `"claude"`).
+    pub id: String,
+    /// Display name shown in the meeting UI (e.g. `"Claude"`).
+    pub name: String,
+    /// Backend name: `"anthropic"`, `"gemini"`, `"lmstudio"`, or `"ollama"`.
+    pub backend: String,
+    /// Model ID recognised by the backend (e.g. `"claude-sonnet-4-6"`).
+    pub model: String,
+    /// Name of the environment variable that holds the API key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_env: Option<String>,
+}
+
+impl ExternalAiProvider {
+    /// Resolve into an [`LlmConfig`] for use with [`ChatRequest::llm_override`].
+    pub fn resolve_llm_config(&self) -> crate::llm::LlmConfig {
+        let api_key = self.api_key_env.as_deref()
+            .and_then(|env| std::env::var(env).ok())
+            .filter(|v| !v.trim().is_empty());
+        crate::llm::LlmConfig::for_override(&self.backend, &self.model, api_key)
+    }
+}
+
 /// Complete configuration for one AI agent instance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
@@ -376,6 +405,10 @@ pub struct AgentsFile {
     /// Maximum number of agents that may be active simultaneously (UI cap).
     #[serde(default = "default_max_agents")]
     pub max_agents: usize,
+    /// External cloud AI providers available as meeting participants.
+    /// These are NOT regular agents — they have no channel, KPI, or sidebar card.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub external_providers: Vec<ExternalAiProvider>,
 }
 
 impl Default for AgentsFile {
@@ -390,6 +423,7 @@ impl Default for AgentsFile {
         Self {
             agents: vec![agent],
             max_agents: default_max_agents(),
+            external_providers: Vec::new(),
         }
     }
 }
