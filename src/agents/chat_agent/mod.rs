@@ -33,7 +33,7 @@ use intent::{understand_message, Intent, MessageUnderstanding};
 
 // ── Public request / response types ──────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ChatRequest {
     pub user_text: String,
     #[serde(default)]
@@ -61,6 +61,20 @@ pub struct ChatRequest {
     /// Mirrors `AgentConfig.disable_remote_ai` for per-agent override.
     #[serde(default)]
     pub disable_remote_ai: bool,
+    /// Per-request LLM override — used by the meeting room when the selected agent
+    /// has its own provider (e.g. Anthropic Claude).  Serialised as plain strings so
+    /// the JSON round-trip through `AgentRuntime` is lossless.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_override: Option<LlmOverride>,
+}
+
+/// Serialisable LLM override forwarded from `AgentConfig::llm_override`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmOverride {
+    pub backend:  String,
+    pub base_url: String,
+    pub model:    String,
+    pub api_key:  Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -106,9 +120,15 @@ impl Agent for ChatAgent {
                 || persona.as_ref().map_or(false, |p| p.disable_remote_ai);
             let use_large = request.use_large_model && !remote_disabled;
 
-            // When use_large_model is requested, use the process-wide large-model
-            // config (cached; avoids cloning on every request).
-            let llm: Arc<crate::llm::LlmConfig> = if use_large {
+            // Per-request LLM override (e.g. Anthropic Claude for meeting participants).
+            // Takes highest priority; bypasses both large-model and kill-switch logic.
+            let llm: Arc<crate::llm::LlmConfig> = if let Some(ref ov) = request.llm_override {
+                Arc::new(crate::llm::LlmConfig::for_override(
+                    &ov.backend,
+                    &ov.model,
+                    ov.api_key.clone(),
+                ))
+            } else if use_large {
                 crate::llm::shared_large_llm()
             } else {
                 llm_arc
@@ -243,6 +263,10 @@ pub async fn run_chat_response_via_adk_with_tracker(
         .context("chat_request")
         .with_optional_tracker(tracker)
         .with_metadata("agent", "chat_agent")
+        .with_metadata(
+            "caller_agent_id",
+            request.agent_id.as_deref().unwrap_or(""),
+        )
         .with_metadata(
             "peer_id",
             request

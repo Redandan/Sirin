@@ -21,6 +21,7 @@ mod rpc_server;
 mod teams;
 mod skill_loader;
 mod skills;
+mod meeting;
 mod workflow;
 mod telegram;
 mod telegram_auth;

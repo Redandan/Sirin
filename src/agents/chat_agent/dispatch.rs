@@ -42,18 +42,25 @@ pub async fn react_loop(
     user_text: &str,
     persona_name: &str,
     initial_context: Option<&str>,
+    has_meeting_auth: bool,
 ) -> String {
-    let tool_instructions = "\
-You are an AI assistant. You can use these tools before answering:\n\
-  [SEARCH] <query>  — search the web\n\
-  [MEMORY] <query>  — recall past knowledge\n\
-  [CODE]   <query>  — search this project's source code\n\
-\n\
-When you have enough information, reply with:\n\
-  [ANSWER] <your response to the user>\n\
-\n\
-Use at most one tool per turn. If no tool is needed, go straight to [ANSWER].
-These bracket tags are internal only; never mention them in the final user-facing reply.";
+    let handoff_line = if has_meeting_auth {
+        "  [HANDOFF] <to_agent>::<payload>  — pass confidential info to another agent\n"
+    } else {
+        ""
+    };
+    let tool_instructions = format!(
+        "You are an AI assistant. You can use these tools before answering:\n\
+          [SEARCH] <query>  — search the web\n\
+          [MEMORY] <query>  — recall past knowledge\n\
+          [CODE]   <query>  — search this project's source code\n\
+        {handoff_line}\n\
+        When you have enough information, reply with:\n\
+          [ANSWER] <your response to the user>\n\
+        \n\
+        Use at most one tool per turn. If no tool is needed, go straight to [ANSWER].\n\
+        These bracket tags are internal only; never mention them in the final user-facing reply."
+    );
 
     let context_block = initial_context
         .map(|c| format!("\nContext:\n{c}\n"))
@@ -86,6 +93,10 @@ These bracket tags are internal only; never mention them in the final user-facin
             } else if let Some(q) = trimmed.strip_prefix("[CODE]") {
                 tool_name = Some("codebase_search");
                 tool_query = q.trim().to_string();
+                break;
+            } else if let Some(rest) = trimmed.strip_prefix("[HANDOFF]") {
+                tool_name = Some("confidential_handoff");
+                tool_query = rest.trim().to_string();
                 break;
             } else if let Some(ans) = trimmed.strip_prefix("[ANSWER]") {
                 final_answer = Some(ans.trim().to_string());
@@ -123,10 +134,19 @@ These bracket tags are internal only; never mention them in the final user-facin
             )),
         );
 
-        let tool_result = ctx
-            .call_tool(tool, serde_json::json!({ "query": tool_query, "limit": 3 }))
-            .await
-            .unwrap_or_else(|_| serde_json::Value::String("(no results)".into()));
+        let call_result = if tool == "confidential_handoff" {
+            // [HANDOFF] format: "to_agent::payload"
+            let (to, payload) = tool_query
+                .split_once("::")
+                .map(|(a, b)| (a.trim().to_string(), b.trim().to_string()))
+                .unwrap_or_else(|| (String::new(), tool_query.clone()));
+            ctx.call_tool("confidential_handoff", serde_json::json!({ "to_agent": to, "payload": payload }))
+                .await
+        } else {
+            ctx.call_tool(tool, serde_json::json!({ "query": tool_query, "limit": 3 }))
+                .await
+        };
+        let tool_result = call_result.unwrap_or_else(|_| serde_json::Value::String("(no results)".into()));
 
         let result_text = match &tool_result {
             serde_json::Value::Array(arr) => arr
@@ -187,6 +207,13 @@ pub(super) async fn dispatch_by_understanding(
 ) -> Option<String> {
     let persona_name = persona.map(|p| p.name()).unwrap_or("Sirin");
     let direct_answer = is_direct_answer_request(&request.user_text);
+    // Check if this agent has meeting-room handoff auth (for [HANDOFF] bracket tag).
+    let has_mtg_auth = ctx.metadata.get("caller_agent_id")
+        .map(|id| crate::meeting::with_session(|s| {
+            s.map(|sess| sess.auths.iter().any(|a| &a.from_agent == id))
+             .unwrap_or(false)
+        }))
+        .unwrap_or(false);
     let skill_ctx = crate::skills::build_skill_context(&request.planner_skills);
 
     match &understanding.intent {
@@ -278,6 +305,7 @@ pub(super) async fn dispatch_by_understanding(
                 &request.user_text,
                 persona_name,
                 correction_ctx.as_deref().or(context_block),
+                has_mtg_auth,
             )
             .await;
             if reply.trim().is_empty() {
@@ -408,6 +436,7 @@ pub(super) async fn dispatch_by_understanding(
                 &request.user_text,
                 persona_name,
                 combined_ctx.as_deref(),
+                has_mtg_auth,
             )
             .await;
             if reply.trim().is_empty() {
@@ -495,7 +524,7 @@ pub(super) async fn dispatch_by_understanding(
                     url: None,
                 });
             }
-            let reply = react_loop(ctx, &request.user_text, persona_name, context_block).await;
+            let reply = react_loop(ctx, &request.user_text, persona_name, context_block, has_mtg_auth).await;
             if reply.trim().is_empty() {
                 None
             } else {
@@ -505,6 +534,23 @@ pub(super) async fn dispatch_by_understanding(
 
         // ── General conversation — linear LLM call with memory context ────────
         Intent::General => {
+            // If the agent is in a meeting (with or without handoff auth), route
+            // through react_loop so tools are available.  Pass has_mtg_auth so
+            // react_loop only shows [HANDOFF] when the agent is actually authorised.
+            let in_meeting = context_block
+                .map(|c| c.contains("[Meeting]"))
+                .unwrap_or(false);
+            if has_mtg_auth || in_meeting {
+                ctx.record_system_event(
+                    "adk_chat_meeting_react",
+                    Some(super::preview_text(&request.user_text)),
+                    Some("RUNNING"),
+                    None,
+                );
+                let reply = react_loop(ctx, &request.user_text, persona_name, context_block, has_mtg_auth).await;
+                return if reply.trim().is_empty() { None } else { Some(reply) };
+            }
+
             let memory_ctx = resolve_memory_context(&request.user_text, ctx).await;
             let search_ctx = if crate::telegram::commands::should_search(&request.user_text) {
                 resolve_search_context(request, ctx, client, direct_answer).await

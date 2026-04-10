@@ -338,6 +338,7 @@ mod tests {
             category: "coding".to_string(),
             backed_by_tools: vec![],
             example_prompts: vec!["分析 PR".to_string(), "幫我看 diff".to_string()],
+            trigger_keywords: vec![],
             enabled: true,
             prompt_template: None,
             script_file: None,

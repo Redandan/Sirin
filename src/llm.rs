@@ -105,10 +105,12 @@ pub(crate) fn shared_router_llm() -> Arc<LlmConfig> {
         Arc::new(cfg)
     }))
 }
-const LM_STUDIO_BASE_URL: &str = "http://localhost:1234/v1";
-const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
-const DEFAULT_MODEL: &str = "llama3.2";
+const LM_STUDIO_BASE_URL:  &str = "http://localhost:1234/v1";
+const GEMINI_BASE_URL:     &str = "https://generativelanguage.googleapis.com/v1beta/openai";
+const ANTHROPIC_BASE_URL:  &str = "https://api.anthropic.com/v1";
+const DEFAULT_MODEL:       &str = "llama3.2";
 const DEFAULT_GEMINI_MODEL: &str = "gemini-2.0-flash";
+const DEFAULT_CLAUDE_MODEL: &str = "claude-sonnet-4-6";
 
 // ── UI-editable LLM config (persisted to config/llm.yaml) ────────────────────
 
@@ -163,6 +165,10 @@ pub enum LlmBackend {
     /// `https://generativelanguage.googleapis.com/v1beta/openai`.
     /// Set `LLM_PROVIDER=gemini` and `GEMINI_API_KEY=<key>`.
     Gemini,
+    /// Anthropic Claude via the OpenAI-compatible endpoint at
+    /// `https://api.anthropic.com/v1`.
+    /// Set `LLM_PROVIDER=anthropic` and `ANTHROPIC_API_KEY=<key>`.
+    Anthropic,
 }
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -237,6 +243,19 @@ impl LlmConfig {
                 router_model,
                 large_model,
             },
+            "anthropic" | "claude" => Self {
+                backend: LlmBackend::Anthropic,
+                base_url: std::env::var("ANTHROPIC_BASE_URL")
+                    .unwrap_or_else(|_| ANTHROPIC_BASE_URL.to_string()),
+                model: std::env::var("ANTHROPIC_MODEL")
+                    .unwrap_or_else(|_| DEFAULT_CLAUDE_MODEL.to_string()),
+                api_key: std::env::var("ANTHROPIC_API_KEY")
+                    .ok()
+                    .filter(|v| !v.trim().is_empty()),
+                coding_model,
+                router_model,
+                large_model,
+            },
             _ => Self {
                 backend: LlmBackend::Ollama,
                 base_url: std::env::var("OLLAMA_BASE_URL")
@@ -259,6 +278,7 @@ impl LlmConfig {
             match ui.provider.to_lowercase().as_str() {
                 "lmstudio" | "lm_studio" | "openai" => self.backend = LlmBackend::LmStudio,
                 "gemini" | "google" => self.backend = LlmBackend::Gemini,
+                "anthropic" | "claude" => self.backend = LlmBackend::Anthropic,
                 "ollama" => self.backend = LlmBackend::Ollama,
                 _ => {}
             }
@@ -331,15 +351,41 @@ impl LlmConfig {
     /// Short label for logging (e.g. `"ollama"` or `"lmstudio"`).
     pub fn backend_name(&self) -> &'static str {
         match self.backend {
-            LlmBackend::Ollama => "ollama",
-            LlmBackend::LmStudio => "lmstudio",
-            LlmBackend::Gemini => "gemini",
+            LlmBackend::Ollama     => "ollama",
+            LlmBackend::LmStudio   => "lmstudio",
+            LlmBackend::Gemini     => "gemini",
+            LlmBackend::Anthropic  => "anthropic",
         }
     }
 
-    /// Returns true when this config points to a cloud/remote backend (Gemini).
+    /// Returns true when this config points to a cloud/remote backend.
     pub fn is_remote(&self) -> bool {
-        self.backend == LlmBackend::Gemini
+        matches!(self.backend, LlmBackend::Gemini | LlmBackend::Anthropic)
+    }
+
+    /// Build a minimal `LlmConfig` for a per-agent override.
+    ///
+    /// Used by `AgentConfig::resolve_llm_override` to construct an on-the-fly
+    /// config for agents that use a different provider (e.g. Anthropic Claude).
+    ///
+    /// `backend` is one of `"anthropic"`, `"lmstudio"`, `"gemini"`, `"ollama"`.
+    /// If unrecognised, falls back to Ollama.
+    pub fn for_override(backend: &str, model: &str, api_key: Option<String>) -> Self {
+        let (b, base_url) = match backend.to_lowercase().as_str() {
+            "anthropic" | "claude" => (LlmBackend::Anthropic, ANTHROPIC_BASE_URL.to_string()),
+            "lmstudio" | "openai"  => (LlmBackend::LmStudio,  LM_STUDIO_BASE_URL.to_string()),
+            "gemini" | "google"    => (LlmBackend::Gemini,     GEMINI_BASE_URL.to_string()),
+            _                      => (LlmBackend::Ollama,     OLLAMA_BASE_URL.to_string()),
+        };
+        Self {
+            backend: b,
+            base_url,
+            model: model.to_string(),
+            api_key,
+            coding_model: None,
+            router_model: None,
+            large_model:  None,
+        }
     }
 
     /// The model name to use for coding tasks.
@@ -666,7 +712,7 @@ pub async fn call_prompt(
     let prompt = prompt.into();
     match llm.backend {
         LlmBackend::Ollama => call_ollama(client, &llm.base_url, &llm.model, prompt, None).await,
-        LlmBackend::LmStudio | LlmBackend::Gemini => {
+        LlmBackend::LmStudio | LlmBackend::Gemini | LlmBackend::Anthropic => {
             call_openai(
                 client,
                 &llm.base_url,
@@ -689,7 +735,7 @@ pub async fn call_coding_prompt(
     let model = llm.effective_coding_model();
     match llm.backend {
         LlmBackend::Ollama => call_ollama(client, &llm.base_url, model, prompt, None).await,
-        LlmBackend::LmStudio | LlmBackend::Gemini => {
+        LlmBackend::LmStudio | LlmBackend::Gemini | LlmBackend::Anthropic => {
             call_openai(client, &llm.base_url, model, llm.api_key.as_deref(), prompt).await
         }
     }
@@ -717,7 +763,7 @@ pub async fn call_router_prompt(
             )
             .await
         }
-        LlmBackend::LmStudio | LlmBackend::Gemini => {
+        LlmBackend::LmStudio | LlmBackend::Gemini | LlmBackend::Anthropic => {
             call_openai(client, &llm.base_url, model, llm.api_key.as_deref(), prompt).await
         }
     }
@@ -734,7 +780,7 @@ pub async fn call_large_prompt(
     let model = llm.effective_large_model();
     match llm.backend {
         LlmBackend::Ollama => call_ollama(client, &llm.base_url, model, prompt, None).await,
-        LlmBackend::LmStudio | LlmBackend::Gemini => {
+        LlmBackend::LmStudio | LlmBackend::Gemini | LlmBackend::Anthropic => {
             call_openai(client, &llm.base_url, model, llm.api_key.as_deref(), prompt).await
         }
     }
@@ -760,7 +806,7 @@ where
         LlmBackend::Ollama => {
             stream_ollama(client, &llm.base_url, &llm.model, prompt, on_token).await
         }
-        LlmBackend::LmStudio | LlmBackend::Gemini => {
+        LlmBackend::LmStudio | LlmBackend::Gemini | LlmBackend::Anthropic => {
             stream_openai(
                 client,
                 &llm.base_url,
@@ -795,7 +841,7 @@ pub async fn call_prompt_messages(
                 .join("\n\n");
             call_ollama(client, &llm.base_url, &llm.model, prompt, None).await
         }
-        LlmBackend::LmStudio | LlmBackend::Gemini => {
+        LlmBackend::LmStudio | LlmBackend::Gemini | LlmBackend::Anthropic => {
             let openai_msgs: Vec<OpenAiMessage> = messages
                 .iter()
                 .map(|m| OpenAiMessage {
@@ -1468,7 +1514,7 @@ pub async fn probe_and_build_fleet(client: &reqwest::Client) -> AgentFleet {
 
     let raw_models: Vec<ModelInfo> = match baseline.backend {
         LlmBackend::Ollama => list_ollama_models(client, &baseline.base_url).await,
-        LlmBackend::LmStudio | LlmBackend::Gemini => {
+        LlmBackend::LmStudio | LlmBackend::Gemini | LlmBackend::Anthropic => {
             list_lmstudio_models(client, &baseline.base_url, baseline.api_key.as_deref()).await
         }
     };

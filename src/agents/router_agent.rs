@@ -166,6 +166,7 @@ impl Agent for RouterAgent {
                         use_large_model: false,
                         agent_id: request.agent_id,
                         disable_remote_ai: false,
+                        llm_override: None,
                     }
                 })),
                 RouteTarget::LargeModel => Ok(json!({
@@ -184,6 +185,7 @@ impl Agent for RouterAgent {
                         use_large_model: true,
                         agent_id: request.agent_id,
                         disable_remote_ai: false,
+                        llm_override: None,
                     }
                 })),
             }

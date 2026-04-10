@@ -185,7 +185,7 @@ async fn call_memory_search(args: Value) -> Result<String, String> {
     let limit = args["limit"].as_u64().unwrap_or(5) as usize;
 
     tokio::task::spawn_blocking(move || {
-        crate::memory::memory_search(&query, limit)
+        crate::memory::memory_search(&query, limit, "")
             .map(|results| results.join("\n\n"))
             .map_err(|e| e.to_string())
     })

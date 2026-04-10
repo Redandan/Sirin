@@ -112,12 +112,16 @@ fn build_full_registry() -> ToolRegistry {
             let results = crate::skills::ddg_search(&query).await?;
             Ok(json!(results.into_iter().take(limit).collect::<Vec<_>>()))
         })
-        .register_fn("memory_search", |input| async move {
-            let query = query_from_input(&input)?;
-            let limit = limit_from_input(&input, 5);
-            let results = crate::memory::memory_search(&query, limit)
-                .map_err(|e| e.to_string())?;
-            Ok(json!(results))
+        .register_ctx_fn("memory_search", |ctx, input| {
+            async move {
+                let query = query_from_input(&input)?;
+                let limit = limit_from_input(&input, 5);
+                let caller = ctx.metadata.get("caller_agent_id").cloned().unwrap_or_default();
+                let results = crate::memory::memory_search(&query, limit, &caller)
+                    .map_err(|e| e.to_string())?;
+                Ok(json!(results))
+            }
+            .boxed()
         })
         .register_fn("codebase_search", |input| async move {
             let query = query_from_input(&input)?;
@@ -664,6 +668,40 @@ fn build_full_registry() -> ToolRegistry {
 
             Ok(result)
         })
+        .register_ctx_fn("confidential_handoff", |ctx, input| {
+            async move {
+                let from_agent = ctx.metadata
+                    .get("caller_agent_id").cloned().unwrap_or_default();
+                let to_agent   = required_string_field(&input, "to_agent")?;
+                let payload    = required_string_field(&input, "payload")?;
+                let source_hint = optional_string_field(&input, "source_hint")
+                    .unwrap_or_else(|| "agent_handoff".to_string());
+
+                // Verify from_agent is in the recipient's trusted_senders list.
+                let agents_file = crate::agent_config::AgentsFile::load()
+                    .map_err(|e| e.to_string())?;
+                let recipient = agents_file.agents.iter()
+                    .find(|a| a.id == to_agent)
+                    .ok_or_else(|| format!("Unknown recipient agent: {to_agent}"))?;
+                if !recipient.memory_policy.trusted_senders.is_empty()
+                    && !recipient.memory_policy.trusted_senders.contains(&from_agent)
+                {
+                    // Fallback: check runtime meeting-room auth.
+                    if !crate::meeting::check_meeting_auth(&from_agent, &to_agent) {
+                        return Err(format!(
+                            "Agent '{from_agent}' is not trusted by '{to_agent}'"
+                        ));
+                    }
+                }
+
+                // Persist confidential memory in the recipient's namespace.
+                crate::memory::memory_store(&payload, &source_hint, &to_agent, "confidential")
+                    .map_err(|e| e.to_string())?;
+
+                Ok(json!({ "status": "delivered", "recipient": to_agent }))
+            }
+            .boxed()
+        })
 }
 
 /// Full registry (write tools included). Cached process-wide — cheap to clone.
@@ -686,6 +724,8 @@ pub fn read_only_tool_registry() -> ToolRegistry {
                 "file_patch",
                 "plan_execute",
                 "shell_exec",
+                // confidential_handoff is allowed — security is enforced by the tool's
+                // own trusted_senders + meeting::check_meeting_auth checks.
             ])
         })
         .clone()

@@ -26,6 +26,7 @@ enum View {
     Settings,
     Log,
     Workflow,
+    Meeting,
 }
 
 // ── Log severity filter ───────────────────────────────────────────────────────
@@ -279,6 +280,18 @@ pub struct SirinApp {
     workflow_skill_test_loading: bool,
     /// Channel receiving skill-list test result.
     workflow_skill_test_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
+
+    // ── Meeting room ──────────────────────────────────────────────────────────
+    /// Message text currently typed in the meeting input box.
+    meeting_input: String,
+    /// Sender selector: 0 = Operator, 1..n = participant agents.
+    meeting_sender_idx: usize,
+    /// Agent IDs ticked on the invite screen (pre-meeting).
+    meeting_invited: std::collections::HashSet<String>,
+    /// Channel receiving `(agent_id, reply)` from the background LLM task.
+    meeting_reply_rx: Option<std::sync::mpsc::Receiver<(String, String)>>,
+    /// True while an AI speaker LLM call is in flight.
+    meeting_reply_loading: bool,
 }
 
 impl SirinApp {
@@ -405,6 +418,11 @@ impl SirinApp {
             workflow_skill_test_output: String::new(),
             workflow_skill_test_loading: false,
             workflow_skill_test_rx: None,
+            meeting_input: String::new(),
+            meeting_sender_idx: 0,
+            meeting_invited: std::collections::HashSet::new(),
+            meeting_reply_rx: None,
+            meeting_reply_loading: false,
         };
         app.refresh();
         app
@@ -477,6 +495,16 @@ impl eframe::App for SirinApp {
                 self.overview_sim_result = reply;
                 self.overview_sim_loading = false;
                 self.overview_sim_rx = None;
+                ctx.request_repaint();
+            }
+        }
+
+        // ── Meeting room: poll AI-mediated relay result ──────────────────────
+        if let Some(ref rx) = self.meeting_reply_rx {
+            if let Ok((agent_id, reply)) = rx.try_recv() {
+                crate::meeting::append_turn(&agent_id, &reply);
+                self.meeting_reply_loading = false;
+                self.meeting_reply_rx = None;
                 ctx.request_repaint();
             }
         }
@@ -801,6 +829,24 @@ impl eframe::App for SirinApp {
                         ui.add_space(4.0);
                         ui.separator();
 
+                        // ── Meeting room row (separate line) ──────────────────
+                        ui.horizontal(|ui| {
+                            let mtg_sel = matches!(self.view, View::Meeting);
+                            let mtg_active = crate::meeting::current_meeting_id().is_some();
+                            let mtg_label = RichText::new(
+                                if mtg_active { "⚑ 會議室 ●" } else { "⚑ 會議室" }
+                            )
+                            .small()
+                            .color(if mtg_sel { Color32::WHITE }
+                                   else if mtg_active { Color32::from_rgb(100, 200, 120) }
+                                   else { Color32::GRAY });
+                            let mtg_btn = egui::Button::new(mtg_label)
+                                .fill(if mtg_sel { Color32::from_rgb(35, 55, 80) } else { Color32::TRANSPARENT });
+                            if ui.add(mtg_btn).on_hover_text("內部助手會議室").clicked() {
+                                self.view = View::Meeting;
+                            }
+                        });
+
                         // Single compact toolbar row
                         ui.horizontal(|ui| {
                             // ── Log button ────────────────────────────────────
@@ -870,6 +916,7 @@ impl eframe::App for SirinApp {
             View::Settings   => self.show_settings(ui),
             View::Log        => self.show_log(ui),
             View::Workflow   => show_workflow_tab(ui, self),
+            View::Meeting    => self.show_meeting_tab(ui),
         });
 
         // ── Toast overlay (bottom-right corner) ───────────────────────────────
@@ -2116,14 +2163,14 @@ fn show_overview_tab(
                 if search || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
                     let q = app.overview_mem_query.trim().to_string();
                     app.overview_mem_results = if q.is_empty() {
-                        crate::memory::memory_list_recent(8).unwrap_or_default()
+                        crate::memory::memory_list_recent(8, "").unwrap_or_default()
                     } else {
-                        crate::memory::memory_search(&q, 8).unwrap_or_default()
+                        crate::memory::memory_search(&q, 8, "").unwrap_or_default()
                     };
                 }
                 if ui.small_button("近").on_hover_text("顯示最近記憶").clicked() {
                     app.overview_mem_query.clear();
-                    app.overview_mem_results = crate::memory::memory_list_recent(8).unwrap_or_default();
+                    app.overview_mem_results = crate::memory::memory_list_recent(8, "").unwrap_or_default();
                 }
             });
             ui.add_space(3.0);
@@ -3487,6 +3534,339 @@ fn show_workflow_tab(ui: &mut egui::Ui, app: &mut SirinApp) {
         }
 
         app.workflow_state = Some(state);
+    }
+}
+
+// ── Meeting room tab ─────────────────────────────────────────────────────────
+
+impl SirinApp {
+    fn show_meeting_tab(&mut self, ui: &mut egui::Ui) {
+        use egui::{Color32, RichText};
+
+        // Lazy-load agents the first time we enter this tab.
+        if self.settings_agents.is_none() {
+            self.settings_agents = crate::agent_config::AgentsFile::load()
+                .ok()
+                .or_else(|| Some(crate::agent_config::AgentsFile::default()));
+        }
+
+        let agents = self
+            .settings_agents
+            .as_ref()
+            .map(|f| f.agents.clone())
+            .unwrap_or_default();
+
+        if crate::meeting::current_meeting_id().is_none() {
+            // ── Invite screen ───────────────────────────────────────────────────
+            ui.heading("⚑ 建立會議室");
+            ui.separator();
+
+            if agents.is_empty() {
+                ui.colored_label(Color32::DARK_GRAY, "尚未設定助手，請先至「系統」中新增。");
+                return;
+            }
+
+            ui.label("選擇參與助手：");
+            ui.add_space(4.0);
+            for agent in &agents {
+                let mut checked = self.meeting_invited.contains(&agent.id);
+                if ui.checkbox(&mut checked, &agent.identity.name).changed() {
+                    if checked {
+                        self.meeting_invited.insert(agent.id.clone());
+                    } else {
+                        self.meeting_invited.remove(&agent.id);
+                    }
+                }
+            }
+            ui.add_space(8.0);
+            if ui
+                .add_enabled(
+                    !self.meeting_invited.is_empty(),
+                    egui::Button::new("開始會議 ▶"),
+                )
+                .clicked()
+            {
+                let ids: Vec<String> = self.meeting_invited.iter().cloned().collect();
+                crate::meeting::start_meeting(ids);
+                self.meeting_sender_idx = 0;
+            }
+        } else {
+            // ── Chat screen ─────────────────────────────────────────────────────
+            use egui::ScrollArea;
+
+            // Snapshot session state (avoids holding lock across UI calls)
+            let (participant_ids, participant_names): (Vec<String>, Vec<String>) =
+                crate::meeting::with_session(|s| {
+                    s.map(|sess| {
+                        let ids   = sess.participants.clone();
+                        let names = ids.iter().map(|pid| {
+                            agents.iter().find(|a| &a.id == pid)
+                                .map(|a| a.identity.name.clone())
+                                .unwrap_or_else(|| pid.clone())
+                        }).collect();
+                        (ids, names)
+                    })
+                    .unwrap_or_default()
+                });
+
+            // ── Header bar ──────────────────────────────────────────────────────
+            ui.horizontal(|ui| {
+                ui.heading("⚑ 會議室");
+                ui.separator();
+                ui.label(
+                    RichText::new(participant_names.join(" · "))
+                        .small()
+                        .color(Color32::GRAY),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("結束會議").clicked() {
+                        crate::meeting::end_meeting();
+                        self.meeting_invited.clear();
+                        self.meeting_input.clear();
+                        self.meeting_reply_loading = false;
+                        self.meeting_reply_rx = None;
+                    }
+                });
+            });
+            ui.separator();
+
+            // ── Memory-share section ─────────────────────────────────────────────
+            // Shows all ordered non-self pairs.  Operator can open/close read
+            // access per pair, or grant all pairs at once.
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("🔑 記憶存取").small().color(Color32::GRAY));
+                // "全部互開" — only show when at least one pair is not yet shared.
+                let any_unshared = participant_ids.iter().enumerate().any(|(i, reader)| {
+                    participant_ids.iter().enumerate().any(|(j, owner)| {
+                        i != j && !crate::meeting::can_read_memory(reader, owner)
+                    })
+                });
+                if any_unshared && ui.small_button("全部互開").clicked() {
+                    for (i, reader) in participant_ids.iter().enumerate() {
+                        for (j, owner) in participant_ids.iter().enumerate() {
+                            if i != j {
+                                crate::meeting::grant_memory_share(reader, owner);
+                            }
+                        }
+                    }
+                }
+            });
+
+            {
+                let mut revoke_share: Option<(String, String)> = None;
+                for (i, reader_id) in participant_ids.iter().enumerate() {
+                    for (j, owner_id) in participant_ids.iter().enumerate() {
+                        if i == j { continue; }
+                        let reader_name = participant_names.get(i).map(|s| s.as_str()).unwrap_or(reader_id.as_str());
+                        let owner_name  = participant_names.get(j).map(|s| s.as_str()).unwrap_or(owner_id.as_str());
+                        let shared = crate::meeting::can_read_memory(reader_id, owner_id);
+                        ui.horizontal(|ui| {
+                            let label = format!("  {reader_name} 可讀 {owner_name} 的記憶");
+                            let col = if shared {
+                                Color32::from_rgb(100, 200, 120)
+                            } else {
+                                Color32::DARK_GRAY
+                            };
+                            ui.label(RichText::new(&label).small().color(col));
+                            if shared {
+                                if ui.small_button("撤銷").clicked() {
+                                    revoke_share = Some((reader_id.clone(), owner_id.clone()));
+                                }
+                            } else if ui.small_button("開啟").clicked() {
+                                crate::meeting::grant_memory_share(reader_id, owner_id);
+                            }
+                        });
+                    }
+                }
+                if let Some((reader, owner)) = revoke_share {
+                    crate::meeting::revoke_memory_share(&reader, &owner);
+                }
+            }
+
+            // ── Pending memory-access requests ───────────────────────────────────
+            let pending = crate::meeting::pending_requests();
+            if !pending.is_empty() {
+                ui.separator();
+                ui.label(RichText::new("📋 待審請求").small().color(Color32::YELLOW));
+                let mut resolve: Option<(String, bool)> = None;
+                for req in &pending {
+                    let req_name = agents.iter().find(|a| a.id == req.requester_id)
+                        .map(|a| a.identity.name.clone())
+                        .unwrap_or_else(|| req.requester_id.clone());
+                    let own_name = agents.iter().find(|a| a.id == req.owner_id)
+                        .map(|a| a.identity.name.clone())
+                        .unwrap_or_else(|| req.owner_id.clone());
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(
+                            format!("  {req_name} 想讀 {own_name} 的記憶（查詢：「{}」）", req.query_hint)
+                        ).small());
+                        if ui.small_button("同意").clicked() {
+                            resolve = Some((req.id.clone(), true));
+                        }
+                        if ui.small_button("拒絕").clicked() {
+                            resolve = Some((req.id.clone(), false));
+                        }
+                    });
+                }
+                if let Some((id, approved)) = resolve {
+                    crate::meeting::resolve_access_request(&id, approved);
+                }
+            }
+
+            ui.separator();
+
+            // ── Chat history ─────────────────────────────────────────────────────
+            let turns: Vec<crate::meeting::MeetingTurn> = crate::meeting::with_session(|s| {
+                s.map(|sess| sess.turns.clone()).unwrap_or_default()
+            });
+
+            let chat_height = (ui.available_height() - 50.0).max(80.0);
+            ScrollArea::vertical()
+                .id_salt("mtg_chat")
+                .stick_to_bottom(true)
+                .max_height(chat_height)
+                .show(ui, |ui| {
+                    if turns.is_empty() {
+                        ui.add_space(16.0);
+                        ui.colored_label(Color32::DARK_GRAY, "會議開始，請開始對話…");
+                    } else {
+                        ui.add_space(4.0);
+                        for turn in &turns {
+                            let is_op = turn.speaker == "Operator";
+                            let name = if is_op {
+                                "Operator".to_string()
+                            } else {
+                                agents.iter()
+                                    .find(|a| a.id == turn.speaker)
+                                    .map(|a| a.identity.name.clone())
+                                    .unwrap_or_else(|| turn.speaker.clone())
+                            };
+                            let col = if is_op {
+                                Color32::LIGHT_GRAY
+                            } else {
+                                Color32::from_rgb(140, 210, 160)
+                            };
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(RichText::new(format!("{name}:")).small().color(col).strong());
+                                ui.label(RichText::new(&turn.text).small());
+                            });
+                            ui.add_space(2.0);
+                        }
+                    }
+                });
+
+            ui.separator();
+
+            // ── Input row ────────────────────────────────────────────────────────
+            // Speaker list: 0 = Operator, 1..n = participants
+            let mut speaker_labels: Vec<String> = vec!["Operator".to_string()];
+            speaker_labels.extend(participant_names.iter().cloned());
+            // Clamp
+            if self.meeting_sender_idx >= speaker_labels.len() {
+                self.meeting_sender_idx = 0;
+            }
+
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_id_salt("mtg_speaker")
+                    .width(80.0)
+                    .selected_text(speaker_labels.get(self.meeting_sender_idx).map(|s| s.as_str()).unwrap_or("Operator"))
+                    .show_ui(ui, |ui| {
+                        for (i, label) in speaker_labels.iter().enumerate() {
+                            ui.selectable_value(&mut self.meeting_sender_idx, i, label.as_str());
+                        }
+                    });
+
+                let input_resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.meeting_input)
+                        .desired_width(ui.available_width() - 55.0)
+                        .hint_text("輸入訊息…"),
+                );
+                let enter = input_resp.lost_focus()
+                    && ui.input(|i| i.key_pressed(egui::Key::Enter));
+
+                let can_send = !self.meeting_input.is_empty() && !self.meeting_reply_loading;
+                if self.meeting_reply_loading {
+                    ui.spinner();
+                } else {
+                    let send_btn = ui.add_enabled(can_send, egui::Button::new("發送"));
+                    if (send_btn.clicked() || enter) && can_send {
+                        let msg = std::mem::take(&mut self.meeting_input);
+
+                        if self.meeting_sender_idx == 0 {
+                            // Operator — plain record, no LLM
+                            crate::meeting::append_turn("Operator", &msg);
+                        } else {
+                            let agent_id = participant_ids
+                                .get(self.meeting_sender_idx - 1)
+                                .cloned()
+                                .unwrap_or_default();
+                            // Operator's message is recorded as Operator, not the agent.
+                            crate::meeting::append_turn("Operator", &msg);
+                            self.meeting_reply_loading = true;
+
+                            // Build meeting context — always set so the LLM walks react_loop.
+                            let handoff_targets: Vec<String> = crate::meeting::with_session(|s| {
+                                s.map(|sess| {
+                                    sess.auths.iter()
+                                        .filter(|a| a.from_agent == agent_id)
+                                        .map(|a| {
+                                            let name = agents.iter()
+                                                .find(|ag| ag.id == a.to_agent)
+                                                .map(|ag| ag.identity.name.clone())
+                                                .unwrap_or_else(|| a.to_agent.clone());
+                                            format!("{} (id={})", name, a.to_agent)
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default()
+                            });
+                            let handoff_clause = if handoff_targets.is_empty() {
+                                String::new()
+                            } else {
+                                format!(
+                                    " Authorized to use [HANDOFF] to pass confidential info to: {}. \
+                                     Use [HANDOFF] <agent_id>::<message>.",
+                                    handoff_targets.join(", ")
+                                )
+                            };
+                            let meeting_ctx = Some(format!(
+                                "[Meeting] You are in an internal meeting with: {}.{}",
+                                participant_names.join(", "),
+                                handoff_clause,
+                            ));
+
+                            // Resolve per-agent LLM override (e.g. Claude).
+                            let llm_override = agents
+                                .iter()
+                                .find(|a| a.id == agent_id)
+                                .and_then(|a| a.resolve_llm_override())
+                                .map(|cfg| crate::agents::chat_agent::LlmOverride {
+                                    backend:  cfg.backend_name().to_string(),
+                                    base_url: cfg.base_url.clone(),
+                                    model:    cfg.model.clone(),
+                                    api_key:  cfg.api_key.clone(),
+                                });
+
+                            let (tx, rx) = std::sync::mpsc::channel();
+                            self.meeting_reply_rx = Some(rx);
+                            let rt = self.rt.clone();
+                            let aid = agent_id.clone();
+                            rt.spawn(async move {
+                                let req = crate::agents::chat_agent::ChatRequest {
+                                    user_text: msg,
+                                    agent_id: Some(aid.clone()),
+                                    context_block: meeting_ctx,
+                                    llm_override,
+                                    ..Default::default()
+                                };
+                                let resp = crate::agents::chat_agent::run_chat_response_via_adk_with_tracker(req, None).await;
+                                let _ = tx.send((aid, resp.reply));
+                            });
+                        }
+                    }
+                }
+            });
+        }
     }
 }
 

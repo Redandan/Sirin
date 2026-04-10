@@ -46,6 +46,9 @@ agents:
       source: manual
 - id: assistant_2
   enabled: false
+  memory_policy:
+    trusted_senders:
+      - assistant_1
   identity:
     name: 助手2
     professional_tone: brief
@@ -91,4 +94,20 @@ agents:
       label: 平均回覆時間
       unit: 分鐘
       source: manual
-max_agents: 2
+- id: claude-code
+  enabled: true
+  identity:
+    name: Claude
+    professional_tone: brief
+  response_style:
+    voice: 清晰、直接、專業
+    ack_prefix: ''
+    compliance_line: ''
+  disabled_skills: []
+  disable_remote_ai: false
+  objectives: []
+  llm_override:
+    backend: anthropic
+    model: claude-sonnet-4-6
+    api_key_env: ANTHROPIC_API_KEY
+max_agents: 3

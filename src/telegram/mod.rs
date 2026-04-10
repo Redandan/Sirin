@@ -375,6 +375,7 @@ async fn run_listener_once(
                     use_large_model: false,
                     agent_id: None,
                     disable_remote_ai: false,
+                    llm_override: None,
                 });
 
             // Side-command results (todo creation, task queries) take priority
@@ -584,6 +585,7 @@ async fn run_agent_listener_once(
                     use_large_model: false,
                     agent_id: Some(agent_cfg.id.clone()),
                     disable_remote_ai: agent_cfg.disable_remote_ai,
+                    llm_override: None,
                 });
 
             if let Some(cmd_result) = reply_plan.command_execution_result {

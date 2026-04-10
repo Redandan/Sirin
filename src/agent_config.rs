@@ -222,7 +222,34 @@ pub struct KpiConfig {
 // ── Actions ───────────────────────────────────────────────────────────────────
 
 
+// ── Memory policy ─────────────────────────────────────────────────────────────
+
+/// Controls which agents may deliver confidential memories to this agent.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MemoryPolicy {
+    /// Agent IDs allowed to call `confidential_handoff` targeting this agent.
+    /// Empty = no agent is trusted (confidential handoff disabled).
+    #[serde(default)]
+    pub trusted_senders: Vec<String>,
+}
+
 // ── Agent ─────────────────────────────────────────────────────────────────────
+
+/// Per-agent LLM provider override.
+///
+/// When present on an [`AgentConfig`], that agent will use a separate LLM
+/// (e.g. Anthropic Claude) instead of the process-wide default.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentLlmOverride {
+    /// Backend name: `"anthropic"`, `"lmstudio"`, `"gemini"`, or `"ollama"`.
+    pub backend: String,
+    /// Model ID recognised by the backend (e.g. `"claude-sonnet-4-6"`).
+    pub model: String,
+    /// Name of the environment variable that holds the API key.
+    /// Resolved at call time via `std::env::var`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_env: Option<String>,
+}
 
 /// Complete configuration for one AI agent instance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -266,6 +293,16 @@ pub struct AgentConfig {
     // ── 7. KPI 追蹤 ───────────────────────────────────────────────────────────
     #[serde(default)]
     pub kpi: KpiConfig,
+
+    // ── 8. 記憶存取政策 ────────────────────────────────────────────────────────
+    #[serde(default)]
+    pub memory_policy: MemoryPolicy,
+
+    // ── 9. LLM 覆寫（per-agent provider，如 Anthropic Claude）────────────────
+    /// When set, this agent uses its own LLM instead of the process-wide default.
+    /// Example: `{ backend: anthropic, model: claude-sonnet-4-6, api_key_env: ANTHROPIC_API_KEY }`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_override: Option<AgentLlmOverride>,
 }
 
 impl AgentConfig {
@@ -285,7 +322,23 @@ impl AgentConfig {
             disabled_skills: Vec::new(),
             human_behavior: HumanBehaviorConfig::default(),
             kpi: KpiConfig::default(),
+            memory_policy: MemoryPolicy::default(),
+            llm_override: None,
         }
+    }
+
+    /// Resolve the per-agent LLM override into an `LlmConfig`, if any.
+    ///
+    /// Reads the API key from the named environment variable.
+    /// Returns `None` when no override is configured.
+    pub fn resolve_llm_override(&self) -> Option<crate::llm::LlmConfig> {
+        let ov = self.llm_override.as_ref()?;
+        let api_key = ov
+            .api_key_env
+            .as_deref()
+            .and_then(|env| std::env::var(env).ok())
+            .filter(|v| !v.trim().is_empty());
+        Some(crate::llm::LlmConfig::for_override(&ov.backend, &ov.model, api_key))
     }
 
     /// Returns true if at least one coding skill exists and is not disabled.

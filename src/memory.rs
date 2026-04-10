@@ -58,9 +58,18 @@ fn memory_db() -> &'static Mutex<rusqlite::Connection> {
             rusqlite::Connection::open(&path).expect("Failed to open memory SQLite database");
         conn.execute_batch(
             "CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts \
-             USING fts5(text, source, timestamp, tokenize='unicode61');",
+             USING fts5(text, source, timestamp, tokenize='unicode61'); \
+             CREATE TABLE IF NOT EXISTS agent_memories ( \
+                 id             INTEGER PRIMARY KEY AUTOINCREMENT, \
+                 text           TEXT    NOT NULL, \
+                 source         TEXT    NOT NULL, \
+                 timestamp      TEXT    NOT NULL, \
+                 owner_agent_id TEXT    NOT NULL \
+             ); \
+             CREATE INDEX IF NOT EXISTS idx_am_owner \
+                 ON agent_memories(owner_agent_id);",
         )
-        .expect("Failed to initialize memory FTS5 schema");
+        .expect("Failed to initialize memory schema");
 
         // One-time migration from legacy JSONL on startup.
         migrate_jsonl_to_sqlite(&conn);
@@ -107,10 +116,18 @@ fn migrate_jsonl_to_sqlite(conn: &rusqlite::Connection) {
     }
 }
 
-/// Persist a text snippet to the memory store (SQLite FTS5).
+/// Persist a text snippet to the memory store.
+///
+/// - `owner_agent_id`: the agent that owns this entry.  Pass `""` for global
+///   shared memory (written to `memories_fts`, existing behaviour).
+/// - `visibility`: `"shared"` | `"confidential"`.  When `"confidential"` **and**
+///   `owner_agent_id` is non-empty the entry is written to `agent_memories` and
+///   is only readable by that agent.  All other combinations go to `memories_fts`.
 pub fn memory_store(
     text: &str,
     source: &str,
+    owner_agent_id: &str,
+    visibility: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if text.trim().is_empty() {
         return Ok(());
@@ -119,16 +136,28 @@ pub fn memory_store(
     let conn = memory_db()
         .lock()
         .map_err(|e| format!("memory DB lock poisoned: {e}"))?;
-    conn.execute(
-        "INSERT INTO memories_fts(text, source, timestamp) VALUES (?1, ?2, ?3)",
-        rusqlite::params![text, source, timestamp],
-    )?;
+    if !owner_agent_id.is_empty() && visibility == "confidential" {
+        conn.execute(
+            "INSERT INTO agent_memories(text, source, timestamp, owner_agent_id) \
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![text, source, timestamp, owner_agent_id],
+        )?;
+    } else {
+        conn.execute(
+            "INSERT INTO memories_fts(text, source, timestamp) VALUES (?1, ?2, ?3)",
+            rusqlite::params![text, source, timestamp],
+        )?;
+    }
     Ok(())
 }
 
 /// Return the N most-recently stored memory entries (no query required).
+///
+/// When `caller_agent_id` is non-empty the result also includes the most recent
+/// entries from `agent_memories` owned by that agent.
 pub fn memory_list_recent(
     limit: usize,
+    caller_agent_id: &str,
 ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
     let conn = memory_db()
         .lock()
@@ -136,19 +165,37 @@ pub fn memory_list_recent(
     let mut stmt = conn.prepare(
         "SELECT text FROM memories_fts ORDER BY rowid DESC LIMIT ?1",
     )?;
-    let results: Vec<String> = stmt
+    let mut results: Vec<String> = stmt
         .query_map(rusqlite::params![limit as i64], |row| row.get(0))?
         .filter_map(|r| r.ok())
         .collect();
+    if !caller_agent_id.is_empty() {
+        let mut stmt2 = conn.prepare(
+            "SELECT text FROM agent_memories \
+             WHERE owner_agent_id = ?1 \
+             ORDER BY id DESC LIMIT ?2",
+        )?;
+        let agent_results: Vec<String> = stmt2
+            .query_map(rusqlite::params![caller_agent_id, limit as i64], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        results.extend(agent_results);
+        results.truncate(limit);
+    }
     Ok(results)
 }
 
 /// Full-text search the memory store using SQLite FTS5.
 ///
 /// Results are ranked by FTS5 relevance (BM25) and capped at `limit`.
+///
+/// When `caller_agent_id` is non-empty the result also includes entries from
+/// `agent_memories` owned by that agent (LIKE search).  Pass `""` for anonymous
+/// callers (e.g. MCP / RPC) — they only see shared memories.
 pub fn memory_search(
     query: &str,
     limit: usize,
+    caller_agent_id: &str,
 ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
     if query.trim().is_empty() {
         return Ok(Vec::new());
@@ -163,12 +210,49 @@ pub fn memory_search(
          ORDER BY rank \
          LIMIT ?2",
     )?;
-    let results: Vec<String> = stmt
+    let mut results: Vec<String> = stmt
         .query_map(rusqlite::params![safe_query, limit as i64], |row| {
             row.get(0)
         })?
         .filter_map(|r| r.ok())
         .collect();
+    if !caller_agent_id.is_empty() {
+        let pattern = format!("%{}%", query.replace('%', "\\%").replace('_', "\\_"));
+        // Own private memories.
+        let mut stmt2 = conn.prepare(
+            "SELECT text FROM agent_memories \
+             WHERE owner_agent_id = ?1 AND text LIKE ?2 ESCAPE '\\' \
+             LIMIT ?3",
+        )?;
+        let agent_results: Vec<String> = stmt2
+            .query_map(
+                rusqlite::params![caller_agent_id, pattern, limit as i64],
+                |row| row.get(0),
+            )?
+            .filter_map(|r| r.ok())
+            .collect();
+        results.extend(agent_results);
+
+        // Memories shared with this caller by other agents in the active meeting.
+        let shared_owners = crate::meeting::readable_owners(caller_agent_id);
+        for owner in &shared_owners {
+            let mut stmt3 = conn.prepare(
+                "SELECT text FROM agent_memories \
+                 WHERE owner_agent_id = ?1 AND text LIKE ?2 ESCAPE '\\' \
+                 LIMIT ?3",
+            )?;
+            let shared: Vec<String> = stmt3
+                .query_map(
+                    rusqlite::params![owner, pattern, limit as i64],
+                    |row| row.get(0),
+                )?
+                .filter_map(|r| r.ok())
+                .collect();
+            results.extend(shared);
+        }
+
+        results.truncate(limit);
+    }
     Ok(results)
 }
 
@@ -1322,6 +1406,80 @@ mod tests {
             results.iter().any(|r| r.to_lowercase().contains("planner")),
             "planner should appear in results: {:?}",
             results
+        );
+    }
+
+    // ── agent_memories isolation tests ────────────────────────────────────────
+
+    /// Confidential memory is NOT visible to anonymous callers (MCP / RPC path).
+    #[test]
+    fn confidential_hidden_from_anonymous() {
+        let unique = format!("confidential_test_anon_{}", std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos());
+        memory_store(&unique, "test", "agent_isolation_a", "confidential")
+            .expect("store should succeed");
+
+        let found = memory_search(&unique, 5, "")
+            .expect("search should succeed");
+        assert!(
+            !found.iter().any(|r| r.contains(&unique)),
+            "anonymous search must NOT see confidential memory: {:?}", found
+        );
+    }
+
+    /// Owner agent can retrieve its own confidential memory.
+    #[test]
+    fn owner_can_read_confidential() {
+        let unique = format!("confidential_test_owner_{}", std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos());
+        memory_store(&unique, "test", "agent_isolation_b", "confidential")
+            .expect("store should succeed");
+
+        let found = memory_search(&unique, 5, "agent_isolation_b")
+            .expect("search should succeed");
+        assert!(
+            found.iter().any(|r| r.contains(&unique)),
+            "owner must see its own confidential memory: {:?}", found
+        );
+    }
+
+    /// A different agent cannot read another agent's confidential memory.
+    #[test]
+    fn other_agent_cannot_read_confidential() {
+        let unique = format!("confidential_test_other_{}", std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos());
+        memory_store(&unique, "test", "agent_isolation_c", "confidential")
+            .expect("store should succeed");
+
+        let found = memory_search(&unique, 5, "agent_isolation_d")
+            .expect("search should succeed");
+        assert!(
+            !found.iter().any(|r| r.contains(&unique)),
+            "other agent must NOT see this confidential memory: {:?}", found
+        );
+    }
+
+    /// Shared memory (empty owner_agent_id) is visible to everyone including anonymous.
+    #[test]
+    fn shared_memory_visible_to_all() {
+        let unique = format!("shared_test_visible_{}", std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos());
+        memory_store(&unique, "test", "", "shared")
+            .expect("store should succeed");
+
+        // Anonymous can see it.
+        let found_anon = memory_search(&unique, 5, "")
+            .expect("search should succeed");
+        assert!(
+            found_anon.iter().any(|r| r.contains(&unique)),
+            "anonymous must see shared memory: {:?}", found_anon
+        );
+        // Any agent can also see it.
+        let found_agent = memory_search(&unique, 5, "agent_isolation_e")
+            .expect("search should succeed");
+        assert!(
+            found_agent.iter().any(|r| r.contains(&unique)),
+            "agent must also see shared memory: {:?}", found_agent
         );
     }
 }

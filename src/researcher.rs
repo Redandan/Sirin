@@ -614,6 +614,8 @@ async fn pipeline(
     if let Err(e) = memory_store(
         &format!("Research topic: {}\n\n{}", task.topic, memory_snippet),
         "research",
+        "",
+        "shared",
     ) {
         sirin_log!("[researcher] Failed to persist research memory: {e}");
     }
