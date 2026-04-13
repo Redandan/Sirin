@@ -139,15 +139,24 @@ pub fn launch(
         agent_auth_states,
     });
 
-    dioxus::LaunchBuilder::desktop()
-        .with_cfg(
-            dioxus::desktop::Config::new()
-                .with_window(
-                    dioxus::desktop::WindowBuilder::new()
-                        .with_title("Sirin")
-                        .with_inner_size(dioxus::desktop::LogicalSize::new(1100.0, 740.0))
-                        .with_min_inner_size(dioxus::desktop::LogicalSize::new(640.0, 480.0)),
-                )
-        )
-        .launch(App);
+    #[cfg(feature = "desktop")]
+    {
+        dioxus::LaunchBuilder::desktop()
+            .with_cfg(
+                dioxus::desktop::Config::new()
+                    .with_window(
+                        dioxus::desktop::WindowBuilder::new()
+                            .with_title("Sirin")
+                            .with_inner_size(dioxus::desktop::LogicalSize::new(1100.0, 740.0))
+                            .with_min_inner_size(dioxus::desktop::LogicalSize::new(640.0, 480.0)),
+                    )
+            )
+            .launch(App);
+    }
+
+    // Fullstack server mode: Dioxus serves SSR + WASM client
+    #[cfg(all(feature = "server", not(feature = "desktop")))]
+    {
+        dioxus::launch(App);
+    }
 }
