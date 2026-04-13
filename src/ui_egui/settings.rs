@@ -14,15 +14,23 @@ pub struct SettingsState {
     mcp_expanded: Option<String>,
     mcp_args: String,
     mcp_result: String,
-    // New agent
     new_agent_id: String,
     new_agent_name: String,
-    // Research
     research_topic: String,
     research_url: String,
-    // Persona
     persona_name_buf: String,
+    persona_voice_buf: String,
+    persona_obj_new: String,
     persona_loaded: bool,
+    // Config export/import
+    config_export: String,
+    config_import: String,
+    // Skill execution
+    skill_test_id: String,
+    skill_test_input: String,
+    skill_test_output: String,
+
+
 }
 
 pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, _agents: &[AgentSummary], state: &mut SettingsState) {
@@ -168,18 +176,52 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, _agents: &[AgentSummar
             }
         });
 
-        // ── Persona ──────────────────────────────────────────────────────
+        // ── Persona (full edit) ──────────────────────────────────────────
         theme::section(ui, "全局人格", |ui| {
             if !state.persona_loaded {
                 state.persona_name_buf = svc.persona_name();
+                state.persona_voice_buf = svc.persona_voice();
                 state.persona_loaded = true;
             }
+            // Name
+            theme::info_row(ui, "名稱", "");
+            let resp = ui.add_sized([250.0, 24.0], egui::TextEdit::singleline(&mut state.persona_name_buf));
+            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                svc.set_persona_name(&state.persona_name_buf);
+            }
+            // Voice
+            theme::info_row(ui, "語氣風格", "");
+            let resp2 = ui.add_sized([250.0, 24.0], egui::TextEdit::singleline(&mut state.persona_voice_buf));
+            if resp2.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                svc.set_persona_voice(&state.persona_voice_buf);
+            }
+            // Objectives
+            ui.add_space(theme::SP_SM);
+            ui.colored_label(theme::TEXT_DIM, RichText::new("全局目標:").size(theme::FONT_SMALL));
+            let objectives = svc.persona_objectives();
+            let mut remove_idx: Option<usize> = None;
+            for (i, obj) in objectives.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.colored_label(theme::ACCENT, "•");
+                    ui.label(RichText::new(obj).size(theme::FONT_BODY).color(theme::TEXT));
+                    let del = ui.add(egui::Label::new(RichText::new("  x").size(theme::FONT_BODY).color(theme::DANGER.linear_multiply(0.6)))
+                        .selectable(false).sense(egui::Sense::click()));
+                    if del.clicked() { remove_idx = Some(i); }
+                });
+            }
+            if let Some(idx) = remove_idx {
+                let mut objs = objectives.clone();
+                objs.remove(idx);
+                svc.set_persona_objectives(objs);
+            }
             ui.horizontal(|ui| {
-                ui.colored_label(theme::TEXT_DIM, RichText::new("名稱").size(theme::FONT_BODY));
-                ui.add_space(theme::SP_SM);
-                let resp = ui.add_sized([200.0, 24.0], egui::TextEdit::singleline(&mut state.persona_name_buf));
-                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    svc.set_persona_name(&state.persona_name_buf);
+                ui.add_sized([200.0, 24.0], egui::TextEdit::singleline(&mut state.persona_obj_new).hint_text("新增目標..."));
+                if ui.add(egui::Button::new(RichText::new("+").color(theme::BG)).fill(theme::ACCENT).corner_radius(4.0)).clicked()
+                    && !state.persona_obj_new.trim().is_empty() {
+                    let mut objs = svc.persona_objectives();
+                    objs.push(state.persona_obj_new.trim().to_string());
+                    svc.set_persona_objectives(objs);
+                    state.persona_obj_new.clear();
                 }
             });
         });
@@ -201,21 +243,76 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, _agents: &[AgentSummar
             });
         });
 
-        // ── Research Trigger ─────────────────────────────────────────────
+        // ── Research ─────────────────────────────────────────────────────
         theme::section(ui, "觸發調研", |ui| {
             ui.horizontal(|ui| {
-                ui.add_sized([200.0, 24.0], egui::TextEdit::singleline(&mut state.research_topic).hint_text("調研主題..."));
+                ui.add_sized([200.0, 24.0], egui::TextEdit::singleline(&mut state.research_topic).hint_text("主題..."));
                 ui.add_sized([150.0, 24.0], egui::TextEdit::singleline(&mut state.research_url).hint_text("URL（選填）"));
-                if ui.add(egui::Button::new(RichText::new("🔍 開始").size(theme::FONT_SMALL).color(theme::BG))
-                    .fill(theme::ACCENT).corner_radius(4.0)).clicked()
-                    && !state.research_topic.trim().is_empty()
-                {
+                if ui.add(egui::Button::new(RichText::new("🔍").color(theme::BG)).fill(theme::ACCENT).corner_radius(4.0)).clicked()
+                    && !state.research_topic.trim().is_empty() {
                     let url = if state.research_url.trim().is_empty() { None } else { Some(state.research_url.trim()) };
                     svc.trigger_research(state.research_topic.trim(), url);
                     state.research_topic.clear();
                     state.research_url.clear();
                 }
             });
+        });
+
+        // ── Skill Execution ──────────────────────────────────────────────
+        theme::section(ui, "技能測試", |ui| {
+            ui.horizontal(|ui| {
+                ui.add_sized([150.0, 24.0], egui::TextEdit::singleline(&mut state.skill_test_id).hint_text("skill_id"));
+                ui.add_sized([200.0, 24.0], egui::TextEdit::singleline(&mut state.skill_test_input).hint_text("輸入..."));
+                if ui.add(egui::Button::new(RichText::new("▶").color(theme::BG)).fill(theme::ACCENT).corner_radius(4.0)).clicked()
+                    && !state.skill_test_id.trim().is_empty() {
+                    state.skill_test_output = svc.execute_skill(state.skill_test_id.trim(), state.skill_test_input.trim());
+                }
+            });
+            if !state.skill_test_output.is_empty() {
+                egui::Frame::new().fill(theme::BG).corner_radius(4.0).inner_margin(theme::SP_SM).show(ui, |ui| {
+                    ui.colored_label(theme::ACCENT, RichText::new(&state.skill_test_output).size(theme::FONT_SMALL).monospace());
+                });
+            }
+        });
+
+        // ── Config Export/Import ─────────────────────────────────────────
+        theme::section(ui, "設定備份", |ui| {
+            ui.horizontal(|ui| {
+                if ui.add(egui::Button::new(RichText::new("匯出").size(theme::FONT_SMALL).color(theme::BG)).fill(theme::INFO).corner_radius(4.0)).clicked() {
+                    state.config_export = svc.export_config();
+                }
+                if ui.add(egui::Button::new(RichText::new("匯入").size(theme::FONT_SMALL).color(theme::BG)).fill(theme::YELLOW).corner_radius(4.0)).clicked()
+                    && !state.config_import.trim().is_empty() {
+                    if let Err(e) = svc.import_config(&state.config_import) {
+                        state.config_export = e;
+                    }
+                }
+            });
+            if !state.config_export.is_empty() {
+                ui.add_sized([ui.available_width(), 80.0], egui::TextEdit::multiline(&mut state.config_export).font(egui::TextStyle::Monospace));
+            }
+            ui.colored_label(theme::TEXT_DIM, RichText::new("貼上 YAML 後點「匯入」:").size(theme::FONT_CAPTION));
+            ui.add_sized([ui.available_width(), 60.0], egui::TextEdit::multiline(&mut state.config_import).font(egui::TextStyle::Monospace).hint_text("貼上 agents.yaml 內容..."));
+        });
+
+        // ── Notification History ─────────────────────────────────────────
+        theme::section(ui, "通知歷史", |ui| {
+            let history = svc.toast_history();
+            if history.is_empty() {
+                ui.colored_label(theme::TEXT_DIM, "暫無通知");
+            } else {
+                for evt in history.iter().rev().take(20) {
+                    let (icon, color) = match evt.level {
+                        ToastLevel::Success => ("✓", theme::ACCENT),
+                        ToastLevel::Error => ("✗", theme::DANGER),
+                        ToastLevel::Info => ("ℹ", theme::INFO),
+                    };
+                    ui.horizontal(|ui| {
+                        ui.colored_label(color, RichText::new(icon).size(theme::FONT_SMALL));
+                        ui.colored_label(color, RichText::new(&evt.text).size(theme::FONT_SMALL));
+                    });
+                }
+            }
         });
     });
 }

@@ -237,7 +237,31 @@ pub trait AppService: Send + Sync + 'static {
     fn toggle_skill(&self, agent_id: &str, skill_id: &str, enabled: bool);
     fn disabled_skills(&self, agent_id: &str) -> Vec<String>;
 
-    // ── Events ───────────────────────────────────────────────────────────────
+    // ── Workflow AI ────────────────────────────────────────────────────────
+
+    /// Call LLM with the current stage prompt and return the generated text.
+    fn workflow_generate(&self) -> Option<String>;
+    /// Save AI output to the current stage.
+    fn workflow_save_output(&self, stage_id: &str, output: &str);
+
+    // ── Config export/import ─────────────────────────────────────────────
+
+    fn export_config(&self) -> String;
+    fn import_config(&self, yaml: &str) -> Result<(), String>;
+
+    // ── Skill execution ──────────────────────────────────────────────────
+
+    fn execute_skill(&self, skill_id: &str, input: &str) -> String;
+
+    // ── Persona full edit ────────────────────────────────────────────────
+
+    fn persona_objectives(&self) -> Vec<String>;
+    fn set_persona_objectives(&self, objectives: Vec<String>);
+    fn persona_voice(&self) -> String;
+    fn set_persona_voice(&self, voice: &str);
+
+    // ── Events ───────────────────────────────────────────────────────────
 
     fn poll_toasts(&self) -> Vec<ToastEvent>;
+    fn toast_history(&self) -> Vec<ToastEvent>;
 }

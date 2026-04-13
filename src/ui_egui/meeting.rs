@@ -17,13 +17,28 @@ pub struct MeetingState {
 pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agents: &[AgentSummary], state: &mut MeetingState) {
     ui.set_max_width(600.0);
 
-    // Poll async AI reply
+    // Poll async AI replies (multiple agents may respond)
     if let Some(rx) = &state.ai_rx {
-        if let Ok((name, reply)) = rx.try_recv() {
+        while let Ok((name, reply)) = rx.try_recv() {
             state.messages.push((name.clone(), reply.clone()));
             svc.meeting_send(&name, &reply);
-            state.ai_loading = false;
-            state.ai_rx = None;
+        }
+        // Check if channel is closed (all agents done)
+        if rx.try_recv().is_err() && !state.messages.is_empty() {
+            // Keep rx alive until disconnected
+        }
+    }
+    // Clear loading when sender dropped (thread finished)
+    if state.ai_loading {
+        if let Some(rx) = &state.ai_rx {
+            // If disconnected and no more messages, done
+            match rx.try_recv() {
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    state.ai_loading = false;
+                    state.ai_rx = None;
+                }
+                _ => {}
+            }
         }
     }
 
@@ -116,14 +131,18 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agents: &[AgentSummary
             svc.meeting_send("Operator", &msg);
             state.input.clear();
 
-            // Trigger AI agent reply in background
+            // Trigger ALL enabled agents to reply (multi-agent rotation)
             let (tx, rx) = std::sync::mpsc::channel();
+            let enabled: Vec<(String, String)> = agents.iter()
+                .filter(|a| a.enabled)
+                .map(|a| (a.id.clone(), a.name.clone()))
+                .collect();
             let svc = svc.clone();
-            let agent_name = agents.iter().find(|a| a.enabled).map(|a| a.name.clone()).unwrap_or("Agent".into());
-            let agent_id = agents.iter().find(|a| a.enabled).map(|a| a.id.clone()).unwrap_or_default();
             std::thread::spawn(move || {
-                let reply = svc.chat_send(&agent_id, &msg);
-                let _ = tx.send((agent_name, reply));
+                for (aid, aname) in enabled {
+                    let reply = svc.chat_send(&aid, &msg);
+                    let _ = tx.send((aname, reply));
+                }
             });
             state.ai_rx = Some(rx);
             state.ai_loading = true;

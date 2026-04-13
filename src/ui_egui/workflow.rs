@@ -10,10 +10,23 @@ pub struct WorkflowUiState {
     new_feature: String,
     new_description: String,
     stage_prompt: Option<String>,
+    ai_output: String,
+    ai_loading: bool,
+    ai_rx: Option<std::sync::mpsc::Receiver<String>>,
 }
 
 pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, state: &mut WorkflowUiState) {
     ui.set_max_width(600.0);
+
+    // Poll async AI generation
+    if let Some(rx) = &state.ai_rx {
+        if let Ok(result) = rx.try_recv() {
+            state.ai_output = result;
+            state.ai_loading = false;
+            state.ai_rx = None;
+        }
+    }
+
     match svc.workflow_state() {
         None => show_empty(ui, svc, state),
         Some(wf) => show_active(ui, svc, &wf, state),
@@ -75,29 +88,48 @@ fn show_active(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, wf: &WorkflowView, 
     if wf.all_done {
         ui.colored_label(theme::ACCENT, "🎉 所有階段已完成！");
     } else {
-        // Current stage controls
         theme::section(ui, &format!("當前: {}", wf.current_stage), |ui| {
-            // Show stage prompt (for AI reference)
-            if state.stage_prompt.is_none() {
-                state.stage_prompt = svc.workflow_stage_prompt();
+            if state.stage_prompt.is_none() { state.stage_prompt = svc.workflow_stage_prompt(); }
+
+            // AI generate
+            ui.horizontal(|ui| {
+                let can = !state.ai_loading;
+                if ui.add_enabled(can, egui::Button::new(RichText::new("🤖 AI 生成").color(theme::BG)).fill(theme::ACCENT).corner_radius(4.0)).clicked() {
+                    state.ai_loading = true;
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let svc = svc.clone();
+                    std::thread::spawn(move || { let _ = tx.send(svc.workflow_generate().unwrap_or_else(|| "（生成失敗）".into())); });
+                    state.ai_rx = Some(rx);
+                }
+                if state.ai_loading { ui.colored_label(theme::YELLOW, "● 生成中..."); }
+                if ui.small_button("📋 複製 Prompt").clicked() {
+                    if let Some(p) = &state.stage_prompt { ui.ctx().copy_text(p.clone()); }
+                }
+            });
+
+            // AI output
+            if !state.ai_output.is_empty() {
+                ui.add_space(theme::SP_SM);
+                ui.colored_label(theme::TEXT_DIM, RichText::new("AI 輸出（可編輯）:").size(theme::FONT_SMALL));
+                ui.add_sized([ui.available_width(), 120.0], egui::TextEdit::multiline(&mut state.ai_output).font(egui::TextStyle::Monospace));
+                ui.horizontal(|ui| {
+                    if ui.add(egui::Button::new(RichText::new("💾 接受").color(theme::BG)).fill(theme::ACCENT).corner_radius(4.0)).clicked() {
+                        svc.workflow_save_output(&wf.current_stage, &state.ai_output);
+                    }
+                });
             }
+
+            // Prompt ref
             if let Some(prompt) = &state.stage_prompt {
-                egui::CollapsingHeader::new(RichText::new("📄 AI Prompt（可複製）").size(theme::FONT_SMALL).color(theme::TEXT_DIM))
-                    .default_open(false)
-                    .show(ui, |ui| {
-                        egui::Frame::new().fill(theme::BG).corner_radius(4.0).inner_margin(theme::SP_SM).show(ui, |ui| {
-                            ui.colored_label(theme::TEXT_DIM, RichText::new(prompt).monospace().size(theme::FONT_SMALL));
-                        });
-                        if ui.small_button("📋 複製 Prompt").clicked() {
-                            ui.ctx().copy_text(prompt.clone());
-                        }
+                egui::CollapsingHeader::new(RichText::new("📄 Prompt").size(theme::FONT_CAPTION).color(theme::TEXT_DIM))
+                    .default_open(false).show(ui, |ui| {
+                        ui.colored_label(theme::TEXT_DIM, RichText::new(prompt).monospace().size(theme::FONT_CAPTION));
                     });
             }
 
             ui.add_space(theme::SP_MD);
-            if ui.add(egui::Button::new(RichText::new("✅ 完成此階段 → 下一步").color(theme::BG)).fill(theme::ACCENT).corner_radius(6.0)).clicked() {
-                svc.workflow_advance();
-                state.stage_prompt = svc.workflow_stage_prompt();
+            if ui.add(egui::Button::new(RichText::new("✅ 下一步").color(theme::BG)).fill(theme::ACCENT).corner_radius(4.0)).clicked() {
+                svc.workflow_advance(); state.stage_prompt = svc.workflow_stage_prompt(); state.ai_output.clear();
             }
         });
     }

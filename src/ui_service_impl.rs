@@ -10,11 +10,12 @@ pub struct RealService {
     pub tracker: TaskTracker,
     pub tg_auth: TelegramAuthState,
     toasts: Mutex<Vec<ToastEvent>>,
+    toast_history: Mutex<Vec<ToastEvent>>,
 }
 
 impl RealService {
     pub fn new(tracker: TaskTracker, tg_auth: TelegramAuthState) -> Self {
-        Self { tracker, tg_auth, toasts: Mutex::new(Vec::new()) }
+        Self { tracker, tg_auth, toasts: Mutex::new(Vec::new()), toast_history: Mutex::new(Vec::new()) }
     }
 
     fn push_toast(&self, level: ToastLevel, text: impl Into<String>) {
@@ -487,10 +488,100 @@ impl AppService for RealService {
             .unwrap_or_default()
     }
 
-    // ── Events ───────────────────────────────────────────────────────────────
+    // ── Workflow AI ────────────────────────────────────────────────────────
+
+    fn workflow_generate(&self) -> Option<String> {
+        let prompt = self.workflow_stage_prompt()?;
+        let handle = tokio::runtime::Handle::try_current().ok()?;
+        let result = std::thread::spawn(move || {
+            handle.block_on(crate::llm::call_prompt(
+                &crate::llm::shared_http(), &crate::llm::shared_llm(), &prompt,
+            ))
+        }).join().ok()?.ok()?;
+        Some(result)
+    }
+
+    fn workflow_save_output(&self, stage_id: &str, output: &str) {
+        if let Some(mut state) = crate::workflow::WorkflowState::load() {
+            state.stage_outputs.insert(stage_id.to_string(), output.to_string());
+            state.save();
+        }
+    }
+
+    // ── Config export/import ─────────────────────────────────────────────
+
+    fn export_config(&self) -> String {
+        std::fs::read_to_string("config/agents.yaml").unwrap_or_else(|_| "# empty".to_string())
+    }
+
+    fn import_config(&self, yaml: &str) -> Result<(), String> {
+        // Validate YAML parses
+        let _: crate::agent_config::AgentsFile = serde_yaml::from_str(yaml)
+            .map_err(|e| format!("YAML 解析失敗: {e}"))?;
+        std::fs::write("config/agents.yaml", yaml).map_err(|e| format!("寫入失敗: {e}"))?;
+        self.push_toast(ToastLevel::Success, "設定已匯入");
+        Ok(())
+    }
+
+    // ── Skill execution ──────────────────────────────────────────────────
+
+    fn execute_skill(&self, skill_id: &str, input: &str) -> String {
+        // Try Rhai script first
+        let script_path = format!("config/scripts/{skill_id}.rhai");
+        if std::path::Path::new(&script_path).exists() {
+            return crate::rhai_engine::run_rhai_script(&script_path, skill_id, input, None)
+                .unwrap_or_else(|e| format!("錯誤: {e}"));
+        }
+        format!("技能 {skill_id} 沒有可執行的腳本")
+    }
+
+    // ── Persona full edit ────────────────────────────────────────────────
+
+    fn persona_objectives(&self) -> Vec<String> {
+        crate::persona::Persona::cached().map(|p| p.objectives.clone()).unwrap_or_default()
+    }
+
+    fn set_persona_objectives(&self, objectives: Vec<String>) {
+        if let Ok(mut p) = crate::persona::Persona::load() {
+            p.objectives = objectives;
+            if let Ok(yaml) = serde_yaml::to_string(&p) {
+                let _ = std::fs::write("config/persona.yaml", yaml);
+                crate::persona::Persona::reload_cache();
+            }
+        }
+    }
+
+    fn persona_voice(&self) -> String {
+        crate::persona::Persona::cached()
+            .map(|p| p.response_style.voice.clone())
+            .unwrap_or_default()
+    }
+
+    fn set_persona_voice(&self, voice: &str) {
+        if let Ok(mut p) = crate::persona::Persona::load() {
+            p.response_style.voice = voice.to_string();
+            if let Ok(yaml) = serde_yaml::to_string(&p) {
+                let _ = std::fs::write("config/persona.yaml", yaml);
+                crate::persona::Persona::reload_cache();
+            }
+        }
+    }
+
+    // ── Events ───────────────────────────────────────────────────────────
 
     fn poll_toasts(&self) -> Vec<ToastEvent> {
-        self.toasts.lock().ok().map(|mut t| std::mem::take(&mut *t)).unwrap_or_default()
+        let new = self.toasts.lock().ok().map(|mut t| std::mem::take(&mut *t)).unwrap_or_default();
+        // Also record in history
+        if let Ok(mut h) = self.toast_history.lock() {
+            h.extend(new.iter().cloned());
+            // Keep last 50
+            if h.len() > 50 { let n = h.len() - 50; h.drain(..n); }
+        }
+        new
+    }
+
+    fn toast_history(&self) -> Vec<ToastEvent> {
+        self.toast_history.lock().ok().map(|h| h.clone()).unwrap_or_default()
     }
 }
 
