@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "sirin-web",
+      "runtimeExecutable": "dx",
+      "runtimeArgs": ["serve", "--platform", "fullstack"],
+      "port": 8080
+    },
+    {
+      "name": "sirin-dev",
+      "runtimeExecutable": "cargo",
+      "runtimeArgs": ["run"],
+      "port": 7700
+    },
+    {
+      "name": "sirin-release",
+      "runtimeExecutable": "cargo",
+      "runtimeArgs": ["run", "--release"],
+      "port": 7700
+    }
+  ]
+}
