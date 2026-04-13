@@ -32,7 +32,7 @@ fn show_empty(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, state: &mut Workflow
             egui::TextEdit::multiline(&mut state.new_description).hint_text("描述技能功能..."));
         ui.add_space(theme::SP_MD);
         let can = !state.new_feature.trim().is_empty();
-        if ui.add_enabled(can, egui::Button::new(RichText::new("🚀 開始開發").color(theme::BG)).fill(theme::INFO).corner_radius(6.0)).clicked() {
+        if ui.add_enabled(can, egui::Button::new(RichText::new("🚀 開始開發").color(theme::BG)).fill(theme::ACCENT).corner_radius(4.0)).clicked() {
             svc.workflow_create(state.new_feature.trim(), state.new_description.trim());
             state.new_feature.clear();
             state.new_description.clear();
@@ -60,7 +60,6 @@ fn show_active(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, wf: &WorkflowView, 
             };
             egui::Frame::new().fill(bg).corner_radius(4.0)
                 .inner_margin(theme::SP_MD)
-                .stroke(egui::Stroke::new(1.0, fg.linear_multiply(0.3)))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width() / wf.stages.len().max(1) as f32 - 8.0);
                     ui.vertical_centered(|ui| {
@@ -86,7 +85,7 @@ fn show_active(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, wf: &WorkflowView, 
                 egui::CollapsingHeader::new(RichText::new("📄 AI Prompt（可複製）").size(theme::FONT_SMALL).color(theme::TEXT_DIM))
                     .default_open(false)
                     .show(ui, |ui| {
-                        egui::Frame::new().fill(theme::BG).corner_radius(4.0).inner_margin(6.0).show(ui, |ui| {
+                        egui::Frame::new().fill(theme::BG).corner_radius(4.0).inner_margin(theme::SP_SM).show(ui, |ui| {
                             ui.colored_label(theme::TEXT_DIM, RichText::new(prompt).monospace().size(theme::FONT_SMALL));
                         });
                         if ui.small_button("📋 複製 Prompt").clicked() {

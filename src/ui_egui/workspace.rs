@@ -156,8 +156,7 @@ fn show_pending(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &str, st
                 // Draft reply (EDITABLE)
                 ui.label(RichText::new("✏ 草稿（可編輯）").size(theme::FONT_SMALL).color(theme::TEXT_DIM));
                 if let Some(buf) = state.draft_edits.get_mut(&reply.id) {
-                    egui::Frame::new().fill(theme::INFO.linear_multiply(0.06)).corner_radius(6.0).inner_margin(theme::SP_MD)
-                        .stroke(egui::Stroke::new(1.0, theme::INFO.linear_multiply(0.2)))
+                    egui::Frame::new().fill(theme::INFO.linear_multiply(0.06)).corner_radius(4.0).inner_margin(theme::SP_MD)
                         .show(ui, |ui| {
                             ui.add_sized([ui.available_width(), 60.0],
                                 egui::TextEdit::multiline(buf).text_color(theme::INFO).font(egui::TextStyle::Body));

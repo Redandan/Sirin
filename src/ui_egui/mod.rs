@@ -1,5 +1,5 @@
 //! egui immediate-mode UI for Sirin.
-//! Catppuccin Mocha theme + AppService trait.
+//! 極簡硬核風 (#1A1A1A + #00FFA3) + AppService trait.
 
 mod theme;
 mod sidebar;
@@ -149,8 +149,8 @@ impl eframe::App for SirinApp {
                             ToastLevel::Error => (theme::DANGER, theme::DANGER.linear_multiply(0.12)),
                             ToastLevel::Info => (theme::INFO, theme::INFO.linear_multiply(0.12)),
                         };
-                        egui::Frame::new().fill(bg).corner_radius(8.0)
-                            .inner_margin(egui::vec2(14.0, 8.0))
+                        egui::Frame::new().fill(bg).corner_radius(4.0)
+                            .inner_margin(theme::SP_MD)
                             .stroke(egui::Stroke::new(1.0, fg.linear_multiply(0.3)))
                             .show(ui, |ui| { ui.colored_label(fg, &toast.text); });
                         ui.add_space(theme::SP_XS);

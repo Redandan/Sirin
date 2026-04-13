@@ -34,7 +34,7 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agents: &[AgentSummary
 
             ui.add_space(theme::SP_MD);
             let can_start = !state.invited.is_empty();
-            if ui.add_enabled(can_start, egui::Button::new(RichText::new("🚀 開始會議").color(theme::BG)).fill(theme::INFO).corner_radius(6.0)).clicked() {
+            if ui.add_enabled(can_start, egui::Button::new(RichText::new("🚀 開始會議").color(theme::BG)).fill(theme::ACCENT).corner_radius(4.0)).clicked() {
                 let participants: Vec<String> = state.invited.drain().collect();
                 svc.meeting_start(participants);
                 state.messages.clear();
@@ -62,7 +62,7 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agents: &[AgentSummary
             if state.messages.is_empty() {
                 ui.vertical_centered(|ui| {
                     ui.add_space(theme::SP_XL);
-                    ui.label(RichText::new("💬").size(theme::SP_XL * 2.0));
+                    ui.label(RichText::new("💬").size(theme::SP_XL));
                     ui.colored_label(theme::TEXT_DIM, "輸入訊息開始對話");
                 });
             }
@@ -83,7 +83,7 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agents: &[AgentSummary
             egui::TextEdit::singleline(&mut state.input).hint_text("輸入訊息..."),
         );
         let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-        if (ui.add(egui::Button::new(RichText::new("發送").color(theme::BG)).fill(theme::INFO).corner_radius(6.0)).clicked() || enter)
+        if (ui.add(egui::Button::new(RichText::new("發送").color(theme::BG)).fill(theme::ACCENT).corner_radius(4.0)).clicked() || enter)
             && !state.input.trim().is_empty()
         {
             let msg = state.input.trim().to_string();
