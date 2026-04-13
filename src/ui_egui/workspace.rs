@@ -250,11 +250,14 @@ fn show_agent_settings(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &
                 ui.horizontal(|ui| {
                     ui.colored_label(theme::ACCENT, "•");
                     ui.label(RichText::new(obj).size(theme::FONT_BODY).color(theme::TEXT));
-                    // Delete button right after text, not far right
-                    if ui.add(egui::Button::new(RichText::new("✕").size(theme::FONT_CAPTION).color(theme::TEXT_DIM))
-                        .fill(egui::Color32::TRANSPARENT)).on_hover_text("刪除").clicked() {
-                        remove_idx = Some(i);
+                    let del = ui.add(
+                        egui::Label::new(RichText::new("  ✕").size(theme::FONT_CAPTION).color(theme::TEXT_DIM))
+                            .selectable(false).sense(egui::Sense::click()),
+                    );
+                    if del.hovered() {
+                        ui.painter().rect_filled(del.rect, 2.0, theme::HOVER);
                     }
+                    if del.on_hover_text("刪除").clicked() { remove_idx = Some(i); }
                 });
             }
             if let Some(idx) = remove_idx { svc.remove_objective(agent_id, idx); }
