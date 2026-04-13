@@ -57,9 +57,18 @@ pub fn show(
                                 });
                             });
                             ui.horizontal(|ui| {
-                                let (dot, color) = if agent.enabled { ("●", theme::GREEN) } else { ("○", theme::OVERLAY0) };
+                                let (dot, color) = match agent.live_status.as_str() {
+                                    "connected" => ("●", theme::GREEN),
+                                    "reconnecting" => ("◐", theme::YELLOW),
+                                    "waiting" => ("◑", theme::PEACH),
+                                    "error" => ("●", theme::RED),
+                                    _ => if agent.enabled { ("○", theme::OVERLAY0) } else { ("○", theme::SURFACE2) },
+                                };
                                 ui.colored_label(color, RichText::new(dot).small());
                                 ui.colored_label(theme::OVERLAY0, RichText::new(&agent.id).small());
+                                if agent.live_status != "idle" {
+                                    ui.colored_label(color, RichText::new(&agent.live_status).small());
+                                }
                             });
                         }
                     });

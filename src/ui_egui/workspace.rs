@@ -10,6 +10,8 @@ pub struct WorkspaceState {
     tab: usize,
     pending_cache: Vec<PendingReplyView>,
     pending_loaded_for: String,
+    /// Draft edit buffers keyed by reply ID.
+    draft_edits: std::collections::HashMap<String, String>,
     mem_query: String,
     mem_results: Vec<String>,
 }
@@ -124,10 +126,18 @@ fn show_pending(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &str, st
         return;
     }
 
+    // Collect reply IDs for edit buffers
+    for reply in &state.pending_cache {
+        state.draft_edits.entry(reply.id.clone()).or_insert_with(|| reply.draft_reply.clone());
+    }
+
     ScrollArea::vertical().id_salt("pending").show(ui, |ui| {
-        let mut action: Option<(String, bool)> = None;
+        let mut action: Option<(String, u8)> = None; // 1=approve, 2=reject, 3=save_edit
+        let reply_ids: Vec<String> = state.pending_cache.iter().map(|r| r.id.clone()).collect();
+
         for reply in &state.pending_cache {
             theme::card(ui, |ui| {
+                // Header: from + timestamp
                 ui.horizontal(|ui| {
                     ui.colored_label(theme::OVERLAY0, "來自");
                     ui.colored_label(theme::BLUE, &reply.peer_name);
@@ -137,33 +147,58 @@ fn show_pending(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &str, st
                 });
                 ui.add_space(theme::GAP_SM);
 
-                // Original message
+                // Original message (read-only)
                 egui::Frame::new().fill(theme::CRUST).corner_radius(6.0).inner_margin(8.0).show(ui, |ui| {
                     ui.label(RichText::new(&reply.original_message).size(13.0).color(theme::SUBTEXT1));
                 });
                 ui.add_space(theme::GAP_SM);
 
-                // Draft
-                egui::Frame::new().fill(theme::BLUE.linear_multiply(0.08)).corner_radius(6.0).inner_margin(8.0)
-                    .stroke(egui::Stroke::new(1.0, theme::BLUE.linear_multiply(0.2)))
-                    .show(ui, |ui| {
-                        ui.colored_label(theme::LAVENDER, RichText::new(&reply.draft_reply).size(13.0));
-                    });
+                // Draft reply (EDITABLE)
+                ui.label(RichText::new("✏ 草稿（可編輯）").small().color(theme::OVERLAY0));
+                if let Some(buf) = state.draft_edits.get_mut(&reply.id) {
+                    egui::Frame::new().fill(theme::BLUE.linear_multiply(0.06)).corner_radius(6.0).inner_margin(8.0)
+                        .stroke(egui::Stroke::new(1.0, theme::BLUE.linear_multiply(0.2)))
+                        .show(ui, |ui| {
+                            ui.add_sized([ui.available_width(), 60.0],
+                                egui::TextEdit::multiline(buf).text_color(theme::LAVENDER).font(egui::TextStyle::Body));
+                        });
+                }
                 ui.add_space(theme::GAP_MD);
 
+                // Action buttons
                 ui.horizontal(|ui| {
-                    if ui.add(egui::Button::new(RichText::new("✓ 核准").color(theme::CRUST)).fill(theme::GREEN).corner_radius(6.0)).clicked() {
-                        action = Some((reply.id.clone(), true));
+                    if ui.add(egui::Button::new(RichText::new("✓ 核准送出").color(theme::CRUST)).fill(theme::GREEN).corner_radius(6.0)).clicked() {
+                        action = Some((reply.id.clone(), 1));
                     }
                     if ui.add(egui::Button::new(RichText::new("✗ 拒絕").color(theme::CRUST)).fill(theme::RED).corner_radius(6.0)).clicked() {
-                        action = Some((reply.id.clone(), false));
+                        action = Some((reply.id.clone(), 2));
+                    }
+                    if ui.add(egui::Button::new(RichText::new("💾 儲存修改").color(theme::TEXT)).fill(theme::SURFACE1).corner_radius(6.0)).clicked() {
+                        action = Some((reply.id.clone(), 3));
                     }
                 });
             });
         }
-        if let Some((id, approve)) = action {
-            if approve { svc.approve_reply(agent_id, &id); } else { svc.reject_reply(agent_id, &id); }
+
+        if let Some((id, act)) = action {
+            match act {
+                1 => { // Approve: save edit first, then approve
+                    if let Some(edited) = state.draft_edits.get(&id) {
+                        svc.edit_draft(agent_id, &id, edited);
+                    }
+                    svc.approve_reply(agent_id, &id);
+                }
+                2 => { svc.reject_reply(agent_id, &id); }
+                3 => { // Save edit only
+                    if let Some(edited) = state.draft_edits.get(&id) {
+                        svc.edit_draft(agent_id, &id, edited);
+                    }
+                }
+                _ => {}
+            }
             state.pending_cache = svc.load_pending(agent_id);
+            // Clean up stale edit buffers
+            state.draft_edits.retain(|k, _| reply_ids.contains(k));
         }
     });
 }

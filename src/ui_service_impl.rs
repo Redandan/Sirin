@@ -35,7 +35,16 @@ impl AppService for RealService {
             } else if a.channel.as_ref().and_then(|c| c.teams.as_ref()).is_some() {
                 "teams"
             } else { "ui_only" };
-            AgentSummary { id: a.id.clone(), name: a.identity.name.clone(), enabled: a.enabled, platform: platform.to_string() }
+            let live_status = if !a.enabled { "idle" }
+                else if platform == "telegram" {
+                    match self.tg_auth.status() {
+                        crate::telegram_auth::TelegramStatus::Connected => "connected",
+                        crate::telegram_auth::TelegramStatus::Disconnected { .. } => "reconnecting",
+                        _ => "waiting",
+                    }
+                } else { "idle" };
+            AgentSummary { id: a.id.clone(), name: a.identity.name.clone(), enabled: a.enabled,
+                platform: platform.to_string(), live_status: live_status.to_string() }
         }).collect()
     }
 
@@ -230,6 +239,61 @@ impl AppService for RealService {
 
     fn tg_reconnect(&self) {
         self.tg_auth.trigger_reconnect();
+    }
+
+    // ── MCP Tools ─────────────────────────────────────────────────────────────
+
+    fn mcp_tools(&self) -> Vec<McpToolDetail> {
+        crate::mcp_client::get_discovered_tools().iter().map(|t| {
+            let params = t.input_schema.get("properties")
+                .and_then(|p| p.as_object())
+                .map(|props| {
+                    props.iter().map(|(k, v)| {
+                        let typ = v.get("type").and_then(|t| t.as_str()).unwrap_or("string");
+                        (k.clone(), typ.to_string())
+                    }).collect()
+                })
+                .unwrap_or_default();
+            McpToolDetail {
+                server_name: t.server_name.clone(),
+                tool_name: t.tool_name.clone(),
+                registry_name: t.registry_name(),
+                description: t.description.clone(),
+                params,
+            }
+        }).collect()
+    }
+
+    fn mcp_call(&self, tool_name: &str, args_json: &str) -> Result<String, String> {
+        // Find the tool
+        let tools = crate::mcp_client::get_discovered_tools();
+        let tool = tools.iter().find(|t| t.registry_name() == tool_name || t.tool_name == tool_name)
+            .ok_or_else(|| format!("Tool not found: {tool_name}"))?;
+
+        let args: serde_json::Value = serde_json::from_str(args_json)
+            .map_err(|e| format!("Invalid JSON: {e}"))?;
+
+        let url = tool.server_url.clone();
+        let name = tool.tool_name.clone();
+
+        // Run synchronously (UI blocks briefly — acceptable for tool calls)
+        let rt = tokio::runtime::Handle::try_current()
+            .map_err(|_| "No tokio runtime".to_string())?;
+        let result = std::thread::spawn(move || {
+            rt.block_on(crate::mcp_client::call_tool(&url, &name, args))
+        }).join().map_err(|_| "Thread panic".to_string())??;
+
+        Ok(serde_json::to_string_pretty(&result).unwrap_or_else(|_| format!("{result}")))
+    }
+
+    // ── Pending reply editing ────────────────────────────────────────────────
+
+    fn edit_draft(&self, agent_id: &str, reply_id: &str, new_text: &str) {
+        let mut replies = crate::pending_reply::load_pending(agent_id);
+        if let Some(r) = replies.iter_mut().find(|r| r.id == reply_id) {
+            r.draft_reply = new_text.to_string();
+        }
+        let _ = crate::pending_reply::save_pending(agent_id, &replies);
     }
 
     // ── Meeting ───────────────────────────────────────────────────────────────

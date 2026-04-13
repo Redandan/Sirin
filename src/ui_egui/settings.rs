@@ -11,6 +11,10 @@ pub struct SettingsState {
     new_objective: String,
     tg_code: String,
     tg_password: String,
+    /// MCP tool test: which tool is expanded for testing.
+    mcp_expanded: Option<String>,
+    mcp_args: String,
+    mcp_result: String,
 }
 
 pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agents: &[AgentSummary], state: &mut SettingsState) {
@@ -123,13 +127,60 @@ fn show_system(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, state: &mut Setting
         theme::info_row(ui, "遠端", if s.llm.is_remote { "是" } else { "否（本地）" });
     });
 
-    theme::section(ui, "MCP 外部工具", |ui| {
-        if s.mcp_tools.is_empty() { ui.colored_label(theme::OVERLAY0, "未連接"); }
-        for tool in &s.mcp_tools {
+    // MCP tools with interactive execution
+    let mcp_tools = svc.mcp_tools();
+    theme::section(ui, &format!("MCP 外部工具 ({})", mcp_tools.len()), |ui| {
+        if mcp_tools.is_empty() {
+            ui.colored_label(theme::OVERLAY0, "未連接 — 配置 config/mcp_servers.yaml");
+            return;
+        }
+        for tool in &mcp_tools {
+            let is_expanded = state.mcp_expanded.as_deref() == Some(&tool.registry_name);
             ui.horizontal(|ui| {
-                ui.colored_label(theme::BLUE, &tool.name);
+                let arrow = if is_expanded { "▼" } else { "▶" };
+                if ui.small_button(arrow).clicked() {
+                    state.mcp_expanded = if is_expanded { None } else {
+                        state.mcp_args = "{}".to_string();
+                        state.mcp_result.clear();
+                        Some(tool.registry_name.clone())
+                    };
+                }
+                ui.colored_label(theme::BLUE, &tool.tool_name);
                 ui.colored_label(theme::OVERLAY0, RichText::new(&tool.description).small());
             });
+
+            if is_expanded {
+                ui.indent("mcp_detail", |ui| {
+                    // Show params
+                    if !tool.params.is_empty() {
+                        ui.horizontal(|ui| {
+                            ui.colored_label(theme::OVERLAY0, "參數:");
+                            for (name, typ) in &tool.params {
+                                theme::badge(ui, &format!("{name}: {typ}"), theme::MAUVE);
+                            }
+                        });
+                    }
+                    // Args input + run button
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("JSON:").small().color(theme::OVERLAY0));
+                        ui.add_sized([ui.available_width() - 60.0, 24.0],
+                            egui::TextEdit::singleline(&mut state.mcp_args).font(egui::TextStyle::Monospace));
+                        if ui.add(egui::Button::new(RichText::new("▶ 執行").color(theme::CRUST)).fill(theme::BLUE).corner_radius(4.0)).clicked() {
+                            state.mcp_result = match svc.mcp_call(&tool.registry_name, &state.mcp_args) {
+                                Ok(r) => r,
+                                Err(e) => format!("❌ {e}"),
+                            };
+                        }
+                    });
+                    // Result
+                    if !state.mcp_result.is_empty() {
+                        egui::Frame::new().fill(theme::CRUST).corner_radius(4.0).inner_margin(6.0).show(ui, |ui| {
+                            ui.colored_label(theme::TEAL, RichText::new(&state.mcp_result).monospace().small());
+                        });
+                    }
+                });
+                ui.add_space(theme::GAP_SM);
+            }
         }
     });
 

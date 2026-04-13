@@ -13,6 +13,8 @@ pub struct AgentSummary {
     pub name: String,
     pub enabled: bool,
     pub platform: String,
+    /// Real-time status: "connected", "reconnecting", "error", "idle"
+    pub live_status: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -113,6 +115,17 @@ pub struct AgentDetailView {
     pub kpi_labels: Vec<(String, String)>,
 }
 
+/// MCP tool with full schema details for UI display and execution.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpToolDetail {
+    pub server_name: String,
+    pub tool_name: String,
+    pub registry_name: String,
+    pub description: String,
+    /// JSON Schema properties as human-readable param list.
+    pub params: Vec<(String, String)>, // (name, type)
+}
+
 /// Toast notification pushed from service to UI.
 #[derive(Debug, Clone)]
 pub struct ToastEvent {
@@ -166,6 +179,17 @@ pub trait AppService: Send + Sync + 'static {
     fn tg_submit_code(&self, code: &str) -> bool;
     fn tg_submit_password(&self, password: &str) -> bool;
     fn tg_reconnect(&self);
+
+    // ── MCP Tools ─────────────────────────────────────────────────────────────
+
+    /// List external MCP tools with full details.
+    fn mcp_tools(&self) -> Vec<McpToolDetail>;
+    /// Execute an MCP tool by name with JSON arguments.
+    fn mcp_call(&self, tool_name: &str, args_json: &str) -> Result<String, String>;
+
+    // ── Pending reply editing ────────────────────────────────────────────────
+
+    fn edit_draft(&self, agent_id: &str, reply_id: &str, new_text: &str);
 
     // ── Meeting ───────────────────────────────────────────────────────────────
 
