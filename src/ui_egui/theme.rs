@@ -27,8 +27,8 @@ pub const PEACH: Color32 = Color32::from_rgb(250, 179, 135);
 pub const MAUVE: Color32 = Color32::from_rgb(203, 166, 247);
 pub const TEAL: Color32 = Color32::from_rgb(148, 226, 213);
 pub const LAVENDER: Color32 = Color32::from_rgb(180, 190, 254);
-pub const FLAMINGO: Color32 = Color32::from_rgb(242, 205, 205);
-pub const ROSEWATER: Color32 = Color32::from_rgb(245, 224, 220);
+
+
 
 // ── Spacing ──────────────────────────────────────────────────────────────────
 

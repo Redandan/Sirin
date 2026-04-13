@@ -182,6 +182,32 @@ impl AppService for RealService {
         self.push_toast(ToastLevel::Success, format!("Workflow「{feature}」已建立"));
     }
 
+    fn workflow_advance(&self) -> bool {
+        if let Some(mut state) = crate::workflow::WorkflowState::load() {
+            let advanced = state.advance();
+            if advanced {
+                if let Some(info) = state.current_stage_info() {
+                    self.push_toast(ToastLevel::Info, format!("進入階段: {}", info.label));
+                }
+            }
+            advanced
+        } else {
+            false
+        }
+    }
+
+    fn workflow_stage_prompt(&self) -> Option<String> {
+        let state = crate::workflow::WorkflowState::load()?;
+        let prompt = crate::workflow::stage_context(
+            &state.current_stage,
+            &state.skill_id,
+            &state.feature,
+            &state.description,
+            &state.stage_outputs,
+        );
+        Some(prompt)
+    }
+
     fn workflow_reset(&self) {
         let _ = std::fs::remove_file("data/workflow.json");
     }
@@ -241,6 +267,21 @@ impl AppService for RealService {
         self.tg_auth.trigger_reconnect();
     }
 
+    // ── Teams ────────────────────────────────────────────────────────────────
+
+    fn start_teams(&self) {
+        let handle = tokio::runtime::Handle::try_current();
+        if let Ok(rt) = handle {
+            rt.spawn(async { crate::teams::run_poller().await });
+            self.push_toast(ToastLevel::Info, "Teams 連線啟動中...");
+        }
+    }
+
+    fn teams_running(&self) -> bool {
+        // Check via the session status static
+        !matches!(crate::teams::session_status(), crate::teams::SessionStatus::NotStarted)
+    }
+
     // ── MCP Tools ─────────────────────────────────────────────────────────────
 
     fn mcp_tools(&self) -> Vec<McpToolDetail> {
@@ -298,8 +339,30 @@ impl AppService for RealService {
 
     // ── Meeting ───────────────────────────────────────────────────────────────
 
-    fn meeting_send(&self, _speaker: &str, _text: &str) {
-        // TODO: integrate with meeting module for AI-mediated responses
+    fn meeting_active(&self) -> bool {
+        crate::meeting::current_meeting_id().is_some()
+    }
+
+    fn meeting_start(&self, participants: Vec<String>) -> String {
+        let id = crate::meeting::start_meeting(participants);
+        self.push_toast(ToastLevel::Success, "會議已開始");
+        id
+    }
+
+    fn meeting_end(&self) {
+        crate::meeting::end_meeting();
+        self.push_toast(ToastLevel::Info, "會議已結束");
+    }
+
+    fn meeting_send(&self, speaker: &str, text: &str) {
+        crate::meeting::append_turn(speaker, text);
+    }
+
+    fn meeting_history(&self) -> Vec<(String, String)> {
+        // Read from the meeting transcript
+        crate::meeting::current_meeting_id()
+            .map(|_| Vec::new()) // TODO: expose transcript from meeting module
+            .unwrap_or_default()
     }
 
     // ── Events ───────────────────────────────────────────────────────────────

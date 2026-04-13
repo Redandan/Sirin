@@ -1,4 +1,4 @@
-//! Meeting room — multi-agent conversation with themed cards.
+//! Meeting room — multi-agent conversation with backend integration.
 
 use std::sync::Arc;
 use eframe::egui::{self, RichText, ScrollArea};
@@ -9,13 +9,49 @@ use crate::ui_service::*;
 pub struct MeetingState {
     input: String,
     messages: Vec<(String, String)>,
+    invited: std::collections::HashSet<String>,
 }
 
 pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agents: &[AgentSummary], state: &mut MeetingState) {
+    let active = svc.meeting_active();
+
+    if !active {
+        // Invite screen
+        theme::card(ui, |ui| {
+            ui.label(RichText::new("開始新會議").strong().size(16.0).color(theme::TEXT));
+            ui.add_space(theme::GAP_MD);
+            ui.label(RichText::new("選擇參與者:").color(theme::SUBTEXT0));
+            ui.add_space(theme::GAP_SM);
+
+            for agent in agents.iter().filter(|a| a.enabled) {
+                let mut checked = state.invited.contains(&agent.id);
+                if ui.checkbox(&mut checked, RichText::new(&agent.name).color(theme::TEXT)).changed() {
+                    if checked { state.invited.insert(agent.id.clone()); }
+                    else { state.invited.remove(&agent.id); }
+                }
+            }
+
+            ui.add_space(theme::GAP_MD);
+            let can_start = !state.invited.is_empty();
+            if ui.add_enabled(can_start, egui::Button::new(RichText::new("🚀 開始會議").color(theme::CRUST)).fill(theme::BLUE).corner_radius(6.0)).clicked() {
+                let participants: Vec<String> = state.invited.drain().collect();
+                svc.meeting_start(participants);
+                state.messages.clear();
+            }
+        });
+        return;
+    }
+
+    // Active meeting
     let names: Vec<&str> = agents.iter().filter(|a| a.enabled).map(|a| a.name.as_str()).collect();
     ui.horizontal(|ui| {
         ui.colored_label(theme::OVERLAY0, "參與者:");
         for name in &names { theme::badge(ui, name, theme::BLUE); }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.add(egui::Button::new(RichText::new("結束會議").color(theme::CRUST)).fill(theme::RED).corner_radius(6.0)).clicked() {
+                svc.meeting_end();
+            }
+        });
     });
     ui.separator();
 
@@ -26,7 +62,7 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agents: &[AgentSummary
                 ui.vertical_centered(|ui| {
                     ui.add_space(40.0);
                     ui.label(RichText::new("💬").size(32.0));
-                    ui.colored_label(theme::OVERLAY0, "輸入訊息開始會議");
+                    ui.colored_label(theme::OVERLAY0, "輸入訊息開始對話");
                 });
             }
             for (speaker, text) in &state.messages {

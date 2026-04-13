@@ -50,6 +50,21 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, _agents: &[AgentSummar
                 ui.add_space(theme::GAP_SM);
                 if ui.button("🔄 重新連線 Telegram").clicked() { svc.tg_reconnect(); }
             }
+
+            ui.add_space(theme::GAP_MD);
+            ui.separator();
+            ui.add_space(theme::GAP_SM);
+
+            // Teams
+            let teams_running = svc.teams_running();
+            theme::status_row(ui, "Teams", if teams_running { "監聽中" } else { "未啟動" }, teams_running);
+            if !teams_running {
+                ui.add_space(theme::GAP_SM);
+                ui.colored_label(theme::OVERLAY0, "Teams 使用 Chrome CDP 監聽，需要 Chrome 瀏覽器。");
+                if ui.add(egui::Button::new(RichText::new("🚀 啟動 Teams 連線").color(theme::CRUST)).fill(theme::BLUE).corner_radius(6.0)).clicked() {
+                    svc.start_teams();
+                }
+            }
         });
 
         // ── LLM ─────────────────────────────────────────────────────────

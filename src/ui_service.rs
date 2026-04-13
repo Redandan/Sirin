@@ -167,6 +167,8 @@ pub trait AppService: Send + Sync + 'static {
     fn log_clear(&self);
 
     fn workflow_create(&self, feature: &str, description: &str);
+    fn workflow_advance(&self) -> bool;
+    fn workflow_stage_prompt(&self) -> Option<String>;
     fn workflow_reset(&self);
 
     fn rename_agent(&self, agent_id: &str, new_name: &str);
@@ -179,6 +181,11 @@ pub trait AppService: Send + Sync + 'static {
     fn tg_submit_code(&self, code: &str) -> bool;
     fn tg_submit_password(&self, password: &str) -> bool;
     fn tg_reconnect(&self);
+
+    // ── Teams ────────────────────────────────────────────────────────────────
+
+    fn start_teams(&self);
+    fn teams_running(&self) -> bool;
 
     // ── MCP Tools ─────────────────────────────────────────────────────────────
 
@@ -193,7 +200,11 @@ pub trait AppService: Send + Sync + 'static {
 
     // ── Meeting ───────────────────────────────────────────────────────────────
 
+    fn meeting_active(&self) -> bool;
+    fn meeting_start(&self, participants: Vec<String>) -> String;
+    fn meeting_end(&self);
     fn meeting_send(&self, speaker: &str, text: &str);
+    fn meeting_history(&self) -> Vec<(String, String)>;
 
     // ── Events (polled by UI each frame) ─────────────────────────────────────
 
