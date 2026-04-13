@@ -122,8 +122,8 @@ static STATUS: std::sync::OnceLock<Mutex<SessionStatus>> = std::sync::OnceLock::
 fn status_cell() -> &'static Mutex<SessionStatus> {
     STATUS.get_or_init(|| Mutex::new(SessionStatus::NotStarted))
 }
-pub fn session_status() -> SessionStatus { status_cell().lock().unwrap().clone() }
-fn set_status(s: SessionStatus) { *status_cell().lock().unwrap() = s; }
+pub fn session_status() -> SessionStatus { status_cell().lock().unwrap_or_else(|e| e.into_inner()).clone() }
+fn set_status(s: SessionStatus) { *status_cell().lock().unwrap_or_else(|e| e.into_inner()) = s; }
 
 // ── 資料結構 ──────────────────────────────────────────────────────────────────
 

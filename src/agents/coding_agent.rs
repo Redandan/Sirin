@@ -121,7 +121,7 @@ impl Agent for CodingAgent {
             let request: CodingRequest = serde_json::from_value(input)
                 .map_err(|e| format!("Invalid coding request payload: {e}"))?;
 
-            let config = Persona::load().map(|p| p.coding_agent).unwrap_or_default();
+            let config = Persona::cached().map(|p| p.coding_agent).unwrap_or_default();
 
             if !config.enabled {
                 return Err("Coding agent is disabled in persona config.".to_string());

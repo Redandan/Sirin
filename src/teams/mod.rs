@@ -18,6 +18,8 @@
 
 pub mod browser_client;
 
+// Re-exported for future UI integration (Teams poller start button).
+#[allow(unused_imports)]
 pub use browser_client::{SessionStatus, session_status};
 
 use std::collections::HashSet;
@@ -28,6 +30,9 @@ use tokio::time::Duration;
 
 use crate::events::{publish, AgentEvent};
 use crate::pending_reply::{PendingReply, PendingStatus, append_pending, update_status};
+
+/// Seconds between sweeps of stale approved replies.
+const APPROVED_SWEEP_INTERVAL_SECS: u64 = 60;
 
 
 // ── P1：即時核准通道 ──────────────────────────────────────────────────────────
@@ -114,7 +119,7 @@ pub async fn run_poller() {
                     let c = Arc::clone(&client);
                     let chat_clone = chat.clone();
                     let msg = tokio::task::spawn_blocking(move || {
-                        c.lock().unwrap().read_latest_message(&chat_clone)
+                        c.lock().unwrap_or_else(|e| e.into_inner()).read_latest_message(&chat_clone)
                     }).await.unwrap_or(None).unwrap_or_default();
 
                     if msg.trim().is_empty() { continue; }
@@ -127,17 +132,17 @@ pub async fn run_poller() {
                         let c         = Arc::clone(&client);
                         let peer_log  = peer_name.clone();
                         tokio::task::spawn_blocking(move || {
-                            match c.lock().unwrap().send_message(&ack) {
+                            match c.lock().unwrap_or_else(|e| e.into_inner()).send_message(&ack) {
                                 Ok(())  => eprintln!("[teams] Auto-ack → '{peer_log}'"),
                                 Err(e)  => eprintln!("[teams] Auto-ack failed: {e}"),
                             }
                         });
                     }
 
-                    // 建立需確認的實質草稿
+                    // 建立需確認的實質草稿（AI 生成）
                     if need_draft {
                         drafted.insert(chat.chat_id.clone());
-                        let draft = generate_draft(&msg);
+                        let draft = generate_draft_ai(&msg, &peer_name).await;
                         let mut reply = PendingReply::new(
                             "teams", "teams", None,
                             peer_name.clone(),
@@ -164,7 +169,7 @@ pub async fn run_poller() {
             }
 
             // ── 每 60 秒：清掃任何殘留的已核准草稿 ──────────────────────────
-            _ = tokio::time::sleep(Duration::from_secs(60)) => {
+            _ = tokio::time::sleep(Duration::from_secs(APPROVED_SWEEP_INTERVAL_SECS)) => {
                 send_approved_replies(&client).await;
             }
         }
@@ -184,7 +189,7 @@ async fn send_one_approved(client: &Arc<Mutex<browser_client::TeamsClient>>, rep
     let c        = Arc::clone(client);
 
     tokio::task::spawn_blocking(move || {
-        match c.lock().unwrap().send_message(&text) {
+        match c.lock().unwrap_or_else(|e| e.into_inner()).send_message(&text) {
             Ok(()) => {
                 update_status("teams", &id_owned, PendingStatus::Rejected);
                 eprintln!("[teams] Instant send → {chat_id}");
@@ -209,7 +214,7 @@ async fn send_approved_replies(client: &Arc<Mutex<browser_client::TeamsClient>>)
         let c        = Arc::clone(client);
 
         tokio::task::spawn_blocking(move || {
-            match c.lock().unwrap().send_message(&text) {
+            match c.lock().unwrap_or_else(|e| e.into_inner()).send_message(&text) {
                 Ok(()) => {
                     update_status("teams", &reply_id, PendingStatus::Rejected);
                     eprintln!("[teams] Approved reply sent → {chat_id}");
@@ -220,9 +225,39 @@ async fn send_approved_replies(client: &Arc<Mutex<browser_client::TeamsClient>>)
     }
 }
 
-// ── 實質草稿生成 ──────────────────────────────────────────────────────────────
+// ── 實質草稿生成（AI 驅動）──────────────────────────────────────────────────
 
-fn generate_draft(msg: &str) -> String {
+/// Generate a draft reply using the ChatAgent AI pipeline.
+/// Falls back to a simple template if AI generation fails.
+async fn generate_draft_ai(msg: &str, peer_name: &str) -> String {
+    use crate::agents::chat_agent::{ChatRequest, run_chat_via_adk_with_tracker};
+
+    // Search memory for relevant context about this peer.
+    let context_block = crate::memory::memory_search(peer_name, 3, "")
+        .ok()
+        .map(|results| results.join("\n"))
+        .filter(|s| !s.is_empty());
+
+    let request = ChatRequest {
+        user_text: msg.to_string(),
+        context_block,
+        // Teams replies should use the local LLM by default for privacy.
+        disable_remote_ai: false,
+        ..Default::default()
+    };
+
+    let reply = run_chat_via_adk_with_tracker(request, None).await;
+
+    if reply.trim().is_empty() {
+        // Fallback to template if AI returns empty.
+        generate_draft_fallback(msg)
+    } else {
+        reply
+    }
+}
+
+/// Simple keyword-based fallback when AI is unavailable.
+fn generate_draft_fallback(msg: &str) -> String {
     let lower = msg.to_lowercase();
     if lower.contains("作業") || lower.contains("報告") || lower.contains("deadline") {
         format!("關於「{}⋯」我確認進度後回覆你！",

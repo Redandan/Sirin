@@ -112,7 +112,7 @@ impl Agent for ChatAgent {
 
             let client = Arc::clone(&ctx.http);
             let llm_arc = Arc::clone(&ctx.llm);
-            let persona = Persona::load().ok();
+            let persona = Persona::cached().ok();
 
             // Respect the remote-AI kill-switch: per-request flag (from AgentConfig)
             // takes priority, then falls back to persona.yaml setting.
@@ -311,7 +311,7 @@ where
         .context("chat_stream")
         .with_metadata("agent", "chat_agent_stream");
 
-    let persona = Persona::load().ok();
+    let persona = Persona::cached().ok();
     let fallback_reply = request.fallback_reply.clone().unwrap_or_else(|| {
         chinese_fallback_reply(&request.user_text, request.execution_result.as_deref())
     });
@@ -650,6 +650,7 @@ mod tests {
                 use_large_model: false,
                 agent_id: None,
                 disable_remote_ai: false,
+                ..Default::default()
             },
             None,
         )
@@ -680,6 +681,7 @@ mod tests {
                 use_large_model: false,
                 agent_id: None,
                 disable_remote_ai: false,
+                ..Default::default()
             },
             None,
         )
@@ -706,6 +708,7 @@ mod tests {
                 use_large_model: false,
                 agent_id: None,
                 disable_remote_ai: false,
+                ..Default::default()
             },
             None,
         )
@@ -725,6 +728,7 @@ mod tests {
                 use_large_model: false,
                 agent_id: None,
                 disable_remote_ai: false,
+                ..Default::default()
             },
             None,
         )
@@ -757,6 +761,7 @@ mod tests {
                 use_large_model: false,
                 agent_id: None,
                 disable_remote_ai: false,
+                ..Default::default()
             },
             None,
         )
@@ -787,6 +792,7 @@ mod tests {
                 use_large_model: false,
                 agent_id: None,
                 disable_remote_ai: false,
+                ..Default::default()
             },
             None,
         )
@@ -814,6 +820,7 @@ mod tests {
                 use_large_model: false,
                 agent_id: None,
                 disable_remote_ai: false,
+                ..Default::default()
             },
             None,
         )
@@ -844,6 +851,7 @@ mod tests {
                 use_large_model: false,
                 agent_id: None,
                 disable_remote_ai: false,
+                ..Default::default()
             },
             None,
         )

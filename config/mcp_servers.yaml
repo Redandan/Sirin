@@ -1,0 +1,11 @@
+# External MCP servers that Sirin can connect to and use as tools.
+# Sirin will call `tools/list` on each enabled server at startup to
+# discover available tools, then register them for agent use.
+#
+# Tool names in Sirin become: mcp_{server-name}_{tool-name}
+# Example: agora-trading server's "getBalance" tool → mcp_agora-trading_getBalance
+
+servers: []
+  # - name: agora-trading
+  #   url: "http://localhost:3001/mcp"
+  #   enabled: true
