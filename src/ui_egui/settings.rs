@@ -18,7 +18,7 @@ pub struct SettingsState {
 
 pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, _agents: &[AgentSummary], state: &mut SettingsState) {
     ScrollArea::vertical().id_salt("system_settings").show(ui, |ui| {
-        ui.add_space(theme::SP_SM);
+        ui.set_max_width(560.0);
         let s = svc.system_status();
 
         // ── Connection ───────────────────────────────────────────────────

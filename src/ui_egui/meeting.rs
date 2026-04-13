@@ -13,6 +13,7 @@ pub struct MeetingState {
 }
 
 pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agents: &[AgentSummary], state: &mut MeetingState) {
+    ui.set_max_width(600.0);
     let active = svc.meeting_active();
 
     if !active {

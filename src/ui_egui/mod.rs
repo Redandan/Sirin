@@ -93,26 +93,33 @@ impl eframe::App for SirinApp {
 
         sidebar::show(ctx, &self.svc, &self.agents, &self.pending_counts, &mut self.view, &mut self.renaming);
 
-        // ── Top bar (32pt, clean like Claude Desktop) ─────────────────────
+        // ── Top bar — shows current page context ─────────────────────────
         egui::TopBottomPanel::top("top_bar")
-            .exact_height(32.0)
-            .frame(egui::Frame::new().fill(theme::BG).inner_margin(egui::vec2(theme::SP_MD, theme::SP_XS)))
+            .exact_height(34.0)
+            .frame(egui::Frame::new().fill(theme::BG)
+                .inner_margin(egui::vec2(theme::SP_XL, theme::SP_SM))
+                .stroke(egui::Stroke::new(0.5, theme::BORDER)))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Sirin").size(theme::FONT_BODY).strong().color(theme::TEXT));
-                    ui.colored_label(theme::TEXT_DIM, RichText::new("v0.1.0").size(theme::FONT_CAPTION));
+                    // Page context
+                    let title = match &self.view {
+                        View::Workspace(idx) => {
+                            let name = self.agents.get(*idx).map(|a| a.name.as_str()).unwrap_or("—");
+                            format!("{name}")
+                        }
+                        View::Settings => "系統設定".into(),
+                        View::Log => "系統 Log".into(),
+                        View::Workflow => "Skill 開發".into(),
+                        View::Meeting => "會議室".into(),
+                    };
+                    ui.label(RichText::new(&title).size(theme::FONT_HEADING).strong().color(theme::TEXT));
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        // Status indicators
-                        let status = self.svc.system_status();
-                        let tg_color = if status.telegram_connected { theme::ACCENT } else { theme::DANGER };
-                        ui.colored_label(tg_color, RichText::new("●").size(theme::FONT_CAPTION));
-                        ui.colored_label(theme::TEXT_DIM, RichText::new("TG").size(theme::FONT_CAPTION));
-                        ui.add_space(theme::SP_SM);
-
                         let total_pending: usize = self.pending_counts.values().sum();
                         if total_pending > 0 {
                             theme::count_badge(ui, total_pending);
+                            ui.add_space(theme::SP_XS);
+                            ui.colored_label(theme::TEXT_DIM, RichText::new("待審").size(theme::FONT_CAPTION));
                         }
                     });
                 });

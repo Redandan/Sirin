@@ -13,7 +13,7 @@ pub struct WorkflowUiState {
 }
 
 pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, state: &mut WorkflowUiState) {
-    ui.add_space(theme::SP_SM);
+    ui.set_max_width(600.0);
     match svc.workflow_state() {
         None => show_empty(ui, svc, state),
         Some(wf) => show_active(ui, svc, &wf, state),
