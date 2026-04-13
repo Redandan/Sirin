@@ -148,7 +148,7 @@ fn show_pending(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &str, st
                 ui.add_space(theme::SP_SM);
 
                 // Original message (read-only)
-                egui::Frame::new().fill(theme::CRUST).corner_radius(6.0).inner_margin(8.0).show(ui, |ui| {
+                egui::Frame::new().fill(theme::CRUST).corner_radius(6.0).inner_margin(theme::SP_MD).show(ui, |ui| {
                     ui.label(RichText::new(&reply.original_message).size(theme::FONT_BODY).color(theme::SUBTEXT1));
                 });
                 ui.add_space(theme::SP_SM);
@@ -156,7 +156,7 @@ fn show_pending(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &str, st
                 // Draft reply (EDITABLE)
                 ui.label(RichText::new("✏ 草稿（可編輯）").size(theme::FONT_SMALL).color(theme::OVERLAY0));
                 if let Some(buf) = state.draft_edits.get_mut(&reply.id) {
-                    egui::Frame::new().fill(theme::BLUE.linear_multiply(0.06)).corner_radius(6.0).inner_margin(8.0)
+                    egui::Frame::new().fill(theme::BLUE.linear_multiply(0.06)).corner_radius(6.0).inner_margin(theme::SP_MD)
                         .stroke(egui::Stroke::new(1.0, theme::BLUE.linear_multiply(0.2)))
                         .show(ui, |ui| {
                             ui.add_sized([ui.available_width(), 60.0],

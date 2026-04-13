@@ -1,7 +1,6 @@
-//! UI theme — Catppuccin Mocha palette + spacing + reusable components.
-//!
-//! Design references: Slack sidebar, Linear tabs, Claude Desktop top bar.
-//! Principle: generous spacing, minimal borders, clear text hierarchy.
+//! UI theme — Catppuccin Mocha + generous spacing + reusable components.
+//! Design: Slack sidebar, Linear tabs, professional dark theme.
+//! All sizing flows from constants here — change once, update everywhere.
 
 use eframe::egui::{self, Color32, RichText, Stroke};
 
@@ -27,14 +26,14 @@ pub const MAUVE: Color32 = Color32::from_rgb(203, 166, 247);
 pub const TEAL: Color32 = Color32::from_rgb(148, 226, 213);
 pub const LAVENDER: Color32 = Color32::from_rgb(180, 190, 254);
 
-// ── Typography sizes ─────────────────────────────────────────────────────────
+// ── Typography ───────────────────────────────────────────────────────────────
 
-pub const FONT_HEADING: f32 = 18.0;   // page title, agent name
-pub const FONT_BODY: f32 = 14.0;      // normal content
-pub const FONT_SMALL: f32 = 12.0;     // secondary info
-pub const FONT_CAPTION: f32 = 11.0;   // timestamps, IDs, labels
+pub const FONT_HEADING: f32 = 18.0;
+pub const FONT_BODY: f32 = 14.0;
+pub const FONT_SMALL: f32 = 12.0;
+pub const FONT_CAPTION: f32 = 11.0;
 
-// ── Spacing (generous — like Slack/Linear) ───────────────────────────────────
+// ── Spacing ──────────────────────────────────────────────────────────────────
 
 pub const SP_XS: f32 = 4.0;
 pub const SP_SM: f32 = 8.0;
@@ -43,7 +42,7 @@ pub const SP_LG: f32 = 16.0;
 pub const SP_XL: f32 = 24.0;
 pub const CARD_RADIUS: f32 = 8.0;
 
-// ── Apply theme ──────────────────────────────────────────────────────────────
+// ── Apply ────────────────────────────────────────────────────────────────────
 
 pub fn apply(ctx: &egui::Context) {
     catppuccin_egui::set_theme(ctx, catppuccin_egui::MOCHA);
@@ -60,29 +59,31 @@ pub fn apply(ctx: &egui::Context) {
     ctx.set_visuals(v);
 }
 
-// ── Reusable widgets ─────────────────────────────────────────────────────────
+// ── Widgets ──────────────────────────────────────────────────────────────────
 
-/// Clean card — subtle background, NO border (unless hovered).
-/// References: Linear's issue cards.
+/// Card — rounded background, generous padding.
 pub fn card(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new()
         .fill(SURFACE0)
         .corner_radius(CARD_RADIUS)
-        .inner_margin(SP_MD)
+        .inner_margin(SP_LG) // 16px all sides
         .show(ui, |ui| content(ui));
     ui.add_space(SP_SM);
 }
 
-/// Section with title — no nested card, just a header + content.
+/// Section — title + content with left indent for visual hierarchy.
 pub fn section(ui: &mut egui::Ui, title: &str, content: impl FnOnce(&mut egui::Ui)) {
     ui.add_space(SP_SM);
     ui.label(RichText::new(title).size(FONT_SMALL).strong().color(OVERLAY0));
     ui.add_space(SP_XS);
-    content(ui);
+    // Indent content slightly for visual grouping
+    ui.indent(title, |ui| {
+        content(ui);
+    });
     ui.add_space(SP_MD);
 }
 
-/// Pill badge — coloured background with matching text.
+/// Pill badge.
 pub fn badge(ui: &mut egui::Ui, label: &str, color: Color32) {
     egui::Frame::new()
         .fill(color.linear_multiply(0.15))
@@ -105,8 +106,7 @@ pub fn count_badge(ui: &mut egui::Ui, count: usize) {
         });
 }
 
-/// Tab bar — underline style like Linear/Notion.
-/// Returns the index of the selected tab.
+/// Underline tab bar (Linear/Notion style).
 pub fn tab_bar(ui: &mut egui::Ui, labels: &[&str], selected: &mut usize) {
     ui.horizontal(|ui| {
         for (i, label) in labels.iter().enumerate() {
@@ -120,7 +120,6 @@ pub fn tab_bar(ui: &mut egui::Ui, labels: &[&str], selected: &mut usize) {
             );
 
             if active {
-                // Draw underline indicator
                 let rect = response.rect;
                 ui.painter().line_segment(
                     [rect.left_bottom(), rect.right_bottom()],
@@ -132,13 +131,13 @@ pub fn tab_bar(ui: &mut egui::Ui, labels: &[&str], selected: &mut usize) {
             ui.add_space(SP_LG);
         }
     });
-    // Separator line under tabs
+    // Separator
     let rect = ui.max_rect();
     ui.painter().line_segment(
         [egui::pos2(rect.left(), ui.cursor().top()), egui::pos2(rect.right(), ui.cursor().top())],
         Stroke::new(1.0, SURFACE0),
     );
-    ui.add_space(SP_SM);
+    ui.add_space(SP_MD);
 }
 
 /// Key-value info row.
@@ -164,12 +163,8 @@ pub fn status_row(ui: &mut egui::Ui, label: &str, status: &str, ok: bool) {
 
 pub fn status_color(status: &str) -> Color32 {
     match status {
-        "DONE" => GREEN,
-        "PENDING" | "RUNNING" => YELLOW,
-        "FOLLOWING" => BLUE,
-        "FOLLOWUP_NEEDED" => PEACH,
-        "FAILED" | "ERROR" => RED,
-        "ROLLBACK" => MAUVE,
+        "DONE" => GREEN, "PENDING" | "RUNNING" => YELLOW, "FOLLOWING" => BLUE,
+        "FOLLOWUP_NEEDED" => PEACH, "FAILED" | "ERROR" => RED, "ROLLBACK" => MAUVE,
         _ => OVERLAY0,
     }
 }
@@ -177,13 +172,8 @@ pub fn status_color(status: &str) -> Color32 {
 pub fn log_color(level: crate::ui_service::LogLevel) -> Color32 {
     use crate::ui_service::LogLevel;
     match level {
-        LogLevel::Error => RED,
-        LogLevel::Warn => YELLOW,
-        LogLevel::Telegram => BLUE,
-        LogLevel::Research => GREEN,
-        LogLevel::Followup => PEACH,
-        LogLevel::Coding => MAUVE,
-        LogLevel::Teams => TEAL,
-        LogLevel::Info | LogLevel::Normal => OVERLAY0,
+        LogLevel::Error => RED, LogLevel::Warn => YELLOW, LogLevel::Telegram => BLUE,
+        LogLevel::Research => GREEN, LogLevel::Followup => PEACH, LogLevel::Coding => MAUVE,
+        LogLevel::Teams => TEAL, LogLevel::Info | LogLevel::Normal => OVERLAY0,
     }
 }

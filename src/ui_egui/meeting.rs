@@ -75,6 +75,7 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agents: &[AgentSummary
 
     // Input
     ui.separator();
+    ui.add_space(theme::SP_SM);
     ui.horizontal(|ui| {
         let resp = ui.add_sized(
             [ui.available_width() - 60.0, 28.0],
