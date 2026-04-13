@@ -203,7 +203,10 @@ fn show_pending(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &str, st
     });
 }
 
-// ── Per-agent settings tab — editable form ───────────────────────────────────
+// ── Per-agent settings tab ───────────────────────────────────────────────────
+//
+// Layout: max-width 500px content area, Claude Desktop style sections.
+// Each row: fixed 100px label + value next to it (no right-to-left stretch).
 
 fn show_agent_settings(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &str, state: &mut WorkspaceState) {
     let Some(d) = svc.agent_detail(agent_id) else {
@@ -212,32 +215,29 @@ fn show_agent_settings(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &
     };
 
     ScrollArea::vertical().id_salt("agent_settings").show(ui, |ui| {
+        // Constrain content width for readability (like Claude Desktop)
+        ui.set_max_width(520.0);
+
         // ── Header ───────────────────────────────────────────────────────
         ui.horizontal(|ui| {
-            ui.label(RichText::new(&d.name).size(theme::FONT_HEADING).strong().color(theme::TEXT));
-            ui.add_space(theme::SP_MD);
             let mut enabled = d.enabled;
             if ui.checkbox(&mut enabled, "").changed() {
                 svc.toggle_agent(&d.id, enabled);
             }
-            theme::badge(ui, if d.enabled { "啟用" } else { "停用" }, if d.enabled { theme::ACCENT } else { theme::TEXT_DIM });
+            ui.label(RichText::new(&d.name).size(theme::FONT_TITLE).strong().color(theme::TEXT));
         });
         ui.colored_label(theme::TEXT_DIM, RichText::new(format!("ID: {}", d.id)).size(theme::FONT_CAPTION));
-        ui.add_space(theme::SP_LG);
 
         // ── 身份 ─────────────────────────────────────────────────────────
         theme::section(ui, "身份", |ui| {
-            form_row(ui, "語氣", &d.professional_tone);
-            ui.add_space(theme::SP_XS);
-            // Remote AI toggle
-            ui.horizontal(|ui| {
-                ui.colored_label(theme::TEXT_DIM, RichText::new("遠端 AI").size(theme::FONT_SMALL));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let mut allowed = !d.disable_remote_ai;
-                    if ui.checkbox(&mut allowed, "允許").changed() {
-                        svc.set_remote_ai(agent_id, allowed);
-                    }
-                });
+            setting_row(ui, "語氣", |ui| {
+                ui.label(RichText::new(&d.professional_tone).size(theme::FONT_BODY).color(theme::TEXT));
+            });
+            setting_row(ui, "遠端 AI", |ui| {
+                let mut allowed = !d.disable_remote_ai;
+                if ui.checkbox(&mut allowed, "允許").changed() {
+                    svc.set_remote_ai(agent_id, allowed);
+                }
             });
         });
 
@@ -249,25 +249,23 @@ fn show_agent_settings(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &
             let mut remove_idx: Option<usize> = None;
             for (i, obj) in d.objectives.iter().enumerate() {
                 ui.horizontal(|ui| {
-                    ui.colored_label(theme::INFO, "•");
+                    ui.colored_label(theme::ACCENT, "•");
                     ui.label(RichText::new(obj).size(theme::FONT_BODY).color(theme::TEXT));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add(egui::Button::new(RichText::new("✕").size(theme::FONT_CAPTION).color(theme::TEXT_DIM))
-                            .fill(egui::Color32::TRANSPARENT).corner_radius(4.0))
-                            .on_hover_text("刪除").clicked() {
-                            remove_idx = Some(i);
-                        }
-                    });
+                    // Delete button right after text, not far right
+                    if ui.add(egui::Button::new(RichText::new("✕").size(theme::FONT_CAPTION).color(theme::TEXT_DIM))
+                        .fill(egui::Color32::TRANSPARENT)).on_hover_text("刪除").clicked() {
+                        remove_idx = Some(i);
+                    }
                 });
             }
             if let Some(idx) = remove_idx { svc.remove_objective(agent_id, idx); }
 
             ui.add_space(theme::SP_SM);
             ui.horizontal(|ui| {
-                ui.add_sized([ui.available_width() - 56.0, 26.0],
+                ui.add_sized([ui.available_width() - 60.0, 26.0],
                     egui::TextEdit::singleline(&mut state.new_objective).hint_text("輸入新目標..."));
                 if ui.add(egui::Button::new(RichText::new("+ 新增").size(theme::FONT_SMALL).color(theme::BG))
-                    .fill(theme::INFO).corner_radius(4.0)).clicked()
+                    .fill(theme::ACCENT).corner_radius(4.0)).clicked()
                     && !state.new_objective.trim().is_empty() {
                     svc.add_objective(agent_id, state.new_objective.trim());
                     state.new_objective.clear();
@@ -275,7 +273,7 @@ fn show_agent_settings(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &
             });
         });
 
-        // ── 回覆行為（可調整）────────────────────────────────────────────
+        // ── 回覆行為 ─────────────────────────────────────────────────────
         theme::section(ui, "回覆行為", |ui| {
             let mut beh_enabled = d.human_behavior_enabled;
             let mut min_d = d.min_reply_delay as f32;
@@ -284,29 +282,19 @@ fn show_agent_settings(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &
             let mut max_day = d.max_per_day as f32;
             let mut changed = false;
 
-            ui.horizontal(|ui| {
-                ui.colored_label(theme::TEXT_DIM, RichText::new("啟用").size(theme::FONT_SMALL));
+            setting_row(ui, "啟用", |ui| {
                 if ui.checkbox(&mut beh_enabled, "").changed() { changed = true; }
             });
-
-            ui.add_space(theme::SP_XS);
-            ui.horizontal(|ui| {
-                ui.colored_label(theme::TEXT_DIM, RichText::new("最小延遲").size(theme::FONT_SMALL));
-                ui.add_space(theme::SP_SM);
+            setting_row(ui, "最小延遲", |ui| {
                 if ui.add(egui::Slider::new(&mut min_d, 0.0..=300.0).suffix("s").integer()).changed() { changed = true; }
             });
-            ui.horizontal(|ui| {
-                ui.colored_label(theme::TEXT_DIM, RichText::new("最大延遲").size(theme::FONT_SMALL));
-                ui.add_space(theme::SP_SM);
+            setting_row(ui, "最大延遲", |ui| {
                 if ui.add(egui::Slider::new(&mut max_d, 0.0..=600.0).suffix("s").integer()).changed() { changed = true; }
             });
-            ui.horizontal(|ui| {
-                ui.colored_label(theme::TEXT_DIM, RichText::new("每小時上限").size(theme::FONT_SMALL));
+            setting_row(ui, "每小時上限", |ui| {
                 if ui.add(egui::Slider::new(&mut max_h, 0.0..=100.0).integer()).changed() { changed = true; }
             });
-            ui.horizontal(|ui| {
-                ui.colored_label(theme::TEXT_DIM, RichText::new("每日上限").size(theme::FONT_SMALL));
-                ui.add_space(theme::SP_SM);
+            setting_row(ui, "每日上限", |ui| {
                 if ui.add(egui::Slider::new(&mut max_day, 0.0..=500.0).integer()).changed() { changed = true; }
             });
 
@@ -317,40 +305,44 @@ fn show_agent_settings(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &
 
         // ── 通道 ─────────────────────────────────────────────────────────
         theme::section(ui, "通道", |ui| {
-            form_row(ui, "平台", &d.platform);
-            form_row(ui, "ID", &d.id);
+            setting_row(ui, "平台", |ui| {
+                ui.label(RichText::new(&d.platform).size(theme::FONT_BODY).color(theme::TEXT));
+            });
+            setting_row(ui, "ID", |ui| {
+                ui.label(RichText::new(&d.id).size(theme::FONT_BODY).color(theme::TEXT).family(egui::FontFamily::Monospace));
+            });
         });
 
         // ── KPI ──────────────────────────────────────────────────────────
         if !d.kpi_labels.is_empty() {
             theme::section(ui, "KPI 指標", |ui| {
                 for (label, unit) in &d.kpi_labels {
-                    theme::info_row(ui, label, unit);
+                    setting_row(ui, label, |ui| {
+                        ui.label(RichText::new(unit).size(theme::FONT_BODY).color(theme::TEXT));
+                    });
                 }
             });
         }
 
         // ── 危險操作 ─────────────────────────────────────────────────────
         ui.add_space(theme::SP_XL);
-        ui.horizontal(|ui| {
-            ui.colored_label(theme::TEXT_DIM, RichText::new("危險操作").size(theme::FONT_CAPTION));
-        });
-        ui.add_space(theme::SP_XS);
-        if ui.add(egui::Button::new(RichText::new("🗑 刪除此 Agent").size(theme::FONT_SMALL).color(theme::DANGER))
-            .fill(theme::DANGER.linear_multiply(0.1)).corner_radius(4.0)).clicked() {
+        theme::thin_separator(ui);
+        ui.add_space(theme::SP_SM);
+        if ui.add(egui::Button::new(RichText::new("刪除此 Agent").size(theme::FONT_SMALL).color(theme::DANGER))
+            .fill(theme::DANGER.linear_multiply(0.08)).corner_radius(4.0)).clicked() {
             svc.delete_agent(agent_id);
         }
     });
 }
 
-/// A label-value form row — fixed label width.
-fn form_row(ui: &mut egui::Ui, label: &str, value: &str) {
+/// A setting row: fixed 100px label + inline widget/value. No right-stretch.
+fn setting_row(ui: &mut egui::Ui, label: &str, widget: impl FnOnce(&mut egui::Ui)) {
     ui.horizontal(|ui| {
         ui.allocate_ui_with_layout(
             egui::vec2(100.0, ui.spacing().interact_size.y),
             egui::Layout::left_to_right(egui::Align::Center),
-            |ui| { ui.colored_label(theme::TEXT_DIM, RichText::new(label).size(theme::FONT_SMALL)); },
+            |ui| { ui.colored_label(theme::TEXT_DIM, RichText::new(label).size(theme::FONT_BODY)); },
         );
-        ui.label(RichText::new(value).size(theme::FONT_BODY).color(theme::TEXT));
+        widget(ui);
     });
 }
