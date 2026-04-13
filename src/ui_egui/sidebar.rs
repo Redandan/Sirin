@@ -48,21 +48,17 @@ pub fn show(
                             egui::Sense::click(),
                         );
 
-                        // Background + left accent bar
+                        // Background + left accent bar (inside rect, not offset)
                         if is_selected {
                             ui.painter().rect_filled(rect, 4.0, theme::HOVER);
-                            // Bar at absolute left edge of panel (offset back by inner_margin)
-                            let bar_left = rect.left() - theme::SP_SM;
-                            let bar = egui::Rect::from_min_size(
-                                egui::pos2(bar_left, rect.top()),
-                                egui::vec2(3.0, rect.height()),
-                            );
+                            let bar = egui::Rect::from_min_size(rect.left_top(), egui::vec2(3.0, rect.height()));
                             ui.painter().rect_filled(bar, 1.0, theme::ACCENT);
                         } else if response.hovered() {
                             ui.painter().rect_filled(rect, 4.0, theme::CARD);
                         }
 
-                        let inner = rect.shrink2(egui::vec2(theme::SP_MD, 0.0));
+                        // Content area with left padding for bar + dot
+                        let inner = rect.shrink2(egui::vec2(theme::SP_SM, 0.0));
 
                         if is_renaming {
                             let buf = &mut renaming.as_mut().unwrap().1;
@@ -86,12 +82,12 @@ pub fn show(
                                 "error" => theme::DANGER,
                                 _ => if agent.enabled { theme::TEXT_DIM } else { theme::BORDER },
                             };
-                            let dot_center = egui::pos2(inner.left() + 4.0, inner.center().y);
+                            let dot_center = egui::pos2(inner.left() + 8.0, inner.center().y);
                             ui.painter().circle_filled(dot_center, 3.0, dot_color);
 
                             // Name
                             let text_color = if is_selected { theme::TEXT } else { theme::TEXT_DIM };
-                            let name_pos = egui::pos2(inner.left() + 14.0, inner.center().y - 6.5);
+                            let name_pos = egui::pos2(inner.left() + 20.0, inner.center().y - 6.5);
                             ui.painter().text(
                                 name_pos, egui::Align2::LEFT_TOP, &agent.name,
                                 egui::FontId::proportional(theme::FONT_BODY), text_color,
@@ -162,8 +158,7 @@ fn nav_item(ui: &mut egui::Ui, label: &str, target: View, current: &mut View) {
 
     if active {
         ui.painter().rect_filled(rect, 4.0, theme::HOVER);
-        let bar_left = rect.left() - theme::SP_SM;
-        let bar = egui::Rect::from_min_size(egui::pos2(bar_left, rect.top()), egui::vec2(3.0, rect.height()));
+        let bar = egui::Rect::from_min_size(rect.left_top(), egui::vec2(3.0, rect.height()));
         ui.painter().rect_filled(bar, 1.0, theme::ACCENT);
     } else if response.hovered() {
         ui.painter().rect_filled(rect, 4.0, theme::CARD);

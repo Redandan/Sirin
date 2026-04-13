@@ -251,20 +251,21 @@ fn show_agent_settings(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &
                     ui.colored_label(theme::ACCENT, "•");
                     ui.label(RichText::new(obj).size(theme::FONT_BODY).color(theme::TEXT));
                     let del = ui.add(
-                        egui::Label::new(RichText::new("  x").size(theme::FONT_CAPTION).color(theme::TEXT_DIM))
+                        egui::Label::new(RichText::new("  x").size(theme::FONT_BODY).color(theme::DANGER.linear_multiply(0.6)))
                             .selectable(false).sense(egui::Sense::click()),
                     );
                     if del.hovered() {
-                        ui.painter().rect_filled(del.rect, 2.0, theme::HOVER);
+                        ui.painter().rect_filled(del.rect, 2.0, theme::DANGER.linear_multiply(0.1));
                     }
-                    if del.on_hover_text("刪除").clicked() { remove_idx = Some(i); }
+                    if del.on_hover_text("刪除此目標").clicked() { remove_idx = Some(i); }
                 });
             }
             if let Some(idx) = remove_idx { svc.remove_objective(agent_id, idx); }
 
             ui.add_space(theme::SP_SM);
             ui.horizontal(|ui| {
-                ui.add_sized([ui.available_width() - 60.0, 26.0],
+                let input_width = (ui.available_width() - 70.0).min(350.0);
+                ui.add_sized([input_width, 26.0],
                     egui::TextEdit::singleline(&mut state.new_objective).hint_text("輸入新目標..."));
                 if ui.add(egui::Button::new(RichText::new("+ 新增").size(theme::FONT_SMALL).color(theme::BG))
                     .fill(theme::ACCENT).corner_radius(4.0)).clicked()
