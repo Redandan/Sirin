@@ -251,7 +251,7 @@ fn show_agent_settings(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &
                     ui.colored_label(theme::ACCENT, "•");
                     ui.label(RichText::new(obj).size(theme::FONT_BODY).color(theme::TEXT));
                     let del = ui.add(
-                        egui::Label::new(RichText::new("  ✕").size(theme::FONT_CAPTION).color(theme::TEXT_DIM))
+                        egui::Label::new(RichText::new("  x").size(theme::FONT_CAPTION).color(theme::TEXT_DIM))
                             .selectable(false).sense(egui::Sense::click()),
                     );
                     if del.hovered() {

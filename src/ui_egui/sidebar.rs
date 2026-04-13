@@ -18,8 +18,8 @@ pub fn show(
     pending_counts: &std::collections::HashMap<String, usize>,
     view: &mut View, renaming: &mut Option<(usize, String)>,
 ) {
-    egui::SidePanel::left("sidebar").resizable(false).exact_width(200.0)
-        .frame(egui::Frame::new().fill(theme::BG))
+    egui::SidePanel::left("sidebar").resizable(false).exact_width(210.0)
+        .frame(egui::Frame::new().fill(theme::BG).inner_margin(egui::vec2(theme::SP_SM, 0.0)))
         .show(ctx, |ui| {
             ui.add_space(theme::SP_LG);
 
