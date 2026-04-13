@@ -12,9 +12,11 @@ pub struct MeetingState {
 }
 
 pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agents: &[AgentSummary], state: &mut MeetingState) {
-    ui.label(RichText::new("🤝 多 Agent 會議室").heading().strong().color(theme::TEXT));
     let names: Vec<&str> = agents.iter().filter(|a| a.enabled).map(|a| a.name.as_str()).collect();
-    ui.colored_label(theme::OVERLAY0, format!("參與者: {}", names.join(", ")));
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::OVERLAY0, "參與者:");
+        for name in &names { theme::badge(ui, name, theme::BLUE); }
+    });
     ui.separator();
 
     // Messages

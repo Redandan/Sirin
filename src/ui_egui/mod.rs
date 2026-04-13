@@ -93,15 +93,51 @@ impl eframe::App for SirinApp {
 
         sidebar::show(ctx, &self.svc, &self.agents, &self.pending_counts, &mut self.view, &mut self.renaming);
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            match self.view.clone() {
-                View::Workspace(idx) => workspace::show(ui, &self.svc, &self.agents, idx, &self.tasks, &self.pending_counts, &mut self.workspace_state),
-                View::Settings => settings::show(ui, &self.svc, &self.agents, &mut self.settings_state),
-                View::Log => log_view::show(ui, &self.svc, &mut self.log_state),
-                View::Workflow => workflow::show(ui, &self.svc, &mut self.workflow_state),
-                View::Meeting => meeting::show(ui, &self.svc, &self.agents, &mut self.meeting_state),
-            }
-        });
+        // ── Top bar ───────────────────────────────────────────────────────
+        egui::TopBottomPanel::top("top_bar")
+            .frame(egui::Frame::new().fill(theme::MANTLE).inner_margin(egui::vec2(16.0, 8.0)))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    // Page title + breadcrumb
+                    let (icon, title, subtitle) = match &self.view {
+                        View::Workspace(idx) => {
+                            let name = self.agents.get(*idx).map(|a| a.name.as_str()).unwrap_or("—");
+                            ("💬", name, "Agent 工作區")
+                        }
+                        View::Settings => ("⚙", "設定", "Agent 配置 & 系統"),
+                        View::Log => ("📋", "系統 Log", "即時日誌"),
+                        View::Workflow => ("🔧", "Skill 開發", "工作流 Pipeline"),
+                        View::Meeting => ("🤝", "會議室", "多 Agent 協作"),
+                    };
+                    ui.label(RichText::new(icon).size(18.0));
+                    ui.label(RichText::new(title).strong().size(16.0).color(theme::TEXT));
+                    ui.colored_label(theme::OVERLAY0, RichText::new(format!("/ {subtitle}")).small());
+
+                    // Right side: agent count + pending total
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let total_pending: usize = self.pending_counts.values().sum();
+                        if total_pending > 0 {
+                            theme::count_badge(ui, total_pending);
+                            ui.colored_label(theme::OVERLAY0, RichText::new("待審").small());
+                        }
+                        ui.colored_label(theme::SURFACE2, RichText::new("|").small());
+                        ui.colored_label(theme::OVERLAY0, RichText::new(format!("{} agents", self.agents.len())).small());
+                    });
+                });
+            });
+
+        // ── Central panel ────────────────────────────────────────────────
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(theme::BASE).inner_margin(theme::GAP_LG))
+            .show(ctx, |ui| {
+                match self.view.clone() {
+                    View::Workspace(idx) => workspace::show(ui, &self.svc, &self.agents, idx, &self.tasks, &self.pending_counts, &mut self.workspace_state),
+                    View::Settings => settings::show(ui, &self.svc, &self.agents, &mut self.settings_state),
+                    View::Log => log_view::show(ui, &self.svc, &mut self.log_state),
+                    View::Workflow => workflow::show(ui, &self.svc, &mut self.workflow_state),
+                    View::Meeting => meeting::show(ui, &self.svc, &self.agents, &mut self.meeting_state),
+                }
+            });
 
         // Toast overlay
         if !self.toasts.is_empty() {

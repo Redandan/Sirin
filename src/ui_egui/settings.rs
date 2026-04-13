@@ -44,7 +44,10 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agents: &[AgentSummary
 }
 
 fn show_agent(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, d: &AgentDetailView, state: &mut SettingsState) {
-    ui.label(RichText::new(&d.name).heading().strong().color(theme::TEXT));
+    // Compact header with inline controls
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(&d.name).strong().size(16.0).color(theme::TEXT));
+    });
     ui.horizontal(|ui| {
         let mut enabled = d.enabled;
         if ui.checkbox(&mut enabled, "").changed() { svc.toggle_agent(&d.id, enabled); }
@@ -90,8 +93,8 @@ fn show_agent(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, d: &AgentDetailView,
 
 fn show_system(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, state: &mut SettingsState) {
     let s = svc.system_status();
-    ui.label(RichText::new("系統設定").heading().strong().color(theme::TEXT));
-    ui.add_space(theme::GAP_MD);
+    // No heading needed — top bar shows "設定 / Agent 配置 & 系統"
+    ui.add_space(theme::GAP_SM);
 
     theme::section(ui, "連線狀態", |ui| {
         theme::status_row(ui, "Telegram", &s.telegram_status, s.telegram_connected);

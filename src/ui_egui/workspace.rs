@@ -24,9 +24,15 @@ pub fn show(
     let Some(agent) = agents.get(idx) else { ui.label("Agent not found"); return; };
     let pending_n = pending_counts.get(&agent.id).copied().unwrap_or(0);
 
-    ui.label(RichText::new(&agent.name).heading().strong().color(theme::TEXT));
-    ui.colored_label(theme::OVERLAY0, format!("ID: {} | {}", agent.id, agent.platform));
-    ui.add_space(theme::GAP_MD);
+    // Agent info bar (compact, since top bar shows the name)
+    ui.horizontal(|ui| {
+        theme::badge(ui, &agent.platform, theme::BLUE);
+        ui.colored_label(theme::OVERLAY0, format!("ID: {}", agent.id));
+        if agent.enabled {
+            theme::badge(ui, "啟用", theme::GREEN);
+        }
+    });
+    ui.add_space(theme::GAP_SM);
 
     ui.horizontal(|ui| {
         if ui.selectable_label(state.tab == 0, RichText::new("📊 概覽").color(theme::TEXT)).clicked() { state.tab = 0; }

@@ -12,8 +12,7 @@ pub struct WorkflowUiState {
 }
 
 pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, state: &mut WorkflowUiState) {
-    ui.label(RichText::new("Skill 開發工作流").heading().strong().color(theme::TEXT));
-    ui.add_space(theme::GAP_MD);
+    ui.add_space(theme::GAP_SM);
 
     match svc.workflow_state() {
         None => show_empty(ui, svc, state),
