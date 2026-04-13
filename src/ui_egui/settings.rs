@@ -14,6 +14,15 @@ pub struct SettingsState {
     mcp_expanded: Option<String>,
     mcp_args: String,
     mcp_result: String,
+    // New agent
+    new_agent_id: String,
+    new_agent_name: String,
+    // Research
+    research_topic: String,
+    research_url: String,
+    // Persona
+    persona_name_buf: String,
+    persona_loaded: bool,
 }
 
 pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, _agents: &[AgentSummary], state: &mut SettingsState) {
@@ -132,6 +141,81 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, _agents: &[AgentSummar
                     ui.label(RichText::new(&skill.name).size(theme::FONT_BODY).color(theme::TEXT));
                 });
             }
+        });
+
+        // ── LLM Model Selection ─────────────────────────────────────────
+        theme::section(ui, "模型選擇", |ui| {
+            let models = svc.available_models();
+            if models.is_empty() {
+                ui.colored_label(theme::TEXT_DIM, RichText::new("無可用模型").size(theme::FONT_SMALL));
+            } else {
+                for model in &models {
+                    let is_current = model == &s.llm.main_model;
+                    ui.horizontal(|ui| {
+                        if is_current {
+                            ui.colored_label(theme::ACCENT, "●");
+                        } else {
+                            if ui.add(egui::Label::new(RichText::new("○").color(theme::TEXT_DIM))
+                                .selectable(false).sense(egui::Sense::click())).clicked() {
+                                svc.set_main_model(model);
+                            }
+                        }
+                        ui.label(RichText::new(model).size(theme::FONT_BODY).color(
+                            if is_current { theme::TEXT } else { theme::TEXT_DIM }
+                        ).family(egui::FontFamily::Monospace));
+                    });
+                }
+            }
+        });
+
+        // ── Persona ──────────────────────────────────────────────────────
+        theme::section(ui, "全局人格", |ui| {
+            if !state.persona_loaded {
+                state.persona_name_buf = svc.persona_name();
+                state.persona_loaded = true;
+            }
+            ui.horizontal(|ui| {
+                ui.colored_label(theme::TEXT_DIM, RichText::new("名稱").size(theme::FONT_BODY));
+                ui.add_space(theme::SP_SM);
+                let resp = ui.add_sized([200.0, 24.0], egui::TextEdit::singleline(&mut state.persona_name_buf));
+                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    svc.set_persona_name(&state.persona_name_buf);
+                }
+            });
+        });
+
+        // ── New Agent ────────────────────────────────────────────────────
+        theme::section(ui, "新增 Agent", |ui| {
+            ui.horizontal(|ui| {
+                ui.colored_label(theme::TEXT_DIM, RichText::new("ID").size(theme::FONT_SMALL));
+                ui.add_sized([120.0, 24.0], egui::TextEdit::singleline(&mut state.new_agent_id).hint_text("agent_id"));
+                ui.colored_label(theme::TEXT_DIM, RichText::new("名稱").size(theme::FONT_SMALL));
+                ui.add_sized([120.0, 24.0], egui::TextEdit::singleline(&mut state.new_agent_name).hint_text("顯示名稱"));
+                let can = !state.new_agent_id.trim().is_empty() && !state.new_agent_name.trim().is_empty();
+                if ui.add_enabled(can, egui::Button::new(RichText::new("+ 建立").size(theme::FONT_SMALL).color(theme::BG))
+                    .fill(theme::ACCENT).corner_radius(4.0)).clicked() {
+                    svc.create_agent(state.new_agent_id.trim(), state.new_agent_name.trim());
+                    state.new_agent_id.clear();
+                    state.new_agent_name.clear();
+                }
+            });
+        });
+
+        // ── Research Trigger ─────────────────────────────────────────────
+        theme::section(ui, "觸發調研", |ui| {
+            ui.horizontal(|ui| {
+                ui.add_sized([200.0, 24.0], egui::TextEdit::singleline(&mut state.research_topic).hint_text("調研主題..."));
+                ui.add_sized([150.0, 24.0], egui::TextEdit::singleline(&mut state.research_url).hint_text("URL（選填）"));
+                if ui.add(egui::Button::new(RichText::new("🔍 開始").size(theme::FONT_SMALL).color(theme::BG))
+                    .fill(theme::ACCENT).corner_radius(4.0)).clicked()
+                    && !state.research_topic.trim().is_empty()
+                {
+                    let url = if state.research_url.trim().is_empty() { None } else { Some(state.research_url.trim()) };
+                    svc.trigger_research(state.research_topic.trim(), url);
+                    state.research_topic.clear();
+                    state.research_url.clear();
+                }
+            });
         });
     });
 }

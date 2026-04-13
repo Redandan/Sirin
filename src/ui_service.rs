@@ -209,7 +209,35 @@ pub trait AppService: Send + Sync + 'static {
     fn meeting_send(&self, speaker: &str, text: &str);
     fn meeting_history(&self) -> Vec<(String, String)>;
 
-    // ── Events (polled by UI each frame) ─────────────────────────────────────
+    // ── Chat (direct conversation with agent) ─────────────────────────────────
+
+    /// Send a message to the agent and get a reply (blocking).
+    fn chat_send(&self, agent_id: &str, message: &str) -> String;
+
+    // ── Create agent ─────────────────────────────────────────────────────────
+
+    fn create_agent(&self, id: &str, name: &str);
+
+    // ── LLM model selection ──────────────────────────────────────────────────
+
+    fn available_models(&self) -> Vec<String>;
+    fn set_main_model(&self, model: &str);
+
+    // ── Research ─────────────────────────────────────────────────────────────
+
+    fn trigger_research(&self, topic: &str, url: Option<&str>);
+
+    // ── Persona ──────────────────────────────────────────────────────────────
+
+    fn persona_name(&self) -> String;
+    fn set_persona_name(&self, name: &str);
+
+    // ── Skill toggle ─────────────────────────────────────────────────────────
+
+    fn toggle_skill(&self, agent_id: &str, skill_id: &str, enabled: bool);
+    fn disabled_skills(&self, agent_id: &str) -> Vec<String>;
+
+    // ── Events ───────────────────────────────────────────────────────────────
 
     fn poll_toasts(&self) -> Vec<ToastEvent>;
 }

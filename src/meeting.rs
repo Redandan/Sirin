@@ -139,6 +139,14 @@ pub fn append_turn(speaker: &str, text: &str) {
     }
 }
 
+/// Get all turns from the current meeting as (speaker, text) pairs.
+pub fn get_turns() -> Vec<(String, String)> {
+    state().lock().unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .map(|s| s.turns.iter().map(|t| (t.speaker.clone(), t.text.clone())).collect())
+        .unwrap_or_default()
+}
+
 /// Returns `true` if `from` currently has meeting-level auth to hand off to `to`.
 pub fn check_meeting_auth(from: &str, to: &str) -> bool {
     state()

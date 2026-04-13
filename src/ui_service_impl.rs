@@ -389,9 +389,101 @@ impl AppService for RealService {
     }
 
     fn meeting_history(&self) -> Vec<(String, String)> {
-        // Read from the meeting transcript
-        crate::meeting::current_meeting_id()
-            .map(|_| Vec::new()) // TODO: expose transcript from meeting module
+        crate::meeting::get_turns()
+    }
+
+    // ── Chat ─────────────────────────────────────────────────────────────────
+
+    fn chat_send(&self, _agent_id: &str, message: &str) -> String {
+        use crate::agents::chat_agent::{ChatRequest, run_chat_via_adk_with_tracker};
+
+        let request = ChatRequest {
+            user_text: message.to_string(),
+            ..Default::default()
+        };
+
+        let handle = tokio::runtime::Handle::try_current();
+        if let Ok(rt) = handle {
+            let tracker = self.tracker.clone();
+            std::thread::spawn(move || {
+                rt.block_on(run_chat_via_adk_with_tracker(request, Some(tracker)))
+            }).join().unwrap_or_else(|_| "（Agent 回覆失敗）".to_string())
+        } else {
+            "（無法取得 Tokio runtime）".to_string()
+        }
+    }
+
+    // ── Create agent ─────────────────────────────────────────────────────────
+
+    fn create_agent(&self, id: &str, name: &str) {
+        if let Ok(mut file) = crate::agent_config::AgentsFile::load() {
+            let agent = crate::agent_config::AgentConfig::new_default(id, name);
+            file.agents.push(agent);
+            let _ = file.save();
+            self.push_toast(ToastLevel::Success, format!("Agent「{name}」已建立"));
+        }
+    }
+
+    // ── LLM ──────────────────────────────────────────────────────────────────
+
+    fn available_models(&self) -> Vec<String> {
+        let fleet = crate::llm::shared_fleet();
+        fleet.classified_models.iter().map(|m| m.info.name.clone()).collect()
+    }
+
+    fn set_main_model(&self, model: &str) {
+        let mut cfg = crate::llm::LlmUiConfig::load();
+        cfg.main_model = model.to_string();
+        let _ = cfg.save();
+        self.push_toast(ToastLevel::Info, format!("模型已切換為 {model}（重啟生效）"));
+    }
+
+    // ── Research ──────────────────────────────────────────────────────────────
+
+    fn trigger_research(&self, topic: &str, url: Option<&str>) {
+        crate::events::publish(crate::events::AgentEvent::ResearchRequested {
+            topic: topic.to_string(),
+            url: url.map(|s| s.to_string()),
+        });
+        self.push_toast(ToastLevel::Info, format!("已觸發調研：{topic}"));
+    }
+
+    // ── Persona ──────────────────────────────────────────────────────────────
+
+    fn persona_name(&self) -> String {
+        crate::persona::Persona::cached().map(|p| p.name().to_string()).unwrap_or_default()
+    }
+
+    fn set_persona_name(&self, name: &str) {
+        if let Ok(mut p) = crate::persona::Persona::load() {
+            p.identity.name = name.to_string();
+            if let Ok(yaml) = serde_yaml::to_string(&p) {
+                let _ = std::fs::write("config/persona.yaml", yaml);
+                crate::persona::Persona::reload_cache();
+            }
+        }
+    }
+
+    // ── Skill toggle ─────────────────────────────────────────────────────────
+
+    fn toggle_skill(&self, agent_id: &str, skill_id: &str, enabled: bool) {
+        if let Ok(mut file) = crate::agent_config::AgentsFile::load() {
+            if let Some(a) = file.agents.iter_mut().find(|a| a.id == agent_id) {
+                if enabled {
+                    a.disabled_skills.retain(|s| s != skill_id);
+                } else {
+                    if !a.disabled_skills.contains(&skill_id.to_string()) {
+                        a.disabled_skills.push(skill_id.to_string());
+                    }
+                }
+                let _ = file.save();
+            }
+        }
+    }
+
+    fn disabled_skills(&self, agent_id: &str) -> Vec<String> {
+        crate::agent_config::AgentsFile::load().ok()
+            .and_then(|f| f.agents.iter().find(|a| a.id == agent_id).map(|a| a.disabled_skills.clone()))
             .unwrap_or_default()
     }
 

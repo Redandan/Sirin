@@ -11,14 +11,17 @@ use crate::ui_service::*;
 
 #[derive(Default)]
 pub struct WorkspaceState {
-    tab: usize, // 0=overview, 1=thinking, 2=pending, 3=settings
+    tab: usize, // 0=chat, 1=overview, 2=thinking, 3=pending, 4=settings
     pending_cache: Vec<PendingReplyView>,
     pending_loaded_for: String,
     draft_edits: std::collections::HashMap<String, String>,
     mem_query: String,
     mem_results: Vec<String>,
-    // Per-agent settings
     new_objective: String,
+    // Chat
+    chat_input: String,
+    chat_history: Vec<(String, String)>, // (role, text): "user"/"agent"
+    chat_loading: bool,
 }
 
 pub fn show(
@@ -31,16 +34,59 @@ pub fn show(
 
     // Tab bar (underline style)
     let pending_label = format!("待確認 ({pending_n})");
-    let tab_labels = ["概覽", "思考流", &pending_label, "設定"];
+    let tab_labels = ["💬 對話", "概覽", "思考流", &pending_label, "設定"];
     theme::tab_bar(ui, &tab_labels, &mut state.tab);
 
     match state.tab {
-        0 => show_overview(ui, svc, tasks, state),
-        1 => show_thinking(ui, tasks),
-        2 => show_pending(ui, svc, &agent.id, state),
-        3 => show_agent_settings(ui, svc, &agent.id, state),
+        0 => show_chat(ui, svc, &agent.id, state),
+        1 => show_overview(ui, svc, tasks, state),
+        2 => show_thinking(ui, tasks),
+        3 => show_pending(ui, svc, &agent.id, state),
+        4 => show_agent_settings(ui, svc, &agent.id, state),
         _ => {}
     }
+}
+
+fn show_chat(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &str, state: &mut WorkspaceState) {
+    // Message history
+    ScrollArea::vertical().id_salt("chat").stick_to_bottom(true).auto_shrink(false)
+        .max_height(ui.available_height() - 50.0).show(ui, |ui| {
+            ui.set_max_width(600.0);
+            if state.chat_history.is_empty() {
+                ui.add_space(theme::SP_XL);
+                ui.colored_label(theme::TEXT_DIM, "輸入訊息開始對話...");
+            }
+            for (role, text) in &state.chat_history {
+                let (color, prefix) = if role == "user" { (theme::TEXT, "你") } else { (theme::ACCENT, "Agent") };
+                theme::card(ui, |ui| {
+                    ui.colored_label(color, RichText::new(prefix).size(theme::FONT_SMALL).strong());
+                    ui.label(RichText::new(text).size(theme::FONT_BODY).color(theme::TEXT));
+                });
+            }
+            if state.chat_loading {
+                ui.colored_label(theme::TEXT_DIM, "Agent 思考中...");
+            }
+        });
+
+    // Input bar
+    ui.add_space(theme::SP_SM);
+    ui.horizontal(|ui| {
+        let input_width = (ui.available_width() - 60.0).min(540.0);
+        let resp = ui.add_sized([input_width, 28.0],
+            egui::TextEdit::singleline(&mut state.chat_input).hint_text("輸入訊息..."));
+        let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        if (ui.add(egui::Button::new(RichText::new("發送").color(theme::BG)).fill(theme::ACCENT).corner_radius(4.0)).clicked() || enter)
+            && !state.chat_input.trim().is_empty() && !state.chat_loading
+        {
+            let msg = state.chat_input.trim().to_string();
+            state.chat_history.push(("user".into(), msg.clone()));
+            state.chat_input.clear();
+
+            // Get AI reply (blocking for now)
+            let reply = svc.chat_send(agent_id, &msg);
+            state.chat_history.push(("agent".into(), reply));
+        }
+    });
 }
 
 fn show_overview(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, tasks: &[TaskView], state: &mut WorkspaceState) {
