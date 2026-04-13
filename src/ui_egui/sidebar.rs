@@ -10,8 +10,9 @@ pub fn show(
     pending_counts: &std::collections::HashMap<String, usize>,
     view: &mut View, renaming: &mut Option<(usize, String)>,
 ) {
-    egui::SidePanel::left("sidebar").resizable(false).exact_width(230.0)
-        .frame(egui::Frame::new().fill(theme::MANTLE).inner_margin(egui::vec2(theme::SP_MD, 0.0)))
+    egui::SidePanel::left("sidebar").resizable(false).exact_width(200.0)
+        .frame(egui::Frame::new().fill(theme::BG).inner_margin(egui::vec2(theme::SP_SM, 0.0))
+            .stroke(egui::Stroke::new(1.0, theme::BORDER)))
         .show(ctx, |ui| {
             ui.add_space(theme::SP_LG);
 
@@ -40,9 +41,9 @@ pub fn show(
 
                         // Background: selected or hovered
                         if is_selected {
-                            ui.painter().rect_filled(rect, 6.0, theme::SURFACE1);
+                            ui.painter().rect_filled(rect, 6.0, theme::HOVER);
                         } else if response.hovered() {
-                            ui.painter().rect_filled(rect, 6.0, theme::SURFACE0);
+                            ui.painter().rect_filled(rect, 6.0, theme::CARD);
                         }
 
                         // Content
@@ -64,14 +65,14 @@ pub fn show(
 
                             // Draw: dot + name + (badge)
                             let dot_color = match agent.live_status.as_str() {
-                                "connected" => theme::GREEN,
+                                "connected" => theme::ACCENT,
                                 "reconnecting" => theme::YELLOW,
-                                "waiting" => theme::PEACH,
-                                "error" => theme::RED,
-                                _ => if agent.enabled { theme::OVERLAY0 } else { theme::SURFACE2 },
+                                "waiting" => theme::YELLOW,
+                                "error" => theme::DANGER,
+                                _ => if agent.enabled { theme::TEXT_DIM } else { theme::BORDER },
                             };
 
-                            let text_color = if is_selected { theme::TEXT } else { theme::SUBTEXT0 };
+                            let text_color = if is_selected { theme::TEXT } else { theme::TEXT_DIM };
 
                             // Dot
                             let dot_center = egui::pos2(content_rect.left() + 6.0, content_rect.center().y);
@@ -91,12 +92,12 @@ pub fn show(
                                 let badge_text = format!("{pending_n}");
                                 let badge_pos = egui::pos2(content_rect.right() - 8.0, content_rect.center().y);
                                 let badge_rect = egui::Rect::from_center_size(badge_pos, egui::vec2(20.0, 16.0));
-                                ui.painter().rect_filled(badge_rect, 8.0, theme::PEACH);
+                                ui.painter().rect_filled(badge_rect, 8.0, theme::YELLOW);
                                 ui.painter().text(
                                     badge_pos, egui::Align2::CENTER_CENTER,
                                     &badge_text,
                                     egui::FontId::proportional(theme::FONT_CAPTION),
-                                    theme::CRUST,
+                                    theme::BG,
                                 );
                             }
                         }
@@ -134,7 +135,7 @@ pub fn show(
                 // Thin separator
                 ui.painter().line_segment(
                     [ui.cursor().left_top(), egui::pos2(ui.cursor().left_top().x + ui.available_width(), ui.cursor().left_top().y)],
-                    egui::Stroke::new(1.0, theme::SURFACE0),
+                    egui::Stroke::new(1.0, theme::CARD),
                 );
             });
         });
@@ -142,13 +143,13 @@ pub fn show(
 
 fn section_label(ui: &mut egui::Ui, text: &str) {
     ui.add_space(theme::SP_XS);
-    ui.label(RichText::new(text).size(theme::FONT_CAPTION).strong().color(theme::SURFACE2));
+    ui.label(RichText::new(text).size(theme::FONT_CAPTION).strong().color(theme::BORDER));
     ui.add_space(theme::SP_XS);
 }
 
 fn nav_item(ui: &mut egui::Ui, label: &str, target: View, current: &mut View) {
     let active = std::mem::discriminant(current) == std::mem::discriminant(&target);
-    let text_color = if active { theme::TEXT } else { theme::SUBTEXT0 };
+    let text_color = if active { theme::TEXT } else { theme::TEXT_DIM };
 
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), 30.0),
@@ -156,9 +157,9 @@ fn nav_item(ui: &mut egui::Ui, label: &str, target: View, current: &mut View) {
     );
 
     if active {
-        ui.painter().rect_filled(rect, 6.0, theme::SURFACE0);
+        ui.painter().rect_filled(rect, 6.0, theme::CARD);
     } else if response.hovered() {
-        ui.painter().rect_filled(rect, 6.0, theme::SURFACE0.linear_multiply(0.5));
+        ui.painter().rect_filled(rect, 6.0, theme::CARD.linear_multiply(0.5));
     }
 
     let text_pos = egui::pos2(rect.left() + theme::SP_SM, rect.center().y - 7.0);
@@ -171,10 +172,10 @@ fn nav_item(ui: &mut egui::Ui, label: &str, target: View, current: &mut View) {
 }
 
 fn status_dot(ui: &mut egui::Ui, label: &str, ok: bool) {
-    let color = if ok { theme::GREEN } else { theme::RED };
+    let color = if ok { theme::ACCENT } else { theme::DANGER };
     ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
         ui.painter().circle_filled(rect.center(), 3.0, color);
-        ui.colored_label(theme::OVERLAY0, RichText::new(label).size(theme::FONT_CAPTION));
+        ui.colored_label(theme::TEXT_DIM, RichText::new(label).size(theme::FONT_CAPTION));
     });
 }

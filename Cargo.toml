@@ -7,7 +7,6 @@ description = "A pure-Rust cross-platform AI agent (Dioxus + Tokio)"
 [dependencies]
 eframe = { version = "0.31", features = ["default"] }
 egui = { version = "0.31", features = ["default"] }
-catppuccin-egui = { version = "5.7", default-features = false, features = ["egui31"] }
 thiserror = "2"
 tokio = { version = "1.37.0", features = ["full"] }
 serde = { version = "1.0.228", features = ["derive"] }

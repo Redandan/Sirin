@@ -58,9 +58,9 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, _agents: &[AgentSummar
             theme::status_row(ui, "Teams", if teams_running { "監聽中" } else { "未啟動" }, teams_running);
             if !teams_running {
                 ui.add_space(theme::SP_SM);
-                ui.colored_label(theme::OVERLAY0, RichText::new("需要 Chrome 瀏覽器").size(theme::FONT_CAPTION));
-                if ui.add(egui::Button::new(RichText::new("🚀 啟動 Teams").size(theme::FONT_SMALL).color(theme::CRUST))
-                    .fill(theme::BLUE).corner_radius(4.0)).clicked() {
+                ui.colored_label(theme::TEXT_DIM, RichText::new("需要 Chrome 瀏覽器").size(theme::FONT_CAPTION));
+                if ui.add(egui::Button::new(RichText::new("🚀 啟動 Teams").size(theme::FONT_SMALL).color(theme::BG))
+                    .fill(theme::INFO).corner_radius(4.0)).clicked() {
                     svc.start_teams();
                 }
             }
@@ -77,14 +77,14 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, _agents: &[AgentSummar
         let mcp_tools = svc.mcp_tools();
         theme::section(ui, &format!("MCP 工具 ({})", mcp_tools.len()), |ui| {
             if mcp_tools.is_empty() {
-                ui.colored_label(theme::OVERLAY0, RichText::new("未連接 — 編輯 config/mcp_servers.yaml").size(theme::FONT_SMALL));
+                ui.colored_label(theme::TEXT_DIM, RichText::new("未連接 — 編輯 config/mcp_servers.yaml").size(theme::FONT_SMALL));
                 return;
             }
             for tool in &mcp_tools {
                 let is_expanded = state.mcp_expanded.as_deref() == Some(&tool.registry_name);
                 ui.horizontal(|ui| {
                     let arrow = if is_expanded { "▼" } else { "▶" };
-                    if ui.add(egui::Button::new(RichText::new(arrow).size(theme::FONT_CAPTION).color(theme::OVERLAY0))
+                    if ui.add(egui::Button::new(RichText::new(arrow).size(theme::FONT_CAPTION).color(theme::TEXT_DIM))
                         .fill(egui::Color32::TRANSPARENT)).clicked() {
                         state.mcp_expanded = if is_expanded { None } else {
                             state.mcp_args = "{}".to_string();
@@ -92,30 +92,30 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, _agents: &[AgentSummar
                             Some(tool.registry_name.clone())
                         };
                     }
-                    ui.colored_label(theme::BLUE, RichText::new(&tool.tool_name).size(theme::FONT_BODY));
-                    ui.colored_label(theme::OVERLAY0, RichText::new(&tool.description).size(theme::FONT_CAPTION));
+                    ui.colored_label(theme::INFO, RichText::new(&tool.tool_name).size(theme::FONT_BODY));
+                    ui.colored_label(theme::TEXT_DIM, RichText::new(&tool.description).size(theme::FONT_CAPTION));
                 });
                 if is_expanded {
                     ui.indent("mcp_detail", |ui| {
                         if !tool.params.is_empty() {
                             ui.horizontal(|ui| {
                                 for (name, typ) in &tool.params {
-                                    theme::badge(ui, &format!("{name}: {typ}"), theme::MAUVE);
+                                    theme::badge(ui, &format!("{name}: {typ}"), theme::INFO);
                                 }
                             });
                         }
                         ui.horizontal(|ui| {
                             ui.add_sized([ui.available_width() - 56.0, 24.0],
                                 egui::TextEdit::singleline(&mut state.mcp_args).font(egui::TextStyle::Monospace));
-                            if ui.add(egui::Button::new(RichText::new("▶ 執行").size(theme::FONT_SMALL).color(theme::CRUST))
-                                .fill(theme::BLUE).corner_radius(4.0)).clicked() {
+                            if ui.add(egui::Button::new(RichText::new("▶ 執行").size(theme::FONT_SMALL).color(theme::BG))
+                                .fill(theme::INFO).corner_radius(4.0)).clicked() {
                                 state.mcp_result = svc.mcp_call(&tool.registry_name, &state.mcp_args).unwrap_or_else(|e| format!("❌ {e}"));
                             }
                         });
                         if !state.mcp_result.is_empty() {
                             ui.add_space(theme::SP_XS);
-                            egui::Frame::new().fill(theme::CRUST).corner_radius(4.0).inner_margin(theme::SP_SM).show(ui, |ui| {
-                                ui.colored_label(theme::TEAL, RichText::new(&state.mcp_result).size(theme::FONT_SMALL).monospace());
+                            egui::Frame::new().fill(theme::BG).corner_radius(4.0).inner_margin(theme::SP_SM).show(ui, |ui| {
+                                ui.colored_label(theme::ACCENT, RichText::new(&state.mcp_result).size(theme::FONT_SMALL).monospace());
                             });
                         }
                     });
@@ -128,7 +128,7 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, _agents: &[AgentSummar
         theme::section(ui, &format!("技能 ({})", s.skills.len()), |ui| {
             for skill in &s.skills {
                 ui.horizontal(|ui| {
-                    theme::badge(ui, &skill.category, theme::MAUVE);
+                    theme::badge(ui, &skill.category, theme::INFO);
                     ui.label(RichText::new(&skill.name).size(theme::FONT_BODY).color(theme::TEXT));
                 });
             }

@@ -43,23 +43,23 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, state: &mut LogState) 
         ui.add_space(theme::SP_MD);
 
         for (label, f, color) in [
-            ("全部", Filter::All, theme::BLUE),
+            ("全部", Filter::All, theme::INFO),
             ("⚠ 警告+", Filter::WarnPlus, theme::YELLOW),
-            ("✗ 錯誤", Filter::ErrorOnly, theme::RED),
+            ("✗ 錯誤", Filter::ErrorOnly, theme::DANGER),
         ] {
             let active = filter == f;
             let btn = egui::Button::new(
-                RichText::new(label).size(theme::FONT_SMALL).color(if active { theme::CRUST } else { theme::SUBTEXT0 })
+                RichText::new(label).size(theme::FONT_SMALL).color(if active { theme::BG } else { theme::TEXT_DIM })
             ).fill(if active { color } else { Color32::TRANSPARENT }).corner_radius(4.0);
             if ui.add(btn).clicked() { state.filter = Some(f); }
         }
 
         ui.add_space(theme::SP_MD);
         let count_text = if filter == Filter::All { format!("{shown} 行") } else { format!("{shown} / {total} 行") };
-        ui.colored_label(theme::OVERLAY0, RichText::new(count_text).size(theme::FONT_CAPTION));
+        ui.colored_label(theme::TEXT_DIM, RichText::new(count_text).size(theme::FONT_CAPTION));
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.add(egui::Button::new(RichText::new("清除").size(theme::FONT_SMALL).color(theme::SUBTEXT0))
+            if ui.add(egui::Button::new(RichText::new("清除").size(theme::FONT_SMALL).color(theme::TEXT_DIM))
                 .fill(Color32::TRANSPARENT).corner_radius(4.0)).clicked() {
                 svc.log_clear();
             }
@@ -71,7 +71,7 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, state: &mut LogState) 
     ScrollArea::vertical().id_salt("log").stick_to_bottom(true).auto_shrink(false).show(ui, |ui| {
         if state.cache.is_empty() {
             ui.add_space(theme::SP_XL);
-            ui.colored_label(theme::OVERLAY0, RichText::new("目前沒有符合條件的 Log").size(theme::FONT_BODY));
+            ui.colored_label(theme::TEXT_DIM, RichText::new("目前沒有符合條件的 Log").size(theme::FONT_BODY));
             return;
         }
         for (text, color) in &state.cache {

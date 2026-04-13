@@ -95,7 +95,9 @@ impl eframe::App for SirinApp {
 
         // ── Top bar ───────────────────────────────────────────────────────
         egui::TopBottomPanel::top("top_bar")
-            .frame(egui::Frame::new().fill(theme::MANTLE).inner_margin(egui::vec2(theme::SP_XL, theme::SP_MD)))
+            .exact_height(32.0)
+            .frame(egui::Frame::new().fill(theme::CARD).inner_margin(egui::vec2(theme::SP_MD, theme::SP_XS))
+                .stroke(egui::Stroke::new(1.0, theme::BORDER)))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     // Page title + breadcrumb
@@ -111,24 +113,24 @@ impl eframe::App for SirinApp {
                     };
                     ui.label(RichText::new(icon).size(theme::FONT_HEADING));
                     ui.label(RichText::new(title).strong().size(theme::FONT_HEADING).color(theme::TEXT));
-                    ui.colored_label(theme::OVERLAY0, RichText::new(format!("/ {subtitle}")).size(theme::FONT_SMALL));
+                    ui.colored_label(theme::TEXT_DIM, RichText::new(format!("/ {subtitle}")).size(theme::FONT_SMALL));
 
                     // Right side: agent count + pending total
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let total_pending: usize = self.pending_counts.values().sum();
                         if total_pending > 0 {
                             theme::count_badge(ui, total_pending);
-                            ui.colored_label(theme::OVERLAY0, RichText::new("待審").size(theme::FONT_SMALL));
+                            ui.colored_label(theme::TEXT_DIM, RichText::new("待審").size(theme::FONT_SMALL));
                         }
-                        ui.colored_label(theme::SURFACE2, RichText::new("|").size(theme::FONT_SMALL));
-                        ui.colored_label(theme::OVERLAY0, RichText::new(format!("{} agents", self.agents.len())).size(theme::FONT_SMALL));
+                        ui.colored_label(theme::BORDER, RichText::new("|").size(theme::FONT_SMALL));
+                        ui.colored_label(theme::TEXT_DIM, RichText::new(format!("{} agents", self.agents.len())).size(theme::FONT_SMALL));
                     });
                 });
             });
 
         // ── Central panel ────────────────────────────────────────────────
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(theme::BASE).inner_margin(egui::vec2(theme::SP_XL, theme::SP_LG)))
+            .frame(egui::Frame::new().fill(theme::BG).inner_margin(egui::vec2(theme::SP_XL, theme::SP_LG)))
             .show(ctx, |ui| {
                 match self.view.clone() {
                     View::Workspace(idx) => workspace::show(ui, &self.svc, &self.agents, idx, &self.tasks, &self.pending_counts, &mut self.workspace_state),
@@ -146,9 +148,9 @@ impl eframe::App for SirinApp {
                 .show(ctx, |ui| {
                     for toast in self.toasts.iter().rev().take(3) {
                         let (fg, bg) = match toast.level {
-                            ToastLevel::Success => (theme::GREEN, theme::GREEN.linear_multiply(0.12)),
-                            ToastLevel::Error => (theme::RED, theme::RED.linear_multiply(0.12)),
-                            ToastLevel::Info => (theme::BLUE, theme::BLUE.linear_multiply(0.12)),
+                            ToastLevel::Success => (theme::ACCENT, theme::ACCENT.linear_multiply(0.12)),
+                            ToastLevel::Error => (theme::DANGER, theme::DANGER.linear_multiply(0.12)),
+                            ToastLevel::Info => (theme::INFO, theme::INFO.linear_multiply(0.12)),
                         };
                         egui::Frame::new().fill(bg).corner_radius(8.0)
                             .inner_margin(egui::vec2(14.0, 8.0))
