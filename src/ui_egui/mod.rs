@@ -95,7 +95,7 @@ impl eframe::App for SirinApp {
 
         // ── Top bar ───────────────────────────────────────────────────────
         egui::TopBottomPanel::top("top_bar")
-            .frame(egui::Frame::new().fill(theme::MANTLE).inner_margin(egui::vec2(16.0, 8.0)))
+            .frame(egui::Frame::new().fill(theme::MANTLE).inner_margin(egui::vec2(theme::SP_XL, theme::SP_MD)))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     // Page title + breadcrumb
@@ -128,7 +128,7 @@ impl eframe::App for SirinApp {
 
         // ── Central panel ────────────────────────────────────────────────
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(theme::BASE).inner_margin(theme::SP_LG))
+            .frame(egui::Frame::new().fill(theme::BASE).inner_margin(egui::vec2(theme::SP_XL, theme::SP_LG)))
             .show(ctx, |ui| {
                 match self.view.clone() {
                     View::Workspace(idx) => workspace::show(ui, &self.svc, &self.agents, idx, &self.tasks, &self.pending_counts, &mut self.workspace_state),
