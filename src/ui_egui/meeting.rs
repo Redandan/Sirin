@@ -18,7 +18,7 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agents: &[AgentSummary
     if !active {
         // Invite screen
         theme::card(ui, |ui| {
-            ui.label(RichText::new("開始新會議").strong().size(16.0).color(theme::TEXT));
+            ui.label(RichText::new("開始新會議").strong().size(theme::FONT_HEADING).color(theme::TEXT));
             ui.add_space(theme::SP_MD);
             ui.label(RichText::new("選擇參與者:").color(theme::SUBTEXT0));
             ui.add_space(theme::SP_SM);
@@ -60,14 +60,14 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agents: &[AgentSummary
         .max_height(ui.available_height() - 50.0).show(ui, |ui| {
             if state.messages.is_empty() {
                 ui.vertical_centered(|ui| {
-                    ui.add_space(40.0);
-                    ui.label(RichText::new("💬").size(32.0));
+                    ui.add_space(theme::SP_XL);
+                    ui.label(RichText::new("💬").size(theme::SP_XL * 2.0));
                     ui.colored_label(theme::OVERLAY0, "輸入訊息開始對話");
                 });
             }
             for (speaker, text) in &state.messages {
                 theme::card(ui, |ui| {
-                    ui.colored_label(theme::BLUE, RichText::new(speaker).small().strong());
+                    ui.colored_label(theme::BLUE, RichText::new(speaker).size(theme::FONT_SMALL).strong());
                     ui.label(RichText::new(text).color(theme::TEXT));
                 });
             }

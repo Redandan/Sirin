@@ -57,9 +57,9 @@ fn show_overview(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, tasks: &[TaskView
     if !state.mem_results.is_empty() {
         ui.add_space(theme::SP_SM);
         theme::card(ui, |ui| {
-            ui.label(RichText::new("搜尋結果").small().strong().color(theme::OVERLAY0));
+            ui.label(RichText::new("搜尋結果").size(theme::FONT_SMALL).strong().color(theme::OVERLAY0));
             for r in &state.mem_results {
-                ui.colored_label(theme::LAVENDER, RichText::new(r).small());
+                ui.colored_label(theme::LAVENDER, RichText::new(r).size(theme::FONT_SMALL));
                 ui.separator();
             }
         });
@@ -73,14 +73,14 @@ fn show_overview(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, tasks: &[TaskView
         for task in tasks.iter().take(30) {
             theme::card(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(&task.event).size(13.0).color(theme::TEXT));
+                    ui.label(RichText::new(&task.event).size(theme::FONT_BODY).color(theme::TEXT));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let s = task.status.as_deref().unwrap_or("");
                         theme::badge(ui, s, theme::status_color(s));
                     });
                 });
-                if let Some(r) = &task.reason { ui.colored_label(theme::SUBTEXT0, RichText::new(r).small()); }
-                ui.colored_label(theme::OVERLAY0, RichText::new(&task.timestamp).small());
+                if let Some(r) = &task.reason { ui.colored_label(theme::SUBTEXT0, RichText::new(r).size(theme::FONT_SMALL)); }
+                ui.colored_label(theme::OVERLAY0, RichText::new(&task.timestamp).size(theme::FONT_SMALL));
             });
         }
     });
@@ -105,12 +105,12 @@ fn show_thinking(ui: &mut egui::Ui, tasks: &[TaskView]) {
             theme::card(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(icon);
-                    ui.label(RichText::new(&task.event).size(13.0).color(theme::BLUE));
+                    ui.label(RichText::new(&task.event).size(theme::FONT_BODY).color(theme::BLUE));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.colored_label(theme::OVERLAY0, RichText::new(&task.timestamp).small());
+                        ui.colored_label(theme::OVERLAY0, RichText::new(&task.timestamp).size(theme::FONT_SMALL));
                     });
                 });
-                if let Some(r) = &task.reason { ui.colored_label(theme::SUBTEXT0, RichText::new(r).small()); }
+                if let Some(r) = &task.reason { ui.colored_label(theme::SUBTEXT0, RichText::new(r).size(theme::FONT_SMALL)); }
             });
         }
     });
@@ -142,19 +142,19 @@ fn show_pending(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &str, st
                     ui.colored_label(theme::OVERLAY0, "來自");
                     ui.colored_label(theme::BLUE, &reply.peer_name);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.colored_label(theme::OVERLAY0, RichText::new(&reply.created_at).small());
+                        ui.colored_label(theme::OVERLAY0, RichText::new(&reply.created_at).size(theme::FONT_SMALL));
                     });
                 });
                 ui.add_space(theme::SP_SM);
 
                 // Original message (read-only)
                 egui::Frame::new().fill(theme::CRUST).corner_radius(6.0).inner_margin(8.0).show(ui, |ui| {
-                    ui.label(RichText::new(&reply.original_message).size(13.0).color(theme::SUBTEXT1));
+                    ui.label(RichText::new(&reply.original_message).size(theme::FONT_BODY).color(theme::SUBTEXT1));
                 });
                 ui.add_space(theme::SP_SM);
 
                 // Draft reply (EDITABLE)
-                ui.label(RichText::new("✏ 草稿（可編輯）").small().color(theme::OVERLAY0));
+                ui.label(RichText::new("✏ 草稿（可編輯）").size(theme::FONT_SMALL).color(theme::OVERLAY0));
                 if let Some(buf) = state.draft_edits.get_mut(&reply.id) {
                     egui::Frame::new().fill(theme::BLUE.linear_multiply(0.06)).corner_radius(6.0).inner_margin(8.0)
                         .stroke(egui::Stroke::new(1.0, theme::BLUE.linear_multiply(0.2)))

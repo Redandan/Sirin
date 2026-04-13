@@ -109,19 +109,19 @@ impl eframe::App for SirinApp {
                         View::Workflow => ("🔧", "Skill 開發", "工作流 Pipeline"),
                         View::Meeting => ("🤝", "會議室", "多 Agent 協作"),
                     };
-                    ui.label(RichText::new(icon).size(18.0));
-                    ui.label(RichText::new(title).strong().size(16.0).color(theme::TEXT));
-                    ui.colored_label(theme::OVERLAY0, RichText::new(format!("/ {subtitle}")).small());
+                    ui.label(RichText::new(icon).size(theme::FONT_HEADING));
+                    ui.label(RichText::new(title).strong().size(theme::FONT_HEADING).color(theme::TEXT));
+                    ui.colored_label(theme::OVERLAY0, RichText::new(format!("/ {subtitle}")).size(theme::FONT_SMALL));
 
                     // Right side: agent count + pending total
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let total_pending: usize = self.pending_counts.values().sum();
                         if total_pending > 0 {
                             theme::count_badge(ui, total_pending);
-                            ui.colored_label(theme::OVERLAY0, RichText::new("待審").small());
+                            ui.colored_label(theme::OVERLAY0, RichText::new("待審").size(theme::FONT_SMALL));
                         }
-                        ui.colored_label(theme::SURFACE2, RichText::new("|").small());
-                        ui.colored_label(theme::OVERLAY0, RichText::new(format!("{} agents", self.agents.len())).small());
+                        ui.colored_label(theme::SURFACE2, RichText::new("|").size(theme::FONT_SMALL));
+                        ui.colored_label(theme::OVERLAY0, RichText::new(format!("{} agents", self.agents.len())).size(theme::FONT_SMALL));
                     });
                 });
             });
@@ -154,7 +154,7 @@ impl eframe::App for SirinApp {
                             .inner_margin(egui::vec2(14.0, 8.0))
                             .stroke(egui::Stroke::new(1.0, fg.linear_multiply(0.3)))
                             .show(ui, |ui| { ui.colored_label(fg, &toast.text); });
-                        ui.add_space(4.0);
+                        ui.add_space(theme::SP_XS);
                     }
                 });
         }

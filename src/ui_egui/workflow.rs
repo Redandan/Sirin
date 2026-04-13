@@ -22,7 +22,7 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, state: &mut WorkflowUi
 
 fn show_empty(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, state: &mut WorkflowUiState) {
     theme::card(ui, |ui| {
-        ui.label(RichText::new("開始新的 Skill 開發").strong().size(16.0).color(theme::TEXT));
+        ui.label(RichText::new("開始新的 Skill 開發").strong().size(theme::FONT_HEADING).color(theme::TEXT));
         ui.add_space(theme::SP_MD);
         ui.label(RichText::new("技能名稱:").color(theme::SUBTEXT0));
         ui.text_edit_singleline(&mut state.new_feature);
@@ -44,7 +44,7 @@ fn show_empty(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, state: &mut Workflow
 fn show_active(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, wf: &WorkflowView, state: &mut WorkflowUiState) {
     // Header
     ui.horizontal(|ui| {
-        ui.label(RichText::new(&wf.feature).strong().size(18.0).color(theme::TEXT));
+        ui.label(RichText::new(&wf.feature).strong().size(theme::FONT_HEADING).color(theme::TEXT));
         ui.colored_label(theme::OVERLAY0, format!("({}) 開始於 {}", wf.skill_id, wf.started_at));
     });
     if !wf.description.is_empty() { ui.colored_label(theme::SUBTEXT0, &wf.description); }
@@ -65,8 +65,8 @@ fn show_active(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, wf: &WorkflowView, 
                     ui.set_width(ui.available_width() / wf.stages.len().max(1) as f32 - 8.0);
                     ui.vertical_centered(|ui| {
                         ui.label(icon);
-                        ui.colored_label(fg, RichText::new(&stage.label).small().strong());
-                        ui.colored_label(theme::OVERLAY0, RichText::new(&stage.desc).small());
+                        ui.colored_label(fg, RichText::new(&stage.label).size(theme::FONT_SMALL).strong());
+                        ui.colored_label(theme::OVERLAY0, RichText::new(&stage.desc).size(theme::FONT_SMALL));
                     });
                 });
         }
@@ -83,11 +83,11 @@ fn show_active(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, wf: &WorkflowView, 
                 state.stage_prompt = svc.workflow_stage_prompt();
             }
             if let Some(prompt) = &state.stage_prompt {
-                egui::CollapsingHeader::new(RichText::new("📄 AI Prompt（可複製）").small().color(theme::OVERLAY0))
+                egui::CollapsingHeader::new(RichText::new("📄 AI Prompt（可複製）").size(theme::FONT_SMALL).color(theme::OVERLAY0))
                     .default_open(false)
                     .show(ui, |ui| {
                         egui::Frame::new().fill(theme::CRUST).corner_radius(4.0).inner_margin(6.0).show(ui, |ui| {
-                            ui.colored_label(theme::SUBTEXT0, RichText::new(prompt).monospace().small());
+                            ui.colored_label(theme::SUBTEXT0, RichText::new(prompt).monospace().size(theme::FONT_SMALL));
                         });
                         if ui.small_button("📋 複製 Prompt").clicked() {
                             ui.ctx().copy_text(prompt.clone());
