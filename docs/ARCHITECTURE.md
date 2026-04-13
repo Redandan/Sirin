@@ -4,7 +4,7 @@
 
 ## 1. 系統總覽
 
-Sirin 是一個**單一 Rust binary**，整合 Dioxus 跨平台 UI 與 Tokio 非同步後端。沒有 WebView、沒有 Node.js、沒有 IPC 序列化層。
+Sirin 是一個**單一 Rust binary**，整合 egui 0.31 immediate mode UI 與 Tokio 非同步後端。沒有 WebView、沒有 Node.js、沒有 IPC 序列化層。
 
 Agent layer 使用 ADK-RUST 風格：
 - `src/adk/`：`Agent` / `AgentContext` / `ToolRegistry` / `AgentRuntime`
@@ -39,24 +39,24 @@ Agent layer 使用 ADK-RUST 風格：
 └──────────────────────────────────────────────────────────┘
 ```
 
-## 2. UI 層（Dioxus 0.7）
+## 2. UI 層（egui 0.31 immediate mode）
 
 ```
-src/ui_dx/
-├── mod.rs          App root + Signal 狀態 + 背景 worker
+src/ui_egui/
+├── mod.rs          App root + eframe context + view 切換邏輯
 ├── sidebar.rs      Agent 列表 + 導航按鈕
 ├── workspace.rs    Agent 工作區（概覽 + 待審核）
 ├── settings.rs     Agent 設定 + 系統面板入口
-├── system.rs       系統面板（LLM、TG 狀態、MCP 工具、技能）
 ├── log_view.rs     日誌（filter + 版本快取）
 ├── workflow.rs     Skill 開發 6 階段 pipeline
-└── meeting.rs      多 Agent 會議室
+├── meeting.rs      多 Agent 會議室
+└── theme.rs        配色方案（#1A1A1A + #00FFA3）
 ```
 
 **狀態管理**：
-- `Signal<T>` 反應式狀態（自動觸發 re-render）
-- `use_context_provider` 注入共享狀態（AppState）
-- `use_future` 背景 worker（5 秒重整、事件監聽）
+- 本地結構體狀態（無 Signal）
+- `AppService` trait 提供後端訪問
+- 事件監聽通過 tokio channels
 - 磁碟 I/O 在背景執行緒執行，不阻塞 UI
 
 ## 3. Agent Pipeline

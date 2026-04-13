@@ -28,8 +28,8 @@
 
 ## 1. GUI 介面
 
-**入口**：`src/ui.rs`  
-框架：egui 0.31 / eframe（原生 Rust，無 WebView）
+**入口**：`src/ui_egui/mod.rs`  
+框架：egui 0.31 / eframe（原生 Rust immediate mode，Desktop 原生）
 
 ### 四個主 Tab
 

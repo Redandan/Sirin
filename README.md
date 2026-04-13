@@ -1,13 +1,13 @@
 # Sirin
 
-純 Rust 跨平台 AI Agent 平台。Tokio 非同步後端負責多平台訊息監聽、任務追蹤、LLM 自動回覆與多階段調研；前端使用 Dioxus 0.7 跨平台 UI（Desktop / Web / Mobile），零 WebView、零 Node.js、零外部 C 依賴（SQLite 靜態編入）。
+純 Rust 跨平台 AI Agent 平台。Tokio 非同步後端負責多平台訊息監聽、任務追蹤、LLM 自動回覆與多階段調研；前端使用 egui 0.31 immediate mode UI（Desktop 原生），零 WebView、零 Node.js、零外部 C 依賴（SQLite 靜態編入）。
 
 ---
 
 ## 架構總覽
 
 ```
-Dioxus UI (Desktop / Web)
+egui Immediate Mode UI (Desktop native)
    │
    ├── Sidebar：助手清單 + 導航
    │
@@ -89,7 +89,7 @@ Tokio Background Tasks
 
 | 層 | 技術 |
 |---|---|
-| GUI | Dioxus 0.7（跨平台：Desktop / Web / Mobile） |
+| GUI | egui 0.31（immediate mode，Desktop 原生） |
 | 非同步 | Tokio 1.37（full features） |
 | LLM | Ollama / LM Studio / Gemini / Anthropic Claude |
 | Telegram | grammers-client 0.9（MTProto） |
@@ -195,8 +195,8 @@ servers:
 
 | 路徑 | 說明 |
 |------|------|
-| `src/main.rs` | 程式入口：Tokio runtime、Dioxus 視窗、背景任務啟動 |
-| `src/ui_dx/` | Dioxus UI：sidebar、workspace、settings、log、workflow、meeting |
+| `src/main.rs` | 程式入口：Tokio runtime、egui 視窗、背景任務啟動 |
+| `src/ui_egui/` | egui UI：sidebar、workspace、settings、log、workflow、meeting |
 | `src/agents/` | Planner / Router / Chat / Coding / Research agent |
 | `src/adk/` | ADK 核心：Agent trait、ToolRegistry、AgentRuntime |
 | `src/telegram/` | Telegram listener / handler / reply |
