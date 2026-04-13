@@ -48,11 +48,16 @@ pub fn show(
                             egui::Sense::click(),
                         );
 
-                        // Background
+                        // Background + left accent bar
                         if is_selected {
                             ui.painter().rect_filled(rect, 4.0, theme::HOVER);
-                            let bar = egui::Rect::from_min_size(rect.left_top(), egui::vec2(3.0, rect.height()));
-                            ui.painter().rect_filled(bar, 2.0, theme::ACCENT);
+                            // Bar at absolute left edge of panel (offset back by inner_margin)
+                            let bar_left = rect.left() - theme::SP_SM;
+                            let bar = egui::Rect::from_min_size(
+                                egui::pos2(bar_left, rect.top()),
+                                egui::vec2(3.0, rect.height()),
+                            );
+                            ui.painter().rect_filled(bar, 1.0, theme::ACCENT);
                         } else if response.hovered() {
                             ui.painter().rect_filled(rect, 4.0, theme::CARD);
                         }
@@ -157,8 +162,9 @@ fn nav_item(ui: &mut egui::Ui, label: &str, target: View, current: &mut View) {
 
     if active {
         ui.painter().rect_filled(rect, 4.0, theme::HOVER);
-        let bar = egui::Rect::from_min_size(rect.left_top(), egui::vec2(3.0, rect.height()));
-        ui.painter().rect_filled(bar, 2.0, theme::ACCENT);
+        let bar_left = rect.left() - theme::SP_SM;
+        let bar = egui::Rect::from_min_size(egui::pos2(bar_left, rect.top()), egui::vec2(3.0, rect.height()));
+        ui.painter().rect_filled(bar, 1.0, theme::ACCENT);
     } else if response.hovered() {
         ui.painter().rect_filled(rect, 4.0, theme::CARD);
     }
