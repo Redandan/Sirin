@@ -38,6 +38,15 @@ use crate::human_behavior;
 use crate::memory::ensure_codebase_index;
 use crate::pending_reply;
 use crate::persona::{Persona, TaskTracker};
+
+// ── Tunable constants ────────────────────────────────────────────────────────
+
+/// Seconds to wait before retrying after an update-stream error.
+const UPDATE_ERROR_RETRY_SECS: u64 = 5;
+/// Minimum random reply delay in the legacy single-agent path (ms).
+const LEGACY_REPLY_DELAY_MIN_MS: u64 = 1000;
+/// Maximum additional random delay on top of the minimum (ms).
+const LEGACY_REPLY_DELAY_JITTER_MS: u64 = 3000;
 use crate::researcher;
 use crate::sirin_log;
 use crate::telegram_auth::TelegramAuthState;
@@ -191,7 +200,7 @@ async fn run_listener_once(
             Ok(u) => u,
             Err(e) => {
                 sirin_log!("[telegram] Error receiving update: {e}");
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                tokio::time::sleep(std::time::Duration::from_secs(UPDATE_ERROR_RETRY_SECS)).await;
                 continue;
             }
         };
@@ -394,6 +403,14 @@ async fn run_listener_once(
                 Some(tracker.clone()),
             )
             .await;
+
+            // Add a small random delay to appear more human-like.
+            let delay_ms = LEGACY_REPLY_DELAY_MIN_MS + (std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .subsec_millis() as u64 % LEGACY_REPLY_DELAY_JITTER_MS);
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+
             reply::send_final_reply(&client, &message, is_private, final_reply.as_str()).await;
             reply::persist_reply_context(&text, &final_reply, peer_bare_id, None);
         } else if cfg.debug_updates {
@@ -476,7 +493,7 @@ async fn run_agent_listener_once(
             Ok(u) => u,
             Err(e) => {
                 sirin_log!("[telegram/{agent_id}] Error receiving update: {e}");
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                tokio::time::sleep(std::time::Duration::from_secs(UPDATE_ERROR_RETRY_SECS)).await;
                 continue;
             }
         };
@@ -709,7 +726,12 @@ pub async fn run_agent_listener(
             }
         }
 
-        backoff_secs = (backoff_secs * 2).min(300);
+        // Exponential backoff with jitter to avoid thundering herd.
+        let jitter = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_millis() % 5000) as u64 / 1000; // 0–4s jitter
+        backoff_secs = ((backoff_secs * 2) + jitter).min(300);
     }
 }
 
@@ -752,7 +774,12 @@ pub async fn run_listener(tracker: TaskTracker, auth: TelegramAuthState) {
         }
 
         // Exponential back-off capped at 5 minutes.
-        backoff_secs = (backoff_secs * 2).min(300);
+        // Exponential backoff with jitter to avoid thundering herd.
+        let jitter = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_millis() % 5000) as u64 / 1000; // 0–4s jitter
+        backoff_secs = ((backoff_secs * 2) + jitter).min(300);
     }
 }
 

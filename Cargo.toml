@@ -2,11 +2,11 @@
 name = "sirin"
 version = "0.1.0"
 edition = "2021"
-description = "A pure-Rust desktop AI agent (egui + Tokio)"
+description = "A pure-Rust cross-platform AI agent (Dioxus + Tokio)"
 
 [dependencies]
-eframe = { version = "0.31", features = ["default"] }
-egui = { version = "0.31", features = ["default"] }
+dioxus = { version = "0.7", features = ["desktop"] }
+thiserror = "2"
 tokio = { version = "1.37.0", features = ["full"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.116"
@@ -24,7 +24,6 @@ tree-sitter-rust = "0.21"
 parking_lot = "0.12"
 rusqlite = { version = "0.31", features = ["bundled"] }
 headless_chrome = "1.0"
-image = { version = "0.25", default-features = false, features = ["png"] }
 axum = { version = "0.8", features = ["ws"] }
 
 [package.metadata.bundle]

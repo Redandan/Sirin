@@ -9,9 +9,14 @@
 use std::{
     fs,
     path::PathBuf,
+    sync::Mutex,
 };
 
 use serde::{Deserialize, Serialize};
+
+/// Process-wide lock guarding the load → modify → save cycle.
+/// Prevents data corruption when multiple async tasks access the same file.
+static FILE_LOCK: Mutex<()> = Mutex::new(());
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -28,7 +33,7 @@ pub enum PendingStatus {
 }
 
 /// One AI-drafted reply waiting for operator confirmation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PendingReply {
     /// Unique ID: `"{unix_timestamp_ms}_{agent_id}"`.
     pub id: String,
@@ -130,25 +135,37 @@ pub fn save_pending(
 }
 
 /// Append one new reply to the store (load → push → save).
+/// Guarded by `FILE_LOCK` to prevent concurrent corruption.
 pub fn append_pending(reply: PendingReply) {
+    let _guard = FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let agent_id = reply.agent_id.clone();
     let mut replies = load_pending(&agent_id);
     replies.push(reply);
-    let _ = save_pending(&agent_id, &replies);
+    if let Err(e) = save_pending(&agent_id, &replies) {
+        eprintln!("[pending_reply] save error: {e}");
+    }
 }
 
 /// Update the status of one reply by ID.  No-op if the ID is not found.
+/// Guarded by `FILE_LOCK` to prevent concurrent corruption.
 pub fn update_status(agent_id: &str, id: &str, status: PendingStatus) {
+    let _guard = FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut replies = load_pending(agent_id);
     if let Some(r) = replies.iter_mut().find(|r| r.id == id) {
         r.status = status;
     }
-    let _ = save_pending(agent_id, &replies);
+    if let Err(e) = save_pending(agent_id, &replies) {
+        eprintln!("[pending_reply] save error: {e}");
+    }
 }
 
 /// Delete a reply by ID.
+/// Guarded by `FILE_LOCK` to prevent concurrent corruption.
 pub fn delete_pending(agent_id: &str, id: &str) {
+    let _guard = FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut replies = load_pending(agent_id);
     replies.retain(|r| r.id != id);
-    let _ = save_pending(agent_id, &replies);
+    if let Err(e) = save_pending(agent_id, &replies) {
+        eprintln!("[pending_reply] save error: {e}");
+    }
 }

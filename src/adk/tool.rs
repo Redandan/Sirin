@@ -103,9 +103,25 @@ fn required_string_field(input: &Value, key: &str) -> Result<String, String> {
     optional_string_field(input, key).ok_or_else(|| format!("Missing '{key}' string"))
 }
 
+/// Register all discovered external MCP tools into a registry.
+fn register_mcp_tools(registry: ToolRegistry) -> ToolRegistry {
+    let tools = crate::mcp_client::get_discovered_tools();
+    let mut reg = registry;
+    for tool in tools {
+        let server_url = tool.server_url.clone();
+        let tool_name = tool.tool_name.clone();
+        reg = reg.register_fn(tool.registry_name(), move |input| {
+            let url = server_url.clone();
+            let name = tool_name.clone();
+            async move { crate::mcp_client::call_tool(&url, &name, input).await }
+        });
+    }
+    reg
+}
+
 /// Build the full registry (called once, result is cached).
 fn build_full_registry() -> ToolRegistry {
-    ToolRegistry::new()
+    let reg = ToolRegistry::new()
         .register_fn("web_search", |input| async move {
             let query = query_from_input(&input)?;
             let limit = limit_from_input(&input, 5);
@@ -267,7 +283,7 @@ fn build_full_registry() -> ToolRegistry {
         })
         .register_ctx_fn("behavior_evaluate", |ctx, input| {
             async move {
-                let persona = Persona::load().map_err(|e| e.to_string())?;
+                let persona = Persona::cached().map_err(|e| e.to_string())?;
                 let msg = required_string_field(&input, "msg")?;
                 let source = optional_string_field(&input, "source")
                     .unwrap_or_else(|| ctx.source.clone());
@@ -317,7 +333,7 @@ fn build_full_registry() -> ToolRegistry {
             let dry_run = input.get("dry_run").and_then(Value::as_bool).unwrap_or(false);
 
             // Load persona config for size limit.
-            let max_bytes = crate::persona::Persona::load()
+            let max_bytes = crate::persona::Persona::cached()
                 .map(|p| p.coding_agent.max_file_write_bytes)
                 .unwrap_or(102_400);
 
@@ -362,7 +378,9 @@ fn build_full_registry() -> ToolRegistry {
             let bytes = content.len();
             std::fs::write(&safe_path, content)
                 .map_err(|e| format!("Write failed: {e}"))?;
-            let _ = crate::memory::refresh_codebase_index();
+            if let Err(e) = crate::memory::refresh_codebase_index() {
+                eprintln!("[tool] codebase index refresh failed: {e}");
+            }
             Ok(json!({
                 "path": safe_path.display().to_string(),
                 "bytes_written": bytes,
@@ -390,7 +408,7 @@ fn build_full_registry() -> ToolRegistry {
             let command = required_string_field(&input, "command")?;
 
             // Build effective allowed list: persona config + SIRIN_ALLOWED_COMMANDS env.
-            let mut allowed: Vec<String> = crate::persona::Persona::load()
+            let mut allowed: Vec<String> = crate::persona::Persona::cached()
                 .map(|p| p.coding_agent.allowed_commands)
                 .unwrap_or_else(|_| vec![
                     "cargo check".to_string(),
@@ -515,7 +533,9 @@ fn build_full_registry() -> ToolRegistry {
             let bytes = content.len();
             std::fs::write(&safe_path, &content)
                 .map_err(|e| format!("Write failed: {e}"))?;
-            let _ = crate::memory::refresh_codebase_index();
+            if let Err(e) = crate::memory::refresh_codebase_index() {
+                eprintln!("[tool] codebase index refresh failed: {e}");
+            }
             Ok(json!({
                 "path": safe_path.display().to_string(),
                 "hunks_applied": hunks_applied,
@@ -701,7 +721,10 @@ fn build_full_registry() -> ToolRegistry {
                 Ok(json!({ "status": "delivered", "recipient": to_agent }))
             }
             .boxed()
-        })
+        });
+
+    // Register external MCP tools discovered at startup.
+    register_mcp_tools(reg)
 }
 
 /// Full registry (write tools included). Cached process-wide — cheap to clone.
@@ -949,11 +972,12 @@ mod tests {
 
     #[test]
     fn safe_project_path_rejects_path_traversal() {
+        // Paths that escape the project root MUST be rejected.
         let result = safe_project_path("../../etc/passwd");
-        // Should either error (path outside root) or succeed by staying in root.
-        // On most systems this will resolve outside the project root and be rejected.
-        // We just verify it doesn't panic.
-        let _ = result;
+        assert!(result.is_err(), "path traversal should be rejected, got: {:?}", result);
+
+        let result2 = safe_project_path("../../../Windows/System32/config/sam");
+        assert!(result2.is_err(), "deep traversal should be rejected, got: {:?}", result2);
     }
 
     #[test]

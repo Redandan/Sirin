@@ -28,7 +28,7 @@ pub fn stage_by_id(id: &str) -> Option<&'static StageInfo> {
 
 // ── Persisted state ───────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkflowState {
     /// Short display name of the skill being built.
     pub feature: String,

@@ -2,6 +2,7 @@
 
 mod adk;
 mod agent_config;
+pub mod error;
 mod platform;
 mod browser;
 mod agents;
@@ -15,6 +16,7 @@ mod memory;
 mod pending_reply;
 mod persona;
 mod researcher;
+mod mcp_client;
 mod mcp_server;
 mod rhai_engine;
 mod rpc_server;
@@ -25,7 +27,7 @@ mod meeting;
 mod workflow;
 mod telegram;
 mod telegram_auth;
-mod ui;
+mod ui_dx;
 
 use std::path::PathBuf;
 
@@ -130,8 +132,22 @@ fn main() {
         let client = reqwest::Client::new();
         let fleet = rt.block_on(llm::probe_and_build_fleet(&client));
         fleet.log_summary();
+        if fleet.chat_model.is_empty() {
+            eprintln!("⚠️  [main] WARNING: No LLM models discovered. Check that Ollama/LM Studio is running.");
+            eprintln!("⚠️  [main] Agent replies will fail until a model is available.");
+        }
         llm::init_shared_llm(fleet.to_llm_config());
         llm::init_agent_fleet(fleet);
+    }
+
+    // ── Connect to external MCP servers ─────────────────────────────────────────
+    // Must happen before any agent accesses the ToolRegistry (which is lazily
+    // initialized on first use and includes discovered MCP tools).
+    {
+        let tools = rt.block_on(mcp_client::init());
+        if !tools.is_empty() {
+            eprintln!("[main] MCP client: {} external tool(s) available", tools.len());
+        }
     }
 
     // Per-agent auth states collected here and moved into SirinApp below.
@@ -195,26 +211,10 @@ fn main() {
         // Teams browser poller is started on demand from the Settings UI.
     }
 
-    // Keep the runtime alive by storing it; drop order matters on Windows.
-    let rt_handle = rt.handle().clone();
+    // Keep the runtime alive; Dioxus will manage its own Tokio runtime for
+    // the UI, but background tasks spawned above run on *this* runtime.
     std::mem::forget(rt); // runtime lives until process exit
 
-    // Launch the native egui window on the main thread.
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("Sirin")
-            .with_inner_size([1100.0, 740.0])
-            .with_min_inner_size([640.0, 480.0]),
-        ..Default::default()
-    };
-
-    eframe::run_native(
-        "Sirin",
-        options,
-        Box::new(move |cc| {
-            ui::SirinApp::setup_fonts(&cc.egui_ctx);
-            Ok(Box::new(ui::SirinApp::new(tracker, tg_auth, rt_handle, agent_auth_states)))
-        }),
-    )
-    .expect("Failed to run Sirin UI");
+    // Launch the Dioxus desktop window on the main thread.
+    ui_dx::launch(tracker, tg_auth, agent_auth_states);
 }

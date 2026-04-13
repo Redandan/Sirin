@@ -16,7 +16,7 @@ use crate::persona::{Identity, ProfessionalTone, ResponseStyle};
 ///
 /// Values may be literal strings (`"12345678"`) or env-var references
 /// (`"${TG_API_ID}"`).  The runtime will resolve references at launch time.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TelegramChannelConfig {
     /// Telegram App API ID (integer as string, or `"${VAR}"`).
     pub api_id: String,
@@ -64,7 +64,7 @@ impl Default for TelegramChannelConfig {
 }
 
 /// Collection of channels an agent may communicate through.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct ChannelConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telegram: Option<TelegramChannelConfig>,
@@ -74,7 +74,7 @@ pub struct ChannelConfig {
 }
 
 /// Microsoft Teams channel placeholder (not yet implemented).
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct TeamsChannelConfig {
     /// Teams webhook URL or `"${VAR}"` reference.
     #[serde(default)]
@@ -95,7 +95,7 @@ pub enum AgentPlatform {
 // ── Human behavior simulation ─────────────────────────────────────────────────
 
 /// A single break period within a work day (e.g. lunch break).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BreakPeriod {
     /// Human-readable label (e.g. "午休").
     pub name: String,
@@ -106,7 +106,7 @@ pub struct BreakPeriod {
 }
 
 /// Work-schedule constraints used by the human-behavior engine.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkSchedule {
     /// UTC offset in whole hours (e.g. 8 for CST/UTC+8).
     #[serde(default)]
@@ -138,7 +138,7 @@ impl Default for WorkSchedule {
 }
 
 /// Simulates human-like reply timing: random delay, frequency caps, work schedule.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HumanBehaviorConfig {
     /// Master switch.  When false all other fields are ignored.
     #[serde(default)]
@@ -192,7 +192,7 @@ impl Default for KpiSource {
 }
 
 /// Definition of one KPI metric tracked per agent.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KpiMetricDef {
     /// Machine-readable key (e.g. "conversion_rate").
     pub key: String,
@@ -213,7 +213,7 @@ pub struct KpiMetricDef {
 }
 
 /// KPI tracking configuration for one agent.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct KpiConfig {
     #[serde(default)]
     pub metrics: Vec<KpiMetricDef>,
@@ -225,7 +225,7 @@ pub struct KpiConfig {
 // ── Memory policy ─────────────────────────────────────────────────────────────
 
 /// Controls which agents may deliver confidential memories to this agent.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct MemoryPolicy {
     /// Agent IDs allowed to call `confidential_handoff` targeting this agent.
     /// Empty = no agent is trusted (confidential handoff disabled).
@@ -239,7 +239,7 @@ pub struct MemoryPolicy {
 ///
 /// When present on an [`AgentConfig`], that agent will use a separate LLM
 /// (e.g. Anthropic Claude) instead of the process-wide default.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentLlmOverride {
     /// Backend name: `"anthropic"`, `"lmstudio"`, `"gemini"`, or `"ollama"`.
     pub backend: String,
@@ -255,7 +255,7 @@ pub struct AgentLlmOverride {
 /// a regular agent (no Telegram channel, KPI tracking, or sidebar card).
 ///
 /// Configured under `external_providers:` in `config/agents.yaml`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExternalAiProvider {
     /// Unique slug identifier (e.g. `"claude"`).
     pub id: String,
@@ -281,7 +281,7 @@ impl ExternalAiProvider {
 }
 
 /// Complete configuration for one AI agent instance.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentConfig {
     /// Unique slug identifier (lowercase, no spaces).
     pub id: String,
@@ -399,7 +399,7 @@ impl AgentConfig {
 // ── File ──────────────────────────────────────────────────────────────────────
 
 /// Top-level wrapper for `config/agents.yaml`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentsFile {
     pub agents: Vec<AgentConfig>,
     /// Maximum number of agents that may be active simultaneously (UI cap).

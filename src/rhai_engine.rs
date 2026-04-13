@@ -150,7 +150,7 @@ pub fn run_rhai_script(
     let output: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let out_clone = output.clone();
     engine.on_print(move |s| {
-        let mut buf = out_clone.lock().unwrap();
+        let mut buf = out_clone.lock().unwrap_or_else(|e| e.into_inner());
         buf.push_str(s);
         buf.push('\n');
     });
@@ -164,6 +164,6 @@ pub fn run_rhai_script(
         .run_with_scope(&mut scope, &code)
         .map_err(|e| format!("Script error: {e}"))?;
 
-    let result = output.lock().unwrap().trim().to_string();
+    let result = output.lock().unwrap_or_else(|e| e.into_inner()).trim().to_string();
     Ok(result)
 }

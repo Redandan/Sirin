@@ -14,7 +14,7 @@ static WARNED_NO_TRIGGERS: Mutex<Option<std::collections::HashSet<String>>> = Mu
 
 /// Return all enabled skills from `config/skills/*.yaml`, using an in-memory cache.
 pub fn load_yaml_skills() -> Vec<SkillDefinition> {
-    let mut cache = CACHE.lock().unwrap();
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(ref cached) = *cache {
         return cached.clone();
     }
@@ -52,7 +52,7 @@ fn scan_skills_dir() -> Vec<SkillDefinition> {
             Ok(skill) if skill.enabled => {
                 // Warn once per process lifetime when a script skill has no trigger_keywords.
                 if skill.script_file.is_some() && skill.trigger_keywords.is_empty() {
-                    let mut warned = WARNED_NO_TRIGGERS.lock().unwrap();
+                    let mut warned = WARNED_NO_TRIGGERS.lock().unwrap_or_else(|e| e.into_inner());
                     let set = warned.get_or_insert_with(std::collections::HashSet::new);
                     if set.insert(skill.id.clone()) {
                         eprintln!(

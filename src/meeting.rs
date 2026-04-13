@@ -89,7 +89,7 @@ fn state() -> &'static Mutex<Option<MeetingSession>> {
 /// Returns the new session ID.
 pub fn start_meeting(participants: Vec<String>) -> String {
     let id = format!("mtg-{}", Utc::now().timestamp());
-    *state().lock().unwrap() = Some(MeetingSession {
+    *state().lock().unwrap_or_else(|e| e.into_inner()) = Some(MeetingSession {
         id: id.clone(),
         participants,
         auths:           vec![],
@@ -103,13 +103,13 @@ pub fn start_meeting(participants: Vec<String>) -> String {
 
 /// End the current meeting, clearing all session auth grants.
 pub fn end_meeting() {
-    *state().lock().unwrap() = None;
+    *state().lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 /// Grant `from` the ability to call `confidential_handoff` targeting `to`
 /// for the duration of this meeting (or permanently if `scope == Permanent`).
 pub fn grant_auth(from: &str, to: &str, scope: AuthScope) {
-    if let Some(s) = state().lock().unwrap().as_mut() {
+    if let Some(s) = state().lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
         // Avoid duplicates
         if !s.auths.iter().any(|a| a.from_agent == from && a.to_agent == to) {
             s.auths.push(MeetingAuth {
@@ -123,14 +123,14 @@ pub fn grant_auth(from: &str, to: &str, scope: AuthScope) {
 
 /// Revoke a previously granted auth pair.
 pub fn revoke_auth(from: &str, to: &str) {
-    if let Some(s) = state().lock().unwrap().as_mut() {
+    if let Some(s) = state().lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
         s.auths.retain(|a| !(a.from_agent == from && a.to_agent == to));
     }
 }
 
 /// Append a spoken turn to the session transcript.
 pub fn append_turn(speaker: &str, text: &str) {
-    if let Some(s) = state().lock().unwrap().as_mut() {
+    if let Some(s) = state().lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
         s.turns.push(MeetingTurn {
             speaker:   speaker.to_string(),
             text:      text.to_string(),
@@ -154,7 +154,7 @@ pub fn check_meeting_auth(from: &str, to: &str) -> bool {
 /// Grant `reader` read access to `owner`'s private (`agent_memories`) records
 /// for the lifetime of this session.
 pub fn grant_memory_share(reader: &str, owner: &str) {
-    if let Some(s) = state().lock().unwrap().as_mut() {
+    if let Some(s) = state().lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
         if !s.memory_shares.iter().any(|ms| ms.reader_agent_id == reader && ms.owner_agent_id == owner) {
             s.memory_shares.push(MemoryShare {
                 reader_agent_id: reader.to_string(),
@@ -166,7 +166,7 @@ pub fn grant_memory_share(reader: &str, owner: &str) {
 
 /// Revoke a previously granted memory-share.
 pub fn revoke_memory_share(reader: &str, owner: &str) {
-    if let Some(s) = state().lock().unwrap().as_mut() {
+    if let Some(s) = state().lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
         s.memory_shares.retain(|ms| !(ms.reader_agent_id == reader && ms.owner_agent_id == owner));
     }
 }
@@ -205,7 +205,7 @@ pub fn readable_owners(reader: &str) -> Vec<String> {
 /// exists (deduplication by requester+owner).
 pub fn request_memory_access(requester: &str, owner: &str, hint: &str) -> String {
     let id = format!("req-{}", Utc::now().timestamp_millis());
-    if let Some(s) = state().lock().unwrap().as_mut() {
+    if let Some(s) = state().lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
         let already = s.access_requests.iter().any(|r| {
             r.requester_id == requester
                 && r.owner_id == owner
@@ -228,7 +228,7 @@ pub fn request_memory_access(requester: &str, owner: &str, hint: &str) -> String
 /// Approving automatically calls `grant_memory_share`.
 pub fn resolve_access_request(request_id: &str, approved: bool) {
     let mut share: Option<(String, String)> = None;
-    if let Some(s) = state().lock().unwrap().as_mut() {
+    if let Some(s) = state().lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
         if let Some(req) = s.access_requests.iter_mut().find(|r| r.id == request_id) {
             req.status = if approved { RequestStatus::Approved } else { RequestStatus::Denied };
             if approved {
@@ -260,13 +260,13 @@ pub fn pending_requests() -> Vec<MemoryAccessRequest> {
 /// Read the active session without keeping the lock across await boundaries.
 /// Clones are cheap for small sessions.
 pub fn with_session<T>(f: impl FnOnce(Option<&MeetingSession>) -> T) -> T {
-    let guard = state().lock().unwrap();
+    let guard = state().lock().unwrap_or_else(|e| e.into_inner());
     f(guard.as_ref())
 }
 
 /// Returns the current meeting ID, or `None` if no meeting is active.
 pub fn current_meeting_id() -> Option<String> {
-    state().lock().unwrap().as_ref().map(|s| s.id.clone())
+    state().lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|s| s.id.clone())
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

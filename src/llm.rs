@@ -693,12 +693,12 @@ async fn call_openai_messages(
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// Convenience wrapper: uses the shared LLM config and a fresh HTTP client.
+/// Convenience wrapper: uses the shared LLM config and the process-wide HTTP client.
 /// Intended for one-off UI calls that don't have an existing client/config in scope.
 pub async fn call_llm_simple(
     prompt: &str,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    let client = reqwest::Client::new();
+    let client = shared_http();
     let llm = shared_llm();
     call_prompt(&client, &llm, prompt).await
 }

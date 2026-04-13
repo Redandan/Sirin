@@ -17,7 +17,7 @@ pub enum ProfessionalTone {
     Casual,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Identity {
     pub name: String,
     pub professional_tone: ProfessionalTone,
@@ -29,7 +29,7 @@ pub struct RoiThresholds {
     pub min_usd_to_call_remote_llm: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResponseStyle {
     #[serde(default = "default_voice")]
     pub voice: String,
@@ -148,11 +148,42 @@ fn default_compliance_line() -> String {
     "我會按照你的要求處理。".to_string()
 }
 
+/// Process-wide cached Persona. Loaded once on first access, avoids
+/// repeated YAML reads from disk on every tool call.
+static PERSONA_CACHE: std::sync::OnceLock<std::sync::RwLock<Persona>> = std::sync::OnceLock::new();
+
 impl Persona {
     pub fn load() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let content = fs::read_to_string("config/persona.yaml")?;
         let persona = serde_yaml::from_str(&content)?;
         Ok(persona)
+    }
+
+    /// Return a cached clone of the Persona. First call reads from disk;
+    /// subsequent calls return the cached value without I/O.
+    pub fn cached() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let rw = PERSONA_CACHE.get_or_init(|| {
+            let p = Self::load().unwrap_or_else(|_| Self::default_fallback());
+            std::sync::RwLock::new(p)
+        });
+        Ok(rw.read().unwrap_or_else(|e| e.into_inner()).clone())
+    }
+
+    /// Force-reload the Persona from disk and update the cache.
+    pub fn reload_cache() {
+        if let Ok(p) = Self::load() {
+            if let Some(rw) = PERSONA_CACHE.get() {
+                *rw.write().unwrap_or_else(|e| e.into_inner()) = p;
+            }
+        }
+    }
+
+    /// Minimal fallback when config/persona.yaml is missing or invalid.
+    fn default_fallback() -> Self {
+        serde_yaml::from_str(
+            "identity:\n  name: Sirin\n  professional_tone: brief\nobjectives: []\n\
+             roi_thresholds:\n  min_usd_to_notify: 5.0\n  min_usd_to_call_remote_llm: 25.0\n"
+        ).expect("hardcoded YAML must parse")
     }
 
     pub fn name(&self) -> &str {
