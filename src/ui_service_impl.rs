@@ -253,6 +253,36 @@ impl AppService for RealService {
         }
     }
 
+    fn set_remote_ai(&self, agent_id: &str, allowed: bool) {
+        if let Ok(mut file) = crate::agent_config::AgentsFile::load() {
+            if let Some(a) = file.agents.iter_mut().find(|a| a.id == agent_id) {
+                a.disable_remote_ai = !allowed;
+                let _ = file.save();
+            }
+        }
+    }
+
+    fn set_behavior(&self, agent_id: &str, enabled: bool, min_delay: u64, max_delay: u64, max_hour: u32, max_day: u32) {
+        if let Ok(mut file) = crate::agent_config::AgentsFile::load() {
+            if let Some(a) = file.agents.iter_mut().find(|a| a.id == agent_id) {
+                a.human_behavior.enabled = enabled;
+                a.human_behavior.min_reply_delay_secs = min_delay;
+                a.human_behavior.max_reply_delay_secs = max_delay;
+                a.human_behavior.max_messages_per_hour = max_hour;
+                a.human_behavior.max_messages_per_day = max_day;
+                let _ = file.save();
+            }
+        }
+    }
+
+    fn delete_agent(&self, agent_id: &str) {
+        if let Ok(mut file) = crate::agent_config::AgentsFile::load() {
+            file.agents.retain(|a| a.id != agent_id);
+            let _ = file.save();
+            self.push_toast(ToastLevel::Info, format!("Agent {agent_id} 已刪除"));
+        }
+    }
+
     // ── Telegram auth ────────────────────────────────────────────────────────
 
     fn tg_submit_code(&self, code: &str) -> bool {

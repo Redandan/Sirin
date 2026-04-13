@@ -175,6 +175,9 @@ pub trait AppService: Send + Sync + 'static {
     fn toggle_agent(&self, agent_id: &str, enabled: bool);
     fn add_objective(&self, agent_id: &str, text: &str);
     fn remove_objective(&self, agent_id: &str, index: usize);
+    fn set_remote_ai(&self, agent_id: &str, allowed: bool);
+    fn set_behavior(&self, agent_id: &str, enabled: bool, min_delay: u64, max_delay: u64, max_hour: u32, max_day: u32);
+    fn delete_agent(&self, agent_id: &str);
 
     // ── Telegram auth ────────────────────────────────────────────────────────
 

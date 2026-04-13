@@ -203,7 +203,7 @@ fn show_pending(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &str, st
     });
 }
 
-// ── Per-agent settings tab ───────────────────────────────────────────────────
+// ── Per-agent settings tab — editable form ───────────────────────────────────
 
 fn show_agent_settings(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &str, state: &mut WorkspaceState) {
     let Some(d) = svc.agent_detail(agent_id) else {
@@ -212,58 +212,116 @@ fn show_agent_settings(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &
     };
 
     ScrollArea::vertical().id_salt("agent_settings").show(ui, |ui| {
-        // Enable/Disable toggle
-        theme::section(ui, "基本", |ui| {
+        // ── Header ───────────────────────────────────────────────────────
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(&d.name).size(theme::FONT_HEADING).strong().color(theme::TEXT));
+            ui.add_space(theme::SP_MD);
+            let mut enabled = d.enabled;
+            if ui.checkbox(&mut enabled, "").changed() {
+                svc.toggle_agent(&d.id, enabled);
+            }
+            theme::badge(ui, if d.enabled { "啟用" } else { "停用" }, if d.enabled { theme::GREEN } else { theme::OVERLAY0 });
+        });
+        ui.colored_label(theme::OVERLAY0, RichText::new(format!("ID: {}", d.id)).size(theme::FONT_CAPTION));
+        ui.add_space(theme::SP_LG);
+
+        // ── 身份 ─────────────────────────────────────────────────────────
+        theme::section(ui, "身份", |ui| {
+            form_row(ui, "語氣", &d.professional_tone);
+            ui.add_space(theme::SP_XS);
+            // Remote AI toggle
             ui.horizontal(|ui| {
-                let mut enabled = d.enabled;
-                if ui.checkbox(&mut enabled, "").changed() {
-                    svc.toggle_agent(&d.id, enabled);
-                }
-                theme::badge(ui, if d.enabled { "啟用中" } else { "已停用" }, if d.enabled { theme::GREEN } else { theme::OVERLAY0 });
-                ui.colored_label(theme::OVERLAY0, format!("| 語氣: {}", d.professional_tone));
+                ui.colored_label(theme::OVERLAY0, RichText::new("遠端 AI").size(theme::FONT_SMALL));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let mut allowed = !d.disable_remote_ai;
+                    if ui.checkbox(&mut allowed, "允許").changed() {
+                        svc.set_remote_ai(agent_id, allowed);
+                    }
+                });
             });
-            theme::info_row(ui, "平台", &d.platform);
-            theme::info_row(ui, "遠端 AI", if d.disable_remote_ai { "已禁用" } else { "允許" });
         });
 
-        // Objectives (editable)
-        theme::section(ui, "目標 Objectives", |ui| {
+        // ── 目標 ─────────────────────────────────────────────────────────
+        theme::section(ui, "目標", |ui| {
             if d.objectives.is_empty() {
-                ui.colored_label(theme::OVERLAY0, "（使用全域 Persona 目標）");
+                ui.colored_label(theme::OVERLAY0, RichText::new("尚未設定（使用全域 Persona 目標）").size(theme::FONT_SMALL));
             }
             let mut remove_idx: Option<usize> = None;
             for (i, obj) in d.objectives.iter().enumerate() {
                 ui.horizontal(|ui| {
                     ui.colored_label(theme::BLUE, "•");
-                    ui.label(RichText::new(obj).color(theme::TEXT));
-                    if ui.small_button("✗").on_hover_text("刪除此目標").clicked() {
-                        remove_idx = Some(i);
-                    }
+                    ui.label(RichText::new(obj).size(theme::FONT_BODY).color(theme::TEXT));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add(egui::Button::new(RichText::new("✕").size(theme::FONT_CAPTION).color(theme::OVERLAY0))
+                            .fill(egui::Color32::TRANSPARENT).corner_radius(4.0))
+                            .on_hover_text("刪除").clicked() {
+                            remove_idx = Some(i);
+                        }
+                    });
                 });
             }
-            if let Some(idx) = remove_idx {
-                svc.remove_objective(agent_id, idx);
-            }
+            if let Some(idx) = remove_idx { svc.remove_objective(agent_id, idx); }
+
             ui.add_space(theme::SP_SM);
             ui.horizontal(|ui| {
-                ui.add_sized([ui.available_width() - 60.0, 24.0],
-                    egui::TextEdit::singleline(&mut state.new_objective).hint_text("新增目標..."));
-                if ui.button("+ 新增").clicked() && !state.new_objective.trim().is_empty() {
+                ui.add_sized([ui.available_width() - 56.0, 26.0],
+                    egui::TextEdit::singleline(&mut state.new_objective).hint_text("輸入新目標..."));
+                if ui.add(egui::Button::new(RichText::new("+ 新增").size(theme::FONT_SMALL).color(theme::CRUST))
+                    .fill(theme::BLUE).corner_radius(4.0)).clicked()
+                    && !state.new_objective.trim().is_empty() {
                     svc.add_objective(agent_id, state.new_objective.trim());
                     state.new_objective.clear();
                 }
             });
         });
 
-        // Human behavior
-        theme::section(ui, "人性化行為", |ui| {
-            theme::info_row(ui, "啟用", &format!("{}", d.human_behavior_enabled));
-            theme::info_row(ui, "延遲範圍", &format!("{}–{}s", d.min_reply_delay, d.max_reply_delay));
-            theme::info_row(ui, "每小時上限", &format!("{}", d.max_per_hour));
-            theme::info_row(ui, "每日上限", &format!("{}", d.max_per_day));
+        // ── 回覆行為（可調整）────────────────────────────────────────────
+        theme::section(ui, "回覆行為", |ui| {
+            let mut beh_enabled = d.human_behavior_enabled;
+            let mut min_d = d.min_reply_delay as f32;
+            let mut max_d = d.max_reply_delay as f32;
+            let mut max_h = d.max_per_hour as f32;
+            let mut max_day = d.max_per_day as f32;
+            let mut changed = false;
+
+            ui.horizontal(|ui| {
+                ui.colored_label(theme::OVERLAY0, RichText::new("啟用").size(theme::FONT_SMALL));
+                if ui.checkbox(&mut beh_enabled, "").changed() { changed = true; }
+            });
+
+            ui.add_space(theme::SP_XS);
+            ui.horizontal(|ui| {
+                ui.colored_label(theme::OVERLAY0, RichText::new("最小延遲").size(theme::FONT_SMALL));
+                ui.add_space(theme::SP_SM);
+                if ui.add(egui::Slider::new(&mut min_d, 0.0..=300.0).suffix("s").integer()).changed() { changed = true; }
+            });
+            ui.horizontal(|ui| {
+                ui.colored_label(theme::OVERLAY0, RichText::new("最大延遲").size(theme::FONT_SMALL));
+                ui.add_space(theme::SP_SM);
+                if ui.add(egui::Slider::new(&mut max_d, 0.0..=600.0).suffix("s").integer()).changed() { changed = true; }
+            });
+            ui.horizontal(|ui| {
+                ui.colored_label(theme::OVERLAY0, RichText::new("每小時上限").size(theme::FONT_SMALL));
+                if ui.add(egui::Slider::new(&mut max_h, 0.0..=100.0).integer()).changed() { changed = true; }
+            });
+            ui.horizontal(|ui| {
+                ui.colored_label(theme::OVERLAY0, RichText::new("每日上限").size(theme::FONT_SMALL));
+                ui.add_space(theme::SP_SM);
+                if ui.add(egui::Slider::new(&mut max_day, 0.0..=500.0).integer()).changed() { changed = true; }
+            });
+
+            if changed {
+                svc.set_behavior(agent_id, beh_enabled, min_d as u64, max_d as u64, max_h as u32, max_day as u32);
+            }
         });
 
-        // KPI
+        // ── 通道 ─────────────────────────────────────────────────────────
+        theme::section(ui, "通道", |ui| {
+            form_row(ui, "平台", &d.platform);
+            form_row(ui, "ID", &d.id);
+        });
+
+        // ── KPI ──────────────────────────────────────────────────────────
         if !d.kpi_labels.is_empty() {
             theme::section(ui, "KPI 指標", |ui| {
                 for (label, unit) in &d.kpi_labels {
@@ -271,5 +329,26 @@ fn show_agent_settings(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &
                 }
             });
         }
+
+        // ── 危險操作 ─────────────────────────────────────────────────────
+        ui.add_space(theme::SP_XL);
+        ui.horizontal(|ui| {
+            ui.colored_label(theme::OVERLAY0, RichText::new("危險操作").size(theme::FONT_CAPTION));
+        });
+        ui.add_space(theme::SP_XS);
+        if ui.add(egui::Button::new(RichText::new("🗑 刪除此 Agent").size(theme::FONT_SMALL).color(theme::RED))
+            .fill(theme::RED.linear_multiply(0.1)).corner_radius(4.0)).clicked() {
+            svc.delete_agent(agent_id);
+        }
+    });
+}
+
+/// A label-value form row (read-only).
+fn form_row(ui: &mut egui::Ui, label: &str, value: &str) {
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::OVERLAY0, RichText::new(label).size(theme::FONT_SMALL));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(RichText::new(value).size(theme::FONT_BODY).color(theme::TEXT));
+        });
     });
 }
