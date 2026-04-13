@@ -1,4 +1,5 @@
 //! Log view — severity filter + version-cached coloured lines.
+//! Typography: uses theme::FONT_* for consistent sizing across all pages.
 
 use std::sync::Arc;
 use eframe::egui::{self, Color32, RichText, ScrollArea};
@@ -36,36 +37,45 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, state: &mut LogState) 
     let total = svc.log_len();
     let shown = state.cache.len();
 
+    // Header
     ui.horizontal(|ui| {
-        ui.label(RichText::new("系統 Log").strong().color(theme::TEXT));
-        ui.separator();
+        ui.label(RichText::new("系統 Log").size(theme::FONT_BODY).strong().color(theme::TEXT));
+        ui.add_space(theme::SP_MD);
+
         for (label, f, color) in [
             ("全部", Filter::All, theme::BLUE),
             ("⚠ 警告+", Filter::WarnPlus, theme::YELLOW),
             ("✗ 錯誤", Filter::ErrorOnly, theme::RED),
         ] {
             let active = filter == f;
-            let btn = egui::Button::new(RichText::new(label).small().color(if active { theme::CRUST } else { theme::SUBTEXT0 }))
-                .fill(if active { color } else { Color32::TRANSPARENT }).corner_radius(4.0);
+            let btn = egui::Button::new(
+                RichText::new(label).size(theme::FONT_SMALL).color(if active { theme::CRUST } else { theme::SUBTEXT0 })
+            ).fill(if active { color } else { Color32::TRANSPARENT }).corner_radius(4.0);
             if ui.add(btn).clicked() { state.filter = Some(f); }
         }
-        ui.separator();
-        ui.colored_label(theme::OVERLAY0, RichText::new(
-            if filter == Filter::All { format!("{shown} 行") } else { format!("{shown} / {total} 行") }
-        ).small());
+
+        ui.add_space(theme::SP_MD);
+        let count_text = if filter == Filter::All { format!("{shown} 行") } else { format!("{shown} / {total} 行") };
+        ui.colored_label(theme::OVERLAY0, RichText::new(count_text).size(theme::FONT_CAPTION));
+
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.small_button("🗑 清除").clicked() { svc.log_clear(); }
+            if ui.add(egui::Button::new(RichText::new("清除").size(theme::FONT_SMALL).color(theme::SUBTEXT0))
+                .fill(Color32::TRANSPARENT).corner_radius(4.0)).clicked() {
+                svc.log_clear();
+            }
         });
     });
-    ui.separator();
+    ui.add_space(theme::SP_SM);
 
+    // Log lines
     ScrollArea::vertical().id_salt("log").stick_to_bottom(true).auto_shrink(false).show(ui, |ui| {
         if state.cache.is_empty() {
-            ui.colored_label(theme::OVERLAY0, "目前沒有符合條件的 Log");
+            ui.add_space(theme::SP_XL);
+            ui.colored_label(theme::OVERLAY0, RichText::new("目前沒有符合條件的 Log").size(theme::FONT_BODY));
             return;
         }
         for (text, color) in &state.cache {
-            ui.colored_label(*color, RichText::new(text.as_str()).monospace().small());
+            ui.colored_label(*color, RichText::new(text.as_str()).size(theme::FONT_SMALL).monospace());
         }
     });
 }
