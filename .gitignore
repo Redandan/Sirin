@@ -8,6 +8,7 @@
 
 # ── Build artifacts ───────────────────────────────────────────────────────────
 /target/
+.claude/worktrees/*/target/
 dist/
 out/
 build/

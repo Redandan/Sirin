@@ -3,3 +3,12 @@ PROTOC = "C:/Users/Redan/AppData/Local/protoc/bin/protoc.exe"
 
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "link-arg=/FORCE:MULTIPLE"]
+
+# ── Reduce debug build disk usage ─────────────────────────────────
+[profile.dev]
+# Level 1 = line numbers only (not full DWARF) — saves ~50% debug info size
+debug = 1
+
+[profile.dev.package."*"]
+# No debug info for dependencies — saves gigabytes
+debug = 0
