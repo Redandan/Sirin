@@ -18,11 +18,13 @@ pub struct WorkspaceState {
     mem_query: String,
     mem_results: Vec<String>,
     new_objective: String,
-    // Chat (async — never blocks UI)
+    // Chat
     chat_input: String,
     chat_history: Vec<(String, String)>,
     chat_loading: bool,
     chat_rx: Option<std::sync::mpsc::Receiver<String>>,
+    // Delete confirmation (agent_id being confirmed)
+    delete_confirming: bool,
 }
 
 pub fn show(
@@ -64,7 +66,13 @@ fn show_chat(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &str, state
             ui.set_max_width(600.0);
             if state.chat_history.is_empty() && !state.chat_loading {
                 ui.add_space(theme::SP_XL);
-                ui.colored_label(theme::TEXT_DIM, "輸入訊息開始對話...");
+                ui.vertical_centered(|ui| {
+                    ui.label(RichText::new("💬").size(theme::SP_XL));
+                    ui.add_space(theme::SP_SM);
+                    ui.colored_label(theme::TEXT, RichText::new(format!("與 Agent 對話")).size(theme::FONT_HEADING));
+                    ui.add_space(theme::SP_XS);
+                    ui.colored_label(theme::TEXT_DIM, "輸入訊息開始對話，Agent 會使用 AI 回覆");
+                });
             }
             for (role, text) in &state.chat_history {
                 let (color, prefix) = if role == "user" { (theme::TEXT, "你") } else { (theme::ACCENT, "Agent") };
@@ -130,7 +138,15 @@ fn show_overview(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, tasks: &[TaskView
 
     ui.add_space(theme::SP_MD);
     ui.label(RichText::new("近期活動").strong().color(theme::TEXT_DIM));
-    if tasks.is_empty() { ui.colored_label(theme::TEXT_DIM, "目前沒有活動記錄"); return; }
+    if tasks.is_empty() {
+        ui.add_space(theme::SP_XL);
+        ui.vertical_centered(|ui| {
+            ui.label(RichText::new("📊").size(theme::SP_XL));
+            ui.colored_label(theme::TEXT_DIM, "目前沒有活動記錄");
+            ui.colored_label(theme::TEXT_DIM, RichText::new("Agent 執行任務後會顯示在這裡").size(theme::FONT_SMALL));
+        });
+        return;
+    }
 
     ScrollArea::vertical().id_salt("tasks").show(ui, |ui| {
         for task in tasks.iter().take(30) {
@@ -157,7 +173,15 @@ fn show_thinking(ui: &mut egui::Ui, tasks: &[TaskView]) {
         .filter(|t| ["adk", "chat", "research", "coding", "router", "planner"].iter().any(|k| t.event.contains(k)))
         .take(50).collect();
 
-    if thinking.is_empty() { ui.colored_label(theme::TEXT_DIM, "暫無執行記錄"); return; }
+    if thinking.is_empty() {
+        ui.add_space(theme::SP_XL);
+        ui.vertical_centered(|ui| {
+            ui.label(RichText::new("🧠").size(theme::SP_XL));
+            ui.colored_label(theme::TEXT_DIM, "暫無 Agent 執行記錄");
+            ui.colored_label(theme::TEXT_DIM, RichText::new("Agent 處理訊息時會顯示推理過程").size(theme::FONT_SMALL));
+        });
+        return;
+    }
 
     ScrollArea::vertical().id_salt("thinking").show(ui, |ui| {
         for task in thinking {
@@ -411,13 +435,28 @@ fn show_agent_settings(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &
             });
         }
 
-        // ── 危險操作 ─────────────────────────────────────────────────────
+        // ── 危險操作（兩次點擊確認）─────────────────────────────────────
         ui.add_space(theme::SP_XL);
         theme::thin_separator(ui);
         ui.add_space(theme::SP_SM);
-        if ui.add(egui::Button::new(RichText::new("刪除此 Agent").size(theme::FONT_SMALL).color(theme::DANGER))
-            .fill(theme::DANGER.linear_multiply(0.08)).corner_radius(4.0)).clicked() {
-            svc.delete_agent(agent_id);
+        if !state.delete_confirming {
+            if ui.add(egui::Button::new(RichText::new("刪除此 Agent").size(theme::FONT_SMALL).color(theme::DANGER))
+                .fill(theme::DANGER.linear_multiply(0.08)).corner_radius(4.0)).clicked() {
+                state.delete_confirming = true;
+            }
+        } else {
+            ui.horizontal(|ui| {
+                ui.colored_label(theme::DANGER, RichText::new("⚠ 確認刪除？此操作無法復原").size(theme::FONT_SMALL));
+                if ui.add(egui::Button::new(RichText::new("確認刪除").size(theme::FONT_SMALL).color(theme::VALUE))
+                    .fill(theme::DANGER).corner_radius(4.0)).clicked() {
+                    svc.delete_agent(agent_id);
+                    state.delete_confirming = false;
+                }
+                if ui.add(egui::Button::new(RichText::new("取消").size(theme::FONT_SMALL).color(theme::TEXT_DIM))
+                    .fill(theme::CARD).corner_radius(4.0)).clicked() {
+                    state.delete_confirming = false;
+                }
+            });
         }
     });
 }

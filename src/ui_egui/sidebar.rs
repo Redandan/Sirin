@@ -74,6 +74,7 @@ pub fn show(
                         } else {
                             if response.clicked() { *view = View::Workspace(idx); }
                             if response.double_clicked() { *renaming = Some((idx, agent.name.clone())); }
+                            response.on_hover_text(format!("{} ({}) — {}", agent.name, agent.platform, agent.live_status));
 
                             // Status dot
                             let dot_color = match agent.live_status.as_str() {

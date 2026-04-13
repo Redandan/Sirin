@@ -39,10 +39,17 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agents: &[AgentSummary
 
             for agent in agents.iter().filter(|a| a.enabled) {
                 let mut checked = state.invited.contains(&agent.id);
-                if ui.checkbox(&mut checked, RichText::new(&agent.name).color(theme::TEXT)).changed() {
-                    if checked { state.invited.insert(agent.id.clone()); }
-                    else { state.invited.remove(&agent.id); }
-                }
+                ui.horizontal(|ui| {
+                    if ui.checkbox(&mut checked, RichText::new(&agent.name).color(theme::TEXT)).changed() {
+                        if checked { state.invited.insert(agent.id.clone()); }
+                        else { state.invited.remove(&agent.id); }
+                    }
+                    theme::badge(ui, &agent.platform, theme::INFO);
+                    let status_color = match agent.live_status.as_str() {
+                        "connected" => theme::ACCENT, "error" => theme::DANGER, _ => theme::TEXT_DIM,
+                    };
+                    ui.colored_label(status_color, RichText::new(&agent.live_status).size(theme::FONT_CAPTION));
+                });
             }
 
             ui.add_space(theme::SP_MD);

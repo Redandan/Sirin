@@ -144,15 +144,19 @@ impl eframe::App for SirinApp {
                 .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -16.0))
                 .show(ctx, |ui| {
                     for toast in self.toasts.iter().rev().take(3) {
-                        let (fg, bg) = match toast.level {
-                            ToastLevel::Success => (theme::ACCENT, theme::ACCENT.linear_multiply(0.12)),
-                            ToastLevel::Error => (theme::DANGER, theme::DANGER.linear_multiply(0.12)),
-                            ToastLevel::Info => (theme::INFO, theme::INFO.linear_multiply(0.12)),
+                        let (fg, bg, icon) = match toast.level {
+                            ToastLevel::Success => (theme::ACCENT, theme::ACCENT.linear_multiply(0.12), "✓"),
+                            ToastLevel::Error => (theme::DANGER, theme::DANGER.linear_multiply(0.12), "✗"),
+                            ToastLevel::Info => (theme::INFO, theme::INFO.linear_multiply(0.12), "ℹ"),
                         };
                         egui::Frame::new().fill(bg).corner_radius(4.0)
                             .inner_margin(theme::SP_MD)
-                            .stroke(egui::Stroke::new(1.0, fg.linear_multiply(0.3)))
-                            .show(ui, |ui| { ui.colored_label(fg, &toast.text); });
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.colored_label(fg, RichText::new(icon).strong());
+                                    ui.colored_label(fg, &toast.text);
+                                });
+                            });
                         ui.add_space(theme::SP_XS);
                     }
                 });

@@ -71,7 +71,10 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, state: &mut LogState) 
     ScrollArea::vertical().id_salt("log").stick_to_bottom(true).auto_shrink(false).show(ui, |ui| {
         if state.cache.is_empty() {
             ui.add_space(theme::SP_XL);
-            ui.colored_label(theme::TEXT_DIM, RichText::new("目前沒有符合條件的 Log").size(theme::FONT_BODY));
+            ui.vertical_centered(|ui| {
+                ui.label(RichText::new("📋").size(theme::SP_XL));
+                ui.colored_label(theme::TEXT_DIM, "目前沒有符合條件的 Log");
+            });
             return;
         }
         for (text, color) in &state.cache {
