@@ -49,7 +49,7 @@ pub fn show(
 
                         if is_renaming {
                             let buf = &mut renaming.as_mut().unwrap().1;
-                            let mut child = ui.child_ui(content_rect, *ui.layout(), None);
+                            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(content_rect));
                             let resp = child.text_edit_singleline(buf);
                             if resp.lost_focus() {
                                 if ui.input(|i| i.key_pressed(egui::Key::Enter)) {

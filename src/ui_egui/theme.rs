@@ -132,7 +132,8 @@ pub fn count_badge(ui: &mut egui::Ui, count: usize) {
         });
 }
 
-/// Status dot (small circle) + label text.
+/// Status dot (small circle) + label text. Available for future use.
+#[allow(dead_code)]
 pub fn status_dot(ui: &mut egui::Ui, label: &str, ok: bool) {
     let color = if ok { ACCENT } else { DANGER };
     ui.horizontal(|ui| {
