@@ -1,8 +1,6 @@
-Run `cargo check 2>&1` in the project root to check for Rust compilation errors.
+Run `cargo check 2>&1` and report ONLY:
+1. Number of errors (if any, list with file:line)
+2. Number of warnings (if any, list count per file)
+3. If clean: say "✅ 0 errors, 0 warnings"
 
-Parse the output and:
-1. List all errors grouped by file with line references as clickable links
-2. For each error, briefly explain the root cause and the fix required
-3. If there are no errors, confirm the build is clean and suggest running `cargo build --release`
-
-Focus especially on errors in src/skills.rs, src/telegram.rs, src/persona.rs.
+Do NOT suggest fixes unless asked. Keep response under 10 lines.
