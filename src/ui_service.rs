@@ -1,31 +1,20 @@
 //! Service trait — the single boundary between UI and backend.
 //!
 //! All UI components access backend functionality exclusively through this trait.
-//! This enables:
-//! - **Testing**: MockService returns canned data, no file I/O needed
-//! - **Web mode**: Service can be backed by HTTP/RPC instead of direct calls
-//! - **Isolation**: UI crate has zero imports of backend modules
-//!
-//! # Usage in Dioxus components
-//! ```ignore
-//! let svc = use_context::<Signal<Box<dyn AppService>>>();
-//! let pending = svc.read().load_pending("agent_1");
-//! ```
+//! AI reads the trait to understand what data/actions are available.
 
 use serde::{Deserialize, Serialize};
 
-// ── Data types (shared between UI and backend) ──────────────────────────────
+// ── Data types ───────────────────────────────────────────────────────────────
 
-/// Summary of one agent for UI display.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentSummary {
     pub id: String,
     pub name: String,
     pub enabled: bool,
-    pub platform: String, // "telegram", "teams", "ui_only"
+    pub platform: String,
 }
 
-/// One pending reply awaiting approval.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PendingReplyView {
     pub id: String,
@@ -36,7 +25,6 @@ pub struct PendingReplyView {
     pub created_at: String,
 }
 
-/// One task entry for the activity log.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskView {
     pub timestamp: String,
@@ -45,7 +33,6 @@ pub struct TaskView {
     pub reason: Option<String>,
 }
 
-/// One log line with a severity level.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LogLine {
     pub text: String,
@@ -53,19 +40,8 @@ pub struct LogLine {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum LogLevel {
-    Error,
-    Warn,
-    Info,
-    Telegram,
-    Research,
-    Followup,
-    Coding,
-    Teams,
-    Normal,
-}
+pub enum LogLevel { Error, Warn, Info, Telegram, Research, Followup, Coding, Teams, Normal }
 
-/// LLM model info for system panel.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LlmInfo {
     pub main_model: String,
@@ -75,14 +51,12 @@ pub struct LlmInfo {
     pub is_remote: bool,
 }
 
-/// External MCP tool info.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct McpToolInfo {
     pub name: String,
     pub description: String,
 }
 
-/// Skill info.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SkillInfo {
     pub name: String,
@@ -90,7 +64,6 @@ pub struct SkillInfo {
     pub description: String,
 }
 
-/// System status snapshot.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SystemStatus {
     pub telegram_connected: bool,
@@ -101,7 +74,6 @@ pub struct SystemStatus {
     pub skills: Vec<SkillInfo>,
 }
 
-/// Workflow stage.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkflowView {
     pub feature: String,
@@ -124,8 +96,6 @@ pub struct StageView {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum StageStatusView { Done, Current, Pending }
 
-// ── Agent config for settings ───────────────────────────────────────────────
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentDetailView {
     pub id: String,
@@ -140,37 +110,68 @@ pub struct AgentDetailView {
     pub max_reply_delay: u64,
     pub max_per_hour: u32,
     pub max_per_day: u32,
-    pub kpi_labels: Vec<(String, String)>, // (label, unit)
+    pub kpi_labels: Vec<(String, String)>,
 }
+
+/// Toast notification pushed from service to UI.
+#[derive(Debug, Clone)]
+pub struct ToastEvent {
+    pub level: ToastLevel,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ToastLevel { Info, Success, Error }
 
 // ── Service trait ────────────────────────────────────────────────────────────
 
-/// The single interface between UI and backend. All UI data flows through here.
 pub trait AppService: Send + Sync + 'static {
-    // Agents
+    // ── Read ─────────────────────────────────────────────────────────────────
+
     fn list_agents(&self) -> Vec<AgentSummary>;
     fn agent_detail(&self, agent_id: &str) -> Option<AgentDetailView>;
 
-    // Pending replies
     fn pending_count(&self, agent_id: &str) -> usize;
     fn load_pending(&self, agent_id: &str) -> Vec<PendingReplyView>;
-    fn approve_reply(&self, agent_id: &str, reply_id: &str);
-    fn reject_reply(&self, agent_id: &str, reply_id: &str);
 
-    // Tasks / activity
     fn recent_tasks(&self, limit: usize) -> Vec<TaskView>;
 
-    // Log
     fn log_version(&self) -> usize;
     fn log_recent(&self, limit: usize) -> Vec<LogLine>;
     fn log_len(&self) -> usize;
-    fn log_clear(&self);
 
-    // System
     fn system_status(&self) -> SystemStatus;
 
-    // Workflow
     fn workflow_state(&self) -> Option<WorkflowView>;
+
+    fn search_memory(&self, query: &str, limit: usize) -> Vec<String>;
+
+    // ── Write ────────────────────────────────────────────────────────────────
+
+    fn approve_reply(&self, agent_id: &str, reply_id: &str);
+    fn reject_reply(&self, agent_id: &str, reply_id: &str);
+
+    fn log_clear(&self);
+
     fn workflow_create(&self, feature: &str, description: &str);
     fn workflow_reset(&self);
+
+    fn rename_agent(&self, agent_id: &str, new_name: &str);
+    fn toggle_agent(&self, agent_id: &str, enabled: bool);
+    fn add_objective(&self, agent_id: &str, text: &str);
+    fn remove_objective(&self, agent_id: &str, index: usize);
+
+    // ── Telegram auth ────────────────────────────────────────────────────────
+
+    fn tg_submit_code(&self, code: &str) -> bool;
+    fn tg_submit_password(&self, password: &str) -> bool;
+    fn tg_reconnect(&self);
+
+    // ── Meeting ───────────────────────────────────────────────────────────────
+
+    fn meeting_send(&self, speaker: &str, text: &str);
+
+    // ── Events (polled by UI each frame) ─────────────────────────────────────
+
+    fn poll_toasts(&self) -> Vec<ToastEvent>;
 }

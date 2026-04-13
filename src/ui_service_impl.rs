@@ -1,17 +1,31 @@
 //! Real implementation of [`AppService`] — wraps actual backend modules.
 
+use std::sync::Mutex;
+
 use crate::persona::TaskTracker;
 use crate::telegram_auth::TelegramAuthState;
 use crate::ui_service::*;
 
-/// Production service backed by real backend modules.
 pub struct RealService {
     pub tracker: TaskTracker,
     pub tg_auth: TelegramAuthState,
+    toasts: Mutex<Vec<ToastEvent>>,
+}
+
+impl RealService {
+    pub fn new(tracker: TaskTracker, tg_auth: TelegramAuthState) -> Self {
+        Self { tracker, tg_auth, toasts: Mutex::new(Vec::new()) }
+    }
+
+    fn push_toast(&self, level: ToastLevel, text: impl Into<String>) {
+        if let Ok(mut t) = self.toasts.lock() {
+            t.push(ToastEvent { level, text: text.into() });
+        }
+    }
 }
 
 impl AppService for RealService {
-    // ── Agents ───────────────────────────────────────────────────────────────
+    // ── Read: Agents ─────────────────────────────────────────────────────────
 
     fn list_agents(&self) -> Vec<AgentSummary> {
         let file = crate::agent_config::AgentsFile::load().unwrap_or_default();
@@ -20,32 +34,19 @@ impl AppService for RealService {
                 "telegram"
             } else if a.channel.as_ref().and_then(|c| c.teams.as_ref()).is_some() {
                 "teams"
-            } else {
-                "ui_only"
-            };
-            AgentSummary {
-                id: a.id.clone(),
-                name: a.identity.name.clone(),
-                enabled: a.enabled,
-                platform: platform.to_string(),
-            }
+            } else { "ui_only" };
+            AgentSummary { id: a.id.clone(), name: a.identity.name.clone(), enabled: a.enabled, platform: platform.to_string() }
         }).collect()
     }
 
     fn agent_detail(&self, agent_id: &str) -> Option<AgentDetailView> {
         let file = crate::agent_config::AgentsFile::load().unwrap_or_default();
         let a = file.agents.iter().find(|a| a.id == agent_id)?;
-        let platform = if a.channel.as_ref().and_then(|c| c.telegram.as_ref()).is_some() {
-            "telegram"
-        } else if a.channel.as_ref().and_then(|c| c.teams.as_ref()).is_some() {
-            "teams"
-        } else {
-            "ui_only"
-        };
+        let platform = if a.channel.as_ref().and_then(|c| c.telegram.as_ref()).is_some() { "telegram" }
+        else if a.channel.as_ref().and_then(|c| c.teams.as_ref()).is_some() { "teams" }
+        else { "ui_only" };
         Some(AgentDetailView {
-            id: a.id.clone(),
-            name: a.identity.name.clone(),
-            enabled: a.enabled,
+            id: a.id.clone(), name: a.identity.name.clone(), enabled: a.enabled,
             platform: platform.to_string(),
             professional_tone: format!("{:?}", a.identity.professional_tone),
             disable_remote_ai: a.disable_remote_ai,
@@ -59,7 +60,7 @@ impl AppService for RealService {
         })
     }
 
-    // ── Pending replies ──────────────────────────────────────────────────────
+    // ── Read: Pending replies ────────────────────────────────────────────────
 
     fn pending_count(&self, agent_id: &str) -> usize {
         crate::pending_reply::load_pending(agent_id)
@@ -73,166 +74,185 @@ impl AppService for RealService {
             .into_iter()
             .filter(|r| r.status == crate::pending_reply::PendingStatus::Pending)
             .map(|r| PendingReplyView {
-                id: r.id,
-                agent_id: r.agent_id,
-                peer_name: r.peer_name,
-                original_message: r.original_message,
-                draft_reply: r.draft_reply,
-                created_at: r.created_at,
+                id: r.id, agent_id: r.agent_id, peer_name: r.peer_name,
+                original_message: r.original_message, draft_reply: r.draft_reply, created_at: r.created_at,
             })
             .collect()
     }
 
+    // ── Read: Tasks ──────────────────────────────────────────────────────────
+
+    fn recent_tasks(&self, limit: usize) -> Vec<TaskView> {
+        self.tracker.read_last_n(limit).unwrap_or_default()
+            .into_iter()
+            .filter(|e| e.event != "heartbeat")
+            .rev()
+            .map(|e| TaskView { timestamp: e.timestamp, event: e.event, status: e.status, reason: e.reason })
+            .collect()
+    }
+
+    // ── Read: Log ────────────────────────────────────────────────────────────
+
+    fn log_version(&self) -> usize { crate::log_buffer::version() }
+
+    fn log_recent(&self, limit: usize) -> Vec<LogLine> {
+        crate::log_buffer::recent(limit).into_iter()
+            .map(|text| { let level = classify_log_level(&text); LogLine { text, level } })
+            .collect()
+    }
+
+    fn log_len(&self) -> usize { crate::log_buffer::len() }
+
+    // ── Read: System ─────────────────────────────────────────────────────────
+
+    fn system_status(&self) -> SystemStatus {
+        let tg = self.tg_auth.status();
+        let tg_connected = matches!(tg, crate::telegram_auth::TelegramStatus::Connected);
+        let llm = crate::llm::shared_llm();
+        let router = crate::llm::shared_router_llm();
+        SystemStatus {
+            telegram_connected: tg_connected,
+            telegram_status: format!("{:?}", tg),
+            rpc_running: crate::rpc_server::is_running(),
+            llm: LlmInfo {
+                main_model: llm.model.clone(), main_backend: llm.backend_name().to_string(),
+                router_model: router.model.clone(), router_backend: router.backend_name().to_string(),
+                is_remote: llm.is_remote(),
+            },
+            mcp_tools: crate::mcp_client::get_discovered_tools().iter()
+                .map(|t| McpToolInfo { name: t.registry_name(), description: t.description.clone() }).collect(),
+            skills: crate::skills::list_skills().iter()
+                .map(|s| SkillInfo { name: s.name.clone(), category: s.category.clone(), description: s.description.clone() }).collect(),
+        }
+    }
+
+    // ── Read: Workflow ────────────────────────────────────────────────────────
+
+    fn workflow_state(&self) -> Option<WorkflowView> {
+        let state = crate::workflow::WorkflowState::load()?;
+        let stages = crate::workflow::STAGES.iter().map(|s| StageView {
+            id: s.id.to_string(), label: s.label.to_string(), desc: s.desc.to_string(),
+            status: match state.stage_status(s.id) {
+                crate::workflow::StageStatus::Done => StageStatusView::Done,
+                crate::workflow::StageStatus::Current => StageStatusView::Current,
+                crate::workflow::StageStatus::Pending => StageStatusView::Pending,
+            },
+        }).collect();
+        let all_done = state.all_done();
+        Some(WorkflowView {
+            feature: state.feature, description: state.description, skill_id: state.skill_id,
+            current_stage: state.current_stage, started_at: state.started_at, stages, all_done,
+        })
+    }
+
+    // ── Read: Memory ─────────────────────────────────────────────────────────
+
+    fn search_memory(&self, query: &str, limit: usize) -> Vec<String> {
+        crate::memory::memory_search(query, limit, "").unwrap_or_default()
+    }
+
+    // ── Write: Pending ───────────────────────────────────────────────────────
+
     fn approve_reply(&self, agent_id: &str, reply_id: &str) {
         crate::pending_reply::update_status(agent_id, reply_id, crate::pending_reply::PendingStatus::Approved);
+        self.push_toast(ToastLevel::Success, "已核准");
     }
 
     fn reject_reply(&self, agent_id: &str, reply_id: &str) {
         crate::pending_reply::update_status(agent_id, reply_id, crate::pending_reply::PendingStatus::Rejected);
     }
 
-    // ── Tasks ────────────────────────────────────────────────────────────────
+    fn log_clear(&self) { crate::log_buffer::clear(); }
 
-    fn recent_tasks(&self, limit: usize) -> Vec<TaskView> {
-        self.tracker
-            .read_last_n(limit)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|e| e.event != "heartbeat")
-            .rev()
-            .map(|e| TaskView {
-                timestamp: e.timestamp.clone(),
-                event: e.event.clone(),
-                status: e.status.clone(),
-                reason: e.reason.clone(),
-            })
-            .collect()
-    }
-
-    // ── Log ──────────────────────────────────────────────────────────────────
-
-    fn log_version(&self) -> usize {
-        crate::log_buffer::version()
-    }
-
-    fn log_recent(&self, limit: usize) -> Vec<LogLine> {
-        crate::log_buffer::recent(limit)
-            .into_iter()
-            .map(|text| {
-                let level = classify_log_level(&text);
-                LogLine { text, level }
-            })
-            .collect()
-    }
-
-    fn log_len(&self) -> usize {
-        crate::log_buffer::len()
-    }
-
-    fn log_clear(&self) {
-        crate::log_buffer::clear();
-    }
-
-    // ── System ───────────────────────────────────────────────────────────────
-
-    fn system_status(&self) -> SystemStatus {
-        let tg_status_enum = self.tg_auth.status();
-        let tg_connected = matches!(tg_status_enum, crate::telegram_auth::TelegramStatus::Connected);
-
-        let llm = crate::llm::shared_llm();
-        let router = crate::llm::shared_router_llm();
-
-        let mcp_tools = crate::mcp_client::get_discovered_tools()
-            .iter()
-            .map(|t| McpToolInfo {
-                name: t.registry_name(),
-                description: t.description.clone(),
-            })
-            .collect();
-
-        let skills = crate::skills::list_skills()
-            .iter()
-            .map(|s| SkillInfo {
-                name: s.name.clone(),
-                category: s.category.clone(),
-                description: s.description.clone(),
-            })
-            .collect();
-
-        SystemStatus {
-            telegram_connected: tg_connected,
-            telegram_status: format!("{:?}", tg_status_enum),
-            rpc_running: crate::rpc_server::is_running(),
-            llm: LlmInfo {
-                main_model: llm.model.clone(),
-                main_backend: llm.backend_name().to_string(),
-                router_model: router.model.clone(),
-                router_backend: router.backend_name().to_string(),
-                is_remote: llm.is_remote(),
-            },
-            mcp_tools,
-            skills,
-        }
-    }
-
-    // ── Workflow ──────────────────────────────────────────────────────────────
-
-    fn workflow_state(&self) -> Option<WorkflowView> {
-        let state = crate::workflow::WorkflowState::load()?;
-        let stages = crate::workflow::STAGES
-            .iter()
-            .map(|s| StageView {
-                id: s.id.to_string(),
-                label: s.label.to_string(),
-                desc: s.desc.to_string(),
-                status: match state.stage_status(s.id) {
-                    crate::workflow::StageStatus::Done => StageStatusView::Done,
-                    crate::workflow::StageStatus::Current => StageStatusView::Current,
-                    crate::workflow::StageStatus::Pending => StageStatusView::Pending,
-                },
-            })
-            .collect();
-        Some(WorkflowView {
-            feature: state.feature.clone(),
-            description: state.description.clone(),
-            skill_id: state.skill_id.clone(),
-            current_stage: state.current_stage.clone(),
-            started_at: state.started_at.clone(),
-            stages,
-            all_done: state.all_done(),
-        })
-    }
+    // ── Write: Workflow ──────────────────────────────────────────────────────
 
     fn workflow_create(&self, feature: &str, description: &str) {
         let skill_id = feature.to_lowercase().replace(' ', "_");
         let state = crate::workflow::WorkflowState::new(feature, description, &skill_id);
         state.save();
+        self.push_toast(ToastLevel::Success, format!("Workflow「{feature}」已建立"));
     }
 
     fn workflow_reset(&self) {
         let _ = std::fs::remove_file("data/workflow.json");
     }
-}
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+    // ── Write: Agent config ──────────────────────────────────────────────────
+
+    fn rename_agent(&self, agent_id: &str, new_name: &str) {
+        if let Ok(mut file) = crate::agent_config::AgentsFile::load() {
+            if let Some(a) = file.agents.iter_mut().find(|a| a.id == agent_id) {
+                a.identity.name = new_name.to_string();
+                let _ = file.save();
+                self.push_toast(ToastLevel::Success, format!("已改名為「{new_name}」"));
+            }
+        }
+    }
+
+    fn toggle_agent(&self, agent_id: &str, enabled: bool) {
+        if let Ok(mut file) = crate::agent_config::AgentsFile::load() {
+            if let Some(a) = file.agents.iter_mut().find(|a| a.id == agent_id) {
+                a.enabled = enabled;
+                let _ = file.save();
+            }
+        }
+    }
+
+    fn add_objective(&self, agent_id: &str, text: &str) {
+        if let Ok(mut file) = crate::agent_config::AgentsFile::load() {
+            if let Some(a) = file.agents.iter_mut().find(|a| a.id == agent_id) {
+                a.objectives.push(text.to_string());
+                let _ = file.save();
+            }
+        }
+    }
+
+    fn remove_objective(&self, agent_id: &str, index: usize) {
+        if let Ok(mut file) = crate::agent_config::AgentsFile::load() {
+            if let Some(a) = file.agents.iter_mut().find(|a| a.id == agent_id) {
+                if index < a.objectives.len() {
+                    a.objectives.remove(index);
+                    let _ = file.save();
+                }
+            }
+        }
+    }
+
+    // ── Telegram auth ────────────────────────────────────────────────────────
+
+    fn tg_submit_code(&self, code: &str) -> bool {
+        self.tg_auth.submit_code(code.to_string())
+    }
+
+    fn tg_submit_password(&self, password: &str) -> bool {
+        self.tg_auth.submit_password(password.to_string())
+    }
+
+    fn tg_reconnect(&self) {
+        self.tg_auth.trigger_reconnect();
+    }
+
+    // ── Meeting ───────────────────────────────────────────────────────────────
+
+    fn meeting_send(&self, _speaker: &str, _text: &str) {
+        // TODO: integrate with meeting module for AI-mediated responses
+    }
+
+    // ── Events ───────────────────────────────────────────────────────────────
+
+    fn poll_toasts(&self) -> Vec<ToastEvent> {
+        self.toasts.lock().ok().map(|mut t| std::mem::take(&mut *t)).unwrap_or_default()
+    }
+}
 
 fn classify_log_level(line: &str) -> LogLevel {
     let lower = line.to_lowercase();
-    if line.contains("[ERROR]") || lower.contains("error") || lower.contains("failed") {
-        LogLevel::Error
-    } else if line.contains("[WARN]") || lower.contains("warn") {
-        LogLevel::Warn
-    } else if line.contains("[telegram]") || line.contains("[tg]") {
-        LogLevel::Telegram
-    } else if line.contains("[researcher]") {
-        LogLevel::Research
-    } else if line.contains("[followup]") {
-        LogLevel::Followup
-    } else if line.contains("[coding]") || line.contains("[adk]") {
-        LogLevel::Coding
-    } else if line.contains("[teams]") {
-        LogLevel::Teams
-    } else {
-        LogLevel::Normal
-    }
+    if line.contains("[ERROR]") || lower.contains("error") || lower.contains("failed") { LogLevel::Error }
+    else if line.contains("[WARN]") || lower.contains("warn") { LogLevel::Warn }
+    else if line.contains("[telegram]") || line.contains("[tg]") { LogLevel::Telegram }
+    else if line.contains("[researcher]") { LogLevel::Research }
+    else if line.contains("[followup]") { LogLevel::Followup }
+    else if line.contains("[coding]") || line.contains("[adk]") { LogLevel::Coding }
+    else if line.contains("[teams]") { LogLevel::Teams }
+    else { LogLevel::Normal }
 }

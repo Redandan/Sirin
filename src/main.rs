@@ -179,9 +179,8 @@ fn main() {
 
     std::mem::forget(rt);
 
-    let service: Arc<dyn ui_service::AppService> = Arc::new(ui_service_impl::RealService {
-        tracker: tracker.clone(),
-        tg_auth: tg_auth.clone(),
-    });
+    let service: Arc<dyn ui_service::AppService> = Arc::new(
+        ui_service_impl::RealService::new(tracker.clone(), tg_auth.clone())
+    );
     ui_egui::launch(service);
 }
