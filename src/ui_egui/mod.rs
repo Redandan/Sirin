@@ -104,7 +104,7 @@ impl eframe::App for SirinApp {
                             let name = self.agents.get(*idx).map(|a| a.name.as_str()).unwrap_or("—");
                             ("💬", name, "Agent 工作區")
                         }
-                        View::Settings => ("⚙", "設定", "Agent 配置 & 系統"),
+                        View::Settings => ("⚙", "系統設定", "LLM / TG / MCP / 技能"),
                         View::Log => ("📋", "系統 Log", "即時日誌"),
                         View::Workflow => ("🔧", "Skill 開發", "工作流 Pipeline"),
                         View::Meeting => ("🤝", "會議室", "多 Agent 協作"),

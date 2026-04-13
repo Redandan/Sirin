@@ -110,8 +110,8 @@ pub fn show(
             ui.add_space(theme::GAP_SM);
 
             // ── TOOLS section ────────────────────────────────────────────────
-            section_header(ui, "TOOLS");
-            nav_item(ui, "⚙", "設定", View::Settings, view);
+            section_header(ui, "SYSTEM");
+            nav_item(ui, "⚙", "系統設定", View::Settings, view);
             nav_item(ui, "📋", "系統 Log", View::Log, view);
 
             ui.add_space(theme::GAP_SM);

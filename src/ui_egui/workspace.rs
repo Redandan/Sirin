@@ -1,4 +1,8 @@
-//! Workspace — overview (tasks + memory search) + thinking stream + pending approvals.
+//! Workspace — per-agent view with 4 tabs:
+//!   0=概覽 (tasks + memory search)
+//!   1=思考流 (agent execution trace)
+//!   2=待確認 (pending approvals with draft editing)
+//!   3=⚙設定 (per-agent config: identity, objectives, behavior, KPI)
 
 use std::sync::Arc;
 use eframe::egui::{self, RichText, ScrollArea};
@@ -7,13 +11,14 @@ use crate::ui_service::*;
 
 #[derive(Default)]
 pub struct WorkspaceState {
-    tab: usize,
+    tab: usize, // 0=overview, 1=thinking, 2=pending, 3=settings
     pending_cache: Vec<PendingReplyView>,
     pending_loaded_for: String,
-    /// Draft edit buffers keyed by reply ID.
     draft_edits: std::collections::HashMap<String, String>,
     mem_query: String,
     mem_results: Vec<String>,
+    // Per-agent settings
+    new_objective: String,
 }
 
 pub fn show(
@@ -38,6 +43,7 @@ pub fn show(
         if ui.selectable_label(state.tab == 0, RichText::new("📊 概覽").color(theme::TEXT)).clicked() { state.tab = 0; }
         if ui.selectable_label(state.tab == 1, RichText::new("🧠 思考流").color(theme::TEXT)).clicked() { state.tab = 1; }
         if ui.selectable_label(state.tab == 2, RichText::new(format!("📝 待確認 ({pending_n})")).color(theme::TEXT)).clicked() { state.tab = 2; }
+        if ui.selectable_label(state.tab == 3, RichText::new("⚙ 設定").color(theme::TEXT)).clicked() { state.tab = 3; }
     });
     ui.separator();
 
@@ -45,6 +51,7 @@ pub fn show(
         0 => show_overview(ui, svc, tasks, state),
         1 => show_thinking(ui, tasks),
         2 => show_pending(ui, svc, &agent.id, state),
+        3 => show_agent_settings(ui, svc, &agent.id, state),
         _ => {}
     }
 }
@@ -205,6 +212,77 @@ fn show_pending(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &str, st
             state.pending_cache = svc.load_pending(agent_id);
             // Clean up stale edit buffers
             state.draft_edits.retain(|k, _| reply_ids.contains(k));
+        }
+    });
+}
+
+// ── Per-agent settings tab ───────────────────────────────────────────────────
+
+fn show_agent_settings(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &str, state: &mut WorkspaceState) {
+    let Some(d) = svc.agent_detail(agent_id) else {
+        ui.colored_label(theme::RED, "無法載入 Agent 設定");
+        return;
+    };
+
+    ScrollArea::vertical().id_salt("agent_settings").show(ui, |ui| {
+        // Enable/Disable toggle
+        theme::section(ui, "基本", |ui| {
+            ui.horizontal(|ui| {
+                let mut enabled = d.enabled;
+                if ui.checkbox(&mut enabled, "").changed() {
+                    svc.toggle_agent(&d.id, enabled);
+                }
+                theme::badge(ui, if d.enabled { "啟用中" } else { "已停用" }, if d.enabled { theme::GREEN } else { theme::OVERLAY0 });
+                ui.colored_label(theme::OVERLAY0, format!("| 語氣: {}", d.professional_tone));
+            });
+            theme::info_row(ui, "平台", &d.platform);
+            theme::info_row(ui, "遠端 AI", if d.disable_remote_ai { "已禁用" } else { "允許" });
+        });
+
+        // Objectives (editable)
+        theme::section(ui, "目標 Objectives", |ui| {
+            if d.objectives.is_empty() {
+                ui.colored_label(theme::OVERLAY0, "（使用全域 Persona 目標）");
+            }
+            let mut remove_idx: Option<usize> = None;
+            for (i, obj) in d.objectives.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.colored_label(theme::BLUE, "•");
+                    ui.label(RichText::new(obj).color(theme::TEXT));
+                    if ui.small_button("✗").on_hover_text("刪除此目標").clicked() {
+                        remove_idx = Some(i);
+                    }
+                });
+            }
+            if let Some(idx) = remove_idx {
+                svc.remove_objective(agent_id, idx);
+            }
+            ui.add_space(theme::GAP_SM);
+            ui.horizontal(|ui| {
+                ui.add_sized([ui.available_width() - 60.0, 24.0],
+                    egui::TextEdit::singleline(&mut state.new_objective).hint_text("新增目標..."));
+                if ui.button("+ 新增").clicked() && !state.new_objective.trim().is_empty() {
+                    svc.add_objective(agent_id, state.new_objective.trim());
+                    state.new_objective.clear();
+                }
+            });
+        });
+
+        // Human behavior
+        theme::section(ui, "人性化行為", |ui| {
+            theme::info_row(ui, "啟用", &format!("{}", d.human_behavior_enabled));
+            theme::info_row(ui, "延遲範圍", &format!("{}–{}s", d.min_reply_delay, d.max_reply_delay));
+            theme::info_row(ui, "每小時上限", &format!("{}", d.max_per_hour));
+            theme::info_row(ui, "每日上限", &format!("{}", d.max_per_day));
+        });
+
+        // KPI
+        if !d.kpi_labels.is_empty() {
+            theme::section(ui, "KPI 指標", |ui| {
+                for (label, unit) in &d.kpi_labels {
+                    theme::info_row(ui, label, unit);
+                }
+            });
         }
     });
 }
