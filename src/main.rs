@@ -32,7 +32,7 @@ mod ui_service_impl;
 mod ui_egui;
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::Arc as StdArc;
 
 use persona::TaskTracker;
 use telegram_auth::TelegramAuthState;
@@ -178,5 +178,6 @@ fn main() {
     }
 
     std::mem::forget(rt);
-    ui_dx::launch(tracker, tg_auth, agent_auth_states);
+    let svc = StdArc::new(ui_service_impl::RealService::new(tracker, tg_auth));
+    ui_egui::launch(svc);
 }
