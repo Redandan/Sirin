@@ -114,14 +114,16 @@ pub fn status_dot(ui: &mut egui::Ui, label: &str, ok: bool) {
     });
 }
 
-/// Status row: label left, dot+status right.
+/// Status row: fixed-width label + dot+status (not pushed to far right).
 pub fn status_row(ui: &mut egui::Ui, label: &str, status: &str, ok: bool) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new(label).size(FONT_BODY).color(TEXT));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let color = if ok { ACCENT } else { DANGER };
-            ui.colored_label(color, RichText::new(format!("● {status}")).size(FONT_SMALL));
-        });
+        ui.allocate_ui_with_layout(
+            egui::vec2(100.0, ui.spacing().interact_size.y),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| { ui.label(RichText::new(label).size(FONT_BODY).color(TEXT)); },
+        );
+        let color = if ok { ACCENT } else { DANGER };
+        ui.colored_label(color, RichText::new(format!("● {status}")).size(FONT_SMALL));
     });
 }
 
@@ -175,13 +177,15 @@ pub fn tab_bar(ui: &mut egui::Ui, labels: &[&str], selected: &mut usize) {
     ui.add_space(SP_SM);
 }
 
-/// Key-value info row.
+/// Key-value info row: fixed-width label + value (compact, not stretched).
 pub fn info_row(ui: &mut egui::Ui, label: &str, value: &str) {
     ui.horizontal(|ui| {
-        ui.colored_label(TEXT_DIM, RichText::new(label).size(FONT_SMALL));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(RichText::new(value).size(FONT_SMALL).color(TEXT).family(FontFamily::Monospace));
-        });
+        ui.allocate_ui_with_layout(
+            egui::vec2(100.0, ui.spacing().interact_size.y),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| { ui.colored_label(TEXT_DIM, RichText::new(label).size(FONT_SMALL)); },
+        );
+        ui.label(RichText::new(value).size(FONT_SMALL).color(TEXT).family(FontFamily::Monospace));
     });
 }
 

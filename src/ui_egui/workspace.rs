@@ -343,12 +343,14 @@ fn show_agent_settings(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &
     });
 }
 
-/// A label-value form row (read-only).
+/// A label-value form row — fixed label width.
 fn form_row(ui: &mut egui::Ui, label: &str, value: &str) {
     ui.horizontal(|ui| {
-        ui.colored_label(theme::TEXT_DIM, RichText::new(label).size(theme::FONT_SMALL));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(RichText::new(value).size(theme::FONT_BODY).color(theme::TEXT));
-        });
+        ui.allocate_ui_with_layout(
+            egui::vec2(100.0, ui.spacing().interact_size.y),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| { ui.colored_label(theme::TEXT_DIM, RichText::new(label).size(theme::FONT_SMALL)); },
+        );
+        ui.label(RichText::new(value).size(theme::FONT_BODY).color(theme::TEXT));
     });
 }
