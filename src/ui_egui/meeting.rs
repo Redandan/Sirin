@@ -10,10 +10,23 @@ pub struct MeetingState {
     input: String,
     messages: Vec<(String, String)>,
     invited: std::collections::HashSet<String>,
+    ai_loading: bool,
+    ai_rx: Option<std::sync::mpsc::Receiver<(String, String)>>, // (agent_name, reply)
 }
 
 pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agents: &[AgentSummary], state: &mut MeetingState) {
     ui.set_max_width(600.0);
+
+    // Poll async AI reply
+    if let Some(rx) = &state.ai_rx {
+        if let Ok((name, reply)) = rx.try_recv() {
+            state.messages.push((name.clone(), reply.clone()));
+            svc.meeting_send(&name, &reply);
+            state.ai_loading = false;
+            state.ai_rx = None;
+        }
+    }
+
     let active = svc.meeting_active();
 
     if !active {
@@ -67,10 +80,15 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agents: &[AgentSummary
                 });
             }
             for (speaker, text) in &state.messages {
+                let is_agent = speaker != "Operator";
+                let name_color = if is_agent { theme::ACCENT } else { theme::INFO };
                 theme::card(ui, |ui| {
-                    ui.colored_label(theme::INFO, RichText::new(speaker).size(theme::FONT_SMALL).strong());
+                    ui.colored_label(name_color, RichText::new(speaker).size(theme::FONT_SMALL).strong());
                     ui.label(RichText::new(text).color(theme::TEXT));
                 });
+            }
+            if state.ai_loading {
+                ui.colored_label(theme::YELLOW, "● Agent 思考中...");
             }
         });
 
@@ -83,13 +101,25 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agents: &[AgentSummary
             egui::TextEdit::singleline(&mut state.input).hint_text("輸入訊息..."),
         );
         let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-        if (ui.add(egui::Button::new(RichText::new("發送").color(theme::BG)).fill(theme::ACCENT).corner_radius(4.0)).clicked() || enter)
-            && !state.input.trim().is_empty()
+        let can_send = !state.input.trim().is_empty() && !state.ai_loading;
+        if ui.add_enabled(can_send, egui::Button::new(RichText::new("發送").color(theme::BG)).fill(theme::ACCENT).corner_radius(4.0)).clicked() || (enter && can_send)
         {
             let msg = state.input.trim().to_string();
             state.messages.push(("Operator".to_string(), msg.clone()));
             svc.meeting_send("Operator", &msg);
             state.input.clear();
+
+            // Trigger AI agent reply in background
+            let (tx, rx) = std::sync::mpsc::channel();
+            let svc = svc.clone();
+            let agent_name = agents.iter().find(|a| a.enabled).map(|a| a.name.clone()).unwrap_or("Agent".into());
+            let agent_id = agents.iter().find(|a| a.enabled).map(|a| a.id.clone()).unwrap_or_default();
+            std::thread::spawn(move || {
+                let reply = svc.chat_send(&agent_id, &msg);
+                let _ = tx.send((agent_name, reply));
+            });
+            state.ai_rx = Some(rx);
+            state.ai_loading = true;
         }
     });
 }

@@ -18,10 +18,11 @@ pub struct WorkspaceState {
     mem_query: String,
     mem_results: Vec<String>,
     new_objective: String,
-    // Chat
+    // Chat (async — never blocks UI)
     chat_input: String,
-    chat_history: Vec<(String, String)>, // (role, text): "user"/"agent"
+    chat_history: Vec<(String, String)>,
     chat_loading: bool,
+    chat_rx: Option<std::sync::mpsc::Receiver<String>>,
 }
 
 pub fn show(
@@ -48,11 +49,20 @@ pub fn show(
 }
 
 fn show_chat(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &str, state: &mut WorkspaceState) {
+    // Poll for async reply
+    if let Some(rx) = &state.chat_rx {
+        if let Ok(reply) = rx.try_recv() {
+            state.chat_history.push(("agent".into(), reply));
+            state.chat_loading = false;
+            state.chat_rx = None;
+        }
+    }
+
     // Message history
     ScrollArea::vertical().id_salt("chat").stick_to_bottom(true).auto_shrink(false)
         .max_height(ui.available_height() - 50.0).show(ui, |ui| {
             ui.set_max_width(600.0);
-            if state.chat_history.is_empty() {
+            if state.chat_history.is_empty() && !state.chat_loading {
                 ui.add_space(theme::SP_XL);
                 ui.colored_label(theme::TEXT_DIM, "輸入訊息開始對話...");
             }
@@ -64,7 +74,7 @@ fn show_chat(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &str, state
                 });
             }
             if state.chat_loading {
-                ui.colored_label(theme::TEXT_DIM, "Agent 思考中...");
+                ui.colored_label(theme::YELLOW, "● Agent 思考中...");
             }
         });
 
@@ -75,16 +85,23 @@ fn show_chat(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &str, state
         let resp = ui.add_sized([input_width, 28.0],
             egui::TextEdit::singleline(&mut state.chat_input).hint_text("輸入訊息..."));
         let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-        if (ui.add(egui::Button::new(RichText::new("發送").color(theme::BG)).fill(theme::ACCENT).corner_radius(4.0)).clicked() || enter)
-            && !state.chat_input.trim().is_empty() && !state.chat_loading
+        let can_send = !state.chat_input.trim().is_empty() && !state.chat_loading;
+        if ui.add_enabled(can_send, egui::Button::new(RichText::new("發送").color(theme::BG)).fill(theme::ACCENT).corner_radius(4.0)).clicked() || (enter && can_send)
         {
             let msg = state.chat_input.trim().to_string();
             state.chat_history.push(("user".into(), msg.clone()));
             state.chat_input.clear();
+            state.chat_loading = true;
 
-            // Get AI reply (blocking for now)
-            let reply = svc.chat_send(agent_id, &msg);
-            state.chat_history.push(("agent".into(), reply));
+            // Async: spawn background thread, UI continues
+            let (tx, rx) = std::sync::mpsc::channel();
+            let svc = svc.clone();
+            let aid = agent_id.to_string();
+            std::thread::spawn(move || {
+                let reply = svc.chat_send(&aid, &msg);
+                let _ = tx.send(reply);
+            });
+            state.chat_rx = Some(rx);
         }
     });
 }
@@ -368,6 +385,27 @@ fn show_agent_settings(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &
                 for (label, unit) in &d.kpi_labels {
                     setting_row(ui, label, |ui| {
                         ui.label(RichText::new(unit).size(theme::FONT_BODY).color(theme::TEXT));
+                    });
+                }
+            });
+        }
+
+        // ── 技能控制 ─────────────────────────────────────────────────────
+        let skills = svc.system_status().skills;
+        if !skills.is_empty() {
+            let disabled = svc.disabled_skills(agent_id);
+            theme::section(ui, "技能", |ui| {
+                for skill in &skills {
+                    ui.horizontal(|ui| {
+                        let is_enabled = !disabled.contains(&skill.name);
+                        let mut checked = is_enabled;
+                        if ui.checkbox(&mut checked, "").changed() {
+                            svc.toggle_skill(agent_id, &skill.name, checked);
+                        }
+                        ui.label(RichText::new(&skill.name).size(theme::FONT_BODY).color(
+                            if is_enabled { theme::TEXT } else { theme::TEXT_DIM }
+                        ));
+                        ui.colored_label(theme::TEXT_DIM, RichText::new(&skill.category).size(theme::FONT_CAPTION));
                     });
                 }
             });
