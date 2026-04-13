@@ -128,7 +128,7 @@ impl eframe::App for SirinApp {
 
         // ── Central panel ────────────────────────────────────────────────
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(theme::BASE).inner_margin(theme::GAP_LG))
+            .frame(egui::Frame::new().fill(theme::BASE).inner_margin(theme::SP_LG))
             .show(ctx, |ui| {
                 match self.view.clone() {
                     View::Workspace(idx) => workspace::show(ui, &self.svc, &self.agents, idx, &self.tasks, &self.pending_counts, &mut self.workspace_state),

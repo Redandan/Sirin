@@ -19,9 +19,9 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agents: &[AgentSummary
         // Invite screen
         theme::card(ui, |ui| {
             ui.label(RichText::new("開始新會議").strong().size(16.0).color(theme::TEXT));
-            ui.add_space(theme::GAP_MD);
+            ui.add_space(theme::SP_MD);
             ui.label(RichText::new("選擇參與者:").color(theme::SUBTEXT0));
-            ui.add_space(theme::GAP_SM);
+            ui.add_space(theme::SP_SM);
 
             for agent in agents.iter().filter(|a| a.enabled) {
                 let mut checked = state.invited.contains(&agent.id);
@@ -31,7 +31,7 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agents: &[AgentSummary
                 }
             }
 
-            ui.add_space(theme::GAP_MD);
+            ui.add_space(theme::SP_MD);
             let can_start = !state.invited.is_empty();
             if ui.add_enabled(can_start, egui::Button::new(RichText::new("🚀 開始會議").color(theme::CRUST)).fill(theme::BLUE).corner_radius(6.0)).clicked() {
                 let participants: Vec<String> = state.invited.drain().collect();

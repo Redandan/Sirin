@@ -1,15 +1,4 @@
-//! Left sidebar — three grouped sections + status bar.
-//!
-//! Layout (top to bottom):
-//!   Logo + subtitle
-//!   ─── AGENTS section ───
-//!     Agent cards (name, status dot, pending badge, double-click rename)
-//!   ─── TOOLS section ───
-//!     ⚙ 設定 / 📋 Log
-//!   ─── COLLAB section ───
-//!     🔧 Workflow / 🤝 Meeting
-//!   ─── STATUS bar (bottom-pinned) ───
-//!     TG: ● connected / RPC: ● 7700
+//! Left sidebar — Slack-inspired: logo, agent list (name + dot only), grouped nav, status bar.
 
 use std::sync::Arc;
 use eframe::egui::{self, RichText, ScrollArea};
@@ -21,26 +10,20 @@ pub fn show(
     pending_counts: &std::collections::HashMap<String, usize>,
     view: &mut View, renaming: &mut Option<(usize, String)>,
 ) {
-    egui::SidePanel::left("sidebar").resizable(false).exact_width(220.0)
-        .frame(egui::Frame::new().fill(theme::MANTLE))
+    egui::SidePanel::left("sidebar").resizable(false).exact_width(230.0)
+        .frame(egui::Frame::new().fill(theme::MANTLE).inner_margin(egui::vec2(theme::SP_MD, 0.0)))
         .show(ctx, |ui| {
-            ui.add_space(theme::GAP_LG);
+            ui.add_space(theme::SP_LG);
 
-            // ── Logo ─────────────────────────────────────────────────────────
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("◆").size(20.0).color(theme::BLUE));
-                ui.vertical(|ui| {
-                    ui.label(RichText::new("Sirin").strong().size(16.0).color(theme::TEXT));
-                    ui.label(RichText::new("AI Agent Platform").small().color(theme::OVERLAY0));
-                });
-            });
-            ui.add_space(theme::GAP_MD);
+            // ── Logo ─────────────────────────────────────────────────────
+            ui.label(RichText::new("Sirin").size(theme::FONT_HEADING).strong().color(theme::TEXT));
+            ui.add_space(theme::SP_XL);
 
-            // ── AGENTS section ───────────────────────────────────────────────
-            section_header(ui, "AGENTS");
+            // ── AGENTS ───────────────────────────────────────────────────
+            section_label(ui, "AGENTS");
 
             ScrollArea::vertical().id_salt("agents")
-                .max_height(ui.available_height() - 220.0)
+                .max_height(ui.available_height() - 200.0)
                 .show(ui, |ui| {
                     let mut rename_commit: Option<(usize, String)> = None;
 
@@ -49,57 +32,74 @@ pub fn show(
                         let pending_n = pending_counts.get(&agent.id).copied().unwrap_or(0);
                         let is_renaming = renaming.as_ref().map(|(i, _)| *i == idx).unwrap_or(false);
 
-                        let id = ui.id().with(("agent_card", idx));
-                        let rect = ui.available_rect_before_wrap();
-                        let response = ui.interact(rect, id, egui::Sense::click());
-                        let bg = if is_selected { theme::SURFACE1 }
-                            else if response.hovered() { theme::SURFACE0 }
-                            else { egui::Color32::TRANSPARENT };
+                        // Interaction
+                        let (rect, response) = ui.allocate_exact_size(
+                            egui::vec2(ui.available_width(), 32.0),
+                            egui::Sense::click(),
+                        );
 
-                        egui::Frame::new().fill(bg).corner_radius(6.0).inner_margin(egui::vec2(8.0, 6.0)).show(ui, |ui| {
-                            if is_renaming {
-                                let buf = &mut renaming.as_mut().unwrap().1;
-                                let resp = ui.text_edit_singleline(buf);
-                                if resp.lost_focus() {
-                                    if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                                        rename_commit = Some((idx, buf.clone()));
-                                    }
-                                    *renaming = None;
+                        // Background: selected or hovered
+                        if is_selected {
+                            ui.painter().rect_filled(rect, 6.0, theme::SURFACE1);
+                        } else if response.hovered() {
+                            ui.painter().rect_filled(rect, 6.0, theme::SURFACE0);
+                        }
+
+                        // Content
+                        let content_rect = rect.shrink2(egui::vec2(theme::SP_SM, 0.0));
+                        if is_renaming {
+                            let buf = &mut renaming.as_mut().unwrap().1;
+                            let mut r = ui.child_ui(content_rect, *ui.layout(), None);
+                            let resp = r.text_edit_singleline(buf);
+                            if resp.lost_focus() {
+                                if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                    rename_commit = Some((idx, buf.clone()));
                                 }
-                                resp.request_focus();
-                            } else {
-                                if response.clicked() { *view = View::Workspace(idx); }
-                                if response.double_clicked() { *renaming = Some((idx, agent.name.clone())); }
-
-                                ui.horizontal(|ui| {
-                                    // Status dot
-                                    let (dot, color) = match agent.live_status.as_str() {
-                                        "connected" => ("●", theme::GREEN),
-                                        "reconnecting" => ("◐", theme::YELLOW),
-                                        "waiting" => ("◑", theme::PEACH),
-                                        "error" => ("●", theme::RED),
-                                        _ => if agent.enabled { ("○", theme::OVERLAY0) } else { ("○", theme::SURFACE2) },
-                                    };
-                                    ui.colored_label(color, dot);
-                                    ui.label(RichText::new(&agent.name).strong().size(13.0).color(theme::TEXT));
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        theme::count_badge(ui, pending_n);
-                                    });
-                                });
-                                // Platform tag
-                                ui.horizontal(|ui| {
-                                    ui.add_space(16.0); // indent under dot
-                                    let platform_color = match agent.platform.as_str() {
-                                        "telegram" => theme::BLUE,
-                                        "teams" => theme::TEAL,
-                                        _ => theme::OVERLAY0,
-                                    };
-                                    ui.colored_label(platform_color, RichText::new(&agent.platform).small());
-                                    ui.colored_label(theme::SURFACE2, RichText::new(&agent.id).small());
-                                });
+                                *renaming = None;
                             }
-                        });
-                        ui.add_space(1.0);
+                            resp.request_focus();
+                        } else {
+                            if response.clicked() { *view = View::Workspace(idx); }
+                            if response.double_clicked() { *renaming = Some((idx, agent.name.clone())); }
+
+                            // Draw: dot + name + (badge)
+                            let dot_color = match agent.live_status.as_str() {
+                                "connected" => theme::GREEN,
+                                "reconnecting" => theme::YELLOW,
+                                "waiting" => theme::PEACH,
+                                "error" => theme::RED,
+                                _ => if agent.enabled { theme::OVERLAY0 } else { theme::SURFACE2 },
+                            };
+
+                            let text_color = if is_selected { theme::TEXT } else { theme::SUBTEXT0 };
+
+                            // Dot
+                            let dot_center = egui::pos2(content_rect.left() + 6.0, content_rect.center().y);
+                            ui.painter().circle_filled(dot_center, 4.0, dot_color);
+
+                            // Name
+                            let name_pos = egui::pos2(content_rect.left() + 18.0, content_rect.center().y - 7.0);
+                            ui.painter().text(
+                                name_pos, egui::Align2::LEFT_TOP,
+                                &agent.name,
+                                egui::FontId::proportional(theme::FONT_BODY),
+                                text_color,
+                            );
+
+                            // Pending badge (right-aligned)
+                            if pending_n > 0 {
+                                let badge_text = format!("{pending_n}");
+                                let badge_pos = egui::pos2(content_rect.right() - 8.0, content_rect.center().y);
+                                let badge_rect = egui::Rect::from_center_size(badge_pos, egui::vec2(20.0, 16.0));
+                                ui.painter().rect_filled(badge_rect, 8.0, theme::PEACH);
+                                ui.painter().text(
+                                    badge_pos, egui::Align2::CENTER_CENTER,
+                                    &badge_text,
+                                    egui::FontId::proportional(theme::FONT_CAPTION),
+                                    theme::CRUST,
+                                );
+                            }
+                        }
                     }
 
                     if let Some((idx, name)) = rename_commit {
@@ -107,56 +107,74 @@ pub fn show(
                     }
                 });
 
-            ui.add_space(theme::GAP_SM);
+            ui.add_space(theme::SP_MD);
 
-            // ── TOOLS section ────────────────────────────────────────────────
-            section_header(ui, "SYSTEM");
-            nav_item(ui, "⚙", "系統設定", View::Settings, view);
-            nav_item(ui, "📋", "系統 Log", View::Log, view);
+            // ── SYSTEM ───────────────────────────────────────────────────
+            section_label(ui, "SYSTEM");
+            nav_item(ui, "⚙  系統設定", View::Settings, view);
+            nav_item(ui, "📋  Log", View::Log, view);
 
-            ui.add_space(theme::GAP_SM);
+            ui.add_space(theme::SP_SM);
 
-            // ── COLLAB section ───────────────────────────────────────────────
-            section_header(ui, "COLLAB");
-            nav_item(ui, "🔧", "Skill 開發", View::Workflow, view);
-            nav_item(ui, "🤝", "多 Agent 會議", View::Meeting, view);
+            // ── DEVELOP ──────────────────────────────────────────────────
+            section_label(ui, "DEVELOP");
+            nav_item(ui, "🔧  Skill 開發", View::Workflow, view);
+            nav_item(ui, "🤝  會議室", View::Meeting, view);
 
-            // ── STATUS bar (bottom-pinned) ───────────────────────────────────
+            // ── STATUS (bottom) ──────────────────────────────────────────
             ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                ui.add_space(theme::GAP_SM);
+                ui.add_space(theme::SP_SM);
                 let status = svc.system_status();
                 ui.horizontal(|ui| {
-                    let (dot, color) = if status.rpc_running { ("●", theme::GREEN) } else { ("○", theme::RED) };
-                    ui.colored_label(color, RichText::new(format!("{dot} RPC")).small());
-                    let (dot2, color2) = if status.telegram_connected { ("●", theme::GREEN) } else { ("○", theme::RED) };
-                    ui.colored_label(color2, RichText::new(format!("{dot2} TG")).small());
+                    status_dot(ui, "TG", status.telegram_connected);
+                    ui.add_space(theme::SP_MD);
+                    status_dot(ui, "RPC", status.rpc_running);
                 });
-                egui::Frame::new().fill(theme::SURFACE0.linear_multiply(0.5))
-                    .corner_radius(0.0).inner_margin(egui::vec2(0.0, 0.5)).show(ui, |_| {});
+                ui.add_space(theme::SP_XS);
+                // Thin separator
+                ui.painter().line_segment(
+                    [ui.cursor().left_top(), egui::pos2(ui.cursor().left_top().x + ui.available_width(), ui.cursor().left_top().y)],
+                    egui::Stroke::new(1.0, theme::SURFACE0),
+                );
             });
         });
 }
 
-/// Small uppercase section header.
-fn section_header(ui: &mut egui::Ui, label: &str) {
-    ui.horizontal(|ui| {
-        ui.add_space(8.0);
-        ui.label(RichText::new(label).small().strong().color(theme::SURFACE2));
-    });
-    ui.add_space(2.0);
+fn section_label(ui: &mut egui::Ui, text: &str) {
+    ui.add_space(theme::SP_XS);
+    ui.label(RichText::new(text).size(theme::FONT_CAPTION).strong().color(theme::SURFACE2));
+    ui.add_space(theme::SP_XS);
 }
 
-/// A navigation item: icon + label, with active/hover states.
-fn nav_item(ui: &mut egui::Ui, icon: &str, label: &str, target: View, current: &mut View) {
-    let is_active = std::mem::discriminant(current) == std::mem::discriminant(&target);
-    let text_color = if is_active { theme::TEXT } else { theme::SUBTEXT0 };
-    let bg = if is_active { theme::SURFACE1 } else { egui::Color32::TRANSPARENT };
+fn nav_item(ui: &mut egui::Ui, label: &str, target: View, current: &mut View) {
+    let active = std::mem::discriminant(current) == std::mem::discriminant(&target);
+    let text_color = if active { theme::TEXT } else { theme::SUBTEXT0 };
 
-    let btn = egui::Button::new(
-        RichText::new(format!("{icon}  {label}")).size(13.0).color(text_color)
-    ).fill(bg).corner_radius(6.0);
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), 30.0),
+        egui::Sense::click(),
+    );
 
-    if ui.add_sized([ui.available_width(), 28.0], btn).clicked() {
-        *current = target;
+    if active {
+        ui.painter().rect_filled(rect, 6.0, theme::SURFACE0);
+    } else if response.hovered() {
+        ui.painter().rect_filled(rect, 6.0, theme::SURFACE0.linear_multiply(0.5));
     }
+
+    let text_pos = egui::pos2(rect.left() + theme::SP_SM, rect.center().y - 7.0);
+    ui.painter().text(
+        text_pos, egui::Align2::LEFT_TOP, label,
+        egui::FontId::proportional(theme::FONT_BODY), text_color,
+    );
+
+    if response.clicked() { *current = target; }
+}
+
+fn status_dot(ui: &mut egui::Ui, label: &str, ok: bool) {
+    let color = if ok { theme::GREEN } else { theme::RED };
+    ui.horizontal(|ui| {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+        ui.painter().circle_filled(rect.center(), 3.0, color);
+        ui.colored_label(theme::OVERLAY0, RichText::new(label).size(theme::FONT_CAPTION));
+    });
 }

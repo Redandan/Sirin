@@ -29,23 +29,10 @@ pub fn show(
     let Some(agent) = agents.get(idx) else { ui.label("Agent not found"); return; };
     let pending_n = pending_counts.get(&agent.id).copied().unwrap_or(0);
 
-    // Agent info bar (compact, since top bar shows the name)
-    ui.horizontal(|ui| {
-        theme::badge(ui, &agent.platform, theme::BLUE);
-        ui.colored_label(theme::OVERLAY0, format!("ID: {}", agent.id));
-        if agent.enabled {
-            theme::badge(ui, "啟用", theme::GREEN);
-        }
-    });
-    ui.add_space(theme::GAP_SM);
-
-    ui.horizontal(|ui| {
-        if ui.selectable_label(state.tab == 0, RichText::new("📊 概覽").color(theme::TEXT)).clicked() { state.tab = 0; }
-        if ui.selectable_label(state.tab == 1, RichText::new("🧠 思考流").color(theme::TEXT)).clicked() { state.tab = 1; }
-        if ui.selectable_label(state.tab == 2, RichText::new(format!("📝 待確認 ({pending_n})")).color(theme::TEXT)).clicked() { state.tab = 2; }
-        if ui.selectable_label(state.tab == 3, RichText::new("⚙ 設定").color(theme::TEXT)).clicked() { state.tab = 3; }
-    });
-    ui.separator();
+    // Tab bar (underline style)
+    let pending_label = format!("待確認 ({pending_n})");
+    let tab_labels = ["概覽", "思考流", &pending_label, "設定"];
+    theme::tab_bar(ui, &tab_labels, &mut state.tab);
 
     match state.tab {
         0 => show_overview(ui, svc, tasks, state),
@@ -68,7 +55,7 @@ fn show_overview(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, tasks: &[TaskView
     });
 
     if !state.mem_results.is_empty() {
-        ui.add_space(theme::GAP_SM);
+        ui.add_space(theme::SP_SM);
         theme::card(ui, |ui| {
             ui.label(RichText::new("搜尋結果").small().strong().color(theme::OVERLAY0));
             for r in &state.mem_results {
@@ -78,7 +65,7 @@ fn show_overview(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, tasks: &[TaskView
         });
     }
 
-    ui.add_space(theme::GAP_MD);
+    ui.add_space(theme::SP_MD);
     ui.label(RichText::new("近期活動").strong().color(theme::OVERLAY0));
     if tasks.is_empty() { ui.colored_label(theme::OVERLAY0, "目前沒有活動記錄"); return; }
 
@@ -101,7 +88,7 @@ fn show_overview(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, tasks: &[TaskView
 
 fn show_thinking(ui: &mut egui::Ui, tasks: &[TaskView]) {
     ui.label(RichText::new("Agent 執行追蹤").strong().color(theme::OVERLAY0));
-    ui.add_space(theme::GAP_SM);
+    ui.add_space(theme::SP_SM);
 
     let thinking: Vec<&TaskView> = tasks.iter()
         .filter(|t| ["adk", "chat", "research", "coding", "router", "planner"].iter().any(|k| t.event.contains(k)))
@@ -158,13 +145,13 @@ fn show_pending(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &str, st
                         ui.colored_label(theme::OVERLAY0, RichText::new(&reply.created_at).small());
                     });
                 });
-                ui.add_space(theme::GAP_SM);
+                ui.add_space(theme::SP_SM);
 
                 // Original message (read-only)
                 egui::Frame::new().fill(theme::CRUST).corner_radius(6.0).inner_margin(8.0).show(ui, |ui| {
                     ui.label(RichText::new(&reply.original_message).size(13.0).color(theme::SUBTEXT1));
                 });
-                ui.add_space(theme::GAP_SM);
+                ui.add_space(theme::SP_SM);
 
                 // Draft reply (EDITABLE)
                 ui.label(RichText::new("✏ 草稿（可編輯）").small().color(theme::OVERLAY0));
@@ -176,7 +163,7 @@ fn show_pending(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &str, st
                                 egui::TextEdit::multiline(buf).text_color(theme::LAVENDER).font(egui::TextStyle::Body));
                         });
                 }
-                ui.add_space(theme::GAP_MD);
+                ui.add_space(theme::SP_MD);
 
                 // Action buttons
                 ui.horizontal(|ui| {
@@ -257,7 +244,7 @@ fn show_agent_settings(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &
             if let Some(idx) = remove_idx {
                 svc.remove_objective(agent_id, idx);
             }
-            ui.add_space(theme::GAP_SM);
+            ui.add_space(theme::SP_SM);
             ui.horizontal(|ui| {
                 ui.add_sized([ui.available_width() - 60.0, 24.0],
                     egui::TextEdit::singleline(&mut state.new_objective).hint_text("新增目標..."));

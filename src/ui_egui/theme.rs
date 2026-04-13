@@ -1,24 +1,23 @@
-//! UI theme — semantic colours, spacing constants, and reusable widget helpers.
+//! UI theme — Catppuccin Mocha palette + spacing + reusable components.
 //!
-//! AI reads this to know: what colours mean what, and what card/badge look like.
-//! All colour values come from the Catppuccin Mocha palette.
+//! Design references: Slack sidebar, Linear tabs, Claude Desktop top bar.
+//! Principle: generous spacing, minimal borders, clear text hierarchy.
 
 use eframe::egui::{self, Color32, RichText, Stroke};
 
-// ── Catppuccin Mocha semantic aliases ────────────────────────────────────────
+// ── Catppuccin Mocha palette ─────────────────────────────────────────────────
 
-pub const BASE: Color32 = Color32::from_rgb(30, 30, 46);       // main background
-pub const MANTLE: Color32 = Color32::from_rgb(24, 24, 37);     // sidebar / panel bg
-pub const CRUST: Color32 = Color32::from_rgb(17, 17, 27);      // deepest bg
-pub const SURFACE0: Color32 = Color32::from_rgb(49, 50, 68);   // card bg
-pub const SURFACE1: Color32 = Color32::from_rgb(69, 71, 90);   // hover bg
-pub const SURFACE2: Color32 = Color32::from_rgb(88, 91, 112);  // border
-pub const OVERLAY0: Color32 = Color32::from_rgb(108, 112, 134); // muted text
-pub const TEXT: Color32 = Color32::from_rgb(205, 214, 244);     // primary text
-pub const SUBTEXT0: Color32 = Color32::from_rgb(166, 173, 200); // secondary text
-pub const SUBTEXT1: Color32 = Color32::from_rgb(186, 194, 222); // subtitle
+pub const BASE: Color32 = Color32::from_rgb(30, 30, 46);
+pub const MANTLE: Color32 = Color32::from_rgb(24, 24, 37);
+pub const CRUST: Color32 = Color32::from_rgb(17, 17, 27);
+pub const SURFACE0: Color32 = Color32::from_rgb(49, 50, 68);
+pub const SURFACE1: Color32 = Color32::from_rgb(69, 71, 90);
+pub const SURFACE2: Color32 = Color32::from_rgb(88, 91, 112);
+pub const OVERLAY0: Color32 = Color32::from_rgb(108, 112, 134);
+pub const TEXT: Color32 = Color32::from_rgb(205, 214, 244);
+pub const SUBTEXT0: Color32 = Color32::from_rgb(166, 173, 200);
+pub const SUBTEXT1: Color32 = Color32::from_rgb(186, 194, 222);
 
-// Accent colours
 pub const BLUE: Color32 = Color32::from_rgb(137, 180, 250);
 pub const GREEN: Color32 = Color32::from_rgb(166, 227, 161);
 pub const RED: Color32 = Color32::from_rgb(243, 139, 168);
@@ -28,97 +27,141 @@ pub const MAUVE: Color32 = Color32::from_rgb(203, 166, 247);
 pub const TEAL: Color32 = Color32::from_rgb(148, 226, 213);
 pub const LAVENDER: Color32 = Color32::from_rgb(180, 190, 254);
 
+// ── Typography sizes ─────────────────────────────────────────────────────────
 
+pub const FONT_HEADING: f32 = 18.0;   // page title, agent name
+pub const FONT_BODY: f32 = 14.0;      // normal content
+pub const FONT_SMALL: f32 = 12.0;     // secondary info
+pub const FONT_CAPTION: f32 = 11.0;   // timestamps, IDs, labels
 
-// ── Spacing ──────────────────────────────────────────────────────────────────
+// ── Spacing (generous — like Slack/Linear) ───────────────────────────────────
 
-pub const GAP_SM: f32 = 4.0;
-pub const GAP_MD: f32 = 8.0;
-pub const GAP_LG: f32 = 12.0;
-pub const GAP_XL: f32 = 16.0;
+pub const SP_XS: f32 = 4.0;
+pub const SP_SM: f32 = 8.0;
+pub const SP_MD: f32 = 12.0;
+pub const SP_LG: f32 = 16.0;
+pub const SP_XL: f32 = 24.0;
 pub const CARD_RADIUS: f32 = 8.0;
-pub const BADGE_RADIUS: f32 = 10.0;
 
-// ── Visuals setup ────────────────────────────────────────────────────────────
+// ── Apply theme ──────────────────────────────────────────────────────────────
 
 pub fn apply(ctx: &egui::Context) {
     catppuccin_egui::set_theme(ctx, catppuccin_egui::MOCHA);
 
-    // Fine-tune on top of catppuccin
+    let mut style = (*ctx.style()).clone();
+    style.spacing.item_spacing = egui::vec2(SP_SM, SP_XS);
+    style.spacing.button_padding = egui::vec2(SP_MD, SP_SM);
+    ctx.set_style(style);
+
     let mut v = ctx.style().visuals.clone();
     v.window_corner_radius = CARD_RADIUS.into();
     v.menu_corner_radius = 6.0.into();
-    v.popup_shadow = egui::epaint::Shadow { offset: [2, 4], blur: 8, spread: 0, color: Color32::from_black_alpha(60) };
+    v.popup_shadow = egui::epaint::Shadow { offset: [2, 4], blur: 8, spread: 0, color: Color32::from_black_alpha(40) };
     ctx.set_visuals(v);
 }
 
 // ── Reusable widgets ─────────────────────────────────────────────────────────
 
-/// A rounded card container with consistent padding and border.
+/// Clean card — subtle background, NO border (unless hovered).
+/// References: Linear's issue cards.
 pub fn card(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new()
         .fill(SURFACE0)
         .corner_radius(CARD_RADIUS)
-        .inner_margin(GAP_LG)
-        .stroke(Stroke::new(1.0, SURFACE2.linear_multiply(0.3)))
+        .inner_margin(SP_MD)
         .show(ui, |ui| content(ui));
-    ui.add_space(GAP_MD);
+    ui.add_space(SP_SM);
 }
 
-/// A section with a title label and card body.
+/// Section with title — no nested card, just a header + content.
 pub fn section(ui: &mut egui::Ui, title: &str, content: impl FnOnce(&mut egui::Ui)) {
-    card(ui, |ui| {
-        ui.label(RichText::new(title).strong().small().color(OVERLAY0));
-        ui.add_space(GAP_SM);
-        content(ui);
-    });
+    ui.add_space(SP_SM);
+    ui.label(RichText::new(title).size(FONT_SMALL).strong().color(OVERLAY0));
+    ui.add_space(SP_XS);
+    content(ui);
+    ui.add_space(SP_MD);
 }
 
-/// A coloured status badge (pill shape).
+/// Pill badge — coloured background with matching text.
 pub fn badge(ui: &mut egui::Ui, label: &str, color: Color32) {
     egui::Frame::new()
         .fill(color.linear_multiply(0.15))
-        .corner_radius(BADGE_RADIUS)
-        .inner_margin(egui::vec2(6.0, 2.0))
+        .corner_radius(4.0)
+        .inner_margin(egui::vec2(SP_SM, 2.0))
         .show(ui, |ui| {
-            ui.label(RichText::new(label).small().color(color));
+            ui.label(RichText::new(label).size(FONT_CAPTION).color(color));
         });
 }
 
-/// A notification count badge (orange pill).
+/// Notification count badge.
 pub fn count_badge(ui: &mut egui::Ui, count: usize) {
     if count == 0 { return; }
     egui::Frame::new()
         .fill(PEACH)
-        .corner_radius(BADGE_RADIUS)
-        .inner_margin(egui::vec2(5.0, 1.0))
+        .corner_radius(10.0)
+        .inner_margin(egui::vec2(6.0, 2.0))
         .show(ui, |ui| {
-            ui.label(RichText::new(format!("{count}")).small().strong().color(CRUST));
+            ui.label(RichText::new(format!("{count}")).size(FONT_CAPTION).strong().color(CRUST));
         });
 }
 
-/// A key-value row for settings/detail views.
+/// Tab bar — underline style like Linear/Notion.
+/// Returns the index of the selected tab.
+pub fn tab_bar(ui: &mut egui::Ui, labels: &[&str], selected: &mut usize) {
+    ui.horizontal(|ui| {
+        for (i, label) in labels.iter().enumerate() {
+            let active = *selected == i;
+            let color = if active { BLUE } else { SUBTEXT0 };
+
+            let response = ui.add(
+                egui::Label::new(RichText::new(*label).size(FONT_BODY).color(color))
+                    .selectable(false)
+                    .sense(egui::Sense::click()),
+            );
+
+            if active {
+                // Draw underline indicator
+                let rect = response.rect;
+                ui.painter().line_segment(
+                    [rect.left_bottom(), rect.right_bottom()],
+                    Stroke::new(2.0, BLUE),
+                );
+            }
+
+            if response.clicked() { *selected = i; }
+            ui.add_space(SP_LG);
+        }
+    });
+    // Separator line under tabs
+    let rect = ui.max_rect();
+    ui.painter().line_segment(
+        [egui::pos2(rect.left(), ui.cursor().top()), egui::pos2(rect.right(), ui.cursor().top())],
+        Stroke::new(1.0, SURFACE0),
+    );
+    ui.add_space(SP_SM);
+}
+
+/// Key-value info row.
 pub fn info_row(ui: &mut egui::Ui, label: &str, value: &str) {
     ui.horizontal(|ui| {
-        ui.colored_label(OVERLAY0, RichText::new(label).small());
+        ui.colored_label(OVERLAY0, RichText::new(label).size(FONT_SMALL));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(RichText::new(value).small().color(SUBTEXT1));
+            ui.label(RichText::new(value).size(FONT_SMALL).color(SUBTEXT1));
         });
     });
 }
 
-/// A connection status row with coloured dot.
+/// Status dot + text row.
 pub fn status_row(ui: &mut egui::Ui, label: &str, status: &str, ok: bool) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new(label).color(TEXT));
+        ui.label(RichText::new(label).size(FONT_BODY).color(TEXT));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let (dot, color) = if ok { ("●", GREEN) } else { ("○", RED) };
-            ui.colored_label(color, format!("{dot} {status}"));
+            ui.colored_label(color, RichText::new(format!("{dot} {status}")).size(FONT_SMALL));
         });
     });
 }
 
-/// Map a task status string to a Catppuccin accent colour.
 pub fn status_color(status: &str) -> Color32 {
     match status {
         "DONE" => GREEN,
@@ -131,7 +174,6 @@ pub fn status_color(status: &str) -> Color32 {
     }
 }
 
-/// Map a log level to a Catppuccin colour.
 pub fn log_color(level: crate::ui_service::LogLevel) -> Color32 {
     use crate::ui_service::LogLevel;
     match level {
