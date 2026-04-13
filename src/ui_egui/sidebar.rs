@@ -108,14 +108,16 @@ pub fn show(
                     }
                 });
 
-            ui.add_space(theme::SP_MD);
+            ui.add_space(theme::SP_SM);
+            theme::thin_separator(ui);
 
             // ── SYSTEM ───────────────────────────────────────────────────
             group_label(ui, "SYSTEM");
             nav_item(ui, "系統設定", View::Settings, view);
             nav_item(ui, "Log", View::Log, view);
 
-            ui.add_space(theme::SP_SM);
+            ui.add_space(theme::SP_XS);
+            theme::thin_separator(ui);
 
             // ── DEVELOP ──────────────────────────────────────────────────
             group_label(ui, "DEVELOP");
