@@ -1,4 +1,4 @@
-//! Left sidebar — Slack-inspired: logo, agent list (name + dot only), grouped nav, status bar.
+//! Sidebar — Claude Desktop style: pure text list, selected = left accent bar.
 
 use std::sync::Arc;
 use eframe::egui::{self, RichText, ScrollArea};
@@ -11,20 +11,14 @@ pub fn show(
     view: &mut View, renaming: &mut Option<(usize, String)>,
 ) {
     egui::SidePanel::left("sidebar").resizable(false).exact_width(200.0)
-        .frame(egui::Frame::new().fill(theme::BG).inner_margin(egui::vec2(theme::SP_SM, 0.0))
-            .stroke(egui::Stroke::new(1.0, theme::BORDER)))
+        .frame(egui::Frame::new().fill(theme::BG))
         .show(ctx, |ui| {
             ui.add_space(theme::SP_LG);
+            ui.add_space(theme::SP_SM);
 
-            // ── Logo ─────────────────────────────────────────────────────
-            ui.label(RichText::new("Sirin").size(theme::FONT_HEADING).strong().color(theme::TEXT));
-            ui.add_space(theme::SP_XL);
-
-            // ── AGENTS ───────────────────────────────────────────────────
-            section_label(ui, "AGENTS");
-
+            // ── Agent list ───────────────────────────────────────────────
             ScrollArea::vertical().id_salt("agents")
-                .max_height(ui.available_height() - 200.0)
+                .max_height(ui.available_height() - 180.0)
                 .show(ui, |ui| {
                     let mut rename_commit: Option<(usize, String)> = None;
 
@@ -33,25 +27,30 @@ pub fn show(
                         let pending_n = pending_counts.get(&agent.id).copied().unwrap_or(0);
                         let is_renaming = renaming.as_ref().map(|(i, _)| *i == idx).unwrap_or(false);
 
-                        // Interaction
                         let (rect, response) = ui.allocate_exact_size(
-                            egui::vec2(ui.available_width(), 32.0),
+                            egui::vec2(ui.available_width(), 30.0),
                             egui::Sense::click(),
                         );
 
-                        // Background: selected or hovered
+                        // Selected: left accent bar + dark bg
                         if is_selected {
-                            ui.painter().rect_filled(rect, 6.0, theme::HOVER);
+                            ui.painter().rect_filled(rect, 4.0, theme::HOVER);
+                            // Left accent bar (3px wide)
+                            let bar = egui::Rect::from_min_size(
+                                rect.left_top(),
+                                egui::vec2(3.0, rect.height()),
+                            );
+                            ui.painter().rect_filled(bar, 2.0, theme::ACCENT);
                         } else if response.hovered() {
-                            ui.painter().rect_filled(rect, 6.0, theme::CARD);
+                            ui.painter().rect_filled(rect, 4.0, theme::CARD);
                         }
 
-                        // Content
-                        let content_rect = rect.shrink2(egui::vec2(theme::SP_SM, 0.0));
+                        let content_rect = rect.shrink2(egui::vec2(theme::SP_MD, 0.0));
+
                         if is_renaming {
                             let buf = &mut renaming.as_mut().unwrap().1;
-                            let mut r = ui.child_ui(content_rect, *ui.layout(), None);
-                            let resp = r.text_edit_singleline(buf);
+                            let mut child = ui.child_ui(content_rect, *ui.layout(), None);
+                            let resp = child.text_edit_singleline(buf);
                             if resp.lost_focus() {
                                 if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                                     rename_commit = Some((idx, buf.clone()));
@@ -63,41 +62,21 @@ pub fn show(
                             if response.clicked() { *view = View::Workspace(idx); }
                             if response.double_clicked() { *renaming = Some((idx, agent.name.clone())); }
 
-                            // Draw: dot + name + (badge)
-                            let dot_color = match agent.live_status.as_str() {
-                                "connected" => theme::ACCENT,
-                                "reconnecting" => theme::YELLOW,
-                                "waiting" => theme::YELLOW,
-                                "error" => theme::DANGER,
-                                _ => if agent.enabled { theme::TEXT_DIM } else { theme::BORDER },
-                            };
-
                             let text_color = if is_selected { theme::TEXT } else { theme::TEXT_DIM };
-
-                            // Dot
-                            let dot_center = egui::pos2(content_rect.left() + 6.0, content_rect.center().y);
-                            ui.painter().circle_filled(dot_center, 4.0, dot_color);
-
-                            // Name
-                            let name_pos = egui::pos2(content_rect.left() + 18.0, content_rect.center().y - 7.0);
+                            let name_pos = egui::pos2(content_rect.left(), content_rect.center().y - 7.0);
                             ui.painter().text(
-                                name_pos, egui::Align2::LEFT_TOP,
-                                &agent.name,
-                                egui::FontId::proportional(theme::FONT_BODY),
-                                text_color,
+                                name_pos, egui::Align2::LEFT_TOP, &agent.name,
+                                egui::FontId::proportional(theme::FONT_BODY), text_color,
                             );
 
-                            // Pending badge (right-aligned)
+                            // Pending count (right side, small)
                             if pending_n > 0 {
-                                let badge_text = format!("{pending_n}");
-                                let badge_pos = egui::pos2(content_rect.right() - 8.0, content_rect.center().y);
-                                let badge_rect = egui::Rect::from_center_size(badge_pos, egui::vec2(20.0, 16.0));
-                                ui.painter().rect_filled(badge_rect, 8.0, theme::YELLOW);
+                                let count_pos = egui::pos2(content_rect.right() - 4.0, content_rect.center().y);
                                 ui.painter().text(
-                                    badge_pos, egui::Align2::CENTER_CENTER,
-                                    &badge_text,
+                                    count_pos, egui::Align2::RIGHT_CENTER,
+                                    &format!("{pending_n}"),
                                     egui::FontId::proportional(theme::FONT_CAPTION),
-                                    theme::BG,
+                                    theme::ACCENT,
                                 );
                             }
                         }
@@ -108,74 +87,63 @@ pub fn show(
                     }
                 });
 
-            ui.add_space(theme::SP_MD);
-
-            // ── SYSTEM ───────────────────────────────────────────────────
-            section_label(ui, "SYSTEM");
-            nav_item(ui, "⚙  系統設定", View::Settings, view);
-            nav_item(ui, "📋  Log", View::Log, view);
-
             ui.add_space(theme::SP_SM);
 
-            // ── DEVELOP ──────────────────────────────────────────────────
-            section_label(ui, "DEVELOP");
-            nav_item(ui, "🔧  Skill 開發", View::Workflow, view);
-            nav_item(ui, "🤝  會議室", View::Meeting, view);
+            // ── Section: dimmed label ────────────────────────────────────
+            sidebar_label(ui, "System");
+            sidebar_item(ui, "系統設定", View::Settings, view);
+            sidebar_item(ui, "Log", View::Log, view);
 
-            // ── STATUS (bottom) ──────────────────────────────────────────
+            ui.add_space(theme::SP_SM);
+            sidebar_label(ui, "Develop");
+            sidebar_item(ui, "Skill 開發", View::Workflow, view);
+            sidebar_item(ui, "會議室", View::Meeting, view);
+
+            // ── Bottom status ────────────────────────────────────────────
             ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
                 ui.add_space(theme::SP_SM);
                 let status = svc.system_status();
                 ui.horizontal(|ui| {
-                    status_dot(ui, "TG", status.telegram_connected);
                     ui.add_space(theme::SP_MD);
-                    status_dot(ui, "RPC", status.rpc_running);
+                    let tg_color = if status.telegram_connected { theme::ACCENT } else { theme::DANGER };
+                    let rpc_color = if status.rpc_running { theme::ACCENT } else { theme::DANGER };
+                    ui.colored_label(tg_color, RichText::new("●").size(theme::FONT_CAPTION));
+                    ui.colored_label(theme::TEXT_DIM, RichText::new("TG").size(theme::FONT_CAPTION));
+                    ui.add_space(theme::SP_SM);
+                    ui.colored_label(rpc_color, RichText::new("●").size(theme::FONT_CAPTION));
+                    ui.colored_label(theme::TEXT_DIM, RichText::new("RPC").size(theme::FONT_CAPTION));
                 });
-                ui.add_space(theme::SP_XS);
-                // Thin separator
-                ui.painter().line_segment(
-                    [ui.cursor().left_top(), egui::pos2(ui.cursor().left_top().x + ui.available_width(), ui.cursor().left_top().y)],
-                    egui::Stroke::new(1.0, theme::CARD),
-                );
             });
         });
 }
 
-fn section_label(ui: &mut egui::Ui, text: &str) {
-    ui.add_space(theme::SP_XS);
-    ui.label(RichText::new(text).size(theme::FONT_CAPTION).strong().color(theme::BORDER));
+fn sidebar_label(ui: &mut egui::Ui, text: &str) {
+    ui.horizontal(|ui| {
+        ui.add_space(theme::SP_MD);
+        ui.label(RichText::new(text).size(theme::FONT_SMALL).color(theme::TEXT_DIM));
+    });
     ui.add_space(theme::SP_XS);
 }
 
-fn nav_item(ui: &mut egui::Ui, label: &str, target: View, current: &mut View) {
+fn sidebar_item(ui: &mut egui::Ui, label: &str, target: View, current: &mut View) {
     let active = std::mem::discriminant(current) == std::mem::discriminant(&target);
-    let text_color = if active { theme::TEXT } else { theme::TEXT_DIM };
 
     let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), 30.0),
+        egui::vec2(ui.available_width(), 28.0),
         egui::Sense::click(),
     );
 
     if active {
-        ui.painter().rect_filled(rect, 6.0, theme::CARD);
+        ui.painter().rect_filled(rect, 4.0, theme::HOVER);
+        let bar = egui::Rect::from_min_size(rect.left_top(), egui::vec2(3.0, rect.height()));
+        ui.painter().rect_filled(bar, 2.0, theme::ACCENT);
     } else if response.hovered() {
-        ui.painter().rect_filled(rect, 6.0, theme::CARD.linear_multiply(0.5));
+        ui.painter().rect_filled(rect, 4.0, theme::CARD);
     }
 
-    let text_pos = egui::pos2(rect.left() + theme::SP_SM, rect.center().y - 7.0);
-    ui.painter().text(
-        text_pos, egui::Align2::LEFT_TOP, label,
-        egui::FontId::proportional(theme::FONT_BODY), text_color,
-    );
+    let text_color = if active { theme::TEXT } else { theme::TEXT_DIM };
+    let pos = egui::pos2(rect.left() + theme::SP_MD, rect.center().y - 6.5);
+    ui.painter().text(pos, egui::Align2::LEFT_TOP, label, egui::FontId::proportional(theme::FONT_BODY), text_color);
 
     if response.clicked() { *current = target; }
-}
-
-fn status_dot(ui: &mut egui::Ui, label: &str, ok: bool) {
-    let color = if ok { theme::ACCENT } else { theme::DANGER };
-    ui.horizontal(|ui| {
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
-        ui.painter().circle_filled(rect.center(), 3.0, color);
-        ui.colored_label(theme::TEXT_DIM, RichText::new(label).size(theme::FONT_CAPTION));
-    });
 }

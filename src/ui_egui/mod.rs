@@ -93,37 +93,27 @@ impl eframe::App for SirinApp {
 
         sidebar::show(ctx, &self.svc, &self.agents, &self.pending_counts, &mut self.view, &mut self.renaming);
 
-        // ── Top bar ───────────────────────────────────────────────────────
+        // ── Top bar (32pt, clean like Claude Desktop) ─────────────────────
         egui::TopBottomPanel::top("top_bar")
             .exact_height(32.0)
-            .frame(egui::Frame::new().fill(theme::CARD).inner_margin(egui::vec2(theme::SP_MD, theme::SP_XS))
-                .stroke(egui::Stroke::new(1.0, theme::BORDER)))
+            .frame(egui::Frame::new().fill(theme::BG).inner_margin(egui::vec2(theme::SP_MD, theme::SP_XS)))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    // Page title + breadcrumb
-                    let (icon, title, subtitle) = match &self.view {
-                        View::Workspace(idx) => {
-                            let name = self.agents.get(*idx).map(|a| a.name.as_str()).unwrap_or("—");
-                            ("💬", name, "Agent 工作區")
-                        }
-                        View::Settings => ("⚙", "系統設定", "LLM / TG / MCP / 技能"),
-                        View::Log => ("📋", "系統 Log", "即時日誌"),
-                        View::Workflow => ("🔧", "Skill 開發", "工作流 Pipeline"),
-                        View::Meeting => ("🤝", "會議室", "多 Agent 協作"),
-                    };
-                    ui.label(RichText::new(icon).size(theme::FONT_HEADING));
-                    ui.label(RichText::new(title).strong().size(theme::FONT_HEADING).color(theme::TEXT));
-                    ui.colored_label(theme::TEXT_DIM, RichText::new(format!("/ {subtitle}")).size(theme::FONT_SMALL));
+                    ui.label(RichText::new("Sirin").size(theme::FONT_BODY).strong().color(theme::TEXT));
+                    ui.colored_label(theme::TEXT_DIM, RichText::new("v0.1.0").size(theme::FONT_CAPTION));
 
-                    // Right side: agent count + pending total
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // Status indicators
+                        let status = self.svc.system_status();
+                        let tg_color = if status.telegram_connected { theme::ACCENT } else { theme::DANGER };
+                        ui.colored_label(tg_color, RichText::new("●").size(theme::FONT_CAPTION));
+                        ui.colored_label(theme::TEXT_DIM, RichText::new("TG").size(theme::FONT_CAPTION));
+                        ui.add_space(theme::SP_SM);
+
                         let total_pending: usize = self.pending_counts.values().sum();
                         if total_pending > 0 {
                             theme::count_badge(ui, total_pending);
-                            ui.colored_label(theme::TEXT_DIM, RichText::new("待審").size(theme::FONT_SMALL));
                         }
-                        ui.colored_label(theme::BORDER, RichText::new("|").size(theme::FONT_SMALL));
-                        ui.colored_label(theme::TEXT_DIM, RichText::new(format!("{} agents", self.agents.len())).size(theme::FONT_SMALL));
                     });
                 });
             });

@@ -1,81 +1,73 @@
-//! Sirin UI theme — 極簡硬核風 (crypto terminal / system monitor aesthetic).
+//! Sirin UI theme — 極簡硬核風，參考 Claude Desktop settings 風格。
 //!
-//! Design spec:
-//!   背景 #1A1A1A, 卡片 #222222, 邊框 #333333
-//!   運行 #00FFA3, 警告 #FF4B4B, 資訊 #4DA6FF
-//!   主文字 #E0E0E0, 副文字 #808080, 數值 #FFFFFF mono
+//! 特點：零邊框卡片、大標題、淡分隔線、左側亮色條選中態。
 
 use eframe::egui::{self, Color32, RichText, Stroke, FontFamily};
 
 // ── Palette ──────────────────────────────────────────────────────────────────
 
-pub const BG: Color32 = Color32::from_rgb(0x1A, 0x1A, 0x1A);         // 背景
-pub const CARD: Color32 = Color32::from_rgb(0x22, 0x22, 0x22);       // 卡片/面板
-pub const HOVER: Color32 = Color32::from_rgb(0x2A, 0x2A, 0x2A);      // Hover 狀態
-pub const BORDER: Color32 = Color32::from_rgb(0x33, 0x33, 0x33);     // 邊框
-pub const TEXT: Color32 = Color32::from_rgb(0xE0, 0xE0, 0xE0);       // 主文字
-pub const TEXT_DIM: Color32 = Color32::from_rgb(0x80, 0x80, 0x80);   // 副文字/標籤
-pub const ACCENT: Color32 = Color32::from_rgb(0x00, 0xFF, 0xA3);     // 運行/安全
-pub const DANGER: Color32 = Color32::from_rgb(0xFF, 0x4B, 0x4B);     // 警告/停用
-pub const INFO: Color32 = Color32::from_rgb(0x4D, 0xA6, 0xFF);       // 資訊/連結
-pub const VALUE: Color32 = Color32::WHITE;                             // 數值 (mono)
-pub const YELLOW: Color32 = Color32::from_rgb(0xFF, 0xD9, 0x3D);     // 等待/警示
+pub const BG: Color32 = Color32::from_rgb(0x1A, 0x1A, 0x1A);
+pub const CARD: Color32 = Color32::from_rgb(0x22, 0x22, 0x22);
+pub const HOVER: Color32 = Color32::from_rgb(0x2A, 0x2A, 0x2A);
+pub const BORDER: Color32 = Color32::from_rgb(0x33, 0x33, 0x33);
+pub const TEXT: Color32 = Color32::from_rgb(0xE0, 0xE0, 0xE0);
+pub const TEXT_DIM: Color32 = Color32::from_rgb(0x80, 0x80, 0x80);
+pub const ACCENT: Color32 = Color32::from_rgb(0x00, 0xFF, 0xA3);
+pub const DANGER: Color32 = Color32::from_rgb(0xFF, 0x4B, 0x4B);
+pub const INFO: Color32 = Color32::from_rgb(0x4D, 0xA6, 0xFF);
+pub const VALUE: Color32 = Color32::WHITE;
+pub const YELLOW: Color32 = Color32::from_rgb(0xFF, 0xD9, 0x3D);
 
 // ── Typography ───────────────────────────────────────────────────────────────
 
-pub const FONT_HEADING: f32 = 16.0;
-pub const FONT_BODY: f32 = 13.0;
-pub const FONT_SMALL: f32 = 11.5;
-pub const FONT_CAPTION: f32 = 10.0;
+pub const FONT_TITLE: f32 = 18.0;     // section title (bold, white)
+pub const FONT_HEADING: f32 = 15.0;   // sub-heading
+pub const FONT_BODY: f32 = 13.0;      // normal content
+pub const FONT_SMALL: f32 = 11.5;     // labels, secondary
+pub const FONT_CAPTION: f32 = 10.0;   // timestamps
 
 // ── Spacing ──────────────────────────────────────────────────────────────────
 
 pub const SP_XS: f32 = 4.0;
 pub const SP_SM: f32 = 8.0;
 pub const SP_MD: f32 = 12.0;
-pub const SP_LG: f32 = 16.0;
-pub const SP_XL: f32 = 24.0;
+pub const SP_LG: f32 = 20.0;    // between sections (generous)
+pub const SP_XL: f32 = 32.0;    // page-level gaps
 
-// ── Apply theme ──────────────────────────────────────────────────────────────
+// ── Apply ────────────────────────────────────────────────────────────────────
 
 pub fn apply(ctx: &egui::Context) {
     let mut v = egui::Visuals::dark();
-
-    // Backgrounds
     v.panel_fill = BG;
-    v.window_fill = CARD;
+    v.window_fill = BG;
     v.faint_bg_color = CARD;
     v.extreme_bg_color = Color32::from_rgb(0x12, 0x12, 0x12);
 
-    // Widgets
     v.widgets.noninteractive.bg_fill = CARD;
-    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, BORDER);
+    v.widgets.noninteractive.bg_stroke = Stroke::NONE;
     v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, TEXT_DIM);
 
     v.widgets.inactive.bg_fill = CARD;
-    v.widgets.inactive.bg_stroke = Stroke::new(1.0, BORDER);
+    v.widgets.inactive.bg_stroke = Stroke::new(0.5, BORDER);
     v.widgets.inactive.fg_stroke = Stroke::new(1.0, TEXT);
 
     v.widgets.hovered.bg_fill = HOVER;
-    v.widgets.hovered.bg_stroke = Stroke::new(1.0, ACCENT);  // hover 邊框亮
+    v.widgets.hovered.bg_stroke = Stroke::new(1.0, TEXT_DIM);
     v.widgets.hovered.fg_stroke = Stroke::new(1.0, TEXT);
 
-    v.widgets.active.bg_fill = Color32::from_rgb(0x33, 0x33, 0x33);
+    v.widgets.active.bg_fill = HOVER;
     v.widgets.active.bg_stroke = Stroke::new(1.0, ACCENT);
     v.widgets.active.fg_stroke = Stroke::new(1.0, VALUE);
 
-    // Selection
-    v.selection.bg_fill = ACCENT.linear_multiply(0.15);
+    v.selection.bg_fill = ACCENT.linear_multiply(0.12);
     v.selection.stroke = Stroke::new(1.0, ACCENT);
 
-    // Shape
     v.window_corner_radius = 4.0.into();
     v.menu_corner_radius = 4.0.into();
-    v.popup_shadow = egui::epaint::Shadow { offset: [1, 2], blur: 6, spread: 0, color: Color32::from_black_alpha(80) };
+    v.popup_shadow = egui::epaint::Shadow { offset: [1, 2], blur: 6, spread: 0, color: Color32::from_black_alpha(60) };
 
     ctx.set_visuals(v);
 
-    // Spacing
     let mut style = (*ctx.style()).clone();
     style.spacing.item_spacing = egui::vec2(SP_SM, SP_XS);
     style.spacing.button_padding = egui::vec2(SP_SM, SP_XS);
@@ -84,47 +76,37 @@ pub fn apply(ctx: &egui::Context) {
 
 // ── Widgets ──────────────────────────────────────────────────────────────────
 
-/// Card — dark bg + border + rounded 4px (spec: Rounding(4.0) + Stroke(1.0, #333))
+/// Section — big bold title + thin separator below, then content.
+/// Like Claude Desktop's "Plan usage limits" sections.
+pub fn section(ui: &mut egui::Ui, title: &str, content: impl FnOnce(&mut egui::Ui)) {
+    ui.add_space(SP_LG);
+    ui.label(RichText::new(title).size(FONT_TITLE).strong().color(TEXT));
+    ui.add_space(SP_SM);
+    content(ui);
+    ui.add_space(SP_SM);
+    // Thin separator
+    thin_separator(ui);
+}
+
+/// Ultra-thin separator line (#333).
+pub fn thin_separator(ui: &mut egui::Ui) {
+    let width = ui.available_width();
+    let pos = ui.cursor().left_top();
+    ui.painter().line_segment(
+        [pos, egui::pos2(pos.x + width, pos.y)],
+        Stroke::new(0.5, BORDER),
+    );
+    ui.add_space(SP_XS);
+}
+
+/// Card — NO border. Just slightly lighter bg. Claude Desktop style.
 pub fn card(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new()
         .fill(CARD)
         .corner_radius(4.0)
-        .stroke(Stroke::new(1.0, BORDER))
         .inner_margin(SP_MD)
         .show(ui, |ui| content(ui));
     ui.add_space(SP_SM);
-}
-
-/// Section header (dim label) + indented content.
-pub fn section(ui: &mut egui::Ui, title: &str, content: impl FnOnce(&mut egui::Ui)) {
-    ui.add_space(SP_SM);
-    ui.label(RichText::new(title).size(FONT_SMALL).strong().color(TEXT_DIM));
-    ui.add_space(SP_XS);
-    ui.indent(title, |ui| { content(ui); });
-    ui.add_space(SP_SM);
-}
-
-/// Status dot (filled circle) + text. ACCENT=running, DANGER=stopped.
-pub fn status_dot(ui: &mut egui::Ui, label: &str, ok: bool) {
-    ui.horizontal(|ui| {
-        let color = if ok { ACCENT } else { DANGER };
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
-        ui.painter().circle_filled(rect.center(), 3.5, color);
-        ui.label(RichText::new(label).size(FONT_BODY).color(TEXT));
-    });
-}
-
-/// Status row: fixed-width label + dot+status (not pushed to far right).
-pub fn status_row(ui: &mut egui::Ui, label: &str, status: &str, ok: bool) {
-    ui.horizontal(|ui| {
-        ui.allocate_ui_with_layout(
-            egui::vec2(100.0, ui.spacing().interact_size.y),
-            egui::Layout::left_to_right(egui::Align::Center),
-            |ui| { ui.label(RichText::new(label).size(FONT_BODY).color(TEXT)); },
-        );
-        let color = if ok { ACCENT } else { DANGER };
-        ui.colored_label(color, RichText::new(format!("● {status}")).size(FONT_SMALL));
-    });
 }
 
 /// Pill badge.
@@ -132,14 +114,13 @@ pub fn badge(ui: &mut egui::Ui, label: &str, color: Color32) {
     egui::Frame::new()
         .fill(color.linear_multiply(0.12))
         .corner_radius(3.0)
-        .stroke(Stroke::new(0.5, color.linear_multiply(0.3)))
         .inner_margin(egui::vec2(6.0, 1.0))
         .show(ui, |ui| {
             ui.label(RichText::new(label).size(FONT_CAPTION).color(color));
         });
 }
 
-/// Count badge (accent bg).
+/// Count badge.
 pub fn count_badge(ui: &mut egui::Ui, count: usize) {
     if count == 0 { return; }
     egui::Frame::new()
@@ -151,12 +132,22 @@ pub fn count_badge(ui: &mut egui::Ui, count: usize) {
         });
 }
 
+/// Status dot (small circle) + label text.
+pub fn status_dot(ui: &mut egui::Ui, label: &str, ok: bool) {
+    let color = if ok { ACCENT } else { DANGER };
+    ui.horizontal(|ui| {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+        ui.painter().circle_filled(rect.center(), 3.5, color);
+        ui.label(RichText::new(label).size(FONT_BODY).color(TEXT));
+    });
+}
+
 /// Underline tab bar.
 pub fn tab_bar(ui: &mut egui::Ui, labels: &[&str], selected: &mut usize) {
     ui.horizontal(|ui| {
         for (i, label) in labels.iter().enumerate() {
             let active = *selected == i;
-            let color = if active { ACCENT } else { TEXT_DIM };
+            let color = if active { TEXT } else { TEXT_DIM };
             let response = ui.add(
                 egui::Label::new(RichText::new(*label).size(FONT_BODY).color(color))
                     .selectable(false).sense(egui::Sense::click()),
@@ -169,49 +160,49 @@ pub fn tab_bar(ui: &mut egui::Ui, labels: &[&str], selected: &mut usize) {
             ui.add_space(SP_LG);
         }
     });
-    let r = ui.max_rect();
-    ui.painter().line_segment(
-        [egui::pos2(r.left(), ui.cursor().top()), egui::pos2(r.right(), ui.cursor().top())],
-        Stroke::new(1.0, BORDER),
-    );
+    thin_separator(ui);
     ui.add_space(SP_SM);
 }
 
-/// Key-value info row: fixed-width label + value (compact, not stretched).
+/// Key-value info row — label left (100px), value right after. Monospace values.
 pub fn info_row(ui: &mut egui::Ui, label: &str, value: &str) {
     ui.horizontal(|ui| {
         ui.allocate_ui_with_layout(
-            egui::vec2(100.0, ui.spacing().interact_size.y),
+            egui::vec2(120.0, ui.spacing().interact_size.y),
             egui::Layout::left_to_right(egui::Align::Center),
-            |ui| { ui.colored_label(TEXT_DIM, RichText::new(label).size(FONT_SMALL)); },
+            |ui| { ui.label(RichText::new(label).size(FONT_BODY).color(TEXT_DIM)); },
         );
-        ui.label(RichText::new(value).size(FONT_SMALL).color(TEXT).family(FontFamily::Monospace));
+        ui.label(RichText::new(value).size(FONT_BODY).color(TEXT).family(FontFamily::Monospace));
     });
 }
 
-/// Map task status to colour.
+/// Status row — label + dot+status text.
+pub fn status_row(ui: &mut egui::Ui, label: &str, status: &str, ok: bool) {
+    ui.horizontal(|ui| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(120.0, ui.spacing().interact_size.y),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| { ui.label(RichText::new(label).size(FONT_BODY).color(TEXT)); },
+        );
+        let color = if ok { ACCENT } else { DANGER };
+        ui.colored_label(color, RichText::new(format!("● {status}")).size(FONT_SMALL));
+    });
+}
+
 pub fn status_color(status: &str) -> Color32 {
     match status {
-        "DONE" => ACCENT,
-        "PENDING" | "RUNNING" => YELLOW,
-        "FOLLOWING" => INFO,
-        "FOLLOWUP_NEEDED" => YELLOW,
-        "FAILED" | "ERROR" => DANGER,
-        _ => TEXT_DIM,
+        "DONE" => ACCENT, "PENDING" | "RUNNING" => YELLOW, "FOLLOWING" => INFO,
+        "FOLLOWUP_NEEDED" => YELLOW, "FAILED" | "ERROR" => DANGER, _ => TEXT_DIM,
     }
 }
 
-/// Map log level to colour.
 pub fn log_color(level: crate::ui_service::LogLevel) -> Color32 {
     use crate::ui_service::LogLevel;
     match level {
-        LogLevel::Error => DANGER,
-        LogLevel::Warn => YELLOW,
-        LogLevel::Telegram => INFO,
-        LogLevel::Research => ACCENT,
-        LogLevel::Followup => YELLOW,
-        LogLevel::Coding => Color32::from_rgb(0xBB, 0x86, 0xFC), // purple
-        LogLevel::Teams => Color32::from_rgb(0x00, 0xCC, 0xCC),  // teal
+        LogLevel::Error => DANGER, LogLevel::Warn => YELLOW, LogLevel::Telegram => INFO,
+        LogLevel::Research => ACCENT, LogLevel::Followup => YELLOW,
+        LogLevel::Coding => Color32::from_rgb(0xBB, 0x86, 0xFC),
+        LogLevel::Teams => Color32::from_rgb(0x00, 0xCC, 0xCC),
         LogLevel::Info | LogLevel::Normal => TEXT_DIM,
     }
 }
