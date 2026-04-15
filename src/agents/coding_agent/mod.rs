@@ -17,6 +17,7 @@
 #![allow(dead_code)]
 
 mod helpers;
+mod verdict;
 
 use futures::FutureExt;
 use serde::{Deserialize, Serialize};
@@ -32,6 +33,11 @@ use helpers::{
     build_task_named_file_context, describe_tools, extract_json_body, extract_path_hints_from_task,
     file_read_cache_key, format_tool_output, format_tool_output_large, is_read_only_analysis_task,
     maybe_enrich_tool_error, preview_text, preview_tool_input, step_fingerprint, truncate_to_bytes,
+};
+use verdict::{
+    build_change_summary, build_fail_fast_outcome, derive_result_status, followup_reason,
+    has_sufficient_analysis_evidence, overall_verified, salvage_non_json_final_answer,
+    synthesize_read_only_outcome, HistoryEntry,
 };
 
 // ── Public request / response types ──────────────────────────────────────────
@@ -1113,64 +1119,6 @@ fn parse_react_step(raw: &str) -> ReactStep {
     }
 }
 
-// ── Post-processing ───────────────────────────────────────────────────────────
-
-fn overall_verified(
-    dry_run: bool,
-    build_verified: bool,
-    attempted_write: bool,
-    files_modified_count: usize,
-    had_tool_errors: bool,
-) -> bool {
-    if dry_run || !build_verified {
-        return false;
-    }
-    if attempted_write && files_modified_count == 0 {
-        return false;
-    }
-    if had_tool_errors && files_modified_count == 0 {
-        return false;
-    }
-    true
-}
-
-fn followup_reason(
-    dry_run: bool,
-    build_verified: bool,
-    attempted_write: bool,
-    files_modified_count: usize,
-    had_tool_errors: bool,
-    last_tool_error: Option<&str>,
-) -> Option<String> {
-    if dry_run {
-        return None;
-    }
-
-    if !build_verified {
-        return Some("cargo check 尚未通過，任務仍需 follow-up。".to_string());
-    }
-
-    if attempted_write && files_modified_count == 0 {
-        let suffix = last_tool_error
-            .map(|err| format!(" 最後錯誤：{err}"))
-            .unwrap_or_default();
-        return Some(format!(
-            "Agent 曾嘗試修改程式，但沒有任何檔案真正寫入；這通常代表路徑猜錯、上下文已過期，或 patch 比對失敗。請先重新確認真實檔案位置後再繼續。{suffix}"
-        ));
-    }
-
-    if had_tool_errors && files_modified_count == 0 {
-        let suffix = last_tool_error
-            .map(|err| format!(" 最後錯誤：{err}"))
-            .unwrap_or_default();
-        return Some(format!(
-            "工具執行過程仍有錯誤，任務需要 follow-up。{suffix}"
-        ));
-    }
-
-    None
-}
-
 async fn verify_build(ctx: &AgentContext) -> (bool, Option<String>) {
     match ctx
         .call_tool("shell_exec", json!({ "command": "cargo check" }))
@@ -1240,199 +1188,6 @@ async fn auto_commit(task: &str, files_modified: &[String]) -> bool {
         files_modified.len()
     );
     true
-}
-
-// ── History entry ─────────────────────────────────────────────────────────────
-
-struct HistoryEntry {
-    thought: String,
-    action: String,
-    action_input: Value,
-    observation: String,
-    /// Pinned entries (e.g. file_read) are always included in the history
-    /// window regardless of how many iterations have passed.
-    pinned: bool,
-}
-
-fn has_sufficient_analysis_evidence(history: &[HistoryEntry]) -> bool {
-    history
-        .iter()
-        .filter(|h| h.action == "local_file_read" && !h.observation.starts_with("ERROR:"))
-        .count()
-        >= 2
-}
-
-fn inspected_paths_from_history(history: &[HistoryEntry]) -> Vec<String> {
-    let mut paths = Vec::new();
-    for entry in history {
-        if entry.action != "local_file_read" {
-            continue;
-        }
-        if let Some(path) = entry.action_input.get("path").and_then(Value::as_str) {
-            let path = path.trim().to_string();
-            if !path.is_empty() && !paths.contains(&path) {
-                paths.push(path);
-            }
-        }
-    }
-    paths
-}
-
-fn salvage_non_json_final_answer(raw: &str, history: &[HistoryEntry]) -> String {
-    let trimmed = raw.trim();
-    if trimmed.len() >= 40 {
-        return trimmed.to_string();
-    }
-
-    let inspected = inspected_paths_from_history(history);
-    if inspected.is_empty() {
-        "分析完成，但模型沒有回傳結構化 JSON。請根據已讀取的檔案內容確認結論。".to_string()
-    } else {
-        format!(
-            "分析完成。已檢查檔案：{}。模型最後一步沒有回傳合法 JSON，但前面的檔案證據已足以支撐這個結論。",
-            inspected.join(", ")
-        )
-    }
-}
-
-fn synthesize_read_only_outcome(history: &[HistoryEntry]) -> String {
-    let inspected = inspected_paths_from_history(history);
-    let evidence = history
-        .iter()
-        .rev()
-        .find(|h| {
-            matches!(h.action.as_str(), "local_file_read" | "codebase_search")
-                && !h.observation.starts_with("ERROR:")
-        })
-        .map(|h| preview_text(&h.observation))
-        .unwrap_or_default();
-
-    if inspected.is_empty() {
-        "分析完成；目前沒有寫入任何檔案。".to_string()
-    } else if evidence.is_empty() {
-        format!(
-            "分析完成。已檢查檔案：{}。目前沒有寫入任何檔案。",
-            inspected.join(", ")
-        )
-    } else {
-        format!(
-            "分析完成。已檢查檔案：{}。目前沒有寫入任何檔案。\n\n最後一條關鍵證據：{}",
-            inspected.join(", "),
-            evidence
-        )
-    }
-}
-
-fn build_fail_fast_outcome(
-    reason: &str,
-    history: &[HistoryEntry],
-    last_tool_error: Option<&str>,
-    read_only_analysis: bool,
-) -> String {
-    let suffix = last_tool_error
-        .map(|err| format!(" 最後錯誤：{err}"))
-        .unwrap_or_default();
-
-    if read_only_analysis && has_sufficient_analysis_evidence(history) {
-        format!(
-            "⚠️ {reason}.{suffix}\n\n{}",
-            synthesize_read_only_outcome(history)
-        )
-    } else {
-        format!("⚠️ 任務已 fail-fast 中止：{reason}.{suffix}")
-    }
-}
-
-fn derive_result_status(
-    dry_run: bool,
-    analysis_completed: bool,
-    verified: bool,
-    build_verified: bool,
-    attempted_write: bool,
-    files_modified_count: usize,
-    had_tool_errors: bool,
-) -> CodingResultStatus {
-    if verified {
-        return CodingResultStatus::Verified;
-    }
-
-    if analysis_completed {
-        return if dry_run {
-            CodingResultStatus::DryRunDone
-        } else {
-            CodingResultStatus::Done
-        };
-    }
-
-    if dry_run && !had_tool_errors {
-        return CodingResultStatus::DryRunDone;
-    }
-
-    if !build_verified
-        || (attempted_write && files_modified_count == 0)
-        || (had_tool_errors && files_modified_count == 0)
-    {
-        return CodingResultStatus::FollowupNeeded;
-    }
-
-    CodingResultStatus::Done
-}
-
-fn build_change_summary(
-    files_modified: &[String],
-    verified: bool,
-    dry_run: bool,
-    auto_committed: bool,
-    outcome: &str,
-) -> String {
-    let mut parts = Vec::new();
-
-    if files_modified.is_empty() {
-        parts.push(if dry_run {
-            "僅分析，未寫入檔案".to_string()
-        } else {
-            "未偵測到檔案變更".to_string()
-        });
-    } else {
-        let listed = files_modified
-            .iter()
-            .take(3)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", ");
-        if files_modified.len() > 3 {
-            parts.push(format!(
-                "已變更 {} 個檔案：{} …",
-                files_modified.len(),
-                listed
-            ));
-        } else {
-            parts.push(format!(
-                "已變更 {} 個檔案：{}",
-                files_modified.len(),
-                listed
-            ));
-        }
-    }
-
-    if dry_run {
-        parts.push("dry-run".to_string());
-    } else if verified {
-        parts.push("cargo check 通過".to_string());
-    } else {
-        parts.push("待人工確認".to_string());
-    }
-
-    if auto_committed {
-        parts.push("已自動 commit".to_string());
-    }
-
-    let preview = preview_text(outcome);
-    if !preview.is_empty() {
-        parts.push(format!("摘要：{preview}"));
-    }
-
-    parts.join("｜")
 }
 
 // ── Public runner ─────────────────────────────────────────────────────────────
