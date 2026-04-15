@@ -1,6 +1,14 @@
 //! Persistent memory for Sirin.
 //!
-//! Three layers:
+//! ## Concurrency
+//! - The SQLite connection is wrapped in a process-wide `Mutex` — every
+//!   `memory_store` / `memory_search` / `memory_list_recent` call serialises
+//!   through it.  FTS5 search blocks concurrent writes (and vice versa).
+//! - The per-peer context and codebase-index files are each their own
+//!   [`crate::jsonl_log::JsonlLog`] instance and do not contend with the SQL
+//!   connection.
+//!
+//! ## Three layers
 //!
 //! 1. **Full-text memory store** (`memory_store` / `memory_search`)
 //!    SQLite FTS5 database at `{app_data}/memory/memories.db`.

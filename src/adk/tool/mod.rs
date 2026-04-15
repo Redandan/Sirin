@@ -1,6 +1,13 @@
 //! `ToolRegistry` — the ADK tool-dispatch surface.
 //!
-//! Public API:
+//! ## Concurrency
+//! `ToolRegistry` is `Clone` (shares `Arc<HashMap>` inside).  Both
+//! [`default_tool_registry`] and [`read_only_tool_registry`] are `OnceLock`
+//! singletons initialised on first access.  Per-session variants are built
+//! via [`ToolRegistry::without`] which returns a new shared handle without
+//! mutating the original — safe to pass across async tasks.
+//!
+//! ## Public API
 //! - [`ToolRegistry`] — clone-friendly handle over an Arc<HashMap>.
 //! - [`default_tool_registry`] — full registry with all built-ins + MCP tools.
 //! - [`read_only_tool_registry`] — default minus write/shell/plan tools.

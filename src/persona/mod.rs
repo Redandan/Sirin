@@ -2,7 +2,13 @@
 //! coding-agent config, and the YAML-backed `Persona` struct consumed across
 //! the app.
 //!
-//! Submodules:
+//! ## Concurrency
+//! - `Persona::cached()` returns a clone from a process-wide `RwLock<Persona>`;
+//!   concurrent readers don't block each other.  Writers (`reload_cache`) take
+//!   the write lock briefly.
+//! - Hot paths **must** call `cached()`, not `load()` — `load()` hits disk.
+//!
+//! ## Submodules
 //! - [`behavior`] — action-tier classifier and response-draft generator.
 //! - [`task_tracker`] — append-only event log (`TaskEntry` + `TaskTracker`).
 

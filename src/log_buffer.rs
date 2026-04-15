@@ -1,5 +1,10 @@
 //! Global in-process log ring buffer.
 //!
+//! ## Concurrency
+//! Ring-buffer is a `Mutex<VecDeque<String>>`.  `append` / `recent` / `clear`
+//! all take the lock briefly.  `version()` uses an atomic counter so the UI's
+//! polling loop can cheaply detect "something new" without taking the mutex.
+//!
 //! All modules write via `sirin_log!(...)` which echoes to stderr and
 //! appends to a fixed-size ring buffer that the UI reads on demand.
 

@@ -1,5 +1,10 @@
 //! Lightweight process-wide event bus for inter-agent communication.
 //!
+//! ## Concurrency
+//! Backed by a `tokio::sync::broadcast` channel (capacity 64).  `publish` is
+//! non-blocking and safe to call from any task.  Subscribers that fall behind
+//! get `RecvError::Lagged` rather than blocking the whole bus.
+//!
 //! Any module can publish an [`AgentEvent`] with [`publish`] and subscribe to
 //! receive future events with [`subscribe`].  Subscribers that fall behind are
 //! automatically skipped (lagged receivers get an error they can ignore).

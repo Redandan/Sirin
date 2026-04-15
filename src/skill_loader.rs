@@ -1,5 +1,10 @@
 //! YAML-based skill loader for `config/skills/*.yaml`.
 //!
+//! ## Concurrency
+//! Skill list is cached behind a `Mutex<Option<Vec<_>>>`.  Readers clone the
+//! cached slice under the lock; `invalidate_cache` sets the slot to `None`
+//! so the next read re-parses the YAML files.
+//!
 //! Skills defined in YAML files are merged with hardcoded skills at runtime.
 //! Call [`invalidate_cache`] to trigger a reload on next [`load_yaml_skills`] call.
 

@@ -1,7 +1,15 @@
 //! Shared LLM provider abstraction — Ollama and OpenAI-compatible (LM Studio,
 //! Gemini, Anthropic) backends.
 //!
-//! This module hosts:
+//! ## Concurrency
+//! Four `OnceLock` singletons — [`shared_http`], [`shared_llm`],
+//! [`shared_router_llm`], [`shared_large_llm`] — are initialised on first
+//! access and never mutated after.  Reqwest's `Client` is internally
+//! thread-safe and designed for concurrent reuse.  `LlmConfig` is cloned
+//! into the three derived singletons; changing env vars or `config/llm.yaml`
+//! after startup requires a process restart to take effect.
+//!
+//! ## Contents
 //! - Core types ([`LlmConfig`], [`LlmBackend`], [`MessageRole`], [`LlmMessage`]).
 //! - Process-wide singletons ([`shared_http`], [`shared_llm`], [`shared_router_llm`],
 //!   [`shared_large_llm`]).

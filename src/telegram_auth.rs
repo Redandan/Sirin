@@ -1,6 +1,12 @@
 //! Non-blocking Telegram authentication state shared between the
 //! background listener task and Tauri UI commands.
 //!
+//! ## Concurrency
+//! `TelegramAuthState` clones cheaply (inner `Arc<Mutex<Inner>>`).  All status
+//! mutations go through the mutex; the code-input channel is a
+//! `tokio::sync::mpsc` so the UI can inject user input without the listener
+//! blocking a thread while it waits.
+//!
 //! Flow:
 //! 1. `run_listener` detects an unauthorised session and calls
 //!    `TelegramAuthState::request_code`.  This sets the status to

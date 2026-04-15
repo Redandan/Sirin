@@ -1,5 +1,11 @@
 //! Call-graph index for Rust source files, built with tree-sitter.
 //!
+//! ## Concurrency
+//! Graph and freshness stamp live in separate `RwLock`s.  `query_call_graph`
+//! takes only the read lock; `refresh_call_graph` / `invalidate_cache` take
+//! the write lock while rescanning.  The rescan itself is single-threaded —
+//! calling it concurrently will serialise at the lock.
+//!
 //! ## Layers
 //!
 //! 1. **Parse** (`parse_rust_file`) — given a single `.rs` file, extract

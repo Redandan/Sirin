@@ -1,6 +1,13 @@
 //! Internal meeting room — operator-driven multi-agent session with
 //! runtime handoff authorisation.
 //!
+//! ## Concurrency
+//! Single active session lives in a `RwLock<Option<MeetingSession>>`.
+//! `current_meeting_id` / `readable_owners` / `check_meeting_auth` take the
+//! read lock; `start_meeting` / `end_meeting` / `append_turn` take the write
+//! lock briefly.  Parallel `start_meeting` calls would replace each other —
+//! operator UI is expected to coordinate so only one caller starts at a time.
+//!
 //! # Usage
 //! ```
 //! meeting::start_meeting(vec!["assistant_1".into(), "assistant_2".into()]);
