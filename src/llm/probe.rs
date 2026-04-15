@@ -233,7 +233,8 @@ pub fn classify_model_capabilities(model: &ModelInfo) -> Vec<ModelCapability> {
     ]
     .iter()
     .any(|p| name.contains(p));
-    let large_by_size = model.size_bytes > 0 && model.size_bytes >= LARGE_BYTES;
+    // `>= LARGE_BYTES` (20 GB) already implies `> 0`, so no size-known guard needed here.
+    let large_by_size = model.size_bytes >= LARGE_BYTES;
     if large_by_name || large_by_size {
         caps.push(ModelCapability::Large);
     }
