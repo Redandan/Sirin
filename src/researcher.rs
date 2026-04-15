@@ -310,7 +310,7 @@ pub async fn run_research(topic: String, url: Option<String>) -> ResearchTask {
 /// After every 5th completed research, ask the LLM whether the persona's
 /// objectives should be updated, and write the result back to persona.yaml.
 async fn maybe_reflect_on_objectives(http: &reqwest::Client, llm: &LlmConfig, task: &ResearchTask) {
-    let persona = match Persona::load() {
+    let persona = match Persona::cached() {
         Ok(p) => p,
         Err(e) => {
             sirin_log!("[researcher] Persona load failed during reflection: {e}");

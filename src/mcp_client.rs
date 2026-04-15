@@ -45,7 +45,7 @@ impl McpServersConfig {
         let path = "config/mcp_servers.yaml";
         match std::fs::read_to_string(path) {
             Ok(content) => serde_yaml::from_str(&content).unwrap_or_else(|e| {
-                eprintln!("[mcp_client] Failed to parse {path}: {e}");
+                crate::sirin_log!("[mcp_client] Failed to parse {path}: {e}");
                 Self::default()
             }),
             Err(_) => {

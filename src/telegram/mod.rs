@@ -18,6 +18,7 @@
 
 pub(crate) mod commands;
 mod config;
+mod filter;
 mod handler;
 pub(crate) mod language;
 pub(crate) mod llm;
@@ -31,7 +32,6 @@ use grammers_client::update::Update;
 use grammers_client::SignInError;
 use grammers_client::{Client, SenderPool};
 use grammers_session::storages::SqliteSession;
-use grammers_session::types::{PeerId, PeerKind};
 
 use crate::events;
 use crate::human_behavior;
@@ -220,73 +220,20 @@ async fn run_listener_once(
             );
         }
 
-        if message.outgoing() {
-            if cfg.debug_updates {
-                sirin_log!("[telegram] skip: outgoing message");
-            }
-            continue;
-        }
-
-        // Guard against self-chat feedback loops (e.g. startup message in Saved Messages).
-        if message.sender_id() == Some(PeerId::self_user()) {
-            if cfg.debug_updates {
-                sirin_log!("[telegram] skip: sender is self_user");
-            }
-            continue;
-        }
-
-        let is_private = matches!(
-            message.peer_id().kind(),
-            PeerKind::User | PeerKind::UserSelf
-        );
-        if is_private && !cfg.reply_private {
-            if cfg.debug_updates {
-                sirin_log!("[telegram] skip: private replies disabled");
-            }
-            continue;
-        }
-
-        if !is_private && !cfg.reply_groups {
-            if cfg.debug_updates {
-                sirin_log!("[telegram] skip: group replies disabled");
-            }
-            continue;
-        }
-
-        // TG_GROUP_IDS only applies to group/channel chats.
-        if !is_private && !cfg.group_ids.is_empty() {
-            let peer_id = message.peer_id().bare_id();
-            if !cfg.group_ids.contains(&peer_id) {
+        let (text, is_private, peer_bare_id) = match filter::filter_message(&message, &cfg, listener_started_at) {
+            filter::FilterDecision::Skip(reason) => {
                 if cfg.debug_updates {
-                    sirin_log!("[telegram] skip: group id {} not in TG_GROUP_IDS", peer_id);
+                    sirin_log!("[telegram] skip: {}", reason);
                 }
                 continue;
             }
-        }
-
-        // Ignore messages that predate current listener run.
-        if message.date() < listener_started_at {
-            if cfg.debug_updates {
-                sirin_log!(
-                    "[telegram] skip: message older than listener start ({} < {})",
-                    message.date(),
-                    listener_started_at
-                );
+            filter::FilterDecision::Handle { text, is_private, peer_bare_id } => {
+                (text, is_private, Some(peer_bare_id))
             }
-            continue;
-        }
+        };
 
-        let text = message.text().to_owned();
-        if text.is_empty() {
-            if cfg.debug_updates {
-                sirin_log!("[telegram] skip: empty text message");
-            }
-            continue;
-        }
-
-        let persona = Persona::load().ok();
+        let persona = Persona::cached().ok();
         let persona_name = persona.as_ref().map(|p| p.name()).unwrap_or("Sirin");
-        let peer_bare_id = Some(message.peer_id().bare_id());
         let mut should_record_ai_decision = false;
 
         if cfg.auto_reply_enabled {
@@ -513,27 +460,18 @@ async fn run_agent_listener_once(
             }
         }
 
-        if message.outgoing() { continue; }
-        if message.sender_id() == Some(PeerId::self_user()) { continue; }
-
-        let is_private = matches!(message.peer_id().kind(), PeerKind::User | PeerKind::UserSelf);
-        if is_private && !cfg.reply_private { continue; }
-        if !is_private && !cfg.reply_groups { continue; }
-        if !is_private && !cfg.group_ids.is_empty() {
-            let peer_id = message.peer_id().bare_id();
-            if !cfg.group_ids.contains(&peer_id) { continue; }
-        }
-        if message.date() < listener_started_at { continue; }
-
-        let text = message.text().to_owned();
-        if text.is_empty() { continue; }
+        let (text, is_private, peer_bare_id) = match filter::filter_message(&message, &cfg, listener_started_at) {
+            filter::FilterDecision::Skip(_) => continue,
+            filter::FilterDecision::Handle { text, is_private, peer_bare_id } => {
+                (text, is_private, Some(peer_bare_id))
+            }
+        };
 
         // Use the agent's own identity — no longer falls back to persona.yaml.
         let persona_name = agent_cfg.identity.name.as_str();
         let voice        = agent_cfg.response_style.voice.as_str();
         let ack_prefix   = agent_cfg.response_style.ack_prefix.as_str();
         let compliance   = agent_cfg.response_style.compliance_line.as_str();
-        let peer_bare_id = Some(message.peer_id().bare_id());
         let mut should_record_ai_decision = false;
 
         // ── Per-agent objective matching ──────────────────────────────────────

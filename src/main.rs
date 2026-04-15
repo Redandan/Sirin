@@ -90,7 +90,7 @@ async fn background_loop(tracker: TaskTracker) {
     interval.tick().await;
     loop {
         interval.tick().await;
-        if let Ok(p) = persona::Persona::load() {
+        if let Ok(p) = persona::Persona::cached() {
             let entry = persona::TaskEntry::heartbeat(p.name());
             let _ = tracker.record(&entry);
         }

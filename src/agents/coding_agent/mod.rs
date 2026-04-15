@@ -16,6 +16,8 @@
 // Rust's static analysis cannot trace through the trait object, so suppress dead_code warnings.
 #![allow(dead_code)]
 
+mod helpers;
+
 use futures::FutureExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -25,6 +27,12 @@ use crate::llm::call_coding_prompt;
 use crate::memory::load_recent_context;
 use crate::persona::{CodingAgentConfig, Persona, TaskTracker};
 use crate::sirin_log;
+
+use helpers::{
+    build_task_named_file_context, describe_tools, extract_json_body, extract_path_hints_from_task,
+    file_read_cache_key, format_tool_output, format_tool_output_large, is_read_only_analysis_task,
+    maybe_enrich_tool_error, preview_text, preview_tool_input, step_fingerprint, truncate_to_bytes,
+};
 
 // ── Public request / response types ──────────────────────────────────────────
 
@@ -943,116 +951,6 @@ async fn gather_project_context(ctx: &AgentContext, task: &str) -> String {
     )
 }
 
-fn extract_path_hints_from_task(task: &str) -> Vec<String> {
-    let mut hints = Vec::new();
-    let known_exts = [
-        ".rs", ".toml", ".md", ".json", ".yaml", ".yml", ".tsx", ".ts", ".js",
-    ];
-
-    for raw in task.split_whitespace() {
-        let trimmed = raw
-            .trim()
-            .trim_matches(|c: char| {
-                matches!(
-                    c,
-                    '`' | '"'
-                        | '\''
-                        | '('
-                        | ')'
-                        | '['
-                        | ']'
-                        | '{'
-                        | '}'
-                        | ','
-                        | '，'
-                        | '。'
-                        | ':'
-                        | '：'
-                        | ';'
-                        | '；'
-                        | '?'
-                        | '？'
-                )
-            })
-            .replace('\\', "/");
-        let cleaned: String = trimmed
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-'))
-            .collect();
-
-        if cleaned.is_empty() {
-            continue;
-        }
-
-        let looks_like_path = cleaned.contains('/')
-            || cleaned.starts_with("src")
-            || cleaned.starts_with("tests")
-            || cleaned.starts_with("app")
-            || cleaned.starts_with("config");
-        let has_known_ext = known_exts.iter().any(|ext| cleaned.ends_with(ext));
-
-        if (looks_like_path || has_known_ext) && !hints.contains(&cleaned) {
-            hints.push(cleaned);
-        }
-
-        if hints.len() >= 3 {
-            break;
-        }
-    }
-
-    hints
-}
-
-fn build_task_named_file_context(path_hints: &[String]) -> String {
-    let blocks: Vec<String> = path_hints
-        .iter()
-        .take(2)
-        .filter_map(|path| {
-            crate::memory::inspect_project_file_range(path, Some(1), Some(120), 5000)
-                .ok()
-                .map(|content| {
-                    format!("\n\n## Task-named file hint\nRequested path: {path}\n{content}")
-                })
-        })
-        .collect();
-
-    blocks.join("")
-}
-
-fn is_read_only_analysis_task(task: &str) -> bool {
-    let lower = task.to_lowercase();
-    let asks_analysis = [
-        "分析", "說明", "summar", "explain", "inspect", "review", "找出", "檢查", "read ",
-    ]
-    .iter()
-    .any(|needle| lower.contains(needle));
-    let forbids_write = [
-        "不要寫入",
-        "不要修改",
-        "do not modify",
-        "don't modify",
-        "read-only",
-        "dry-run",
-    ]
-    .iter()
-    .any(|needle| lower.contains(needle));
-    let asks_to_change = [
-        "修改",
-        "新增",
-        "加入",
-        "修正",
-        "fix",
-        "implement",
-        "write",
-        "patch",
-        "refactor",
-    ]
-    .iter()
-    .any(|needle| lower.contains(needle));
-
-    forbids_write || (asks_analysis && !asks_to_change)
-}
-
 async fn make_plan(ctx: &AgentContext, task: &str, project_ctx: &str) -> String {
     let prompt = format!(
         "You are an expert software engineer. \
@@ -1070,29 +968,6 @@ Return only the numbered list, no extra prose.",
 }
 
 // ── ReAct prompt ──────────────────────────────────────────────────────────────
-
-fn describe_tools() -> String {
-    let tools = [
-        ("file_list", r#"{"path":"dir","max_depth":3}"#, "List files in a directory."),
-        ("local_file_read", r#"{"path":"src/foo.rs","start_line":100,"end_line":200}"#, "Read a file's content. Use start_line/end_line (1-based, optional) to fetch a specific window — output includes line numbers, essential for precise file_patch old_str."),
-        ("file_write", r#"{"path":"src/foo.rs","content":"..."}"#, "Write full content to a file (use only when replacing the entire file)."),
-        ("file_patch", r#"{"path":"src/foo.rs","hunks":[{"old_str":"fn foo() {","new_str":"fn foo() -> i32 {"}]}"#, "Apply surgical hunk-based edits. Fails atomically if any old_str is not found. Prefer over file_write for partial changes."),
-        ("file_diff", r#"{"path":null}"#, "Show git diff of uncommitted changes."),
-        ("shell_exec", r#"{"command":"cargo check"}"#, "Run a whitelisted shell command."),
-        ("codebase_search", r#"{"query":"...","limit":5}"#, "Search codebase for relevant code."),
-        ("symbol_search", r#"{"query":"function_name"}"#, "Search for a symbol by name."),
-        ("call_graph_query", r#"{"symbol":"my_fn","hops":1}"#, "Look up callers and callees of a symbol in the call graph."),
-        ("plan_execute", r#"{"steps":[{"tool":"file_patch","input":{...}},{"tool":"shell_exec","input":{"command":"cargo check"}}]}"#, "Execute multiple tool steps in sequence. Stops on first failure. Use to batch multi-file changes in one action."),
-        ("git_status", r#"{}"#, "Show git status."),
-        ("git_log", r#"{"limit":5}"#, "Show recent git commits."),
-        ("memory_search", r#"{"query":"...","limit":3}"#, "Search past memories."),
-    ];
-    tools
-        .iter()
-        .map(|(name, example, desc)| format!("- `{name}({example})`: {desc}"))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
 
 /// Soft character limit for a single ReAct prompt.  LM Studio at 32K context ≈
 /// 128K chars (4 chars/token estimate).  We leave headroom for the LLM output.
@@ -1193,23 +1068,6 @@ struct ReactStep {
     action_input: Value,
     final_answer: Option<String>,
     parse_error: bool,
-}
-
-fn extract_json_body(raw: &str) -> &str {
-    // Strip markdown code fences first.
-    let s = raw
-        .trim()
-        .trim_start_matches("```json")
-        .trim_start_matches("```")
-        .trim_end_matches("```")
-        .trim();
-    // Then extract the outermost { … } so any preamble/postamble text is ignored.
-    if let (Some(start), Some(end)) = (s.find('{'), s.rfind('}')) {
-        if start <= end {
-            return &s[start..=end];
-        }
-    }
-    s
 }
 
 fn parse_react_step(raw: &str) -> ReactStep {
@@ -1313,32 +1171,6 @@ fn followup_reason(
     None
 }
 
-fn maybe_enrich_tool_error(action_name: &str, observation: String) -> String {
-    if !observation.starts_with("ERROR:") {
-        return observation;
-    }
-
-    let lower = observation.to_lowercase();
-    let looks_like_path_issue = lower.contains("could not resolve local project file")
-        || lower.contains("cannot read '")
-        || lower.contains("patch aborted")
-        || lower.contains("not found in '")
-        || lower.contains("directory not found");
-
-    if looks_like_path_issue
-        && matches!(
-            action_name,
-            "local_file_read" | "file_patch" | "file_write" | "plan_execute"
-        )
-    {
-        format!(
-            "{observation}\nHint: verify the real path with file_list/codebase_search before more writes. In Rust projects, `foo.rs` may actually be `foo/mod.rs`."
-        )
-    } else {
-        observation
-    }
-}
-
 async fn verify_build(ctx: &AgentContext) -> (bool, Option<String>) {
     match ctx
         .call_tool("shell_exec", json!({ "command": "cargo check" }))
@@ -1364,19 +1196,6 @@ async fn get_diff(ctx: &AgentContext) -> Option<String> {
         .ok()
         .and_then(|v| v.get("diff").and_then(Value::as_str).map(|s| s.to_string()))
         .filter(|s| !s.trim().is_empty())
-}
-
-/// Truncate `s` to at most `max_bytes` UTF-8 bytes, always at a valid char
-/// boundary.  Chinese/CJK chars are 3 bytes each, so 72 bytes ≈ 24 CJK chars.
-fn truncate_to_bytes(s: &str, max_bytes: usize) -> &str {
-    if s.len() <= max_bytes {
-        return s;
-    }
-    let mut end = max_bytes;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
 }
 
 /// Stage only the files this task modified and create a commit.
@@ -1433,91 +1252,6 @@ struct HistoryEntry {
     /// Pinned entries (e.g. file_read) are always included in the history
     /// window regardless of how many iterations have passed.
     pinned: bool,
-}
-
-// ── Formatting helpers ────────────────────────────────────────────────────────
-
-fn format_tool_output(v: &Value) -> String {
-    match v {
-        Value::String(s) => s.chars().take(800).collect(),
-        Value::Array(arr) => arr
-            .iter()
-            .take(10)
-            .map(|item| {
-                item.as_str()
-                    .unwrap_or(&item.to_string())
-                    .chars()
-                    .take(120)
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-        other => {
-            let s = serde_json::to_string_pretty(other).unwrap_or_default();
-            s.chars().take(800).collect()
-        }
-    }
-}
-
-/// Like `format_tool_output` but with a larger budget (2000 chars) for file_read
-/// observations, so the LLM sees enough source context to construct accurate
-/// `old_str` for `file_patch`.
-fn format_tool_output_large(v: &Value) -> String {
-    match v {
-        Value::String(s) => s.chars().take(2000).collect(),
-        Value::Array(arr) => arr
-            .iter()
-            .take(20)
-            .map(|item| {
-                item.as_str()
-                    .unwrap_or(&item.to_string())
-                    .chars()
-                    .take(200)
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-        other => {
-            let s = serde_json::to_string_pretty(other).unwrap_or_default();
-            s.chars().take(2000).collect()
-        }
-    }
-}
-
-fn preview_tool_input(v: &Value) -> String {
-    let s = serde_json::to_string(v).unwrap_or_default();
-    s.chars().take(60).collect()
-}
-
-fn preview_text(text: &str) -> String {
-    let mut chars = text.chars();
-    let head: String = chars.by_ref().take(120).collect();
-    if chars.next().is_some() {
-        format!("{head}…")
-    } else {
-        head
-    }
-}
-
-fn step_fingerprint(action_name: &str, action_input: &Value, observation: &str) -> String {
-    format!(
-        "{}|{}|{}",
-        action_name,
-        preview_tool_input(action_input),
-        preview_text(observation)
-    )
-}
-
-fn file_read_cache_key(input: &Value) -> String {
-    let path = input
-        .get("path")
-        .or_else(|| input.get("file_path"))
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let start = input.get("start_line").and_then(Value::as_u64).unwrap_or(0);
-    let end = input.get("end_line").and_then(Value::as_u64).unwrap_or(0);
-
-    format!("{path}|{start}|{end}")
 }
 
 fn has_sufficient_analysis_evidence(history: &[HistoryEntry]) -> bool {

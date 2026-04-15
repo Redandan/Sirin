@@ -142,10 +142,13 @@ impl LlmUiConfig {
     const PATH: &'static str = "config/llm.yaml";
 
     pub fn load() -> Self {
-        std::fs::read_to_string(Self::PATH)
-            .ok()
-            .and_then(|s| serde_yaml::from_str(&s).ok())
-            .unwrap_or_default()
+        match std::fs::read_to_string(Self::PATH) {
+            Ok(content) => serde_yaml::from_str(&content).unwrap_or_else(|e| {
+                crate::sirin_log!("[llm] Failed to parse {}: {e}", Self::PATH);
+                Self::default()
+            }),
+            Err(_) => Self::default(),
+        }
     }
 
     pub fn save(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
