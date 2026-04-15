@@ -19,28 +19,25 @@
 mod finalize;
 mod helpers;
 mod prompt;
+mod react;
 mod rollback;
+mod state;
 mod verdict;
+mod verify;
 
 use futures::FutureExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::adk::{Agent, AgentContext, AgentRuntime};
-use crate::llm::call_coding_prompt;
 use crate::memory::load_recent_context;
 use crate::persona::{CodingAgentConfig, Persona, TaskTracker};
 use crate::sirin_log;
 
-use helpers::{
-    describe_tools, file_read_cache_key, format_tool_output, format_tool_output_large,
-    is_read_only_analysis_task, maybe_enrich_tool_error, preview_text, step_fingerprint,
-};
-use prompt::{build_react_prompt, gather_project_context, make_plan, parse_react_step};
-use verdict::{
-    build_fail_fast_outcome, has_sufficient_analysis_evidence, salvage_non_json_final_answer,
-    synthesize_read_only_outcome, HistoryEntry,
-};
+use helpers::{is_read_only_analysis_task, preview_text};
+use prompt::{gather_project_context, make_plan};
+use state::RunState;
+use verify::VerifyOutcome;
 
 // ── Public request / response types ──────────────────────────────────────────
 
@@ -150,7 +147,16 @@ impl Agent for CodingAgent {
     }
 }
 
-// ── ReAct loop ────────────────────────────────────────────────────────────────
+// ── ReAct loop orchestration ─────────────────────────────────────────────────
+//
+// Phase 1: gather project context (overview + codebase search + recent
+//          conversation + router-injected memory).
+// Phase 2: one-shot LLM call that produces the numbered plan.
+// Phase 2.5: record the baseline commit so rollback has an anchor.
+// Phase 3: main ReAct loop — delegated to [`react::run_react_iterations`].
+// Phase 4: verify + auto-fix — delegated to [`verify::run_verify_and_autofix`];
+//          may short-circuit with a `Rollback` response.
+// Phase 5: diff + auto-commit + outcome synthesis — [`finalize::finalize`].
 
 async fn run_react_loop(
     ctx: &AgentContext,
@@ -172,7 +178,7 @@ async fn run_react_loop(
         Some(format!("max_iter={max_iter} dry_run={dry_run}")),
     );
 
-    // ── Step 1: gather project context ────────────────────────────────────────
+    // ── Phase 1: gather project context ──────────────────────────────────────
     let mut project_ctx = gather_project_context(ctx, &request.task).await;
 
     // Append recent conversation context if available so the agent has
@@ -183,9 +189,6 @@ async fn run_react_loop(
     }
 
     // Append router-injected memory context when provided.
-    // This is the conversation history the Router fetched from SQLite memory
-    // before dispatching, giving the agent cross-turn awareness without an
-    // additional database query.
     if let Some(block) = &request.context_block {
         if !block.trim().is_empty() {
             project_ctx.push_str("\n\n## Conversation memory (router-injected)\n");
@@ -193,11 +196,11 @@ async fn run_react_loop(
         }
     }
 
-    // ── Step 2: planning call ─────────────────────────────────────────────────
+    // ── Phase 2: planning call ───────────────────────────────────────────────
     let plan = make_plan(ctx, &request.task, &project_ctx).await;
     sirin_log!("[coding_agent] plan ready ({} chars)", plan.len());
 
-    // ── Step 2.5: record baseline commit (rollback anchor) ───────────────────
+    // ── Phase 2.5: record baseline commit (rollback anchor) ──────────────────
     // Call git directly — bypasses the shell_exec allowlist which only permits
     // cargo commands. Never panics; baseline is simply None if git is absent.
     let baseline_commit = if !dry_run {
@@ -213,561 +216,56 @@ async fn run_react_loop(
         None
     };
 
-    // ── Step 3: ReAct loop ────────────────────────────────────────────────────
-    let mut history: Vec<HistoryEntry> = Vec::new();
-    let mut files_modified: Vec<String> = Vec::new();
-    let mut final_answer = String::new();
-    let mut attempted_write = false;
-    let mut had_tool_errors = false;
-    let mut last_tool_error: Option<String> = None;
-    let mut total_tool_errors: u32 = 0;
-    let mut stalled_iterations: u32 = 0;
-    let mut last_step_fingerprint: Option<String> = None;
-    let tool_list = describe_tools();
+    // ── Phase 3: ReAct loop ──────────────────────────────────────────────────
+    let mut state = RunState::default();
+    react::run_react_iterations(
+        ctx,
+        request,
+        config,
+        &project_ctx,
+        &plan,
+        dry_run,
+        read_only_analysis,
+        max_iter,
+        &mut state,
+    )
+    .await?;
 
-    // Safety counters — prevent destructive escalation when surgical edits fail.
-    let mut consecutive_patch_errors: u32 = 0;
-    const MAX_PATCH_ERRORS: u32 = 2;
-    const MAX_TOTAL_TOOL_ERRORS: u32 = 3;
-    let max_stalled_iterations: u32 = if read_only_analysis { 2 } else { 3 };
-    let write_tools = ["file_write", "file_patch", "plan_execute"];
-
-    // Read cache: deduplicates local_file_read calls within one task so the
-    // model can't waste iterations re-reading files it already inspected.
-    // Key = file path.  Value = (first_read_iteration, formatted_content).
-    // Invalidated when file_patch / file_write succeeds on that path.
-    let mut file_read_cache: std::collections::HashMap<String, (usize, String)> =
-        std::collections::HashMap::new();
-
-    // Sliding window: only pass recent N entries to the LLM.
-    // file_read entries are "pinned" and kept, but capped at MAX_PINNED to
-    // prevent context explosion when many files are read in one task.
-    // When over the cap, keep only the most recent pinned entries.
-    const HISTORY_WINDOW: usize = 6;
-    const MAX_PINNED: usize = 4;
-
-    for iteration in 0..max_iter {
-        // Build history window: capped pinned entries + recent N non-pinned.
-        let history_window: Vec<&HistoryEntry> = {
-            let mut pinned: Vec<&HistoryEntry> = history.iter().filter(|h| h.pinned).collect();
-            // Keep only the most recent MAX_PINNED file reads.
-            if pinned.len() > MAX_PINNED {
-                pinned = pinned[pinned.len() - MAX_PINNED..].to_vec();
-            }
-            let recent: Vec<&HistoryEntry> = history
-                .iter()
-                .filter(|h| !h.pinned)
-                .rev()
-                .take(HISTORY_WINDOW)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect();
-            pinned.into_iter().chain(recent).collect()
-        };
-
-        let prompt = build_react_prompt(
-            &request.task,
-            &project_ctx,
-            &plan,
-            &history_window,
-            &tool_list,
-            dry_run,
-        );
-
-        let raw = match call_coding_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), prompt).await {
-            Ok(raw) => raw,
-            Err(e) => {
-                let err_msg = format!("LLM error on iteration {iteration}: {e}");
-                if read_only_analysis && has_sufficient_analysis_evidence(&history) {
-                    had_tool_errors = true;
-                    last_tool_error = Some(preview_text(&err_msg));
-                    final_answer =
-                        format!("⚠️ {err_msg}\n\n{}", synthesize_read_only_outcome(&history));
-                    break;
-                }
-                return Err(err_msg);
-            }
-        };
-
-        let step = parse_react_step(&raw);
-        sirin_log!(
-            "[coding_agent] iter={} action={} thought={}",
-            iteration,
-            step.action,
-            preview_text(&step.thought)
-        );
-
-        ctx.record_system_event(
-            format!("adk_coding_iter_{iteration}"),
-            Some(format!("action={}", step.action)),
-            Some("RUNNING"),
-            Some(preview_text(&step.thought)),
-        );
-
-        if step.parse_error {
-            if read_only_analysis && has_sufficient_analysis_evidence(&history) {
-                final_answer = salvage_non_json_final_answer(&raw, &history);
-                history.push(HistoryEntry {
-                    thought: step.thought,
-                    action: "DONE".to_string(),
-                    action_input: json!({}),
-                    observation: "Task complete (salvaged non-JSON analysis answer).".to_string(),
-                    pinned: false,
-                });
-                break;
-            }
-
-            let observation = format!(
-                "ERROR: LLM step was not valid JSON. Retry with ONLY the required JSON object and do not mark DONE until you have either verified the existing code or applied a real change. Raw preview: {}",
-                preview_text(&raw),
-            );
-            history.push(HistoryEntry {
-                thought: step.thought,
-                action: "INVALID_JSON".to_string(),
-                action_input: json!({}),
-                observation: observation.clone(),
-                pinned: false,
-            });
-            had_tool_errors = true;
-            total_tool_errors += 1;
-            last_tool_error = Some(preview_text(&observation));
-
-            if total_tool_errors >= MAX_TOTAL_TOOL_ERRORS {
-                final_answer = build_fail_fast_outcome(
-                    "模型連續回傳不可解析的輸出，已觸發 fail-fast",
-                    &history,
-                    last_tool_error.as_deref(),
-                    read_only_analysis,
-                );
-                ctx.record_system_event(
-                    "adk_coding_fail_fast",
-                    Some("⚠ fail-fast：模型連續回傳無效 JSON".to_string()),
-                    Some("FOLLOWUP_NEEDED"),
-                    last_tool_error.clone(),
-                );
-                break;
-            }
-            continue;
-        }
-
-        if step.action == "DONE" {
-            final_answer = step.final_answer.unwrap_or_else(|| step.thought.clone());
-            history.push(HistoryEntry {
-                thought: step.thought,
-                action: "DONE".to_string(),
-                action_input: json!({}),
-                observation: "Task complete.".to_string(),
-                pinned: false,
-            });
-            break;
-        }
-
-        // Safety: if file_patch has failed too many times, block all write tools
-        // to prevent the LLM from escalating to file_write as a fallback.
-        if consecutive_patch_errors >= MAX_PATCH_ERRORS
-            && write_tools.contains(&step.action.as_str())
-        {
-            sirin_log!(
-                "[coding_agent] SAFETY: write tool '{}' blocked after {} consecutive patch errors",
-                step.action,
-                consecutive_patch_errors
-            );
-            final_answer = format!(
-                "任務中止：file_patch 連續失敗 {} 次，已封鎖所有寫入工具以防止資料損毀。\
-                請縮小任務範圍，並確認目標函式的確切位置後重試。",
-                consecutive_patch_errors
-            );
-            break;
-        }
-
-        // Execute the tool.
-        // In dry_run mode, force dry_run=true into every write tool so that
-        // writes are never applied regardless of how the agent calls them.
-        // file_patch, file_write, and plan_execute all honour the dry_run flag.
-        let is_write_tool = matches!(
-            step.action.as_str(),
-            "file_write" | "file_patch" | "plan_execute"
-        );
-        if is_write_tool {
-            attempted_write = true;
-        }
-        let tool_input = if dry_run && is_write_tool {
-            let mut input = step.action_input.clone();
-            if let Some(obj) = input.as_object_mut() {
-                obj.insert("dry_run".to_string(), json!(true));
-            }
-            input
-        } else {
-            step.action_input.clone()
-        };
-
-        let is_file_read = step.action == "local_file_read";
-
-        // Invalidate cache when a file is about to be modified so a subsequent
-        // read fetches the updated content instead of the stale cached version.
-        if step.action == "file_patch" || step.action == "file_write" {
-            if let Some(path) = step.action_input.get("path").and_then(Value::as_str) {
-                let path = path.to_string();
-                file_read_cache
-                    .retain(|key, _| !key.starts_with(&format!("{path}|")) && key != &path);
-            }
-        }
-
-        // Short-circuit duplicate file reads: return cached content immediately
-        // without consuming an API round-trip.
-        let observation = if is_file_read {
-            let path_key = file_read_cache_key(&step.action_input);
-            if let Some((cached_iter, cached)) = file_read_cache.get(&path_key) {
-                sirin_log!(
-                    "[coding_agent] cache hit: {path_key} (first read at iter {cached_iter})"
-                );
-                format!("[Already read at iteration {cached_iter} — content unchanged, using cache]\n{cached}")
-            } else {
-                match ctx.call_tool(&step.action, tool_input).await {
-                    Ok(v) => {
-                        let out = format_tool_output_large(&v);
-                        if !path_key.is_empty() {
-                            file_read_cache.insert(path_key, (iteration, out.clone()));
-                        }
-                        out
-                    }
-                    Err(e) => format!("ERROR: {e}"),
-                }
-            }
-        } else {
-            match ctx.call_tool(&step.action, tool_input).await {
-                Ok(v) => {
-                    // Track which files were written.
-                    if step.action == "file_write" || step.action == "file_patch" {
-                        if let Some(path) = v.get("path").and_then(Value::as_str) {
-                            if !files_modified.contains(&path.to_string()) {
-                                files_modified.push(path.to_string());
-                            }
-                        }
-                    }
-                    // Track files touched via plan_execute steps.
-                    if step.action == "plan_execute" {
-                        if let Some(results) = v.get("results").and_then(Value::as_array) {
-                            for r in results {
-                                if let Some(result) = r.get("result") {
-                                    if let Some(path) = result.get("path").and_then(Value::as_str) {
-                                        if !files_modified.contains(&path.to_string()) {
-                                            files_modified.push(path.to_string());
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    format_tool_output(&v)
-                }
-                Err(e) => format!("ERROR: {e}"),
-            }
-        };
-
-        let action_name = step.action.clone();
-        let observation = maybe_enrich_tool_error(&action_name, observation);
-        history.push(HistoryEntry {
-            thought: step.thought,
-            action: step.action,
-            action_input: step.action_input,
-            observation: observation.clone(),
-            pinned: is_file_read,
-        });
-
-        // Track consecutive patch errors for safety circuit breaker.
-        if observation.starts_with("ERROR:") {
-            had_tool_errors = true;
-            total_tool_errors += 1;
-            last_tool_error = Some(preview_text(&observation));
-            sirin_log!("[coding_agent] tool error: {observation}");
-            if action_name == "file_patch" {
-                consecutive_patch_errors += 1;
-            }
-        } else if action_name == "file_patch" {
-            consecutive_patch_errors = 0; // reset on success
-        }
-
-        let fingerprint = step_fingerprint(
-            &action_name,
-            &history
-                .last()
-                .expect("history entry just pushed")
-                .action_input,
-            &observation,
-        );
-        let repeated_cache_hit = action_name == "local_file_read"
-            && observation.starts_with("[Already read at iteration");
-        if repeated_cache_hit || last_step_fingerprint.as_deref() == Some(&fingerprint) {
-            stalled_iterations += 1;
-        } else {
-            stalled_iterations = 0;
-        }
-        last_step_fingerprint = Some(fingerprint);
-
-        if read_only_analysis && repeated_cache_hit && has_sufficient_analysis_evidence(&history) {
-            final_answer = synthesize_read_only_outcome(&history);
-            ctx.record_system_event(
-                "adk_coding_fail_fast",
-                Some("✅ read-only analysis：grounded answer ready".to_string()),
-                Some("DONE"),
-                Some("Stopped after repeated cached reads because enough grounded evidence was already collected.".to_string()),
-            );
-            break;
-        }
-
-        if total_tool_errors >= MAX_TOTAL_TOOL_ERRORS {
-            final_answer = build_fail_fast_outcome(
-                "工具錯誤次數過多，已觸發 fail-fast",
-                &history,
-                last_tool_error.as_deref(),
-                read_only_analysis,
-            );
-            ctx.record_system_event(
-                "adk_coding_fail_fast",
-                Some("⚠ fail-fast：工具錯誤次數過多".to_string()),
-                Some("FOLLOWUP_NEEDED"),
-                last_tool_error.clone(),
-            );
-            break;
-        }
-
-        if stalled_iterations >= max_stalled_iterations {
-            final_answer = build_fail_fast_outcome(
-                "連續多步沒有新進展，已觸發 fail-fast",
-                &history,
-                last_tool_error.as_deref(),
-                read_only_analysis,
-            );
-            ctx.record_system_event(
-                "adk_coding_fail_fast",
-                Some("⚠ fail-fast：連續多步沒有新進展".to_string()),
-                Some("FOLLOWUP_NEEDED"),
-                Some(format!("stalled_iterations={stalled_iterations}")),
-            );
-            break;
-        }
-    }
-
-    // ── Step 4: verification + auto-fix loop ─────────────────────────────────
-    let can_verify = !dry_run
-        && config
-            .allowed_commands
-            .iter()
-            .any(|cmd| cmd == "cargo check");
-    let (build_verified, verification_output) = if can_verify {
-        let (mut ok, mut out) = verify_build(ctx).await;
-
-        // If verification fails, re-enter the ReAct loop up to 3 times to fix
-        // the compilation errors before giving up.
-        const MAX_FIX_ATTEMPTS: u32 = 3;
-        let mut fix_attempt = 0u32;
-        while !ok && fix_attempt < MAX_FIX_ATTEMPTS {
-            fix_attempt += 1;
-            let err_output = out.clone().unwrap_or_default();
-            sirin_log!(
-                "[coding_agent] cargo check failed (attempt {fix_attempt}/{MAX_FIX_ATTEMPTS}), re-entering ReAct to fix"
-            );
-            ctx.record_system_event(
-                format!("adk_coding_fix_attempt_{fix_attempt}"),
-                Some("cargo check failed".to_string()),
-                Some("RUNNING"),
-                Some(preview_text(&err_output)),
-            );
-
-            // Inject the compiler error as context and run fix iterations.
-            let fix_task = format!(
-                "cargo check failed with the following errors. Fix them without changing behaviour:\n\n{}",
-                err_output.chars().take(1200).collect::<String>()
-            );
-            let fix_plan =
-                "1. Read the failing file(s)\n2. Apply file_patch to fix the error\n3. DONE"
-                    .to_string();
-            let fix_tool_list = describe_tools();
-
-            // Seed fix history with the pinned file_read entries from the main
-            // loop so the LLM doesn't have to re-read files it already knows.
-            let mut fix_history: Vec<HistoryEntry> = history
-                .iter()
-                .filter(|h| h.pinned)
-                .map(|h| HistoryEntry {
-                    thought: h.thought.clone(),
-                    action: h.action.clone(),
-                    action_input: h.action_input.clone(),
-                    observation: h.observation.clone(),
-                    pinned: true,
-                })
-                .collect();
-
-            // Re-run up to 4 ReAct iterations to apply the fix.
-            // Circuit breaker: abort if file_patch fails twice in a row.
-            let mut fix_patch_errors: u32 = 0;
-            const MAX_FIX_PATCH_ERRORS: u32 = 2;
-            for fix_iter in 0..4usize {
-                let fix_window: Vec<&HistoryEntry> = fix_history.iter().collect();
-                let prompt = build_react_prompt(
-                    &fix_task,
-                    &project_ctx,
-                    &fix_plan,
-                    &fix_window,
-                    &fix_tool_list,
-                    false,
-                );
-                let raw =
-                    match call_coding_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), prompt).await {
-                        Ok(r) => r,
-                        Err(e) => {
-                            sirin_log!("[coding_agent] fix iter {fix_iter} LLM error: {e}");
-                            break;
-                        }
-                    };
-                let step = parse_react_step(&raw);
-                if step.parse_error {
-                    let obs = "ERROR: Invalid JSON from model during fix loop. Retry with ONLY the required JSON object.".to_string();
-                    had_tool_errors = true;
-                    last_tool_error = Some(preview_text(&obs));
-                    fix_history.push(HistoryEntry {
-                        thought: step.thought,
-                        action: "INVALID_JSON".to_string(),
-                        action_input: json!({}),
-                        observation: obs,
-                        pinned: false,
-                    });
-                    continue;
-                }
-                if step.action == "DONE" {
-                    break;
-                }
-
-                // Safety: stop fix loop if write patches keep failing.
-                if fix_patch_errors >= MAX_FIX_PATCH_ERRORS
-                    && matches!(
-                        step.action.as_str(),
-                        "file_patch" | "file_write" | "plan_execute"
-                    )
-                {
-                    sirin_log!(
-                        "[coding_agent] fix loop circuit breaker: {} consecutive patch errors, aborting",
-                        fix_patch_errors
-                    );
-                    break;
-                }
-
-                let is_read = step.action == "local_file_read";
-                let action_name = step.action.clone();
-                let obs = match ctx.call_tool(&step.action, step.action_input.clone()).await {
-                    Ok(v) => {
-                        // Track files modified in fix loop so auto-commit and
-                        // rollback cover them too.
-                        if action_name == "file_write" || action_name == "file_patch" {
-                            if let Some(path) = v.get("path").and_then(Value::as_str) {
-                                if !files_modified.contains(&path.to_string()) {
-                                    files_modified.push(path.to_string());
-                                }
-                            }
-                        }
-                        if action_name == "plan_execute" {
-                            if let Some(results) = v.get("results").and_then(Value::as_array) {
-                                for r in results {
-                                    if let Some(result) = r.get("result") {
-                                        if let Some(path) =
-                                            result.get("path").and_then(Value::as_str)
-                                        {
-                                            if !files_modified.contains(&path.to_string()) {
-                                                files_modified.push(path.to_string());
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        fix_patch_errors = 0;
-                        if is_read {
-                            format_tool_output_large(&v)
-                        } else {
-                            format_tool_output(&v)
-                        }
-                    }
-                    Err(e) => {
-                        if action_name == "file_patch" {
-                            fix_patch_errors += 1;
-                        }
-                        format!("ERROR: {e}")
-                    }
-                };
-                sirin_log!(
-                    "[coding_agent] fix iter {fix_iter} action={action_name} obs={}",
-                    preview_text(&obs)
-                );
-                fix_history.push(HistoryEntry {
-                    thought: step.thought,
-                    action: step.action,
-                    action_input: step.action_input,
-                    observation: obs,
-                    pinned: is_read,
-                });
-            }
-
-            (ok, out) = verify_build(ctx).await;
-        }
-
-        // If still broken after all fix attempts, rollback only the files this
-        // task touched — leave any other working-tree changes intact.
-        if !ok {
-            if let Some(ref commit) = baseline_commit {
-                return Ok(rollback::perform_rollback(
-                    ctx,
-                    commit,
-                    &files_modified,
-                    history.iter().filter(|h| h.action != "DONE").count(),
-                    out,
-                    dry_run,
-                ));
-            }
-        }
-
-        (ok, out)
-    } else {
-        (false, None)
+    // ── Phase 4: verification + auto-fix (may early-return Rollback) ─────────
+    let (build_verified, verification_output) = match verify::run_verify_and_autofix(
+        ctx,
+        &project_ctx,
+        config,
+        baseline_commit.as_deref(),
+        dry_run,
+        &mut state,
+    )
+    .await
+    {
+        VerifyOutcome::Verified {
+            build_verified,
+            verification_output,
+        } => (build_verified, verification_output),
+        VerifyOutcome::RolledBack(response) => return Ok(response),
     };
 
+    // ── Phase 5: finalize (diff + auto-commit + response) ────────────────────
     Ok(finalize::finalize(
         ctx,
         &request.task,
-        &history,
-        files_modified,
-        final_answer,
+        &state.history,
+        state.files_modified,
+        state.final_answer,
         read_only_analysis,
         dry_run,
         build_verified,
-        attempted_write,
-        had_tool_errors,
-        last_tool_error,
+        state.attempted_write,
+        state.had_tool_errors,
+        state.last_tool_error,
         verification_output,
     )
     .await)
 }
-
-async fn verify_build(ctx: &AgentContext) -> (bool, Option<String>) {
-    match ctx
-        .call_tool("shell_exec", json!({ "command": "cargo check" }))
-        .await
-    {
-        Ok(v) => {
-            let success = v.get("success").and_then(Value::as_bool).unwrap_or(false);
-            let output = format!(
-                "exit_code={}\nstdout={}\nstderr={}",
-                v.get("exit_code").and_then(Value::as_i64).unwrap_or(-1),
-                v.get("stdout").and_then(Value::as_str).unwrap_or(""),
-                v.get("stderr").and_then(Value::as_str).unwrap_or(""),
-            );
-            (success, Some(output))
-        }
-        Err(e) => (false, Some(format!("shell_exec error: {e}"))),
-    }
-}
-
 
 // ── Public runner ─────────────────────────────────────────────────────────────
 
@@ -835,8 +333,14 @@ pub async fn run_coding_via_adk(
 
 #[cfg(test)]
 mod tests {
-    use super::helpers::{extract_path_hints_from_task, truncate_to_bytes};
-    use super::verdict::{build_change_summary, derive_result_status, overall_verified};
+    use super::helpers::{
+        extract_path_hints_from_task, file_read_cache_key, truncate_to_bytes,
+    };
+    use super::prompt::parse_react_step;
+    use super::verdict::{
+        build_change_summary, build_fail_fast_outcome, derive_result_status, overall_verified,
+        salvage_non_json_final_answer, HistoryEntry,
+    };
     use super::*;
 
     /// Live integration test — requires LM Studio running at http://localhost:1234.
