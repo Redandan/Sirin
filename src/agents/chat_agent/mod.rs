@@ -12,6 +12,7 @@
 
 mod context;
 mod dispatch;
+mod format;
 mod intent;
 
 use std::sync::Arc;
@@ -495,7 +496,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::context::format_search_results;
-    use super::dispatch::{format_local_file_reply, format_skill_catalog_reply};
+    use super::format::{format_local_file_reply, format_skill_catalog_reply};
     use super::intent::{
         extract_file_reference, extract_file_references_from_text, infer_focus_paths_from_query,
         is_contextual_file_explanation_request, is_simple_meta_request, is_skill_inventory_request,
