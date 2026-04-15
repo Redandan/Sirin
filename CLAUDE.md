@@ -61,23 +61,41 @@ Central Panel:  ScrollArea 包裹, 內邊距 12pt
 ## Project layout
 
 ```
-src/ui_egui/          egui UI (7 modules + theme)
-src/ui_service.rs     AppService trait — UI↔backend boundary
-src/ui_service_impl.rs RealService
-src/agents/           Planner → Router → Chat / Coding / Research
-src/adk/              Agent trait, ToolRegistry, AgentRuntime
-src/mcp_client.rs     External MCP server proxy
-src/mcp_server.rs     Expose tools via MCP HTTP (:7700/mcp)
-src/telegram/         MTProto listener
-src/teams/            Chrome CDP
-src/memory.rs         SQLite FTS5
-src/llm.rs            Ollama / LM Studio / Gemini / Claude
+src/ui_egui/                 egui UI (7 modules + theme)
+src/ui_service.rs            AppService trait — UI↔backend boundary
+src/ui_service_impl/         RealService (5 domain submodules: agents, pending,
+                             workflow, integrations, system)
+src/agents/                  Planner → Router → Chat / Coding / Research
+  coding_agent/              mod (orchestration) + react (ReAct loop) +
+                             verify (auto-fix+rollback) + finalize (epilogue) +
+                             state (RunState) + prompt + verdict + rollback +
+                             helpers
+  chat_agent/                mod + dispatch + intent + context + format
+  planner_agent.rs +
+  planner_intent.rs          intent classification split out
+src/adk/                     Agent trait, AgentRuntime
+  tool/                      mod (ToolRegistry) + builtins (21 tool impls) +
+                             fs_helpers
+src/mcp_client.rs            External MCP server proxy
+src/mcp_server.rs            Expose tools via MCP HTTP (:7700/mcp)
+src/telegram/                MTProto listener — mod + filter + handler +
+                             reply + commands + config + language + llm
+src/teams/                   Chrome CDP
+src/memory/                  mod (FTS5 SQL store) + codebase (project index) +
+                             context (per-peer ring-log)
+src/llm/                     mod (core types + public call API) + backends
+                             (Ollama/OpenAI HTTP) + probe (fleet discovery)
+src/persona/                 mod (config types) + behavior (decision engine) +
+                             task_tracker (event log)
+src/researcher/              mod + fetch + persistence + pipeline
+src/followup/                mod (worker loop) + candidates (self-assign)
 ```
 
 ## Build
 
 ```bash
-cargo check          # 0 errors, 0 warnings
-cargo test           # 177 tests
+cargo check          # 0 errors
+cargo test --bin sirin   # 174 passed, 5 ignored (need LM Studio)
+cargo clippy             # 11 warnings (false positives + architectural)
 cargo build --release
 ```
