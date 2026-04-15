@@ -2,7 +2,7 @@
 name = "sirin"
 version = "0.1.0"
 edition = "2021"
-description = "A pure-Rust cross-platform AI agent (Dioxus + Tokio)"
+description = "A pure-Rust desktop AI agent (egui + Tokio)"
 
 [dependencies]
 eframe = { version = "0.31", features = ["default"] }
