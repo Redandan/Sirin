@@ -22,6 +22,7 @@ mod prompt;
 mod react;
 mod rollback;
 mod state;
+mod step;
 mod verdict;
 mod verify;
 

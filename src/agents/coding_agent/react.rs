@@ -18,10 +18,7 @@ use crate::llm::call_coding_prompt;
 use crate::persona::CodingAgentConfig;
 use crate::sirin_log;
 
-use super::helpers::{
-    describe_tools, file_read_cache_key, format_tool_output, format_tool_output_large,
-    maybe_enrich_tool_error, preview_text, step_fingerprint,
-};
+use super::helpers::{describe_tools, file_read_cache_key, preview_text, step_fingerprint};
 use super::prompt::{build_react_prompt, parse_react_step};
 use super::state::RunState;
 use super::verdict::{
@@ -245,50 +242,25 @@ pub(super) async fn run_react_iterations(
                 );
                 format!("[Already read at iteration {cached_iter} — content unchanged, using cache]\n{cached}")
             } else {
-                match ctx.call_tool(&step.action, tool_input).await {
-                    Ok(v) => {
-                        let out = format_tool_output_large(&v);
-                        if !path_key.is_empty() {
-                            file_read_cache.insert(path_key, (iteration, out.clone()));
-                        }
-                        out
-                    }
-                    Err(e) => format!("ERROR: {e}"),
+                let outcome =
+                    super::step::execute_tool(ctx, &step.action, tool_input, true).await;
+                if !path_key.is_empty() && !outcome.observation.starts_with("ERROR:") {
+                    file_read_cache.insert(path_key, (iteration, outcome.observation.clone()));
                 }
+                outcome.observation
             }
         } else {
-            match ctx.call_tool(&step.action, tool_input).await {
-                Ok(v) => {
-                    // Track which files were written.
-                    if step.action == "file_write" || step.action == "file_patch" {
-                        if let Some(path) = v.get("path").and_then(Value::as_str) {
-                            if !state.files_modified.contains(&path.to_string()) {
-                                state.files_modified.push(path.to_string());
-                            }
-                        }
-                    }
-                    // Track files touched via plan_execute steps.
-                    if step.action == "plan_execute" {
-                        if let Some(results) = v.get("results").and_then(Value::as_array) {
-                            for r in results {
-                                if let Some(result) = r.get("result") {
-                                    if let Some(path) = result.get("path").and_then(Value::as_str) {
-                                        if !state.files_modified.contains(&path.to_string()) {
-                                            state.files_modified.push(path.to_string());
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    format_tool_output(&v)
+            let outcome =
+                super::step::execute_tool(ctx, &step.action, tool_input, false).await;
+            for path in outcome.files_modified {
+                if !state.files_modified.contains(&path) {
+                    state.files_modified.push(path);
                 }
-                Err(e) => format!("ERROR: {e}"),
             }
+            outcome.observation
         };
 
         let action_name = step.action.clone();
-        let observation = maybe_enrich_tool_error(&action_name, observation);
         state.history.push(HistoryEntry {
             thought: step.thought,
             action: step.action,

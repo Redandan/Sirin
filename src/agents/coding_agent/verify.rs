@@ -18,9 +18,7 @@ use crate::llm::call_coding_prompt;
 use crate::persona::CodingAgentConfig;
 use crate::sirin_log;
 
-use super::helpers::{
-    describe_tools, format_tool_output, format_tool_output_large, preview_text,
-};
+use super::helpers::{describe_tools, preview_text};
 use super::prompt::{build_react_prompt, parse_react_step};
 use super::state::RunState;
 use super::verdict::HistoryEntry;
@@ -188,44 +186,24 @@ async fn run_fix_iterations(
 
         let is_read = step.action == "local_file_read";
         let action_name = step.action.clone();
-        let obs = match ctx.call_tool(&step.action, step.action_input.clone()).await {
-            Ok(v) => {
-                // Track files modified in fix loop so auto-commit and
-                // rollback cover them too.
-                if action_name == "file_write" || action_name == "file_patch" {
-                    if let Some(path) = v.get("path").and_then(Value::as_str) {
-                        if !state.files_modified.contains(&path.to_string()) {
-                            state.files_modified.push(path.to_string());
-                        }
-                    }
-                }
-                if action_name == "plan_execute" {
-                    if let Some(results) = v.get("results").and_then(Value::as_array) {
-                        for r in results {
-                            if let Some(result) = r.get("result") {
-                                if let Some(path) = result.get("path").and_then(Value::as_str) {
-                                    if !state.files_modified.contains(&path.to_string()) {
-                                        state.files_modified.push(path.to_string());
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                fix_patch_errors = 0;
-                if is_read {
-                    format_tool_output_large(&v)
-                } else {
-                    format_tool_output(&v)
+        let outcome =
+            super::step::execute_tool(ctx, &step.action, step.action_input.clone(), is_read).await;
+        let obs = outcome.observation;
+
+        if obs.starts_with("ERROR:") {
+            if action_name == "file_patch" {
+                fix_patch_errors += 1;
+            }
+        } else {
+            // Track files modified in fix loop so auto-commit and
+            // rollback cover them too.
+            for path in outcome.files_modified {
+                if !state.files_modified.contains(&path) {
+                    state.files_modified.push(path);
                 }
             }
-            Err(e) => {
-                if action_name == "file_patch" {
-                    fix_patch_errors += 1;
-                }
-                format!("ERROR: {e}")
-            }
-        };
+            fix_patch_errors = 0;
+        }
         sirin_log!(
             "[coding_agent] fix iter {fix_iter} action={action_name} obs={}",
             preview_text(&obs)
