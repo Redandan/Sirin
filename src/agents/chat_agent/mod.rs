@@ -118,7 +118,7 @@ impl Agent for ChatAgent {
             // Respect the remote-AI kill-switch: per-request flag (from AgentConfig)
             // takes priority, then falls back to persona.yaml setting.
             let remote_disabled = request.disable_remote_ai
-                || persona.as_ref().map_or(false, |p| p.disable_remote_ai);
+                || persona.as_ref().is_some_and(|p| p.disable_remote_ai);
             let use_large = request.use_large_model && !remote_disabled;
 
             // Per-request LLM override (e.g. Anthropic Claude for meeting participants).

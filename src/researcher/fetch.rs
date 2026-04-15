@@ -52,7 +52,7 @@ pub(super) async fn fetch_page_text(http: &reqwest::Client, url: &str) -> Result
     let sel = page_content_selector();
 
     let mut parts: Vec<String> = Vec::new();
-    for el in doc.select(&sel) {
+    for el in doc.select(sel) {
         let text: String = el.text().collect::<Vec<_>>().join(" ");
         let trimmed = text.split_whitespace().collect::<Vec<_>>().join(" ");
         if trimmed.len() > 20 {

@@ -98,7 +98,7 @@ pub fn show(
                             if pending_n > 0 {
                                 let pos = egui::pos2(inner.right() - 4.0, inner.center().y);
                                 ui.painter().text(
-                                    pos, egui::Align2::RIGHT_CENTER, &format!("{pending_n}"),
+                                    pos, egui::Align2::RIGHT_CENTER, format!("{pending_n}"),
                                     egui::FontId::proportional(theme::FONT_CAPTION), theme::ACCENT,
                                 );
                             }

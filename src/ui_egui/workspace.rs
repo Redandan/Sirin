@@ -69,7 +69,7 @@ fn show_chat(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &str, state
                 ui.vertical_centered(|ui| {
                     ui.label(RichText::new("💬").size(theme::SP_XL));
                     ui.add_space(theme::SP_SM);
-                    ui.colored_label(theme::TEXT, RichText::new(format!("與 Agent 對話")).size(theme::FONT_HEADING));
+                    ui.colored_label(theme::TEXT, RichText::new("與 Agent 對話".to_string()).size(theme::FONT_HEADING));
                     ui.add_space(theme::SP_XS);
                     ui.colored_label(theme::TEXT_DIM, "輸入訊息開始對話，Agent 會使用 AI 回覆");
                 });

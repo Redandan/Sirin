@@ -32,12 +32,9 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agents: &[AgentSummary
     if state.ai_loading {
         if let Some(rx) = &state.ai_rx {
             // If disconnected and no more messages, done
-            match rx.try_recv() {
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    state.ai_loading = false;
-                    state.ai_rx = None;
-                }
-                _ => {}
+            if let Err(std::sync::mpsc::TryRecvError::Disconnected) = rx.try_recv() {
+                state.ai_loading = false;
+                state.ai_rx = None;
             }
         }
     }

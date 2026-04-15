@@ -22,7 +22,7 @@ use tokio::sync::RwLock;
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct McpServersConfig {
     #[serde(default)]
     pub servers: Vec<McpServerEntry>,
@@ -52,14 +52,6 @@ impl McpServersConfig {
                 // File doesn't exist — that's fine, no external servers configured.
                 Self::default()
             }
-        }
-    }
-}
-
-impl Default for McpServersConfig {
-    fn default() -> Self {
-        Self {
-            servers: Vec::new(),
         }
     }
 }
@@ -356,7 +348,7 @@ fn compact_schema_example(schema: &Value) -> String {
             let placeholder = match typ {
                 "number" | "integer" => "0".to_string(),
                 "boolean" => "true".to_string(),
-                _ => format!("\"...\""),
+                _ => "\"...\"".to_string(),
             };
             format!("\"{k}\":{placeholder}")
         })

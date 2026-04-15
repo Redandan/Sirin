@@ -166,7 +166,7 @@ pub async fn run_worker(tracker: TaskTracker) {
         }
 
         // Trim the task log every 10 cycles (~5 h at the default interval).
-        if cycle % 10 == 0 {
+        if cycle.is_multiple_of(10) {
             let max = task_log_max_lines();
             match tracker.trim_to_max(max) {
                 Ok(0) => {}

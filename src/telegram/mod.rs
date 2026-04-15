@@ -83,7 +83,7 @@ async fn ensure_user_authorized(
 
     sirin_log!("[telegram] Session not authorized, starting user sign-in flow...");
 
-    let phone = cfg.phone.clone().ok_or_else(|| {
+    let phone = cfg.phone.clone().ok_or({
         "TG_PHONE is not set; cannot start non-interactive sign-in (set TG_PHONE in .env)"
     })?;
 
@@ -254,7 +254,7 @@ async fn run_listener_once(
 
             let reply_plan = handler::prepare_reply_plan(
                 &text,
-                peer_bare_id.map(|id| id as i64),
+                peer_bare_id,
                 persona_name,
                 voice,
                 ack_prefix,
@@ -494,7 +494,7 @@ async fn run_agent_listener_once(
 
             let reply_plan = handler::prepare_reply_plan(
                 &text,
-                peer_bare_id.map(|id| id as i64),
+                peer_bare_id,
                 persona_name,
                 voice,
                 ack_prefix,
@@ -586,7 +586,7 @@ async fn run_agent_listener_once(
                     let pending = pending_reply::PendingReply::new(
                         agent_cfg.id.clone(),
                         "telegram",
-                        peer_bare_id.map(|id| id as i64),
+                        peer_bare_id,
                         peer_name.clone(),
                         text.clone(),
                         final_reply.clone(),

@@ -66,13 +66,11 @@ fn ensure_first_run_dirs() {
         }
     }
 
-    if !std::path::Path::new(".env").exists() {
-        if std::path::Path::new(".env.example").exists() {
-            if fs::copy(".env.example", ".env").is_ok() {
+    if !std::path::Path::new(".env").exists()
+        && std::path::Path::new(".env.example").exists()
+            && fs::copy(".env.example", ".env").is_ok() {
                 eprintln!("[main] Created .env from .env.example");
             }
-        }
-    }
 
     if !std::path::Path::new("config/persona.yaml").exists() {
         let default_yaml = "\

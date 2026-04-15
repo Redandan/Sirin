@@ -3,9 +3,9 @@
 
 pub fn contains_cjk(text: &str) -> bool {
     text.chars().any(|ch| {
-        (ch >= '\u{4E00}' && ch <= '\u{9FFF}')
-            || (ch >= '\u{3400}' && ch <= '\u{4DBF}')
-            || (ch >= '\u{F900}' && ch <= '\u{FAFF}')
+        ('\u{4E00}'..='\u{9FFF}').contains(&ch)
+            || ('\u{3400}'..='\u{4DBF}').contains(&ch)
+            || ('\u{F900}'..='\u{FAFF}').contains(&ch)
     })
 }
 
@@ -15,9 +15,9 @@ pub fn is_mixed_language_reply(text: &str) -> bool {
     let mut latin_count = 0usize;
 
     for ch in text.chars() {
-        if (ch >= '\u{4E00}' && ch <= '\u{9FFF}')
-            || (ch >= '\u{3400}' && ch <= '\u{4DBF}')
-            || (ch >= '\u{F900}' && ch <= '\u{FAFF}')
+        if ('\u{4E00}'..='\u{9FFF}').contains(&ch)
+            || ('\u{3400}'..='\u{4DBF}').contains(&ch)
+            || ('\u{F900}'..='\u{FAFF}').contains(&ch)
         {
             cjk_count += 1;
         } else if ch.is_ascii_alphabetic() {

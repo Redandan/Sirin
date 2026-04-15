@@ -105,7 +105,7 @@ impl eframe::App for SirinApp {
                     let title = match &self.view {
                         View::Workspace(idx) => {
                             let name = self.agents.get(*idx).map(|a| a.name.as_str()).unwrap_or("—");
-                            format!("{name}")
+                            name.to_string()
                         }
                         View::Settings => "系統設定".into(),
                         View::Log => "系統 Log".into(),

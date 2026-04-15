@@ -176,19 +176,14 @@ impl Default for HumanBehaviorConfig {
 // ── KPI ───────────────────────────────────────────────────────────────────────
 
 /// Where a KPI metric value comes from.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum KpiSource {
     /// Value is entered manually by the operator.
+    #[default]
     Manual,
     /// Value is fetched from the Agora API (TODO: not yet implemented).
     AgoraApi,
-}
-
-impl Default for KpiSource {
-    fn default() -> Self {
-        KpiSource::Manual
-    }
 }
 
 /// Definition of one KPI metric tracked per agent.
