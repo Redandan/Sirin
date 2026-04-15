@@ -11,6 +11,7 @@ mod events;
 mod followup;
 mod human_behavior;
 mod jsonl_log;
+mod log_subscriber;
 #[allow(dead_code)] mod llm;
 mod log_buffer;
 #[allow(dead_code)] mod memory;
@@ -96,7 +97,27 @@ async fn background_loop(tracker: TaskTracker) {
     }
 }
 
+fn init_tracing() {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    use tracing_subscriber::{fmt, EnvFilter};
+
+    // Default filter: everything from sirin at info, everything else at warn —
+    // keeps reqwest / hyper / tokio internals from flooding the UI.
+    // Override with `RUST_LOG=sirin=debug,reqwest=info` etc.
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("sirin=info,warn"));
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(fmt::layer().with_target(false).with_writer(std::io::stderr))
+        .with(log_subscriber::LogBufferLayer)
+        .init();
+}
+
 fn main() {
+    init_tracing();
+
     match dotenvy::dotenv() {
         Ok(path) => eprintln!("[main] Loaded .env from {path:?}"),
         Err(e) => eprintln!("[main] .env not loaded: {e}"),

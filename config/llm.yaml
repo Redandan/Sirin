@@ -1,0 +1,6 @@
+provider: ''
+base_url: ''
+main_model: models/gemini-2.5-pro
+router_model: ''
+coding_model: ''
+large_model: ''

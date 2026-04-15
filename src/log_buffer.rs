@@ -65,11 +65,15 @@ pub fn clear() {
 }
 
 /// Log a message to both stderr and the UI ring buffer.
+///
+/// Implemented as a thin wrapper around `tracing::info!` so the tracing
+/// subscriber installed in `main.rs` handles the stderr write and the
+/// [`crate::log_subscriber::LogBufferLayer`] handles the ring-buffer push.
+/// New code should prefer `tracing::info!` / `warn!` / `error!` directly to
+/// get level selection, plus `info_span!` around async tasks for correlation.
 #[macro_export]
 macro_rules! sirin_log {
     ($($arg:tt)*) => {{
-        let msg = format!($($arg)*);
-        eprintln!("{}", msg);
-        $crate::log_buffer::push(msg);
+        ::tracing::info!(target: "sirin", $($arg)*);
     }};
 }
