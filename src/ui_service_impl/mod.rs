@@ -69,8 +69,7 @@ impl RealService {
     }
 }
 
-impl AppService for RealService {
-    // ── Agents ───────────────────────────────────────────────────────────────
+impl AgentService for RealService {
     fn list_agents(&self) -> Vec<AgentSummary> { agents::list_agents(self) }
     fn agent_detail(&self, id: &str) -> Option<AgentDetailView> { agents::agent_detail(self, id) }
     fn create_agent(&self, id: &str, name: &str) { agents::create_agent(self, id, name) }
@@ -85,15 +84,17 @@ impl AppService for RealService {
     }
     fn toggle_skill(&self, id: &str, skill_id: &str, enabled: bool) { agents::toggle_skill(self, id, skill_id, enabled) }
     fn disabled_skills(&self, id: &str) -> Vec<String> { agents::disabled_skills(self, id) }
+}
 
-    // ── Pending replies ──────────────────────────────────────────────────────
+impl PendingReplyService for RealService {
     fn pending_count(&self, id: &str) -> usize { pending::pending_count(self, id) }
     fn load_pending(&self, id: &str) -> Vec<PendingReplyView> { pending::load_pending(self, id) }
     fn approve_reply(&self, id: &str, reply_id: &str) { pending::approve_reply(self, id, reply_id) }
     fn reject_reply(&self, id: &str, reply_id: &str) { pending::reject_reply(self, id, reply_id) }
     fn edit_draft(&self, id: &str, reply_id: &str, new_text: &str) { pending::edit_draft(self, id, reply_id, new_text) }
+}
 
-    // ── Workflow ─────────────────────────────────────────────────────────────
+impl WorkflowService for RealService {
     fn workflow_state(&self) -> Option<WorkflowView> { workflow::workflow_state(self) }
     fn workflow_create(&self, feature: &str, description: &str) { workflow::workflow_create(self, feature, description) }
     fn workflow_advance(&self) -> bool { workflow::workflow_advance(self) }
@@ -101,8 +102,9 @@ impl AppService for RealService {
     fn workflow_reset(&self) { workflow::workflow_reset(self) }
     fn workflow_generate(&self) -> Option<String> { workflow::workflow_generate(self) }
     fn workflow_save_output(&self, stage_id: &str, output: &str) { workflow::workflow_save_output(self, stage_id, output) }
+}
 
-    // ── Integrations (TG / Teams / MCP / Meeting / Chat / Research / Skills) ─
+impl IntegrationService for RealService {
     fn tg_submit_code(&self, code: &str) -> bool { integrations::tg_submit_code(self, code) }
     fn tg_submit_password(&self, pwd: &str) -> bool { integrations::tg_submit_password(self, pwd) }
     fn tg_reconnect(&self) { integrations::tg_reconnect(self) }
@@ -118,8 +120,9 @@ impl AppService for RealService {
     fn chat_send(&self, id: &str, message: &str) -> String { integrations::chat_send(self, id, message) }
     fn trigger_research(&self, topic: &str, url: Option<&str>) { integrations::trigger_research(self, topic, url) }
     fn execute_skill(&self, skill_id: &str, input: &str) -> String { integrations::execute_skill(self, skill_id, input) }
+}
 
-    // ── System (logs / tasks / status / memory / persona / LLM / config / toasts) ─
+impl SystemService for RealService {
     fn recent_tasks(&self, limit: usize) -> Vec<TaskView> { system::recent_tasks(self, limit) }
     fn log_version(&self) -> usize { system::log_version(self) }
     fn log_recent(&self, limit: usize) -> Vec<LogLine> { system::log_recent(self, limit) }
@@ -140,3 +143,6 @@ impl AppService for RealService {
     fn poll_toasts(&self) -> Vec<ToastEvent> { system::poll_toasts(self) }
     fn toast_history(&self) -> Vec<ToastEvent> { system::toast_history(self) }
 }
+
+// `impl AppService for RealService` is satisfied automatically by the blanket
+// impl in `ui_service` — no explicit block needed.

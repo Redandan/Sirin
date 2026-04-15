@@ -136,72 +136,66 @@ pub struct ToastEvent {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ToastLevel { Info, Success, Error }
 
-// ── Service trait ────────────────────────────────────────────────────────────
+// ── Service traits ───────────────────────────────────────────────────────────
+//
+// Split by domain so UI consumers (and future alternative implementations) can
+// target the narrowest surface they actually need, rather than the full
+// 50-method god-trait.  `AppService` is the supertrait union; a blanket impl
+// means anything that implements all sub-traits automatically satisfies it,
+// and `Arc<dyn AppService>` behaves exactly as before for the UI layer.
 
-pub trait AppService: Send + Sync + 'static {
-    // ── Read ─────────────────────────────────────────────────────────────────
-
+/// Agent CRUD, objectives, human-behavior config, per-agent skill toggles.
+pub trait AgentService: Send + Sync + 'static {
     fn list_agents(&self) -> Vec<AgentSummary>;
     fn agent_detail(&self, agent_id: &str) -> Option<AgentDetailView>;
-
-    fn pending_count(&self, agent_id: &str) -> usize;
-    fn load_pending(&self, agent_id: &str) -> Vec<PendingReplyView>;
-
-    fn recent_tasks(&self, limit: usize) -> Vec<TaskView>;
-
-    fn log_version(&self) -> usize;
-    fn log_recent(&self, limit: usize) -> Vec<LogLine>;
-    fn log_len(&self) -> usize;
-
-    fn system_status(&self) -> SystemStatus;
-
-    fn workflow_state(&self) -> Option<WorkflowView>;
-
-    fn search_memory(&self, query: &str, limit: usize) -> Vec<String>;
-
-    // ── Write ────────────────────────────────────────────────────────────────
-
-    fn approve_reply(&self, agent_id: &str, reply_id: &str);
-    fn reject_reply(&self, agent_id: &str, reply_id: &str);
-
-    fn log_clear(&self);
-
-    fn workflow_create(&self, feature: &str, description: &str);
-    fn workflow_advance(&self) -> bool;
-    fn workflow_stage_prompt(&self) -> Option<String>;
-    fn workflow_reset(&self);
-
+    fn create_agent(&self, id: &str, name: &str);
     fn rename_agent(&self, agent_id: &str, new_name: &str);
     fn toggle_agent(&self, agent_id: &str, enabled: bool);
+    fn delete_agent(&self, agent_id: &str);
     fn add_objective(&self, agent_id: &str, text: &str);
     fn remove_objective(&self, agent_id: &str, index: usize);
     fn set_remote_ai(&self, agent_id: &str, allowed: bool);
     fn set_behavior(&self, agent_id: &str, enabled: bool, min_delay: u64, max_delay: u64, max_hour: u32, max_day: u32);
-    fn delete_agent(&self, agent_id: &str);
+    fn toggle_skill(&self, agent_id: &str, skill_id: &str, enabled: bool);
+    fn disabled_skills(&self, agent_id: &str) -> Vec<String>;
+}
 
-    // ── Telegram auth ────────────────────────────────────────────────────────
+/// Pending-reply queue read + mutation.
+pub trait PendingReplyService: Send + Sync + 'static {
+    fn pending_count(&self, agent_id: &str) -> usize;
+    fn load_pending(&self, agent_id: &str) -> Vec<PendingReplyView>;
+    fn approve_reply(&self, agent_id: &str, reply_id: &str);
+    fn reject_reply(&self, agent_id: &str, reply_id: &str);
+    fn edit_draft(&self, agent_id: &str, reply_id: &str, new_text: &str);
+}
 
+/// Workflow lifecycle + LLM-driven stage output generation.
+pub trait WorkflowService: Send + Sync + 'static {
+    fn workflow_state(&self) -> Option<WorkflowView>;
+    fn workflow_create(&self, feature: &str, description: &str);
+    fn workflow_advance(&self) -> bool;
+    fn workflow_stage_prompt(&self) -> Option<String>;
+    fn workflow_reset(&self);
+    /// Call LLM with the current stage prompt and return the generated text.
+    fn workflow_generate(&self) -> Option<String>;
+    /// Save AI output to the current stage.
+    fn workflow_save_output(&self, stage_id: &str, output: &str);
+}
+
+/// External integrations — Telegram auth, Teams session, MCP tools, meeting
+/// room, direct chat, research triggers, and local skill execution.
+pub trait IntegrationService: Send + Sync + 'static {
     fn tg_submit_code(&self, code: &str) -> bool;
     fn tg_submit_password(&self, password: &str) -> bool;
     fn tg_reconnect(&self);
 
-    // ── Teams ────────────────────────────────────────────────────────────────
-
     fn start_teams(&self);
     fn teams_running(&self) -> bool;
-
-    // ── MCP Tools ─────────────────────────────────────────────────────────────
 
     /// List external MCP tools with full details.
     fn mcp_tools(&self) -> Vec<McpToolDetail>;
     /// Execute an MCP tool by name with JSON arguments.
     fn mcp_call(&self, tool_name: &str, args_json: &str) -> Result<String, String>;
-
-    // ── Pending reply editing ────────────────────────────────────────────────
-
-    fn edit_draft(&self, agent_id: &str, reply_id: &str, new_text: &str);
-
-    // ── Meeting ───────────────────────────────────────────────────────────────
 
     fn meeting_active(&self) -> bool;
     fn meeting_start(&self, participants: Vec<String>) -> String;
@@ -209,59 +203,60 @@ pub trait AppService: Send + Sync + 'static {
     fn meeting_send(&self, speaker: &str, text: &str);
     fn meeting_history(&self) -> Vec<(String, String)>;
 
-    // ── Chat (direct conversation with agent) ─────────────────────────────────
-
     /// Send a message to the agent and get a reply (blocking).
     fn chat_send(&self, agent_id: &str, message: &str) -> String;
 
-    // ── Create agent ─────────────────────────────────────────────────────────
-
-    fn create_agent(&self, id: &str, name: &str);
-
-    // ── LLM model selection ──────────────────────────────────────────────────
-
-    fn available_models(&self) -> Vec<String>;
-    fn set_main_model(&self, model: &str);
-
-    // ── Research ─────────────────────────────────────────────────────────────
-
     fn trigger_research(&self, topic: &str, url: Option<&str>);
 
-    // ── Persona ──────────────────────────────────────────────────────────────
+    fn execute_skill(&self, skill_id: &str, input: &str) -> String;
+}
+
+/// App-level state — logs, task tracker, system status, memory search,
+/// persona/LLM/config editing, and the toast event buffer.
+pub trait SystemService: Send + Sync + 'static {
+    fn recent_tasks(&self, limit: usize) -> Vec<TaskView>;
+
+    fn log_version(&self) -> usize;
+    fn log_recent(&self, limit: usize) -> Vec<LogLine>;
+    fn log_len(&self) -> usize;
+    fn log_clear(&self);
+
+    fn system_status(&self) -> SystemStatus;
+
+    fn search_memory(&self, query: &str, limit: usize) -> Vec<String>;
 
     fn persona_name(&self) -> String;
     fn set_persona_name(&self, name: &str);
-
-    // ── Skill toggle ─────────────────────────────────────────────────────────
-
-    fn toggle_skill(&self, agent_id: &str, skill_id: &str, enabled: bool);
-    fn disabled_skills(&self, agent_id: &str) -> Vec<String>;
-
-    // ── Workflow AI ────────────────────────────────────────────────────────
-
-    /// Call LLM with the current stage prompt and return the generated text.
-    fn workflow_generate(&self) -> Option<String>;
-    /// Save AI output to the current stage.
-    fn workflow_save_output(&self, stage_id: &str, output: &str);
-
-    // ── Config export/import ─────────────────────────────────────────────
-
-    fn export_config(&self) -> String;
-    fn import_config(&self, yaml: &str) -> Result<(), String>;
-
-    // ── Skill execution ──────────────────────────────────────────────────
-
-    fn execute_skill(&self, skill_id: &str, input: &str) -> String;
-
-    // ── Persona full edit ────────────────────────────────────────────────
-
     fn persona_objectives(&self) -> Vec<String>;
     fn set_persona_objectives(&self, objectives: Vec<String>);
     fn persona_voice(&self) -> String;
     fn set_persona_voice(&self, voice: &str);
 
-    // ── Events ───────────────────────────────────────────────────────────
+    fn available_models(&self) -> Vec<String>;
+    fn set_main_model(&self, model: &str);
+
+    fn export_config(&self) -> String;
+    fn import_config(&self, yaml: &str) -> Result<(), String>;
 
     fn poll_toasts(&self) -> Vec<ToastEvent>;
     fn toast_history(&self) -> Vec<ToastEvent>;
+}
+
+/// Aggregate trait the UI consumes as `Arc<dyn AppService>`.
+///
+/// Any type that implements all five sub-traits automatically gets
+/// `AppService` via the blanket impl below — no separate impl block required.
+pub trait AppService:
+    AgentService + PendingReplyService + WorkflowService + IntegrationService + SystemService
+{
+}
+
+impl<T> AppService for T where
+    T: AgentService
+        + PendingReplyService
+        + WorkflowService
+        + IntegrationService
+        + SystemService
+        + ?Sized
+{
 }
