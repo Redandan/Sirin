@@ -10,6 +10,7 @@ mod code_graph;
 mod events;
 mod followup;
 mod human_behavior;
+mod jsonl_log;
 #[allow(dead_code)] mod llm;
 mod log_buffer;
 #[allow(dead_code)] mod memory;

@@ -6,17 +6,11 @@
 //! [`PendingReply`].  The full list is re-written on every update (the file
 //! is expected to stay small — operator reviews replies promptly).
 
-use std::{
-    fs,
-    path::PathBuf,
-    sync::Mutex,
-};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-/// Process-wide lock guarding the load → modify → save cycle.
-/// Prevents data corruption when multiple async tasks access the same file.
-static FILE_LOCK: Mutex<()> = Mutex::new(());
+use crate::jsonl_log::JsonlLog;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -99,21 +93,19 @@ impl PendingReply {
 
 /// Path to the JSONL file for a given agent.
 pub fn pending_replies_path(agent_id: &str) -> PathBuf {
-    PathBuf::from("data").join("pending_replies").join(format!("{agent_id}.jsonl"))
+    PathBuf::from("data")
+        .join("pending_replies")
+        .join(format!("{agent_id}.jsonl"))
+}
+
+fn log_for(agent_id: &str) -> JsonlLog<PendingReply> {
+    JsonlLog::new(pending_replies_path(agent_id))
 }
 
 /// Load all pending replies for an agent.  Returns an empty Vec if the file
 /// does not exist or cannot be parsed.
 pub fn load_pending(agent_id: &str) -> Vec<PendingReply> {
-    let path = pending_replies_path(agent_id);
-    let Ok(content) = fs::read_to_string(&path) else {
-        return Vec::new();
-    };
-    content
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .filter_map(|l| serde_json::from_str(l).ok())
-        .collect()
+    log_for(agent_id).read_all().unwrap_or_default()
 }
 
 /// Persist the full list of replies for an agent (overwrites existing file).
@@ -121,51 +113,43 @@ pub fn save_pending(
     agent_id: &str,
     replies: &[PendingReply],
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let path = pending_replies_path(agent_id);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let mut out = String::new();
-    for r in replies {
-        out.push_str(&serde_json::to_string(r)?);
-        out.push('\n');
-    }
-    fs::write(&path, &out)?;
-    Ok(())
+    let owned = replies.to_vec();
+    log_for(agent_id)
+        .rewrite_with(move |_existing| owned)
+        .map_err(Into::into)
 }
 
-/// Append one new reply to the store (load → push → save).
-/// Guarded by `FILE_LOCK` to prevent concurrent corruption.
+/// Append one new reply to the store.
+///
+/// Concurrency is handled by the underlying `JsonlLog` mutex, so no process-wide
+/// guard is needed.
 pub fn append_pending(reply: PendingReply) {
-    let _guard = FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let agent_id = reply.agent_id.clone();
-    let mut replies = load_pending(&agent_id);
-    replies.push(reply);
-    if let Err(e) = save_pending(&agent_id, &replies) {
-        eprintln!("[pending_reply] save error: {e}");
+    if let Err(e) = log_for(&agent_id).append(&reply) {
+        eprintln!("[pending_reply] append error: {e}");
     }
 }
 
 /// Update the status of one reply by ID.  No-op if the ID is not found.
-/// Guarded by `FILE_LOCK` to prevent concurrent corruption.
 pub fn update_status(agent_id: &str, id: &str, status: PendingStatus) {
-    let _guard = FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let mut replies = load_pending(agent_id);
-    if let Some(r) = replies.iter_mut().find(|r| r.id == id) {
-        r.status = status;
-    }
-    if let Err(e) = save_pending(agent_id, &replies) {
-        eprintln!("[pending_reply] save error: {e}");
+    let id = id.to_string();
+    if let Err(e) = log_for(agent_id).rewrite_with(move |mut replies| {
+        if let Some(r) = replies.iter_mut().find(|r| r.id == id) {
+            r.status = status;
+        }
+        replies
+    }) {
+        eprintln!("[pending_reply] update_status error: {e}");
     }
 }
 
 /// Delete a reply by ID.
-/// Guarded by `FILE_LOCK` to prevent concurrent corruption.
 pub fn delete_pending(agent_id: &str, id: &str) {
-    let _guard = FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let mut replies = load_pending(agent_id);
-    replies.retain(|r| r.id != id);
-    if let Err(e) = save_pending(agent_id, &replies) {
-        eprintln!("[pending_reply] save error: {e}");
+    let id = id.to_string();
+    if let Err(e) = log_for(agent_id).rewrite_with(move |mut replies| {
+        replies.retain(|r| r.id != id);
+        replies
+    }) {
+        eprintln!("[pending_reply] delete error: {e}");
     }
 }

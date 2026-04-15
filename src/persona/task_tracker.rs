@@ -4,15 +4,18 @@
 //! that all agents append `TaskEntry` records to.  The UI reads the tail via
 //! `read_last_n` for the task board; the followup worker calls
 //! `update_statuses` to mark entries `FOLLOWING` / `DONE`.
+//!
+//! Concurrency: `TaskTracker` is `Clone`-able (clones share the same
+//! underlying log file + mutex).  Concurrent `record` / `update_statuses`
+//! calls on the same tracker are serialised by [`crate::jsonl_log::JsonlLog`].
 
 use std::collections::HashMap;
-use std::fs::{self, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+
+use crate::jsonl_log::JsonlLog;
 
 use super::{ActionTier, BehaviorDecision, Persona};
 
@@ -124,13 +127,13 @@ impl TaskEntry {
 
 #[derive(Clone)]
 pub struct TaskTracker {
-    path: Arc<Mutex<PathBuf>>,
+    log: JsonlLog<TaskEntry>,
 }
 
 impl TaskTracker {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self {
-            path: Arc::new(Mutex::new(path.into())),
+            log: JsonlLog::new(path),
         }
     }
 
@@ -138,74 +141,14 @@ impl TaskTracker {
         &self,
         entry: &TaskEntry,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let path = self.path.lock().expect("TaskTracker mutex poisoned");
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let line = serde_json::to_string(entry)?;
-        let mut file = OpenOptions::new().create(true).append(true).open(&*path)?;
-        writeln!(file, "{line}")?;
-        Ok(())
-    }
-
-    fn read_raw_lines_lossy(
-        &self,
-    ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
-        let path = self
-            .path
-            .lock()
-            .expect("TaskTracker mutex poisoned")
-            .clone();
-        if !path.exists() {
-            return Ok(Vec::new());
-        }
-
-        let file = fs::File::open(&path)?;
-        let mut reader = BufReader::new(file);
-        let mut lines = Vec::new();
-        let mut buf = Vec::new();
-
-        loop {
-            buf.clear();
-            let bytes = reader.read_until(b'\n', &mut buf)?;
-            if bytes == 0 {
-                break;
-            }
-
-            if matches!(buf.last(), Some(b'\n')) {
-                buf.pop();
-            }
-            if matches!(buf.last(), Some(b'\r')) {
-                buf.pop();
-            }
-
-            lines.push(String::from_utf8_lossy(&buf).into_owned());
-        }
-
-        Ok(lines)
+        self.log.append(entry).map_err(Into::into)
     }
 
     pub fn read_last_n(
         &self,
         n: usize,
     ) -> Result<Vec<TaskEntry>, Box<dyn std::error::Error + Send + Sync>> {
-        let mut ring: std::collections::VecDeque<String> =
-            std::collections::VecDeque::with_capacity(n);
-        for line in self.read_raw_lines_lossy()? {
-            if line.trim().is_empty() {
-                continue;
-            }
-            if ring.len() == n {
-                ring.pop_front();
-            }
-            ring.push_back(line);
-        }
-
-        let entries = ring
-            .iter()
-            .filter_map(|l| serde_json::from_str(l).ok())
-            .collect();
-        Ok(entries)
+        self.log.read_last_n(n).map_err(Into::into)
     }
 
     pub fn update_statuses(
@@ -215,61 +158,24 @@ impl TaskTracker {
         if updates.is_empty() {
             return Ok(());
         }
-        let path = self
-            .path
-            .lock()
-            .expect("TaskTracker mutex poisoned")
-            .clone();
-        if !path.exists() {
-            return Ok(());
-        }
-
-        let raw = self.read_raw_lines_lossy()?;
-
-        let tmp_path = path.with_extension("jsonl.tmp");
-        {
-            let mut tmp = OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(&tmp_path)?;
-            for line in &raw {
-                if line.trim().is_empty() {
-                    writeln!(tmp, "{line}")?;
-                    continue;
-                }
-                if let Ok(mut entry) = serde_json::from_str::<TaskEntry>(line) {
+        self.log
+            .rewrite_with(|mut entries| {
+                for entry in entries.iter_mut() {
                     if let Some(new_status) = updates.get(&entry.timestamp) {
                         entry.status = Some(new_status.clone());
-                        writeln!(tmp, "{}", serde_json::to_string(&entry)?)?;
-                        continue;
                     }
                 }
-                writeln!(tmp, "{line}")?;
-            }
-        }
-
-        fs::rename(&tmp_path, &path)?;
-        Ok(())
+                entries
+            })
+            .map_err(Into::into)
     }
 
     pub fn find_by_timestamp(
         &self,
         timestamp: &str,
     ) -> Result<Option<TaskEntry>, Box<dyn std::error::Error + Send + Sync>> {
-        for line in self.read_raw_lines_lossy()? {
-            if line.trim().is_empty() {
-                continue;
-            }
-
-            if let Ok(entry) = serde_json::from_str::<TaskEntry>(&line) {
-                if entry.timestamp == timestamp {
-                    return Ok(Some(entry));
-                }
-            }
-        }
-
-        Ok(None)
+        let all = self.log.read_all()?;
+        Ok(all.into_iter().find(|e| e.timestamp == timestamp))
     }
 
     /// Keep only the newest `max_lines` entries, discarding the oldest.
@@ -280,38 +186,7 @@ impl TaskTracker {
         &self,
         max_lines: usize,
     ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
-        let all = self.read_raw_lines_lossy()?;
-        let non_empty: Vec<&str> = all
-            .iter()
-            .map(|l| l.as_str())
-            .filter(|l| !l.trim().is_empty())
-            .collect();
-
-        if non_empty.len() <= max_lines {
-            return Ok(0);
-        }
-
-        let removed = non_empty.len() - max_lines;
-        let keep = &non_empty[removed..];
-
-        let path = self
-            .path
-            .lock()
-            .expect("TaskTracker mutex poisoned")
-            .clone();
-        let tmp_path = path.with_extension("jsonl.tmp");
-        {
-            let mut tmp = OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(&tmp_path)?;
-            for line in keep {
-                writeln!(tmp, "{line}")?;
-            }
-        }
-        fs::rename(&tmp_path, &path)?;
-        Ok(removed)
+        self.log.trim_to_max(max_lines).map_err(Into::into)
     }
 }
 
@@ -331,6 +206,7 @@ mod tests {
     #[test]
     fn tracker_record_and_read_roundtrip() {
         let (tracker, path) = tmp_tracker("roundtrip");
+        let _ = std::fs::remove_file(&path);
         let entry = TaskEntry::heartbeat("TestPersona");
         tracker.record(&entry).expect("record should succeed");
 
@@ -344,6 +220,7 @@ mod tests {
     #[test]
     fn tracker_read_last_n_returns_tail() {
         let (tracker, path) = tmp_tracker("tail");
+        let _ = std::fs::remove_file(&path);
         for i in 0..10usize {
             let mut e = TaskEntry::heartbeat("P");
             e.reason = Some(format!("entry {i}"));
@@ -351,7 +228,6 @@ mod tests {
         }
         let entries = tracker.read_last_n(3).expect("read ok");
         assert_eq!(entries.len(), 3);
-        // The 3 newest entries should be entries 7, 8, 9.
         assert_eq!(entries[2].reason.as_deref(), Some("entry 9"));
         std::fs::remove_file(&path).ok();
     }
@@ -359,7 +235,7 @@ mod tests {
     #[test]
     fn tracker_read_missing_file_returns_empty() {
         let path = std::env::temp_dir().join("sirin_nonexistent_tracker.jsonl");
-        let _ = std::fs::remove_file(&path); // ensure absent
+        let _ = std::fs::remove_file(&path);
         let tracker = TaskTracker::new(&path);
         let entries = tracker
             .read_last_n(10)
@@ -370,6 +246,7 @@ mod tests {
     #[test]
     fn tracker_update_statuses_rewrites_atomically() {
         let (tracker, path) = tmp_tracker("update");
+        let _ = std::fs::remove_file(&path);
         let mut entry = TaskEntry::heartbeat("P");
         entry.status = Some("PENDING".to_string());
         let ts = entry.timestamp.clone();
@@ -387,6 +264,7 @@ mod tests {
     #[test]
     fn tracker_update_statuses_noop_when_empty() {
         let (tracker, path) = tmp_tracker("noop");
+        let _ = std::fs::remove_file(&path);
         tracker
             .update_statuses(&std::collections::HashMap::new())
             .expect("noop ok");
@@ -396,6 +274,7 @@ mod tests {
     #[test]
     fn tracker_trim_to_max_removes_oldest_entries() {
         let (tracker, path) = tmp_tracker("trim");
+        let _ = std::fs::remove_file(&path);
         for i in 0..8usize {
             let mut e = TaskEntry::heartbeat("P");
             e.reason = Some(format!("entry {i}"));
@@ -416,6 +295,7 @@ mod tests {
     #[test]
     fn tracker_trim_to_max_noop_when_under_limit() {
         let (tracker, path) = tmp_tracker("trim_noop");
+        let _ = std::fs::remove_file(&path);
         for _ in 0..3 {
             tracker
                 .record(&TaskEntry::heartbeat("P"))
@@ -429,6 +309,7 @@ mod tests {
     #[test]
     fn tracker_find_by_timestamp_returns_correct_entry() {
         let (tracker, path) = tmp_tracker("find");
+        let _ = std::fs::remove_file(&path);
         let mut entry = TaskEntry::heartbeat("P");
         entry.reason = Some("unique-reason".to_string());
         let ts = entry.timestamp.clone();
