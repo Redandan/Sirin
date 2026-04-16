@@ -676,10 +676,7 @@ pub async fn call_prompt_messages(
         LlmBackend::LmStudio | LlmBackend::Gemini | LlmBackend::Anthropic => {
             let openai_msgs: Vec<OpenAiMessage> = messages
                 .iter()
-                .map(|m| OpenAiMessage {
-                    role: m.role.as_str().to_string(),
-                    content: m.content.clone(),
-                })
+                .map(|m| OpenAiMessage::text(m.role.as_str(), &m.content))
                 .collect();
             call_openai_messages(
                 client,
@@ -691,6 +688,78 @@ pub async fn call_prompt_messages(
             .await
         }
     }
+}
+
+// ── Vision / multimodal ──────────────────────────────────────────────────────
+
+/// Send a prompt with an image to the LLM (vision-capable models only).
+///
+/// `image_base64` is raw base64-encoded PNG/JPEG data (no data: prefix).
+/// Works with Gemini, GPT-4o, Claude — NOT with Ollama text-only models.
+#[allow(dead_code)]
+pub async fn call_vision(
+    client: &reqwest::Client,
+    llm: &LlmConfig,
+    prompt: &str,
+    image_base64: &str,
+    mime: &str,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    match llm.backend {
+        LlmBackend::Ollama => {
+            // Ollama vision models (llava, etc.) use the `images` field
+            let body = serde_json::json!({
+                "model": llm.model,
+                "prompt": prompt,
+                "images": [image_base64],
+                "stream": false,
+            });
+            let url = format!("{}/api/generate", llm.base_url.trim_end_matches('/'));
+            let resp: serde_json::Value = client.post(&url).json(&body).send().await?.json().await?;
+            Ok(resp["response"].as_str().unwrap_or("").trim().to_string())
+        }
+        LlmBackend::LmStudio | LlmBackend::Gemini | LlmBackend::Anthropic => {
+            let msg = OpenAiMessage::with_image("user", prompt, image_base64, mime);
+            call_openai_messages(
+                client,
+                &llm.base_url,
+                &llm.model,
+                llm.api_key.as_deref(),
+                vec![msg],
+            ).await
+        }
+    }
+}
+
+/// Convenience: screenshot current browser page and ask LLM to analyze it.
+#[allow(dead_code)]
+pub async fn analyze_screenshot(
+    client: &reqwest::Client,
+    llm: &LlmConfig,
+    prompt: &str,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let png = tokio::task::spawn_blocking(|| crate::browser::screenshot())
+        .await
+        .map_err(|e| format!("spawn: {e}"))??;
+    let b64 = base64_encode_bytes(&png);
+    call_vision(client, llm, prompt, &b64, "image/png").await
+}
+
+fn base64_encode_bytes(input: &[u8]) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((input.len() + 2) / 3 * 4);
+    for chunk in input.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        out.push(CHARS[((triple >> 18) & 0x3F) as usize] as char);
+        out.push(CHARS[((triple >> 12) & 0x3F) as usize] as char);
+        if chunk.len() > 1 { out.push(CHARS[((triple >> 6) & 0x3F) as usize] as char); }
+        else { out.push('='); }
+        if chunk.len() > 2 { out.push(CHARS[(triple & 0x3F) as usize] as char); }
+        else { out.push('='); }
+    }
+    out
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

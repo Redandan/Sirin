@@ -821,11 +821,33 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                         Ok(json!({ "status": "auth_set" }))
                     }
 
+                    // ── Vision: screenshot + LLM analysis ────────
+                    "screenshot_analyze" => {
+                        // Take screenshot, send to vision LLM with prompt, return analysis
+                        if target.is_empty() {
+                            return Err("'screenshot_analyze' requires 'target' = analysis prompt".into());
+                        }
+                        // Capture screenshot (blocking)
+                        let png = browser::screenshot()?;
+                        // Return the png + prompt for async vision call below
+                        Ok(json!({ "__vision": true, "prompt": target, "png_len": png.len() }))
+                    }
+
                     other => Err(format!("Unknown web_navigate action: {other}")),
                 }
             })
             .await
             .map_err(|e| format!("spawn_blocking: {e}"))??;
+
+            // Handle vision analysis (requires async LLM call)
+            if result.get("__vision").and_then(|v| v.as_bool()).unwrap_or(false) {
+                let prompt = result["prompt"].as_str().unwrap_or("Describe this page");
+                let llm = crate::llm::shared_llm();
+                let client = crate::llm::shared_http();
+                let analysis = crate::llm::analyze_screenshot(&client, &llm, prompt).await
+                    .map_err(|e| format!("vision analysis failed: {e}"))?;
+                return Ok(json!({ "analysis": analysis }));
+            }
 
             Ok(result)
         })

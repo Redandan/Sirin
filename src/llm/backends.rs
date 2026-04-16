@@ -68,10 +68,49 @@ struct OpenAiRequest<'a> {
     stream: bool,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub(super) struct OpenAiMessage {
     pub role: String,
-    pub content: String,
+    /// Text string OR multimodal content array (for vision).
+    pub content: serde_json::Value,
+}
+
+impl OpenAiMessage {
+    /// Create a text-only message.
+    pub fn text(role: &str, content: impl Into<String>) -> Self {
+        Self { role: role.into(), content: serde_json::Value::String(content.into()) }
+    }
+
+    /// Create a message with text + image (base64 PNG).
+    pub fn with_image(role: &str, text: &str, image_base64: &str, mime: &str) -> Self {
+        Self {
+            role: role.into(),
+            content: serde_json::json!([
+                { "type": "text", "text": text },
+                { "type": "image_url", "image_url": {
+                    "url": format!("data:{mime};base64,{image_base64}")
+                }}
+            ]),
+        }
+    }
+
+    /// Extract text content (whether string or array).
+    pub fn text_content(&self) -> String {
+        match &self.content {
+            serde_json::Value::String(s) => s.clone(),
+            serde_json::Value::Array(arr) => {
+                arr.iter()
+                    .filter_map(|part| {
+                        if part.get("type")?.as_str()? == "text" {
+                            part.get("text")?.as_str().map(|s| s.to_string())
+                        } else { None }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+            _ => String::new(),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -128,10 +167,7 @@ pub(super) async fn call_openai(
         base_url,
         model,
         api_key,
-        vec![OpenAiMessage {
-            role: "user".into(),
-            content: prompt,
-        }],
+        vec![OpenAiMessage::text("user", prompt)],
     )
     .await
 }
@@ -146,7 +182,7 @@ pub(super) async fn call_openai_messages(
     api_key: Option<&str>,
     messages: Vec<OpenAiMessage>,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    let total_chars: usize = messages.iter().map(|m| m.content.len()).sum();
+    let total_chars: usize = messages.iter().map(|m| m.text_content().len()).sum();
     crate::sirin_log!(
         "[llm] call  backend=openai-compat model={} msgs={} chars={}",
         model,
@@ -192,7 +228,7 @@ pub(super) async fn call_openai_messages(
         let reply = parsed
             .choices
             .first()
-            .map(|c| c.message.content.trim().to_string())
+            .map(|c| c.message.text_content().trim().to_string())
             .unwrap_or_default();
         crate::sirin_log!(
             "[llm] resp  backend=openai-compat model={} reply_chars={}",
@@ -280,10 +316,7 @@ where
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let body = OpenAiStreamRequest {
         model,
-        messages: vec![OpenAiMessage {
-            role: "user".into(),
-            content: prompt,
-        }],
+        messages: vec![OpenAiMessage::text("user", prompt)],
         stream: true,
     };
 
