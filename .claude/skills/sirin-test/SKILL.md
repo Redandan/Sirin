@@ -19,7 +19,10 @@ Drive Sirin's AI-powered browser testing from external Claude Code sessions. Unl
 
 1. **Sirin is running** with MCP server on `http://127.0.0.1:7700/mcp`
    - Check: `curl -X POST http://127.0.0.1:7700/mcp -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'`
-   - If not running, ask user to start it (`cargo run --release` in Sirin repo)
+   - If not running, apply the **`sirin-launch`** skill first — it has
+     a full status-check → build → detached launch → readiness-poll
+     workflow. Do not tell the user "please start Sirin" without trying
+     to launch it yourself.
 
 2. **Sirin is registered as MCP server** in the caller's Claude Desktop config (or equivalent):
    ```json
