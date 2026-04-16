@@ -513,15 +513,17 @@ fn call_list_fixes(args: Value) -> Result<Value, String> {
         None      => crate::test_runner::store::recent_fixes_all(limit),
     };
     let items: Vec<Value> = fixes.into_iter().map(|f| json!({
-        "id":               f.id,
-        "test_id":          f.test_id,
-        "run_id":           f.run_id,
-        "category":         f.category,
-        "triggered_at":     f.triggered_at,
-        "completed_at":     f.completed_at,
-        "outcome":          f.outcome,
-        "claude_exit_code": f.claude_exit_code,
-        "claude_output":    f.claude_output,
+        "id":                  f.id,
+        "test_id":             f.test_id,
+        "run_id":              f.run_id,
+        "category":            f.category,
+        "triggered_at":        f.triggered_at,
+        "completed_at":        f.completed_at,
+        "outcome":             f.outcome,
+        "claude_exit_code":    f.claude_exit_code,
+        "claude_output":       f.claude_output,
+        "verification_run_id": f.verification_run_id,
+        "verified_at":         f.verified_at,
     })).collect();
     Ok(json!({ "count": items.len(), "fixes": items }))
 }

@@ -1,0 +1,20 @@
+id: agora_market_smoke
+name: "Agora Market — Flutter PWA smoke test"
+url: "https://redandan.github.io/"
+goal: |
+  驗證 Agora Market PWA 能正常載入並顯示登入頁面。
+  應該看到「Agora Market」標題與「電子郵件」輸入欄位。
+
+# Force HTML renderer so CSS selectors work against the DOM
+# (CanvasKit renders to <canvas> which is opaque to selectors).
+url_query:
+  flutter-web-renderer: html
+
+max_iterations: 8
+timeout_secs: 90
+
+success_criteria:
+  - "頁面包含文字「Agora Market」"
+  - "頁面包含 email 輸入欄位"
+
+tags: [smoke, flutter, agora]

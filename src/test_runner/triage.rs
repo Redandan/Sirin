@@ -204,19 +204,89 @@ pub fn trigger_auto_fix(test: &TestGoal, result: &TestResult, outcome: &TriageOu
 
     std::thread::spawn(move || {
         tracing::info!("[test_runner] auto_fix[{fix_id}]: spawning claude_session in {cwd}");
-        match crate::claude_session::run_sync(&cwd, &bug_prompt) {
+
+        let claude_result = crate::claude_session::run_sync(&cwd, &bug_prompt);
+
+        let (exit_code, output) = match claude_result {
             Ok(r) => {
                 tracing::info!(
                     "[test_runner] auto_fix[{fix_id}] for {test_id}: exit={}, output chars={}",
                     r.exit_code, r.output.len()
                 );
-                if let Err(e) = super::store::complete_fix(fix_id, r.exit_code as i64, &r.output) {
-                    tracing::error!("[test_runner] complete_fix({fix_id}) DB write failed: {e}");
-                }
+                (r.exit_code as i64, r.output)
             }
             Err(e) => {
                 tracing::error!("[test_runner] auto_fix[{fix_id}] for {test_id} failed: {e}");
-                let _ = super::store::complete_fix(fix_id, -1, &format!("claude_session error: {e}"));
+                (-1, format!("claude_session error: {e}"))
+            }
+        };
+
+        if let Err(e) = super::store::complete_fix(fix_id, exit_code, &output) {
+            tracing::error!("[test_runner] complete_fix({fix_id}) DB write failed: {e}");
+        }
+
+        // Verification: only re-run if claude actually succeeded (exit=0)
+        // and the test_id corresponds to a real YAML test (not adhoc).
+        if exit_code != 0 {
+            return;
+        }
+        if !super::parser::find(&test_id).is_some() {
+            tracing::info!(
+                "[test_runner] auto_fix[{fix_id}]: skipping verification — test_id '{test_id}' \
+                 is not a YAML-defined test (probably adhoc)"
+            );
+            return;
+        }
+
+        tracing::info!(
+            "[test_runner] auto_fix[{fix_id}]: spawning verification run for {test_id}"
+        );
+        match super::spawn_run_async(test_id.clone(), false /* no nested auto_fix */) {
+            Err(e) => {
+                tracing::error!("[test_runner] verification spawn failed: {e}");
+            }
+            Ok(ver_run_id) => {
+                // Poll until terminal state, max 5 minutes
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+                let passed = loop {
+                    if std::time::Instant::now() >= deadline {
+                        tracing::warn!(
+                            "[test_runner] verification[{fix_id}]: timed out after 5min"
+                        );
+                        break None;
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    match super::runs::get(&ver_run_id) {
+                        Some(state) => match state.phase {
+                            super::runs::RunPhase::Complete(r) => {
+                                break Some(matches!(r.status, super::executor::TestStatus::Passed));
+                            }
+                            super::runs::RunPhase::Error(e) => {
+                                tracing::warn!(
+                                    "[test_runner] verification[{fix_id}]: errored: {e}"
+                                );
+                                break Some(false);
+                            }
+                            _ => continue,
+                        },
+                        None => {
+                            tracing::warn!(
+                                "[test_runner] verification[{fix_id}]: run_id pruned"
+                            );
+                            break None;
+                        }
+                    }
+                };
+
+                if let Some(p) = passed {
+                    if let Err(e) = super::store::record_verification(fix_id, &ver_run_id, p) {
+                        tracing::error!("[test_runner] record_verification failed: {e}");
+                    }
+                    let label = if p { "VERIFIED" } else { "REGRESSED" };
+                    tracing::info!(
+                        "[test_runner] auto_fix[{fix_id}] for {test_id}: {label} (ver_run={ver_run_id})"
+                    );
+                }
             }
         }
     });

@@ -1,6 +1,7 @@
 //! YAML parsing for test goals.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,10 +20,54 @@ pub struct TestGoal {
     /// Locale for LLM prompts and responses.  Supported: "zh-TW" (default), "en", "zh-CN".
     #[serde(default = "default_locale")]
     pub locale: String,
+    /// Extra query parameters merged into `url` before navigation.
+    /// Primary use: Flutter Canvas apps need `flutter-web-renderer: html`
+    /// to have a real DOM that selectors can work against.
+    #[serde(default)]
+    pub url_query: BTreeMap<String, String>,
     #[serde(default)]
     pub success_criteria: Vec<String>,
     #[serde(default)]
     pub tags: Vec<String>,
+}
+
+impl TestGoal {
+    /// Return the navigation URL with `url_query` appended as query string.
+    /// If the URL already has a query string, the params are merged (TestGoal
+    /// values win on collision).
+    pub fn full_url(&self) -> String {
+        if self.url_query.is_empty() {
+            return self.url.clone();
+        }
+        let (base, existing) = match self.url.split_once('?') {
+            Some((b, q)) => (b.to_string(), q.to_string()),
+            None => (self.url.clone(), String::new()),
+        };
+        // Parse existing query into map (preserving order via Vec).
+        let mut params: Vec<(String, String)> = existing
+            .split('&')
+            .filter(|p| !p.is_empty())
+            .filter_map(|p| {
+                p.split_once('=')
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .or_else(|| Some((p.to_string(), String::new())))
+            })
+            .collect();
+        // Override / append from url_query
+        for (k, v) in &self.url_query {
+            if let Some(existing_val) = params.iter_mut().find(|(ek, _)| ek == k) {
+                existing_val.1 = v.clone();
+            } else {
+                params.push((k.clone(), v.clone()));
+            }
+        }
+        let qs = params
+            .iter()
+            .map(|(k, v)| if v.is_empty() { k.clone() } else { format!("{k}={v}") })
+            .collect::<Vec<_>>()
+            .join("&");
+        format!("{base}?{qs}")
+    }
 }
 
 fn default_max_iter() -> u32 { 15 }
@@ -113,5 +158,43 @@ tags: [auth, smoke, critical]
         let yaml = "id: x\n";
         let r: Result<TestGoal, _> = serde_yaml::from_str(yaml);
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn full_url_without_query_params_unchanged() {
+        let g: TestGoal = serde_yaml::from_str(
+            "id: x\nname: y\nurl: https://example.com\ngoal: g",
+        ).unwrap();
+        assert_eq!(g.full_url(), "https://example.com");
+    }
+
+    #[test]
+    fn full_url_appends_url_query() {
+        let g: TestGoal = serde_yaml::from_str(r#"
+id: flutter_test
+name: "Flutter test"
+url: "https://app.example.com/"
+goal: "test it"
+url_query:
+  flutter-web-renderer: html
+"#).unwrap();
+        assert_eq!(g.full_url(), "https://app.example.com/?flutter-web-renderer=html");
+    }
+
+    #[test]
+    fn full_url_merges_with_existing_query() {
+        let g: TestGoal = serde_yaml::from_str(r#"
+id: x
+name: y
+url: "https://app.com/?foo=1&bar=2"
+goal: g
+url_query:
+  flutter-web-renderer: html
+  foo: OVERRIDE
+"#).unwrap();
+        let url = g.full_url();
+        assert!(url.contains("foo=OVERRIDE"), "override should win: {url}");
+        assert!(url.contains("bar=2"), "existing non-conflicting param kept: {url}");
+        assert!(url.contains("flutter-web-renderer=html"));
     }
 }

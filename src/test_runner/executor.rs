@@ -65,7 +65,9 @@ pub async fn execute_test_tracked(
     }
 
     // 1) Ensure browser open + navigate
-    let nav_input = json!({ "action": "goto", "target": &test.url });
+    // Use full_url() so url_query params (e.g. flutter-web-renderer=html) are applied.
+    let nav_url = test.full_url();
+    let nav_input = json!({ "action": "goto", "target": &nav_url });
     if let Err(e) = ctx.call_tool("web_navigate", nav_input).await {
         return finalize_early(ctx, run_id, test, &history, format!("navigate failed: {e}")).await;
     }

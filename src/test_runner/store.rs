@@ -57,12 +57,20 @@ fn db() -> &'static Mutex<rusqlite::Connection> {
                 outcome TEXT NOT NULL, \
                 claude_exit_code INTEGER, \
                 claude_output TEXT, \
-                bug_prompt TEXT \
+                bug_prompt TEXT, \
+                verification_run_id TEXT, \
+                verified_at TEXT \
             ); \
             CREATE INDEX IF NOT EXISTS idx_afh_test ON auto_fix_history(test_id, triggered_at); \
             CREATE INDEX IF NOT EXISTS idx_afh_outcome ON auto_fix_history(outcome);",
         )
         .expect("Failed to initialise test_memory schema");
+
+        // Migration: pre-verification DBs are missing the new columns.
+        // Ignore errors since they will fail "duplicate column" on fresh DBs.
+        let _ = conn.execute("ALTER TABLE auto_fix_history ADD COLUMN verification_run_id TEXT", []);
+        let _ = conn.execute("ALTER TABLE auto_fix_history ADD COLUMN verified_at TEXT", []);
+
         Mutex::new(conn)
     })
 }
@@ -214,9 +222,15 @@ pub struct FixRecord {
     pub category: String,
     pub triggered_at: String,
     pub completed_at: Option<String>,
-    pub outcome: String,  // pending | completed | failed | skipped_dedupe
+    /// pending → fix_attempted (claude returned, awaiting verification)
+    /// → verified (re-ran test, passed) OR regressed (re-ran, still fails)
+    /// failed: claude_session itself failed (non-zero exit)
+    /// skipped_dedupe: not spawned because another fix is in flight
+    pub outcome: String,
     pub claude_exit_code: Option<i64>,
     pub claude_output: Option<String>,
+    pub verification_run_id: Option<String>,
+    pub verified_at: Option<String>,
 }
 
 /// Record a new auto-fix attempt as "pending".  Returns the fix_id so the
@@ -238,15 +252,17 @@ pub fn record_pending_fix(
     Ok(conn.last_insert_rowid())
 }
 
-/// Mark a previously-pending fix as completed (success or failure).
+/// Mark a previously-pending fix as having received a claude_session response.
+/// Outcomes:
+/// - exit=0 → `fix_attempted` (awaiting verification re-run)
+/// - exit!=0 → `failed` (claude_session itself errored)
 pub fn complete_fix(
     fix_id: i64,
     exit_code: i64,
     output: &str,
 ) -> Result<(), String> {
     let now = chrono::Local::now().to_rfc3339();
-    let outcome = if exit_code == 0 { "completed" } else { "failed" };
-    // Truncate output to avoid bloating DB
+    let outcome = if exit_code == 0 { "fix_attempted" } else { "failed" };
     let trimmed: String = output.chars().take(2000).collect();
     let conn = db().lock().unwrap_or_else(|e| e.into_inner());
     conn.execute(
@@ -254,6 +270,24 @@ pub fn complete_fix(
          WHERE id=?5",
         rusqlite::params![now, outcome, exit_code, trimmed, fix_id],
     ).map_err(|e| format!("complete_fix: {e}"))?;
+    Ok(())
+}
+
+/// Record the verification run that confirmed (or refuted) the fix.
+/// `passed` true → outcome becomes `verified`, false → `regressed`.
+pub fn record_verification(
+    fix_id: i64,
+    verification_run_id: &str,
+    passed: bool,
+) -> Result<(), String> {
+    let now = chrono::Local::now().to_rfc3339();
+    let outcome = if passed { "verified" } else { "regressed" };
+    let conn = db().lock().unwrap_or_else(|e| e.into_inner());
+    conn.execute(
+        "UPDATE auto_fix_history SET verification_run_id=?1, verified_at=?2, outcome=?3 \
+         WHERE id=?4",
+        rusqlite::params![verification_run_id, now, outcome, fix_id],
+    ).map_err(|e| format!("record_verification: {e}"))?;
     Ok(())
 }
 
@@ -270,30 +304,34 @@ pub fn has_pending_fix(test_id: &str, minutes: i64) -> bool {
     ).map(|n| n > 0).unwrap_or(false)
 }
 
+const FIX_COLS: &str = "id, test_id, run_id, category, triggered_at, \
+    completed_at, outcome, claude_exit_code, claude_output, \
+    verification_run_id, verified_at";
+
+fn map_fix_row(row: &rusqlite::Row) -> rusqlite::Result<FixRecord> {
+    Ok(FixRecord {
+        id: row.get(0)?,
+        test_id: row.get(1)?,
+        run_id: row.get(2)?,
+        category: row.get(3)?,
+        triggered_at: row.get(4)?,
+        completed_at: row.get(5)?,
+        outcome: row.get(6)?,
+        claude_exit_code: row.get(7)?,
+        claude_output: row.get(8)?,
+        verification_run_id: row.get(9)?,
+        verified_at: row.get(10)?,
+    })
+}
+
 /// Return most recent fix attempts across ALL tests.
 pub fn recent_fixes_all(limit: usize) -> Vec<FixRecord> {
     let conn = db().lock().unwrap_or_else(|e| e.into_inner());
-    let mut stmt = match conn.prepare(
-        "SELECT id, test_id, run_id, category, triggered_at, completed_at, outcome, claude_exit_code, claude_output \
-         FROM auto_fix_history ORDER BY triggered_at DESC LIMIT ?1",
-    ) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
-    let rows = stmt.query_map(
-        rusqlite::params![limit as i64],
-        |row| Ok(FixRecord {
-            id: row.get(0)?,
-            test_id: row.get(1)?,
-            run_id: row.get(2)?,
-            category: row.get(3)?,
-            triggered_at: row.get(4)?,
-            completed_at: row.get(5)?,
-            outcome: row.get(6)?,
-            claude_exit_code: row.get(7)?,
-            claude_output: row.get(8)?,
-        }),
+    let sql = format!(
+        "SELECT {FIX_COLS} FROM auto_fix_history ORDER BY triggered_at DESC LIMIT ?1"
     );
+    let mut stmt = match conn.prepare(&sql) { Ok(s) => s, Err(_) => return Vec::new() };
+    let rows = stmt.query_map(rusqlite::params![limit as i64], map_fix_row);
     match rows {
         Ok(iter) => iter.filter_map(Result::ok).collect(),
         Err(_) => Vec::new(),
@@ -303,27 +341,11 @@ pub fn recent_fixes_all(limit: usize) -> Vec<FixRecord> {
 /// Return recent fix attempts for a test.
 pub fn recent_fixes(test_id: &str, limit: usize) -> Vec<FixRecord> {
     let conn = db().lock().unwrap_or_else(|e| e.into_inner());
-    let mut stmt = match conn.prepare(
-        "SELECT id, test_id, run_id, category, triggered_at, completed_at, outcome, claude_exit_code, claude_output \
-         FROM auto_fix_history WHERE test_id = ?1 ORDER BY triggered_at DESC LIMIT ?2",
-    ) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
-    let rows = stmt.query_map(
-        rusqlite::params![test_id, limit as i64],
-        |row| Ok(FixRecord {
-            id: row.get(0)?,
-            test_id: row.get(1)?,
-            run_id: row.get(2)?,
-            category: row.get(3)?,
-            triggered_at: row.get(4)?,
-            completed_at: row.get(5)?,
-            outcome: row.get(6)?,
-            claude_exit_code: row.get(7)?,
-            claude_output: row.get(8)?,
-        }),
+    let sql = format!(
+        "SELECT {FIX_COLS} FROM auto_fix_history WHERE test_id=?1 ORDER BY triggered_at DESC LIMIT ?2"
     );
+    let mut stmt = match conn.prepare(&sql) { Ok(s) => s, Err(_) => return Vec::new() };
+    let rows = stmt.query_map(rusqlite::params![test_id, limit as i64], map_fix_row);
     match rows {
         Ok(iter) => iter.filter_map(Result::ok).collect(),
         Err(_) => Vec::new(),
@@ -409,15 +431,33 @@ mod tests {
         let fix_id = record_pending_fix(&tid, Some("run_abc"), "ui_bug", "test bug prompt").unwrap();
         assert!(has_pending_fix(&tid, 60), "should detect pending fix");
 
-        // Complete it
+        // Claude returned successfully
         complete_fix(fix_id, 0, "all good").unwrap();
-        assert!(!has_pending_fix(&tid, 60), "completed fixes shouldn't count as pending");
+        assert!(!has_pending_fix(&tid, 60), "fix_attempted shouldn't count as pending");
 
-        // recent_fixes should find it
+        // After complete_fix, outcome is 'fix_attempted' (awaiting verification)
         let fixes = recent_fixes(&tid, 10);
         assert_eq!(fixes.len(), 1);
-        assert_eq!(fixes[0].outcome, "completed");
+        assert_eq!(fixes[0].outcome, "fix_attempted");
         assert_eq!(fixes[0].claude_exit_code, Some(0));
+        assert!(fixes[0].verification_run_id.is_none());
+
+        // Record verification — passed
+        record_verification(fix_id, "ver_run_xyz", true).unwrap();
+        let fixes = recent_fixes(&tid, 10);
+        assert_eq!(fixes[0].outcome, "verified");
+        assert_eq!(fixes[0].verification_run_id.as_deref(), Some("ver_run_xyz"));
+        assert!(fixes[0].verified_at.is_some());
+    }
+
+    #[test]
+    fn fix_history_regression_outcome() {
+        let tid = format!("test_regr_{}", chrono::Local::now().timestamp_nanos_opt().unwrap_or(0));
+        let fix_id = record_pending_fix(&tid, None, "ui_bug", "bug").unwrap();
+        complete_fix(fix_id, 0, "claude said done").unwrap();
+        record_verification(fix_id, "ver_run_z", false).unwrap();
+        let fixes = recent_fixes(&tid, 10);
+        assert_eq!(fixes[0].outcome, "regressed");
     }
 
     #[test]

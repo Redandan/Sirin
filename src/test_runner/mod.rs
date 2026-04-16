@@ -175,6 +175,7 @@ pub fn spawn_adhoc_run(
         timeout_secs: timeout_secs.unwrap_or(120),
         retry_on_parse_error: 3,
         locale: locale.unwrap_or_else(|| "zh-TW".into()),
+        url_query: Default::default(),
         success_criteria,
         tags: vec!["adhoc".into()],
     };
