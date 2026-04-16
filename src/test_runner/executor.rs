@@ -34,8 +34,6 @@ pub enum TestStatus { Passed, Failed, Timeout, Error }
 
 // ── Executor ─────────────────────────────────────────────────────────────────
 
-/// Maximum JSON parse failures before aborting (but not before reprompting).
-const MAX_PARSE_ERRORS: usize = 3;
 /// Truncate observation text past this many chars in LLM history.
 const OBS_TRUNCATE_CHARS: usize = 800;
 
@@ -59,7 +57,8 @@ pub async fn execute_test_tracked(
     let started = std::time::Instant::now();
     let mut history: Vec<TestStep> = Vec::new();
     let mut parse_error_hint: Option<String> = None;
-    let mut parse_error_count = 0usize;
+    let mut parse_error_count = 0u32;
+    let max_parse_errors = test.retry_on_parse_error.max(1);
 
     if let Some(rid) = run_id {
         runs::set_phase(rid, runs::RunPhase::Running { step: 0, current_action: "goto".into() });
@@ -109,7 +108,7 @@ pub async fn execute_test_tracked(
         let step = parse_step(&raw);
         if let Some(err) = &step.parse_error {
             parse_error_count += 1;
-            if parse_error_count >= MAX_PARSE_ERRORS {
+            if parse_error_count >= max_parse_errors {
                 history.push(TestStep {
                     thought: step.thought.clone(),
                     action: json!({"error": "invalid_json"}),
@@ -120,7 +119,7 @@ pub async fn execute_test_tracked(
                 }
                 return finalize_early(
                     ctx, run_id, test, &history,
-                    format!("too many invalid LLM responses ({MAX_PARSE_ERRORS})"),
+                    format!("too many invalid LLM responses ({max_parse_errors})"),
                 ).await;
             }
             // Reprompt — save hint for next iteration
@@ -129,7 +128,7 @@ pub async fn execute_test_tracked(
                  Please output STRICTLY valid JSON, no markdown fences, no prose before/after."
             ));
             if let Some(rid) = run_id {
-                runs::push_observation(rid, format!("PARSE_RETRY ({parse_error_count}/{MAX_PARSE_ERRORS}): {err}\nRaw: {raw}"));
+                runs::push_observation(rid, format!("PARSE_RETRY ({parse_error_count}/{max_parse_errors}): {err}\nRaw: {raw}"));
             }
             continue;  // don't push anything to visible history — LLM just retries
         }
@@ -293,8 +292,9 @@ fn build_prompt(test: &TestGoal, history: &[TestStep], parse_error_hint: Option<
         .map(|h| format!("\n## ⚠️ Reprompt notice\n{h}\n"))
         .unwrap_or_default();
 
+    let locale = crate::test_runner::i18n::Locale::from_yaml(&test.locale);
     let criteria = if test.success_criteria.is_empty() {
-        "- 頁面正常載入，目標描述的動作成功執行".to_string()
+        locale.default_criteria().to_string()
     } else {
         test.success_criteria.iter().map(|c| format!("- {c}")).collect::<Vec<_>>().join("\n")
     };
@@ -336,10 +336,10 @@ When the goal is clearly achieved (or definitively failed), set "done": true.
 
 Respond with STRICTLY valid JSON, no markdown fences, no prose:
 {{
-  "thought": "<reasoning in 繁體中文>",
+  "thought": "<reasoning in {lang}>",
   "action_input": {{ "action": "click", "target": "#btn" }},
   "done": false,
-  "final_answer": "<only when done=true: summary of outcome>"
+  "final_answer": "<only when done=true: summary of outcome in {lang}>"
 }}
 "##,
         goal = test.goal.trim(),
@@ -347,6 +347,7 @@ Respond with STRICTLY valid JSON, no markdown fences, no prose:
         criteria = criteria,
         history = history_str,
         hint = hint_block,
+        lang = locale.reasoning_language(),
     )
 }
 
@@ -428,8 +429,9 @@ async fn evaluate_success(
     history: &[TestStep],
     agent_final: Option<String>,
 ) -> SuccessAnalysis {
+    let locale = crate::test_runner::i18n::Locale::from_yaml(&test.locale);
     let criteria = if test.success_criteria.is_empty() {
-        "- 目標描述的動作成功執行".to_string()
+        locale.evaluate_default_criteria().to_string()
     } else {
         test.success_criteria.iter().map(|c| format!("- {c}")).collect::<Vec<_>>().join("\n")
     };
@@ -445,26 +447,30 @@ async fn evaluate_success(
     let url = ctx.call_tool("web_navigate", json!({"action":"url"})).await
         .ok().and_then(|v| v.get("url").and_then(Value::as_str).map(String::from)).unwrap_or_default();
 
-    let prompt = format!(r#"判斷這個瀏覽器測試是否通過。
+    let prompt = format!(r#"{header}
 
-目標: {}
+Goal: {goal}
 Success criteria:
-{}
+{criteria}
 
-執行歷史 (摘要):
-{}
+Execution history (summary):
+{history}
 
-最終 URL: {}
-Agent 最終訊息: {}
+Final URL: {url}
+Agent final message: {agent_final}
 
-根據 criteria 嚴格判斷，回傳 JSON:
-{{"passed": true/false, "reason": "<繁體中文 1-3 句解釋>"}}
+{judgment_hint}
+{{"passed": true/false, "reason": "<{lang} {reason_hint}>"}}
 "#,
-        test.goal.trim(),
-        criteria,
-        history_summary,
-        url,
-        agent_final.unwrap_or_else(|| "(none)".into()),
+        header = locale.evaluate_prompt_header(),
+        goal = test.goal.trim(),
+        criteria = criteria,
+        history = history_summary,
+        url = url,
+        agent_final = agent_final.unwrap_or_else(|| "(none)".into()),
+        judgment_hint = locale.evaluate_judgment_hint(),
+        lang = locale.reasoning_language(),
+        reason_hint = locale.evaluate_reason_hint(),
     );
 
     let raw = match crate::llm::call_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), prompt).await {

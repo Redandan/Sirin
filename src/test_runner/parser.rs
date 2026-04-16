@@ -13,6 +13,12 @@ pub struct TestGoal {
     pub max_iterations: u32,
     #[serde(default = "default_timeout")]
     pub timeout_secs: u64,
+    /// Number of JSON-parse retries before giving up.  Default 3.
+    #[serde(default = "default_parse_retries")]
+    pub retry_on_parse_error: u32,
+    /// Locale for LLM prompts and responses.  Supported: "zh-TW" (default), "en", "zh-CN".
+    #[serde(default = "default_locale")]
+    pub locale: String,
     #[serde(default)]
     pub success_criteria: Vec<String>,
     #[serde(default)]
@@ -21,6 +27,8 @@ pub struct TestGoal {
 
 fn default_max_iter() -> u32 { 15 }
 fn default_timeout() -> u64 { 120 }
+fn default_parse_retries() -> u32 { 3 }
+fn default_locale() -> String { "zh-TW".into() }
 
 /// Directory containing YAML test definitions.
 fn tests_dir() -> PathBuf {

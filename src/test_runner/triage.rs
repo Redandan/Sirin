@@ -81,25 +81,28 @@ pub async fn triage(
     }
 
     // 3. LLM classification
+    let locale = crate::test_runner::i18n::Locale::from_yaml(&test.locale);
     let context = collect_failure_context(test, result);
-    let prompt = format!(r#"分析下面瀏覽器測試失敗屬於哪一類，輸出 JSON。
+    let prompt = format!(r#"{header}
 
-類別定義:
-- ui_bug:   前端 UI 錯誤 (元素渲染錯、按鈕無反應、頁面空白、JS error)
-- api_bug:  後端 API 錯誤 (network log 顯示 4xx/5xx、response body 錯誤)
-- flaky:   偶發、時序、非確定性 (但歷史上不常失敗)
-- env:     瀏覽器崩潰、網路 timeout、DNS 失敗等基礎設施
-- obsolete: Selector 找不到元素、UI 改版，測試本身需要更新
+Categories:
+{cats}
 
 {context}
 
-嚴格輸出 JSON (不要 markdown fence):
+Output strictly valid JSON (no markdown fence):
 {{
   "category": "ui_bug | api_bug | flaky | env | obsolete",
-  "reason": "<繁體中文 1-2 句解釋>",
+  "reason": "<{lang} {reason_hint}>",
   "suggested_repo": "frontend | backend | none"
 }}
-"#);
+"#,
+        header = locale.triage_prompt_header(),
+        cats = locale.triage_categories_doc(),
+        context = context,
+        lang = locale.reasoning_language(),
+        reason_hint = locale.triage_reason_hint(),
+    );
 
     let raw = match crate::llm::call_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), prompt).await {
         Ok(s) => s,
