@@ -255,6 +255,16 @@ pub trait BrowserService: Send + Sync + 'static {
     fn browser_close(&self);
     fn browser_url(&self) -> Option<String>;
     fn browser_title(&self) -> Option<String>;
+    fn browser_click_point(&self, x: f64, y: f64) -> Result<(), String>;
+    fn browser_hover(&self, selector: &str) -> Result<(), String>;
+    fn browser_press_key(&self, key: &str) -> Result<(), String>;
+    fn browser_wait(&self, selector: &str, timeout_ms: u64) -> Result<(), String>;
+    fn browser_exists(&self, selector: &str) -> bool;
+    fn browser_select(&self, selector: &str, value: &str) -> Result<(), String>;
+    fn browser_scroll(&self, x: f64, y: f64) -> Result<(), String>;
+    fn browser_set_viewport(&self, width: u32, height: u32, mobile: bool) -> Result<(), String>;
+    fn browser_console(&self, limit: usize) -> String;
+    fn browser_tab_count(&self) -> usize;
 }
 
 /// Aggregate trait the UI consumes as `Arc<dyn AppService>`.

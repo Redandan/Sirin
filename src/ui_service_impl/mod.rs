@@ -157,6 +157,16 @@ impl BrowserService for RealService {
     fn browser_close(&self) { browser::browser_close(self) }
     fn browser_url(&self) -> Option<String> { browser::browser_url(self) }
     fn browser_title(&self) -> Option<String> { browser::browser_title(self) }
+    fn browser_click_point(&self, x: f64, y: f64) -> Result<(), String> { browser::browser_click_point(self, x, y) }
+    fn browser_hover(&self, selector: &str) -> Result<(), String> { browser::browser_hover(self, selector) }
+    fn browser_press_key(&self, key: &str) -> Result<(), String> { browser::browser_press_key(self, key) }
+    fn browser_wait(&self, selector: &str, timeout_ms: u64) -> Result<(), String> { browser::browser_wait(self, selector, timeout_ms) }
+    fn browser_exists(&self, selector: &str) -> bool { browser::browser_exists(self, selector) }
+    fn browser_select(&self, selector: &str, value: &str) -> Result<(), String> { browser::browser_select(self, selector, value) }
+    fn browser_scroll(&self, x: f64, y: f64) -> Result<(), String> { browser::browser_scroll(self, x, y) }
+    fn browser_set_viewport(&self, width: u32, height: u32, mobile: bool) -> Result<(), String> { browser::browser_set_viewport(self, width, height, mobile) }
+    fn browser_console(&self, limit: usize) -> String { browser::browser_console(self, limit) }
+    fn browser_tab_count(&self) -> usize { browser::browser_tab_count(self) }
 }
 
 // `impl AppService for RealService` is satisfied automatically by the blanket

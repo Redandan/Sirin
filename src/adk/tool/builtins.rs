@@ -591,9 +591,15 @@ pub(super) fn build_full_registry() -> ToolRegistry {
             Ok(json!({ "log": log }))
         })
         .register_fn("web_navigate", |input| async move {
-            // action: goto | screenshot | click | type | read | eval | title | url | close
-            // target: URL (goto), CSS selector (click/type/read), JS expression (eval)
-            // text:   text to type (only for "type" action)
+            // ── Actions ──────────────────────────────────────────────
+            // Navigation:  goto, screenshot, title, url, close
+            // DOM:         click, type, read, eval, wait, exists, count, attr, value
+            // Input:       key, select, scroll, scroll_to
+            // Coordinate:  click_point, hover, hover_point
+            // Tabs:        new_tab, switch_tab, close_tab, list_tabs
+            // Data:        cookies, set_cookie, delete_cookie, localStorage_get, localStorage_set
+            // Network:     network, console
+            // Advanced:    viewport, pdf, file_upload, iframe_eval, drag, http_auth
             let action = optional_string_field(&input, "action")
                 .unwrap_or_else(|| "goto".to_string());
             let target = optional_string_field(&input, "target").unwrap_or_default();
@@ -602,15 +608,13 @@ pub(super) fn build_full_registry() -> ToolRegistry {
             let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
                 use crate::browser;
                 match action.as_str() {
+                    // ── Navigation ───────────────────────────────────
                     "goto" => {
-                        if target.is_empty() {
-                            return Err("'goto' requires a 'target' URL".into());
-                        }
+                        if target.is_empty() { return Err("'goto' requires a 'target' URL".into()); }
                         browser::navigate(&target)?;
                         let png = browser::screenshot()?;
                         crate::events::publish(crate::events::AgentEvent::BrowserScreenshotReady {
-                            png_bytes: png,
-                            url: target.clone(),
+                            png_bytes: png, url: target.clone(),
                         });
                         Ok(json!({ "status": "navigated", "url": target }))
                     }
@@ -618,51 +622,205 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                         let png = browser::screenshot()?;
                         let url = browser::current_url().unwrap_or_default();
                         crate::events::publish(crate::events::AgentEvent::BrowserScreenshotReady {
-                            png_bytes: png,
-                            url: url.clone(),
+                            png_bytes: png, url: url.clone(),
                         });
                         Ok(json!({ "status": "screenshot captured", "url": url }))
                     }
+                    "title" => Ok(json!({ "title": browser::page_title()? })),
+                    "url"   => Ok(json!({ "url": browser::current_url()? })),
+                    "close" => { browser::close(); Ok(json!({ "status": "closed" })) }
+
+                    // ── DOM interaction ──────────────────────────────
                     "click" => {
-                        if target.is_empty() {
-                            return Err("'click' requires a 'target' CSS selector".into());
-                        }
+                        if target.is_empty() { return Err("'click' requires 'target' selector".into()); }
                         browser::click(&target)?;
                         Ok(json!({ "status": "clicked", "selector": target }))
                     }
                     "type" => {
-                        if target.is_empty() {
-                            return Err("'type' requires a 'target' CSS selector".into());
-                        }
+                        if target.is_empty() { return Err("'type' requires 'target' selector".into()); }
                         browser::type_text(&target, &text)?;
                         Ok(json!({ "status": "typed", "selector": target, "length": text.len() }))
                     }
                     "read" => {
-                        if target.is_empty() {
-                            return Err("'read' requires a 'target' CSS selector".into());
-                        }
-                        let content = browser::get_text(&target)?;
-                        Ok(json!({ "selector": target, "text": content }))
+                        if target.is_empty() { return Err("'read' requires 'target' selector".into()); }
+                        Ok(json!({ "selector": target, "text": browser::get_text(&target)? }))
                     }
                     "eval" => {
-                        if target.is_empty() {
-                            return Err("'eval' requires a 'target' JS expression".into());
-                        }
-                        let result = browser::evaluate_js(&target)?;
-                        Ok(json!({ "result": result }))
+                        if target.is_empty() { return Err("'eval' requires 'target' JS expression".into()); }
+                        Ok(json!({ "result": browser::evaluate_js(&target)? }))
                     }
-                    "title" => {
-                        let title = browser::page_title()?;
-                        Ok(json!({ "title": title }))
+                    "wait" => {
+                        if target.is_empty() { return Err("'wait' requires 'target' selector".into()); }
+                        let ms = input.get("timeout").and_then(|v| v.as_u64()).unwrap_or(5000);
+                        browser::wait_for_ms(&target, ms)?;
+                        Ok(json!({ "status": "found", "selector": target }))
                     }
-                    "url" => {
-                        let url = browser::current_url()?;
-                        Ok(json!({ "url": url }))
+                    "exists" => {
+                        if target.is_empty() { return Err("'exists' requires 'target' selector".into()); }
+                        Ok(json!({ "selector": target, "exists": browser::element_exists(&target)? }))
                     }
-                    "close" => {
-                        browser::close();
-                        Ok(json!({ "status": "browser closed" }))
+                    "count" => {
+                        if target.is_empty() { return Err("'count' requires 'target' selector".into()); }
+                        Ok(json!({ "selector": target, "count": browser::element_count(&target)? }))
                     }
+                    "attr" => {
+                        if target.is_empty() { return Err("'attr' requires 'target' selector".into()); }
+                        if text.is_empty() { return Err("'attr' requires 'text' = attribute name".into()); }
+                        Ok(json!({ "selector": target, "attribute": &text, "value": browser::get_attribute(&target, &text)? }))
+                    }
+                    "value" => {
+                        if target.is_empty() { return Err("'value' requires 'target' selector".into()); }
+                        Ok(json!({ "selector": target, "value": browser::get_value(&target)? }))
+                    }
+
+                    // ── Keyboard / input ─────────────────────────────
+                    "key" => {
+                        if target.is_empty() { return Err("'key' requires 'target' key name".into()); }
+                        browser::press_key(&target)?;
+                        Ok(json!({ "status": "pressed", "key": target }))
+                    }
+                    "select" => {
+                        if target.is_empty() { return Err("'select' requires 'target' selector".into()); }
+                        if text.is_empty() { return Err("'select' requires 'text' = option value".into()); }
+                        browser::select_option(&target, &text)?;
+                        Ok(json!({ "status": "selected", "selector": target, "value": text }))
+                    }
+                    "scroll" => {
+                        let x = input.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                        let y = input.get("y").and_then(|v| v.as_f64()).unwrap_or(300.0);
+                        browser::scroll_by(x, y)?;
+                        Ok(json!({ "status": "scrolled", "x": x, "y": y }))
+                    }
+                    "scroll_to" => {
+                        if target.is_empty() { return Err("'scroll_to' requires 'target' selector".into()); }
+                        browser::scroll_into_view(&target)?;
+                        Ok(json!({ "status": "scrolled_to", "selector": target }))
+                    }
+
+                    // ── Coordinate interaction ──────────────────────
+                    "click_point" => {
+                        let x = input.get("x").and_then(|v| v.as_f64()).ok_or("'click_point' requires 'x'")?;
+                        let y = input.get("y").and_then(|v| v.as_f64()).ok_or("'click_point' requires 'y'")?;
+                        browser::click_point(x, y)?;
+                        Ok(json!({ "status": "clicked", "x": x, "y": y }))
+                    }
+                    "hover" => {
+                        if target.is_empty() { return Err("'hover' requires 'target' selector".into()); }
+                        browser::hover(&target)?;
+                        Ok(json!({ "status": "hovered", "selector": target }))
+                    }
+                    "hover_point" => {
+                        let x = input.get("x").and_then(|v| v.as_f64()).ok_or("'hover_point' requires 'x'")?;
+                        let y = input.get("y").and_then(|v| v.as_f64()).ok_or("'hover_point' requires 'y'")?;
+                        browser::hover_point(x, y)?;
+                        Ok(json!({ "status": "hovered", "x": x, "y": y }))
+                    }
+
+                    // ── Tabs ─────────────────────────────────────────
+                    "new_tab" => {
+                        let idx = browser::new_tab()?;
+                        if !target.is_empty() { browser::navigate(&target)?; }
+                        Ok(json!({ "tab_index": idx }))
+                    }
+                    "switch_tab" => {
+                        let idx = input.get("index").and_then(|v| v.as_u64())
+                            .ok_or("'switch_tab' requires 'index'")? as usize;
+                        browser::switch_tab(idx)?;
+                        Ok(json!({ "status": "switched", "tab_index": idx }))
+                    }
+                    "close_tab" => {
+                        let idx = input.get("index").and_then(|v| v.as_u64())
+                            .ok_or("'close_tab' requires 'index'")? as usize;
+                        browser::close_tab(idx)?;
+                        Ok(json!({ "status": "tab_closed", "index": idx }))
+                    }
+                    "list_tabs" => {
+                        let tabs = browser::list_tabs()?;
+                        let active = browser::active_tab()?;
+                        let arr: Vec<serde_json::Value> = tabs.into_iter()
+                            .map(|(i, u)| json!({"index": i, "url": u, "active": i == active}))
+                            .collect();
+                        Ok(json!({ "tabs": arr }))
+                    }
+
+                    // ── Cookies ──────────────────────────────────────
+                    "cookies" => {
+                        let raw = browser::get_cookies()?;
+                        let val: serde_json::Value = serde_json::from_str(&raw).unwrap_or(json!([]));
+                        Ok(json!({ "cookies": val }))
+                    }
+                    "set_cookie" => {
+                        let name = input.get("name").and_then(|v| v.as_str()).unwrap_or_default();
+                        let value = input.get("value").and_then(|v| v.as_str()).unwrap_or_default();
+                        let domain = input.get("domain").and_then(|v| v.as_str()).unwrap_or_default();
+                        let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("/");
+                        browser::set_cookie(name, value, domain, path)?;
+                        Ok(json!({ "status": "cookie_set", "name": name }))
+                    }
+                    "delete_cookie" => {
+                        if target.is_empty() { return Err("'delete_cookie' requires 'target' cookie name".into()); }
+                        browser::delete_cookie(&target)?;
+                        Ok(json!({ "status": "cookie_deleted", "name": target }))
+                    }
+
+                    // ── Storage ──────────────────────────────────────
+                    "localStorage_get" => {
+                        if target.is_empty() { return Err("requires 'target' key".into()); }
+                        Ok(json!({ "key": target, "value": browser::local_storage_get(&target)? }))
+                    }
+                    "localStorage_set" => {
+                        if target.is_empty() { return Err("requires 'target' key".into()); }
+                        browser::local_storage_set(&target, &text)?;
+                        Ok(json!({ "status": "set", "key": target }))
+                    }
+
+                    // ── Network / Console ────────────────────────────
+                    "network" => {
+                        let limit = input.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
+                        let raw = browser::captured_requests(limit)?;
+                        let val: serde_json::Value = serde_json::from_str(&raw).unwrap_or(json!([]));
+                        Ok(json!({ "requests": val }))
+                    }
+                    "console" => {
+                        let limit = input.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
+                        let raw = browser::console_messages(limit)?;
+                        let val: serde_json::Value = serde_json::from_str(&raw).unwrap_or(json!([]));
+                        Ok(json!({ "messages": val }))
+                    }
+                    "install_capture" => {
+                        browser::install_console_capture()?;
+                        browser::install_network_capture()?;
+                        Ok(json!({ "status": "console+network capture installed" }))
+                    }
+
+                    // ── Advanced ─────────────────────────────────────
+                    "viewport" => {
+                        let w = input.get("width").and_then(|v| v.as_u64()).unwrap_or(1280) as u32;
+                        let h = input.get("height").and_then(|v| v.as_u64()).unwrap_or(800) as u32;
+                        let scale = input.get("scale").and_then(|v| v.as_f64()).unwrap_or(1.0);
+                        let mobile = input.get("mobile").and_then(|v| v.as_bool()).unwrap_or(false);
+                        browser::set_viewport(w, h, scale, mobile)?;
+                        Ok(json!({ "status": "viewport_set", "width": w, "height": h }))
+                    }
+                    "pdf" => {
+                        let bytes = browser::pdf()?;
+                        Ok(json!({ "status": "pdf_exported", "bytes": bytes.len() }))
+                    }
+                    "drag" => {
+                        let fx = input.get("from_x").and_then(|v| v.as_f64()).ok_or("requires 'from_x'")?;
+                        let fy = input.get("from_y").and_then(|v| v.as_f64()).ok_or("requires 'from_y'")?;
+                        let tx = input.get("to_x").and_then(|v| v.as_f64()).ok_or("requires 'to_x'")?;
+                        let ty = input.get("to_y").and_then(|v| v.as_f64()).ok_or("requires 'to_y'")?;
+                        browser::drag(fx, fy, tx, ty)?;
+                        Ok(json!({ "status": "dragged" }))
+                    }
+                    "http_auth" => {
+                        let user = input.get("username").and_then(|v| v.as_str()).unwrap_or_default();
+                        let pass = input.get("password").and_then(|v| v.as_str()).unwrap_or_default();
+                        browser::set_http_auth(user, pass)?;
+                        Ok(json!({ "status": "auth_set" }))
+                    }
+
                     other => Err(format!("Unknown web_navigate action: {other}")),
                 }
             })
