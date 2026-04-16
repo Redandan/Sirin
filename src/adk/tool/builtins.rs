@@ -829,6 +829,52 @@ pub(super) fn build_full_registry() -> ToolRegistry {
 
             Ok(result)
         })
+        .register_fn("claude_session", |input| async move {
+            // Spawn a Claude Code CLI session to fix bugs in another repo.
+            // repo:   "backend" | "frontend" | "sirin" | absolute path
+            // prompt: full instruction to Claude
+            // Optional context fields for bug reports:
+            //   bug, url, error, network_log, screenshot_path
+            let repo = required_string_field(&input, "repo")?;
+            let prompt = optional_string_field(&input, "prompt");
+            let bug = optional_string_field(&input, "bug");
+
+            // Resolve repo path
+            let cwd = if std::path::Path::new(&repo).is_absolute() {
+                repo.clone()
+            } else {
+                crate::claude_session::repo_path(&repo)
+                    .ok_or_else(|| format!("Unknown repo alias: {repo}. Use: backend, frontend, sirin, or absolute path"))?
+            };
+
+            // Build prompt from either direct prompt or bug fields
+            let final_prompt = if let Some(p) = prompt {
+                p
+            } else if let Some(b) = bug {
+                crate::claude_session::build_bug_prompt(
+                    &b,
+                    optional_string_field(&input, "url").as_deref(),
+                    optional_string_field(&input, "error").as_deref(),
+                    optional_string_field(&input, "network_log").as_deref(),
+                    optional_string_field(&input, "screenshot_path").as_deref(),
+                )
+            } else {
+                return Err("'claude_session' requires 'prompt' or 'bug' field".into());
+            };
+
+            // Run in background thread (can take minutes)
+            let result = tokio::task::spawn_blocking(move || {
+                crate::claude_session::run_sync(&cwd, &final_prompt)
+            })
+            .await
+            .map_err(|e| format!("spawn_blocking: {e}"))??;
+
+            Ok(json!({
+                "success": result.success,
+                "exit_code": result.exit_code,
+                "output": result.output.chars().take(3000).collect::<String>(),
+            }))
+        })
         .register_ctx_fn("confidential_handoff", |ctx, input| {
             async move {
                 let from_agent = ctx.metadata
