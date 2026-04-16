@@ -61,10 +61,11 @@ Central Panel:  ScrollArea 包裹, 內邊距 12pt
 ## Project layout
 
 ```
-src/ui_egui/                 egui UI (7 modules + theme)
-src/ui_service.rs            AppService trait — UI↔backend boundary
-src/ui_service_impl/         RealService (5 domain submodules: agents, pending,
-                             workflow, integrations, system)
+src/ui_egui/                 egui UI (8 modules + theme — incl. browser panel)
+src/ui_service.rs            AppService trait — UI↔backend boundary (6 sub-traits
+                             incl. BrowserService)
+src/ui_service_impl/         RealService (6 domain submodules: agents, pending,
+                             workflow, integrations, system, browser)
 src/agents/                  Planner → Router → Chat / Coding / Research
   coding_agent/              mod (orchestration) + react (ReAct loop) +
                              verify (auto-fix+rollback) + finalize (epilogue) +
@@ -74,17 +75,32 @@ src/agents/                  Planner → Router → Chat / Coding / Research
   planner_agent.rs +
   planner_intent.rs          intent classification split out
 src/adk/                     Agent trait, AgentRuntime
-  tool/                      mod (ToolRegistry) + builtins (21 tool impls) +
-                             fs_helpers
+  tool/                      mod (ToolRegistry) + builtins (35+ tool impls
+                             incl. web_navigate / run_test / claude_session /
+                             expand_observation) + fs_helpers
+src/browser.rs               Persistent Chrome session (singleton + auto-recover)
+                             — 35+ CDP actions, vision-ready
+src/test_runner/             AI-driven browser testing
+  mod.rs                     Public API (run_test / spawn_run_async /
+                             spawn_adhoc_run / run_all)
+  parser.rs                  YAML TestGoal (locale, retry, url_query, criteria)
+  executor.rs                ReAct loop driving web_navigate
+  triage.rs                  Failure classification + auto-fix + verification loop
+  store.rs                   SQLite test_runs + auto_fix_history (with verification)
+  runs.rs                    In-memory async run registry
+  i18n.rs                    Locale (zh-TW / en / zh-CN) prompt strings
+src/claude_session.rs        Spawn `claude` CLI for cross-repo bug fixing
+src/config_check.rs          Diagnostics + AI fix proposal (dual-stage confirm)
 src/mcp_client.rs            External MCP server proxy
-src/mcp_server.rs            Expose tools via MCP HTTP (:7700/mcp)
+src/mcp_server.rs            MCP HTTP server (:7700/mcp) — 14 tools exposed
 src/telegram/                MTProto listener — mod + filter + handler +
                              reply + commands + config + language + llm
-src/teams/                   Chrome CDP
+src/teams/                   Chrome CDP (Teams MutationObserver)
 src/memory/                  mod (FTS5 SQL store) + codebase (project index) +
                              context (per-peer ring-log)
-src/llm/                     mod (core types + public call API) + backends
-                             (Ollama/OpenAI HTTP) + probe (fleet discovery)
+src/llm/                     mod (core types + public call API + vision) +
+                             backends (Ollama/OpenAI HTTP, multimodal) +
+                             probe (fleet discovery)
 src/persona/                 mod (config types) + behavior (decision engine) +
                              task_tracker (event log)
 src/researcher/              mod + fetch + persistence + pipeline

@@ -5,6 +5,9 @@
 *.session
 /data/auth/
 /data/tracking/task.jsonl
+/data/test_failures/
+/data/test_*.png
+/data/teams_profile/
 
 # ── Build artifacts ───────────────────────────────────────────────────────────
 /target/
