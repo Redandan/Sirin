@@ -4529,6 +4529,7 @@ dependencies = [
  "grammers-client",
  "grammers-session",
  "headless_chrome",
+ "image",
  "parking_lot",
  "reqwest",
  "rhai",

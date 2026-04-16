@@ -8,6 +8,7 @@ mod settings;
 mod log_view;
 mod workflow;
 mod meeting;
+mod browser;
 
 use std::sync::Arc;
 use std::collections::VecDeque;
@@ -19,7 +20,7 @@ use crate::ui_service::*;
 // ── View ─────────────────────────────────────────────────────────────────────
 
 #[derive(PartialEq, Clone)]
-enum View { Workspace(usize), Settings, Log, Workflow, Meeting }
+enum View { Workspace(usize), Settings, Log, Workflow, Meeting, Browser }
 
 // ── Toast ────────────────────────────────────────────────────────────────────
 
@@ -53,6 +54,7 @@ pub struct SirinApp {
     settings_state: settings::SettingsState,
     workflow_state: workflow::WorkflowUiState,
     meeting_state: meeting::MeetingState,
+    browser_state: browser::BrowserUiState,
 }
 
 impl SirinApp {
@@ -69,7 +71,7 @@ impl SirinApp {
             renaming: None,
             log_state: Default::default(), workspace_state: Default::default(),
             settings_state: Default::default(), workflow_state: Default::default(),
-            meeting_state: Default::default(),
+            meeting_state: Default::default(), browser_state: Default::default(),
         }
     }
 
@@ -111,6 +113,7 @@ impl eframe::App for SirinApp {
                         View::Log => "系統 Log".into(),
                         View::Workflow => "Skill 開發".into(),
                         View::Meeting => "會議室".into(),
+                        View::Browser => "Browser".into(),
                     };
                     ui.label(RichText::new(&title).size(theme::FONT_HEADING).strong().color(theme::TEXT));
 
@@ -135,6 +138,7 @@ impl eframe::App for SirinApp {
                     View::Log => log_view::show(ui, &self.svc, &mut self.log_state),
                     View::Workflow => workflow::show(ui, &self.svc, &mut self.workflow_state),
                     View::Meeting => meeting::show(ui, &self.svc, &self.agents, &mut self.meeting_state),
+                    View::Browser => browser::show(ui, &self.svc, &mut self.browser_state),
                 }
             });
 

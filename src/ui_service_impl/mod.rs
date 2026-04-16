@@ -12,6 +12,7 @@
 //! - [`system`] — logs, task tracker, system status, memory, persona, LLM, config, toasts.
 
 mod agents;
+mod browser;
 mod integrations;
 mod pending;
 mod system;
@@ -142,6 +143,20 @@ impl SystemService for RealService {
     fn import_config(&self, yaml: &str) -> Result<(), String> { system::import_config(self, yaml) }
     fn poll_toasts(&self) -> Vec<ToastEvent> { system::poll_toasts(self) }
     fn toast_history(&self) -> Vec<ToastEvent> { system::toast_history(self) }
+}
+
+impl BrowserService for RealService {
+    fn browser_is_open(&self) -> bool { browser::browser_is_open(self) }
+    fn browser_open(&self, url: &str, headless: bool) { browser::browser_open(self, url, headless) }
+    fn browser_navigate(&self, url: &str) -> Result<(), String> { browser::browser_navigate(self, url) }
+    fn browser_click(&self, selector: &str) -> Result<(), String> { browser::browser_click(self, selector) }
+    fn browser_type(&self, selector: &str, text: &str) -> Result<(), String> { browser::browser_type(self, selector, text) }
+    fn browser_screenshot(&self) -> Option<Vec<u8>> { browser::browser_screenshot(self) }
+    fn browser_eval(&self, js: &str) -> Result<String, String> { browser::browser_eval(self, js) }
+    fn browser_read(&self, selector: &str) -> Result<String, String> { browser::browser_read(self, selector) }
+    fn browser_close(&self) { browser::browser_close(self) }
+    fn browser_url(&self) -> Option<String> { browser::browser_url(self) }
+    fn browser_title(&self) -> Option<String> { browser::browser_title(self) }
 }
 
 // `impl AppService for RealService` is satisfied automatically by the blanket

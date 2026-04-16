@@ -591,34 +591,77 @@ pub(super) fn build_full_registry() -> ToolRegistry {
             Ok(json!({ "log": log }))
         })
         .register_fn("web_navigate", |input| async move {
-            // action: "goto" | "click" | "type" | "screenshot"
-            // target: URL (for goto/screenshot) or CSS selector (for click/type)
+            // action: goto | screenshot | click | type | read | eval | title | url | close
+            // target: URL (goto), CSS selector (click/type/read), JS expression (eval)
             // text:   text to type (only for "type" action)
             let action = optional_string_field(&input, "action")
                 .unwrap_or_else(|| "goto".to_string());
-            let target = required_string_field(&input, "target")?;
-            let _text = optional_string_field(&input, "text").unwrap_or_default();
+            let target = optional_string_field(&input, "target").unwrap_or_default();
+            let text = optional_string_field(&input, "text").unwrap_or_default();
 
             let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
-                use crate::browser::BrowserSession;
+                use crate::browser;
                 match action.as_str() {
-                    "screenshot" | "goto" => {
-                        let png = BrowserSession::navigate_and_screenshot(&target)
-                            .map_err(|e| e.to_string())?;
-                        // Publish event so the UI can display the screenshot.
+                    "goto" => {
+                        if target.is_empty() {
+                            return Err("'goto' requires a 'target' URL".into());
+                        }
+                        browser::navigate(&target)?;
+                        let png = browser::screenshot()?;
                         crate::events::publish(crate::events::AgentEvent::BrowserScreenshotReady {
                             png_bytes: png,
                             url: target.clone(),
                         });
-                        Ok(json!({ "status": "screenshot captured", "url": target }))
+                        Ok(json!({ "status": "navigated", "url": target }))
+                    }
+                    "screenshot" => {
+                        let png = browser::screenshot()?;
+                        let url = browser::current_url().unwrap_or_default();
+                        crate::events::publish(crate::events::AgentEvent::BrowserScreenshotReady {
+                            png_bytes: png,
+                            url: url.clone(),
+                        });
+                        Ok(json!({ "status": "screenshot captured", "url": url }))
                     }
                     "click" => {
-                        // Stateless click: launch, navigate (no URL given → error),
-                        // then click. Callers should prefer a goto first then click.
-                        Err("'click' requires an active session; use 'goto' first".to_string())
+                        if target.is_empty() {
+                            return Err("'click' requires a 'target' CSS selector".into());
+                        }
+                        browser::click(&target)?;
+                        Ok(json!({ "status": "clicked", "selector": target }))
                     }
                     "type" => {
-                        Err("'type' requires an active session; use 'goto' first".to_string())
+                        if target.is_empty() {
+                            return Err("'type' requires a 'target' CSS selector".into());
+                        }
+                        browser::type_text(&target, &text)?;
+                        Ok(json!({ "status": "typed", "selector": target, "length": text.len() }))
+                    }
+                    "read" => {
+                        if target.is_empty() {
+                            return Err("'read' requires a 'target' CSS selector".into());
+                        }
+                        let content = browser::get_text(&target)?;
+                        Ok(json!({ "selector": target, "text": content }))
+                    }
+                    "eval" => {
+                        if target.is_empty() {
+                            return Err("'eval' requires a 'target' JS expression".into());
+                        }
+                        let result = browser::evaluate_js(&target)?;
+                        Ok(json!({ "result": result }))
+                    }
+                    "title" => {
+                        let title = browser::page_title()?;
+                        Ok(json!({ "title": title }))
+                    }
+                    "url" => {
+                        let url = browser::current_url()?;
+                        Ok(json!({ "url": url }))
+                    }
+                    "close" => {
+                        browser::close();
+                        Ok(json!({ "status": "browser closed" }))
                     }
                     other => Err(format!("Unknown web_navigate action: {other}")),
                 }

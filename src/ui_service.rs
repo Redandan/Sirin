@@ -242,12 +242,27 @@ pub trait SystemService: Send + Sync + 'static {
     fn toast_history(&self) -> Vec<ToastEvent>;
 }
 
+/// Browser automation — persistent Chrome session control.
+pub trait BrowserService: Send + Sync + 'static {
+    fn browser_is_open(&self) -> bool;
+    fn browser_open(&self, url: &str, headless: bool);
+    fn browser_navigate(&self, url: &str) -> Result<(), String>;
+    fn browser_click(&self, selector: &str) -> Result<(), String>;
+    fn browser_type(&self, selector: &str, text: &str) -> Result<(), String>;
+    fn browser_screenshot(&self) -> Option<Vec<u8>>;
+    fn browser_eval(&self, js: &str) -> Result<String, String>;
+    fn browser_read(&self, selector: &str) -> Result<String, String>;
+    fn browser_close(&self);
+    fn browser_url(&self) -> Option<String>;
+    fn browser_title(&self) -> Option<String>;
+}
+
 /// Aggregate trait the UI consumes as `Arc<dyn AppService>`.
 ///
-/// Any type that implements all five sub-traits automatically gets
+/// Any type that implements all six sub-traits automatically gets
 /// `AppService` via the blanket impl below — no separate impl block required.
 pub trait AppService:
-    AgentService + PendingReplyService + WorkflowService + IntegrationService + SystemService
+    AgentService + PendingReplyService + WorkflowService + IntegrationService + SystemService + BrowserService
 {
 }
 
@@ -257,6 +272,7 @@ impl<T> AppService for T where
         + WorkflowService
         + IntegrationService
         + SystemService
+        + BrowserService
         + ?Sized
 {
 }

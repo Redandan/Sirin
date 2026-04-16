@@ -126,6 +126,13 @@ pub fn show(
             nav_item(ui, "Skill 開發", View::Workflow, view);
             nav_item(ui, "會議室", View::Meeting, view);
 
+            ui.add_space(theme::SP_XS);
+            theme::thin_separator(ui);
+
+            // ── TOOLS ───────────────────────────────────────────────────
+            group_label(ui, "TOOLS");
+            nav_item(ui, "Browser", View::Browser, view);
+
             // ── Bottom status ────────────────────────────────────────────
             ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
                 ui.add_space(theme::SP_SM);
