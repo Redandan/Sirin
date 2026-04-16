@@ -170,20 +170,52 @@ Let the LLM figure out the steps. Only write steps if they're non-obvious or ord
 
 ## Common Patterns
 
-### Flutter Web apps (CanvasKit)
+### Flutter Web apps (CanvasKit) — **vision-based testing**
 
-CSS selectors don't work against Canvas. Instead, use coordinate clicks via
-vision:
+Flutter apps built with CanvasKit (the default for production) render
+to a `<canvas>` element. The DOM is **empty** — `read`, `exists`, and
+`eval(document.body.innerText)` all return empty/false even though
+visually the page looks fine.
 
+**Symptom of this trap:** test fails with "page doesn't contain X" but
+get_screenshot shows X clearly visible.
+
+**Workaround tier 1 — `url_query` HTML renderer (only works if app supports it):**
+```yaml
+url_query:
+  flutter-web-renderer: html
+```
+Many production Flutter apps hardcode CanvasKit at build time
+(`<body flt-renderer="canvaskit">`) and ignore this query. Probe with
+`browser_exec({action:"eval", target:"document.body.getAttribute('flt-renderer')"})`.
+
+**Workaround tier 2 — vision via `screenshot_analyze` (always works):**
 ```yaml
 goal: |
-  After landing on the Flutter app's login screen, click on the email
-  input field (appears around center of the screen), type the email,
-  and click the "Send verification" button below it.
-```
+  Verify the page shows the login screen.
 
-The LLM will use `screenshot_analyze` + `click_point(x, y)` to navigate
-canvas-rendered UI.
+  ⚠️ This is a Flutter CanvasKit app — DOM is empty. Use:
+    {action:"screenshot_analyze", target:"Does the page show
+      the login form with an email field?"}
+  Don't try eval/read/exists for text content.
+
+success_criteria:
+  - "Vision confirms the brand title is visible"
+  - "Vision confirms login form with email input exists"
+```
+Gemini Vision reads the rendered canvas directly. ~3-5 sec per
+analyze call but reliable.
+
+**Workaround tier 3 — coordinate clicks (for interaction):**
+After vision identifies a button location, click via coordinates:
+```yaml
+{action:"click_point", x:380, y:330}
+```
+The LLM will combine `screenshot_analyze` (find element) +
+`click_point` (interact).
+
+For Agora Market specifically: see `config/tests/agora_market_smoke.yaml`
+for a working vision-based example.
 
 ### Asynchronous UIs
 

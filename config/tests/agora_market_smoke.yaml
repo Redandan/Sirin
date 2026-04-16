@@ -1,20 +1,29 @@
 id: agora_market_smoke
-name: "Agora Market — Flutter PWA smoke test"
+name: "Agora Market — Flutter PWA smoke test (vision)"
 url: "https://redandan.github.io/"
 goal: |
-  驗證 Agora Market PWA 能正常載入並顯示登入頁面。
-  應該看到「Agora Market」標題與「電子郵件」輸入欄位。
+  測試 Agora Market Flutter PWA 能正常載入登入頁面。
 
-# Force HTML renderer so CSS selectors work against the DOM
-# (CanvasKit renders to <canvas> which is opaque to selectors).
-url_query:
-  flutter-web-renderer: html
+  ⚠️ 重要：這是 Flutter CanvasKit app，DOM 是空的（只有 <flt-glass-pane>），
+  所以 read/exists/eval 對文字檢查 **無效**。改用 screenshot_analyze 動作
+  讓 vision LLM 直接「看」截圖：
 
-max_iterations: 8
-timeout_secs: 90
+    {action: "screenshot_analyze", target: "頁面是否顯示 Agora Market 標題與電子郵件輸入欄位？"}
+
+  執行步驟：
+  1. 等 5 秒讓 Flutter bootstrap 完成
+  2. screenshot_analyze 讓 Gemini Vision 判讀畫面
+  3. 根據視覺判讀回報通過/失敗
+
+# url_query 對 Agora 無效（hardcoded canvaskit），保留註記
+# url_query:
+#   flutter-web-renderer: html
+
+max_iterations: 6
+timeout_secs: 120
 
 success_criteria:
-  - "頁面包含文字「Agora Market」"
-  - "頁面包含 email 輸入欄位"
+  - "Vision 確認頁面顯示 Agora Market 標題或品牌"
+  - "Vision 確認可見 email/電子郵件 輸入欄位"
 
-tags: [smoke, flutter, agora]
+tags: [smoke, flutter, agora, vision]
