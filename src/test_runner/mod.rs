@@ -145,6 +145,88 @@ pub fn spawn_run_async(test_id: String, auto_fix: bool) -> Result<String, String
     Ok(run_id)
 }
 
+/// Spawn an ad-hoc test (no YAML file) by providing the goal in-line.
+/// Returns run_id for polling.  The synthetic test_id is `adhoc_<timestamp>`.
+///
+/// This unblocks external callers who want to test a URL without first
+/// writing a YAML goal definition.
+pub fn spawn_adhoc_run(
+    url: String,
+    goal: String,
+    success_criteria: Vec<String>,
+    locale: Option<String>,
+    max_iterations: Option<u32>,
+    timeout_secs: Option<u64>,
+) -> Result<String, String> {
+    if url.trim().is_empty() {
+        return Err("url is required".into());
+    }
+    if goal.trim().is_empty() {
+        return Err("goal is required".into());
+    }
+
+    let test_id = format!("adhoc_{}", chrono::Local::now().format("%Y%m%d_%H%M%S_%3f"));
+    let test = TestGoal {
+        id: test_id.clone(),
+        name: format!("Ad-hoc: {}", goal.chars().take(40).collect::<String>()),
+        url,
+        goal,
+        max_iterations: max_iterations.unwrap_or(15),
+        timeout_secs: timeout_secs.unwrap_or(120),
+        retry_on_parse_error: 3,
+        locale: locale.unwrap_or_else(|| "zh-TW".into()),
+        success_criteria,
+        tags: vec!["adhoc".into()],
+    };
+
+    let run_id = runs::new_run(&test_id);
+    let run_id_clone = run_id.clone();
+    let test_clone = test.clone();
+
+    std::thread::spawn(move || {
+        let rt = match tokio::runtime::Runtime::new() {
+            Ok(r) => r,
+            Err(e) => {
+                runs::set_phase(&run_id_clone, runs::RunPhase::Error(
+                    format!("failed to create runtime: {e}")
+                ));
+                return;
+            }
+        };
+        rt.block_on(async {
+            let tools = crate::adk::tool::default_tool_registry();
+            let ctx = crate::adk::context::AgentContext::new("mcp_adhoc", tools)
+                .with_metadata("test_run_id", &run_id_clone);
+
+            let started = chrono::Local::now().to_rfc3339();
+            let result = executor::execute_test_tracked(&ctx, &test_clone, Some(&run_id_clone)).await;
+
+            // Persist to SQLite — ad-hoc runs are still worth recording
+            let history_json = serde_json::to_string(&result.history).ok();
+            let status_str = match result.status {
+                TestStatus::Passed  => "passed",
+                TestStatus::Failed  => "failed",
+                TestStatus::Timeout => "timeout",
+                TestStatus::Error   => "error",
+            };
+            let _ = store::record_run(store::NewRun {
+                test_id: &test_clone.id,
+                started_at: &started,
+                duration_ms: Some(result.duration_ms as i64),
+                status: status_str,
+                failure_category: None,
+                ai_analysis: result.final_analysis.as_deref(),
+                screenshot_path: result.screenshot_path.as_deref(),
+                history_json: history_json.as_deref(),
+            });
+
+            runs::set_phase(&run_id_clone, runs::RunPhase::Complete(result));
+        });
+    });
+
+    Ok(run_id)
+}
+
 /// Run all tests matching the optional tag filter.
 pub async fn run_all(
     ctx: &crate::adk::context::AgentContext,

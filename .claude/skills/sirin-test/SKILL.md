@@ -40,11 +40,16 @@ Drive Sirin's AI-powered browser testing from external Claude Code sessions. Unl
 
 | Tool | Purpose | When to use |
 |------|---------|------------|
-| `list_tests` | Enumerate all test YAMLs | Discovery — "what tests exist?" |
-| `run_test_async` | Fire-and-forget test execution | Start a test without blocking |
+| `list_tests` | Enumerate YAML tests in `config/tests/` | "What tests exist?" |
+| `run_test_async` | Run a YAML-defined test | When matching test_id exists |
+| `run_adhoc_test` | Test a URL with inline goal, no YAML | **User wants to test arbitrary URL** |
 | `get_test_result` | Poll run status by `run_id` | Every 3-5s while test runs |
-| `get_screenshot` | Fetch base64 PNG of failure | When status=failed/timeout/error |
-| `get_full_observation` | Un-truncated tool output | When step observation mentions `[truncated: ...]` |
+| `get_screenshot` | Fetch base64 PNG of failure | status=failed/timeout/error |
+| `get_full_observation` | Un-truncated tool output | Observation mentions `[truncated: ...]` |
+| `list_recent_runs` | Historical test executions (SQLite) | Debug flakiness / see patterns |
+| `list_fixes` | Auto-fix history (claude_session spawns) | Check if a fix is in-flight |
+| `config_diagnostics` | LLM/router/vision health report | Tests failing mysteriously — self-diagnose |
+| `browser_exec` | Single imperative browser action | **Debug / one-off exploration without a goal** |
 
 Plus Sirin's normal MCP tools: `memory_search`, `skill_list`, `teams_pending`, `teams_approve`, `trigger_research`.
 
@@ -78,6 +83,45 @@ run_test_async(test_id="checkout_flow", auto_fix=true)
 # frontend/backend repo when the failure is classified as
 # ui_bug or api_bug. Fire-and-forget; check repo for commits.
 ```
+
+### Workflow B.5 — Ad-hoc URL test (NO YAML needed)
+
+When the user names an arbitrary URL that isn't in `config/tests/`:
+
+```
+User: "Test if https://example.com/signup still works with email
+       'test@test.com' and verify we land on /welcome"
+
+1. run_adhoc_test({
+     url: "https://example.com/signup",
+     goal: "Register with email test@test.com and reach /welcome",
+     success_criteria: ["URL ends with /welcome", "No console errors"]
+   })
+   → { run_id: "run_...", status: "queued" }
+
+2. Poll with get_test_result as in Workflow A.
+```
+
+This is the right answer when `list_tests` doesn't show a matching
+existing test.  Don't refuse the user with "no such test".
+
+### Workflow B.6 — Imperative browser debug
+
+For manual exploration without a goal, use `browser_exec` directly:
+
+```
+browser_exec({action: "goto",       target: "https://site.com"})
+browser_exec({action: "screenshot"}) → base64 PNG
+browser_exec({action: "console"})   → JS errors
+browser_exec({action: "network"})   → fetch/XHR log
+browser_exec({action: "click",      target: "#btn"})
+browser_exec({action: "read",       target: "h1"})
+```
+
+Useful for:
+- Diagnosing why a test fails before retrying
+- Answering "what's on that page right now?"
+- Step-by-step exploration when the user is iterating on a flow
 
 ### Workflow C — Debug a failed run
 
@@ -182,7 +226,7 @@ When a test fails, Sirin classifies it via LLM:
 
 1. **Test hangs at `queued` phase >10s** → Sirin may be stuck spawning Chrome. Check Sirin logs for browser launch errors.
 
-2. **Always returns `failed` with "LLM error"** → Check Sirin's LLM config (likely quota exhaustion on Gemini). Run `/config-check` skill inside Sirin.
+2. **Always returns `failed` with "LLM error"** → Call `config_diagnostics` MCP tool to check LLM/router health from the outside (no need to open Sirin GUI).
 
 3. **Screenshot returns `bytes_base64: null`** → Look at `screenshot_error` field. Common causes:
    - Flutter CanvasKit in headless mode → blank PNG

@@ -31,9 +31,14 @@
 //! | `trigger_research` | 觸發研究任務 |
 //! | `list_tests` | 列出 `config/tests/` 下所有測試 goal |
 //! | `run_test_async` | 非同步觸發測試，立即返回 run_id |
+//! | `run_adhoc_test` | 即席測試 — 直接給 URL + goal，不必建 YAML |
 //! | `get_test_result` | 依 run_id 取得測試狀態或結果 |
 //! | `get_screenshot` | 依 run_id 取得截圖（base64 PNG）|
 //! | `get_full_observation` | 取得某步驟的完整（未截斷）observation |
+//! | `list_recent_runs` | 查詢歷史測試執行記錄（所有測試或特定 test_id）|
+//! | `list_fixes` | 查詢 auto-fix 歷史 |
+//! | `config_diagnostics` | 回傳 Sirin 配置診斷（LLM/router/vision 等）|
+//! | `browser_exec` | 即席操作瀏覽器（click/type/read/...），不需完整 test goal |
 
 use axum::{
     extract::Json,
@@ -213,6 +218,67 @@ fn handle_tools_list() -> Result<Value, String> {
                     },
                     "required": ["run_id", "step"]
                 }
+            },
+            {
+                "name": "run_adhoc_test",
+                "description": "即席啟動測試 — 不需預先建立 YAML。外部 AI 收到用戶要求『測 <URL> 的 <流程>』時用這個。立即返回 run_id，用 get_test_result 輪詢。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "url":  { "type": "string", "description": "要測試的起始 URL" },
+                        "goal": { "type": "string", "description": "高階測試目標（自然語言描述）" },
+                        "success_criteria": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "通過條件（1-3 條；空陣列會用預設的『目標達成』判斷）"
+                        },
+                        "locale":         { "type": "string", "description": "zh-TW / en / zh-CN（預設 zh-TW）" },
+                        "max_iterations": { "type": "number", "description": "預設 15" },
+                        "timeout_secs":   { "type": "number", "description": "預設 120" }
+                    },
+                    "required": ["url", "goal"]
+                }
+            },
+            {
+                "name": "list_recent_runs",
+                "description": "查詢歷史測試執行記錄。不指定 test_id 時列所有測試的近期 runs。用來看 pattern / flakiness / 最近失敗原因。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "test_id": { "type": "string", "description": "選填：只看特定測試" },
+                        "limit":   { "type": "number", "description": "筆數（預設 20，最多 100）" }
+                    }
+                }
+            },
+            {
+                "name": "list_fixes",
+                "description": "查詢 auto-fix 歷史（claude_session spawn 記錄）。能看到哪些 test 觸發過自動修復、結果如何。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "test_id": { "type": "string", "description": "選填" },
+                        "limit":   { "type": "number", "description": "預設 20" }
+                    }
+                }
+            },
+            {
+                "name": "config_diagnostics",
+                "description": "回傳 Sirin 當前配置診斷（LLM backend 連通、router 狀態、vision 可用性、Chrome/Claude CLI 等）。遇到測試全部失敗時用來自我檢查。",
+                "inputSchema": { "type": "object", "properties": {} }
+            },
+            {
+                "name": "browser_exec",
+                "description": "即席執行瀏覽器動作，不走完整 test goal。適合 debug / 探索 / 單步操作。action 可用：goto, screenshot, click, type, read, eval, wait, exists, attr, scroll, key, console, network, url, title, close。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action":  { "type": "string", "description": "web_navigate action 名稱" },
+                        "target":  { "type": "string", "description": "URL / CSS selector / JS expression，視 action 而定" },
+                        "text":    { "type": "string", "description": "type 動作的輸入文字" },
+                        "timeout": { "type": "number", "description": "wait 動作的 ms" }
+                    },
+                    "required": ["action"]
+                }
             }
         ]
     }))
@@ -228,9 +294,14 @@ async fn handle_tools_call(params: Value) -> Result<Value, String> {
     match name {
         "list_tests"           => return call_list_tests(arguments).map(wrap_json),
         "run_test_async"       => return call_run_test_async(arguments).map(wrap_json),
+        "run_adhoc_test"       => return call_run_adhoc_test(arguments).map(wrap_json),
         "get_test_result"      => return call_get_test_result(arguments).map(wrap_json),
         "get_screenshot"       => return call_get_screenshot(arguments).map(wrap_json),
         "get_full_observation" => return call_get_full_observation(arguments).map(wrap_json),
+        "list_recent_runs"     => return call_list_recent_runs(arguments).map(wrap_json),
+        "list_fixes"           => return call_list_fixes(arguments).map(wrap_json),
+        "config_diagnostics"   => return call_config_diagnostics().map(wrap_json),
+        "browser_exec"         => return call_browser_exec(arguments).await.map(wrap_json),
         _ => {}
     }
 
@@ -390,6 +461,187 @@ fn call_get_screenshot(args: Value) -> Result<Value, String> {
     }
 }
 
+fn call_run_adhoc_test(args: Value) -> Result<Value, String> {
+    let url = args["url"].as_str().ok_or("Missing url")?.to_string();
+    let goal = args["goal"].as_str().ok_or("Missing goal")?.to_string();
+    let criteria: Vec<String> = args.get("success_criteria")
+        .and_then(Value::as_array)
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let locale = args.get("locale").and_then(Value::as_str).map(String::from);
+    let max_iter = args.get("max_iterations").and_then(Value::as_u64).map(|n| n as u32);
+    let timeout = args.get("timeout_secs").and_then(Value::as_u64);
+
+    let run_id = crate::test_runner::spawn_adhoc_run(
+        url.clone(), goal, criteria, locale, max_iter, timeout,
+    )?;
+    Ok(json!({
+        "run_id": run_id,
+        "url": url,
+        "status": "queued",
+        "poll_with": "get_test_result",
+    }))
+}
+
+fn call_list_recent_runs(args: Value) -> Result<Value, String> {
+    let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(20).min(100) as usize;
+    let test_id = args.get("test_id").and_then(Value::as_str);
+
+    let runs = match test_id {
+        Some(tid) => crate::test_runner::store::recent_runs(tid, limit),
+        None      => crate::test_runner::store::recent_runs_all(limit),
+    };
+    let items: Vec<Value> = runs.into_iter().map(|r| json!({
+        "id":               r.id,
+        "test_id":          r.test_id,
+        "started_at":       r.started_at,
+        "duration_ms":      r.duration_ms,
+        "status":           r.status,
+        "failure_category": r.failure_category,
+        "ai_analysis":      r.ai_analysis,
+        "screenshot_path":  r.screenshot_path,
+    })).collect();
+    Ok(json!({ "count": items.len(), "runs": items }))
+}
+
+fn call_list_fixes(args: Value) -> Result<Value, String> {
+    let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(20).min(100) as usize;
+    let test_id = args.get("test_id").and_then(Value::as_str);
+
+    let fixes = match test_id {
+        Some(tid) => crate::test_runner::store::recent_fixes(tid, limit),
+        None      => crate::test_runner::store::recent_fixes_all(limit),
+    };
+    let items: Vec<Value> = fixes.into_iter().map(|f| json!({
+        "id":               f.id,
+        "test_id":          f.test_id,
+        "run_id":           f.run_id,
+        "category":         f.category,
+        "triggered_at":     f.triggered_at,
+        "completed_at":     f.completed_at,
+        "outcome":          f.outcome,
+        "claude_exit_code": f.claude_exit_code,
+        "claude_output":    f.claude_output,
+    })).collect();
+    Ok(json!({ "count": items.len(), "fixes": items }))
+}
+
+fn call_config_diagnostics() -> Result<Value, String> {
+    let issues = crate::config_check::run_diagnostics();
+    let items: Vec<Value> = issues.iter().map(|i| json!({
+        "severity":   match i.severity {
+            crate::config_check::Severity::Ok      => "ok",
+            crate::config_check::Severity::Info    => "info",
+            crate::config_check::Severity::Warning => "warning",
+            crate::config_check::Severity::Error   => "error",
+        },
+        "category":   i.category,
+        "message":    i.message,
+        "suggestion": i.suggestion,
+    })).collect();
+    let summary = crate::config_check::format_report(&issues);
+    Ok(json!({
+        "count": items.len(),
+        "errors":   issues.iter().filter(|i| matches!(i.severity, crate::config_check::Severity::Error)).count(),
+        "warnings": issues.iter().filter(|i| matches!(i.severity, crate::config_check::Severity::Warning)).count(),
+        "ok":       issues.iter().filter(|i| matches!(i.severity, crate::config_check::Severity::Ok)).count(),
+        "issues":   items,
+        "text_report": summary,
+    }))
+}
+
+async fn call_browser_exec(args: Value) -> Result<Value, String> {
+    let action = args["action"].as_str().ok_or("Missing action")?.to_string();
+    let target = args.get("target").and_then(Value::as_str).unwrap_or("").to_string();
+    let text   = args.get("text").and_then(Value::as_str).unwrap_or("").to_string();
+    let timeout = args.get("timeout").and_then(Value::as_u64);
+
+    // Dispatch directly to crate::browser to avoid requiring an AgentContext
+    // for simple imperative calls.  Mirrors the web_navigate action set.
+    tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        use crate::browser;
+        match action.as_str() {
+            "goto" => {
+                if target.is_empty() { return Err("'goto' requires 'target' URL".into()); }
+                browser::ensure_open(true)?;
+                browser::navigate(&target)?;
+                Ok(json!({ "status": "navigated", "url": target }))
+            }
+            "screenshot" => {
+                let png = browser::screenshot()?;
+                let b64 = base64_encode(&png);
+                let url = browser::current_url().unwrap_or_default();
+                Ok(json!({
+                    "mime": "image/png",
+                    "bytes_base64": b64,
+                    "size_bytes": png.len(),
+                    "url": url,
+                }))
+            }
+            "click" => {
+                if target.is_empty() { return Err("'click' requires 'target' selector".into()); }
+                browser::click(&target)?;
+                Ok(json!({ "status": "clicked", "selector": target }))
+            }
+            "type" => {
+                if target.is_empty() { return Err("'type' requires 'target' selector".into()); }
+                browser::type_text(&target, &text)?;
+                Ok(json!({ "status": "typed", "selector": target, "length": text.len() }))
+            }
+            "read" => {
+                if target.is_empty() { return Err("'read' requires 'target' selector".into()); }
+                Ok(json!({ "selector": target, "text": browser::get_text(&target)? }))
+            }
+            "eval" => {
+                if target.is_empty() { return Err("'eval' requires 'target' JS expression".into()); }
+                Ok(json!({ "result": browser::evaluate_js(&target)? }))
+            }
+            "wait" => {
+                if target.is_empty() { return Err("'wait' requires 'target' selector".into()); }
+                browser::wait_for_ms(&target, timeout.unwrap_or(5000))?;
+                Ok(json!({ "status": "found", "selector": target }))
+            }
+            "exists" => {
+                if target.is_empty() { return Err("'exists' requires 'target' selector".into()); }
+                Ok(json!({ "selector": target, "exists": browser::element_exists(&target)? }))
+            }
+            "attr" => {
+                if target.is_empty() { return Err("'attr' requires 'target' selector".into()); }
+                if text.is_empty() { return Err("'attr' requires 'text' = attribute name".into()); }
+                Ok(json!({ "selector": target, "attribute": &text, "value": browser::get_attribute(&target, &text)? }))
+            }
+            "scroll" => {
+                let y = timeout.map(|t| t as f64).unwrap_or(300.0);
+                browser::scroll_by(0.0, y)?;
+                Ok(json!({ "status": "scrolled", "y": y }))
+            }
+            "key" => {
+                if target.is_empty() { return Err("'key' requires 'target' key name".into()); }
+                browser::press_key(&target)?;
+                Ok(json!({ "status": "pressed", "key": target }))
+            }
+            "console" => {
+                let limit = timeout.unwrap_or(20) as usize;
+                let raw = browser::console_messages(limit).unwrap_or_else(|_| "[]".into());
+                let val: Value = serde_json::from_str(&raw).unwrap_or(json!([]));
+                Ok(json!({ "messages": val }))
+            }
+            "network" => {
+                let limit = timeout.unwrap_or(20) as usize;
+                let raw = browser::captured_requests(limit).unwrap_or_else(|_| "[]".into());
+                let val: Value = serde_json::from_str(&raw).unwrap_or(json!([]));
+                Ok(json!({ "requests": val }))
+            }
+            "url"   => Ok(json!({ "url": browser::current_url()? })),
+            "title" => Ok(json!({ "title": browser::page_title()? })),
+            "close" => { browser::close(); Ok(json!({ "status": "closed" })) }
+            other   => Err(format!("Unknown browser_exec action: {other}")),
+        }
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking: {e}"))?
+}
+
 fn call_get_full_observation(args: Value) -> Result<Value, String> {
     let run_id = args["run_id"].as_str().ok_or("Missing run_id")?;
     let step   = args["step"].as_u64().ok_or("Missing step (non-negative integer)")? as usize;
@@ -451,6 +703,52 @@ mod test_runner_mcp_tests {
         assert_eq!(base64_encode(b"fo"), "Zm8=");
         assert_eq!(base64_encode(b"foo"), "Zm9v");
         assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn run_adhoc_test_requires_url_and_goal() {
+        assert!(call_run_adhoc_test(json!({})).is_err());
+        assert!(call_run_adhoc_test(json!({"url": "https://x.com"})).is_err());
+        assert!(call_run_adhoc_test(json!({"goal": "test something"})).is_err());
+    }
+
+    #[test]
+    fn list_recent_runs_limits_clamped() {
+        // Should not panic with huge limit
+        let r = call_list_recent_runs(json!({"limit": 99999})).unwrap();
+        assert!(r["count"].is_u64());
+        // Default limit when omitted
+        let r = call_list_recent_runs(json!({})).unwrap();
+        assert!(r["count"].is_u64());
+    }
+
+    #[test]
+    fn list_fixes_returns_schema() {
+        let r = call_list_fixes(json!({})).unwrap();
+        assert!(r["count"].is_u64());
+        assert!(r["fixes"].is_array());
+    }
+
+    #[test]
+    fn config_diagnostics_returns_structured_report() {
+        let r = call_config_diagnostics().unwrap();
+        assert!(r["count"].is_u64());
+        assert!(r["issues"].is_array());
+        assert!(r["text_report"].is_string());
+        // Sum of severities equals count
+        let total = r["errors"].as_u64().unwrap()
+            + r["warnings"].as_u64().unwrap()
+            + r["ok"].as_u64().unwrap()
+            + r["issues"].as_array().unwrap().iter()
+                .filter(|i| i["severity"] == "info").count() as u64;
+        assert_eq!(total, r["count"].as_u64().unwrap());
+    }
+
+    #[test]
+    fn browser_exec_rejects_missing_action() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let r = rt.block_on(call_browser_exec(json!({})));
+        assert!(r.is_err());
     }
 }
 

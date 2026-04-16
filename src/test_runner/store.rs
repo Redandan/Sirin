@@ -107,6 +107,36 @@ pub fn record_run(r: NewRun<'_>) -> Result<i64, String> {
     Ok(conn.last_insert_rowid())
 }
 
+/// Return the most recent test runs across ALL tests.  Used by the
+/// `list_recent_runs` MCP endpoint when no test_id is specified.
+pub fn recent_runs_all(limit: usize) -> Vec<RunRecord> {
+    let conn = db().lock().unwrap_or_else(|e| e.into_inner());
+    let mut stmt = match conn.prepare(
+        "SELECT id, test_id, started_at, duration_ms, status, failure_category, ai_analysis, screenshot_path \
+         FROM test_runs ORDER BY started_at DESC LIMIT ?1",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let rows = stmt.query_map(
+        rusqlite::params![limit as i64],
+        |row| Ok(RunRecord {
+            id: row.get(0)?,
+            test_id: row.get(1)?,
+            started_at: row.get(2)?,
+            duration_ms: row.get(3)?,
+            status: row.get(4)?,
+            failure_category: row.get(5)?,
+            ai_analysis: row.get(6)?,
+            screenshot_path: row.get(7)?,
+        }),
+    );
+    match rows {
+        Ok(iter) => iter.filter_map(Result::ok).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
 pub fn recent_runs(test_id: &str, limit: usize) -> Vec<RunRecord> {
     let conn = db().lock().unwrap_or_else(|e| e.into_inner());
     let mut stmt = match conn.prepare(
@@ -238,6 +268,36 @@ pub fn has_pending_fix(test_id: &str, minutes: i64) -> bool {
         rusqlite::params![test_id, cutoff],
         |row| row.get::<_, i64>(0),
     ).map(|n| n > 0).unwrap_or(false)
+}
+
+/// Return most recent fix attempts across ALL tests.
+pub fn recent_fixes_all(limit: usize) -> Vec<FixRecord> {
+    let conn = db().lock().unwrap_or_else(|e| e.into_inner());
+    let mut stmt = match conn.prepare(
+        "SELECT id, test_id, run_id, category, triggered_at, completed_at, outcome, claude_exit_code, claude_output \
+         FROM auto_fix_history ORDER BY triggered_at DESC LIMIT ?1",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let rows = stmt.query_map(
+        rusqlite::params![limit as i64],
+        |row| Ok(FixRecord {
+            id: row.get(0)?,
+            test_id: row.get(1)?,
+            run_id: row.get(2)?,
+            category: row.get(3)?,
+            triggered_at: row.get(4)?,
+            completed_at: row.get(5)?,
+            outcome: row.get(6)?,
+            claude_exit_code: row.get(7)?,
+            claude_output: row.get(8)?,
+        }),
+    );
+    match rows {
+        Ok(iter) => iter.filter_map(Result::ok).collect(),
+        Err(_) => Vec::new(),
+    }
 }
 
 /// Return recent fix attempts for a test.
