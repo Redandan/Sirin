@@ -1,0 +1,25 @@
+id: browser-test
+name: "瀏覽器測試"
+description: "驅動瀏覽器執行 E2E 測試。用戶說『測這個網站』『驗證 XX 流程』『跑測試』時使用。輸入可以是：(a) 既有 test_id（會從 config/tests/ 找對應 YAML 執行），(b) 'list' 列出所有可用測試，(c) URL + 目標描述（ad-hoc 即時測試）。失敗時自動截圖並可選呼叫 Claude Code 修 bug。"
+category: testing
+enabled: true
+requires_approval: false
+trigger_keywords:
+  - test
+  - 測試
+  - 驗證
+  - verify
+  - E2E
+  - browser
+  - 瀏覽器
+  - smoke
+  - 跑測試
+  - 測網站
+  - 檢查網頁
+example_prompts:
+  - "測試 Agora 的登入流程"
+  - "跑 wiki_smoke 測試"
+  - "列出所有測試"
+  - "驗證 example.com 能正常載入"
+  - "Run the checkout E2E test"
+  - "測試這個網址 https://..."

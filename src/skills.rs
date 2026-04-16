@@ -356,6 +356,33 @@ mod tests {
         let none = recommended_skills("分析 PR", &[]);
         assert!(none.is_empty());
     }
+
+    #[tokio::test]
+    async fn browser_test_skill_list_mode() {
+        let out = execute_browser_test("list").await.expect("list");
+        // config/tests/ has at least wiki_smoke + example_en
+        assert!(out.contains("wiki_smoke"), "output: {out}");
+    }
+
+    #[tokio::test]
+    async fn browser_test_skill_empty_input_lists() {
+        let out = execute_browser_test("").await.expect("empty");
+        assert!(out.contains("可用測試") || out.contains("available"));
+    }
+
+    #[tokio::test]
+    async fn browser_test_skill_unknown_id_guides_user() {
+        let out = execute_browser_test("nonexistent_test_xyz").await.expect("unknown");
+        assert!(out.contains("未找到") || out.contains("not found"));
+        assert!(out.contains("nonexistent_test_xyz"));
+    }
+
+    #[test]
+    fn browser_test_skill_listed_in_skill_manifest() {
+        let skills = list_skills();
+        let has_bt = skills.iter().any(|s| s.id == "browser-test");
+        assert!(has_bt, "browser-test skill must be in list_skills()");
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -396,6 +423,98 @@ pub struct SkillDefinition {
 
 fn skill_enabled_default() -> bool { true }
 fn default_script_timeout() -> u64 { 30 }
+
+// ── Built-in skill: browser-test ─────────────────────────────────────────────
+
+/// Execute the `browser-test` skill.  Interprets `user_input`:
+/// - `"list"` / empty / `"ls"` → returns the list of available tests
+/// - An existing test_id → runs that test, returns status summary
+/// - Otherwise → returns guidance (how to run a test)
+///
+/// For ad-hoc URL-based testing the caller should use the `run_test` tool
+/// directly (or the `web_navigate` tool) — the skill layer only runs tests
+/// already defined as YAML goals.
+async fn execute_browser_test(user_input: &str) -> Result<String, String> {
+    let trimmed = user_input.trim();
+
+    // List mode
+    if trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case("list")
+        || trimmed.eq_ignore_ascii_case("ls")
+        || trimmed == "列出" || trimmed == "所有"
+    {
+        let tests = crate::test_runner::list_tests();
+        if tests.is_empty() {
+            return Ok("目前 config/tests/ 沒有任何測試 YAML。請先建立 goal 檔案。".into());
+        }
+        let mut out = format!("可用測試 ({}):\n\n", tests.len());
+        for t in &tests {
+            let tags = if t.tags.is_empty() { String::new() }
+                else { format!(" [{}]", t.tags.join(",")) };
+            out.push_str(&format!("• {} — {}{}\n  url: {}\n", t.id, t.name, tags, t.url));
+        }
+        out.push_str("\n執行範例: browser-test <test_id>");
+        return Ok(out);
+    }
+
+    // Try to match as a test_id (first whitespace-separated token)
+    let requested_id = trimmed.split_whitespace().next().unwrap_or(trimmed);
+    let tests = crate::test_runner::list_tests();
+    let matched = tests.iter().find(|t| t.id == requested_id);
+
+    let Some(test) = matched else {
+        let available: Vec<String> = tests.iter().map(|t| t.id.clone()).collect();
+        return Ok(format!(
+            "未找到 test_id '{requested_id}'。\n\n可用測試 id: {}\n\n\
+             提示:\n\
+             - `browser-test list` 列出所有測試（含 goal）\n\
+             - `browser-test <id>` 執行指定測試",
+            available.join(", "),
+        ));
+    };
+
+    // Run the matched test. Use a minimal AgentContext (no tracker needed).
+    let tools = crate::adk::tool::default_tool_registry();
+    let ctx = crate::adk::context::AgentContext::new("skill:browser-test", tools);
+
+    let started = std::time::Instant::now();
+    let result = crate::test_runner::run_test(&ctx, &test.id, false)
+        .await
+        .map_err(|e| format!("run_test failed: {e}"))?;
+
+    let elapsed_s = started.elapsed().as_secs_f64();
+    let status_label = match result.status {
+        crate::test_runner::TestStatus::Passed  => "✓ PASSED",
+        crate::test_runner::TestStatus::Failed  => "✗ FAILED",
+        crate::test_runner::TestStatus::Timeout => "⏱ TIMEOUT",
+        crate::test_runner::TestStatus::Error   => "✗ ERROR",
+    };
+
+    let mut summary = format!(
+        "{status_label} — {name} ({id})\n\
+         duration: {elapsed:.1}s  iterations: {iter}  steps: {steps}\n",
+        name = test.name,
+        id = test.id,
+        elapsed = elapsed_s,
+        iter = result.iterations,
+        steps = result.history.len(),
+    );
+
+    if let Some(analysis) = &result.final_analysis {
+        summary.push_str(&format!("\nAnalysis:\n{analysis}\n"));
+    }
+    if let Some(err) = &result.error_message {
+        summary.push_str(&format!("\nError: {err}\n"));
+    }
+    if let Some(path) = &result.screenshot_path {
+        summary.push_str(&format!("\nFailure screenshot: {path}\n"));
+    }
+    if let Some(err) = &result.screenshot_error {
+        summary.push_str(&format!("\nScreenshot error: {err}\n"));
+    }
+
+    Ok(summary)
+}
 
 /// Infer the script interpreter from the file extension.
 fn infer_interpreter(path: &str) -> &'static str {
@@ -514,6 +633,10 @@ pub async fn execute_skill(
             .await
             .map_err(|e| format!("spawn_blocking: {e}"))?;
         return Ok(crate::config_check::format_report(&issues));
+    }
+
+    if skill_id == "browser-test" {
+        return execute_browser_test(user_input).await;
     }
 
     let skill = list_skills()
