@@ -119,6 +119,25 @@ pub fn close() {
     *guard = None;
 }
 
+/// Ensures a browser session exists, **preserving current mode if already open**.
+///
+/// Use this inside tool dispatch paths (`with_tab`, `navigate_and_screenshot`,
+/// recovery re-launches) where the caller just needs a session and must not
+/// override the user's explicit headless choice made at launch time.
+///
+/// Explicit mode control should only happen at test-runner entry points
+/// (`execute_test_tracked`, MCP `run_adhoc_test`) via `ensure_open(resolved_mode)`.
+///
+/// Fixes: #10 — `with_tab()` used to call `ensure_open(true)` which triggered
+/// the mode-switch logic from `bd08841`, flipping a user-requested
+/// `SIRIN_BROWSER_HEADLESS=false` session back to headless.
+pub fn ensure_open_reusing() -> Result<bool, String> {
+    if is_open() {
+        return Ok(false);
+    }
+    ensure_open(default_headless())
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 //  TIER 1 — BASIC NAVIGATION & INTERACTION
 // ══════════════════════════════════════════════════════════════════════════════
@@ -196,7 +215,7 @@ pub fn screenshot() -> Result<Vec<u8>, String> {
 
 #[allow(dead_code)]
 pub fn navigate_and_screenshot(url: &str) -> Result<Vec<u8>, String> {
-    ensure_open(true)?;
+    ensure_open_reusing()?;
     navigate(url)?;
     screenshot()
 }
@@ -800,7 +819,7 @@ fn with_tab<F, R>(f: F) -> Result<R, String>
 where
     F: FnOnce(&Arc<Tab>) -> Result<R, String> + Clone,
 {
-    ensure_open(true)?;
+    ensure_open_reusing()?;
 
     let result = {
         let guard = global().lock().unwrap_or_else(|e| e.into_inner());
@@ -816,8 +835,8 @@ where
             tracing::warn!("[browser] mid-call connection closed — attempting one-shot recovery");
             // Clear singleton
             *global().lock().unwrap_or_else(|e| e.into_inner()) = None;
-            // Re-launch
-            ensure_open(true)?;
+            // Re-launch — preserve user-requested mode if previously set
+            ensure_open_reusing()?;
             // Retry exactly once
             let guard = global().lock().unwrap_or_else(|e| e.into_inner());
             if let Some(inner) = guard.as_ref() {
@@ -926,6 +945,33 @@ mod tests {
         if let Some(v) = orig {
             std::env::set_var("SIRIN_BROWSER_HEADLESS", v);
         }
+    }
+
+    #[test]
+    #[ignore] // needs Chrome; integration test
+    fn ensure_open_reusing_preserves_non_headless_session() {
+        // Regression test for #10: `with_tab()` used to call `ensure_open(true)`,
+        // which flipped a user-requested headless=false session back to headless,
+        // causing Flutter CanvasKit / WebGL content to paint all-black.
+        close();
+        ensure_open(false).expect("launch visible");
+        assert_eq!(is_headless(), Some(false), "launched visible");
+
+        // Simulate what `with_tab()` does on every tool dispatch.
+        ensure_open_reusing().expect("reuse");
+        assert_eq!(is_headless(), Some(false), "mode MUST stay false after reuse");
+
+        close();
+    }
+
+    #[test]
+    #[ignore] // needs Chrome; integration test
+    fn ensure_open_reusing_opens_when_closed() {
+        close();
+        assert!(!is_open());
+        ensure_open_reusing().expect("opens fresh");
+        assert!(is_open());
+        close();
     }
 
     // ── Integration tests (need Chrome) ───────────────────────────────────────
