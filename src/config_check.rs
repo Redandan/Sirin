@@ -713,4 +713,33 @@ mod tests {
         let json = extract_json(raw);
         assert_eq!(json, "{\"a\":1}");
     }
+
+    /// E2E: call the real LLM to analyze config.  Needs GEMINI_API_KEY.
+    /// Run: cargo test --bin sirin test_ai_analyze -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn test_ai_analyze() {
+        let _ = dotenvy::dotenv();
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let advice = rt.block_on(ai_analyze()).expect("ai_analyze failed");
+
+        println!("\n=== AI Analysis ===\n{}\n", advice.analysis);
+        println!("=== Proposed Fixes ({}) ===", advice.proposed_fixes.len());
+        for (i, fix) in advice.proposed_fixes.iter().enumerate() {
+            println!("\n[{}] {} :: {}", i + 1, fix.file, fix.field_path);
+            println!("    current: {:?}", fix.current_value);
+            println!("    new:     {:?}", fix.new_value);
+            println!("    reason:  {}", fix.reason);
+        }
+
+        // Basic sanity
+        assert!(!advice.analysis.is_empty(), "analysis should not be empty");
+        for fix in &advice.proposed_fixes {
+            assert!(
+                fix.file == "config/llm.yaml" || fix.file == "config/persona.yaml",
+                "AI proposed write to disallowed file: {}",
+                fix.file
+            );
+        }
+    }
 }
