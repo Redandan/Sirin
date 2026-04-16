@@ -29,6 +29,11 @@
 //! | `teams_pending` | 取得 Teams 待確認草稿列表 |
 //! | `teams_approve` | 核准指定草稿（標記為 Approved，觸發送出）|
 //! | `trigger_research` | 觸發研究任務 |
+//! | `list_tests` | 列出 `config/tests/` 下所有測試 goal |
+//! | `run_test_async` | 非同步觸發測試，立即返回 run_id |
+//! | `get_test_result` | 依 run_id 取得測試狀態或結果 |
+//! | `get_screenshot` | 依 run_id 取得截圖（base64 PNG）|
+//! | `get_full_observation` | 取得某步驟的完整（未截斷）observation |
 
 use axum::{
     extract::Json,
@@ -152,6 +157,62 @@ fn handle_tools_list() -> Result<Value, String> {
                     },
                     "required": ["topic"]
                 }
+            },
+            {
+                "name": "list_tests",
+                "description": "列出 config/tests/ 目錄下所有 YAML 測試 goal。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "tag": { "type": "string", "description": "選填：tag filter" }
+                    }
+                }
+            },
+            {
+                "name": "run_test_async",
+                "description": "非同步啟動測試；立即返回 run_id。用 get_test_result 輪詢狀態。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "test_id":  { "type": "string", "description": "測試 id（config/tests/*.yaml 中的 id 欄位）" },
+                        "auto_fix": { "type": "boolean", "description": "失敗時自動 spawn claude_session 修 bug（預設 false）" }
+                    },
+                    "required": ["test_id"]
+                }
+            },
+            {
+                "name": "get_test_result",
+                "description": "依 run_id 取得測試狀態。可能狀態：queued | running | passed | failed | timeout | error。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "run_id": { "type": "string", "description": "spawn_run_async 返回的 run_id" }
+                    },
+                    "required": ["run_id"]
+                }
+            },
+            {
+                "name": "get_screenshot",
+                "description": "依 run_id 取得失敗截圖（base64 PNG）。若 bytes 為 null，screenshot_error 說明為何失敗。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "run_id": { "type": "string" }
+                    },
+                    "required": ["run_id"]
+                }
+            },
+            {
+                "name": "get_full_observation",
+                "description": "取得某步驟的完整（未截斷）browser tool observation。LLM 歷史中的 observation 被截斷時，可用這個抓完整內容。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "run_id": { "type": "string" },
+                        "step":   { "type": "number", "description": "0-indexed 步驟" }
+                    },
+                    "required": ["run_id", "step"]
+                }
             }
         ]
     }))
@@ -163,6 +224,16 @@ async fn handle_tools_call(params: Value) -> Result<Value, String> {
     let name      = params["name"].as_str().ok_or("Missing 'name'")?;
     let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
+    // Tools that return structured JSON (not just text) bypass the text wrapper.
+    match name {
+        "list_tests"           => return call_list_tests(arguments).map(wrap_json),
+        "run_test_async"       => return call_run_test_async(arguments).map(wrap_json),
+        "get_test_result"      => return call_get_test_result(arguments).map(wrap_json),
+        "get_screenshot"       => return call_get_screenshot(arguments).map(wrap_json),
+        "get_full_observation" => return call_get_full_observation(arguments).map(wrap_json),
+        _ => {}
+    }
+
     let text = match name {
         "memory_search"    => call_memory_search(arguments).await?,
         "skill_list"       => call_skill_list(),
@@ -172,10 +243,20 @@ async fn handle_tools_call(params: Value) -> Result<Value, String> {
         other => return Err(format!("Unknown tool: {other}")),
     };
 
-    // MCP content format
+    // MCP content format (text only tools)
     Ok(json!({
         "content": [{ "type": "text", "text": text }]
     }))
+}
+
+/// Wrap arbitrary JSON payload as MCP content blocks.
+fn wrap_json(payload: Value) -> Value {
+    json!({
+        "content": [{
+            "type": "text",
+            "text": serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string())
+        }]
+    })
 }
 
 // ── Tool implementations ──────────────────────────────────────────────────────
@@ -240,4 +321,154 @@ fn call_trigger_research(args: Value) -> Result<String, String> {
         url,
     });
     Ok(format!("已觸發對「{topic}」的調研任務。"))
+}
+
+// ── Test runner MCP handlers ─────────────────────────────────────────────────
+
+fn call_list_tests(args: Value) -> Result<Value, String> {
+    let tag_filter = args.get("tag").and_then(Value::as_str);
+    let tests = crate::test_runner::list_tests();
+    let items: Vec<Value> = tests.iter()
+        .filter(|t| match tag_filter {
+            Some(tag) => t.tags.iter().any(|x| x == tag),
+            None => true,
+        })
+        .map(|t| json!({
+            "id":   t.id,
+            "name": t.name,
+            "url":  t.url,
+            "goal": t.goal,
+            "tags": t.tags,
+            "max_iterations": t.max_iterations,
+            "timeout_secs": t.timeout_secs,
+        }))
+        .collect();
+    Ok(json!({ "count": items.len(), "tests": items }))
+}
+
+fn call_run_test_async(args: Value) -> Result<Value, String> {
+    let test_id = args["test_id"].as_str().ok_or("Missing test_id")?.to_string();
+    let auto_fix = args.get("auto_fix").and_then(Value::as_bool).unwrap_or(false);
+    let run_id = crate::test_runner::spawn_run_async(test_id.clone(), auto_fix)?;
+    Ok(json!({
+        "run_id": run_id,
+        "test_id": test_id,
+        "auto_fix": auto_fix,
+        "status": "queued",
+        "poll_with": "get_test_result",
+    }))
+}
+
+fn call_get_test_result(args: Value) -> Result<Value, String> {
+    let run_id = args["run_id"].as_str().ok_or("Missing run_id")?;
+    match crate::test_runner::runs::get(run_id) {
+        Some(state) => Ok(crate::test_runner::runs::to_json(&state)),
+        None => Err(format!("run_id '{run_id}' not found (may have been pruned)")),
+    }
+}
+
+fn call_get_screenshot(args: Value) -> Result<Value, String> {
+    let run_id = args["run_id"].as_str().ok_or("Missing run_id")?;
+    match crate::test_runner::runs::get_screenshot(run_id) {
+        Some((Some(bytes), _)) => Ok(json!({
+            "run_id": run_id,
+            "mime": "image/png",
+            "bytes_base64": base64_encode(&bytes),
+            "size_bytes": bytes.len(),
+        })),
+        Some((None, Some(err))) => Ok(json!({
+            "run_id": run_id,
+            "bytes_base64": null,
+            "screenshot_error": err,
+        })),
+        Some((None, None)) => Ok(json!({
+            "run_id": run_id,
+            "bytes_base64": null,
+            "screenshot_error": "no screenshot captured (test passed or not yet taken)",
+        })),
+        None => Err(format!("run_id '{run_id}' not found")),
+    }
+}
+
+fn call_get_full_observation(args: Value) -> Result<Value, String> {
+    let run_id = args["run_id"].as_str().ok_or("Missing run_id")?;
+    let step   = args["step"].as_u64().ok_or("Missing step (non-negative integer)")? as usize;
+    match crate::test_runner::runs::get_full_observation(run_id, step) {
+        Some(content) => Ok(json!({
+            "run_id": run_id,
+            "step": step,
+            "content": content,
+            "char_count": content.chars().count(),
+        })),
+        None => Err(format!("observation for run_id '{run_id}' step {step} not found")),
+    }
+}
+
+#[cfg(test)]
+mod test_runner_mcp_tests {
+    use super::*;
+
+    #[test]
+    fn list_tests_returns_config_tests() {
+        let result = call_list_tests(json!({})).unwrap();
+        assert!(result["count"].is_u64());
+        // config/tests/wiki_smoke.yaml should be visible
+        let tests = result["tests"].as_array().unwrap();
+        assert!(tests.iter().any(|t| t["id"] == "wiki_smoke"),
+            "wiki_smoke test should be listed: {result:?}");
+    }
+
+    #[test]
+    fn list_tests_with_tag_filter() {
+        let result = call_list_tests(json!({"tag": "smoke"})).unwrap();
+        let tests = result["tests"].as_array().unwrap();
+        assert!(tests.iter().all(|t| t["tags"].as_array().unwrap()
+            .iter().any(|tg| tg == "smoke")));
+    }
+
+    #[test]
+    fn run_test_async_rejects_missing_test_id() {
+        let result = call_run_test_async(json!({}));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn run_test_async_rejects_unknown_test() {
+        let result = call_run_test_async(json!({"test_id": "nonexistent_test_xyz"}));
+        assert!(result.is_err(), "should reject unknown test_id");
+    }
+
+    #[test]
+    fn get_test_result_rejects_unknown_run_id() {
+        let result = call_get_test_result(json!({"run_id": "run_fake_12345"}));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn base64_encode_roundtrip() {
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+    }
+}
+
+/// Minimal base64 encoder (no external dep).
+fn base64_encode(input: &[u8]) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((input.len() + 2) / 3 * 4);
+    for chunk in input.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        out.push(CHARS[((triple >> 18) & 0x3F) as usize] as char);
+        out.push(CHARS[((triple >> 12) & 0x3F) as usize] as char);
+        if chunk.len() > 1 { out.push(CHARS[((triple >> 6) & 0x3F) as usize] as char); }
+        else { out.push('='); }
+        if chunk.len() > 2 { out.push(CHARS[(triple & 0x3F) as usize] as char); }
+        else { out.push('='); }
+    }
+    out
 }

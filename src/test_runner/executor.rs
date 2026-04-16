@@ -22,6 +22,8 @@ pub struct TestResult {
     pub duration_ms: u64,
     pub error_message: Option<String>,
     pub screenshot_path: Option<String>,
+    #[serde(default)]
+    pub screenshot_error: Option<String>,
     pub history: Vec<TestStep>,
     pub final_analysis: Option<String>,
 }
@@ -32,18 +34,41 @@ pub enum TestStatus { Passed, Failed, Timeout, Error }
 
 // ── Executor ─────────────────────────────────────────────────────────────────
 
+/// Maximum JSON parse failures before aborting (but not before reprompting).
+const MAX_PARSE_ERRORS: usize = 3;
+/// Truncate observation text past this many chars in LLM history.
+const OBS_TRUNCATE_CHARS: usize = 800;
+
 /// Execute a test goal by driving the browser via the `web_navigate` tool.
 pub async fn execute_test(
     ctx: &crate::adk::context::AgentContext,
     test: &TestGoal,
 ) -> TestResult {
+    execute_test_tracked(ctx, test, None).await
+}
+
+/// Same as [`execute_test`] but reports live progress to an async run registry.
+/// `run_id` — key in [`crate::test_runner::runs`] to update as steps progress.
+pub async fn execute_test_tracked(
+    ctx: &crate::adk::context::AgentContext,
+    test: &TestGoal,
+    run_id: Option<&str>,
+) -> TestResult {
+    use crate::test_runner::runs;
+
     let started = std::time::Instant::now();
     let mut history: Vec<TestStep> = Vec::new();
+    let mut parse_error_hint: Option<String> = None;
+    let mut parse_error_count = 0usize;
+
+    if let Some(rid) = run_id {
+        runs::set_phase(rid, runs::RunPhase::Running { step: 0, current_action: "goto".into() });
+    }
 
     // 1) Ensure browser open + navigate
     let nav_input = json!({ "action": "goto", "target": &test.url });
     if let Err(e) = ctx.call_tool("web_navigate", nav_input).await {
-        return fail_early(test, &history, format!("navigate failed: {e}"));
+        return finalize_early(ctx, run_id, test, &history, format!("navigate failed: {e}")).await;
     }
 
     // 2) Install console + network capture (best effort)
@@ -55,19 +80,22 @@ pub async fn execute_test(
 
     for iteration in 0..max_iter {
         if std::time::Instant::now() >= deadline {
+            let cap = capture_screenshot(ctx, &test.id, run_id).await;
             return TestResult {
                 test_id: test.id.clone(),
                 status: TestStatus::Timeout,
                 iterations: iteration,
                 duration_ms: started.elapsed().as_millis() as u64,
                 error_message: Some(format!("timed out after {}s", test.timeout_secs)),
-                screenshot_path: capture_screenshot(ctx, &test.id).await,
+                screenshot_path: cap.path,
+                screenshot_error: cap.error,
                 history,
                 final_analysis: None,
             };
         }
 
-        let prompt = build_prompt(test, &history);
+        let prompt = build_prompt(test, &history, parse_error_hint.as_deref());
+        parse_error_hint = None;  // reset — only used for the next turn
 
         let raw = match crate::llm::call_coding_prompt(
             ctx.http.as_ref(),
@@ -75,33 +103,52 @@ pub async fn execute_test(
             prompt,
         ).await {
             Ok(s) => s,
-            Err(e) => return fail_early(test, &history, format!("LLM error: {e}")),
+            Err(e) => return finalize_early(ctx, run_id, test, &history, format!("LLM error: {e}")).await,
         };
 
         let step = parse_step(&raw);
         if let Some(err) = &step.parse_error {
-            history.push(TestStep {
-                thought: step.thought.clone(),
-                action: json!({"error":"invalid_json"}),
-                observation: format!("ERROR: {err}"),
-            });
-            // Allow up to 2 parse errors then abort
-            let parse_errs = history.iter().filter(|s| s.observation.starts_with("ERROR:")).count();
-            if parse_errs >= 3 {
-                return fail_early(test, &history, "too many invalid LLM responses".into());
+            parse_error_count += 1;
+            if parse_error_count >= MAX_PARSE_ERRORS {
+                history.push(TestStep {
+                    thought: step.thought.clone(),
+                    action: json!({"error": "invalid_json"}),
+                    observation: format!("ERROR: {err}"),
+                });
+                if let Some(rid) = run_id {
+                    runs::push_observation(rid, format!("ERROR (parse): {err}\nRaw: {raw}"));
+                }
+                return finalize_early(
+                    ctx, run_id, test, &history,
+                    format!("too many invalid LLM responses ({MAX_PARSE_ERRORS})"),
+                ).await;
             }
-            continue;
+            // Reprompt — save hint for next iteration
+            parse_error_hint = Some(format!(
+                "⚠️ Previous response could not be parsed as JSON ({err}). \
+                 Please output STRICTLY valid JSON, no markdown fences, no prose before/after."
+            ));
+            if let Some(rid) = run_id {
+                runs::push_observation(rid, format!("PARSE_RETRY ({parse_error_count}/{MAX_PARSE_ERRORS}): {err}\nRaw: {raw}"));
+            }
+            continue;  // don't push anything to visible history — LLM just retries
         }
 
         if step.done {
             let analysis = evaluate_success(ctx, test, &history, step.final_answer.clone()).await;
+            let cap = if analysis.passed {
+                ScreenshotCapture { path: None, error: None }
+            } else {
+                capture_screenshot(ctx, &test.id, run_id).await
+            };
             return TestResult {
                 test_id: test.id.clone(),
                 status: if analysis.passed { TestStatus::Passed } else { TestStatus::Failed },
                 iterations: iteration + 1,
                 duration_ms: started.elapsed().as_millis() as u64,
                 error_message: if analysis.passed { None } else { Some(analysis.reason.clone()) },
-                screenshot_path: if analysis.passed { None } else { capture_screenshot(ctx, &test.id).await },
+                screenshot_path: cap.path,
+                screenshot_error: cap.error,
                 history,
                 final_analysis: Some(analysis.reason),
             };
@@ -109,57 +156,129 @@ pub async fn execute_test(
 
         // Execute the browser tool call
         let action_input = step.action_input.clone();
-        let obs = match ctx.call_tool("web_navigate", action_input.clone()).await {
-            Ok(v) => format_observation(&v),
+        let action_label = action_input.get("action").and_then(Value::as_str).unwrap_or("?").to_string();
+        if let Some(rid) = run_id {
+            runs::set_phase(rid, runs::RunPhase::Running {
+                step: (iteration + 1) as u32,
+                current_action: action_label.clone(),
+            });
+        }
+        let raw_result = ctx.call_tool("web_navigate", action_input.clone()).await;
+        let full_obs = match &raw_result {
+            Ok(v) => v.to_string(),
             Err(e) => format!("ERROR: {e}"),
         };
+        // Store full observation before truncation
+        if let Some(rid) = run_id {
+            runs::push_observation(rid, full_obs.clone());
+        }
+        let obs_for_llm = truncate_with_hint(&full_obs, history.len());
 
         history.push(TestStep {
             thought: step.thought,
             action: action_input,
-            observation: obs,
+            observation: obs_for_llm,
         });
     }
 
     // Loop exhausted
+    let cap = capture_screenshot(ctx, &test.id, run_id).await;
     TestResult {
         test_id: test.id.clone(),
         status: TestStatus::Failed,
         iterations: max_iter,
         duration_ms: started.elapsed().as_millis() as u64,
         error_message: Some(format!("max iterations ({max_iter}) reached without DONE")),
-        screenshot_path: capture_screenshot(ctx, &test.id).await,
+        screenshot_path: cap.path,
+        screenshot_error: cap.error,
         history,
         final_analysis: None,
     }
 }
 
-fn fail_early(test: &TestGoal, history: &[TestStep], msg: String) -> TestResult {
+struct ScreenshotCapture {
+    path: Option<String>,
+    error: Option<String>,
+}
+
+async fn finalize_early(
+    ctx: &crate::adk::context::AgentContext,
+    run_id: Option<&str>,
+    test: &TestGoal,
+    history: &[TestStep],
+    msg: String,
+) -> TestResult {
+    let cap = capture_screenshot(ctx, &test.id, run_id).await;
     TestResult {
         test_id: test.id.clone(),
         status: TestStatus::Error,
         iterations: history.len() as u32,
         duration_ms: 0,
         error_message: Some(msg),
-        screenshot_path: None,
+        screenshot_path: cap.path,
+        screenshot_error: cap.error,
         history: history.to_vec(),
         final_analysis: None,
     }
 }
 
-async fn capture_screenshot(ctx: &crate::adk::context::AgentContext, test_id: &str) -> Option<String> {
-    // Tell the tool to screenshot (publishes event) — we also want to save locally
+/// Capture a screenshot, save to disk AND store bytes to run registry if
+/// `run_id` is set.  Surface any error (spawn_blocking failure, CDP error,
+/// filesystem write error).
+async fn capture_screenshot(
+    ctx: &crate::adk::context::AgentContext,
+    test_id: &str,
+    run_id: Option<&str>,
+) -> ScreenshotCapture {
+    // Tell the tool (publishes event for UI)
     let _ = ctx.call_tool("web_navigate", json!({"action": "screenshot"})).await;
-    let png = tokio::task::spawn_blocking(|| crate::browser::screenshot()).await.ok()?.ok()?;
-    let path = format!("data/test_failures/{test_id}_{}.png", chrono::Local::now().format("%Y%m%d_%H%M%S"));
-    let _ = std::fs::create_dir_all("data/test_failures");
-    std::fs::write(&path, &png).ok()?;
-    Some(path)
+
+    let bytes_result: Result<Vec<u8>, String> = tokio::task::spawn_blocking(
+        || crate::browser::screenshot()
+    ).await
+    .map_err(|e| format!("spawn_blocking failed: {e}"))
+    .and_then(|r| r);
+
+    match bytes_result {
+        Ok(bytes) => {
+            if let Some(rid) = run_id {
+                crate::test_runner::runs::set_screenshot(rid, Ok(bytes.clone()));
+            }
+            let path = format!("data/test_failures/{test_id}_{}.png",
+                chrono::Local::now().format("%Y%m%d_%H%M%S"));
+            if let Err(e) = std::fs::create_dir_all("data/test_failures") {
+                let msg = format!("mkdir failed: {e}");
+                return ScreenshotCapture { path: None, error: Some(msg) };
+            }
+            if let Err(e) = std::fs::write(&path, &bytes) {
+                let msg = format!("write {path} failed: {e}");
+                return ScreenshotCapture { path: None, error: Some(msg) };
+            }
+            ScreenshotCapture { path: Some(path), error: None }
+        }
+        Err(e) => {
+            if let Some(rid) = run_id {
+                crate::test_runner::runs::set_screenshot(rid, Err(e.clone()));
+            }
+            ScreenshotCapture { path: None, error: Some(e) }
+        }
+    }
+}
+
+/// Truncate observation for LLM history, appending a retrieval hint if cut.
+fn truncate_with_hint(full: &str, step_idx: usize) -> String {
+    let char_count = full.chars().count();
+    if char_count <= OBS_TRUNCATE_CHARS { return full.to_string(); }
+    let head: String = full.chars().take(OBS_TRUNCATE_CHARS).collect();
+    format!(
+        "{head}... [truncated: full length {char_count} chars. \
+         Use MCP get_full_observation(run_id, step={step_idx}) to fetch complete content.]"
+    )
 }
 
 // ── Prompt building ──────────────────────────────────────────────────────────
 
-fn build_prompt(test: &TestGoal, history: &[TestStep]) -> String {
+fn build_prompt(test: &TestGoal, history: &[TestStep], parse_error_hint: Option<&str>) -> String {
     let history_str = if history.is_empty() {
         "(none yet)".to_string()
     } else {
@@ -169,6 +288,10 @@ fn build_prompt(test: &TestGoal, history: &[TestStep]) -> String {
                 i + 1, s.thought, s.action, obs)
         }).collect::<Vec<_>>().join("---\n")
     };
+
+    let hint_block = parse_error_hint
+        .map(|h| format!("\n## ⚠️ Reprompt notice\n{h}\n"))
+        .unwrap_or_default();
 
     let criteria = if test.success_criteria.is_empty() {
         "- 頁面正常載入，目標描述的動作成功執行".to_string()
@@ -206,7 +329,7 @@ fn build_prompt(test: &TestGoal, history: &[TestStep]) -> String {
 
 ## History
 {history}
-
+{hint}
 ## Instructions
 Analyse the goal and history, decide the single next action.
 When the goal is clearly achieved (or definitively failed), set "done": true.
@@ -223,6 +346,7 @@ Respond with STRICTLY valid JSON, no markdown fences, no prose:
         url = test.url,
         criteria = criteria,
         history = history_str,
+        hint = hint_block,
     )
 }
 

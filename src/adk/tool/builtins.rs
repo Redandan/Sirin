@@ -881,6 +881,7 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                         "error": result.error_message,
                         "analysis": result.final_analysis,
                         "screenshot": result.screenshot_path,
+                        "screenshot_error": result.screenshot_error,
                         "steps": result.history.len(),
                     }))
                 }

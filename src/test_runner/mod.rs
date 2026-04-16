@@ -15,6 +15,7 @@ pub mod parser;
 pub mod executor;
 pub mod triage;
 pub mod store;
+pub mod runs;
 
 pub use parser::TestGoal;
 pub use executor::{TestResult, TestStatus};
@@ -32,11 +33,21 @@ pub async fn run_test(
     test_id: &str,
     auto_fix: bool,
 ) -> Result<TestResult, String> {
+    run_test_with_run_id(ctx, test_id, auto_fix, None).await
+}
+
+/// Internal variant that accepts a pre-allocated run_id for async tracking.
+async fn run_test_with_run_id(
+    ctx: &crate::adk::context::AgentContext,
+    test_id: &str,
+    auto_fix: bool,
+    run_id: Option<&str>,
+) -> Result<TestResult, String> {
     let test = parser::find(test_id)
         .ok_or_else(|| format!("Test '{test_id}' not found in config/tests/"))?;
 
     let started = chrono::Local::now().to_rfc3339();
-    let result = executor::execute_test(ctx, &test).await;
+    let result = executor::execute_test_tracked(ctx, &test, run_id).await;
 
     // Triage non-passed results
     let (category, analysis, fix_triggered) = if matches!(result.status, TestStatus::Passed) {
@@ -74,6 +85,47 @@ pub async fn run_test(
     }
 
     Ok(result)
+}
+
+/// Spawn an async test run in the background.  Returns the `run_id`
+/// immediately; poll `runs::get(run_id)` to check status.
+///
+/// Used by the MCP `run_test_async` endpoint so external callers aren't
+/// blocked by the 2-minute test execution.
+pub fn spawn_run_async(test_id: String, auto_fix: bool) -> Result<String, String> {
+    // Validate test exists before spawning
+    if parser::find(&test_id).is_none() {
+        return Err(format!("Test '{test_id}' not found"));
+    }
+
+    let run_id = runs::new_run(&test_id);
+    let run_id_clone = run_id.clone();
+    let test_id_clone = test_id.clone();
+
+    // Spawn a dedicated tokio runtime so this survives the caller's scope
+    std::thread::spawn(move || {
+        let rt = match tokio::runtime::Runtime::new() {
+            Ok(r) => r,
+            Err(e) => {
+                runs::set_phase(&run_id_clone, runs::RunPhase::Error(
+                    format!("failed to create runtime: {e}")
+                ));
+                return;
+            }
+        };
+        rt.block_on(async {
+            let tools = crate::adk::tool::default_tool_registry();
+            let ctx = crate::adk::context::AgentContext::new("mcp_async", tools)
+                .with_metadata("run_id", &run_id_clone);
+
+            match run_test_with_run_id(&ctx, &test_id_clone, auto_fix, Some(&run_id_clone)).await {
+                Ok(r) => runs::set_phase(&run_id_clone, runs::RunPhase::Complete(r)),
+                Err(e) => runs::set_phase(&run_id_clone, runs::RunPhase::Error(e)),
+            }
+        });
+    });
+
+    Ok(run_id)
 }
 
 /// Run all tests matching the optional tag filter.

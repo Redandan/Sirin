@@ -1,0 +1,222 @@
+//! In-memory async run registry.
+//!
+//! Tracks active test executions so external MCP callers can trigger
+//! `run_test_async(id)` → get a `run_id` immediately → poll
+//! `get_test_result(run_id)` without blocking.
+//!
+//! Also stores full-length observations and screenshot bytes keyed by
+//! `run_id` for later retrieval (since observations get truncated in
+//! the LLM loop).
+
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
+use super::executor::{TestResult, TestStatus};
+
+// ── Types ────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub enum RunPhase {
+    Queued,
+    Running { step: u32, current_action: String },
+    Complete(TestResult),
+    Error(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct RunState {
+    pub run_id: String,
+    pub test_id: String,
+    pub started_at: String,
+    pub phase: RunPhase,
+    /// Full (non-truncated) observation text per step index.
+    pub full_observations: Vec<String>,
+    /// Screenshot bytes keyed by step index (0 = initial/goto).
+    /// None for runs without failure screenshots.
+    pub screenshot_bytes: Option<Vec<u8>>,
+    pub screenshot_error: Option<String>,
+}
+
+// ── Registry singleton ───────────────────────────────────────────────────────
+
+fn registry() -> &'static Mutex<HashMap<String, RunState>> {
+    static REG: OnceLock<Mutex<HashMap<String, RunState>>> = OnceLock::new();
+    REG.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+// ── API ──────────────────────────────────────────────────────────────────────
+
+/// Generate a unique run_id + insert an initial Queued state.
+pub fn new_run(test_id: &str) -> String {
+    let run_id = format!("run_{}", chrono::Local::now().format("%Y%m%d_%H%M%S_%3f"));
+    let state = RunState {
+        run_id: run_id.clone(),
+        test_id: test_id.to_string(),
+        started_at: chrono::Local::now().to_rfc3339(),
+        phase: RunPhase::Queued,
+        full_observations: Vec::new(),
+        screenshot_bytes: None,
+        screenshot_error: None,
+    };
+    registry().lock().unwrap_or_else(|e| e.into_inner())
+        .insert(run_id.clone(), state);
+    prune_old_runs();
+    run_id
+}
+
+/// Update phase (called by executor as it progresses).
+pub fn set_phase(run_id: &str, phase: RunPhase) {
+    let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(s) = reg.get_mut(run_id) {
+        s.phase = phase;
+    }
+}
+
+/// Push a full observation.  Step index is implicit (Vec length).
+pub fn push_observation(run_id: &str, full_text: String) {
+    let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(s) = reg.get_mut(run_id) {
+        s.full_observations.push(full_text);
+    }
+}
+
+/// Store screenshot bytes + optional error for later retrieval.
+pub fn set_screenshot(run_id: &str, result: Result<Vec<u8>, String>) {
+    let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(s) = reg.get_mut(run_id) {
+        match result {
+            Ok(bytes) => { s.screenshot_bytes = Some(bytes); s.screenshot_error = None; }
+            Err(e) => { s.screenshot_bytes = None; s.screenshot_error = Some(e); }
+        }
+    }
+}
+
+pub fn get(run_id: &str) -> Option<RunState> {
+    registry().lock().unwrap_or_else(|e| e.into_inner())
+        .get(run_id).cloned()
+}
+
+pub fn get_full_observation(run_id: &str, step: usize) -> Option<String> {
+    registry().lock().unwrap_or_else(|e| e.into_inner())
+        .get(run_id)?.full_observations.get(step).cloned()
+}
+
+pub fn get_screenshot(run_id: &str) -> Option<(Option<Vec<u8>>, Option<String>)> {
+    let reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+    let s = reg.get(run_id)?;
+    Some((s.screenshot_bytes.clone(), s.screenshot_error.clone()))
+}
+
+pub fn list_active() -> Vec<String> {
+    registry().lock().unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter(|(_, s)| matches!(s.phase, RunPhase::Running{..} | RunPhase::Queued))
+        .map(|(k, _)| k.clone())
+        .collect()
+}
+
+/// Prune completed runs older than 1 hour to prevent unbounded growth.
+fn prune_old_runs() {
+    let cutoff = chrono::Local::now() - chrono::Duration::hours(1);
+    let cutoff_str = cutoff.to_rfc3339();
+    let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+    let stale: Vec<String> = reg.iter()
+        .filter(|(_, s)| s.started_at.as_str() < cutoff_str.as_str()
+            && matches!(s.phase, RunPhase::Complete(_) | RunPhase::Error(_)))
+        .map(|(k, _)| k.clone())
+        .collect();
+    for key in stale {
+        reg.remove(&key);
+    }
+}
+
+// ── Serialization helper ─────────────────────────────────────────────────────
+
+/// Serialize RunState to JSON for MCP response.
+pub fn to_json(s: &RunState) -> serde_json::Value {
+    use serde_json::json;
+    let (status, extra) = match &s.phase {
+        RunPhase::Queued => ("queued", json!({})),
+        RunPhase::Running { step, current_action } => (
+            "running",
+            json!({ "step": step, "current_action": current_action }),
+        ),
+        RunPhase::Complete(r) => (
+            match r.status {
+                TestStatus::Passed  => "passed",
+                TestStatus::Failed  => "failed",
+                TestStatus::Timeout => "timeout",
+                TestStatus::Error   => "error",
+            },
+            json!({
+                "iterations": r.iterations,
+                "duration_ms": r.duration_ms,
+                "error": r.error_message,
+                "analysis": r.final_analysis,
+                "steps": r.history.len(),
+                "has_screenshot": s.screenshot_bytes.is_some(),
+                "screenshot_error": s.screenshot_error,
+            }),
+        ),
+        RunPhase::Error(e) => ("error", json!({ "error": e })),
+    };
+    json!({
+        "run_id": s.run_id,
+        "test_id": s.test_id,
+        "started_at": s.started_at,
+        "status": status,
+        "details": extra,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_run_creates_queued() {
+        let id = new_run("test_x");
+        let s = get(&id).unwrap();
+        assert_eq!(s.test_id, "test_x");
+        assert!(matches!(s.phase, RunPhase::Queued));
+    }
+
+    #[test]
+    fn set_phase_updates() {
+        let id = new_run("t");
+        set_phase(&id, RunPhase::Running { step: 2, current_action: "click".into() });
+        let s = get(&id).unwrap();
+        if let RunPhase::Running { step, current_action } = s.phase {
+            assert_eq!(step, 2);
+            assert_eq!(current_action, "click");
+        } else { panic!("expected running"); }
+    }
+
+    #[test]
+    fn observations_accumulate() {
+        let id = new_run("t");
+        push_observation(&id, "first".into());
+        push_observation(&id, "second".into());
+        assert_eq!(get_full_observation(&id, 0).as_deref(), Some("first"));
+        assert_eq!(get_full_observation(&id, 1).as_deref(), Some("second"));
+        assert_eq!(get_full_observation(&id, 2), None);
+    }
+
+    #[test]
+    fn screenshot_stored() {
+        let id = new_run("t");
+        set_screenshot(&id, Ok(vec![1, 2, 3]));
+        let (bytes, err) = get_screenshot(&id).unwrap();
+        assert_eq!(bytes, Some(vec![1, 2, 3]));
+        assert_eq!(err, None);
+    }
+
+    #[test]
+    fn screenshot_error_stored() {
+        let id = new_run("t");
+        set_screenshot(&id, Err("headless blank".into()));
+        let (bytes, err) = get_screenshot(&id).unwrap();
+        assert_eq!(bytes, None);
+        assert_eq!(err.as_deref(), Some("headless blank"));
+    }
+}
