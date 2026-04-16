@@ -269,7 +269,7 @@ fn handle_tools_list() -> Result<Value, String> {
             },
             {
                 "name": "browser_exec",
-                "description": "即席執行瀏覽器動作，不走完整 test goal。適合 debug / 探索 / 單步操作。action 可用：goto, screenshot, screenshot_analyze, click, type, read, eval, wait, exists, attr, scroll, key, console, network, url, title, close。",
+                "description": "即席執行瀏覽器動作，不走完整 test goal。適合 debug / 探索 / 單步操作。action 可用：goto, screenshot, screenshot_analyze, click, click_point, type, read, eval, wait, exists, attr, scroll, key, console, network, url, title, close, set_viewport。",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -277,6 +277,12 @@ fn handle_tools_list() -> Result<Value, String> {
                         "target":           { "type": "string", "description": "URL / CSS selector / JS expr / screenshot_analyze 的問題，視 action 而定" },
                         "text":             { "type": "string", "description": "type 動作的輸入文字" },
                         "timeout":          { "type": "number", "description": "wait 動作的 ms" },
+                        "x":                { "type": "number", "description": "click_point 的 x 座標 (CSS px)" },
+                        "y":                { "type": "number", "description": "click_point 的 y 座標 (CSS px)" },
+                        "width":            { "type": "number", "description": "set_viewport 的 width (px)" },
+                        "height":           { "type": "number", "description": "set_viewport 的 height (px)" },
+                        "device_scale":     { "type": "number", "description": "set_viewport 的 devicePixelRatio (預設 1.0)" },
+                        "mobile":           { "type": "boolean", "description": "set_viewport 的 mobile 模擬旗標 (預設 false)" },
                         "browser_headless": { "type": "boolean", "description": "Flutter/WebGL 應該設 false。預設讀 SIRIN_BROWSER_HEADLESS env" }
                     },
                     "required": ["action"]
@@ -561,6 +567,13 @@ async fn call_browser_exec(args: Value) -> Result<Value, String> {
     let text   = args.get("text").and_then(Value::as_str).unwrap_or("").to_string();
     let timeout = args.get("timeout").and_then(Value::as_u64);
     let headless_override = args.get("browser_headless").and_then(Value::as_bool);
+    // Coord args for click_point; viewport args for set_viewport.  Fixes #11.
+    let x = args.get("x").and_then(Value::as_f64);
+    let y = args.get("y").and_then(Value::as_f64);
+    let width = args.get("width").and_then(Value::as_u64);
+    let height = args.get("height").and_then(Value::as_u64);
+    let device_scale = args.get("device_scale").and_then(Value::as_f64).unwrap_or(1.0);
+    let mobile = args.get("mobile").and_then(Value::as_bool).unwrap_or(false);
 
     // ── Async-only actions (need LLM call, can't go in spawn_blocking) ────
     if action == "screenshot_analyze" {
@@ -659,6 +672,24 @@ async fn call_browser_exec(args: Value) -> Result<Value, String> {
             "url"   => Ok(json!({ "url": browser::current_url()? })),
             "title" => Ok(json!({ "title": browser::page_title()? })),
             "close" => { browser::close(); Ok(json!({ "status": "closed" })) }
+            // Fixes #11: expose click_point + set_viewport so Flutter Web / CanvasKit
+            // apps (no DOM) can be driven by coordinate rather than CSS selector.
+            "click_point" => {
+                let cx = x.ok_or("'click_point' requires 'x' (number)")?;
+                let cy = y.ok_or("'click_point' requires 'y' (number)")?;
+                browser::click_point(cx, cy)?;
+                Ok(json!({ "status": "clicked", "x": cx, "y": cy }))
+            }
+            "set_viewport" => {
+                let w = width.ok_or("'set_viewport' requires 'width' (positive integer)")? as u32;
+                let h = height.ok_or("'set_viewport' requires 'height' (positive integer)")? as u32;
+                browser::set_viewport(w, h, device_scale, mobile)?;
+                Ok(json!({
+                    "status": "viewport set",
+                    "width": w, "height": h,
+                    "device_scale": device_scale, "mobile": mobile
+                }))
+            }
             other   => Err(format!("Unknown browser_exec action: {other}")),
         }
     })

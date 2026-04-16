@@ -1,6 +1,12 @@
 provider: ''
 base_url: ''
-main_model: models/gemini-2.5-pro
+# main_model: leave empty — falls back to .env GEMINI_MODEL (flash is cheap + stable).
+# Reserve Pro explicitly only for roles that need deep reasoning.
+# Fixes #13 — default config shouldn't use Pro for ALL roles.
+main_model: ''
 router_model: ''
 coding_model: ''
-large_model: ''
+# large_model: deep-reasoning tasks (e.g. multi-file refactor analysis).
+# Test runner + chat stick with main (Flash) for cost + JSON stability.
+# Fixes #12 — Pro tends to malformed JSON in ReAct loops; Flash is more reliable.
+large_model: models/gemini-2.5-pro
