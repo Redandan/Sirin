@@ -92,6 +92,14 @@ pub fn ensure_open(headless: bool) -> Result<bool, String> {
         .map_err(|e| format!("LaunchOptions: {e}"))?;
     let browser = Browser::new(opts).map_err(|e| format!("Browser::new: {e}"))?;
     let tab = browser.new_tab().map_err(|e| format!("new_tab: {e}"))?;
+
+    // Settle delay — Chrome reports tab ready immediately but internal frame
+    // tree / CDP event subscriptions need ~500ms to stabilise.  Without this,
+    // the first navigate_to can miss the Page.frameNavigated event, causing
+    // "wait: The event waited for never came" on the first call after launch
+    // (esp. after a mode switch).
+    std::thread::sleep(std::time::Duration::from_millis(600));
+
     *guard = Some(BrowserInner { browser, tabs: vec![tab], active: 0, headless });
     tracing::info!("[browser] launched Chrome (headless={headless})");
     Ok(true)
@@ -116,6 +124,10 @@ pub fn close() {
 // ══════════════════════════════════════════════════════════════════════════════
 
 pub fn navigate(url: &str) -> Result<(), String> {
+    navigate_with_retry(url, 2)
+}
+
+fn navigate_with_retry(url: &str, attempts: u32) -> Result<(), String> {
     // Detect hash-only navigation (fragment change on the same origin+path).
     // headless_chrome's wait_until_navigated waits for Page.frameNavigated,
     // which Chrome does NOT emit for pure fragment changes.  Use location.hash
@@ -137,11 +149,27 @@ pub fn navigate(url: &str) -> Result<(), String> {
         return Ok(());
     }
 
-    with_tab(|tab| {
+    let result = with_tab(|tab| {
         tab.navigate_to(url).map_err(|e| format!("navigate: {e}"))?
             .wait_until_navigated().map_err(|e| format!("wait: {e}"))?;
         Ok(())
-    })
+    });
+
+    // Auto-retry on transient "event never came" — typically happens right
+    // after browser launch / mode switch when CDP events haven't fully
+    // initialised.  One retry with a short wait is almost always enough.
+    if let Err(ref e) = result {
+        if attempts > 1 && is_transient_nav_error(e) {
+            tracing::warn!("[browser] navigate transient failure ({e}) — retrying in 500ms");
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            return navigate_with_retry(url, attempts - 1);
+        }
+    }
+    result
+}
+
+fn is_transient_nav_error(err: &str) -> bool {
+    err.contains("The event waited for never came")
 }
 
 /// Returns true when `new_url` is the same as `current_url` except for the
