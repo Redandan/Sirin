@@ -48,12 +48,26 @@ impl BrowserInner {
 //  SESSION LIFECYCLE
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// Ensure a persistent browser is running.  No-op if already open.
+/// Ensure a persistent browser is running.
+///
+/// If an existing session is present, runs a cheap CDP health check
+/// (`get_target_info`) to detect dead connections.  If the call fails
+/// (Chrome crashed, websocket closed, tab was closed externally), the
+/// singleton is cleared and a fresh browser is launched.  Returns `true`
+/// if a new browser was launched (either fresh or after recovery).
 pub fn ensure_open(headless: bool) -> Result<bool, String> {
     let mut guard = global().lock().unwrap_or_else(|e| e.into_inner());
-    if guard.is_some() {
-        return Ok(false);
+
+    // Health-check existing session — detect stale connection BEFORE caller does
+    if let Some(inner) = guard.as_ref() {
+        if inner.tab().get_target_info().is_ok() {
+            return Ok(false);  // still alive
+        }
+        tracing::warn!("[browser] existing Chrome session dead (connection closed) — re-launching");
+        *guard = None;
+        // fall through to launch
     }
+
     let opts = LaunchOptions::default_builder()
         .headless(headless)
         .build()
@@ -701,14 +715,41 @@ pub fn local_storage_set(key: &str, value: &str) -> Result<(), String> {
 
 fn with_tab<F, R>(f: F) -> Result<R, String>
 where
-    F: FnOnce(&Arc<Tab>) -> Result<R, String>,
+    F: FnOnce(&Arc<Tab>) -> Result<R, String> + Clone,
 {
     ensure_open(true)?;
-    let guard = global().lock().unwrap_or_else(|e| e.into_inner());
-    match guard.as_ref() {
-        Some(inner) => f(inner.tab()),
-        None => Err("browser session lost".into()),
+
+    let result = {
+        let guard = global().lock().unwrap_or_else(|e| e.into_inner());
+        match guard.as_ref() {
+            Some(inner) => f.clone()(inner.tab()),
+            None => Err("browser session lost".into()),
+        }
+    };
+
+    // If the call failed with a connection-closed error, try one auto-recover.
+    if let Err(ref e) = result {
+        if is_connection_closed(e) {
+            tracing::warn!("[browser] mid-call connection closed — attempting one-shot recovery");
+            // Clear singleton
+            *global().lock().unwrap_or_else(|e| e.into_inner()) = None;
+            // Re-launch
+            ensure_open(true)?;
+            // Retry exactly once
+            let guard = global().lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(inner) = guard.as_ref() {
+                return f(inner.tab());
+            }
+        }
     }
+
+    result
+}
+
+fn is_connection_closed(err: &str) -> bool {
+    err.contains("underlying connection is closed")
+        || err.contains("TaskCancelled")
+        || err.contains("ChannelClosed")
 }
 
 fn base64_encode(input: &str) -> String {
