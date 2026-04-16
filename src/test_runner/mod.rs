@@ -157,6 +157,7 @@ pub fn spawn_adhoc_run(
     locale: Option<String>,
     max_iterations: Option<u32>,
     timeout_secs: Option<u64>,
+    browser_headless: Option<bool>,
 ) -> Result<String, String> {
     if url.trim().is_empty() {
         return Err("url is required".into());
@@ -176,6 +177,7 @@ pub fn spawn_adhoc_run(
         retry_on_parse_error: 3,
         locale: locale.unwrap_or_else(|| "zh-TW".into()),
         url_query: Default::default(),
+        browser_headless,
         success_criteria,
         tags: vec!["adhoc".into()],
     };

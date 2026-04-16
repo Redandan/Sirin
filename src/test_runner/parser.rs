@@ -25,6 +25,12 @@ pub struct TestGoal {
     /// to have a real DOM that selectors can work against.
     #[serde(default)]
     pub url_query: BTreeMap<String, String>,
+    /// Override Chrome headless mode for this test.
+    /// Flutter CanvasKit / WebGL content does NOT paint correctly in
+    /// headless mode — set to `false` for such tests.  Default: honours
+    /// `SIRIN_BROWSER_HEADLESS` env var (which itself defaults to true).
+    #[serde(default)]
+    pub browser_headless: Option<bool>,
     #[serde(default)]
     pub success_criteria: Vec<String>,
     #[serde(default)]

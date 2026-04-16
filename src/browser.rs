@@ -48,24 +48,42 @@ impl BrowserInner {
 //  SESSION LIFECYCLE
 // ══════════════════════════════════════════════════════════════════════════════
 
+/// Resolve the default headless mode, honouring `SIRIN_BROWSER_HEADLESS` env
+/// override.  Accepts: `true`/`false`/`0`/`1`.  Default: `true`.
+pub fn default_headless() -> bool {
+    match std::env::var("SIRIN_BROWSER_HEADLESS").ok().as_deref() {
+        Some("false") | Some("0") | Some("FALSE") | Some("no") | Some("NO") => false,
+        Some("true")  | Some("1") | Some("TRUE")  | Some("yes") | Some("YES") => true,
+        _ => true,  // default
+    }
+}
+
 /// Ensure a persistent browser is running.
 ///
-/// If an existing session is present, runs a cheap CDP health check
-/// (`get_target_info`) to detect dead connections.  If the call fails
-/// (Chrome crashed, websocket closed, tab was closed externally), the
-/// singleton is cleared and a fresh browser is launched.  Returns `true`
-/// if a new browser was launched (either fresh or after recovery).
+/// **Mode switching**: if an existing session is using a different headless
+/// mode than requested, it is closed and a fresh browser is launched in the
+/// desired mode.  This is required because Flutter CanvasKit / WebGL content
+/// doesn't paint correctly in headless mode — tests that need those must
+/// explicitly request `headless=false`.
+///
+/// Also runs a cheap CDP health check on existing sessions and re-launches
+/// if the connection is dead.  Returns `true` if a new browser was launched.
 pub fn ensure_open(headless: bool) -> Result<bool, String> {
     let mut guard = global().lock().unwrap_or_else(|e| e.into_inner());
 
-    // Health-check existing session — detect stale connection BEFORE caller does
     if let Some(inner) = guard.as_ref() {
-        if inner.tab().get_target_info().is_ok() {
-            return Ok(false);  // still alive
+        if inner.headless != headless {
+            tracing::info!(
+                "[browser] headless mode mismatch (current={}, requested={}) — re-launching",
+                inner.headless, headless
+            );
+            *guard = None;
+        } else if inner.tab().get_target_info().is_ok() {
+            return Ok(false);  // still alive, correct mode
+        } else {
+            tracing::warn!("[browser] existing Chrome session dead (connection closed) — re-launching");
+            *guard = None;
         }
-        tracing::warn!("[browser] existing Chrome session dead (connection closed) — re-launching");
-        *guard = None;
-        // fall through to launch
     }
 
     let opts = LaunchOptions::default_builder()
@@ -75,6 +93,7 @@ pub fn ensure_open(headless: bool) -> Result<bool, String> {
     let browser = Browser::new(opts).map_err(|e| format!("Browser::new: {e}"))?;
     let tab = browser.new_tab().map_err(|e| format!("new_tab: {e}"))?;
     *guard = Some(BrowserInner { browser, tabs: vec![tab], active: 0, headless });
+    tracing::info!("[browser] launched Chrome (headless={headless})");
     Ok(true)
 }
 
@@ -97,11 +116,47 @@ pub fn close() {
 // ══════════════════════════════════════════════════════════════════════════════
 
 pub fn navigate(url: &str) -> Result<(), String> {
+    // Detect hash-only navigation (fragment change on the same origin+path).
+    // headless_chrome's wait_until_navigated waits for Page.frameNavigated,
+    // which Chrome does NOT emit for pure fragment changes.  Use location.hash
+    // assignment + short settle delay instead to avoid a 60s timeout.
+    let current = current_url().unwrap_or_default();
+    if is_hash_only_change(&current, url) {
+        let hash = url.split_once('#').map(|(_, h)| h).unwrap_or("");
+        let js = format!(
+            "location.hash = {};",
+            serde_json::to_string(&format!("#{hash}")).unwrap()
+        );
+        with_tab(|tab| {
+            tab.evaluate(&js, false)
+                .map_err(|e| format!("hash-nav: {e}"))?;
+            Ok(())
+        })?;
+        // Short settle delay so SPA router has a chance to run
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        return Ok(());
+    }
+
     with_tab(|tab| {
         tab.navigate_to(url).map_err(|e| format!("navigate: {e}"))?
             .wait_until_navigated().map_err(|e| format!("wait: {e}"))?;
         Ok(())
     })
+}
+
+/// Returns true when `new_url` is the same as `current_url` except for the
+/// fragment (hash) portion.  Same origin, same path, same query, different hash.
+fn is_hash_only_change(current: &str, new_url: &str) -> bool {
+    let (cur_base, _cur_hash) = split_hash(current);
+    let (new_base, _new_hash) = split_hash(new_url);
+    !cur_base.is_empty() && cur_base == new_base && new_url.contains('#')
+}
+
+fn split_hash(url: &str) -> (&str, &str) {
+    match url.split_once('#') {
+        Some((base, hash)) => (base, hash),
+        None => (url, ""),
+    }
 }
 
 pub fn screenshot() -> Result<Vec<u8>, String> {
@@ -774,6 +829,78 @@ fn base64_encode(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Pure unit tests (no Chrome needed) ────────────────────────────────────
+
+    #[test]
+    fn hash_only_change_detects_fragment_switch() {
+        assert!(is_hash_only_change(
+            "https://app.com/",
+            "https://app.com/#/admin/users"
+        ));
+        assert!(is_hash_only_change(
+            "https://app.com/#/login",
+            "https://app.com/#/dashboard"
+        ));
+    }
+
+    #[test]
+    fn hash_only_change_rejects_path_change() {
+        assert!(!is_hash_only_change(
+            "https://app.com/login",
+            "https://app.com/dashboard"
+        ));
+        // Path differs even if both have hashes
+        assert!(!is_hash_only_change(
+            "https://app.com/login#x",
+            "https://app.com/dashboard#y"
+        ));
+    }
+
+    #[test]
+    fn hash_only_change_rejects_origin_change() {
+        assert!(!is_hash_only_change(
+            "https://a.com/#/x",
+            "https://b.com/#/x"
+        ));
+    }
+
+    #[test]
+    fn hash_only_change_rejects_no_hash_target() {
+        // Target has no '#' — should NOT be considered hash-only
+        assert!(!is_hash_only_change(
+            "https://app.com/#/admin",
+            "https://app.com/"
+        ));
+    }
+
+    #[test]
+    fn hash_only_change_handles_empty_current() {
+        // about:blank or empty current should be rejected
+        assert!(!is_hash_only_change("", "https://app.com/#/x"));
+    }
+
+    #[test]
+    fn default_headless_respects_env() {
+        // Save original
+        let orig = std::env::var("SIRIN_BROWSER_HEADLESS").ok();
+
+        std::env::set_var("SIRIN_BROWSER_HEADLESS", "false");
+        assert!(!default_headless());
+        std::env::set_var("SIRIN_BROWSER_HEADLESS", "0");
+        assert!(!default_headless());
+        std::env::set_var("SIRIN_BROWSER_HEADLESS", "true");
+        assert!(default_headless());
+        std::env::remove_var("SIRIN_BROWSER_HEADLESS");
+        assert!(default_headless(), "default when unset");
+
+        // Restore
+        if let Some(v) = orig {
+            std::env::set_var("SIRIN_BROWSER_HEADLESS", v);
+        }
+    }
+
+    // ── Integration tests (need Chrome) ───────────────────────────────────────
 
     #[test]
     #[ignore]

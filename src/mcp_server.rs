@@ -232,9 +232,10 @@ fn handle_tools_list() -> Result<Value, String> {
                             "items": { "type": "string" },
                             "description": "通過條件（1-3 條；空陣列會用預設的『目標達成』判斷）"
                         },
-                        "locale":         { "type": "string", "description": "zh-TW / en / zh-CN（預設 zh-TW）" },
-                        "max_iterations": { "type": "number", "description": "預設 15" },
-                        "timeout_secs":   { "type": "number", "description": "預設 120" }
+                        "locale":           { "type": "string", "description": "zh-TW / en / zh-CN（預設 zh-TW）" },
+                        "max_iterations":   { "type": "number", "description": "預設 15" },
+                        "timeout_secs":     { "type": "number", "description": "預設 120" },
+                        "browser_headless": { "type": "boolean", "description": "Flutter CanvasKit/WebGL 必須設 false 才能 paint。預設讀 SIRIN_BROWSER_HEADLESS env（預設 true）" }
                     },
                     "required": ["url", "goal"]
                 }
@@ -268,14 +269,15 @@ fn handle_tools_list() -> Result<Value, String> {
             },
             {
                 "name": "browser_exec",
-                "description": "即席執行瀏覽器動作，不走完整 test goal。適合 debug / 探索 / 單步操作。action 可用：goto, screenshot, click, type, read, eval, wait, exists, attr, scroll, key, console, network, url, title, close。",
+                "description": "即席執行瀏覽器動作，不走完整 test goal。適合 debug / 探索 / 單步操作。action 可用：goto, screenshot, screenshot_analyze, click, type, read, eval, wait, exists, attr, scroll, key, console, network, url, title, close。",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "action":  { "type": "string", "description": "web_navigate action 名稱" },
-                        "target":  { "type": "string", "description": "URL / CSS selector / JS expression，視 action 而定" },
-                        "text":    { "type": "string", "description": "type 動作的輸入文字" },
-                        "timeout": { "type": "number", "description": "wait 動作的 ms" }
+                        "action":           { "type": "string", "description": "web_navigate action 名稱" },
+                        "target":           { "type": "string", "description": "URL / CSS selector / JS expr / screenshot_analyze 的問題，視 action 而定" },
+                        "text":             { "type": "string", "description": "type 動作的輸入文字" },
+                        "timeout":          { "type": "number", "description": "wait 動作的 ms" },
+                        "browser_headless": { "type": "boolean", "description": "Flutter/WebGL 應該設 false。預設讀 SIRIN_BROWSER_HEADLESS env" }
                     },
                     "required": ["action"]
                 }
@@ -471,9 +473,10 @@ fn call_run_adhoc_test(args: Value) -> Result<Value, String> {
     let locale = args.get("locale").and_then(Value::as_str).map(String::from);
     let max_iter = args.get("max_iterations").and_then(Value::as_u64).map(|n| n as u32);
     let timeout = args.get("timeout_secs").and_then(Value::as_u64);
+    let headless = args.get("browser_headless").and_then(Value::as_bool);
 
     let run_id = crate::test_runner::spawn_adhoc_run(
-        url.clone(), goal, criteria, locale, max_iter, timeout,
+        url.clone(), goal, criteria, locale, max_iter, timeout, headless,
     )?;
     Ok(json!({
         "run_id": run_id,
@@ -557,15 +560,34 @@ async fn call_browser_exec(args: Value) -> Result<Value, String> {
     let target = args.get("target").and_then(Value::as_str).unwrap_or("").to_string();
     let text   = args.get("text").and_then(Value::as_str).unwrap_or("").to_string();
     let timeout = args.get("timeout").and_then(Value::as_u64);
+    let headless_override = args.get("browser_headless").and_then(Value::as_bool);
+
+    // ── Async-only actions (need LLM call, can't go in spawn_blocking) ────
+    if action == "screenshot_analyze" {
+        if target.is_empty() {
+            return Err("'screenshot_analyze' requires 'target' = analysis prompt".into());
+        }
+        // Ensure browser open in correct mode first (might trigger vision-needing
+        // re-launch for Flutter/WebGL).
+        let want_headless = headless_override.unwrap_or_else(crate::browser::default_headless);
+        tokio::task::spawn_blocking(move || crate::browser::ensure_open(want_headless))
+            .await.map_err(|e| format!("spawn: {e}"))??;
+        let llm = crate::llm::shared_llm();
+        let client = crate::llm::shared_http();
+        let analysis = crate::llm::analyze_screenshot(&client, &llm, &target).await
+            .map_err(|e| format!("vision analysis failed: {e}"))?;
+        return Ok(json!({ "analysis": analysis, "prompt": target }));
+    }
 
     // Dispatch directly to crate::browser to avoid requiring an AgentContext
     // for simple imperative calls.  Mirrors the web_navigate action set.
     tokio::task::spawn_blocking(move || -> Result<Value, String> {
         use crate::browser;
+        let want_headless = headless_override.unwrap_or_else(browser::default_headless);
         match action.as_str() {
             "goto" => {
                 if target.is_empty() { return Err("'goto' requires 'target' URL".into()); }
-                browser::ensure_open(true)?;
+                browser::ensure_open(want_headless)?;
                 browser::navigate(&target)?;
                 Ok(json!({ "status": "navigated", "url": target }))
             }

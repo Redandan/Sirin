@@ -1,29 +1,29 @@
 id: agora_market_smoke
-name: "Agora Market — Flutter PWA smoke test (vision)"
+name: "Agora Market — Flutter PWA smoke test (vision + visible browser)"
 url: "https://redandan.github.io/"
 goal: |
-  測試 Agora Market Flutter PWA 能正常載入登入頁面。
+  測試 Agora Market Flutter PWA 能正常載入並顯示登入表單。
 
-  ⚠️ 重要：這是 Flutter CanvasKit app，DOM 是空的（只有 <flt-glass-pane>），
-  所以 read/exists/eval 對文字檢查 **無效**。改用 screenshot_analyze 動作
-  讓 vision LLM 直接「看」截圖：
-
-    {action: "screenshot_analyze", target: "頁面是否顯示 Agora Market 標題與電子郵件輸入欄位？"}
+  ⚠️ 重要：這是 Flutter CanvasKit app:
+  1. DOM 是空的（只有 <flt-glass-pane>），read/exists/eval 對文字檢查無效
+  2. CanvasKit 需要 WebGL，headless Chrome 不會 paint → 截圖全黑
+  → 因此本測試 browser_headless=false（會跳出 Chrome 視窗）
+  → 並用 screenshot_analyze 讓 vision LLM 看截圖
 
   執行步驟：
-  1. 等 5 秒讓 Flutter bootstrap 完成
-  2. screenshot_analyze 讓 Gemini Vision 判讀畫面
-  3. 根據視覺判讀回報通過/失敗
+  1. wait 5 秒讓 Flutter bootstrap 完成 + paint
+  2. screenshot_analyze "頁面是否顯示 Agora Market 標題與 email 輸入欄位？"
+  3. 根據 vision 判讀回報通過/失敗
 
-# url_query 對 Agora 無效（hardcoded canvaskit），保留註記
-# url_query:
-#   flutter-web-renderer: html
+# Flutter CanvasKit MUST run with visible browser to actually paint
+browser_headless: false
 
-max_iterations: 6
-timeout_secs: 120
+max_iterations: 8
+timeout_secs: 180
 
 success_criteria:
   - "Vision 確認頁面顯示 Agora Market 標題或品牌"
   - "Vision 確認可見 email/電子郵件 輸入欄位"
+  - "Vision 確認頁面有實際內容 (不是全黑或全白)"
 
 tags: [smoke, flutter, agora, vision]

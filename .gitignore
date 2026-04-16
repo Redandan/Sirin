@@ -8,6 +8,7 @@
 /data/test_failures/
 /data/test_*.png
 /data/teams_profile/
+sirin.log
 
 # ── Build artifacts ───────────────────────────────────────────────────────────
 /target/
