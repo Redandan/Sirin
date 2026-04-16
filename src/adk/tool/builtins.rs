@@ -851,6 +851,51 @@ pub(super) fn build_full_registry() -> ToolRegistry {
 
             Ok(result)
         })
+        .register_ctx_fn("run_test", |ctx, input| {
+            async move {
+                let test_id = required_string_field(&input, "test_id")?;
+                let auto_fix = input.get("auto_fix").and_then(Value::as_bool).unwrap_or(false);
+                let tag = optional_string_field(&input, "tag");
+
+                if test_id == "*" {
+                    let results = crate::test_runner::run_all(ctx, tag.as_deref(), auto_fix).await;
+                    let summary: Vec<serde_json::Value> = results.iter().map(|r| json!({
+                        "test_id": r.test_id,
+                        "status": format!("{:?}", r.status).to_lowercase(),
+                        "iterations": r.iterations,
+                        "duration_ms": r.duration_ms,
+                        "error": r.error_message,
+                    })).collect();
+                    Ok(json!({
+                        "count": results.len(),
+                        "passed": results.iter().filter(|r| matches!(r.status, crate::test_runner::TestStatus::Passed)).count(),
+                        "results": summary,
+                    }))
+                } else {
+                    let result = crate::test_runner::run_test(ctx, &test_id, auto_fix).await?;
+                    Ok(json!({
+                        "test_id": result.test_id,
+                        "status": format!("{:?}", result.status).to_lowercase(),
+                        "iterations": result.iterations,
+                        "duration_ms": result.duration_ms,
+                        "error": result.error_message,
+                        "analysis": result.final_analysis,
+                        "screenshot": result.screenshot_path,
+                        "steps": result.history.len(),
+                    }))
+                }
+            }.boxed()
+        })
+        .register_fn("list_tests", |_input| async move {
+            let tests = crate::test_runner::list_tests();
+            let items: Vec<serde_json::Value> = tests.iter().map(|t| json!({
+                "id": t.id,
+                "name": t.name,
+                "url": t.url,
+                "tags": t.tags,
+            })).collect();
+            Ok(json!({ "count": items.len(), "tests": items }))
+        })
         .register_fn("claude_session", |input| async move {
             // Spawn a Claude Code CLI session to fix bugs in another repo.
             // repo:   "backend" | "frontend" | "sirin" | absolute path

@@ -7,6 +7,7 @@ mod platform;
 #[allow(dead_code)] mod browser;
 #[allow(dead_code)] mod claude_session;
 #[allow(dead_code)] mod config_check;
+#[allow(dead_code)] mod test_runner;
 #[allow(dead_code)] mod agents;
 mod code_graph;
 mod events;

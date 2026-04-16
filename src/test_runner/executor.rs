@@ -1,0 +1,397 @@
+//! ReAct-style test executor — LLM drives browser actions to achieve a goal.
+
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+
+use super::parser::TestGoal;
+
+// ── Public types ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestStep {
+    pub thought: String,
+    pub action: Value,        // {"action":"click","target":"#btn"}
+    pub observation: String,  // truncated tool result or ERROR:...
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestResult {
+    pub test_id: String,
+    pub status: TestStatus,
+    pub iterations: u32,
+    pub duration_ms: u64,
+    pub error_message: Option<String>,
+    pub screenshot_path: Option<String>,
+    pub history: Vec<TestStep>,
+    pub final_analysis: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TestStatus { Passed, Failed, Timeout, Error }
+
+// ── Executor ─────────────────────────────────────────────────────────────────
+
+/// Execute a test goal by driving the browser via the `web_navigate` tool.
+pub async fn execute_test(
+    ctx: &crate::adk::context::AgentContext,
+    test: &TestGoal,
+) -> TestResult {
+    let started = std::time::Instant::now();
+    let mut history: Vec<TestStep> = Vec::new();
+
+    // 1) Ensure browser open + navigate
+    let nav_input = json!({ "action": "goto", "target": &test.url });
+    if let Err(e) = ctx.call_tool("web_navigate", nav_input).await {
+        return fail_early(test, &history, format!("navigate failed: {e}"));
+    }
+
+    // 2) Install console + network capture (best effort)
+    let _ = ctx.call_tool("web_navigate", json!({ "action": "install_capture" })).await;
+
+    // 3) ReAct loop
+    let max_iter = test.max_iterations.max(1);
+    let deadline = started + std::time::Duration::from_secs(test.timeout_secs.max(10));
+
+    for iteration in 0..max_iter {
+        if std::time::Instant::now() >= deadline {
+            return TestResult {
+                test_id: test.id.clone(),
+                status: TestStatus::Timeout,
+                iterations: iteration,
+                duration_ms: started.elapsed().as_millis() as u64,
+                error_message: Some(format!("timed out after {}s", test.timeout_secs)),
+                screenshot_path: capture_screenshot(ctx, &test.id).await,
+                history,
+                final_analysis: None,
+            };
+        }
+
+        let prompt = build_prompt(test, &history);
+
+        let raw = match crate::llm::call_coding_prompt(
+            ctx.http.as_ref(),
+            ctx.llm.as_ref(),
+            prompt,
+        ).await {
+            Ok(s) => s,
+            Err(e) => return fail_early(test, &history, format!("LLM error: {e}")),
+        };
+
+        let step = parse_step(&raw);
+        if let Some(err) = &step.parse_error {
+            history.push(TestStep {
+                thought: step.thought.clone(),
+                action: json!({"error":"invalid_json"}),
+                observation: format!("ERROR: {err}"),
+            });
+            // Allow up to 2 parse errors then abort
+            let parse_errs = history.iter().filter(|s| s.observation.starts_with("ERROR:")).count();
+            if parse_errs >= 3 {
+                return fail_early(test, &history, "too many invalid LLM responses".into());
+            }
+            continue;
+        }
+
+        if step.done {
+            let analysis = evaluate_success(ctx, test, &history, step.final_answer.clone()).await;
+            return TestResult {
+                test_id: test.id.clone(),
+                status: if analysis.passed { TestStatus::Passed } else { TestStatus::Failed },
+                iterations: iteration + 1,
+                duration_ms: started.elapsed().as_millis() as u64,
+                error_message: if analysis.passed { None } else { Some(analysis.reason.clone()) },
+                screenshot_path: if analysis.passed { None } else { capture_screenshot(ctx, &test.id).await },
+                history,
+                final_analysis: Some(analysis.reason),
+            };
+        }
+
+        // Execute the browser tool call
+        let action_input = step.action_input.clone();
+        let obs = match ctx.call_tool("web_navigate", action_input.clone()).await {
+            Ok(v) => format_observation(&v),
+            Err(e) => format!("ERROR: {e}"),
+        };
+
+        history.push(TestStep {
+            thought: step.thought,
+            action: action_input,
+            observation: obs,
+        });
+    }
+
+    // Loop exhausted
+    TestResult {
+        test_id: test.id.clone(),
+        status: TestStatus::Failed,
+        iterations: max_iter,
+        duration_ms: started.elapsed().as_millis() as u64,
+        error_message: Some(format!("max iterations ({max_iter}) reached without DONE")),
+        screenshot_path: capture_screenshot(ctx, &test.id).await,
+        history,
+        final_analysis: None,
+    }
+}
+
+fn fail_early(test: &TestGoal, history: &[TestStep], msg: String) -> TestResult {
+    TestResult {
+        test_id: test.id.clone(),
+        status: TestStatus::Error,
+        iterations: history.len() as u32,
+        duration_ms: 0,
+        error_message: Some(msg),
+        screenshot_path: None,
+        history: history.to_vec(),
+        final_analysis: None,
+    }
+}
+
+async fn capture_screenshot(ctx: &crate::adk::context::AgentContext, test_id: &str) -> Option<String> {
+    // Tell the tool to screenshot (publishes event) — we also want to save locally
+    let _ = ctx.call_tool("web_navigate", json!({"action": "screenshot"})).await;
+    let png = tokio::task::spawn_blocking(|| crate::browser::screenshot()).await.ok()?.ok()?;
+    let path = format!("data/test_failures/{test_id}_{}.png", chrono::Local::now().format("%Y%m%d_%H%M%S"));
+    let _ = std::fs::create_dir_all("data/test_failures");
+    std::fs::write(&path, &png).ok()?;
+    Some(path)
+}
+
+// ── Prompt building ──────────────────────────────────────────────────────────
+
+fn build_prompt(test: &TestGoal, history: &[TestStep]) -> String {
+    let history_str = if history.is_empty() {
+        "(none yet)".to_string()
+    } else {
+        history.iter().enumerate().map(|(i, s)| {
+            let obs = truncate(&s.observation, 500);
+            format!("[Step {}]\nThought: {}\nAction: {}\nObservation: {}\n",
+                i + 1, s.thought, s.action, obs)
+        }).collect::<Vec<_>>().join("---\n")
+    };
+
+    let criteria = if test.success_criteria.is_empty() {
+        "- 頁面正常載入，目標描述的動作成功執行".to_string()
+    } else {
+        test.success_criteria.iter().map(|c| format!("- {c}")).collect::<Vec<_>>().join("\n")
+    };
+
+    format!(r##"You are a browser-testing agent.  Your job is to achieve the test goal by driving the browser.
+
+## Goal
+{goal}
+
+## Test URL (already opened)
+{url}
+
+## Success criteria
+{criteria}
+
+## Available browser actions (call via tool "web_navigate", field "action")
+- goto           — target: URL
+- screenshot     — capture page PNG
+- click          — target: CSS selector
+- type           — target: CSS selector, text: input text
+- read           — target: CSS selector → returns innerText
+- eval           — target: JS expression → returns result
+- wait           — target: CSS selector, timeout: ms
+- exists         — target: CSS selector → true/false
+- attr           — target: selector, text: attribute name
+- scroll         — x, y: pixels (default 0, 300)
+- scroll_to      — target: selector
+- key            — target: key name (Enter/Tab/Escape)
+- screenshot_analyze — target: question for vision LLM about the page
+- console        — return captured console messages
+- network        — return captured fetch/XHR
+
+## History
+{history}
+
+## Instructions
+Analyse the goal and history, decide the single next action.
+When the goal is clearly achieved (or definitively failed), set "done": true.
+
+Respond with STRICTLY valid JSON, no markdown fences, no prose:
+{{
+  "thought": "<reasoning in 繁體中文>",
+  "action_input": {{ "action": "click", "target": "#btn" }},
+  "done": false,
+  "final_answer": "<only when done=true: summary of outcome>"
+}}
+"##,
+        goal = test.goal.trim(),
+        url = test.url,
+        criteria = criteria,
+        history = history_str,
+    )
+}
+
+// ── Step parsing ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Default)]
+struct ParsedStep {
+    thought: String,
+    action_input: Value,
+    done: bool,
+    final_answer: Option<String>,
+    parse_error: Option<String>,
+}
+
+fn parse_step(raw: &str) -> ParsedStep {
+    let cleaned = strip_fences(raw);
+    match serde_json::from_str::<Value>(&cleaned) {
+        Ok(v) => {
+            let thought = v.get("thought").and_then(Value::as_str).unwrap_or_default().to_string();
+            let action_input = v.get("action_input").cloned().unwrap_or(json!({}));
+            let done = v.get("done").and_then(Value::as_bool).unwrap_or(false);
+            let final_answer = v.get("final_answer").and_then(Value::as_str).map(String::from).filter(|s| !s.is_empty());
+
+            // Require action_input to include an "action" field unless done
+            if !done && action_input.get("action").and_then(Value::as_str).is_none() {
+                return ParsedStep {
+                    thought, action_input, done, final_answer,
+                    parse_error: Some("action_input missing 'action' field".into()),
+                };
+            }
+            ParsedStep { thought, action_input, done, final_answer, parse_error: None }
+        }
+        Err(e) => ParsedStep {
+            parse_error: Some(format!("JSON parse: {e}")),
+            ..Default::default()
+        },
+    }
+}
+
+fn strip_fences(raw: &str) -> String {
+    let t = raw.trim();
+    if let Some(start) = t.find("```") {
+        let after = &t[start + 3..];
+        let after = after.strip_prefix("json").unwrap_or(after);
+        let after = after.trim_start_matches('\n');
+        if let Some(end) = after.rfind("```") {
+            return after[..end].trim().to_string();
+        }
+    }
+    if let (Some(s), Some(e)) = (t.find('{'), t.rfind('}')) {
+        if e > s { return t[s..=e].to_string(); }
+    }
+    t.to_string()
+}
+
+fn format_observation(v: &Value) -> String {
+    truncate(&v.to_string(), 800)
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max { s.to_string() }
+    else {
+        let head: String = s.chars().take(max).collect();
+        format!("{head}... [truncated]")
+    }
+}
+
+// ── Success evaluation ───────────────────────────────────────────────────────
+
+pub struct SuccessAnalysis {
+    pub passed: bool,
+    pub reason: String,
+}
+
+/// Ask the LLM to judge whether success criteria are met.
+async fn evaluate_success(
+    ctx: &crate::adk::context::AgentContext,
+    test: &TestGoal,
+    history: &[TestStep],
+    agent_final: Option<String>,
+) -> SuccessAnalysis {
+    let criteria = if test.success_criteria.is_empty() {
+        "- 目標描述的動作成功執行".to_string()
+    } else {
+        test.success_criteria.iter().map(|c| format!("- {c}")).collect::<Vec<_>>().join("\n")
+    };
+
+    let history_summary = history.iter().enumerate()
+        .map(|(i, s)| format!("{}. {} → {}", i + 1,
+            s.action.to_string().chars().take(80).collect::<String>(),
+            truncate(&s.observation, 120)))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Grab current URL + page text hint
+    let url = ctx.call_tool("web_navigate", json!({"action":"url"})).await
+        .ok().and_then(|v| v.get("url").and_then(Value::as_str).map(String::from)).unwrap_or_default();
+
+    let prompt = format!(r#"判斷這個瀏覽器測試是否通過。
+
+目標: {}
+Success criteria:
+{}
+
+執行歷史 (摘要):
+{}
+
+最終 URL: {}
+Agent 最終訊息: {}
+
+根據 criteria 嚴格判斷，回傳 JSON:
+{{"passed": true/false, "reason": "<繁體中文 1-3 句解釋>"}}
+"#,
+        test.goal.trim(),
+        criteria,
+        history_summary,
+        url,
+        agent_final.unwrap_or_else(|| "(none)".into()),
+    );
+
+    let raw = match crate::llm::call_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), prompt).await {
+        Ok(s) => s,
+        Err(e) => return SuccessAnalysis { passed: false, reason: format!("evaluate LLM error: {e}") },
+    };
+
+    let cleaned = strip_fences(&raw);
+    match serde_json::from_str::<Value>(&cleaned) {
+        Ok(v) => SuccessAnalysis {
+            passed: v.get("passed").and_then(Value::as_bool).unwrap_or(false),
+            reason: v.get("reason").and_then(Value::as_str).unwrap_or("no reason").to_string(),
+        },
+        Err(_) => SuccessAnalysis { passed: false, reason: format!("unparseable judgment: {raw}") },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_valid_step() {
+        let raw = r##"{"thought":"go","action_input":{"action":"click","target":"#x"},"done":false}"##;
+        let s = parse_step(raw);
+        assert!(s.parse_error.is_none());
+        assert_eq!(s.action_input["action"], "click");
+        assert!(!s.done);
+    }
+
+    #[test]
+    fn parse_done_step() {
+        let raw = r#"{"thought":"ok","done":true,"final_answer":"logged in"}"#;
+        let s = parse_step(raw);
+        assert!(s.parse_error.is_none());
+        assert!(s.done);
+        assert_eq!(s.final_answer.as_deref(), Some("logged in"));
+    }
+
+    #[test]
+    fn parse_rejects_missing_action() {
+        let raw = r##"{"thought":"hmm","action_input":{"target":"#x"},"done":false}"##;
+        let s = parse_step(raw);
+        assert!(s.parse_error.is_some());
+    }
+
+    #[test]
+    fn parse_strips_markdown_fences() {
+        let raw = "```json\n{\"thought\":\"ok\",\"done\":true}\n```";
+        let s = parse_step(raw);
+        assert!(s.parse_error.is_none());
+        assert!(s.done);
+    }
+}

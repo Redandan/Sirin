@@ -1,0 +1,15 @@
+id: wiki_smoke
+name: "GitHub Wiki smoke test"
+url: "https://github.com/Redandan/Redandan.github.io/wiki"
+goal: |
+  驗證 Agora Market 專案的 Wiki Home 頁面可以正常載入。
+  應該看到 "Agora Market" 標題和專案簡介文字。
+
+max_iterations: 6
+timeout_secs: 60
+
+success_criteria:
+  - "頁面包含文字「Agora Market」"
+  - "URL 仍停留在 github.com/.../wiki 路徑"
+
+tags: [smoke, docs]
