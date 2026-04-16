@@ -1,7 +1,7 @@
 ---
 name: sirin-test
 description: This skill should be used when the user asks to "test a website", "run an E2E test", "verify a user flow", "check if a page works", "run browser tests", or mentions Sirin's testing capabilities. Provides the workflow for driving Sirin's AI-powered browser test runner via its MCP API (:7700/mcp).
-version: 1.0.0
+version: 1.1.0
 ---
 
 # Sirin Browser Test Runner
@@ -95,7 +95,9 @@ User: "Test if https://example.com/signup still works with email
 1. run_adhoc_test({
      url: "https://example.com/signup",
      goal: "Register with email test@test.com and reach /welcome",
-     success_criteria: ["URL ends with /welcome", "No console errors"]
+     success_criteria: ["URL ends with /welcome", "No console errors"],
+     // Flutter / WebGL targets? add:
+     // browser_headless: false
    })
    → { run_id: "run_...", status: "queued" }
 
@@ -105,6 +107,10 @@ User: "Test if https://example.com/signup still works with email
 This is the right answer when `list_tests` doesn't show a matching
 existing test.  Don't refuse the user with "no such test".
 
+**Flutter/WebGL ad-hoc:** pass `browser_headless: false`. Same reason
+as the Flutter playbook section below — CanvasKit won't paint in
+headless Chrome.
+
 ### Workflow B.6 — Imperative browser debug
 
 For manual exploration without a goal, use `browser_exec` directly:
@@ -112,6 +118,8 @@ For manual exploration without a goal, use `browser_exec` directly:
 ```
 browser_exec({action: "goto",       target: "https://site.com"})
 browser_exec({action: "screenshot"}) → base64 PNG
+browser_exec({action: "screenshot_analyze",
+              target: "Describe what's on screen"}) → Gemini Vision text
 browser_exec({action: "console"})   → JS errors
 browser_exec({action: "network"})   → fetch/XHR log
 browser_exec({action: "click",      target: "#btn"})
@@ -149,9 +157,18 @@ goal: |
   User with items already in cart should be able to click checkout,
   fill shipping info, choose credit card, and see order confirmation.
 
-max_iterations: 15                   # default 15 (can raise for complex flows)
+max_iterations: 15                   # default 15 (raise for complex flows)
 timeout_secs: 120                    # default 120s
 retry_on_parse_error: 3              # default 3 (LLM JSON parse retries)
+locale: en                           # zh-TW (default) / en / zh-CN
+
+# Flutter / WebGL / Canvas-rendered apps: set to false or vision won't work
+# (CanvasKit doesn't paint in headless Chrome → screenshots come back black)
+browser_headless: true               # default reads SIRIN_BROWSER_HEADLESS env
+
+# Optional URL query merge (e.g. force Flutter HTML renderer if app supports it)
+url_query:
+  # flutter-web-renderer: html       # uncomment for Flutter apps that honor it
 
 success_criteria:                    # LLM judges these at the end
   - "URL contains /order-confirmation"
@@ -170,52 +187,83 @@ Let the LLM figure out the steps. Only write steps if they're non-obvious or ord
 
 ## Common Patterns
 
-### Flutter Web apps (CanvasKit) — **vision-based testing**
+### Flutter Web apps (CanvasKit) — **REQUIRED: browser_headless: false + vision**
 
-Flutter apps built with CanvasKit (the default for production) render
-to a `<canvas>` element. The DOM is **empty** — `read`, `exists`, and
-`eval(document.body.innerText)` all return empty/false even though
-visually the page looks fine.
+Flutter apps built with CanvasKit (the default for production) have
+**two separate traps**:
 
-**Symptom of this trap:** test fails with "page doesn't contain X" but
-get_screenshot shows X clearly visible.
+**Trap 1 — WebGL in headless = blank canvas.**
+CanvasKit uses WebGL. Chrome's headless mode doesn't paint WebGL
+content reliably → `get_screenshot` returns an all-black PNG regardless
+of what the page should show. This ALSO defeats vision LLM — it can
+only say "page is black".
 
-**Workaround tier 1 — `url_query` HTML renderer (only works if app supports it):**
+**→ FIX: `browser_headless: false` in the test YAML.**
+
 ```yaml
-url_query:
-  flutter-web-renderer: html
+id: flutter_smoke
+url: "https://your-flutter-app.example.com/"
+browser_headless: false   # ← REQUIRED for Flutter Canvas apps
+goal: |
+  ...
 ```
-Many production Flutter apps hardcode CanvasKit at build time
-(`<body flt-renderer="canvaskit">`) and ignore this query. Probe with
-`browser_exec({action:"eval", target:"document.body.getAttribute('flt-renderer')"})`.
 
-**Workaround tier 2 — vision via `screenshot_analyze` (always works):**
+Or globally via `SIRIN_BROWSER_HEADLESS=false` env before launching Sirin.
+
+Chrome will open a visible window. Flutter's WebGL then paints
+normally. Screenshots are real content.
+
+**Trap 2 — DOM is empty** (even with visible Chrome).
+CanvasKit paints to `<canvas>`, not HTML elements. `read`, `exists`,
+`eval(document.body.innerText)` all return empty/false. Don't use
+those for text assertions.
+
+**→ FIX: `screenshot_analyze` action + Gemini Vision** reads the
+rendered canvas pixels.
+
 ```yaml
 goal: |
-  Verify the page shows the login screen.
-
-  ⚠️ This is a Flutter CanvasKit app — DOM is empty. Use:
-    {action:"screenshot_analyze", target:"Does the page show
-      the login form with an email field?"}
+  ⚠️ Flutter CanvasKit app. DOM is empty — use screenshot_analyze:
+    {action:"screenshot_analyze",
+     target:"Does the page show the login form with an email field?"}
   Don't try eval/read/exists for text content.
 
 success_criteria:
   - "Vision confirms the brand title is visible"
   - "Vision confirms login form with email input exists"
+  - "Vision confirms page has actual content (not blank/black)"
 ```
-Gemini Vision reads the rendered canvas directly. ~3-5 sec per
-analyze call but reliable.
 
-**Workaround tier 3 — coordinate clicks (for interaction):**
-After vision identifies a button location, click via coordinates:
+The last criterion defends against false positives where vision might
+report "blank screen" when the screenshot really was blank (Trap 1
+not yet applied).
+
+**(Optional workaround) — `url_query` HTML renderer:**
+
+```yaml
+url_query:
+  flutter-web-renderer: html
+```
+Only works if the app allows switching renderers. Many production
+Flutter apps hardcode CanvasKit at build time (`<body flt-renderer=
+"canvaskit">`) and ignore this query. Probe first:
+
+```
+browser_exec({action:"eval",
+              target:"document.body.getAttribute('flt-renderer')"})
+```
+
+If it returns `"canvaskit"`, the app ignores `url_query` — use
+`browser_headless: false` + vision instead.
+
+**Interaction on CanvasKit:** combine vision (find element) with
+coordinate clicks (click):
 ```yaml
 {action:"click_point", x:380, y:330}
 ```
-The LLM will combine `screenshot_analyze` (find element) +
-`click_point` (interact).
 
 For Agora Market specifically: see `config/tests/agora_market_smoke.yaml`
-for a working vision-based example.
+— working end-to-end example using `browser_headless: false` + vision.
 
 ### Asynchronous UIs
 

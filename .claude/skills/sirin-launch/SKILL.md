@@ -1,14 +1,17 @@
 ---
 name: sirin-launch
 description: This skill should be used when the user wants to start, stop, restart, or check the status of Sirin (the AI browser testing service). Trigger phrases include "start Sirin", "launch Sirin", "Sirin 起來", "開啟 Sirin", "is Sirin running", "stop Sirin", "restart Sirin", or before any sirin-test workflow when Sirin's MCP endpoint might not be up.
-version: 1.0.0
+version: 1.1.0
 ---
 
 # Sirin Lifecycle Skill
 
 Manage the Sirin process from an external Claude Code session. Required
 before `sirin-test` can be used — Sirin's MCP endpoint on
-`http://127.0.0.1:7700/mcp` is only live while the process is running.
+`http://127.0.0.1:<port>/mcp` is only live while the process is running.
+
+Default port: `7700`. Override: `SIRIN_RPC_PORT=<alt>` (see "Port stuck"
+section below).
 
 ## When This Skill Applies
 
@@ -29,7 +32,8 @@ before `sirin-test` can be used — Sirin's MCP endpoint on
 Before launching, always probe the MCP endpoint:
 
 ```bash
-curl -s -X POST http://127.0.0.1:7700/mcp \
+PORT=${SIRIN_RPC_PORT:-7700}
+curl -s -X POST "http://127.0.0.1:${PORT}/mcp" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
   --max-time 3
@@ -39,6 +43,9 @@ curl -s -X POST http://127.0.0.1:7700/mcp \
 - Returns JSON with `"tools": [...]` → Sirin is up, skip launch
 - `curl: (7) Failed to connect` → Sirin not running, proceed to launch
 - Returns empty / timeout → Sirin in bad state, restart recommended
+
+If user previously launched with a non-default port, try both 7700
+and 7701 before concluding "not running".
 
 ## Launch Workflow
 
@@ -70,6 +77,22 @@ cd ~/IdeaProjects/Sirin
 nohup ./target/release/sirin > sirin.log 2>&1 &
 disown
 ```
+
+**Port 7700 stuck? Use an alt port:**
+```bash
+SIRIN_RPC_PORT=7701 ./target/release/sirin.exe > sirin.log 2>&1 &
+# Remember to use the same port in all subsequent MCP calls
+```
+
+This is the escape hatch when the previous Sirin left the socket in
+TIME_WAIT / CLOSE_WAIT. Sirin itself auto-retries bind 3× with 2s
+backoff, so the env override is only needed for genuinely occupied
+ports or when running multiple instances side-by-side.
+
+**Flutter / WebGL targets:** set `SIRIN_BROWSER_HEADLESS=false` before
+launch so Chrome opens visibly. CanvasKit/WebGL content won't paint in
+headless mode (test screenshots come out all-black). Per-test YAML
+override: `browser_headless: false` in the goal file.
 
 **Important:** Sirin opens an egui window. On systems without a display,
 the launch will fail silently. Warn the user if no display is available.
@@ -167,7 +190,8 @@ Claude Code:
 | connection timeout | Sirin hung during startup | Stop, check log, restart |
 | "No LLM models discovered" in log | API key missing/invalid | Fix `.env`, restart |
 | Window opens, closes immediately | Missing display / driver issue | Use `--help` flag for diagnostics |
-| Port 7700 in use | Orphaned Sirin process | Kill all `sirin` processes |
+| Port 7700 in use | Orphaned Sirin or Windows TCP zombie | Kill sirin processes; if still stuck, set `SIRIN_RPC_PORT=7701` (sirin auto-retries bind 3× before failing) |
+| Flutter/WebGL test shows blank/black screenshots | Running headless (CanvasKit doesn't paint) | Set `SIRIN_BROWSER_HEADLESS=false` globally, or `browser_headless: false` in the test YAML |
 
 ## Related Skills
 

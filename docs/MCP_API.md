@@ -2,6 +2,10 @@
 
 `http://127.0.0.1:7700/mcp` — MCP 2024-11-05 Streamable HTTP (JSON-RPC 2.0 over POST)
 
+Port override: `SIRIN_RPC_PORT=<n>` env var at Sirin launch time (default `7700`).
+When port 7700 is held by a zombie socket from a previously-killed Sirin, set
+this to `7701` or similar.
+
 Use this when Sirin is running and you want to drive it from an external agent
 (Claude Code, Claude Desktop, custom scripts).
 
@@ -96,9 +100,15 @@ external Claude Code sessions that receive requests against arbitrary URLs.
   "success_criteria":["Page contains 'Example Domain'"],
   "locale":"en",
   "max_iterations":10,
-  "timeout_secs":90
+  "timeout_secs":90,
+  "browser_headless":false
 }}
 ```
+**`browser_headless` (optional):** `false` required for Flutter CanvasKit /
+WebGL targets (they won't paint in headless Chrome → screenshots come back
+black). Default reads `SIRIN_BROWSER_HEADLESS` env (itself defaulting to
+`true`).
+
 Synthetic test_id format: `adhoc_<YYYYMMDD_HHMMSS_mmm>`. Results persist to
 `test_runs` table with tag `adhoc`. Adhoc runs **skip** auto-fix verification
 (no YAML to re-run).
@@ -179,15 +189,22 @@ Imperative single-action browser control. Bypasses the full test goal flow.
 ```json
 {"name":"browser_exec","arguments":{
   "action":"click",
-  "target":"#submit-btn"
+  "target":"#submit-btn",
+  "browser_headless":false
 }}
 ```
+
+**`browser_headless` (optional on every call):** overrides default on bind.
+First call that sets this causes Sirin to launch (or relaunch) Chrome in
+that mode. Subsequent calls without the flag reuse the current mode.
+Changing the value between calls triggers a clean re-launch.
 
 Supported `action` values:
 | Action | Required args | Returns |
 |--------|---------------|---------|
 | `goto` | `target` (URL) | `{status, url}` |
 | `screenshot` | — | `{mime, bytes_base64, size_bytes, url}` |
+| **`screenshot_analyze`** | `target` (analysis prompt) | `{analysis, prompt}` — Gemini Vision reads the current page |
 | `click` | `target` (selector) | `{status, selector}` |
 | `type` | `target` (selector), `text` | `{status, selector, length}` |
 | `read` | `target` (selector) | `{selector, text}` |
@@ -253,6 +270,34 @@ the failure context:
 Dedup rules (see `list_fixes` outcome values above):
 - Any `pending` fix within 30 minutes for the same test → skipped
 - Last 3 consecutive `failed` outcomes → skipped (circuit breaker)
+
+## Common Gotchas
+
+### Flutter / WebGL target? Set `browser_headless: false`
+CanvasKit and WebGL content do not paint reliably in headless Chrome.
+Symptom: screenshots (and therefore `screenshot_analyze`) return an
+all-black PNG regardless of what the page should show. Fix: pass
+`browser_headless: false` to `run_adhoc_test` / `browser_exec`, or set
+`browser_headless: false` in the test YAML, or set the global env
+`SIRIN_BROWSER_HEADLESS=false` before launching Sirin.
+
+### Hash-only routes (e.g. `/#/admin/users`)
+Fragment changes don't emit `Page.frameNavigated`. Sirin auto-detects
+this case and uses `location.hash = ...` + short settle delay instead
+of waiting for a navigation event. No user action needed — just works.
+
+### Mode-switch race
+Switching between `browser_headless: true` and `browser_headless: false`
+between calls triggers a fresh Chrome launch. The first `navigate()`
+after launch might hit "wait: The event waited for never came" because
+CDP subscriptions haven't fully initialised. Sirin handles this with
+a 600ms settle delay + 1 auto-retry — transparent to the caller but
+shows up in server logs.
+
+### Port 7700 stuck
+If Sirin was killed abruptly on Windows, the port can linger in
+TIME_WAIT / CLOSE_WAIT for ~2 minutes. Sirin auto-retries bind 3× with
+2s backoff; if still failing, launch with `SIRIN_RPC_PORT=7701`.
 
 ## Safety Guarantees
 
