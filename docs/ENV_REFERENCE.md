@@ -44,15 +44,29 @@ Set in `.env` or system environment.
 | `SIRIN_ALLOWED_COMMANDS` | | Additional shell commands (comma-separated) added to coding agent whitelist |
 | `FOLLOWUP_INTERVAL_SECS` | `20` | Follow-up worker polling interval |
 
+## Browser / Test Runner
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SIRIN_BROWSER_HEADLESS` | `true` | Chrome mode. Set `false` / `0` / `no` to run visible — **required for Flutter CanvasKit / WebGL apps** which won't paint headless. Per-test YAML `browser_headless` overrides this. |
+| `SIRIN_RPC_PORT` | `7700` | Port for the WebSocket + MCP HTTP server. Change when port 7700 is stuck in TCP TIME_WAIT from a recently-killed Sirin, or when running multiple instances. |
+| `SIRIN_REPO_BACKEND` | `~/IdeaProjects/AgoraMarketAPI` | Repo path for auto-fix spawning (backend bugs) |
+| `SIRIN_REPO_FRONTEND` | `~/IdeaProjects/AgoraMarketFlutter` | Repo path for auto-fix (frontend bugs) |
+| `SIRIN_REPO_SIRIN` | *(this repo)* | Repo path for auto-fix (Sirin itself) |
+| `SIRIN_CLAUDE_BIN` | *(auto-detect)* | Override path to `claude` CLI binary |
+
 ## Data Paths (Windows)
 
 | Path | Content |
 |------|---------|
 | `%LOCALAPPDATA%\Sirin\tracking\` | task.jsonl, research.jsonl |
-| `%LOCALAPPDATA%\Sirin\memory\` | memories.db (SQLite FTS5) |
+| `%LOCALAPPDATA%\Sirin\memory\` | memories.db (SQLite FTS5) + test_memory.db |
 | `%LOCALAPPDATA%\Sirin\code_graph\` | graph.jsonl |
 | `%LOCALAPPDATA%\Sirin\context\` | Per-peer conversation logs |
 | `data/pending_replies/` | JSONL draft files per agent |
 | `data/sessions/` | Telegram session files |
-| `config/` | agents.yaml, persona.yaml, llm.yaml, skills/, scripts/ |
+| `data/test_failures/` | Per-run failure screenshots (PNG, gitignored) |
+| `data/teams_profile/` | Chrome user data dir for Teams (gitignored) |
+| `config/` | agents.yaml, persona.yaml, llm.yaml, skills/, scripts/, tests/ |
+| `config/tests/` | AI browser test goal YAMLs |
 | `config/mcp_servers.yaml` | External MCP server connections |
