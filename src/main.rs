@@ -4,7 +4,7 @@ mod adk;
 #[allow(dead_code)] mod agent_config;
 pub mod error;
 mod platform;
-mod browser;
+#[allow(dead_code)] mod browser;
 #[allow(dead_code)] mod agents;
 mod code_graph;
 mod events;
