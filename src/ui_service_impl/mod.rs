@@ -143,6 +143,7 @@ impl SystemService for RealService {
     fn import_config(&self, yaml: &str) -> Result<(), String> { system::import_config(self, yaml) }
     fn poll_toasts(&self) -> Vec<ToastEvent> { system::poll_toasts(self) }
     fn toast_history(&self) -> Vec<ToastEvent> { system::toast_history(self) }
+    fn config_check(&self) -> Vec<ConfigIssueView> { system::config_check(self) }
 }
 
 impl BrowserService for RealService {

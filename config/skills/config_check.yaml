@@ -1,0 +1,21 @@
+id: config-check
+name: "系統診斷"
+description: "掃描 LLM 後端、模型可用性、vision 支援、router 連線、persona 設定、Chrome/Claude CLI 等，回報診斷結果並提供修復建議。"
+category: system
+enabled: true
+requires_approval: false
+trigger_keywords:
+  - config
+  - check
+  - 設定
+  - 檢查
+  - 診斷
+  - 健康
+  - health
+  - diagnostics
+example_prompts:
+  - "檢查系統設定"
+  - "診斷系統狀態"
+  - "config check"
+  - "系統健康檢查"
+  - "檢查 LLM 設定"

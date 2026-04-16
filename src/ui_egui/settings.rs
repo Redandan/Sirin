@@ -29,14 +29,24 @@ pub struct SettingsState {
     skill_test_id: String,
     skill_test_input: String,
     skill_test_output: String,
-
-
+    // Config diagnostics
+    config_issues: Vec<ConfigIssueView>,
+    config_issues_loaded: bool,
 }
 
 pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, _agents: &[AgentSummary], state: &mut SettingsState) {
     ScrollArea::vertical().id_salt("system_settings").show(ui, |ui| {
         ui.set_max_width(560.0);
         let s = svc.system_status();
+
+        // Lazy-load config issues on first render
+        if !state.config_issues_loaded {
+            state.config_issues = svc.config_check();
+            state.config_issues_loaded = true;
+        }
+
+        // ── Config diagnostics ────────────────────────────────────────────
+        show_config_diagnostics(ui, svc, state);
 
         // ── Connection ───────────────────────────────────────────────────
         theme::section(ui, "連線狀態", |ui| {
@@ -315,4 +325,90 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, _agents: &[AgentSummar
             }
         });
     });
+}
+
+// ── Config diagnostics section ──────────────────────────────────────────────
+
+fn show_config_diagnostics(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, state: &mut SettingsState) {
+    theme::section(ui, "系統診斷", |ui| {
+        let errors = state.config_issues.iter().filter(|i| i.severity == ConfigSeverity::Error).count();
+        let warnings = state.config_issues.iter().filter(|i| i.severity == ConfigSeverity::Warning).count();
+        let oks = state.config_issues.iter().filter(|i| i.severity == ConfigSeverity::Ok).count();
+
+        // Summary + refresh button
+        ui.horizontal(|ui| {
+            ui.colored_label(theme::ACCENT, RichText::new(format!("{oks} OK")).size(theme::FONT_SMALL).strong());
+            ui.colored_label(theme::TEXT_DIM, "·");
+            if warnings > 0 {
+                ui.colored_label(theme::YELLOW, RichText::new(format!("{warnings} warnings")).size(theme::FONT_SMALL).strong());
+            } else {
+                ui.colored_label(theme::TEXT_DIM, RichText::new("0 warnings").size(theme::FONT_SMALL));
+            }
+            ui.colored_label(theme::TEXT_DIM, "·");
+            if errors > 0 {
+                ui.colored_label(theme::DANGER, RichText::new(format!("{errors} errors")).size(theme::FONT_SMALL).strong());
+            } else {
+                ui.colored_label(theme::TEXT_DIM, RichText::new("0 errors").size(theme::FONT_SMALL));
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.add(egui::Button::new(RichText::new("🔄 重新檢查").size(theme::FONT_SMALL))
+                    .fill(theme::CARD).corner_radius(4.0)).clicked()
+                {
+                    state.config_issues = svc.config_check();
+                }
+            });
+        });
+
+        ui.add_space(theme::SP_SM);
+
+        // Issues list — show warnings/errors first, then OK
+        let issues_to_show: Vec<&ConfigIssueView> = state.config_issues.iter()
+            .filter(|i| i.severity != ConfigSeverity::Ok)
+            .collect();
+
+        if issues_to_show.is_empty() {
+            ui.colored_label(theme::ACCENT, RichText::new("✓ 所有檢查通過").size(theme::FONT_SMALL));
+        } else {
+            for issue in &issues_to_show {
+                render_issue(ui, issue);
+            }
+        }
+
+        // Collapsible OK items
+        if oks > 0 {
+            ui.add_space(theme::SP_SM);
+            ui.collapsing(
+                RichText::new(format!("顯示 {oks} 項通過檢查")).size(theme::FONT_CAPTION).color(theme::TEXT_DIM),
+                |ui| {
+                    for issue in state.config_issues.iter().filter(|i| i.severity == ConfigSeverity::Ok) {
+                        render_issue(ui, issue);
+                    }
+                },
+            );
+        }
+    });
+}
+
+fn render_issue(ui: &mut egui::Ui, issue: &ConfigIssueView) {
+    let (color, icon) = match issue.severity {
+        ConfigSeverity::Ok => (theme::ACCENT, "✓"),
+        ConfigSeverity::Info => (theme::INFO, "ℹ"),
+        ConfigSeverity::Warning => (theme::YELLOW, "⚠"),
+        ConfigSeverity::Error => (theme::DANGER, "✗"),
+    };
+    egui::Frame::new().fill(theme::CARD).corner_radius(4.0)
+        .inner_margin(theme::SP_SM).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.colored_label(color, RichText::new(icon).size(theme::FONT_BODY).strong());
+                theme::badge(ui, &issue.category, color);
+                ui.colored_label(theme::TEXT, RichText::new(&issue.message).size(theme::FONT_SMALL));
+            });
+            if let Some(s) = &issue.suggestion {
+                ui.horizontal(|ui| {
+                    ui.add_space(20.0);
+                    ui.colored_label(theme::TEXT_DIM, RichText::new(format!("→ {s}")).size(theme::FONT_CAPTION));
+                });
+            }
+        });
+    ui.add_space(4.0);
 }

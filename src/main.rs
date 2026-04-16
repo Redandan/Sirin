@@ -6,6 +6,7 @@ pub mod error;
 mod platform;
 #[allow(dead_code)] mod browser;
 #[allow(dead_code)] mod claude_session;
+#[allow(dead_code)] mod config_check;
 #[allow(dead_code)] mod agents;
 mod code_graph;
 mod events;
@@ -146,6 +147,12 @@ fn main() {
         }
         llm::init_shared_llm(fleet.to_llm_config());
         llm::init_agent_fleet(fleet);
+    }
+
+    // Run config diagnostics after fleet init — only prints if warnings/errors
+    {
+        let issues = config_check::run_diagnostics();
+        config_check::log_startup(&issues);
     }
 
     {

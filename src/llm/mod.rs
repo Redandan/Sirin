@@ -38,7 +38,8 @@ mod backends;
 mod probe;
 
 pub use probe::probe_and_build_fleet;
-pub(crate) use probe::{init_agent_fleet, shared_fleet};
+#[allow(unused_imports)]
+pub(crate) use probe::{init_agent_fleet, shared_fleet, ModelCapability};
 
 use std::sync::{Arc, OnceLock};
 

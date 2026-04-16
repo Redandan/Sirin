@@ -205,8 +205,16 @@ pub fn classify_model_capabilities(model: &ModelInfo) -> Vec<ModelCapability> {
         || name.contains("moondream")
         || name.contains("minicpm-v")
         || name.contains("qwen-vl")
+        || name.contains("qwen2.5-vl")
+        || name.contains("qwen2-vl")
         || name.contains("internvl")
         || name.contains("cogvlm")
+        || name.contains("gemma-3")   // Gemma 3+ are multimodal
+        || name.contains("gemma-4")
+        || name.contains("gemma3")
+        || name.contains("gemma4")
+        || name.contains("phi-3.5-vision")
+        || name.contains("phi-4")
     {
         caps.push(ModelCapability::Vision);
     }

@@ -136,6 +136,18 @@ pub struct ToastEvent {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ToastLevel { Info, Success, Error }
 
+/// Config-check issue for the UI.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConfigIssueView {
+    pub severity: ConfigSeverity,
+    pub category: String,
+    pub message: String,
+    pub suggestion: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigSeverity { Ok, Info, Warning, Error }
+
 // ── Service traits ───────────────────────────────────────────────────────────
 //
 // Split by domain so UI consumers (and future alternative implementations) can
@@ -240,6 +252,9 @@ pub trait SystemService: Send + Sync + 'static {
 
     fn poll_toasts(&self) -> Vec<ToastEvent>;
     fn toast_history(&self) -> Vec<ToastEvent>;
+
+    /// Run configuration diagnostics — returns list of issues.
+    fn config_check(&self) -> Vec<ConfigIssueView>;
 }
 
 /// Browser automation — persistent Chrome session control.

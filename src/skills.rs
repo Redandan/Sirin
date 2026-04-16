@@ -508,6 +508,14 @@ pub async fn execute_skill(
     user_input: &str,
     agent_id: Option<&str>,
 ) -> Result<String, String> {
+    // ── Built-in skills (no script_file required) ────────────────────────────
+    if skill_id == "config-check" {
+        let issues = tokio::task::spawn_blocking(crate::config_check::run_diagnostics)
+            .await
+            .map_err(|e| format!("spawn_blocking: {e}"))?;
+        return Ok(crate::config_check::format_report(&issues));
+    }
+
     let skill = list_skills()
         .into_iter()
         .find(|s| s.id == skill_id)

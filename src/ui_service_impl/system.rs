@@ -151,3 +151,22 @@ pub(super) fn poll_toasts(svc: &RealService) -> Vec<ToastEvent> {
 pub(super) fn toast_history(svc: &RealService) -> Vec<ToastEvent> {
     svc.toast_history_snapshot()
 }
+
+// ── Config check ─────────────────────────────────────────────────────────────
+
+pub(super) fn config_check(_svc: &RealService) -> Vec<ConfigIssueView> {
+    crate::config_check::run_diagnostics()
+        .into_iter()
+        .map(|i| ConfigIssueView {
+            severity: match i.severity {
+                crate::config_check::Severity::Ok => ConfigSeverity::Ok,
+                crate::config_check::Severity::Info => ConfigSeverity::Info,
+                crate::config_check::Severity::Warning => ConfigSeverity::Warning,
+                crate::config_check::Severity::Error => ConfigSeverity::Error,
+            },
+            category: i.category.to_string(),
+            message: i.message,
+            suggestion: i.suggestion,
+        })
+        .collect()
+}
