@@ -162,7 +162,14 @@ pub async fn execute_test_tracked(
                 current_action: action_label.clone(),
             });
         }
-        let raw_result = ctx.call_tool("web_navigate", action_input.clone()).await;
+        // Dispatch to the appropriate tool.  `expand_observation` is a
+        // meta-tool (reads run registry, no browser action).  Everything else
+        // goes through `web_navigate`.
+        let raw_result = if action_label == "expand_observation" {
+            ctx.call_tool("expand_observation", action_input.clone()).await
+        } else {
+            ctx.call_tool("web_navigate", action_input.clone()).await
+        };
         let full_obs = match &raw_result {
             Ok(v) => v.to_string(),
             Err(e) => format!("ERROR: {e}"),
@@ -326,6 +333,13 @@ fn build_prompt(test: &TestGoal, history: &[TestStep], parse_error_hint: Option<
 - screenshot_analyze — target: question for vision LLM about the page
 - console        — return captured console messages
 - network        — return captured fetch/XHR
+
+## Separate tool: expand_observation
+When a previous Observation was truncated (you'll see "[truncated: ...]"),
+you can fetch the complete content by outputting an action that calls the
+`expand_observation` tool directly (not via web_navigate):
+  {{"action": "expand_observation", "step": N}}
+Where N is the 0-indexed step number from the truncation hint.
 
 ## History
 {history}

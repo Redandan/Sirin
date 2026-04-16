@@ -34,7 +34,16 @@ pub async fn run_test(
     test_id: &str,
     auto_fix: bool,
 ) -> Result<TestResult, String> {
-    run_test_with_run_id(ctx, test_id, auto_fix, None).await
+    // Always allocate a run_id — enables expand_observation inside the ReAct
+    // loop even when caller didn't explicitly request async tracking.
+    let run_id = runs::new_run(test_id);
+    let result = run_test_with_run_id(ctx, test_id, auto_fix, Some(&run_id)).await;
+    // Mark as complete in registry so MCP pollers see a terminal state.
+    match &result {
+        Ok(r) => runs::set_phase(&run_id, runs::RunPhase::Complete(r.clone())),
+        Err(e) => runs::set_phase(&run_id, runs::RunPhase::Error(e.clone())),
+    }
+    result
 }
 
 /// Internal variant that accepts a pre-allocated run_id for async tracking.
@@ -48,7 +57,14 @@ async fn run_test_with_run_id(
         .ok_or_else(|| format!("Test '{test_id}' not found in config/tests/"))?;
 
     let started = chrono::Local::now().to_rfc3339();
-    let result = executor::execute_test_tracked(ctx, &test, run_id).await;
+    // Inject run_id into context metadata so web_navigate tool actions (e.g.
+    // expand_observation) can find the current run.
+    let ctx_with_run = if let Some(rid) = run_id {
+        ctx.clone().with_metadata("test_run_id", rid)
+    } else {
+        ctx.clone()
+    };
+    let result = executor::execute_test_tracked(&ctx_with_run, &test, run_id).await;
 
     // Triage non-passed results
     let (category, analysis, fix_triggered) = if matches!(result.status, TestStatus::Passed) {

@@ -46,7 +46,21 @@ fn db() -> &'static Mutex<rusqlite::Connection> {
                 updated_at TEXT NOT NULL, \
                 UNIQUE(test_id, key) \
             ); \
-            CREATE INDEX IF NOT EXISTS idx_tk_test ON test_knowledge(test_id);",
+            CREATE INDEX IF NOT EXISTS idx_tk_test ON test_knowledge(test_id); \
+            CREATE TABLE IF NOT EXISTS auto_fix_history ( \
+                id INTEGER PRIMARY KEY AUTOINCREMENT, \
+                test_id TEXT NOT NULL, \
+                run_id TEXT, \
+                category TEXT NOT NULL, \
+                triggered_at TEXT NOT NULL, \
+                completed_at TEXT, \
+                outcome TEXT NOT NULL, \
+                claude_exit_code INTEGER, \
+                claude_output TEXT, \
+                bug_prompt TEXT \
+            ); \
+            CREATE INDEX IF NOT EXISTS idx_afh_test ON auto_fix_history(test_id, triggered_at); \
+            CREATE INDEX IF NOT EXISTS idx_afh_outcome ON auto_fix_history(outcome);",
         )
         .expect("Failed to initialise test_memory schema");
         Mutex::new(conn)
@@ -160,6 +174,120 @@ pub fn get_knowledge(test_id: &str, key: &str) -> Option<String> {
     ).ok()
 }
 
+// ── Auto-fix history ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct FixRecord {
+    pub id: i64,
+    pub test_id: String,
+    pub run_id: Option<String>,
+    pub category: String,
+    pub triggered_at: String,
+    pub completed_at: Option<String>,
+    pub outcome: String,  // pending | completed | failed | skipped_dedupe
+    pub claude_exit_code: Option<i64>,
+    pub claude_output: Option<String>,
+}
+
+/// Record a new auto-fix attempt as "pending".  Returns the fix_id so the
+/// caller can later call `complete_fix(fix_id, ...)` when the spawned Claude
+/// session finishes.
+pub fn record_pending_fix(
+    test_id: &str,
+    run_id: Option<&str>,
+    category: &str,
+    bug_prompt: &str,
+) -> Result<i64, String> {
+    let now = chrono::Local::now().to_rfc3339();
+    let conn = db().lock().unwrap_or_else(|e| e.into_inner());
+    conn.execute(
+        "INSERT INTO auto_fix_history(test_id, run_id, category, triggered_at, outcome, bug_prompt) \
+         VALUES (?1,?2,?3,?4,'pending',?5)",
+        rusqlite::params![test_id, run_id, category, now, bug_prompt],
+    ).map_err(|e| format!("record_pending_fix: {e}"))?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// Mark a previously-pending fix as completed (success or failure).
+pub fn complete_fix(
+    fix_id: i64,
+    exit_code: i64,
+    output: &str,
+) -> Result<(), String> {
+    let now = chrono::Local::now().to_rfc3339();
+    let outcome = if exit_code == 0 { "completed" } else { "failed" };
+    // Truncate output to avoid bloating DB
+    let trimmed: String = output.chars().take(2000).collect();
+    let conn = db().lock().unwrap_or_else(|e| e.into_inner());
+    conn.execute(
+        "UPDATE auto_fix_history SET completed_at=?1, outcome=?2, claude_exit_code=?3, claude_output=?4 \
+         WHERE id=?5",
+        rusqlite::params![now, outcome, exit_code, trimmed, fix_id],
+    ).map_err(|e| format!("complete_fix: {e}"))?;
+    Ok(())
+}
+
+/// Returns true if there is a `pending` auto-fix for this test started within
+/// the last `minutes` — used to deduplicate spawns.
+pub fn has_pending_fix(test_id: &str, minutes: i64) -> bool {
+    let cutoff = (chrono::Local::now() - chrono::Duration::minutes(minutes)).to_rfc3339();
+    let conn = db().lock().unwrap_or_else(|e| e.into_inner());
+    conn.query_row(
+        "SELECT COUNT(*) FROM auto_fix_history \
+         WHERE test_id=?1 AND outcome='pending' AND triggered_at > ?2",
+        rusqlite::params![test_id, cutoff],
+        |row| row.get::<_, i64>(0),
+    ).map(|n| n > 0).unwrap_or(false)
+}
+
+/// Return recent fix attempts for a test.
+pub fn recent_fixes(test_id: &str, limit: usize) -> Vec<FixRecord> {
+    let conn = db().lock().unwrap_or_else(|e| e.into_inner());
+    let mut stmt = match conn.prepare(
+        "SELECT id, test_id, run_id, category, triggered_at, completed_at, outcome, claude_exit_code, claude_output \
+         FROM auto_fix_history WHERE test_id = ?1 ORDER BY triggered_at DESC LIMIT ?2",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let rows = stmt.query_map(
+        rusqlite::params![test_id, limit as i64],
+        |row| Ok(FixRecord {
+            id: row.get(0)?,
+            test_id: row.get(1)?,
+            run_id: row.get(2)?,
+            category: row.get(3)?,
+            triggered_at: row.get(4)?,
+            completed_at: row.get(5)?,
+            outcome: row.get(6)?,
+            claude_exit_code: row.get(7)?,
+            claude_output: row.get(8)?,
+        }),
+    );
+    match rows {
+        Ok(iter) => iter.filter_map(Result::ok).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Mark a fix attempt as skipped due to an existing pending fix.
+/// Still recorded so we can tell "we saw this bug and dedupe'd".
+pub fn record_skipped_fix(
+    test_id: &str,
+    run_id: Option<&str>,
+    category: &str,
+    reason: &str,
+) -> Result<(), String> {
+    let now = chrono::Local::now().to_rfc3339();
+    let conn = db().lock().unwrap_or_else(|e| e.into_inner());
+    conn.execute(
+        "INSERT INTO auto_fix_history(test_id, run_id, category, triggered_at, outcome, claude_output) \
+         VALUES (?1,?2,?3,?4,'skipped_dedupe',?5)",
+        rusqlite::params![test_id, run_id, category, now, reason],
+    ).map_err(|e| format!("record_skipped_fix: {e}"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,6 +337,58 @@ mod tests {
         let tid_stable = format!("test_stable_{}", chrono::Local::now().timestamp_nanos_opt().unwrap_or(0) + 1);
         insert_many(&tid_stable, &["passed", "passed", "passed", "passed"]);
         assert!(!is_flaky(&tid_stable), "all-pass should not be flaky");
+    }
+
+    #[test]
+    fn fix_history_lifecycle() {
+        let tid = format!("test_fix_{}", chrono::Local::now().timestamp_nanos_opt().unwrap_or(0));
+        // Initially no pending fix
+        assert!(!has_pending_fix(&tid, 60));
+
+        // Record pending
+        let fix_id = record_pending_fix(&tid, Some("run_abc"), "ui_bug", "test bug prompt").unwrap();
+        assert!(has_pending_fix(&tid, 60), "should detect pending fix");
+
+        // Complete it
+        complete_fix(fix_id, 0, "all good").unwrap();
+        assert!(!has_pending_fix(&tid, 60), "completed fixes shouldn't count as pending");
+
+        // recent_fixes should find it
+        let fixes = recent_fixes(&tid, 10);
+        assert_eq!(fixes.len(), 1);
+        assert_eq!(fixes[0].outcome, "completed");
+        assert_eq!(fixes[0].claude_exit_code, Some(0));
+    }
+
+    #[test]
+    fn fix_history_failed_outcome() {
+        let tid = format!("test_fix_fail_{}", chrono::Local::now().timestamp_nanos_opt().unwrap_or(0));
+        let fix_id = record_pending_fix(&tid, None, "api_bug", "bug").unwrap();
+        complete_fix(fix_id, 1, "claude failed").unwrap();
+        let fixes = recent_fixes(&tid, 10);
+        assert_eq!(fixes[0].outcome, "failed");
+        assert_eq!(fixes[0].claude_exit_code, Some(1));
+    }
+
+    #[test]
+    fn fix_history_skipped_dedupe() {
+        let tid = format!("test_skip_{}", chrono::Local::now().timestamp_nanos_opt().unwrap_or(0));
+        record_pending_fix(&tid, None, "ui_bug", "first").unwrap();
+        record_skipped_fix(&tid, None, "ui_bug", "already pending").unwrap();
+        let fixes = recent_fixes(&tid, 10);
+        assert_eq!(fixes.len(), 2);
+        assert!(fixes.iter().any(|f| f.outcome == "skipped_dedupe"));
+    }
+
+    #[test]
+    fn has_pending_fix_respects_time_window() {
+        let tid = format!("test_window_{}", chrono::Local::now().timestamp_nanos_opt().unwrap_or(0));
+        record_pending_fix(&tid, None, "ui_bug", "bug").unwrap();
+        // Very short window means nothing counts
+        // Use 0 minutes (cutoff = now → anything triggered before now is too old)
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        // 60 min window: should find it
+        assert!(has_pending_fix(&tid, 60));
     }
 
     #[test]

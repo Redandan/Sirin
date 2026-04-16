@@ -851,6 +851,31 @@ pub(super) fn build_full_registry() -> ToolRegistry {
 
             Ok(result)
         })
+        .register_ctx_fn("expand_observation", |ctx, input| {
+            async move {
+                // Retrieve the full (un-truncated) tool observation for a given
+                // step of the CURRENT test run.  run_id comes from context
+                // metadata set by run_test_with_run_id() — if unset, this tool
+                // can't help (e.g. called outside a test).
+                let step = input.get("step").and_then(Value::as_u64)
+                    .ok_or_else(|| "'expand_observation' requires 'step' (0-indexed number)".to_string())? as usize;
+
+                let run_id = ctx.metadata.get("test_run_id").cloned()
+                    .ok_or_else(|| "expand_observation can only be called during a test run (no test_run_id in context)".to_string())?;
+
+                match crate::test_runner::runs::get_full_observation(&run_id, step) {
+                    Some(content) => Ok(json!({
+                        "run_id": run_id,
+                        "step": step,
+                        "content": content,
+                        "char_count": content.chars().count(),
+                    })),
+                    None => Err(format!(
+                        "no observation at step {step} for run {run_id} (valid range: 0..N where N is current step count)"
+                    )),
+                }
+            }.boxed()
+        })
         .register_ctx_fn("run_test", |ctx, input| {
             async move {
                 let test_id = required_string_field(&input, "test_id")?;

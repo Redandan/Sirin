@@ -126,6 +126,14 @@ Output strictly valid JSON (no markdown fence):
 
 /// If the category has a target repo, spawn a claude_session in background.
 /// Returns true if a fix was triggered.
+///
+/// **Dedup**: if an `auto_fix_history` row with `outcome='pending'` exists for
+/// this test within the last 30 minutes, skip spawning (records a
+/// `skipped_dedupe` entry instead).  This prevents wasting Claude Code tokens
+/// when the same bug is reported by consecutive test runs.
+///
+/// **Outcome tracking**: the spawned thread calls `complete_fix(fix_id, ...)`
+/// when claude_session returns, so future callers can query `recent_fixes()`.
 pub fn trigger_auto_fix(test: &TestGoal, result: &TestResult, outcome: &TriageOutcome) -> bool {
     let Some(repo) = outcome.category.fix_repo() else { return false; };
     let Some(cwd) = crate::claude_session::repo_path(repo) else {
@@ -133,30 +141,111 @@ pub fn trigger_auto_fix(test: &TestGoal, result: &TestResult, outcome: &TriageOu
         return false;
     };
 
+    let test_id = test.id.clone();
+    let category = outcome.category.as_str().to_string();
+
+    // Dedup check — avoid re-spawning Claude for the same test within 30 minutes
+    if super::store::has_pending_fix(&test_id, 30) {
+        let _ = super::store::record_skipped_fix(
+            &test_id,
+            None,
+            &category,
+            "another fix for this test is still pending (within 30 min)",
+        );
+        tracing::info!(
+            "[test_runner] auto_fix for {test_id}: SKIPPED (pending fix exists within 30min)"
+        );
+        return false;
+    }
+
+    // Also skip if the last 3 attempts all failed — probably not fixable by Claude alone
+    let recent = super::store::recent_fixes(&test_id, 3);
+    if recent.len() >= 3 && recent.iter().all(|f| f.outcome == "failed") {
+        let _ = super::store::record_skipped_fix(
+            &test_id,
+            None,
+            &category,
+            "last 3 auto-fix attempts all failed — giving up",
+        );
+        tracing::warn!(
+            "[test_runner] auto_fix for {test_id}: SKIPPED (3 consecutive failures)"
+        );
+        return false;
+    }
+
     let bug_prompt = crate::claude_session::build_bug_prompt(
-        &format!("Sirin test '{}' failed.\n\nTriage category: {}\nReason: {}",
+        &format!(
+            "Sirin test '{}' failed.\n\nTriage category: {}\nReason: {}\n\n\
+             Note: this is triggered automatically by Sirin's test runner. \
+             Previous fix attempts (if any) are listed below.",
             test.name,
             outcome.category.as_str(),
-            outcome.reason),
+            outcome.reason,
+        ),
         Some(&test.url),
         result.error_message.as_deref(),
-        None,
+        Some(&format_recent_fix_context(&test_id)),
         result.screenshot_path.as_deref(),
     );
 
-    let test_id = test.id.clone();
+    // Record as pending BEFORE spawning so concurrent callers see it
+    let fix_id = match super::store::record_pending_fix(
+        &test_id,
+        None,  // TODO: thread run_id through
+        &category,
+        &bug_prompt,
+    ) {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::error!("[test_runner] record_pending_fix failed: {e}");
+            return false;
+        }
+    };
+
     std::thread::spawn(move || {
-        tracing::info!("[test_runner] auto_fix: spawning claude_session in {cwd}");
+        tracing::info!("[test_runner] auto_fix[{fix_id}]: spawning claude_session in {cwd}");
         match crate::claude_session::run_sync(&cwd, &bug_prompt) {
             Ok(r) => {
-                tracing::info!("[test_runner] auto_fix for {test_id}: exit={}, output chars={}",
-                    r.exit_code, r.output.len());
+                tracing::info!(
+                    "[test_runner] auto_fix[{fix_id}] for {test_id}: exit={}, output chars={}",
+                    r.exit_code, r.output.len()
+                );
+                if let Err(e) = super::store::complete_fix(fix_id, r.exit_code as i64, &r.output) {
+                    tracing::error!("[test_runner] complete_fix({fix_id}) DB write failed: {e}");
+                }
             }
-            Err(e) => tracing::error!("[test_runner] auto_fix for {test_id} failed: {e}"),
+            Err(e) => {
+                tracing::error!("[test_runner] auto_fix[{fix_id}] for {test_id} failed: {e}");
+                let _ = super::store::complete_fix(fix_id, -1, &format!("claude_session error: {e}"));
+            }
         }
     });
 
     true
+}
+
+/// Build a short summary of recent fix attempts to give Claude context.
+fn format_recent_fix_context(test_id: &str) -> String {
+    let recent = super::store::recent_fixes(test_id, 3);
+    if recent.is_empty() {
+        return "No previous auto-fix attempts for this test.".into();
+    }
+    let mut out = String::from("Previous auto-fix attempts:\n");
+    for f in &recent {
+        out.push_str(&format!(
+            "- {} [{}]: outcome={}",
+            f.triggered_at, f.category, f.outcome,
+        ));
+        if let Some(exit) = f.claude_exit_code {
+            out.push_str(&format!(" exit={exit}"));
+        }
+        if let Some(output) = &f.claude_output {
+            let snippet: String = output.chars().take(200).collect();
+            out.push_str(&format!(" → {snippet}"));
+        }
+        out.push('\n');
+    }
+    out
 }
 
 // ── Internals ────────────────────────────────────────────────────────────────
