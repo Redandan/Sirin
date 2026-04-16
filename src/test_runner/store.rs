@@ -460,6 +460,68 @@ mod tests {
         assert_eq!(fixes[0].outcome, "regressed");
     }
 
+    /// Demonstrates the full auto-fix verification state machine without
+    /// invoking real claude_session or browser.  Documents the expected
+    /// transitions for future maintainers.
+    ///
+    /// State graph:
+    ///   pending → fix_attempted → verified | regressed
+    ///   pending → failed (claude_session non-zero exit)
+    ///   pending → skipped_dedupe (recorded by record_skipped_fix)
+    #[test]
+    fn fix_state_machine_full_demo() {
+        let base = chrono::Local::now().timestamp_nanos_opt().unwrap_or(0);
+
+        // ── Path A: happy path — verified ─────────────────────────────────
+        let tid_a = format!("demo_verified_{}", base);
+        let fix_a = record_pending_fix(&tid_a, Some("run_xyz"), "ui_bug",
+            "Test failed: button missing").unwrap();
+        let r = recent_fixes(&tid_a, 1);
+        assert_eq!(r[0].outcome, "pending", "spawn started");
+
+        // claude_session returned exit=0 (claimed the fix is done)
+        complete_fix(fix_a, 0, "I added the missing button").unwrap();
+        let r = recent_fixes(&tid_a, 1);
+        assert_eq!(r[0].outcome, "fix_attempted", "claude returned successfully");
+        assert!(r[0].verification_run_id.is_none(), "no verification yet");
+
+        // Sirin spawned a verification run, it passed
+        record_verification(fix_a, "ver_run_aaa", true).unwrap();
+        let r = recent_fixes(&tid_a, 1);
+        assert_eq!(r[0].outcome, "verified",
+            "test passed after fix → verified");
+        assert_eq!(r[0].verification_run_id.as_deref(), Some("ver_run_aaa"));
+
+        // ── Path B: regression — claude "fixed" but test still fails ─────
+        let tid_b = format!("demo_regressed_{}", base + 1);
+        let fix_b = record_pending_fix(&tid_b, None, "api_bug", "500 on POST").unwrap();
+        complete_fix(fix_b, 0, "Updated handler").unwrap();
+        record_verification(fix_b, "ver_run_bbb", false).unwrap();
+        let r = recent_fixes(&tid_b, 1);
+        assert_eq!(r[0].outcome, "regressed",
+            "verified=false → regressed (escalate to human)");
+
+        // ── Path C: claude_session itself failed ─────────────────────────
+        let tid_c = format!("demo_failed_{}", base + 2);
+        let fix_c = record_pending_fix(&tid_c, None, "ui_bug", "x").unwrap();
+        complete_fix(fix_c, 1, "compile error in claude's patch").unwrap();
+        let r = recent_fixes(&tid_c, 1);
+        assert_eq!(r[0].outcome, "failed",
+            "exit!=0 → failed (no verification attempted)");
+        assert!(r[0].verification_run_id.is_none());
+
+        // ── Path D: dedupe — second spawn while first is in flight ───────
+        let tid_d = format!("demo_dedupe_{}", base + 3);
+        let _fix_d1 = record_pending_fix(&tid_d, None, "ui_bug", "first").unwrap();
+        assert!(has_pending_fix(&tid_d, 30));
+        record_skipped_fix(&tid_d, None, "ui_bug",
+            "another fix pending in last 30min").unwrap();
+        let fixes = recent_fixes(&tid_d, 10);
+        assert_eq!(fixes.len(), 2, "both pending and skipped recorded");
+        assert!(fixes.iter().any(|f| f.outcome == "skipped_dedupe"));
+        assert!(fixes.iter().any(|f| f.outcome == "pending"));
+    }
+
     #[test]
     fn fix_history_failed_outcome() {
         let tid = format!("test_fix_fail_{}", chrono::Local::now().timestamp_nanos_opt().unwrap_or(0));
