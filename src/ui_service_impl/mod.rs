@@ -144,6 +144,10 @@ impl SystemService for RealService {
     fn poll_toasts(&self) -> Vec<ToastEvent> { system::poll_toasts(self) }
     fn toast_history(&self) -> Vec<ToastEvent> { system::toast_history(self) }
     fn config_check(&self) -> Vec<ConfigIssueView> { system::config_check(self) }
+    fn config_ai_analyze(&self) -> Result<AiAdviceView, String> { system::config_ai_analyze(self) }
+    fn config_apply_fixes(&self, fixes: Vec<ConfigFixView>) -> Result<Vec<String>, String> {
+        system::config_apply_fixes(self, fixes)
+    }
 }
 
 impl BrowserService for RealService {

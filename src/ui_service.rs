@@ -148,6 +148,23 @@ pub struct ConfigIssueView {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigSeverity { Ok, Info, Warning, Error }
 
+/// AI-proposed single field change.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConfigFixView {
+    pub file: String,
+    pub field_path: String,
+    pub current_value: String,
+    pub new_value: String,
+    pub reason: String,
+}
+
+/// AI-generated config advice.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AiAdviceView {
+    pub analysis: String,
+    pub proposed_fixes: Vec<ConfigFixView>,
+}
+
 // ── Service traits ───────────────────────────────────────────────────────────
 //
 // Split by domain so UI consumers (and future alternative implementations) can
@@ -255,6 +272,14 @@ pub trait SystemService: Send + Sync + 'static {
 
     /// Run configuration diagnostics — returns list of issues.
     fn config_check(&self) -> Vec<ConfigIssueView>;
+
+    /// Ask LLM to analyze config and propose fixes (blocking — may take seconds).
+    /// Does NOT modify any files.  Returns Err on LLM/parse failure.
+    fn config_ai_analyze(&self) -> Result<AiAdviceView, String>;
+
+    /// Apply approved fixes.  Backs up each file to .bak.TIMESTAMP first.
+    /// Returns list of applied fix descriptions or Err on failure.
+    fn config_apply_fixes(&self, fixes: Vec<ConfigFixView>) -> Result<Vec<String>, String>;
 }
 
 /// Browser automation — persistent Chrome session control.

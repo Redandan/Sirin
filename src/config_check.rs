@@ -1,7 +1,18 @@
 //! Configuration diagnostics — detects misconfigs, missing services,
 //! and suboptimal settings.  Shared by startup, UI, and skill entry points.
+//!
+//! ## AI-assisted fixing
+//! `ai_analyze()` asks the main LLM to produce a structured fix proposal
+//! ([`AiAdvice`]).  `apply_fixes()` applies approved fixes with a file
+//! whitelist + `.bak.TIMESTAMP` backups.  Never writes to `.env` or code.
 
 use std::path::Path;
+
+/// Files that `apply_fixes` is allowed to modify.  Hardcoded — never bypass.
+const ALLOWED_FILES: &[&str] = &[
+    "config/llm.yaml",
+    "config/persona.yaml",
+];
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -382,6 +393,202 @@ pub fn log_startup(issues: &[ConfigIssue]) {
     }
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+//  AI-ASSISTED FIXING
+// ══════════════════════════════════════════════════════════════════════════════
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ConfigFix {
+    pub file: String,
+    pub field_path: String,
+    pub current_value: String,
+    pub new_value: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct AiAdvice {
+    pub analysis: String,
+    #[serde(default)]
+    pub proposed_fixes: Vec<ConfigFix>,
+}
+
+/// Ask the main LLM to analyze diagnostic issues and propose fixes.
+/// Returns structured advice — does NOT modify any files.
+pub async fn ai_analyze() -> Result<AiAdvice, String> {
+    let issues = run_diagnostics();
+    let issues_md = format_report(&issues);
+
+    let llm_yaml = std::fs::read_to_string("config/llm.yaml")
+        .unwrap_or_else(|_| "# (missing)".into());
+    let persona_yaml = std::fs::read_to_string("config/persona.yaml")
+        .unwrap_or_else(|_| "# (missing)".into());
+    let env_provider = std::env::var("LLM_PROVIDER").unwrap_or_default();
+    let env_gemini_model = std::env::var("GEMINI_MODEL").unwrap_or_default();
+    let env_router_provider = std::env::var("ROUTER_LLM_PROVIDER").unwrap_or_default();
+
+    let prompt = format!(
+        r#"You are a Sirin configuration advisor. Analyze the diagnostic issues and current config files below, then output STRICTLY valid JSON matching this schema:
+
+{{
+  "analysis": "<Markdown summary in 繁體中文 explaining the overall config health>",
+  "proposed_fixes": [
+    {{
+      "file": "config/llm.yaml",
+      "field_path": "coding_model",
+      "current_value": "",
+      "new_value": "models/gemini-2.5-flash",
+      "reason": "<why this helps, in 繁體中文>"
+    }}
+  ]
+}}
+
+RULES:
+- Output ONLY the JSON object, no markdown code fences, no prose before/after.
+- Only propose changes to: config/llm.yaml, config/persona.yaml.
+- Each fix is a SINGLE field change.
+- field_path uses dot notation (e.g. "roi_thresholds.min_usd_to_notify").
+- Skip fixes that would duplicate existing values.
+- If no fixes are needed, return empty proposed_fixes array.
+- Prefer low-risk suggestions. Don't change API keys or security settings.
+
+## Diagnostic Issues
+
+{issues_md}
+
+## Current config/llm.yaml
+
+```yaml
+{llm_yaml}
+```
+
+## Current config/persona.yaml
+
+```yaml
+{persona_yaml}
+```
+
+## Environment (read-only, for context)
+
+- LLM_PROVIDER: {env_provider}
+- GEMINI_MODEL: {env_gemini_model}
+- ROUTER_LLM_PROVIDER: {env_router_provider}
+"#
+    );
+
+    let client = crate::llm::shared_http();
+    let llm = crate::llm::shared_llm();
+    let raw = crate::llm::call_prompt(&client, &llm, prompt)
+        .await
+        .map_err(|e| format!("LLM call failed: {e}"))?;
+
+    // Strip markdown fences if the model added them despite instructions.
+    let json_str = extract_json(&raw);
+
+    serde_json::from_str::<AiAdvice>(&json_str)
+        .map_err(|e| format!("Failed to parse AI response as JSON: {e}\n\nRaw response:\n{raw}"))
+}
+
+/// Apply approved fixes.  Backs up each file to `.bak.TIMESTAMP` before editing.
+/// Returns list of applied fix descriptions.
+pub fn apply_fixes(fixes: &[ConfigFix]) -> Result<Vec<String>, String> {
+    let mut applied = Vec::new();
+    let ts = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
+
+    // Group fixes by file so each file gets a single backup + edit pass.
+    use std::collections::HashMap;
+    let mut by_file: HashMap<&str, Vec<&ConfigFix>> = HashMap::new();
+    for f in fixes {
+        if !ALLOWED_FILES.contains(&f.file.as_str()) {
+            return Err(format!("File not in allowlist: {}", f.file));
+        }
+        by_file.entry(f.file.as_str()).or_default().push(f);
+    }
+
+    for (file, file_fixes) in by_file {
+        // Backup
+        let backup_path = format!("{file}.bak.{ts}");
+        std::fs::copy(file, &backup_path)
+            .map_err(|e| format!("Failed to backup {file}: {e}"))?;
+
+        // Read → mutate → write
+        let content = std::fs::read_to_string(file)
+            .map_err(|e| format!("Failed to read {file}: {e}"))?;
+        let mut yaml_value: serde_yaml::Value = serde_yaml::from_str(&content)
+            .map_err(|e| format!("Failed to parse {file}: {e}"))?;
+
+        for fix in &file_fixes {
+            set_field_by_path(&mut yaml_value, &fix.field_path, &fix.new_value)
+                .map_err(|e| format!("Fix {}::{}: {e}", fix.file, fix.field_path))?;
+        }
+
+        let new_content = serde_yaml::to_string(&yaml_value)
+            .map_err(|e| format!("Failed to serialize {file}: {e}"))?;
+        std::fs::write(file, new_content)
+            .map_err(|e| format!("Failed to write {file}: {e}"))?;
+
+        for fix in &file_fixes {
+            applied.push(format!("{}::{} = {}", fix.file, fix.field_path, fix.new_value));
+        }
+    }
+
+    Ok(applied)
+}
+
+/// Extract JSON from a response, stripping markdown fences if present.
+fn extract_json(raw: &str) -> String {
+    let trimmed = raw.trim();
+    // Strip ```json ... ``` or ``` ... ```
+    if let Some(start) = trimmed.find("```") {
+        let after = &trimmed[start + 3..];
+        let after = after.strip_prefix("json").unwrap_or(after);
+        let after = after.trim_start_matches('\n');
+        if let Some(end) = after.rfind("```") {
+            return after[..end].trim().to_string();
+        }
+    }
+    // Find first { and last }
+    if let (Some(start), Some(end)) = (trimmed.find('{'), trimmed.rfind('}')) {
+        if end > start {
+            return trimmed[start..=end].to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
+/// Set a YAML value by dot-notation path.  Creates intermediate maps as needed.
+fn set_field_by_path(root: &mut serde_yaml::Value, path: &str, new_value: &str) -> Result<(), String> {
+    let parts: Vec<&str> = path.split('.').collect();
+    if parts.is_empty() {
+        return Err("empty field_path".into());
+    }
+
+    // Navigate/create nested structure
+    let mut current = root;
+    for part in &parts[..parts.len() - 1] {
+        if !current.is_mapping() {
+            *current = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        }
+        let map = current.as_mapping_mut().unwrap();
+        let key = serde_yaml::Value::String(part.to_string());
+        if !map.contains_key(&key) {
+            map.insert(key.clone(), serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+        }
+        current = map.get_mut(&key).unwrap();
+    }
+
+    if !current.is_mapping() {
+        *current = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+    }
+    let last = parts.last().unwrap();
+    let map = current.as_mapping_mut().unwrap();
+    // Try to parse new_value as number/bool/null, else keep as string.
+    let parsed: serde_yaml::Value = serde_yaml::from_str(new_value)
+        .unwrap_or_else(|_| serde_yaml::Value::String(new_value.to_string()));
+    map.insert(serde_yaml::Value::String(last.to_string()), parsed);
+    Ok(())
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 fn url_to_addr(url: &str) -> Option<std::net::SocketAddr> {
@@ -436,14 +643,74 @@ mod tests {
     }
 
     /// Print the actual diagnostic report for this workspace.
-    /// Run: cargo test --bin sirin print_diagnostics -- --ignored --nocapture
     #[test]
     #[ignore]
     fn print_diagnostics() {
-        // Ensure .env is loaded for accurate diagnostics
         let _ = dotenvy::dotenv();
         let issues = run_diagnostics();
         let report = format_report(&issues);
         println!("\n{report}");
+    }
+
+    #[test]
+    fn apply_fixes_rejects_files_outside_allowlist() {
+        let fix = ConfigFix {
+            file: "config/hackme.yaml".into(),  // NOT in allowlist
+            field_path: "foo".into(),
+            current_value: "".into(),
+            new_value: "bar".into(),
+            reason: "evil".into(),
+        };
+        let result = apply_fixes(&[fix]);
+        assert!(result.is_err(), "should reject non-allowlisted file");
+        assert!(result.unwrap_err().contains("allowlist"));
+    }
+
+    #[test]
+    fn apply_fixes_rejects_env_file() {
+        let fix = ConfigFix {
+            file: ".env".into(),
+            field_path: "GEMINI_API_KEY".into(),
+            current_value: "".into(),
+            new_value: "leaked".into(),
+            reason: "attack".into(),
+        };
+        let result = apply_fixes(&[fix]);
+        assert!(result.is_err(), "should reject .env file");
+    }
+
+    #[test]
+    fn set_field_by_path_nested() {
+        let mut root = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        set_field_by_path(&mut root, "a.b.c", "42").expect("set");
+        let yaml = serde_yaml::to_string(&root).unwrap();
+        assert!(yaml.contains("a:"));
+        assert!(yaml.contains("b:"));
+        assert!(yaml.contains("c: 42"));
+    }
+
+    #[test]
+    fn set_field_by_path_preserves_existing() {
+        let mut root: serde_yaml::Value = serde_yaml::from_str("x: 1\ny: 2").unwrap();
+        set_field_by_path(&mut root, "z", "3").expect("set");
+        let yaml = serde_yaml::to_string(&root).unwrap();
+        assert!(yaml.contains("x: 1"));
+        assert!(yaml.contains("y: 2"));
+        assert!(yaml.contains("z: 3"));
+    }
+
+    #[test]
+    fn extract_json_handles_markdown_fences() {
+        let raw = "```json\n{\"analysis\":\"ok\",\"proposed_fixes\":[]}\n```";
+        let json = extract_json(raw);
+        assert!(json.contains("analysis"));
+        assert!(!json.contains("```"));
+    }
+
+    #[test]
+    fn extract_json_handles_bare_json() {
+        let raw = "Here is the result: {\"a\":1}";
+        let json = extract_json(raw);
+        assert_eq!(json, "{\"a\":1}");
     }
 }

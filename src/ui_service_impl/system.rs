@@ -170,3 +170,32 @@ pub(super) fn config_check(_svc: &RealService) -> Vec<ConfigIssueView> {
         })
         .collect()
 }
+
+pub(super) fn config_ai_analyze(_svc: &RealService) -> Result<AiAdviceView, String> {
+    // LLM call is async — bridge to sync via tokio runtime
+    let rt = tokio::runtime::Runtime::new().map_err(|e| format!("runtime: {e}"))?;
+    let advice = rt.block_on(crate::config_check::ai_analyze())?;
+    Ok(AiAdviceView {
+        analysis: advice.analysis,
+        proposed_fixes: advice.proposed_fixes.into_iter().map(|f| ConfigFixView {
+            file: f.file,
+            field_path: f.field_path,
+            current_value: f.current_value,
+            new_value: f.new_value,
+            reason: f.reason,
+        }).collect(),
+    })
+}
+
+pub(super) fn config_apply_fixes(svc: &RealService, fixes: Vec<ConfigFixView>) -> Result<Vec<String>, String> {
+    let core_fixes: Vec<crate::config_check::ConfigFix> = fixes.into_iter().map(|f| crate::config_check::ConfigFix {
+        file: f.file,
+        field_path: f.field_path,
+        current_value: f.current_value,
+        new_value: f.new_value,
+        reason: f.reason,
+    }).collect();
+    let applied = crate::config_check::apply_fixes(&core_fixes)?;
+    svc.push_toast(ToastLevel::Success, format!("已套用 {} 項配置修改（重啟生效）", applied.len()));
+    Ok(applied)
+}
