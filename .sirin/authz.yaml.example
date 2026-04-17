@@ -1,0 +1,123 @@
+# Sirin Pre-Authorization config — EXAMPLE
+#
+# Copy to .sirin/authz.yaml (or ~/.sirin/authz.yaml for user-global) and customize.
+#
+# Precedence: deny > readonly_allow > allow > ask > default-deny
+# Repo-local overrides user-global; both merge with built-in Rust defaults.
+#
+# Full spec:            docs/DESIGN_AUTHZ.md
+# End-user usage doc:   docs/AUTHZ.md
+# ─────────────────────────────────────────────────────────────────────
+
+# mode: selective | strict | permissive | plan
+#   selective   — 預設:deny-by-default + explicit allow/deny/ask lists
+#   strict      — 所有 mutating action 都彈 ask(CI 不適用)
+#   permissive  — 只擋 deny,其他全 allow(本地 dev / 高信任場景)
+#   plan        — 禁所有 mutating(只允許 readonly,適合 AI 規劃階段)
+mode: selective
+
+# 純讀 action 無條件通過(yaml 只能擴充不能收斂內建 list)
+readonly_allow:
+  - ax_tree
+  - ax_find
+  - ax_value
+  - screenshot
+  - url
+  - title
+  - console
+  - network
+  - exists
+  - attr
+  - read
+
+# 各 MCP client 的 policy group
+# client_id 格式:<clientInfo.name>@<version>,如 claude-code@0.3.2
+# 支援 wildcard;沒 match 時 fallback "*"
+clients:
+  # Claude Code 跑在本地 repo,最高信任
+  "claude-code@*":
+    mode: permissive
+  # Claude Desktop 有可能跨 repo 使用
+  "claude-desktop@*":
+    mode: selective
+  # Cursor 同上
+  "cursor@*":
+    mode: selective
+  # Fallback
+  "*":
+    mode: selective
+
+# 允許規則
+# 欄位(任何組合):
+#   action            action 名(支援 * 前後綴,如 "ax_*")
+#   url_pattern       URL glob(* 一段,** 任意段)
+#   js_contains       只用於 eval:JS 字串需含此子字串
+#   name_substring    用於 ax_*:a11y name 需含此子字串
+#   name_regex        用於 ax_*:a11y name regex
+allow:
+  # ── 瀏覽:生產 / dev / 本地 ────────────────────────────────
+  - { action: goto, url_pattern: "https://redandan.github.io/**" }
+  - { action: goto, url_pattern: "https://agoramarket.purrtechllc.com/**" }
+  - { action: goto, url_pattern: "http://localhost:*/**" }
+  - { action: goto, url_pattern: "http://127.0.0.1:*/**" }
+
+  # ── a11y 互動(Flutter Web 主要通道) ───────────────────────
+  - { action: "ax_*", url_pattern: "https://redandan.github.io/**" }
+  - { action: "ax_*", url_pattern: "http://localhost:*/**" }
+
+  # ── 座標 fallback(CanvasKit 無 a11y 時) ────────────────────
+  - { action: click_point, url_pattern: "https://redandan.github.io/**" }
+  - { action: type,        url_pattern: "https://redandan.github.io/**" }
+
+  # ── 瀏覽器控制(不碰敏感內容) ────────────────────────────
+  - { action: set_viewport }
+  - { action: clear_browser_state }
+  - { action: wait_for_request }
+  - { action: wait_for_new_tab }
+  - { action: scroll, url_pattern: "**" }
+  - { action: key,    url_pattern: "**" }
+  - { action: wait,   url_pattern: "**" }
+
+# 拒絕規則(永遠最優先,即使 allow 重疊)
+deny:
+  # ── 敏感網域 ───────────────────────────────────────────────
+  - { url_pattern: "https://**paypal**/**" }
+  - { url_pattern: "https://**bank**/**" }
+  - { url_pattern: "https://*.stripe.com/**" }
+  - { url_pattern: "https://*.coinbase.com/**" }
+  - { url_pattern: "https://*.binance.com/**" }
+  - { url_pattern: "https://metamask.io/**" }
+
+  # ── 敏感 JavaScript(eval action) ─────────────────────────
+  - { action: eval, js_contains: "document.cookie" }
+  - { action: eval, js_contains: "window.ethereum" }
+  - { action: eval, js_contains: "navigator.credentials" }
+  - { action: eval, js_contains: "chrome.storage" }
+  - { action: eval, js_contains: "indexedDB.open" }
+
+  # ── 敏感輸入(ax_type / type) ────────────────────────────
+  - { action: "ax_type*",
+      not_name_matches: ["password", "密碼", "private key", "seed phrase", "助記詞", "ssn", "社會安全"] }
+
+# 需要彈 prompt 的 URL / action(一次性,人類一鍵決定)
+ask:
+  - { action: goto, url_pattern: "https://**.google.com/**" }
+  - { action: goto, url_pattern: "https://**github.com/settings/**" }
+  - { action: goto, url_pattern: "https://**github.com/*/settings/**" }
+
+# Learn mode:未知 pattern 第一次碰到時彈 ask + 給「Allow always」選項
+learn:
+  enabled: true
+  # 新學到的 allow 寫回 repo-local 還是 user-global
+  write_back_to: repo    # repo | user | memory_only
+  # 每個 MCP session 最多彈幾次 ask(防 AI 瘋狂 spam)
+  max_asks_per_session: 20
+
+# 稽核日誌
+audit:
+  # 路徑相對 .sirin/ 目錄
+  log_path: audit.ndjson
+  # 單檔超過此 size 自動 rotate
+  max_size_mb: 10
+  # 最多保留幾個 rotated file
+  max_backups: 5
