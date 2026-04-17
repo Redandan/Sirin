@@ -2,7 +2,7 @@
 
 mod adk;
 #[allow(dead_code)] mod agent_config;
-#[allow(dead_code)] mod authz;
+mod authz;
 pub mod error;
 mod platform;
 #[allow(dead_code)] mod browser;
@@ -25,7 +25,7 @@ mod log_buffer;
 #[allow(dead_code)] mod researcher;
 #[allow(dead_code)] mod mcp_client;
 mod mcp_server;
-#[allow(dead_code)] pub mod monitor;
+pub mod monitor;
 mod rhai_engine;
 mod rpc_server;
 #[allow(dead_code)] mod teams;
@@ -131,6 +131,20 @@ fn main() {
 
     ensure_first_run_dirs();
 
+    // ── AuthZ engine init ────────────────────────────────────────────────────
+    authz::init(Some(std::path::Path::new(".")));
+    eprintln!("[main] AuthZ engine initialized");
+
+    // ── Live Monitor init ────────────────────────────────────────────────────
+    {
+        let _ = std::fs::create_dir_all(".sirin");
+        monitor::init(monitor::MonitorConfig {
+            trace_dir: std::path::PathBuf::from(".sirin"),
+            trace_size_limit: None,
+        });
+        eprintln!("[main] Live Monitor initialized");
+    }
+
     match memory::ensure_codebase_index() {
         Ok(count) if count > 0 => eprintln!("[main] Refreshed codebase index ({count} files)"),
         Ok(_) => {}
@@ -207,6 +221,9 @@ fn main() {
 
         rt.spawn(followup::run_worker(tracker.clone()));
         rt.spawn(rpc_server::start_rpc_server());
+
+        // Screenshot pump — starts only when Monitor view is active
+        monitor::spawn_screenshot_pump();
     }
 
     std::mem::forget(rt);

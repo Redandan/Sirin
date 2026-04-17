@@ -630,6 +630,10 @@ async fn call_browser_exec(args: Value) -> Result<Value, String> {
         }
     }
 
+    // ── Control gate (Pause / Step / Abort) ──────────────────────────────────
+    crate::monitor::control().gate().await
+        .map_err(|e| format!("control: {e}"))?;
+
     // ── Monitor emit ──────────────────────────────────────────────────────────
     let action_id = format!("{}-{}", &action_name, uuid_v4_short());
     crate::monitor::emit_action_start(&client_id, &action_id, &action_name, args.clone()).await;
