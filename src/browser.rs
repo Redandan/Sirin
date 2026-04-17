@@ -213,6 +213,22 @@ pub fn screenshot() -> Result<Vec<u8>, String> {
     })
 }
 
+/// Capture current tab as JPEG with the given quality (1-100).
+/// Prefer over `screenshot()` when streaming (e.g. Monitor view) — JPEG 80
+/// compresses Flutter / typical UI screens to ~50 KB vs 500 KB for PNG.
+pub fn screenshot_jpeg(quality: u8) -> Result<Vec<u8>, String> {
+    with_tab(|tab| {
+        let q = quality.clamp(1, 100) as u32;
+        tab.capture_screenshot(
+            CaptureScreenshotFormatOption::Jpeg,
+            Some(q),
+            None,
+            true,
+        )
+        .map_err(|e| format!("screenshot_jpeg: {e}"))
+    })
+}
+
 #[allow(dead_code)]
 pub fn navigate_and_screenshot(url: &str) -> Result<Vec<u8>, String> {
     ensure_open_reusing()?;
@@ -564,8 +580,25 @@ pub fn close_tab(index: usize) -> Result<(), String> {
 ///
 /// Use case: OAuth flows that pop a Google/Telegram window — Sirin
 /// previously only saw the original tab and missed the popup entirely.
-pub fn wait_for_new_tab(baseline_count: usize, timeout_ms: u64) -> Result<usize, String> {
+pub fn wait_for_new_tab(baseline_count: Option<usize>, timeout_ms: u64) -> Result<usize, String> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+
+    // Measure baseline from the SAME source the loop polls (headless_chrome's
+    // Browser.get_tabs()), not from our singleton's cached `inner.tabs` —
+    // otherwise we may compare apples to oranges and immediately succeed.
+    // We also `register_missing_tabs` first so the baseline reflects all
+    // tabs Chrome currently knows about (about:blank, etc).
+    let baseline = match baseline_count {
+        Some(n) => n,
+        None => {
+            let guard = global().lock().unwrap_or_else(|e| e.into_inner());
+            let inner = guard.as_ref().ok_or("browser not open")?;
+            inner.browser.register_missing_tabs();
+            let tabs_arc = inner.browser.get_tabs().clone();
+            let locked = tabs_arc.lock().unwrap_or_else(|e| e.into_inner());
+            locked.len()
+        }
+    };
 
     loop {
         // Force the underlying Browser to discover tabs created via window.open
@@ -586,7 +619,7 @@ pub fn wait_for_new_tab(baseline_count: usize, timeout_ms: u64) -> Result<usize,
             locked.iter().cloned().collect()
         };
 
-        if browser_tabs.len() > baseline_count {
+        if browser_tabs.len() > baseline {
             // Find the new tab(s) and adopt them into our singleton.
             let mut guard = global().lock().unwrap_or_else(|e| e.into_inner());
             let inner = guard.as_mut().ok_or("browser not open")?;
@@ -1239,6 +1272,17 @@ mod tests {
 
         close();
         println!("✓ browser_tier2_coords: all steps passed");
+    }
+
+    #[test]
+    #[ignore] // needs Chrome; E2E test
+    fn test_screenshot_jpeg_smoke() {
+        navigate_and_screenshot("https://example.com").unwrap();
+        let jpg = screenshot_jpeg(80).expect("jpeg");
+        // JPEG magic: FF D8 FF
+        assert_eq!(&jpg[..3], &[0xFF, 0xD8, 0xFF], "not a JPEG");
+        assert!(jpg.len() > 100, "too small");
+        assert!(jpg.len() < 500_000, "unexpectedly large (quality too high?)");
     }
 
     #[test]

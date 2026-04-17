@@ -883,9 +883,8 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                     // ── Multi-tab / popup ────────────────────────
                     "wait_new_tab" => {
                         let timeout = input.get("timeout").and_then(Value::as_u64).unwrap_or(10000);
-                        // baseline = current tab count
-                        let baseline = browser::list_tabs().map(|v| v.len()).unwrap_or(1);
-                        let idx = browser::wait_for_new_tab(baseline, timeout)?;
+                        // baseline=None → fn measures from same source as its loop
+                        let idx = browser::wait_for_new_tab(None, timeout)?;
                         Ok(json!({ "status": "new tab opened", "active_tab": idx }))
                     }
 
