@@ -1,7 +1,7 @@
 ---
 name: sirin-test
 description: This skill should be used when the user asks to "test a website", "run an E2E test", "verify a user flow", "check if a page works", "run browser tests", or mentions Sirin's testing capabilities. Provides the workflow for driving Sirin's AI-powered browser test runner via its MCP API (:7700/mcp).
-version: 1.1.0
+version: 1.2.0
 ---
 
 # Sirin Browser Test Runner
@@ -50,6 +50,18 @@ Drive Sirin's AI-powered browser testing from external Claude Code sessions. Unl
 | `list_fixes` | Auto-fix history (claude_session spawns) | Check if a fix is in-flight |
 | `config_diagnostics` | LLM/router/vision health report | Tests failing mysteriously — self-diagnose |
 | `browser_exec` | Single imperative browser action | **Debug / one-off exploration without a goal** |
+
+`browser_exec` accepts these `action` values:
+
+**Standard:** `goto`, `screenshot`, `screenshot_analyze`, `click`, `click_point`, `type`, `read`, `eval`, `wait`, `exists`, `attr`, `scroll`, `key`, `console`, `network`, `url`, `title`, `close`, `set_viewport`
+
+**Accessibility tree** (literal string, no vision approximation — **use these for K14/K15 exact-value assertions**):
+- `enable_a11y` — trigger Flutter semantics bridge (call before `ax_tree` on Flutter Canvas apps)
+- `ax_tree` — full a11y node list with `role`, literal `name`, literal `value`, `backend_id`, `child_ids`
+- `ax_find` (params: `role`, `name`) — single match by role + name substring
+- `ax_value` (param: `backend_id`) — exact text content (`value || name`)
+- `ax_click` / `ax_focus` (param: `backend_id`) — interaction by DOM backend id
+- `ax_type` (params: `backend_id`, `text`) — focus + insertText
 
 Plus Sirin's normal MCP tools: `memory_search`, `skill_list`, `teams_pending`, `teams_approve`, `trigger_research`.
 
@@ -130,6 +142,46 @@ Useful for:
 - Diagnosing why a test fails before retrying
 - Answering "what's on that page right now?"
 - Step-by-step exploration when the user is iterating on a flow
+
+### Workflow B.7 — Exact-string assertions (K14/K15) via accessibility tree
+
+When the user needs **exact** text comparison — wallet balances, error
+messages, token counts, transaction hashes — vision LLMs lose precision
+("about $7377" vs the real "$7376.80"). Use the `ax_*` actions instead:
+
+```
+1. browser_exec({action: "goto", target: "https://app.com/wallet",
+                 browser_headless: false})  # Flutter needs visible Chrome
+
+2. browser_exec({action: "enable_a11y"})    # required once for Flutter
+                                              # Canvas apps to expose
+                                              # the semantics tree
+
+3. browser_exec({action: "ax_find", role: "text", name: "Total Assets"})
+   → { found: true, node: { backend_id: 142, name: "Total Assets",
+                            role: "StaticText", ... } }
+
+4. browser_exec({action: "ax_value", backend_id: 142})
+   → { backend_id: 142, text: "$7376.80" }    ← LITERAL string
+
+5. (do something that changes the balance)
+
+6. browser_exec({action: "ax_value", backend_id: 142})
+   → { backend_id: 142, text: "$7277.50" }    ← LITERAL string
+
+7. assert: 7376.80 - 7277.50 == 99.30  ← exact, not "about"
+```
+
+**Tips:**
+- For Flutter apps, `enable_a11y` is required to wake the semantics
+  tree. Sirin auto-retries this if a subsequent `ax_tree` returns
+  ≤2 nodes (Flutter periodically collapses the tree).
+- `ax_find` `name` is **substring + case-insensitive**. Pass exact
+  text in `ax_value` for the precise comparison.
+- `ax_click` uses `DOM.getBoxModel` → element centre point. More
+  reliable than CSS selectors on Flutter Canvas / shadow DOM.
+- For text input on Flutter, use `ax_type` (focus + insertText)
+  rather than `type` (CSS-selector-based, won't find Canvas inputs).
 
 ### Workflow C — Debug a failed run
 
@@ -218,15 +270,38 @@ CanvasKit paints to `<canvas>`, not HTML elements. `read`, `exists`,
 `eval(document.body.innerText)` all return empty/false. Don't use
 those for text assertions.
 
-**→ FIX: `screenshot_analyze` action + Gemini Vision** reads the
-rendered canvas pixels.
+**→ Two FIXes, by use case:**
+
+**A) Exact text comparison (K14/K15) — use `ax_*` (preferred)**
+
+The accessibility tree exposes Flutter's semantics nodes with **literal**
+strings (`"$7376.80"`, not vision's "about $7377"). Required when the
+test asserts numbers, error messages, or specific copy.
 
 ```yaml
 goal: |
-  ⚠️ Flutter CanvasKit app. DOM is empty — use screenshot_analyze:
+  ⚠️ Flutter CanvasKit app. Use accessibility tree for exact assertions:
+    1. {action:"enable_a11y"}                # wake Flutter semantics
+    2. {action:"ax_find", role:"text", name:"Total Assets"}
+       → backend_id of the balance display
+    3. {action:"ax_value", backend_id: <N>}  → literal "$7376.80"
+  Compare strings exactly. Don't use screenshot_analyze for numbers.
+
+success_criteria:
+  - "ax_value of total assets equals $7376.80 before action"
+  - "ax_value of total assets equals $7277.50 after action"
+```
+
+**B) Visual / layout / "is it broken" checks — use `screenshot_analyze`**
+
+When the question is fuzzy ("does the login form look right?",
+"is the page rendered at all?"), vision is fine.
+
+```yaml
+goal: |
+  ⚠️ Flutter CanvasKit app. Use screenshot_analyze for visual checks:
     {action:"screenshot_analyze",
      target:"Does the page show the login form with an email field?"}
-  Don't try eval/read/exists for text content.
 
 success_criteria:
   - "Vision confirms the brand title is visible"

@@ -220,6 +220,20 @@ Supported `action` values:
 | `title` | — | `{title}` |
 | `close` | — | `{status}` |
 
+**Accessibility tree actions** (literal text, no vision approximation —
+required for K14/K15-style exact comparisons of $7376.80, error
+messages, token counts):
+
+| Action | Required args | Returns |
+|--------|---------------|---------|
+| `enable_a11y` | — | `{status}` — call before `ax_tree` on Flutter Canvas apps |
+| `ax_tree` | — (optional `include_ignored`) | `{count, nodes:[{node_id, backend_id, role, name, value, description, child_ids}]}` |
+| `ax_find` | `role` and/or `name` (substring, case-insensitive) | `{found, node?}` |
+| `ax_value` | `backend_id` | `{backend_id, text}` — literal `value || name` |
+| `ax_click` | `backend_id` | `{status, backend_id}` — clicks element centre via `DOM.getBoxModel` |
+| `ax_focus` | `backend_id` | `{status, backend_id}` |
+| `ax_type` | `backend_id`, `text` | `{status, backend_id, length}` — focus + insertText |
+
 ## Workflow Patterns
 
 ### Pattern A — Test a known YAML goal
@@ -240,6 +254,28 @@ get_full_observation  → un-truncated tool output per step
 list_recent_runs      → is this test historically flaky?
 list_fixes            → is an auto-fix already in progress?
 ```
+
+### Pattern F — Exact-string assertion (K14/K15) via accessibility tree
+
+When asserting on numeric values, error messages, or specific copy
+where vision LLM precision loss matters:
+
+```
+1. browser_exec({action:"goto", target:"https://app/wallet",
+                 browser_headless:false})    # Flutter needs visible
+2. browser_exec({action:"enable_a11y"})       # wake Flutter semantics
+3. browser_exec({action:"ax_find", role:"text", name:"Total Assets"})
+   → {found:true, node:{backend_id: 142, ...}}
+4. browser_exec({action:"ax_value", backend_id: 142})
+   → {text: "$7376.80"}                       # LITERAL, not "about 7377"
+5. (perform an action)
+6. browser_exec({action:"ax_value", backend_id: 142})
+   → {text: "$7277.50"}
+7. assert: 7376.80 - 7277.50 == 99.30          # exact diff
+```
+
+`ax_*` is faster than `screenshot_analyze` (no LLM call) and works on
+Flutter CanvasKit (which has no real DOM but does expose semantics).
 
 ### Pattern D — Diagnose Sirin itself
 ```
@@ -285,6 +321,19 @@ all-black PNG regardless of what the page should show. Fix: pass
 Fragment changes don't emit `Page.frameNavigated`. Sirin auto-detects
 this case and uses `location.hash = ...` + short settle delay instead
 of waiting for a navigation event. No user action needed — just works.
+
+### Vision approximates numbers — use `ax_*` for exact values
+`screenshot_analyze` describes a page ("balance is about 7377 USDT");
+the accessibility tree returns the literal string ("$7376.80").  For
+any test that compares amounts, IDs, error messages, or hash strings
+exactly, use the `ax_*` actions instead.
+
+### Flutter semantics tree collapses
+Flutter Web auto-disables its semantics tree when no AT activity is
+detected.  Symptom: `ax_tree` returns 1-2 nodes instead of dozens.
+Sirin's `get_full_tree` detects this (≤2 nodes) and auto-retriggers
+`enable_a11y` (placeholder click + Tab×2) before retrying.  No user
+action required.
 
 ### Mode-switch race
 Switching between `browser_headless: true` and `browser_headless: false`
