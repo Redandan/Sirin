@@ -28,10 +28,13 @@ use std::sync::{Arc, OnceLock};
 use chrono::Utc;
 use serde_json::Value;
 
+pub mod control;
 pub mod events;
+pub mod screenshot_pump;
 pub mod state;
 pub mod trace_writer;
 
+pub use control::{ControlSnapshot, ControlState};
 pub use events::{AuthzDecision, ClientCommand, ServerEvent, SubscribeChannel};
 pub use state::MonitorState;
 pub use trace_writer::TraceWriter;
@@ -282,6 +285,26 @@ pub async fn emit_state(paused: bool, step: bool, aborted: bool) {
 pub async fn emit_goodbye() {
     let Some(st) = state() else { return };
     st.push_event(ServerEvent::Goodbye { ts: Utc::now() });
+}
+
+// ── Control + pump helpers ────────────────────────────────────────────────────
+
+/// Returns the global `ControlState` (initialised on first call).
+pub fn control() -> Arc<crate::monitor::control::ControlState> {
+    crate::monitor::control::global()
+}
+
+/// Spawn the screenshot pump as a background tokio task.
+///
+/// Call once from `main.rs` after `monitor::init()`.
+/// The task runs forever; it self-throttles when `view_active` is false.
+pub fn spawn_screenshot_pump() {
+    if let Some(state) = state() {
+        tokio::spawn(crate::monitor::screenshot_pump::run(
+            state,
+            crate::monitor::screenshot_pump::DEFAULT_INTERVAL_MS,
+        ));
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
