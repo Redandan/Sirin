@@ -888,8 +888,13 @@ async fn call_browser_exec(args: Value) -> Result<Value, String> {
             }
             // ── Accessibility tree (literal text — for exact assertions) ──
             "enable_a11y" => {
-                crate::browser_ax::enable_flutter_semantics()?;
-                Ok(json!({ "status": "semantics enabled" }))
+                // Use get_full_tree() which bootstraps Flutter semantics only when
+                // needed (tree ≤2 nodes) and uses the safe Strategy A/B/C priority.
+                // Do NOT call enable_flutter_semantics() directly — after login /
+                // hash-route navigation the Tab fallback (Strategy C) causes
+                // side-effect navigation and resets the tab URL to about:blank.
+                let tree = crate::browser_ax::get_full_tree(false)?;
+                Ok(json!({ "status": "semantics enabled", "ax_node_count": tree.len() }))
             }
             "ax_tree" => {
                 let nodes = crate::browser_ax::get_full_tree(include_ignored)?;

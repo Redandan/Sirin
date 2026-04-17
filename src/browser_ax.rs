@@ -473,38 +473,73 @@ pub fn type_into_backend_verified(backend_id: u32, text: &str) -> Result<TypeVer
 /// Trigger Flutter Web's a11y semantics tree.
 ///
 /// Without this, `Accessibility.getFullAXTree` on a Flutter app returns only
-/// `<flt-glass-pane>` and the placeholder.  Worse, Flutter periodically
-/// **collapses** the semantics tree if it doesn't see ongoing AT activity —
-/// so this function is called every time `get_full_tree` notices a tree of
-/// ≤2 nodes (likely collapsed state).
+/// `<flt-glass-pane>` and the placeholder.  Flutter also periodically
+/// **collapses** the semantics tree if it doesn't see AT activity —
+/// this function is called every time `get_full_tree` notices ≤2 nodes.
 ///
-/// Strategy: click the canonical placeholder + Tab × 2 + Shift+Tab to make
-/// Flutter believe a screen reader is exploring the page.  Then 800ms settle.
+/// ## Strategy (in priority order)
+///
+/// **A — "Enable accessibility" button** (Flutter 3.x+ explicit opt-in):
+/// Some Flutter builds surface an [button "Enable accessibility"] in the
+/// minimal AX tree.  Clicking it is the cleanest way to activate semantics
+/// without keyboard side-effects.
+///
+/// **B — flt-semantics-placeholder JS click**:
+/// The traditional trigger.  Still present in most Flutter Web builds.
+///
+/// **C — Tab×2 keyboard fallback** (last resort, ONLY if B also failed):
+/// ⚠️ Tab key events can cause navigation side-effects on pages that have
+/// active Flutter routing (e.g. after login → `#/home`).  Use only when
+/// A and B both fail.
 pub fn enable_flutter_semantics() -> Result<(), String> {
-    // Method 1: click the placeholder if present.
+    // ── Strategy A: "Enable accessibility" button in the AX tree ────────
+    // Fetch the raw (possibly collapsed) tree and look for the button by name.
+    if let Ok(raw) = fetch_tree_raw() {
+        if let Some(nodes) = raw.get("nodes").and_then(|v| v.as_array()) {
+            for node in nodes {
+                let name = node.get("name")
+                    .and_then(|n| n.get("value"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+                if name.contains("enable accessibility") {
+                    if let Some(bid) = node.get("backendDOMNodeId").and_then(|v| v.as_u64()) {
+                        tracing::info!("[browser_ax] clicking 'Enable accessibility' button (backend_id={bid})");
+                        let _ = click_backend(bid as u32);
+                        std::thread::sleep(std::time::Duration::from_millis(800));
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Strategy B: flt-semantics-placeholder JS click ───────────────────
     let clicked = crate::browser::evaluate_js(
         r#"(() => {
             const ph = document.querySelector('flt-semantics-placeholder');
-            if (!ph) return false;
+            if (!ph) return "false";
             ph.click();
-            return true;
+            return "true";
         })()"#
     ).unwrap_or_default();
 
-    // Method 2: synthetic Tab/Shift-Tab keys — Flutter watches for these as
-    // an "AT exploring page" signal.  Multiple presses helps — single Tab is
-    // sometimes ignored.
-    let _ = crate::browser::press_key("Tab");
-    std::thread::sleep(std::time::Duration::from_millis(120));
-    let _ = crate::browser::press_key("Tab");
-    std::thread::sleep(std::time::Duration::from_millis(120));
+    if clicked == "true" {
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        return Ok(());
+    }
 
-    // Settle so Flutter has time to rebuild semantics.
+    // ── Strategy C: Tab×2 — last resort only ────────────────────────────
+    // Only reached when neither A nor B found a trigger element.
+    // Tab key events are safe only if the page has no active routing that
+    // intercepts keyboard focus (plain HTML / login pages before navigation).
+    tracing::warn!("[browser_ax] flt-semantics-placeholder not found; using Tab×2 fallback");
+    let _ = crate::browser::press_key("Tab");
+    std::thread::sleep(std::time::Duration::from_millis(120));
+    let _ = crate::browser::press_key("Tab");
+    std::thread::sleep(std::time::Duration::from_millis(120));
     std::thread::sleep(std::time::Duration::from_millis(800));
 
-    if clicked == "false" {
-        tracing::info!("[browser_ax] flt-semantics-placeholder not found (Tab fallback used)");
-    }
     Ok(())
 }
 
