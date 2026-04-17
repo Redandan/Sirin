@@ -123,18 +123,30 @@ pub fn enable() -> Result<(), String> {
 /// Uses a raw JSON return type to tolerate AXPropertyName values the
 /// crate's strict enum doesn't yet know about (e.g. `uninteresting`).
 ///
-/// **Flutter trap**: Flutter Web's semantics tree **collapses to a single
-/// RootWebArea** if it doesn't see ongoing AT activity.  We probe the first
-/// result, and if it's just the root, re-trigger semantics and retry once.
+/// **Flutter trap — two distinct ≤2-node situations**:
+///
+/// 1. **Cold start**: semantics never activated → need bootstrap (A/B).
+/// 2. **Post-navigation teardown** (Issue #20): Flutter SPA rebuilt the
+///    Semantics tree after an `ax_click` route change; tree is transiently 1
+///    node and will recover on its own within ~1s.  Bootstrapping here fires
+///    Tab×2 which resets the URL to about:blank.
+///
+/// Fix: before bootstrapping, poll 3× × 400ms to let Flutter self-recover
+/// (covers case 2).  If tree stays tiny after recovery window, bootstrap
+/// A/B only — Tab×2 (Strategy C) has been permanently removed.
 pub fn get_full_tree(include_ignored: bool) -> Result<Vec<AxNode>, String> {
     enable()?;
     let mut tree = fetch_tree_raw()?;
 
-    // Flutter collapse detection: if only 1-2 nodes and the root has empty
-    // name, the semantics bridge has gone to sleep.  Wake it and retry.
-    if tree.get("nodes").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0) <= 2 {
-        let _ = enable_flutter_semantics();
-        std::thread::sleep(std::time::Duration::from_millis(300));
+    if raw_node_count(&tree) <= 2 {
+        // Wait for potential post-navigation transient teardown to resolve.
+        // Flutter rebuilds the Semantics tree after SPA route changes; the
+        // window is usually 300-800ms.  3 × 400ms = 1.2s covers it.
+        if !poll_tree_recovery(3, 400) {
+            // Still tiny — attempt bootstrap (A/B; Tab×2 removed, see Issue #20).
+            let _ = enable_flutter_semantics();
+            std::thread::sleep(std::time::Duration::from_millis(400));
+        }
         tree = fetch_tree_raw()?;
     }
 
@@ -176,6 +188,26 @@ fn fetch_tree_raw() -> Result<serde_json::Value, String> {
         tab.call_method(RawGetFullAxTree {})
             .map_err(|e| format!("Accessibility.getFullAXTree: {e}"))
     })
+}
+
+/// Count nodes in a raw `getFullAXTree` response.
+fn raw_node_count(raw: &serde_json::Value) -> usize {
+    raw.get("nodes").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0)
+}
+
+/// Poll the raw AX tree up to `attempts` times, sleeping `interval_ms`
+/// between each attempt.  Returns `true` as soon as the tree grows beyond
+/// 2 nodes (indicating Flutter Semantics has recovered from teardown).
+fn poll_tree_recovery(attempts: u32, interval_ms: u64) -> bool {
+    for _ in 0..attempts {
+        std::thread::sleep(std::time::Duration::from_millis(interval_ms));
+        if let Ok(raw) = fetch_tree_raw() {
+            if raw_node_count(&raw) > 2 {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Pull `node[field].value` from a raw AXNode JSON.  CDP wraps text values as
@@ -535,7 +567,7 @@ pub fn type_into_backend_verified(backend_id: u32, text: &str) -> Result<TypeVer
 /// Without this, `Accessibility.getFullAXTree` on a Flutter app returns only
 /// `<flt-glass-pane>` and the placeholder.  Flutter also periodically
 /// **collapses** the semantics tree if it doesn't see AT activity —
-/// this function is called every time `get_full_tree` notices ≤2 nodes.
+/// called by `get_full_tree` after the teardown-recovery poll window.
 ///
 /// ## Strategy (in priority order)
 ///
@@ -547,10 +579,12 @@ pub fn type_into_backend_verified(backend_id: u32, text: &str) -> Result<TypeVer
 /// **B — flt-semantics-placeholder JS click**:
 /// The traditional trigger.  Still present in most Flutter Web builds.
 ///
-/// **C — Tab×2 keyboard fallback** (last resort, ONLY if B also failed):
-/// ⚠️ Tab key events can cause navigation side-effects on pages that have
-/// active Flutter routing (e.g. after login → `#/home`).  Use only when
-/// A and B both fail.
+/// **C — REMOVED** (Issue #20):
+/// Tab×2 was the original last resort, but it causes Flutter's active router
+/// to intercept the Tab key event and reset the page URL to about:blank on
+/// any page with active routing (post-ax_click navigation).  If A and B both
+/// fail, we warn and return Ok(()) — the caller surfaces a small tree and the
+/// agent can use `wait_for_ax_ready` to wait for tree recovery.
 pub fn enable_flutter_semantics() -> Result<(), String> {
     // ── Strategy A: "Enable accessibility" button in the AX tree ────────
     // Fetch the raw (possibly collapsed) tree and look for the button by name.
@@ -589,17 +623,23 @@ pub fn enable_flutter_semantics() -> Result<(), String> {
         return Ok(());
     }
 
-    // ── Strategy C: Tab×2 — last resort only ────────────────────────────
-    // Only reached when neither A nor B found a trigger element.
-    // Tab key events are safe only if the page has no active routing that
-    // intercepts keyboard focus (plain HTML / login pages before navigation).
-    tracing::warn!("[browser_ax] flt-semantics-placeholder not found; using Tab×2 fallback");
-    let _ = crate::browser::press_key("Tab");
-    std::thread::sleep(std::time::Duration::from_millis(120));
-    let _ = crate::browser::press_key("Tab");
-    std::thread::sleep(std::time::Duration::from_millis(120));
-    std::thread::sleep(std::time::Duration::from_millis(800));
-
+    // ── Strategy C: Tab×2 — PERMANENTLY REMOVED (Issue #20) ────────────
+    //
+    // Tab×2 sent keyboard events that Flutter's active router intercepted,
+    // resetting the URL to about:blank on any page visited after an ax_click
+    // navigation (post-click teardown: tree = 1 node, placeholder detached,
+    // both A and B fail → Tab×2 fires into the new route → about:blank).
+    //
+    // Removing it means: if A and B both fail, we return Ok(()) and the tree
+    // stays collapsed.  The caller (get_full_tree) will surface a small tree,
+    // which the agent handles via wait_for_ax_ready + retry rather than
+    // silently corrupting browser state.
+    tracing::warn!(
+        "[browser_ax] enable_flutter_semantics: A and B both failed \
+         (no 'Enable accessibility' button, flt-semantics-placeholder absent/detached). \
+         Tab×2 fallback disabled (Issue #20). \
+         Use wait_for_ax_ready to wait for tree recovery."
+    );
     Ok(())
 }
 
