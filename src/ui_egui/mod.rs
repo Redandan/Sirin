@@ -9,6 +9,7 @@ mod log_view;
 mod workflow;
 mod meeting;
 mod browser;
+mod monitor;
 
 use std::sync::Arc;
 use std::collections::VecDeque;
@@ -20,7 +21,7 @@ use crate::ui_service::*;
 // ── View ─────────────────────────────────────────────────────────────────────
 
 #[derive(PartialEq, Clone)]
-enum View { Workspace(usize), Settings, Log, Workflow, Meeting, Browser }
+enum View { Workspace(usize), Settings, Log, Workflow, Meeting, Browser, Monitor }
 
 // ── Toast ────────────────────────────────────────────────────────────────────
 
@@ -55,6 +56,7 @@ pub struct SirinApp {
     workflow_state: workflow::WorkflowUiState,
     meeting_state: meeting::MeetingState,
     browser_state: browser::BrowserUiState,
+    monitor_state: monitor::MonitorViewState,
 }
 
 impl SirinApp {
@@ -72,6 +74,7 @@ impl SirinApp {
             log_state: Default::default(), workspace_state: Default::default(),
             settings_state: Default::default(), workflow_state: Default::default(),
             meeting_state: Default::default(), browser_state: Default::default(),
+            monitor_state: Default::default(),
         }
     }
 
@@ -88,6 +91,13 @@ impl eframe::App for SirinApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if self.last_refresh.elapsed() > std::time::Duration::from_secs(5) { self.refresh(); }
         ctx.request_repaint_after(std::time::Duration::from_secs(5));
+
+        // Deactivate screenshot pump when Monitor view is not open
+        if !matches!(self.view, View::Monitor) {
+            if let Some(ms) = crate::monitor::state() {
+                ms.set_view_active(false);
+            }
+        }
 
         for te in self.svc.poll_toasts() { self.toasts.push_back(Toast::from_event(te)); }
         let now = std::time::Instant::now();
@@ -114,6 +124,7 @@ impl eframe::App for SirinApp {
                         View::Workflow => "Skill 開發".into(),
                         View::Meeting => "會議室".into(),
                         View::Browser => "Browser".into(),
+                        View::Monitor => "Monitor".into(),
                     };
                     ui.label(RichText::new(&title).size(theme::FONT_HEADING).strong().color(theme::TEXT));
 
@@ -139,6 +150,7 @@ impl eframe::App for SirinApp {
                     View::Workflow => workflow::show(ui, &self.svc, &mut self.workflow_state),
                     View::Meeting => meeting::show(ui, &self.svc, &self.agents, &mut self.meeting_state),
                     View::Browser => browser::show(ui, &self.svc, &mut self.browser_state),
+                    View::Monitor => monitor::show(ui, &mut self.monitor_state),
                 }
             });
 

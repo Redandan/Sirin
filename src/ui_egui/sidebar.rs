@@ -132,6 +132,7 @@ pub fn show(
             // ── TOOLS ───────────────────────────────────────────────────
             group_label(ui, "TOOLS");
             nav_item(ui, "Browser", View::Browser, view);
+            nav_item(ui, "Monitor", View::Monitor, view);
 
             // ── Bottom status ────────────────────────────────────────────
             ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
