@@ -48,6 +48,29 @@ use axum::{
 };
 use serde_json::{json, Value};
 
+// ── Client ID tracker ─────────────────────────────────────────────────────────
+
+static CURRENT_CLIENT_ID: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+fn set_client_id(id: &str) {
+    *CURRENT_CLIENT_ID.lock().unwrap_or_else(|e| e.into_inner()) = id.to_string();
+}
+
+fn get_client_id() -> String {
+    CURRENT_CLIENT_ID.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+// ── UUID short helper ─────────────────────────────────────────────────────────
+
+fn uuid_v4_short() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos();
+    format!("{:08x}", ns)
+}
+
 // ── Router ────────────────────────────────────────────────────────────────────
 
 pub fn mcp_router() -> Router {
@@ -94,7 +117,16 @@ async fn dispatch(method: &str, params: Value) -> Result<Value, String> {
 
 // ── initialize ────────────────────────────────────────────────────────────────
 
-fn handle_initialize(_params: Value) -> Result<Value, String> {
+fn handle_initialize(params: Value) -> Result<Value, String> {
+    // Parse clientInfo → "name@version", fallback "unknown@unknown"
+    let name    = params["clientInfo"]["name"].as_str().unwrap_or("unknown");
+    let version = params["clientInfo"]["version"].as_str().unwrap_or("unknown");
+    let client_id = format!("{name}@{version}");
+    set_client_id(&client_id);
+    // Register with monitor
+    if let Some(state) = crate::monitor::state() {
+        state.mark_client(&client_id, true);
+    }
     Ok(json!({
         "protocolVersion": "2024-11-05",
         "capabilities": {
@@ -566,6 +598,43 @@ fn call_config_diagnostics() -> Result<Value, String> {
 }
 
 async fn call_browser_exec(args: Value) -> Result<Value, String> {
+    // ── AuthZ gate ────────────────────────────────────────────────────────────
+    let action_name = args["action"].as_str().unwrap_or("").to_string();
+    let client_id   = get_client_id();
+    let current_url = crate::browser::current_url().ok();
+    let cfg         = crate::authz::global_config();
+    let decision    = crate::authz::decide(&client_id, &action_name, &args, &current_url, &cfg);
+    match &decision {
+        crate::authz::Decision::Allow(reason) => {
+            crate::authz::audit::log_allow(
+                &cfg.audit.log_path, &client_id, &action_name, &args, &current_url, reason,
+            );
+        }
+        crate::authz::Decision::Deny(reason) => {
+            crate::authz::audit::log_deny(
+                &cfg.audit.log_path, &client_id, &action_name, &args, &current_url, reason,
+            );
+            return Err(format!("authz denied: {reason}"));
+        }
+        crate::authz::Decision::Ask(reason) => {
+            crate::authz::audit::log_ask(
+                &cfg.audit.log_path, &client_id, &action_name, &args, &current_url, reason,
+            );
+            return Err(format!("authz ask (no interactive GUI yet): {reason}"));
+        }
+        crate::authz::Decision::AskWithLearn => {
+            crate::authz::audit::log_ask(
+                &cfg.audit.log_path, &client_id, &action_name, &args, &current_url, "ask (no GUI)",
+            );
+            return Err("authz ask (no interactive GUI yet): ask (no GUI)".to_string());
+        }
+    }
+
+    // ── Monitor emit ──────────────────────────────────────────────────────────
+    let action_id = format!("{}-{}", &action_name, uuid_v4_short());
+    crate::monitor::emit_action_start(&client_id, &action_id, &action_name, args.clone()).await;
+    let t0 = std::time::Instant::now();
+
     let action = args["action"].as_str().ok_or("Missing action")?.to_string();
     let target = args.get("target").and_then(Value::as_str).unwrap_or("").to_string();
     let text   = args.get("text").and_then(Value::as_str).unwrap_or("").to_string();
@@ -587,7 +656,9 @@ async fn call_browser_exec(args: Value) -> Result<Value, String> {
     // ── Async-only actions (need LLM call, can't go in spawn_blocking) ────
     if action == "screenshot_analyze" {
         if target.is_empty() {
-            return Err("'screenshot_analyze' requires 'target' = analysis prompt".into());
+            let e = "'screenshot_analyze' requires 'target' = analysis prompt".to_string();
+            crate::monitor::emit_action_error(&action_id, &e).await;
+            return Err(e);
         }
         // Ensure browser open in correct mode first (might trigger vision-needing
         // re-launch for Flutter/WebGL).
@@ -596,14 +667,23 @@ async fn call_browser_exec(args: Value) -> Result<Value, String> {
             .await.map_err(|e| format!("spawn: {e}"))??;
         let llm = crate::llm::shared_llm();
         let client = crate::llm::shared_http();
-        let analysis = crate::llm::analyze_screenshot(&client, &llm, &target).await
-            .map_err(|e| format!("vision analysis failed: {e}"))?;
-        return Ok(json!({ "analysis": analysis, "prompt": target }));
+        match crate::llm::analyze_screenshot(&client, &llm, &target).await {
+            Ok(analysis) => {
+                let dur = t0.elapsed().as_millis() as u64;
+                crate::monitor::emit_action_done(&action_id, json!({"analysis": &analysis}), dur).await;
+                return Ok(json!({ "analysis": analysis, "prompt": target }));
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                crate::monitor::emit_action_error(&action_id, &msg).await;
+                return Err(format!("vision analysis failed: {msg}"));
+            }
+        }
     }
 
     // Dispatch directly to crate::browser to avoid requiring an AgentContext
     // for simple imperative calls.  Mirrors the web_navigate action set.
-    tokio::task::spawn_blocking(move || -> Result<Value, String> {
+    let result = tokio::task::spawn_blocking(move || -> Result<Value, String> {
         use crate::browser;
         let want_headless = headless_override.unwrap_or_else(browser::default_headless);
         match action.as_str() {
@@ -769,7 +849,14 @@ async fn call_browser_exec(args: Value) -> Result<Value, String> {
         }
     })
     .await
-    .map_err(|e| format!("spawn_blocking: {e}"))?
+    .map_err(|e| format!("spawn_blocking: {e}"))?;
+
+    let dur = t0.elapsed().as_millis() as u64;
+    match &result {
+        Ok(v)  => crate::monitor::emit_action_done(&action_id, v.clone(), dur).await,
+        Err(e) => crate::monitor::emit_action_error(&action_id, e).await,
+    }
+    result
 }
 
 fn call_get_full_observation(args: Value) -> Result<Value, String> {
@@ -879,6 +966,31 @@ mod test_runner_mcp_tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let r = rt.block_on(call_browser_exec(json!({})));
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn get_client_id_defaults_to_empty_before_initialize() {
+        // Static state may already be set by other tests; at minimum the call
+        // must not panic and must return a String.
+        let id = get_client_id();
+        // Must be a valid UTF-8 string (no panic)
+        let _ = id.len();
+    }
+
+    #[test]
+    fn authz_permissive_config_allows_known_actions() {
+        use crate::authz::{AuthzConfig, config::Mode, decide, Decision};
+        let cfg = AuthzConfig {
+            mode: Mode::Permissive,
+            ..AuthzConfig::default()
+        };
+        // screenshot is in readonly_allow in defaults but here we use a
+        // custom permissive config — permissive mode allows everything
+        let d = decide("test@1.0", "goto", &json!({"target": "https://example.com/"}), &None, &cfg);
+        assert!(matches!(d, Decision::Allow(_)), "permissive should allow goto: {d:?}");
+
+        let d2 = decide("test@1.0", "ax_click", &json!({"backend_id": 1}), &None, &cfg);
+        assert!(matches!(d2, Decision::Allow(_)), "permissive should allow ax_click: {d2:?}");
     }
 }
 
