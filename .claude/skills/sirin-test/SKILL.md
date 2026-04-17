@@ -73,6 +73,25 @@ Drive Sirin's AI-powered browser testing from external Claude Code sessions. Unl
 - `wait_request` (params: `target` URL substring, `timeout` ms default 10000) — block until a fetch/XHR matching the substring is captured; auto-installs network capture; eliminates click-then-read races; returns the entry **including `req_body`**
 - `wait_new_tab` (param: `timeout` ms default 10000) — block until a popup/OAuth tab opens; auto-discovers via `register_missing_tabs` and switches `active` to the new tab
 
+**Condition waits** (block until state is reached — no manual sleep polling):
+- `wait_for_url` (params: `target` substring or `/regex/`, `timeout_ms` default 10000) — block until URL matches; `{matched, url, elapsed_ms}`; errors on timeout
+- `wait_for_ax_ready` (params: `min_nodes` default 20, `timeout_ms` default 10000) — block until AX tree has ≥ min_nodes nodes; use after `enable_a11y` on Flutter apps; `{node_count, elapsed_ms}`
+- `wait_for_network_idle` (params: `idle_ms` stable window default 500, `timeout_ms` default 15000) — block until network requests stop firing; `{elapsed_ms, request_count}`
+
+**Assertion shortcuts** (error on failure — no extra if-check needed in scripts):
+- `assert_ax_contains` (params: `role`, `name`) — errors with helpful message if no matching AX node found; `{passed, found, node}`
+- `assert_url_matches` (params: `target` substring or `/regex/`) — errors if current URL doesn't match; `{passed, url}`
+
+**Multi-session** (named Chrome tabs — for parallel or multi-user tests):
+- `list_sessions` — `{sessions: [{session_id, tab_index, url}]}`
+- `close_session` (param: `target` session_id) — close named tab
+
+Every `browser_exec` action accepts optional **`session_id`** param to route to a named tab. First use opens a new tab; subsequent uses reuse it.
+
+**`ax_find` scroll params** (for long lists / virtualized containers):
+- `scroll: true` — if not found initially, scroll down `scroll_step_px` px (default 400) and retry
+- `scroll_max: N` (default 10) — max number of scrolls before giving up; returns `{found, node, scrolled_times}`
+
 Plus Sirin's normal MCP tools: `memory_search`, `skill_list`, `teams_pending`, `teams_approve`, `trigger_research`.
 
 ## Core Workflows
@@ -184,8 +203,14 @@ messages, token counts, transaction hashes — vision LLMs lose precision
 
 **Tips:**
 - For Flutter apps, `enable_a11y` is required to wake the semantics
-  tree. Sirin auto-retries this if a subsequent `ax_tree` returns
-  ≤2 nodes (Flutter periodically collapses the tree).
+  tree. After calling it, use `wait_for_ax_ready` to block until the
+  tree fully populates (Flutter can take up to ~1s to build):
+  ```
+  browser_exec({action: "wait_for_ax_ready", min_nodes: 20, timeout_ms: 8000})
+  ```
+  Sirin also auto-retries the bootstrap internally if `ax_tree`
+  returns ≤2 nodes (polls 3×400ms for self-recovery first, then
+  re-triggers `enable_a11y` once).
 - `ax_find` `name` is **substring + case-insensitive**. Pass exact
   text to `ax_value` for the precise comparison.
 - `ax_click` uses `DOM.getBoxModel` → element centre point. More
@@ -349,6 +374,57 @@ run_adhoc_test({
   cleanup errors are logged and ignored
 
 The same `fixture:` key works in YAML test goals — see Test YAML Structure.
+
+### Workflow B.14 — Condition waits (no sleep polling)
+
+Instead of inserting fixed-delay `wait` calls or polling externally,
+use condition waits to block until a specific state is reached:
+
+```
+# Wait for redirect URL (after login, after form submit):
+browser_exec({action: "wait_for_url", target: "#/dashboard", timeout_ms: 8000})
+→ { matched: true, url: "https://app/#/dashboard", elapsed_ms: 1240 }
+
+# Wait for Flutter AX tree after enable_a11y:
+browser_exec({action: "wait_for_ax_ready", min_nodes: 20, timeout_ms: 8000})
+→ { node_count: 47, elapsed_ms: 600 }
+
+# Wait for async data load to settle before asserting:
+browser_exec({action: "wait_for_network_idle", idle_ms: 800, timeout_ms: 15000})
+→ { elapsed_ms: 2100, request_count: 12 }
+
+# Inline assertion (errors if not found — cleaner than if/else):
+browser_exec({action: "assert_ax_contains", role: "text", name: "Welcome"})
+→ { passed: true, found: true, node: {...} }
+browser_exec({action: "assert_url_matches", target: "#/dashboard"})
+→ { passed: true, url: "https://app/#/dashboard" }
+```
+
+### Workflow B.15 — Multi-session (parallel Chrome tabs)
+
+For multi-user tests or workflows that need two tabs simultaneously:
+
+```
+# Open two sessions (named Chrome tabs):
+browser_exec({action: "goto", target: "https://app/buyer",  session_id: "buyer"})
+browser_exec({action: "goto", target: "https://app/seller", session_id: "seller"})
+
+# Interact in each session independently:
+browser_exec({action: "ax_find", role: "button", name: "Buy",  session_id: "buyer"})
+browser_exec({action: "ax_find", role: "button", name: "Sell", session_id: "seller"})
+
+# List active sessions:
+browser_exec({action: "list_sessions"})
+→ { sessions: [
+     { session_id: "buyer",  tab_index: 1, url: "https://app/buyer" },
+     { session_id: "seller", tab_index: 2, url: "https://app/seller" }
+  ]}
+
+# Close a session when done:
+browser_exec({action: "close_session", target: "buyer"})
+```
+
+Omitting `session_id` always targets the default tab (index 0).
 
 ### Workflow C — Debug a failed run
 
@@ -597,6 +673,27 @@ When a test fails, Sirin classifies it via LLM:
 7. **`ax_snapshot` ID not found on ax_diff** → Snapshots live in memory; they reset on Sirin restart. Retake the snapshot.
 
 8. **AuthZ Ask hangs 30s then denies** → Monitor tab is closed. Open it and retry, or switch to `permissive` mode in `config/authz.yaml`.
+
+9. **bash curl fails with CJK/Unicode** (e.g. `name=登入` corrupted in shell) → use the `sirin-call` CLI instead:
+   ```bash
+   # Build once:
+   cargo build --release   # → target/release/sirin-call.exe
+   # CJK-safe key=value:
+   sirin-call browser_exec action=ax_find role=button name=登入
+   # Or pipe JSON (no shell escaping needed):
+   echo '{"action":"ax_find","role":"button","name":"購買"}' | sirin-call browser_exec
+   # List tools:
+   sirin-call --list
+   ```
+
+10. **`ax_tree` returns only 1-2 nodes after `enable_a11y`** → Flutter tree is still building.
+    Use `wait_for_ax_ready` instead of a fixed `wait`:
+    ```
+    browser_exec({action: "wait_for_ax_ready", min_nodes: 20, timeout_ms: 8000})
+    ```
+    Sirin also auto-retries internally (polls 3×400ms then re-triggers bootstrap), but
+    explicit `wait_for_ax_ready` gives you control over the timeout and is more reliable
+    in test scripts.
 
 ## Anti-patterns
 

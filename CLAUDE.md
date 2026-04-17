@@ -78,15 +78,25 @@ src/adk/                     Agent trait, AgentRuntime
   tool/                      mod (ToolRegistry) + builtins (35+ tool impls
                              incl. web_navigate / run_test / claude_session /
                              expand_observation) + fs_helpers
+src/bin/sirin_call.rs        Thin CLI wrapper for Sirin MCP API — avoids
+                             bash shell-escaping pain with CJK/Unicode payloads;
+                             key=value syntax or stdin JSON; `--list` to
+                             enumerate tools. Build: `cargo build --release`.
 src/browser.rs               Persistent Chrome session (singleton + auto-recover)
-                             — 40+ CDP actions, vision-ready, network capture
+                             — 45+ CDP actions, vision-ready, network capture
                              with req+res body, clear_browser_state,
                              wait_for_new_tab, wait_for_request, hash-route
-                             fast path, mode-switch settle delay + nav retry
+                             fast path, mode-switch settle delay + nav retry,
+                             condition waits (wait_for_url / wait_for_network_idle),
+                             named session mgmt (session_switch / list_sessions /
+                             close_session)
 src/browser_ax.rs            CDP Accessibility tree (literal text — for K14
                              exact assertions; RawGetFullAxTree workaround
-                             for headless_chrome strict-enum bug; auto
-                             retriggers Flutter semantics on collapse)
+                             for headless_chrome strict-enum bug;
+                             poll_tree_recovery + auto-retriggers Flutter
+                             semantics on collapse (Tab×2 removed — Issue #20);
+                             wait_for_ax_ready (min-node count poll);
+                             find_scrolling_by_role_and_name (scroll-to-find)
 src/test_runner/             AI-driven browser testing
   mod.rs                     Public API (run_test / spawn_run_async /
                              spawn_adhoc_run / run_all)
@@ -116,7 +126,7 @@ src/updater.rs               Auto-update via GitHub Releases (self_update crate)
 src/claude_session.rs        Spawn `claude` CLI for cross-repo bug fixing
 src/config_check.rs          Diagnostics + AI fix proposal (dual-stage confirm)
 src/mcp_client.rs            External MCP server proxy
-src/mcp_server.rs            MCP HTTP server (:7700/mcp) — 14 tools exposed
+src/mcp_server.rs            MCP HTTP server (:7700/mcp) — 16 tools exposed
 src/telegram/                MTProto listener — mod + filter + handler +
                              reply + commands + config + language + llm
 src/teams/                   Chrome CDP (Teams MutationObserver)

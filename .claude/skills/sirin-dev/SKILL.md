@@ -35,16 +35,23 @@ Failing to read these = duplicating work or contradicting decisions.
 ```
 src/
 ├── browser.rs              Persistent Chrome singleton (CDP wrapper)
-│                           — 30+ actions: navigate/click/type/wait/scroll/...
+│                           — 45+ actions: navigate/click/type/wait/scroll/...
 │                           — auto-reconnect, hash-route fast path,
 │                             headless mode switching, settle delay,
 │                             nav retry, network capture (req+res body),
 │                             clear_browser_state, wait_for_new_tab,
-│                             wait_for_request, multi-tab management
+│                             wait_for_request, multi-tab management,
+│                             condition waits (wait_for_url,
+│                             wait_for_network_idle), named session mgmt
+│                             (session_switch / list_sessions / close_session)
 ├── browser_ax.rs           CDP Accessibility tree (literal text — for
 │                           K14-style exact assertions; uses raw JSON
 │                           Method to bypass headless_chrome strict
-│                           enum bug; auto-retriggers Flutter semantics)
+│                           enum bug; poll_tree_recovery (3×400ms wait
+│                           before bootstrap — allows Flutter self-recover);
+│                           wait_for_ax_ready (min-node count poll);
+│                           find_scrolling_by_role_and_name (scroll-to-find);
+│                           Tab×2 permanently removed (Issue #20 URL reset)
 ├── platform.rs             Cross-platform path helpers (v0.2.0+)
 │                           — app_data_dir() → %LOCALAPPDATA%\Sirin (Win)
 │                           — config_dir()   → app_data_dir()/config (prod)
@@ -58,7 +65,12 @@ src/
 │                           — get_status() → UpdateStatus enum (UI polls this)
 │                           — apply_update(ver) → downloads zip, self-replaces
 │                           — Expects asset: sirin-windows-x86_64.zip / sirin.exe
-│                           — Tag v0.2.0 push triggers release CI
+│                           — Tag v0.3.0 push triggers release CI
+├── bin/sirin_call.rs       Thin CLI wrapper for the MCP API — avoids bash
+│                           shell-escaping pain with CJK/Unicode payloads;
+│                           `key=value` syntax (auto-typed JSON) or stdin JSON;
+│                           `--list` enumerates tools; reqwest blocking HTTP.
+│                           Build: `cargo build --release`
 ├── claude_session.rs       Spawn `claude` CLI cross-repo bug fixing
 ├── config_check.rs         Diagnostics + AI fix proposal (dual-confirm)
 ├── test_runner/            AI test runner (browser, not unit tests)
@@ -281,8 +293,22 @@ Use this pattern for any other CDP method that crashes on enum mismatch.
 After `Accessibility.enable` + first `getFullAXTree`, Flutter often
 silently collapses the tree to a single `RootWebArea` if it doesn't
 detect ongoing AT activity.  Symptom: 1-2 nodes returned.
-**Fix** (already in `browser_ax::get_full_tree`): detect ≤2 nodes,
-call `enable_flutter_semantics` (placeholder click + Tab×2), retry once.
+
+**Two distinct situations** look identical:
+1. **Cold start** — tree never populated; needs bootstrap (placeholder click)
+2. **Post-navigation teardown** — Flutter rebuilding; self-recovers in ~1s
+
+**Fix** (already in `browser_ax::get_full_tree`): detect ≤2 nodes, first
+**poll 3×400ms** (`poll_tree_recovery`) to allow self-recovery (situation 2),
+then call `enable_flutter_semantics` (placeholder click only — **Tab×2
+permanently removed** in Issue #20, as it triggered URL resets on hash-route
+Flutter apps via keyboard event delivery).
+
+If you need to wait for tree readiness explicitly, use `wait_for_ax_ready`:
+```rust
+browser_ax::wait_for_ax_ready(20, 5000)?;  // block ≤5s until ≥20 nodes
+```
+or via MCP: `{"action":"wait_for_ax_ready","min_nodes":20,"timeout_ms":5000}`
 
 ### Flutter CanvasKit + headless = blank
 WebGL doesn't paint in Chrome headless mode.  Set `browser_headless:
@@ -400,7 +426,7 @@ cargo test --bin sirin browser_lifecycle -- --ignored --nocapture
 Before declaring "done" on any change:
 
 1. `cargo check` → 0 errors, 0 warnings
-2. `cargo test --bin sirin` → all pass (currently 257)
+2. `cargo test --bin sirin` → all pass (currently 345)
 3. Updated docs (`SKILL.md` + `MCP_API.md` if user-facing)
 4. Conventional commit message
 5. Push to `main` (no PR workflow currently)

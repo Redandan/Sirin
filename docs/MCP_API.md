@@ -9,6 +9,37 @@ this to `7701` or similar.
 Use this when Sirin is running and you want to drive it from an external agent
 (Claude Code, Claude Desktop, custom scripts).
 
+## sirin-call CLI
+
+`sirin-call` is a thin Rust CLI wrapper that avoids bash shell-escaping pain
+with CJK/Unicode payloads in curl.  Binary: `src/bin/sirin_call.rs`.
+
+```bash
+# Build once:
+cargo build --release   # → target/release/sirin-call.exe
+
+# key=value syntax (values auto-typed — numbers/booleans/arrays parsed as JSON):
+sirin-call browser_exec action=url
+sirin-call browser_exec action=ax_find role=button name=登入
+sirin-call browser_exec action=wait_for_url target="#/home"
+
+# Stdin JSON (Unicode-safe — no bash escaping needed):
+echo '{"action":"ax_find","role":"button","name":"購買"}' | sirin-call browser_exec
+
+# List available tools:
+sirin-call --list
+
+# Port override:
+SIRIN_RPC_PORT=7701 sirin-call browser_exec action=url
+```
+
+Key=value pairs are auto-typed: numbers, booleans, arrays, and objects are
+parsed as JSON first, falling back to plain string.  Bare strings don't need
+quoting (`target=#/home` works).  Stdin JSON can supplement key=value args for
+nested fields.
+
+---
+
 ## Transport
 
 All requests POST JSON-RPC 2.0 to `/mcp`:
@@ -264,7 +295,7 @@ messages, token counts):
 |--------|---------------|---------|
 | `enable_a11y` | — | `{status}` — call before `ax_tree` on Flutter Canvas apps |
 | `ax_tree` | — (optional `include_ignored`) | `{count, nodes:[{node_id, backend_id, role, name, value, description, child_ids}]}` |
-| `ax_find` | `role` and/or `name` (substring, case-insensitive); optional `name_regex` (Rust regex, no implicit anchoring), `not_name_matches` (array of substrings to exclude), `limit` (int, default 1) | `{found, count, nodes:[...]}` — always an array; for single-match use `nodes[0]` |
+| `ax_find` | `role` and/or `name` (substring, case-insensitive); optional `name_regex` (Rust regex, no implicit anchoring), `not_name_matches` (array of substrings to exclude), `limit` (int, default 1); scroll params: `scroll` (bool, default false), `scroll_max` (int, default 10) | `{found, count, nodes:[...], scrolled_times?}` — always an array; `scroll:true` scrolls the page up to `scroll_max` times when not found immediately |
 | `ax_snapshot` | optional `id` (string key; auto-generated if omitted) | `{snapshot_id, count}` — stores current AX tree in memory keyed by `snapshot_id` |
 | `ax_diff` | `before_id`, `after_id` | `{added:[{...}], removed:[{...}], changed:[{node_id, before_name, after_name}]}` — machine-readable delta between two snapshots |
 | `wait_for_ax_change` | `baseline_id`; optional `timeout_ms` (default 5000) | `{changed:true, diff:{added,removed,changed}}` — blocks until tree differs from baseline; error on timeout |
@@ -281,6 +312,32 @@ messages, token counts):
 | `clear_state` | — | `{status:"cleared"}` — wipes cookies + localStorage + sessionStorage + IndexedDB + caches; doesn't close Chrome |
 | `wait_request` | `target` (URL substring), optional `timeout` (ms, default 10000) | `{request: {url, method, status, req_body, body, ts}}` — auto-installs network capture; eliminates click-then-read race |
 | `wait_new_tab` | optional `timeout` (ms, default 10000) | `{status, active_tab}` — polls + auto-discovers via register_missing_tabs; switches active to newest |
+
+**Condition wait actions** (block until state is reached — no manual sleep polling):
+
+| Action | Required args | Returns |
+|--------|---------------|---------|
+| `wait_for_url` | `target` (substring or `/regex/`), optional `timeout_ms` (default 10000) | `{matched, url, elapsed_ms}` — errors on timeout |
+| `wait_for_ax_ready` | optional `min_nodes` (default 20), `timeout_ms` (default 10000) | `{node_count, elapsed_ms}` — polls AX tree every 200ms; errors on timeout |
+| `wait_for_network_idle` | optional `idle_ms` (stable window, default 500), `timeout_ms` (default 15000) | `{elapsed_ms, request_count}` — stable when capture count unchanged for `idle_ms`; errors on timeout |
+
+**Assertion actions** (return `{passed:true}` or MCP error on failure):
+
+| Action | Required args | Returns |
+|--------|---------------|---------|
+| `assert_ax_contains` | `role` and/or `name` | `{passed, found, node}` — errors with details if no matching AX node |
+| `assert_url_matches` | `target` (substring or `/regex/`) | `{passed, url}` — errors if current URL doesn't match |
+
+**Multi-session actions** (named Chrome tabs):
+
+| Action | Required args | Returns |
+|--------|---------------|---------|
+| `list_sessions` | — | `{sessions: [{session_id, tab_index, url}]}` |
+| `close_session` | `target` (session_id) | `{status, closed_session_id}` — adjusts other sessions' indices |
+
+**`session_id` param (optional on ALL browser_exec actions):** routes the
+call to a named Chrome tab.  First use of a new `session_id` opens a fresh
+tab.  Omitting `session_id` uses the default tab (index 0).
 
 ---
 
@@ -538,6 +595,50 @@ For async UIs where the change fires milliseconds after the action:
                                    after_name:"Confirmed"}]}}
 ```
 
+### Pattern M — Condition waits (no sleep polling)
+
+Instead of inserting fixed-delay `wait` calls or polling externally:
+
+```
+1. browser_exec({action:"goto", target:"https://app/login"})
+2. browser_exec({action:"click", target:"#login-btn"})
+3. browser_exec({action:"wait_for_url",
+                 target:"#/dashboard", timeout_ms:8000})
+   → {matched:true, url:"https://app/#/dashboard", elapsed_ms:1240}
+4. browser_exec({action:"wait_for_ax_ready",
+                 min_nodes:20, timeout_ms:8000})
+   → {node_count:47, elapsed_ms:600}
+5. browser_exec({action:"assert_ax_contains", role:"text", name:"Welcome"})
+   → {passed:true, found:true, node:{...}}
+```
+
+Wait for async data load to finish before asserting:
+```
+browser_exec({action:"wait_for_network_idle", idle_ms:800, timeout_ms:15000})
+→ {elapsed_ms:2100, request_count:12}
+```
+
+### Pattern N — Multi-session (parallel Chrome tabs)
+
+For tests that need two users, two contexts, or two tabs running together:
+
+```
+1. browser_exec({action:"goto",
+                 target:"https://app/buyer",   session_id:"buyer"})
+2. browser_exec({action:"goto",
+                 target:"https://app/seller",  session_id:"seller"})
+3. browser_exec({action:"ax_find", role:"button", name:"Buy",
+                 session_id:"buyer"})
+4. browser_exec({action:"ax_find", role:"button", name:"Sell",
+                 session_id:"seller"})
+5. browser_exec({action:"list_sessions"})
+   → {sessions:[{session_id:"buyer",  tab_index:1, url:"..."},
+                {session_id:"seller", tab_index:2, url:"..."}]}
+6. browser_exec({action:"close_session", target:"buyer"})
+```
+
+Omitting `session_id` always targets the default tab (index 0).
+
 ### Pattern L — Fixture setup/cleanup
 
 When a test needs the app in a specific state before the goal runs:
@@ -609,9 +710,19 @@ exactly, use the `ax_*` actions instead.
 ### Flutter semantics tree collapses
 Flutter Web auto-disables its semantics tree when no AT activity is
 detected.  Symptom: `ax_tree` returns 1-2 nodes instead of dozens.
-Sirin's `get_full_tree` detects this (≤2 nodes) and auto-retriggers
-`enable_a11y` (placeholder click + Tab×2) before retrying.  No user
-action required.
+
+Two distinct situations look identical: (1) cold start — needs bootstrap;
+(2) post-navigation teardown — Flutter rebuilding, tree self-recovers in ~1s.
+
+Sirin's `get_full_tree` detects ≤2 nodes, **polls 3×400ms first** to allow
+self-recovery, then calls `enable_a11y` (placeholder click only — **Tab×2
+permanently removed** in Issue #20 because it triggered URL resets on
+hash-route Flutter apps via keyboard event delivery).
+
+Use `wait_for_ax_ready` after navigation to block until the tree is ready:
+```json
+{"action":"wait_for_ax_ready","min_nodes":20,"timeout_ms":8000}
+```
 
 ### Sequential tests share state — call `clear_state` between them
 Cookies, localStorage, sessionStorage, IndexedDB all persist across
