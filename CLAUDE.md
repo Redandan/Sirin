@@ -79,12 +79,21 @@ src/adk/                     Agent trait, AgentRuntime
                              incl. web_navigate / run_test / claude_session /
                              expand_observation) + fs_helpers
 src/browser.rs               Persistent Chrome session (singleton + auto-recover)
-                             — 35+ CDP actions, vision-ready
+                             — 40+ CDP actions, vision-ready, network capture
+                             with req+res body, clear_browser_state,
+                             wait_for_new_tab, wait_for_request, hash-route
+                             fast path, mode-switch settle delay + nav retry
+src/browser_ax.rs            CDP Accessibility tree (literal text — for K14
+                             exact assertions; RawGetFullAxTree workaround
+                             for headless_chrome strict-enum bug; auto
+                             retriggers Flutter semantics on collapse)
 src/test_runner/             AI-driven browser testing
   mod.rs                     Public API (run_test / spawn_run_async /
                              spawn_adhoc_run / run_all)
-  parser.rs                  YAML TestGoal (locale, retry, url_query, criteria)
-  executor.rs                ReAct loop driving web_navigate
+  parser.rs                  YAML TestGoal (locale, retry, url_query,
+                             browser_headless, criteria)
+  executor.rs                ReAct loop driving web_navigate; LLM prompt
+                             advertises web_navigate/ax_*/robustness actions
   triage.rs                  Failure classification + auto-fix + verification loop
   store.rs                   SQLite test_runs + auto_fix_history (with verification)
   runs.rs                    In-memory async run registry
