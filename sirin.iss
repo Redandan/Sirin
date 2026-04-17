@@ -41,7 +41,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon";  Description: "{cm:CreateDesktopIcon}";  GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
-Name: "startupentry"; Description: "自動登入時啟動 Sirin (Start with Windows)"; GroupDescription: "開機行為"; Flags: unchecked
+Name: "startupentry"; Description: "自動登入時啟動 Sirin (Start with Windows)"; GroupDescription: "開機行為"
 
 [Files]
 ; Main binary — always fresh copy
