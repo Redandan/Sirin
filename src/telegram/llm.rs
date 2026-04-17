@@ -7,6 +7,7 @@ use crate::persona::Persona;
 
 // ── Prompt builder ────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_ai_reply_prompt(
     persona: Option<&Persona>,
     user_text: &str,
@@ -102,6 +103,7 @@ Return only the final reply text."
 
 // ── Reply generator ───────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 pub async fn generate_ai_reply(
     client: &reqwest::Client,
     llm: &LlmConfig,

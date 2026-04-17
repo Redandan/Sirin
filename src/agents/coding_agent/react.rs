@@ -35,6 +35,7 @@ const MAX_PINNED: usize = 4;
 const MAX_PATCH_ERRORS: u32 = 2;
 const MAX_TOTAL_TOOL_ERRORS: u32 = 3;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn run_react_iterations(
     ctx: &AgentContext,
     request: &CodingRequest,

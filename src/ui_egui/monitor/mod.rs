@@ -192,7 +192,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut MonitorViewState) {
 
     // ── Two-column layout: screenshot + control | action feed ───────────
     let available = ui.available_size();
-    let left_w = (available.x * 0.42).max(280.0).min(480.0);
+    let left_w = (available.x * 0.42).clamp(280.0, 480.0);
 
     ui.horizontal(|ui| {
         // Left column: screenshot + control bar

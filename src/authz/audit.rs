@@ -10,7 +10,6 @@
 ///  "action":"ax_click","args":{"backend_id":42},
 ///  "url":"https://redandan.github.io/#/wallet","rule":"readonly_allow"}
 /// ```
-
 use chrono::Utc;
 use serde_json::{json, Value as JsonValue};
 use std::fs::OpenOptions;
@@ -39,7 +38,7 @@ fn maybe_rotate(path: &str) {
         let _ = std::fs::rename(&from, &to);
     }
     // Current log → .1
-    let _ = std::fs::rename(path, &format!("{path}.1"));
+    let _ = std::fs::rename(path, format!("{path}.1"));
 }
 
 /// Write a single NDJSON event to the audit log at `log_path`.
@@ -129,6 +128,7 @@ pub fn log_ask(
 }
 
 /// Log a `learn` event when a new rule is persisted.
+#[allow(dead_code)] // Reserved for ask_with_learn implementation
 pub fn log_learn(
     log_path: &str,
     client: &str,

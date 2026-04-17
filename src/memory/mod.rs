@@ -115,7 +115,7 @@ fn migrate_jsonl_to_sqlite(conn: &rusqlite::Connection) {
     };
     let migrated = BufReader::new(file)
         .lines()
-        .filter_map(|l| l.ok())
+        .map_while(Result::ok)
         .filter(|l| !l.trim().is_empty())
         .filter_map(|l| serde_json::from_str::<MemoryEntry>(&l).ok())
         .filter_map(|e| {

@@ -31,7 +31,7 @@ pub fn show(
             if let Some((ts, jpeg_bytes)) = ms.latest_screenshot() {
                 let is_new = view_state
                     .last_screenshot_ts
-                    .map_or(true, |prev| prev < ts);
+                    .is_none_or(|prev| prev < ts);
                 if is_new {
                     if let Some(color_img) = decode_jpeg(&jpeg_bytes) {
                         let tex = ui.ctx().load_texture(

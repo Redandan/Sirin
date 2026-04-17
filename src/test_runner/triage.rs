@@ -230,7 +230,7 @@ pub fn trigger_auto_fix(test: &TestGoal, result: &TestResult, outcome: &TriageOu
         if exit_code != 0 {
             return;
         }
-        if !super::parser::find(&test_id).is_some() {
+        if super::parser::find(&test_id).is_none() {
             tracing::info!(
                 "[test_runner] auto_fix[{fix_id}]: skipping verification — test_id '{test_id}' \
                  is not a YAML-defined test (probably adhoc)"

@@ -7,7 +7,6 @@
 ///
 /// `allow` / `deny` / `ask` arrays are **unioned** across layers;
 /// `mode` is taken from the highest layer that sets it.
-
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -31,6 +30,7 @@ pub enum Mode {
 
 /// A single allow / deny / ask rule.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct Rule {
     /// Action name (supports `*` suffix like `ax_*`, or `*` for all).
     #[serde(default)]
@@ -266,18 +266,6 @@ pub fn defaults() -> AuthzConfig {
     }
 }
 
-impl Default for Rule {
-    fn default() -> Self {
-        Rule {
-            action: None,
-            url_pattern: None,
-            js_contains: None,
-            name_substring: None,
-            name_regex: None,
-            not_name_matches: vec![],
-        }
-    }
-}
 
 // ─── Loader ──────────────────────────────────────────────────────────────────
 

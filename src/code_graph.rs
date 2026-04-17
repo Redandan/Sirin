@@ -331,7 +331,7 @@ pub fn ensure_call_graph() -> Result<(), Box<dyn std::error::Error + Send + Sync
         let file = fs::File::open(&path)?;
         BufReader::new(file)
             .lines()
-            .filter_map(|l| l.ok())
+            .map_while(Result::ok)
             .filter(|l| !l.trim().is_empty())
             .filter_map(|l| serde_json::from_str::<CallGraphEntry>(&l).ok())
             .collect()

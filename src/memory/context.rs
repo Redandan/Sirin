@@ -83,7 +83,7 @@ pub fn collect_reply_samples(agent_id: &str, limit: usize) -> Vec<String> {
         let Ok(file) = fs::File::open(entry.path()) else {
             continue;
         };
-        for line in BufReader::new(file).lines().filter_map(|l| l.ok()) {
+        for line in BufReader::new(file).lines().map_while(Result::ok) {
             if let Ok(ctx) = serde_json::from_str::<ContextEntry>(&line) {
                 if !ctx.assistant_reply.trim().is_empty() {
                     samples.push((ctx.timestamp, ctx.assistant_reply));

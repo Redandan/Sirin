@@ -8,7 +8,6 @@
 ///   5. ask check
 ///   6. learn path (not implemented — stub)
 ///   7. default deny
-
 use serde_json::Value as JsonValue;
 
 use crate::authz::config::{AuthzConfig, Mode, Rule};

@@ -17,6 +17,7 @@ pub struct ReplyPlan {
     pub should_record_ai_decision: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn prepare_reply_plan<F, Fut>(
     text: &str,
     peer_id: Option<i64>,

@@ -585,9 +585,16 @@ fn call_run_adhoc_test(args: Value) -> Result<Value, String> {
     let fixture: Option<crate::test_runner::parser::Fixture> = args.get("fixture")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
 
-    let run_id = crate::test_runner::spawn_adhoc_run(
-        url.clone(), goal, criteria, locale, max_iter, timeout, headless, fixture,
-    )?;
+    let run_id = crate::test_runner::spawn_adhoc_run(crate::test_runner::AdhocRunRequest {
+        url: url.clone(),
+        goal,
+        success_criteria: criteria,
+        locale,
+        max_iterations: max_iter,
+        timeout_secs: timeout,
+        browser_headless: headless,
+        fixture,
+    })?;
     Ok(json!({
         "run_id": run_id,
         "url": url,
@@ -1328,7 +1335,7 @@ mod test_runner_mcp_tests {
 /// Minimal base64 encoder (no external dep).
 fn base64_encode(input: &[u8]) -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((input.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
         let b0 = chunk[0] as u32;
         let b1 = chunk.get(1).copied().unwrap_or(0) as u32;

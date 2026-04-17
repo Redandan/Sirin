@@ -55,8 +55,7 @@ pub struct TelegramConfig {
 /// string.  Literal values (no `${…}`) are returned unchanged.
 pub fn resolve_env_refs(s: &str) -> String {
     let mut result = s.to_string();
-    loop {
-        let Some(start) = result.find("${") else { break };
+    while let Some(start) = result.find("${") {
         let Some(rel_end) = result[start..].find('}') else { break };
         let end = start + rel_end;
         let var_name = &result[start + 2..end];

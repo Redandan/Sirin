@@ -3,7 +3,7 @@
 //! # 改進
 //! - P0：`data/teams_profile` 持久化 Chrome profile，重啟免重新登入
 //! - P2：`send_message` 改用 JS `execCommand` + 點擊 Send 按鈕，
-//!        不依賴 UI 焦點，避免打字衝突
+//!   不依賴 UI 焦點，避免打字衝突
 
 use std::path::PathBuf;
 use std::sync::Mutex;

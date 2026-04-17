@@ -15,10 +15,10 @@ pub fn list_trace_files() -> Vec<PathBuf> {
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| {
-            p.extension().map_or(false, |ext| ext == "ndjson")
+            p.extension().is_some_and(|ext| ext == "ndjson")
                 && p.file_name()
                     .and_then(|n| n.to_str())
-                    .map_or(false, |n| n.starts_with("trace-"))
+                    .is_some_and(|n| n.starts_with("trace-"))
         })
         .collect();
     // Sort newest first by filename (ISO8601 names sort lexicographically = time order)
@@ -35,7 +35,7 @@ pub fn load_trace(path: &Path) -> Vec<ServerEvent> {
     let reader = BufReader::new(file);
     reader
         .lines()
-        .filter_map(|l| l.ok())
+        .map_while(Result::ok)
         .filter(|l| !l.trim().is_empty())
         .filter_map(|l| serde_json::from_str::<ServerEvent>(&l).ok())
         .collect()

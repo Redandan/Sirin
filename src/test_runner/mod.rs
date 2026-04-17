@@ -18,12 +18,27 @@ pub mod store;
 pub mod runs;
 pub mod i18n;
 
-pub use parser::TestGoal;
+pub use parser::{TestGoal, Fixture};
 pub use executor::{TestResult, TestStatus};
 #[allow(unused_imports)]
 pub use executor::TestStep;
 #[allow(unused_imports)]
 pub use triage::{FailureCategory, TriageOutcome};
+
+/// Parameters for an ad-hoc (non-YAML) test run.  Passed to [`spawn_adhoc_run`].
+///
+/// Only `url` and `goal` are required; all other fields fall back to sensible defaults.
+#[derive(Default)]
+pub struct AdhocRunRequest {
+    pub url: String,
+    pub goal: String,
+    pub success_criteria: Vec<String>,
+    pub locale: Option<String>,
+    pub max_iterations: Option<u32>,
+    pub timeout_secs: Option<u64>,
+    pub browser_headless: Option<bool>,
+    pub fixture: Option<Fixture>,
+}
 
 /// Run a single test by id, record the result, and optionally auto-fix.
 ///
@@ -150,38 +165,29 @@ pub fn spawn_run_async(test_id: String, auto_fix: bool) -> Result<String, String
 ///
 /// This unblocks external callers who want to test a URL without first
 /// writing a YAML goal definition.
-pub fn spawn_adhoc_run(
-    url: String,
-    goal: String,
-    success_criteria: Vec<String>,
-    locale: Option<String>,
-    max_iterations: Option<u32>,
-    timeout_secs: Option<u64>,
-    browser_headless: Option<bool>,
-    fixture: Option<crate::test_runner::parser::Fixture>,
-) -> Result<String, String> {
-    if url.trim().is_empty() {
+pub fn spawn_adhoc_run(req: AdhocRunRequest) -> Result<String, String> {
+    if req.url.trim().is_empty() {
         return Err("url is required".into());
     }
-    if goal.trim().is_empty() {
+    if req.goal.trim().is_empty() {
         return Err("goal is required".into());
     }
 
     let test_id = format!("adhoc_{}", chrono::Local::now().format("%Y%m%d_%H%M%S_%3f"));
     let test = TestGoal {
         id: test_id.clone(),
-        name: format!("Ad-hoc: {}", goal.chars().take(40).collect::<String>()),
-        url,
-        goal,
-        max_iterations: max_iterations.unwrap_or(15),
-        timeout_secs: timeout_secs.unwrap_or(120),
+        name: format!("Ad-hoc: {}", req.goal.chars().take(40).collect::<String>()),
+        url: req.url,
+        goal: req.goal,
+        max_iterations: req.max_iterations.unwrap_or(15),
+        timeout_secs: req.timeout_secs.unwrap_or(120),
         retry_on_parse_error: 3,
-        locale: locale.unwrap_or_else(|| "zh-TW".into()),
+        locale: req.locale.unwrap_or_else(|| "zh-TW".into()),
         url_query: Default::default(),
-        browser_headless,
-        success_criteria,
+        browser_headless: req.browser_headless,
+        success_criteria: req.success_criteria,
         tags: vec!["adhoc".into()],
-        fixture,
+        fixture: req.fixture,
     };
 
     let run_id = runs::new_run(&test_id);

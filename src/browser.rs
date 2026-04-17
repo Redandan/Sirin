@@ -855,7 +855,7 @@ pub fn file_upload(selector: &str, paths: &[&str]) -> Result<(), String> {
         let files: Vec<String> = paths.iter().map(|p| p.to_string()).collect();
         tab.call_method(headless_chrome::protocol::cdp::DOM::SetFileInputFiles {
             files,
-            node_id: Some(node_id.into()),
+            node_id: Some(node_id),
             backend_node_id: Some(node_id),
             object_id: None,
         }).map_err(|e| format!("file_upload: {e}"))?;
@@ -1201,7 +1201,7 @@ fn is_connection_closed(err: &str) -> bool {
 fn base64_encode(input: &str) -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let bytes = input.as_bytes();
-    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let b0 = chunk[0] as u32;
         let b1 = chunk.get(1).copied().unwrap_or(0) as u32;

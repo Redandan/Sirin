@@ -742,7 +742,7 @@ pub async fn analyze_screenshot(
     llm: &LlmConfig,
     prompt: &str,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    let png = tokio::task::spawn_blocking(|| crate::browser::screenshot())
+    let png = tokio::task::spawn_blocking(crate::browser::screenshot)
         .await
         .map_err(|e| format!("spawn: {e}"))??;
     let b64 = base64_encode_bytes(&png);
@@ -751,7 +751,7 @@ pub async fn analyze_screenshot(
 
 fn base64_encode_bytes(input: &[u8]) -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((input.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
         let b0 = chunk[0] as u32;
         let b1 = chunk.get(1).copied().unwrap_or(0) as u32;

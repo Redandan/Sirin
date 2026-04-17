@@ -440,7 +440,7 @@ pub fn wait_for_ax_change(baseline_id: &str, timeout_ms: u64) -> Result<(String,
                 baseline
                     .iter()
                     .find(|b| b.node_id == n.node_id)
-                    .map_or(true, |b| b.name != n.name || b.value != n.value)
+                    .is_none_or(|b| b.name != n.name || b.value != n.value)
             });
 
         if changed {

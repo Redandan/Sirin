@@ -67,15 +67,14 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, state: &mut BrowserUiS
             );
             let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
 
-            if ui.add(egui::Button::new(RichText::new("Go").color(theme::BG))
-                .fill(theme::ACCENT).corner_radius(4.0)).clicked() || enter
-            {
-                if !state.url_input.trim().is_empty() {
+            #[allow(clippy::collapsible_if)]
+            if (ui.add(egui::Button::new(RichText::new("Go").color(theme::BG))
+                .fill(theme::ACCENT).corner_radius(4.0)).clicked() || enter)
+                && !state.url_input.trim().is_empty() {
                     if !is_open { svc.browser_open(&state.url_input, state.headless); }
                     else { let _ = svc.browser_navigate(&state.url_input); }
                     refresh_screenshot(svc, state, ui.ctx());
                 }
-            }
 
             if ui.add(egui::Button::new("Snap").fill(theme::CARD).corner_radius(4.0)).clicked() {
                 refresh_screenshot(svc, state, ui.ctx());

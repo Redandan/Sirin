@@ -208,7 +208,7 @@ pub async fn execute_test_tracked(
             let action_label = action_input.get("action").and_then(Value::as_str).unwrap_or("?").to_string();
             if let Some(rid) = run_id {
                 runs::set_phase(rid, runs::RunPhase::Running {
-                    step: (iteration + 1) as u32,
+                    step: (iteration + 1),
                     current_action: action_label.clone(),
                 });
             }
@@ -302,7 +302,7 @@ async fn capture_screenshot(
     let _ = ctx.call_tool("web_navigate", json!({"action": "screenshot"})).await;
 
     let bytes_result: Result<Vec<u8>, String> = tokio::task::spawn_blocking(
-        || crate::browser::screenshot()
+        crate::browser::screenshot
     ).await
     .map_err(|e| format!("spawn_blocking failed: {e}"))
     .and_then(|r| r);

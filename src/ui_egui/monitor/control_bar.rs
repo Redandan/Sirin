@@ -44,8 +44,9 @@ pub fn show(ui: &mut egui::Ui, ctrl: &Arc<ControlState>) {
                 }
 
                 // Step (only while paused and not aborted)
-                if snap.paused && !snap.aborted {
-                    if ui
+                #[allow(clippy::collapsible_if)]
+                if snap.paused && !snap.aborted
+                    && ui
                         .add(
                             egui::Button::new(RichText::new("\u{23ed} Step"))
                                 .fill(theme::CARD)
@@ -56,7 +57,6 @@ pub fn show(ui: &mut egui::Ui, ctrl: &Arc<ControlState>) {
                         ctrl.step.store(true, Relaxed);
                         ctrl.paused.store(false, Relaxed);
                     }
-                }
 
                 // Abort / Reset
                 if !snap.aborted {
