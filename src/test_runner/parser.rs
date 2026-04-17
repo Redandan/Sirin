@@ -4,6 +4,34 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+/// A single browser action in a fixture step.
+/// Mirrors the browser_exec action format.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct FixtureStep {
+    /// Action name — same values as browser_exec `action` param.
+    pub action: String,
+    /// Primary target (CSS selector, URL, JS expression, etc).
+    #[serde(default)]
+    pub target: String,
+    /// Text to type (for `type` action).
+    #[serde(default)]
+    pub text: String,
+    /// Timeout in ms (for `wait`, `wait_new_tab`, etc).
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+}
+
+/// Setup and cleanup steps for a test goal.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Fixture {
+    /// Steps run before the test loop. Failure aborts the test.
+    #[serde(default)]
+    pub setup: Vec<FixtureStep>,
+    /// Steps run after the test (pass or fail). Failures are logged but do not affect test result.
+    #[serde(default)]
+    pub cleanup: Vec<FixtureStep>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestGoal {
     pub id: String,
@@ -35,6 +63,9 @@ pub struct TestGoal {
     pub success_criteria: Vec<String>,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Optional fixture: setup steps (before test) and cleanup steps (after).
+    #[serde(default)]
+    pub fixture: Option<Fixture>,
 }
 
 impl TestGoal {
@@ -157,6 +188,32 @@ tags: [auth, smoke, critical]
         assert_eq!(g.max_iterations, 8);
         assert_eq!(g.success_criteria.len(), 2);
         assert_eq!(g.tags, vec!["auth".to_string(), "smoke".into(), "critical".into()]);
+    }
+
+    #[test]
+    fn parse_yaml_with_fixture() {
+        let yaml = r##"
+id: fixture_test
+name: "Test with fixture"
+url: "https://example.com"
+goal: "Do something"
+fixture:
+  setup:
+    - action: goto
+      target: "https://example.com/login"
+    - action: type
+      target: "#email"
+      text: "test@example.com"
+  cleanup:
+    - action: eval
+      target: "localStorage.clear()"
+"##;
+        let goal: TestGoal = serde_yaml::from_str(yaml).unwrap();
+        let fixture = goal.fixture.unwrap();
+        assert_eq!(fixture.setup.len(), 2);
+        assert_eq!(fixture.setup[0].action, "goto");
+        assert_eq!(fixture.cleanup.len(), 1);
+        assert_eq!(fixture.cleanup[0].action, "eval");
     }
 
     #[test]

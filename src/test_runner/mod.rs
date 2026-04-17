@@ -158,6 +158,7 @@ pub fn spawn_adhoc_run(
     max_iterations: Option<u32>,
     timeout_secs: Option<u64>,
     browser_headless: Option<bool>,
+    fixture: Option<crate::test_runner::parser::Fixture>,
 ) -> Result<String, String> {
     if url.trim().is_empty() {
         return Err("url is required".into());
@@ -180,6 +181,7 @@ pub fn spawn_adhoc_run(
         browser_headless,
         success_criteria,
         tags: vec!["adhoc".into()],
+        fixture,
     };
 
     let run_id = runs::new_run(&test_id);

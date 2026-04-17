@@ -267,7 +267,39 @@ fn handle_tools_list() -> Result<Value, String> {
                         "locale":           { "type": "string", "description": "zh-TW / en / zh-CN（預設 zh-TW）" },
                         "max_iterations":   { "type": "number", "description": "預設 15" },
                         "timeout_secs":     { "type": "number", "description": "預設 120" },
-                        "browser_headless": { "type": "boolean", "description": "Flutter CanvasKit/WebGL 必須設 false 才能 paint。預設讀 SIRIN_BROWSER_HEADLESS env（預設 true）" }
+                        "browser_headless": { "type": "boolean", "description": "Flutter CanvasKit/WebGL 必須設 false 才能 paint。預設讀 SIRIN_BROWSER_HEADLESS env（預設 true）" },
+                        "fixture": {
+                            "type": "object",
+                            "description": "可選的 fixture：setup（測試前執行）和 cleanup（測試後執行，無論成敗）。",
+                            "properties": {
+                                "setup": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "action":     { "type": "string" },
+                                            "target":     { "type": "string" },
+                                            "text":       { "type": "string" },
+                                            "timeout_ms": { "type": "number" }
+                                        },
+                                        "required": ["action"]
+                                    }
+                                },
+                                "cleanup": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "action":     { "type": "string" },
+                                            "target":     { "type": "string" },
+                                            "text":       { "type": "string" },
+                                            "timeout_ms": { "type": "number" }
+                                        },
+                                        "required": ["action"]
+                                    }
+                                }
+                            }
+                        }
                     },
                     "required": ["url", "goal"]
                 }
@@ -322,25 +354,32 @@ fn handle_tools_list() -> Result<Value, String> {
             },
             {
                 "name": "browser_exec",
-                "description": "即席執行瀏覽器動作，不走完整 test goal。適合 debug / 探索 / 單步操作。action 可用：goto, screenshot, screenshot_analyze, click, click_point, type, read, eval, wait, exists, attr, scroll, key, console, network, url, title, close, set_viewport。Accessibility tree（literal text，精確比對）：enable_a11y, ax_tree, ax_find, ax_value, ax_click, ax_focus, ax_type, ax_type_verified。Test isolation / multi-tab / network races：clear_state, wait_new_tab, wait_request。",
+                "description": "即席執行瀏覽器動作，不走完整 test goal。適合 debug / 探索 / 單步操作。action 可用：goto, screenshot, screenshot_analyze, click, click_point, type, read, eval, wait, exists, attr, scroll, key, console, network, url, title, close, set_viewport。Accessibility tree（literal text，精確比對）：enable_a11y, ax_tree, ax_find（支援 name_regex / not_name_matches / limit）, ax_value, ax_click, ax_focus, ax_type, ax_type_verified。AX snapshots：ax_snapshot, ax_diff, wait_for_ax_change。Test isolation / multi-tab / network races：clear_state, wait_new_tab, wait_request。",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "action":           { "type": "string", "description": "web_navigate action 名稱" },
-                        "target":           { "type": "string", "description": "URL / CSS selector / JS expr / screenshot_analyze 的問題，視 action 而定" },
-                        "text":             { "type": "string", "description": "type / ax_type 動作的輸入文字" },
-                        "timeout":          { "type": "number", "description": "wait 動作的 ms" },
-                        "x":                { "type": "number", "description": "click_point 的 x 座標 (CSS px)" },
-                        "y":                { "type": "number", "description": "click_point 的 y 座標 (CSS px)" },
-                        "width":            { "type": "number", "description": "set_viewport 的 width (px)" },
-                        "height":           { "type": "number", "description": "set_viewport 的 height (px)" },
-                        "device_scale":     { "type": "number", "description": "set_viewport 的 devicePixelRatio (預設 1.0)" },
-                        "mobile":           { "type": "boolean", "description": "set_viewport 的 mobile 模擬旗標 (預設 false)" },
-                        "browser_headless": { "type": "boolean", "description": "Flutter/WebGL 應該設 false。預設讀 SIRIN_BROWSER_HEADLESS env" },
-                        "backend_id":       { "type": "number", "description": "ax_value/ax_click/ax_focus/ax_type 的 DOM backend node id (從 ax_tree / ax_find 取得)" },
-                        "role":             { "type": "string", "description": "ax_find 的 a11y role 過濾 (e.g. button, textbox, text)" },
-                        "name":             { "type": "string", "description": "ax_find 的 name 子字串過濾 (case-insensitive)" },
-                        "include_ignored":  { "type": "boolean", "description": "ax_tree 是否包含 ignored / generic 節點 (預設 false)" }
+                        "action":             { "type": "string", "description": "web_navigate action 名稱" },
+                        "target":             { "type": "string", "description": "URL / CSS selector / JS expr / screenshot_analyze 的問題，視 action 而定" },
+                        "text":               { "type": "string", "description": "type / ax_type 動作的輸入文字" },
+                        "timeout":            { "type": "number", "description": "wait / wait_for_ax_change 動作的 ms" },
+                        "x":                  { "type": "number", "description": "click_point 的 x 座標 (CSS px)" },
+                        "y":                  { "type": "number", "description": "click_point 的 y 座標 (CSS px)" },
+                        "width":              { "type": "number", "description": "set_viewport 的 width (px)" },
+                        "height":             { "type": "number", "description": "set_viewport 的 height (px)" },
+                        "device_scale":       { "type": "number", "description": "set_viewport 的 devicePixelRatio (預設 1.0)" },
+                        "mobile":             { "type": "boolean", "description": "set_viewport 的 mobile 模擬旗標 (預設 false)" },
+                        "browser_headless":   { "type": "boolean", "description": "Flutter/WebGL 應該設 false。預設讀 SIRIN_BROWSER_HEADLESS env" },
+                        "backend_id":         { "type": "number", "description": "ax_value/ax_click/ax_focus/ax_type 的 DOM backend node id (從 ax_tree / ax_find 取得)" },
+                        "role":               { "type": "string", "description": "ax_find 的 a11y role 過濾 (e.g. button, textbox, text)" },
+                        "name":               { "type": "string", "description": "ax_find 的 name 子字串過濾 (case-insensitive)" },
+                        "name_regex":         { "type": "string", "description": "ax_find: Rust regex 對 name 全文比對（比 name 子字串更精確）" },
+                        "not_name_matches":   { "type": "array", "items": { "type": "string" }, "description": "ax_find: 排除 name 包含任一字串的節點" },
+                        "limit":              { "type": "number", "description": "ax_find: >1 時返回 nodes 陣列（多節點），=1 時返回單節點（預設 1）" },
+                        "include_ignored":    { "type": "boolean", "description": "ax_tree 是否包含 ignored / generic 節點 (預設 false)" },
+                        "id":                 { "type": "string", "description": "ax_snapshot: 自訂快照 ID（省略則自動生成）" },
+                        "before_id":          { "type": "string", "description": "ax_diff: 前一個快照 ID" },
+                        "after_id":           { "type": "string", "description": "ax_diff: 後一個快照 ID" },
+                        "baseline_id":        { "type": "string", "description": "wait_for_ax_change: 基準快照 ID" }
                     },
                     "required": ["action"]
                 }
@@ -538,9 +577,11 @@ fn call_run_adhoc_test(args: Value) -> Result<Value, String> {
     let max_iter = args.get("max_iterations").and_then(Value::as_u64).map(|n| n as u32);
     let timeout = args.get("timeout_secs").and_then(Value::as_u64);
     let headless = args.get("browser_headless").and_then(Value::as_bool);
+    let fixture: Option<crate::test_runner::parser::Fixture> = args.get("fixture")
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
 
     let run_id = crate::test_runner::spawn_adhoc_run(
-        url.clone(), goal, criteria, locale, max_iter, timeout, headless,
+        url.clone(), goal, criteria, locale, max_iter, timeout, headless, fixture,
     )?;
     Ok(json!({
         "run_id": run_id,
@@ -858,12 +899,61 @@ async fn call_browser_exec(args: Value) -> Result<Value, String> {
                 if role_arg.is_none() && name_arg.is_none() {
                     return Err("'ax_find' requires 'role' and/or 'name'".into());
                 }
-                let node = crate::browser_ax::find_by_role_and_name(
-                    role_arg.as_deref(), name_arg.as_deref())?;
-                match node {
-                    Some(n) => Ok(json!({ "found": true, "node": n })),
-                    None    => Ok(json!({ "found": false })),
+                let name_regex_arg = args.get("name_regex").and_then(Value::as_str).map(String::from);
+                let not_name_matches: Vec<String> = args.get("not_name_matches")
+                    .and_then(Value::as_array)
+                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                    .unwrap_or_default();
+                let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(1) as usize;
+
+                if limit <= 1 {
+                    match crate::browser_ax::find_by_role_and_name(
+                        role_arg.as_deref(), name_arg.as_deref(),
+                        name_regex_arg.as_deref(), &not_name_matches,
+                    )? {
+                        Some(node) => Ok(json!({ "found": true, "node": node })),
+                        None => Ok(json!({ "found": false, "node": null })),
+                    }
+                } else {
+                    let nodes = crate::browser_ax::find_all_by_role_and_name(
+                        role_arg.as_deref(), name_arg.as_deref(),
+                        name_regex_arg.as_deref(), &not_name_matches, limit,
+                    )?;
+                    Ok(json!({
+                        "found": !nodes.is_empty(),
+                        "count": nodes.len(),
+                        "nodes": nodes,
+                    }))
                 }
+            }
+            "ax_snapshot" => {
+                let snap_id_arg = args.get("id").and_then(Value::as_str).map(String::from);
+                let id = crate::browser_ax::ax_snapshot(snap_id_arg.as_deref())?;
+                Ok(json!({ "snapshot_id": id }))
+            }
+            "ax_diff" => {
+                let before = args["before_id"].as_str().ok_or("'ax_diff' requires 'before_id'")?;
+                let after  = args["after_id"].as_str().ok_or("'ax_diff' requires 'after_id'")?;
+                let diff = crate::browser_ax::ax_diff(before, after)?;
+                Ok(json!({
+                    "added_count":   diff.added.len(),
+                    "removed_count": diff.removed.len(),
+                    "changed_count": diff.changed.len(),
+                    "added":   diff.added.iter().map(|n| json!({"node_id": n.node_id, "role": n.role, "name": n.name})).collect::<Vec<_>>(),
+                    "removed": diff.removed.iter().map(|n| json!({"node_id": n.node_id, "role": n.role, "name": n.name})).collect::<Vec<_>>(),
+                    "changed": diff.changed,
+                }))
+            }
+            "wait_for_ax_change" => {
+                let baseline_id = args["baseline_id"].as_str().ok_or("'wait_for_ax_change' requires 'baseline_id'")?;
+                let to_ms = timeout.unwrap_or(5000);
+                let (new_id, diff) = crate::browser_ax::wait_for_ax_change(baseline_id, to_ms)?;
+                Ok(json!({
+                    "new_snapshot_id": new_id,
+                    "added_count":   diff.added.len(),
+                    "removed_count": diff.removed.len(),
+                    "changed_count": diff.changed.len(),
+                }))
             }
             "ax_value" => {
                 let id = backend_id.ok_or("'ax_value' requires 'backend_id' (number)")?;

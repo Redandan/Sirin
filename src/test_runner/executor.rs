@@ -37,6 +37,24 @@ pub enum TestStatus { Passed, Failed, Timeout, Error }
 /// Truncate observation text past this many chars in LLM history.
 const OBS_TRUNCATE_CHARS: usize = 800;
 
+/// Run a single fixture step via the `web_navigate` tool.
+async fn run_fixture_step(
+    ctx: &crate::adk::context::AgentContext,
+    step: &crate::test_runner::parser::FixtureStep,
+) -> Result<(), String> {
+    let mut args = json!({
+        "action": step.action,
+        "target": step.target,
+        "text": step.text,
+    });
+    if let Some(ms) = step.timeout_ms {
+        args["timeout"] = json!(ms);
+    }
+    ctx.call_tool("web_navigate", args).await
+        .map(|_| ())
+        .map_err(|e| format!("fixture step '{}' failed: {}", step.action, e))
+}
+
 /// Execute a test goal by driving the browser via the `web_navigate` tool.
 pub async fn execute_test(
     ctx: &crate::adk::context::AgentContext,
@@ -85,133 +103,165 @@ pub async fn execute_test_tracked(
     // 2) Install console + network capture (best effort)
     let _ = ctx.call_tool("web_navigate", json!({ "action": "install_capture" })).await;
 
+    // 2b) Run fixture setup steps (failure aborts the test before the ReAct loop).
+    if let Some(fixture) = &test.fixture {
+        for step in &fixture.setup {
+            if let Err(e) = run_fixture_step(ctx, step).await {
+                let result = finalize_early(ctx, run_id, test, &history, format!("fixture setup failed: {e}")).await;
+                // Still run cleanup even when setup fails.
+                if let Some(fix) = &test.fixture {
+                    for cs in &fix.cleanup {
+                        if let Err(ce) = run_fixture_step(ctx, cs).await {
+                            tracing::warn!("[fixture] cleanup step '{}' failed: {ce}", cs.action);
+                        }
+                    }
+                }
+                return result;
+            }
+        }
+    }
+
     // 3) ReAct loop
     let max_iter = test.max_iterations.max(1);
     let deadline = started + std::time::Duration::from_secs(test.timeout_secs.max(10));
 
-    for iteration in 0..max_iter {
-        if std::time::Instant::now() >= deadline {
-            let cap = capture_screenshot(ctx, &test.id, run_id).await;
-            return TestResult {
-                test_id: test.id.clone(),
-                status: TestStatus::Timeout,
-                iterations: iteration,
-                duration_ms: started.elapsed().as_millis() as u64,
-                error_message: Some(format!("timed out after {}s", test.timeout_secs)),
-                screenshot_path: cap.path,
-                screenshot_error: cap.error,
-                history,
-                final_analysis: None,
+    // Collect the loop result into a variable so cleanup always runs afterward.
+    let run_result: TestResult = 'react: {
+        for iteration in 0..max_iter {
+            if std::time::Instant::now() >= deadline {
+                let cap = capture_screenshot(ctx, &test.id, run_id).await;
+                break 'react TestResult {
+                    test_id: test.id.clone(),
+                    status: TestStatus::Timeout,
+                    iterations: iteration,
+                    duration_ms: started.elapsed().as_millis() as u64,
+                    error_message: Some(format!("timed out after {}s", test.timeout_secs)),
+                    screenshot_path: cap.path,
+                    screenshot_error: cap.error,
+                    history,
+                    final_analysis: None,
+                };
+            }
+
+            let prompt = build_prompt(test, &history, parse_error_hint.as_deref());
+            parse_error_hint = None;  // reset — only used for the next turn
+
+            let raw = match crate::llm::call_coding_prompt(
+                ctx.http.as_ref(),
+                ctx.llm.as_ref(),
+                prompt,
+            ).await {
+                Ok(s) => s,
+                Err(e) => break 'react finalize_early(ctx, run_id, test, &history, format!("LLM error: {e}")).await,
             };
-        }
 
-        let prompt = build_prompt(test, &history, parse_error_hint.as_deref());
-        parse_error_hint = None;  // reset — only used for the next turn
-
-        let raw = match crate::llm::call_coding_prompt(
-            ctx.http.as_ref(),
-            ctx.llm.as_ref(),
-            prompt,
-        ).await {
-            Ok(s) => s,
-            Err(e) => return finalize_early(ctx, run_id, test, &history, format!("LLM error: {e}")).await,
-        };
-
-        let step = parse_step(&raw);
-        if let Some(err) = &step.parse_error {
-            parse_error_count += 1;
-            if parse_error_count >= max_parse_errors {
-                history.push(TestStep {
-                    thought: step.thought.clone(),
-                    action: json!({"error": "invalid_json"}),
-                    observation: format!("ERROR: {err}"),
-                });
-                if let Some(rid) = run_id {
-                    runs::push_observation(rid, format!("ERROR (parse): {err}\nRaw: {raw}"));
+            let step = parse_step(&raw);
+            if let Some(err) = &step.parse_error {
+                parse_error_count += 1;
+                if parse_error_count >= max_parse_errors {
+                    history.push(TestStep {
+                        thought: step.thought.clone(),
+                        action: json!({"error": "invalid_json"}),
+                        observation: format!("ERROR: {err}"),
+                    });
+                    if let Some(rid) = run_id {
+                        runs::push_observation(rid, format!("ERROR (parse): {err}\nRaw: {raw}"));
+                    }
+                    break 'react finalize_early(
+                        ctx, run_id, test, &history,
+                        format!("too many invalid LLM responses ({max_parse_errors})"),
+                    ).await;
                 }
-                return finalize_early(
-                    ctx, run_id, test, &history,
-                    format!("too many invalid LLM responses ({max_parse_errors})"),
-                ).await;
+                // Reprompt — save hint for next iteration
+                parse_error_hint = Some(format!(
+                    "⚠️ Previous response could not be parsed as JSON ({err}). \
+                     Please output STRICTLY valid JSON, no markdown fences, no prose before/after."
+                ));
+                if let Some(rid) = run_id {
+                    runs::push_observation(rid, format!("PARSE_RETRY ({parse_error_count}/{max_parse_errors}): {err}\nRaw: {raw}"));
+                }
+                continue;  // don't push anything to visible history — LLM just retries
             }
-            // Reprompt — save hint for next iteration
-            parse_error_hint = Some(format!(
-                "⚠️ Previous response could not be parsed as JSON ({err}). \
-                 Please output STRICTLY valid JSON, no markdown fences, no prose before/after."
-            ));
+
+            if step.done {
+                let analysis = evaluate_success(ctx, test, &history, step.final_answer.clone()).await;
+                let cap = if analysis.passed {
+                    ScreenshotCapture { path: None, error: None }
+                } else {
+                    capture_screenshot(ctx, &test.id, run_id).await
+                };
+                break 'react TestResult {
+                    test_id: test.id.clone(),
+                    status: if analysis.passed { TestStatus::Passed } else { TestStatus::Failed },
+                    iterations: iteration + 1,
+                    duration_ms: started.elapsed().as_millis() as u64,
+                    error_message: if analysis.passed { None } else { Some(analysis.reason.clone()) },
+                    screenshot_path: cap.path,
+                    screenshot_error: cap.error,
+                    history,
+                    final_analysis: Some(analysis.reason),
+                };
+            }
+
+            // Execute the browser tool call
+            let action_input = step.action_input.clone();
+            let action_label = action_input.get("action").and_then(Value::as_str).unwrap_or("?").to_string();
             if let Some(rid) = run_id {
-                runs::push_observation(rid, format!("PARSE_RETRY ({parse_error_count}/{max_parse_errors}): {err}\nRaw: {raw}"));
+                runs::set_phase(rid, runs::RunPhase::Running {
+                    step: (iteration + 1) as u32,
+                    current_action: action_label.clone(),
+                });
             }
-            continue;  // don't push anything to visible history — LLM just retries
-        }
-
-        if step.done {
-            let analysis = evaluate_success(ctx, test, &history, step.final_answer.clone()).await;
-            let cap = if analysis.passed {
-                ScreenshotCapture { path: None, error: None }
+            // Dispatch to the appropriate tool.  `expand_observation` is a
+            // meta-tool (reads run registry, no browser action).  Everything else
+            // goes through `web_navigate`.
+            let raw_result = if action_label == "expand_observation" {
+                ctx.call_tool("expand_observation", action_input.clone()).await
             } else {
-                capture_screenshot(ctx, &test.id, run_id).await
+                ctx.call_tool("web_navigate", action_input.clone()).await
             };
-            return TestResult {
-                test_id: test.id.clone(),
-                status: if analysis.passed { TestStatus::Passed } else { TestStatus::Failed },
-                iterations: iteration + 1,
-                duration_ms: started.elapsed().as_millis() as u64,
-                error_message: if analysis.passed { None } else { Some(analysis.reason.clone()) },
-                screenshot_path: cap.path,
-                screenshot_error: cap.error,
-                history,
-                final_analysis: Some(analysis.reason),
+            let full_obs = match &raw_result {
+                Ok(v) => v.to_string(),
+                Err(e) => format!("ERROR: {e}"),
             };
-        }
+            // Store full observation before truncation
+            if let Some(rid) = run_id {
+                runs::push_observation(rid, full_obs.clone());
+            }
+            let obs_for_llm = truncate_with_hint(&full_obs, history.len());
 
-        // Execute the browser tool call
-        let action_input = step.action_input.clone();
-        let action_label = action_input.get("action").and_then(Value::as_str).unwrap_or("?").to_string();
-        if let Some(rid) = run_id {
-            runs::set_phase(rid, runs::RunPhase::Running {
-                step: (iteration + 1) as u32,
-                current_action: action_label.clone(),
+            history.push(TestStep {
+                thought: step.thought,
+                action: action_input,
+                observation: obs_for_llm,
             });
         }
-        // Dispatch to the appropriate tool.  `expand_observation` is a
-        // meta-tool (reads run registry, no browser action).  Everything else
-        // goes through `web_navigate`.
-        let raw_result = if action_label == "expand_observation" {
-            ctx.call_tool("expand_observation", action_input.clone()).await
-        } else {
-            ctx.call_tool("web_navigate", action_input.clone()).await
-        };
-        let full_obs = match &raw_result {
-            Ok(v) => v.to_string(),
-            Err(e) => format!("ERROR: {e}"),
-        };
-        // Store full observation before truncation
-        if let Some(rid) = run_id {
-            runs::push_observation(rid, full_obs.clone());
+
+        // Loop exhausted
+        let cap = capture_screenshot(ctx, &test.id, run_id).await;
+        TestResult {
+            test_id: test.id.clone(),
+            status: TestStatus::Failed,
+            iterations: max_iter,
+            duration_ms: started.elapsed().as_millis() as u64,
+            error_message: Some(format!("max iterations ({max_iter}) reached without DONE")),
+            screenshot_path: cap.path,
+            screenshot_error: cap.error,
+            history,
+            final_analysis: None,
         }
-        let obs_for_llm = truncate_with_hint(&full_obs, history.len());
+    };  // end 'react block
 
-        history.push(TestStep {
-            thought: step.thought,
-            action: action_input,
-            observation: obs_for_llm,
-        });
+    // 4) Fixture cleanup — always runs regardless of test pass/fail/timeout/error.
+    if let Some(fixture) = &test.fixture {
+        for step in &fixture.cleanup {
+            if let Err(e) = run_fixture_step(ctx, step).await {
+                tracing::warn!("[fixture] cleanup step '{}' failed: {e}", step.action);
+            }
+        }
     }
 
-    // Loop exhausted
-    let cap = capture_screenshot(ctx, &test.id, run_id).await;
-    TestResult {
-        test_id: test.id.clone(),
-        status: TestStatus::Failed,
-        iterations: max_iter,
-        duration_ms: started.elapsed().as_millis() as u64,
-        error_message: Some(format!("max iterations ({max_iter}) reached without DONE")),
-        screenshot_path: cap.path,
-        screenshot_error: cap.error,
-        history,
-        final_analysis: None,
-    }
+    run_result
 }
 
 struct ScreenshotCapture {
