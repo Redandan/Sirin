@@ -233,6 +233,15 @@ messages, token counts):
 | `ax_click` | `backend_id` | `{status, backend_id}` — clicks element centre via `DOM.getBoxModel` |
 | `ax_focus` | `backend_id` | `{status, backend_id}` |
 | `ax_type` | `backend_id`, `text` | `{status, backend_id, length}` — focus + insertText |
+| `ax_type_verified` | `backend_id`, `text` | `{backend_id, typed, actual, matched}` — types, waits 300ms, reads back via a11y; `matched = actual.contains(typed)` |
+
+**Robustness actions** (test isolation, race-free assertions, popup tabs):
+
+| Action | Required args | Returns |
+|--------|---------------|---------|
+| `clear_state` | — | `{status:"cleared"}` — wipes cookies + localStorage + sessionStorage + IndexedDB + caches; doesn't close Chrome |
+| `wait_request` | `target` (URL substring), optional `timeout` (ms, default 10000) | `{request: {url, method, status, req_body, body, ts}}` — auto-installs network capture; eliminates click-then-read race |
+| `wait_new_tab` | optional `timeout` (ms, default 10000) | `{status, active_tab}` — polls + auto-discovers via register_missing_tabs; switches active to newest |
 
 ## Workflow Patterns
 
@@ -276,6 +285,48 @@ where vision LLM precision loss matters:
 
 `ax_*` is faster than `screenshot_analyze` (no LLM call) and works on
 Flutter CanvasKit (which has no real DOM but does expose semantics).
+
+### Pattern G — Race-free network assertion (request body)
+
+When the assertion is on what the client **sent**, not just received:
+
+```
+1. browser_exec({action:"click", target:"#transfer-btn"})  # fires POST
+2. browser_exec({action:"wait_request",
+                 target:"/api/wallet/transfer", timeout:5000})
+   → {request:{url, method:"POST", status:200,
+               req_body:'{"amount":"99.30",...}',  ← LITERAL
+               body:'{"new_balance":"7277.50"}'}}
+3. assert: parse req_body, amount === "99.30"
+```
+
+`wait_request` auto-installs the network capture, so no need to
+prime with `install_capture` first.
+
+### Pattern H — Test isolation between sequential runs
+
+K-series tests run back-to-back share Chrome state by default
+(K13's auth leaks into K14):
+
+```
+clear_state → goto → fresh login form, regardless of previous test
+```
+
+Doesn't restart Chrome. Wipes cookies (all domains), localStorage,
+sessionStorage, IndexedDB, and Cache Storage.
+
+### Pattern I — OAuth / popup tab handling
+
+```
+1. click → opens popup tab (Telegram OAuth, Google login, Stripe)
+2. wait_new_tab → Sirin auto-discovers via register_missing_tabs
+                  and switches `active` to the new tab
+3. interact in popup
+4. switch_tab(0) → back to original
+```
+
+Without `wait_new_tab`, the popup is invisible to Sirin (headless_chrome
+doesn't auto-track tabs spawned by `window.open`).
 
 ### Pattern D — Diagnose Sirin itself
 ```
@@ -334,6 +385,30 @@ detected.  Symptom: `ax_tree` returns 1-2 nodes instead of dozens.
 Sirin's `get_full_tree` detects this (≤2 nodes) and auto-retriggers
 `enable_a11y` (placeholder click + Tab×2) before retrying.  No user
 action required.
+
+### Sequential tests share state — call `clear_state` between them
+Cookies, localStorage, sessionStorage, IndexedDB all persist across
+test runs (Chrome stays alive between them, by design — speed).
+If K13 logs in and K14 expects a logged-out home page, K14 will
+fail unexpectedly.  Insert `browser_exec({action:"clear_state"})`
+between tests, or as the first step of each test goal.
+
+### `network` returns nothing right after a click — race
+The fetch/XHR fires asynchronously; calling `network` immediately
+after a click usually misses it.  Use `wait_request` instead — it
+polls the capture array until a matching URL substring appears.
+
+### `switch_tab(1)` "out of range" after OAuth click
+headless_chrome doesn't auto-track tabs spawned by `window.open` /
+`target="_blank"`.  Use `wait_new_tab` after the click — it calls
+`register_missing_tabs` to force discovery and adopts the popup
+into the singleton.
+
+### `ax_type` typed but value didn't change
+Flutter Canvas inputs sometimes drop characters; React controlled
+inputs may transform values; masked inputs add formatting.  Use
+`ax_type_verified` to read back the actual value and check
+`matched` (substring of typed text) before asserting.
 
 ### Mode-switch race
 Switching between `browser_headless: true` and `browser_headless: false`

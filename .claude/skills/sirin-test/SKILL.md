@@ -1,7 +1,7 @@
 ---
 name: sirin-test
 description: This skill should be used when the user asks to "test a website", "run an E2E test", "verify a user flow", "check if a page works", "run browser tests", or mentions Sirin's testing capabilities. Provides the workflow for driving Sirin's AI-powered browser test runner via its MCP API (:7700/mcp).
-version: 1.2.0
+version: 1.3.0
 ---
 
 # Sirin Browser Test Runner
@@ -62,6 +62,12 @@ Drive Sirin's AI-powered browser testing from external Claude Code sessions. Unl
 - `ax_value` (param: `backend_id`) — exact text content (`value || name`)
 - `ax_click` / `ax_focus` (param: `backend_id`) — interaction by DOM backend id
 - `ax_type` (params: `backend_id`, `text`) — focus + insertText
+- `ax_type_verified` (same params) — types then reads back, returns `{typed, actual, matched}` so you know if Flutter dropped chars or the input formatted the value
+
+**Robustness** (test isolation, race-free assertions, popups):
+- `clear_state` — wipe cookies + localStorage + sessionStorage + IndexedDB + caches between tests so K13 can't leak auth into K14
+- `wait_request` (params: `target` URL substring, `timeout` ms default 10000) — block until a fetch/XHR matching the substring is captured; auto-installs network capture; eliminates click-then-read races; returns the entry **including `req_body`**
+- `wait_new_tab` (param: `timeout` ms default 10000) — block until a popup/OAuth tab opens; auto-discovers via `register_missing_tabs` and switches `active` to the new tab
 
 Plus Sirin's normal MCP tools: `memory_search`, `skill_list`, `teams_pending`, `teams_approve`, `trigger_research`.
 
@@ -182,6 +188,72 @@ messages, token counts, transaction hashes — vision LLMs lose precision
   reliable than CSS selectors on Flutter Canvas / shadow DOM.
 - For text input on Flutter, use `ax_type` (focus + insertText)
   rather than `type` (CSS-selector-based, won't find Canvas inputs).
+
+### Workflow B.8 — Race-free network assertion (request body)
+
+When the assertion is on what was **sent** (not just received) — wallet
+transfer amount, OAuth callback params, form field values posted to the
+backend — use `wait_request` so you don't read `network` before the
+request fires:
+
+```
+1. browser_exec({action: "click", target: "#transfer-btn"})  # fires POST
+2. browser_exec({action: "wait_request",
+                 target: "/api/wallet/transfer",
+                 timeout: 5000})
+   → { request: {
+         url: "https://api.example.com/api/wallet/transfer",
+         method: "POST",
+         status: 200,
+         req_body: '{"amount":"99.30","to":"0xabc..."}',  ← LITERAL
+         body:     '{"new_balance":"7277.50",...}',
+         ts: 1729...
+     }}
+3. assert: request.req_body parses as JSON with amount="99.30"
+```
+
+vs the broken pattern (race):
+```
+✗ click → immediately call `network` → no entry yet → assertion fails
+```
+
+`wait_request` auto-installs the network capture, so no need to call
+`install_capture` first.
+
+### Workflow B.9 — Test isolation between sequential tests
+
+When running K-series tests back-to-back, the previous test's auth
+session, cookies, and localStorage will bleed into the next:
+
+```
+# Before each test (or at the start of each YAML test goal):
+1. browser_exec({action: "clear_state"})
+   → wipes cookies + localStorage + sessionStorage + IndexedDB + caches
+2. browser_exec({action: "goto", target: "https://app/"})
+   → fresh session; login form appears even if previous test was logged in
+```
+
+`clear_state` does NOT close Chrome — same process, same tab, just
+zeroed state. Much faster than a full browser restart.
+
+### Workflow B.10 — OAuth / popup tab handling
+
+When clicking a button opens a new tab (Telegram OAuth, Google login,
+Stripe checkout):
+
+```
+1. browser_exec({action: "click", target: "#login-with-google"})
+2. browser_exec({action: "wait_new_tab", timeout: 5000})
+   → { status: "new tab opened", active_tab: 1 }
+   # Sirin auto-discovers the popup and switches active to it
+3. browser_exec({action: "url"})  → google.com/oauth/...
+4. (interact with the OAuth tab via ax_* / click)
+5. browser_exec({action: "switch_tab", index: 0})  # back to original
+6. browser_exec({action: "ax_value", backend_id: 142})  # read post-login state
+```
+
+Without `wait_new_tab`, the popup tab is invisible to Sirin and
+`switch_tab(1)` would fail with "out of range".
 
 ### Workflow C — Debug a failed run
 
