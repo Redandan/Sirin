@@ -1,7 +1,7 @@
 ---
 name: sirin-launch
 description: This skill should be used when the user wants to start, stop, restart, or check the status of Sirin (the AI browser testing service). Trigger phrases include "start Sirin", "launch Sirin", "Sirin 起來", "開啟 Sirin", "is Sirin running", "stop Sirin", "restart Sirin", or before any sirin-test workflow when Sirin's MCP endpoint might not be up.
-version: 1.1.0
+version: 1.2.0
 ---
 
 # Sirin Lifecycle Skill
@@ -88,6 +88,18 @@ This is the escape hatch when the previous Sirin left the socket in
 TIME_WAIT / CLOSE_WAIT. Sirin itself auto-retries bind 3× with 2s
 backoff, so the env override is only needed for genuinely occupied
 ports or when running multiple instances side-by-side.
+
+**Proactive zombie-port kill (T-M01, issue #14):** Windows sometimes
+leaves a LISTEN socket bound to a PID that `tasklist` cannot see after
+Sirin dies uncleanly — killing by process name misses it. Use
+`bash scripts/kill-port.sh 7700` or
+`powershell -File scripts/kill-port.ps1 7700` to find+kill whoever
+owns the port (silent if free, best-effort on permission errors).
+`scripts/dev-relaunch.sh` now runs the bash helper automatically on
+ports 7700-7703 before building; opt out with
+`SIRIN_KILL_ZOMBIE_PORTS=0` (for enterprise environments that forbid
+the killer). Rust-side bind retry in `src/rpc_server.rs` remains as
+the safety net.
 
 **Flutter / WebGL targets:** set `SIRIN_BROWSER_HEADLESS=false` before
 launch so Chrome opens visibly. CanvasKit/WebGL content won't paint in
@@ -190,7 +202,7 @@ Claude Code:
 | connection timeout | Sirin hung during startup | Stop, check log, restart |
 | "No LLM models discovered" in log | API key missing/invalid | Fix `.env`, restart |
 | Window opens, closes immediately | Missing display / driver issue | Use `--help` flag for diagnostics |
-| Port 7700 in use | Orphaned Sirin or Windows TCP zombie | Kill sirin processes; if still stuck, set `SIRIN_RPC_PORT=7701` (sirin auto-retries bind 3× before failing) |
+| Port 7700 in use | Orphaned Sirin or Windows TCP zombie | `bash scripts/kill-port.sh 7700` (or `kill-port.ps1`) finds+kills by PID; `dev-relaunch.sh` sweeps 7700-7703 auto (disable via `SIRIN_KILL_ZOMBIE_PORTS=0`). Escape hatch: `SIRIN_RPC_PORT=7701` (sirin auto-retries bind 3× before failing) |
 | Flutter/WebGL test shows blank/black screenshots | Running headless (CanvasKit doesn't paint) | Set `SIRIN_BROWSER_HEADLESS=false` globally, or `browser_headless: false` in the test YAML |
 
 ## Related Skills

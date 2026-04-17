@@ -31,6 +31,7 @@ BUILD_ONLY=0
 
 PORT="${SIRIN_RPC_PORT:-7700}"
 HEADLESS="${SIRIN_BROWSER_HEADLESS:-true}"
+KILL_ZOMBIE="${SIRIN_KILL_ZOMBIE_PORTS:-1}"
 
 # ── 1. Kill any running sirin (Windows .exe lock + port reuse) ─────────────
 echo "[1/4] Killing any running sirin.exe..."
@@ -40,6 +41,20 @@ elif command -v pkill >/dev/null 2>&1; then
     pkill -f sirin || true
 fi
 sleep 1
+
+# ── 1b. Sweep zombie TCP listeners on candidate ports (issue #14) ──────────
+# Windows sometimes leaves the listen socket bound to a PID that tasklist
+# can no longer see — killing "by process name" in step 1 doesn't catch
+# those.  Walk the candidate port range and kill whichever process owns
+# each LISTEN socket.  Opt-out:  SIRIN_KILL_ZOMBIE_PORTS=0
+if [[ "$KILL_ZOMBIE" == "1" ]]; then
+    echo "[1b/4] Sweeping zombie listeners on ports $PORT..$((PORT+3))..."
+    for offset in 0 1 2 3; do
+        bash "$REPO_ROOT/scripts/kill-port.sh" "$((PORT + offset))" || true
+    done
+else
+    echo "[1b/4] SIRIN_KILL_ZOMBIE_PORTS=0 — skipping zombie sweep"
+fi
 
 # ── 2. Build release ────────────────────────────────────────────────────────
 echo "[2/4] cargo build --release..."
