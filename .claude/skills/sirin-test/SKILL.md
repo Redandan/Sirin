@@ -1,7 +1,7 @@
 ---
 name: sirin-test
 description: This skill should be used when the user asks to "test a website", "run an E2E test", "verify a user flow", "check if a page works", "run browser tests", or mentions Sirin's testing capabilities. Provides the workflow for driving Sirin's AI-powered browser test runner via its MCP API (:7700/mcp).
-version: 1.3.0
+version: 1.4.0
 ---
 
 # Sirin Browser Test Runner
@@ -49,6 +49,7 @@ Drive Sirin's AI-powered browser testing from external Claude Code sessions. Unl
 | `list_recent_runs` | Historical test executions (SQLite) | Debug flakiness / see patterns |
 | `list_fixes` | Auto-fix history (claude_session spawns) | Check if a fix is in-flight |
 | `config_diagnostics` | LLM/router/vision health report | Tests failing mysteriously — self-diagnose |
+| `page_state` | URL + title + AX summary + console + screenshot | **Quick orientation before deeper inspection** |
 | `browser_exec` | Single imperative browser action | **Debug / one-off exploration without a goal** |
 
 `browser_exec` accepts these `action` values:
@@ -58,7 +59,10 @@ Drive Sirin's AI-powered browser testing from external Claude Code sessions. Unl
 **Accessibility tree** (literal string, no vision approximation — **use these for K14/K15 exact-value assertions**):
 - `enable_a11y` — trigger Flutter semantics bridge (call before `ax_tree` on Flutter Canvas apps)
 - `ax_tree` — full a11y node list with `role`, literal `name`, literal `value`, `backend_id`, `child_ids`
-- `ax_find` (params: `role`, `name`) — single match by role + name substring
+- `ax_find` (params: `role`, `name` substring, `name_regex` full Rust regex, `not_name_matches` exclusion array, `limit` int default 1) — returns `{found, count, nodes:[...]}` array; single-match compat: check `nodes[0]`
+- `ax_snapshot` (param: `id` optional string) — captures current AX tree to memory; returns `{snapshot_id, count}`
+- `ax_diff` (params: `before_id`, `after_id`) — compares two snapshots; returns `{added:[...], removed:[...], changed:[{node_id, before_name, after_name}]}`
+- `wait_for_ax_change` (params: `baseline_id`, `timeout_ms` default 5000) — blocks until tree differs; returns `{changed:true, diff:{...}}` or timeout error
 - `ax_value` (param: `backend_id`) — exact text content (`value || name`)
 - `ax_click` / `ax_focus` (param: `backend_id`) — interaction by DOM backend id
 - `ax_type` (params: `backend_id`, `text`) — focus + insertText
@@ -164,8 +168,8 @@ messages, token counts, transaction hashes — vision LLMs lose precision
                                               # the semantics tree
 
 3. browser_exec({action: "ax_find", role: "text", name: "Total Assets"})
-   → { found: true, node: { backend_id: 142, name: "Total Assets",
-                            role: "StaticText", ... } }
+   → { found: true, nodes: [{ backend_id: 142, name: "Total Assets",
+                              role: "StaticText", ... }] }
 
 4. browser_exec({action: "ax_value", backend_id: 142})
    → { backend_id: 142, text: "$7376.80" }    ← LITERAL string
@@ -183,7 +187,7 @@ messages, token counts, transaction hashes — vision LLMs lose precision
   tree. Sirin auto-retries this if a subsequent `ax_tree` returns
   ≤2 nodes (Flutter periodically collapses the tree).
 - `ax_find` `name` is **substring + case-insensitive**. Pass exact
-  text in `ax_value` for the precise comparison.
+  text to `ax_value` for the precise comparison.
 - `ax_click` uses `DOM.getBoxModel` → element centre point. More
   reliable than CSS selectors on Flutter Canvas / shadow DOM.
 - For text input on Flutter, use `ax_type` (focus + insertText)
@@ -255,6 +259,97 @@ Stripe checkout):
 Without `wait_new_tab`, the popup tab is invisible to Sirin and
 `switch_tab(1)` would fail with "out of range".
 
+### Workflow B.11 — Quick orientation with `page_state`
+
+When you need situational awareness before deciding what to assert or
+which `ax_find` selectors to use:
+
+```
+1. browser_exec({action: "goto", target: "https://app/dashboard"})
+2. page_state()
+   → { url: "https://app/dashboard",
+       title: "Dashboard",
+       ax_summary: "button:Logout, text:Balance $7376.80, button:Transfer ...",
+       console_recent: [],
+       screenshot_b64: "..." }
+3. Read ax_summary → plan which ax_find names to use without extra calls
+```
+
+`page_state` bundles 4 calls (url + title + condensed ax_tree + console)
+into one. Use it at the start of any exploratory session.
+
+### Workflow B.12 — Before/after diff with `ax_snapshot` + `ax_diff`
+
+When you want a machine-readable delta rather than manually comparing
+two full ax_tree dumps:
+
+```
+# Before action
+1. browser_exec({action: "ax_snapshot", id: "before_transfer"})
+   → { snapshot_id: "before_transfer", count: 84 }
+
+# Trigger the change
+2. browser_exec({action: "click", target: "#transfer-btn"})
+3. browser_exec({action: "wait_request", target: "/api/wallet/transfer"})
+
+# After action
+4. browser_exec({action: "ax_snapshot", id: "after_transfer"})
+
+# Get diff
+5. browser_exec({action: "ax_diff",
+                 before_id: "before_transfer",
+                 after_id:  "after_transfer"})
+   → { added: [], removed: [],
+       changed: [{ node_id: "142",
+                   before_name: "$7376.80",
+                   after_name:  "$7277.50" }] }
+
+6. assert changed[0].after_name == "$7277.50"
+```
+
+**For async UIs** (change fires a few ms after the click), use
+`wait_for_ax_change` instead of snapshotting twice:
+
+```
+1. browser_exec({action: "ax_snapshot", id: "baseline"})
+2. browser_exec({action: "click", target: "#submit"})
+3. browser_exec({action: "wait_for_ax_change",
+                 baseline_id: "baseline", timeout_ms: 5000})
+   → { changed: true,
+       diff: { changed: [{ node_id: "22",
+                           before_name: "Pending",
+                           after_name:  "Confirmed" }] } }
+```
+
+### Workflow B.13 — Fixture setup/cleanup
+
+When the test needs the app in a specific state before the goal runs
+(e.g. logged in, specific data loaded):
+
+```
+run_adhoc_test({
+  url:  "https://app.com/transfer",
+  goal: "Transfer $99.30 and verify the balance decreases",
+  success_criteria: ["Balance shows $7277.50 after transfer"],
+  fixture: {
+    setup: [
+      {action: "goto",  target: "https://app.com/login"},
+      {action: "click", target: "#quick-login-test"},
+      {action: "wait",  target: ".dashboard", timeout_ms: 5000}
+    ],
+    cleanup: [
+      {action: "clear_state"}
+    ]
+  }
+})
+```
+
+- `setup` runs before the ReAct loop; failure → test aborts with `error` status
+- `cleanup` runs unconditionally after the loop (even on timeout/failure);
+  cleanup errors are logged and ignored
+
+The same `fixture:` key works in YAML test goals — see Test YAML Structure.
+
 ### Workflow C — Debug a failed run
 
 ```
@@ -300,6 +395,16 @@ success_criteria:                    # LLM judges these at the end
   - "No console errors during checkout"
 
 tags: [smoke, checkout, critical]    # for filter via list_tests(tag=...)
+
+# Optional fixture: setup/cleanup around the ReAct loop
+# Setup failure → status=error; cleanup always runs
+fixture:
+  setup:
+    - {action: "goto",  target: "https://shop.example.com/login"}
+    - {action: "click", target: "#test-login"}
+    - {action: "wait",  target: ".cart-ready", timeout_ms: 5000}
+  cleanup:
+    - {action: "clear_state"}
 ```
 
 ### Writing good goals
@@ -355,7 +460,7 @@ goal: |
   ⚠️ Flutter CanvasKit app. Use accessibility tree for exact assertions:
     1. {action:"enable_a11y"}                # wake Flutter semantics
     2. {action:"ax_find", role:"text", name:"Total Assets"}
-       → backend_id of the balance display
+       → nodes[0].backend_id of the balance display
     3. {action:"ax_value", backend_id: <N>}  → literal "$7376.80"
   Compare strings exactly. Don't use screenshot_analyze for numbers.
 
@@ -435,6 +540,30 @@ If a user says "this test flakes sometimes":
    success rate <70%
 ```
 
+## Pre-Authorization (AuthZ) and Live Monitor
+
+### AuthZ — what it does
+Every `browser_exec` call passes through the AuthZ engine. Default mode is
+**permissive** (all calls pass). In `selective` / `strict` mode, rules in
+`config/authz.yaml` gate calls by URL glob, regex, or JS expression.
+
+An `ask` rule will **block** the call up to 30s waiting for an operator
+decision. If the Monitor tab is not open, the decision never arrives and the
+call is denied. Keep the Monitor visible when testing with `ask` rules.
+
+### Live Monitor — interactive control
+The Monitor tab in Sirin's GUI shows:
+- **Action feed** — every browser_exec step as it executes
+- **Screenshot pane** — live 500ms JPEG thumbnail of Chrome
+- **Control bar** — Pause / Step / Abort / Reset buttons
+- **Authz modal** — yellow panel for pending Ask decisions
+
+**Pause** blocks all future `browser_exec` calls until Resumed.
+**Step** unblocks exactly one call then re-pauses — useful for single-stepping.
+**Abort** terminates the test run (all subsequent calls error).
+
+Control affects both GUI-launched and MCP-launched tests (shared atomic state).
+
 ## Failure Classification (Auto-Triage)
 
 When a test fails, Sirin classifies it via LLM:
@@ -463,6 +592,12 @@ When a test fails, Sirin classifies it via LLM:
 
 5. **`run_id not found`** → Completed runs are pruned after 1 hour. Re-run if you need the data.
 
+6. **`ax_find` returns wrong node** → Use `name_regex` for precise matching, e.g. `name_regex:"^Balance$"`. Add `not_name_matches:["Header","Label"]` to exclude decorative nodes with similar text.
+
+7. **`ax_snapshot` ID not found on ax_diff** → Snapshots live in memory; they reset on Sirin restart. Retake the snapshot.
+
+8. **AuthZ Ask hangs 30s then denies** → Monitor tab is closed. Open it and retry, or switch to `permissive` mode in `config/authz.yaml`.
+
 ## Anti-patterns
 
 ❌ **Don't use Sirin for single-browser-action tasks** — Just use the raw `web_navigate` tool if Sirin's agent tools are accessible. Sirin test runner has ~3s overhead per step.
@@ -472,6 +607,8 @@ When a test fails, Sirin classifies it via LLM:
 ❌ **Don't enable `auto_fix=true` on experimental tests** — Will waste Claude Code tokens trying to "fix" things that aren't bugs.
 
 ❌ **Don't block on synchronous `run_test`** — Always use `run_test_async` + poll. Tests can take 2+ minutes.
+
+❌ **Don't store `ax_snapshot` IDs across Sirin restarts** — They're in-process memory only; retake snapshots at the start of each session.
 
 ## Example: Full Session
 

@@ -68,7 +68,7 @@ Kick off a research task.
 
 ---
 
-### Test Runner (10 tools)
+### Test Runner (11 tools)
 
 #### `list_tests`
 Enumerate test YAMLs in `config/tests/`.
@@ -101,13 +101,29 @@ external Claude Code sessions that receive requests against arbitrary URLs.
   "locale":"en",
   "max_iterations":10,
   "timeout_secs":90,
-  "browser_headless":false
+  "browser_headless":false,
+  "fixture":{
+    "setup":[
+      {"action":"goto","target":"https://example.com/login"},
+      {"action":"click","target":"#guest-btn"},
+      {"action":"wait","target":".dashboard"}
+    ],
+    "cleanup":[
+      {"action":"clear_state"}
+    ]
+  }
 }}
 ```
 **`browser_headless` (optional):** `false` required for Flutter CanvasKit /
 WebGL targets (they won't paint in headless Chrome → screenshots come back
 black). Default reads `SIRIN_BROWSER_HEADLESS` env (itself defaulting to
 `true`).
+
+**`fixture` (optional):** `setup` steps run before the ReAct loop; `cleanup`
+steps run unconditionally after the loop (even on timeout/error). Each step
+supports `action`, `target`, `text`, and `timeout_ms` fields. A setup failure
+aborts the run immediately with `error` status; cleanup errors are logged and
+ignored.
 
 Synthetic test_id format: `adhoc_<YYYYMMDD_HHMMSS_mmm>`. Results persist to
 `test_runs` table with tag `adhoc`. Adhoc runs **skip** auto-fix verification
@@ -184,6 +200,26 @@ message, suggestion}], text_report}`
 
 Use when tests are mysteriously failing across the board.
 
+#### `page_state`
+Single-call page snapshot: URL + title + condensed AX tree summary + last 5
+console messages + JPEG thumbnail. Use instead of four separate `browser_exec`
+calls when you need situational awareness without a specific assertion.
+```json
+{"name":"page_state","arguments":{}}
+```
+**Returns:**
+```json
+{
+  "url":         "https://app.example.com/dashboard",
+  "title":       "Dashboard – Acme",
+  "ax_summary":  "button:Logout, text:Welcome Alice, button:Settings ...",
+  "screenshot_b64": "<JPEG thumbnail — null if browser not open>",
+  "console_recent": ["[warn] Slow network request", "..."]
+}
+```
+Use for quick orientation ("what page are we on?") before deeper exploration.
+`ax_summary` is a compact one-liner; for full tree use `browser_exec(ax_tree)`.
+
 #### `browser_exec`
 Imperative single-action browser control. Bypasses the full test goal flow.
 ```json
@@ -228,8 +264,11 @@ messages, token counts):
 |--------|---------------|---------|
 | `enable_a11y` | — | `{status}` — call before `ax_tree` on Flutter Canvas apps |
 | `ax_tree` | — (optional `include_ignored`) | `{count, nodes:[{node_id, backend_id, role, name, value, description, child_ids}]}` |
-| `ax_find` | `role` and/or `name` (substring, case-insensitive) | `{found, node?}` |
-| `ax_value` | `backend_id` | `{backend_id, text}` — literal `value || name` |
+| `ax_find` | `role` and/or `name` (substring, case-insensitive); optional `name_regex` (Rust regex, no implicit anchoring), `not_name_matches` (array of substrings to exclude), `limit` (int, default 1) | `{found, count, nodes:[...]}` — always an array; for single-match use `nodes[0]` |
+| `ax_snapshot` | optional `id` (string key; auto-generated if omitted) | `{snapshot_id, count}` — stores current AX tree in memory keyed by `snapshot_id` |
+| `ax_diff` | `before_id`, `after_id` | `{added:[{...}], removed:[{...}], changed:[{node_id, before_name, after_name}]}` — machine-readable delta between two snapshots |
+| `wait_for_ax_change` | `baseline_id`; optional `timeout_ms` (default 5000) | `{changed:true, diff:{added,removed,changed}}` — blocks until tree differs from baseline; error on timeout |
+| `ax_value` | `backend_id` | `{backend_id, text}` — literal `value \|\| name` |
 | `ax_click` | `backend_id` | `{status, backend_id}` — clicks element centre via `DOM.getBoxModel` |
 | `ax_focus` | `backend_id` | `{status, backend_id}` |
 | `ax_type` | `backend_id`, `text` | `{status, backend_id, length}` — focus + insertText |
@@ -242,6 +281,107 @@ messages, token counts):
 | `clear_state` | — | `{status:"cleared"}` — wipes cookies + localStorage + sessionStorage + IndexedDB + caches; doesn't close Chrome |
 | `wait_request` | `target` (URL substring), optional `timeout` (ms, default 10000) | `{request: {url, method, status, req_body, body, ts}}` — auto-installs network capture; eliminates click-then-read race |
 | `wait_new_tab` | optional `timeout` (ms, default 10000) | `{status, active_tab}` — polls + auto-discovers via register_missing_tabs; switches active to newest |
+
+---
+
+## Pre-Authorization (AuthZ)
+
+Every `browser_exec` call passes through the AuthZ engine before execution.
+By default Sirin ships in **permissive mode** — all calls pass through and an
+audit entry is written.
+
+### Modes
+
+| Mode | Behaviour |
+|------|-----------|
+| `permissive` (default) | All calls allowed; audit log written |
+| `selective` | Rules evaluated in order; unmatched calls allowed |
+| `strict` | Rules evaluated in order; unmatched calls denied |
+
+Configure in `config/authz.yaml` (created on first run if missing):
+
+```yaml
+mode: permissive          # permissive | selective | strict
+audit_log: data/authz_audit.jsonl
+rules:
+  - url_glob: "https://internal.corp/*"
+    action: deny
+  - url_glob: "https://payments.stripe.com/*"
+    action: ask
+  - js_contains: "document.cookie"
+    action: deny
+```
+
+### Decision pipeline (per `browser_exec` call)
+
+1. Mode `permissive` → immediately allow (skip rules)
+2. Rules evaluated in declaration order → first match wins
+   - `allow` → proceed
+   - `deny` → return error immediately
+   - `ask` / `ask_with_learn` → emit notification to Live Monitor, wait ≤30s
+3. No rule matched: `selective` → allow, `strict` → deny
+
+**`ask` / `ask_with_learn` flow:** Sirin emits an authz-ask event visible in
+the Monitor UI's yellow modal panel. The operator clicks **Allow** or **Deny**.
+If no decision arrives within 30 seconds, the call is denied automatically.
+`ask_with_learn` additionally saves the decision as a rule for future calls.
+
+### Audit log rotation
+
+`data/authz_audit.jsonl` auto-rotates at **10 MB**, keeping up to 5 backups
+(`authz_audit.jsonl.1` … `.5`). No manual rotation needed.
+
+---
+
+## Live Monitor
+
+The Monitor panel (`Sirin GUI → Monitor` tab) shows real-time browser activity
+and gives the operator interactive control over running tests.
+
+### Action Feed
+
+Every browser_exec step emitted by a test or imperative call appears as a
+timestamped event: `[tool] action → status`. The feed auto-scrolls to newest
+entries while running.
+
+### Screenshot Pane
+
+Live JPEG thumbnail (500 ms interval, 80% quality) of the active Chrome
+window. The **⏸ Pause stream** toggle freezes the thumbnail without stopping
+the test.
+
+### Control Bar
+
+| Button | Effect on `browser_exec` calls |
+|--------|-------------------------------|
+| **Pause** | All future calls block at `gate()` until Resumed. In-flight call completes first. |
+| **Step** | Unblocks exactly one queued call, then re-pauses automatically. |
+| **Abort** | Signals abort — all subsequent `gate()` calls return an error, terminating the test run. |
+| **Reset** | Clears abort flag and resumes. Use after inspecting an aborted session. |
+
+Control state is shared between the GUI and MCP server via an atomic
+`ControlState` singleton — these buttons work whether the test was triggered
+from the GUI or from a `run_test_async` MCP call.
+
+### Authz Modal
+
+When an `ask` or `ask_with_learn` rule matches, a yellow panel appears in the
+Monitor showing:
+
+- Tool name and action
+- The URL being requested
+- **Allow** and **Deny** buttons
+
+Clicking Allow/Deny resolves the 30s wait in the MCP server pipeline.
+
+### Trace Replay
+
+Load historical `.sirin/trace-*.ndjson` files to replay the action feed
+offline. The replay dropdown shows available trace files newest-first with
+human-readable timestamps derived from the filename. Screenshot pane is
+disabled during replay.
+
+---
 
 ## Workflow Patterns
 
@@ -264,6 +404,19 @@ list_recent_runs      → is this test historically flaky?
 list_fixes            → is an auto-fix already in progress?
 ```
 
+### Pattern D — Diagnose Sirin itself
+```
+config_diagnostics → errors/warnings + structured text_report
+```
+
+### Pattern E — Imperative exploration
+```
+browser_exec(goto)       → navigate
+browser_exec(console)    → JS errors
+browser_exec(eval)       → inspect DOM
+browser_exec(screenshot) → visual state
+```
+
 ### Pattern F — Exact-string assertion (K14/K15) via accessibility tree
 
 When asserting on numeric values, error messages, or specific copy
@@ -274,7 +427,7 @@ where vision LLM precision loss matters:
                  browser_headless:false})    # Flutter needs visible
 2. browser_exec({action:"enable_a11y"})       # wake Flutter semantics
 3. browser_exec({action:"ax_find", role:"text", name:"Total Assets"})
-   → {found:true, node:{backend_id: 142, ...}}
+   → {found:true, nodes:[{backend_id: 142, ...}]}
 4. browser_exec({action:"ax_value", backend_id: 142})
    → {text: "$7376.80"}                       # LITERAL, not "about 7377"
 5. (perform an action)
@@ -328,18 +481,90 @@ sessionStorage, IndexedDB, and Cache Storage.
 Without `wait_new_tab`, the popup is invisible to Sirin (headless_chrome
 doesn't auto-track tabs spawned by `window.open`).
 
-### Pattern D — Diagnose Sirin itself
+### Pattern J — Quick page orientation with `page_state`
+
+When you need situational awareness before deciding what to assert:
+
 ```
-config_diagnostics → errors/warnings + structured text_report
+1. browser_exec({action:"goto", target:"https://app/dashboard"})
+2. page_state()
+   → {url:"https://app/dashboard", title:"Dashboard",
+      ax_summary:"button:Logout, text:Balance $7376.80, ...",
+      console_recent:[], screenshot_b64:"..."}
+3. Read ax_summary to plan ax_find targets — no extra round-trips
 ```
 
-### Pattern E — Imperative exploration
+Use `page_state` to orient at the start of an ad-hoc exploration or when
+a paused test hands control back for inspection.
+
+### Pattern K — Before/after diff with `ax_snapshot` + `ax_diff`
+
+When an action should change specific UI elements and you want a
+machine-readable delta rather than re-reading every value manually:
+
 ```
-browser_exec(goto)       → navigate
-browser_exec(console)    → JS errors
-browser_exec(eval)       → inspect DOM
-browser_exec(screenshot) → visual state
+1. browser_exec({action:"ax_snapshot", id:"before_transfer"})
+   → {snapshot_id:"before_transfer", count:84}
+
+2. browser_exec({action:"click", target:"#transfer-btn"})
+3. browser_exec({action:"wait_request", target:"/api/wallet/transfer"})
+
+4. browser_exec({action:"ax_snapshot", id:"after_transfer"})
+   → {snapshot_id:"after_transfer", count:84}
+
+5. browser_exec({action:"ax_diff",
+                 before_id:"before_transfer", after_id:"after_transfer"})
+   → {added:[], removed:[],
+      changed:[{node_id:"142", before_name:"$7376.80",
+                              after_name:"$7277.50"}]}
+
+6. assert changed[0].after_name == "$7277.50"
 ```
+
+Faster than scanning the full `ax_tree` — only the delta is returned.
+
+### Pattern K2 — Wait for async UI update with `wait_for_ax_change`
+
+For async UIs where the change fires milliseconds after the action:
+
+```
+1. browser_exec({action:"ax_snapshot", id:"baseline"})
+2. browser_exec({action:"click", target:"#submit"})
+3. browser_exec({action:"wait_for_ax_change",
+                 baseline_id:"baseline", timeout_ms:5000})
+   → {changed:true,
+      diff:{added:[], removed:[],
+            changed:[{node_id:"22", before_name:"Pending",
+                                   after_name:"Confirmed"}]}}
+```
+
+### Pattern L — Fixture setup/cleanup
+
+When a test needs the app in a specific state before the goal runs:
+
+```json
+run_adhoc_test({
+  "url": "https://app.com/transfer",
+  "goal": "Transfer $99.30 and verify balance decreases",
+  "success_criteria": ["Balance shows $7277.50 after transfer"],
+  "fixture": {
+    "setup": [
+      {"action":"goto",  "target":"https://app.com/login"},
+      {"action":"click", "target":"#quick-login-test"},
+      {"action":"wait",  "target":".dashboard"}
+    ],
+    "cleanup": [
+      {"action":"clear_state"}
+    ]
+  }
+})
+```
+
+Setup failure → test status `error`. Cleanup always runs (errors logged,
+not surfaced). YAML test goals use the same `fixture:` key — see
+`docs/test-runner-roadmap.md` for the full schema.
+
+---
 
 ## Failure Classification (auto-fix)
 
@@ -357,6 +582,8 @@ the failure context:
 Dedup rules (see `list_fixes` outcome values above):
 - Any `pending` fix within 30 minutes for the same test → skipped
 - Last 3 consecutive `failed` outcomes → skipped (circuit breaker)
+
+---
 
 ## Common Gotchas
 
@@ -423,6 +650,28 @@ If Sirin was killed abruptly on Windows, the port can linger in
 TIME_WAIT / CLOSE_WAIT for ~2 minutes. Sirin auto-retries bind 3× with
 2s backoff; if still failing, launch with `SIRIN_RPC_PORT=7701`.
 
+### `ax_find` with `name_regex` — anchoring
+`name_regex` is matched via Rust's `regex` crate (no implicit anchoring).
+`"^Balance$"` matches exactly; `"Balance"` matches substring. Combine
+with `not_name_matches` to exclude irrelevant nodes:
+```json
+{"action":"ax_find","role":"text","name_regex":"\\$[0-9]",
+ "not_name_matches":["Total","Header"],"limit":5}
+```
+
+### `ax_snapshot` IDs are session-scoped
+Snapshot IDs live in Sirin's in-process memory — they do not persist
+across Sirin restarts. Take a fresh snapshot at the start of each test
+session; don't store IDs across days.
+
+### AuthZ Ask timeout
+When an `ask` rule matches, Sirin waits up to 30 seconds for an operator
+decision from the Monitor UI. If the Monitor tab is not open, the decision
+never arrives and the call is denied. Either switch to `permissive` mode or
+keep the Monitor visible when running guarded tests.
+
+---
+
 ## Safety Guarantees
 
 - Ad-hoc runs persist to SQLite but skip auto-fix verification (no YAML to re-run)
@@ -433,6 +682,10 @@ TIME_WAIT / CLOSE_WAIT for ~2 minutes. Sirin auto-retries bind 3× with
   per-test, default 3) before aborting
 - Observation truncation at 800 chars includes a hint pointing to
   `get_full_observation` for the full text
+- AuthZ audit log auto-rotates at 10 MB (5 backups kept)
+- AuthZ mode defaults to `permissive` — no accidental denial on fresh installs
+
+---
 
 ## Related
 
