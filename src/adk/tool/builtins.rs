@@ -821,6 +821,53 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                         Ok(json!({ "status": "auth_set" }))
                     }
 
+                    // ── Accessibility tree (literal text, fast, Flutter-OK) ─
+                    "enable_a11y" => {
+                        crate::browser_ax::enable_flutter_semantics()?;
+                        Ok(json!({ "status": "semantics enabled" }))
+                    }
+                    "ax_tree" => {
+                        let include_ignored = input.get("include_ignored").and_then(Value::as_bool).unwrap_or(false);
+                        let nodes = crate::browser_ax::get_full_tree(include_ignored)?;
+                        Ok(json!({ "count": nodes.len(), "nodes": nodes }))
+                    }
+                    "ax_find" => {
+                        let role = optional_string_field(&input, "role");
+                        let name = optional_string_field(&input, "name");
+                        if role.is_none() && name.is_none() {
+                            return Err("'ax_find' requires 'role' and/or 'name'".into());
+                        }
+                        let node = crate::browser_ax::find_by_role_and_name(role.as_deref(), name.as_deref())?;
+                        match node {
+                            Some(n) => Ok(json!({ "found": true, "node": n })),
+                            None    => Ok(json!({ "found": false })),
+                        }
+                    }
+                    "ax_value" => {
+                        let backend_id = input.get("backend_id").and_then(Value::as_u64)
+                            .ok_or("'ax_value' requires 'backend_id' (number)")?;
+                        let text = crate::browser_ax::read_node_text(backend_id as u32)?;
+                        Ok(json!({ "backend_id": backend_id, "text": text }))
+                    }
+                    "ax_click" => {
+                        let backend_id = input.get("backend_id").and_then(Value::as_u64)
+                            .ok_or("'ax_click' requires 'backend_id' (number)")?;
+                        crate::browser_ax::click_backend(backend_id as u32)?;
+                        Ok(json!({ "status": "clicked", "backend_id": backend_id }))
+                    }
+                    "ax_focus" => {
+                        let backend_id = input.get("backend_id").and_then(Value::as_u64)
+                            .ok_or("'ax_focus' requires 'backend_id' (number)")?;
+                        crate::browser_ax::focus_backend(backend_id as u32)?;
+                        Ok(json!({ "status": "focused", "backend_id": backend_id }))
+                    }
+                    "ax_type" => {
+                        let backend_id = input.get("backend_id").and_then(Value::as_u64)
+                            .ok_or("'ax_type' requires 'backend_id' (number)")?;
+                        crate::browser_ax::type_into_backend(backend_id as u32, &text)?;
+                        Ok(json!({ "status": "typed", "backend_id": backend_id, "length": text.len() }))
+                    }
+
                     // ── Vision: screenshot + LLM analysis ────────
                     "screenshot_analyze" => {
                         // Take screenshot, send to vision LLM with prompt, return analysis

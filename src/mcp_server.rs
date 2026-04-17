@@ -269,13 +269,13 @@ fn handle_tools_list() -> Result<Value, String> {
             },
             {
                 "name": "browser_exec",
-                "description": "即席執行瀏覽器動作，不走完整 test goal。適合 debug / 探索 / 單步操作。action 可用：goto, screenshot, screenshot_analyze, click, click_point, type, read, eval, wait, exists, attr, scroll, key, console, network, url, title, close, set_viewport。",
+                "description": "即席執行瀏覽器動作，不走完整 test goal。適合 debug / 探索 / 單步操作。action 可用：goto, screenshot, screenshot_analyze, click, click_point, type, read, eval, wait, exists, attr, scroll, key, console, network, url, title, close, set_viewport。Accessibility tree（literal text，可做精確比對）：enable_a11y, ax_tree, ax_find, ax_value, ax_click, ax_focus, ax_type。",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "action":           { "type": "string", "description": "web_navigate action 名稱" },
                         "target":           { "type": "string", "description": "URL / CSS selector / JS expr / screenshot_analyze 的問題，視 action 而定" },
-                        "text":             { "type": "string", "description": "type 動作的輸入文字" },
+                        "text":             { "type": "string", "description": "type / ax_type 動作的輸入文字" },
                         "timeout":          { "type": "number", "description": "wait 動作的 ms" },
                         "x":                { "type": "number", "description": "click_point 的 x 座標 (CSS px)" },
                         "y":                { "type": "number", "description": "click_point 的 y 座標 (CSS px)" },
@@ -283,7 +283,11 @@ fn handle_tools_list() -> Result<Value, String> {
                         "height":           { "type": "number", "description": "set_viewport 的 height (px)" },
                         "device_scale":     { "type": "number", "description": "set_viewport 的 devicePixelRatio (預設 1.0)" },
                         "mobile":           { "type": "boolean", "description": "set_viewport 的 mobile 模擬旗標 (預設 false)" },
-                        "browser_headless": { "type": "boolean", "description": "Flutter/WebGL 應該設 false。預設讀 SIRIN_BROWSER_HEADLESS env" }
+                        "browser_headless": { "type": "boolean", "description": "Flutter/WebGL 應該設 false。預設讀 SIRIN_BROWSER_HEADLESS env" },
+                        "backend_id":       { "type": "number", "description": "ax_value/ax_click/ax_focus/ax_type 的 DOM backend node id (從 ax_tree / ax_find 取得)" },
+                        "role":             { "type": "string", "description": "ax_find 的 a11y role 過濾 (e.g. button, textbox, text)" },
+                        "name":             { "type": "string", "description": "ax_find 的 name 子字串過濾 (case-insensitive)" },
+                        "include_ignored":  { "type": "boolean", "description": "ax_tree 是否包含 ignored / generic 節點 (預設 false)" }
                     },
                     "required": ["action"]
                 }
@@ -574,6 +578,11 @@ async fn call_browser_exec(args: Value) -> Result<Value, String> {
     let height = args.get("height").and_then(Value::as_u64);
     let device_scale = args.get("device_scale").and_then(Value::as_f64).unwrap_or(1.0);
     let mobile = args.get("mobile").and_then(Value::as_bool).unwrap_or(false);
+    // ax_* args
+    let backend_id = args.get("backend_id").and_then(Value::as_u64).map(|n| n as u32);
+    let role_arg = args.get("role").and_then(Value::as_str).map(String::from);
+    let name_arg = args.get("name").and_then(Value::as_str).map(String::from);
+    let include_ignored = args.get("include_ignored").and_then(Value::as_bool).unwrap_or(false);
 
     // ── Async-only actions (need LLM call, can't go in spawn_blocking) ────
     if action == "screenshot_analyze" {
@@ -689,6 +698,45 @@ async fn call_browser_exec(args: Value) -> Result<Value, String> {
                     "width": w, "height": h,
                     "device_scale": device_scale, "mobile": mobile
                 }))
+            }
+            // ── Accessibility tree (literal text — for exact assertions) ──
+            "enable_a11y" => {
+                crate::browser_ax::enable_flutter_semantics()?;
+                Ok(json!({ "status": "semantics enabled" }))
+            }
+            "ax_tree" => {
+                let nodes = crate::browser_ax::get_full_tree(include_ignored)?;
+                Ok(json!({ "count": nodes.len(), "nodes": nodes }))
+            }
+            "ax_find" => {
+                if role_arg.is_none() && name_arg.is_none() {
+                    return Err("'ax_find' requires 'role' and/or 'name'".into());
+                }
+                let node = crate::browser_ax::find_by_role_and_name(
+                    role_arg.as_deref(), name_arg.as_deref())?;
+                match node {
+                    Some(n) => Ok(json!({ "found": true, "node": n })),
+                    None    => Ok(json!({ "found": false })),
+                }
+            }
+            "ax_value" => {
+                let id = backend_id.ok_or("'ax_value' requires 'backend_id' (number)")?;
+                Ok(json!({ "backend_id": id, "text": crate::browser_ax::read_node_text(id)? }))
+            }
+            "ax_click" => {
+                let id = backend_id.ok_or("'ax_click' requires 'backend_id' (number)")?;
+                crate::browser_ax::click_backend(id)?;
+                Ok(json!({ "status": "clicked", "backend_id": id }))
+            }
+            "ax_focus" => {
+                let id = backend_id.ok_or("'ax_focus' requires 'backend_id' (number)")?;
+                crate::browser_ax::focus_backend(id)?;
+                Ok(json!({ "status": "focused", "backend_id": id }))
+            }
+            "ax_type" => {
+                let id = backend_id.ok_or("'ax_type' requires 'backend_id' (number)")?;
+                crate::browser_ax::type_into_backend(id, &text)?;
+                Ok(json!({ "status": "typed", "backend_id": id, "length": text.len() }))
             }
             other   => Err(format!("Unknown browser_exec action: {other}")),
         }

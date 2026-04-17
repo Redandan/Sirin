@@ -346,6 +346,19 @@ fn build_prompt(test: &TestGoal, history: &[TestStep], parse_error_hint: Option<
 - console        — return captured console messages
 - network        — return captured fetch/XHR
 
+## Accessibility tree actions (literal text, no vision approximation)
+For exact-string assertions ($7376.80, error messages, token counts):
+- enable_a11y    — trigger Flutter semantics bridge first (only needed once for Canvas apps)
+- ax_tree        — list all a11y nodes with role + literal name + value + backend_id
+- ax_find        — role and/or name (substring); returns single match
+- ax_value       — backend_id → exact text (value || name)
+- ax_click       — backend_id → click via DOM box model centre
+- ax_focus       — backend_id → DOM focus
+- ax_type        — backend_id, text → focus + insertText
+
+When you need EXACT text comparison (numbers, IDs), prefer ax_* over
+screenshot_analyze (which approximates).
+
 ## Separate tool: expand_observation
 When a previous Observation was truncated (you'll see "[truncated: ...]"),
 you can fetch the complete content by outputting an action that calls the

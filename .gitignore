@@ -47,3 +47,4 @@ Thumbs.db
 !/config/
 !/config/*.yaml
 .claude/settings.local.json
+sirin_*.log

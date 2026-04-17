@@ -815,7 +815,7 @@ pub fn local_storage_set(key: &str, value: &str) -> Result<(), String> {
 //  INTERNALS
 // ══════════════════════════════════════════════════════════════════════════════
 
-fn with_tab<F, R>(f: F) -> Result<R, String>
+pub(crate) fn with_tab<F, R>(f: F) -> Result<R, String>
 where
     F: FnOnce(&Arc<Tab>) -> Result<R, String> + Clone,
 {
