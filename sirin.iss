@@ -49,14 +49,14 @@ Source: "target\release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 
 ; Default env template — only copy if user doesn't have one yet
 ; (user's actual .env lives in %LOCALAPPDATA%\Sirin\.env, managed by the app)
-Source: ".env.example"; DestDir: "{userappdata}\Sirin"; DestName: ".env.example"; Flags: ignoreversion onlyifdoesntexist; Check: UserAppDataExists
+Source: ".env.example"; DestDir: "{localappdata}\Sirin"; DestName: ".env.example"; Flags: ignoreversion onlyifdoesntexist; Check: AlwaysTrue
 
 ; Default config files — only install if missing (preserves user edits on upgrade)
-Source: "config\agents.yaml";   DestDir: "{userappdata}\Sirin\config"; Flags: ignoreversion onlyifdoesntexist
-Source: "config\persona.yaml";  DestDir: "{userappdata}\Sirin\config"; Flags: ignoreversion onlyifdoesntexist
+Source: "config\agents.yaml";   DestDir: "{localappdata}\Sirin\config"; Flags: ignoreversion onlyifdoesntexist
+Source: "config\persona.yaml";  DestDir: "{localappdata}\Sirin\config"; Flags: ignoreversion onlyifdoesntexist
 
 ; Bundled YAML skills (overwrite on upgrade — these are app-managed, not user-editable)
-; Source: "config\skills\*"; DestDir: "{userappdata}\Sirin\config\skills"; Flags: ignoreversion recursesubdirs
+; Source: "config\skills\*"; DestDir: "{localappdata}\Sirin\config\skills"; Flags: ignoreversion recursesubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}";         Filename: "{app}\{#MyAppExeName}"
@@ -65,9 +65,9 @@ Name: "{commondesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: 
 
 [Registry]
 ; Auto-start entry (created only if task "startupentry" selected)
-Root: HKCU; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
-  ValueType: string; ValueName: "{#MyAppName}";
-  ValueData: """{app}\{#MyAppExeName}""";
+Root: HKCU; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Run"; \
+  ValueType: string; ValueName: "{#MyAppName}"; \
+  ValueData: """{app}\{#MyAppExeName}"""; \
   Tasks: startupentry; Flags: uninsdeletevalue
 
 [Run]
@@ -75,7 +75,7 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}
   Flags: nowait postinstall skipifsilent
 
 [Code]
-function UserAppDataExists: Boolean;
+function AlwaysTrue: Boolean;
 begin
-  Result := True; // always run — the check is handled by onlyifdoesntexist flag
+  Result := True; // always run — the actual guard is the onlyifdoesntexist flag
 end;

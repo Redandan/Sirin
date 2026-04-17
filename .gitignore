@@ -16,6 +16,11 @@ sirin.log
 dist/
 out/
 build/
+/Output/
+
+# ── Runtime / verification dirs ───────────────────────────────────────────────
+.sirin-verify/
+.claude/scheduled_tasks.lock
 
 # ── Node / Next.js ────────────────────────────────────────────────────────────
 node_modules/
