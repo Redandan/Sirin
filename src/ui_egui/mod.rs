@@ -48,6 +48,7 @@ pub struct SirinApp {
     // Sidebar rename state (replaces unsafe static mut)
     renaming: Option<(usize, String)>,
 
+    sidebar_collapsed: bool,
     log_state: log_view::LogState,
     workspace_state: workspace::WorkspaceState,
     settings_state: settings::SettingsState,
@@ -70,6 +71,7 @@ impl SirinApp {
             last_refresh: std::time::Instant::now() - std::time::Duration::from_secs(60),
             toasts: VecDeque::new(),
             renaming: None,
+            sidebar_collapsed: false,
             log_state: Default::default(), workspace_state: Default::default(),
             settings_state: Default::default(), browser_state: Default::default(),
             monitor_state: Default::default(),
@@ -102,7 +104,7 @@ impl eframe::App for SirinApp {
         let now = std::time::Instant::now();
         self.toasts.retain(|t| t.expires > now);
 
-        sidebar::show(ctx, &self.svc, &self.agents, &self.pending_counts, &mut self.view, &mut self.renaming);
+        sidebar::show(ctx, &self.svc, &self.agents, &self.pending_counts, &mut self.view, &mut self.renaming, &mut self.sidebar_collapsed);
 
         // ── Update banner (shown when a new version is available) ────────
         if !self.update_banner_dismissed {
