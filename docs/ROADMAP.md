@@ -511,3 +511,60 @@ T-10 (系統托盤) — 獨立
 | 中期 | T-08 Follow-up 改進 | 改善現有自主循環品質 |
 | 長期 | T-09 Persona 更新 | 真正的自我優化閉環 |
 | 長期 | T-10 系統托盤 | UX 完善 |
+
+---
+
+# 附錄:MCP / Testing Roadmap(2026-04-17 起)
+
+Sirin 除了原本的 self-optimizing agent 方向,也變成**外部 AI 透過 MCP 驅動瀏覽器**的基礎設施(Claude Code / Desktop / Cursor 都在用)。這條線有獨立的演化方向 —— 重點不是「Sirin 更聰明」,是「Sirin 更安全、更穩、更可觀察」。
+
+## Tier 1 — 止血(痛點立即感受)
+
+| # | 項目 | 規模 | 文件 |
+|---|---|---|---|
+| **T-M01** | Windows zombie port wrapper(issue #14 自修復) | 1/2 day | — |
+| **T-M02 ★A** | **Pre-Authorization engine**(外部 AI gate,防幻覺 `eval document.cookie` 等) | 3–5 day | `docs/DESIGN_AUTHZ.md` |
+| **T-M03 ★B** | **Live GUI Monitor**(egui 內的即時 screenshot / action feed / authz ask + Pause/Step/Abort) | 5–7 day | `docs/DESIGN_MONITOR.md` |
+| **T-M04** | Trace NDJSON + Replay mode(★B UI 重用) | 1–2 day(在 ★B 之上) | `DESIGN_MONITOR.md` §6 |
+
+## Tier 2 — 擴能
+
+| # | 項目 | 規模 |
+|---|---|---|
+| T-M05 | `page_state` 聚合查詢(url+ax+screenshot+console+net 一次回) | 1 day |
+| T-M06 | `ax_find` 加 regex + `not_name_matches` | 1/2 day |
+| T-M07 | `ax_diff(before, after)` + `wait_for_ax_change` | 1 day |
+| T-M08 | Fixture 管理(`with_fixture { setup, cleanup }`) | 1 day |
+| T-M09 | Parallel test execution(多 Chrome profile 同時跑) | 2–3 day |
+
+## Tier 3 — 生態
+
+| # | 項目 | 規模 |
+|---|---|---|
+| T-M10 | Playwright protocol bridge(接 Playwright trace viewer / codegen) | 1–2 weeks |
+| T-M11 | VSCode extension(即時 screenshot + ax tree panel) | 1 week |
+| T-M12 | CLI / REPL mode(`sirin exec goto …` 免 curl-heredoc) | 2–3 day |
+| T-M13 | Systray helper(tray-icon,★B 第二階段) | 2 day |
+
+## Tier 4 — 社群
+
+| # | 項目 | 規模 |
+|---|---|---|
+| T-M14 | `examples/agora-market.md`(固化已驗 a11y 節點 cheatsheet) | 1/2 day |
+| T-M15 | `cargo build` emit `schema.json`(外部 LLM tool-use 可消費) | 1/2 day |
+| T-M16 | Benchmark harness(`cargo bench` 跑典型 action 組合) | 1 day |
+
+## 優先序建議
+
+```
+立即 │ T-M01 zombie port → T-M02 AuthZ → T-M03 Monitor
+短期 │ T-M04 trace replay → T-M05 page_state → T-M14 agora cheatsheet
+中期 │ T-M07/M08 ax_diff / fixture → T-M12 CLI → T-M13 systray
+長期 │ T-M09 parallel → T-M10 Playwright bridge → T-M11 VSCode ext
+```
+
+## 跟原 T-01..T-15 Agent 方向的關係
+
+- **獨立**:MCP/Testing 方向不動 agent core(memory / persona / follow-up)
+- **共用**:同個 `sirin.exe` 進程、同個 egui UI、同個 tokio runtime
+- **互補**:Monitor 的 trace ndjson 之後也能給 agent 做 self-optimize 的 training data(T-07 品質評分的一個新 input source)

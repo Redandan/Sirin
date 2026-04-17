@@ -48,7 +48,10 @@ fn registry() -> &'static Mutex<HashMap<String, RunState>> {
 
 /// Generate a unique run_id + insert an initial Queued state.
 pub fn new_run(test_id: &str) -> String {
-    let run_id = format!("run_{}", chrono::Local::now().format("%Y%m%d_%H%M%S_%3f"));
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let run_id = format!("run_{}_{seq}", chrono::Local::now().format("%Y%m%d_%H%M%S_%3f"));
     let state = RunState {
         run_id: run_id.clone(),
         test_id: test_id.to_string(),

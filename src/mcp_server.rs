@@ -751,8 +751,8 @@ async fn call_browser_exec(args: Value) -> Result<Value, String> {
             // ── Multi-tab / popup ───────────────────────────────────
             "wait_new_tab" => {
                 let to_ms = timeout.unwrap_or(10000);
-                let baseline = browser::list_tabs().map(|v| v.len()).unwrap_or(1);
-                let idx = browser::wait_for_new_tab(baseline, to_ms)?;
+                // baseline=None → fn measures from same source as its loop
+                let idx = browser::wait_for_new_tab(None, to_ms)?;
                 Ok(json!({ "status": "new tab opened", "active_tab": idx }))
             }
             // ── Network ─────────────────────────────────────────────

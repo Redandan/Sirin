@@ -25,8 +25,10 @@ tree-sitter-rust = "0.21"
 parking_lot = "0.12"
 rusqlite = { version = "0.31", features = ["bundled"] }
 headless_chrome = "1.0"
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 axum = { version = "0.8", features = ["ws"] }
+globset = "0.4"
+regex = "1.10"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

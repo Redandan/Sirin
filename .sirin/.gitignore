@@ -1,0 +1,8 @@
+# Actual authz config and runtime state — never commit
+# The *.example file IS committed (it's the template other devs copy).
+
+authz.yaml
+audit.ndjson
+audit.ndjson.*
+trace-*.ndjson
+trace-*.ndjson.*

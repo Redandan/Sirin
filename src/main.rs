@@ -2,6 +2,7 @@
 
 mod adk;
 #[allow(dead_code)] mod agent_config;
+#[allow(dead_code)] mod authz;
 pub mod error;
 mod platform;
 #[allow(dead_code)] mod browser;
@@ -24,6 +25,7 @@ mod log_buffer;
 #[allow(dead_code)] mod researcher;
 #[allow(dead_code)] mod mcp_client;
 mod mcp_server;
+#[allow(dead_code)] pub mod monitor;
 mod rhai_engine;
 mod rpc_server;
 #[allow(dead_code)] mod teams;
