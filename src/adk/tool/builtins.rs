@@ -837,11 +837,65 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                         if role.is_none() && name.is_none() {
                             return Err("'ax_find' requires 'role' and/or 'name'".into());
                         }
-                        let node = crate::browser_ax::find_by_role_and_name(role.as_deref(), name.as_deref())?;
-                        match node {
-                            Some(n) => Ok(json!({ "found": true, "node": n })),
-                            None    => Ok(json!({ "found": false })),
+                        let name_regex = optional_string_field(&input, "name_regex");
+                        let not_name_matches: Vec<String> = input
+                            .get("not_name_matches")
+                            .and_then(Value::as_array)
+                            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                            .unwrap_or_default();
+                        let limit = input.get("limit").and_then(Value::as_u64).unwrap_or(1) as usize;
+
+                        if limit <= 1 {
+                            match crate::browser_ax::find_by_role_and_name(
+                                role.as_deref(), name.as_deref(),
+                                name_regex.as_deref(), &not_name_matches,
+                            )? {
+                                Some(n) => Ok(json!({ "found": true, "node": n })),
+                                None    => Ok(json!({ "found": false, "node": null })),
+                            }
+                        } else {
+                            let nodes = crate::browser_ax::find_all_by_role_and_name(
+                                role.as_deref(), name.as_deref(),
+                                name_regex.as_deref(), &not_name_matches, limit,
+                            )?;
+                            Ok(json!({
+                                "found": !nodes.is_empty(),
+                                "count": nodes.len(),
+                                "nodes": nodes,
+                            }))
                         }
+                    }
+                    "ax_snapshot" => {
+                        let snap_id_arg = optional_string_field(&input, "id");
+                        let id = crate::browser_ax::ax_snapshot(snap_id_arg.as_deref())?;
+                        Ok(json!({ "snapshot_id": id }))
+                    }
+                    "ax_diff" => {
+                        let before = input.get("before_id").and_then(Value::as_str)
+                            .ok_or("'ax_diff' requires 'before_id'")?;
+                        let after = input.get("after_id").and_then(Value::as_str)
+                            .ok_or("'ax_diff' requires 'after_id'")?;
+                        let diff = crate::browser_ax::ax_diff(before, after)?;
+                        Ok(json!({
+                            "added_count":   diff.added.len(),
+                            "removed_count": diff.removed.len(),
+                            "changed_count": diff.changed.len(),
+                            "added":   diff.added.iter().map(|n| json!({"node_id": n.node_id, "role": n.role, "name": n.name})).collect::<Vec<_>>(),
+                            "removed": diff.removed.iter().map(|n| json!({"node_id": n.node_id, "role": n.role, "name": n.name})).collect::<Vec<_>>(),
+                            "changed": diff.changed,
+                        }))
+                    }
+                    "wait_for_ax_change" => {
+                        let baseline_id = input.get("baseline_id").and_then(Value::as_str)
+                            .ok_or("'wait_for_ax_change' requires 'baseline_id'")?;
+                        let timeout_ms = input.get("timeout").and_then(Value::as_u64).unwrap_or(5000);
+                        let (new_id, diff) = crate::browser_ax::wait_for_ax_change(baseline_id, timeout_ms)?;
+                        Ok(json!({
+                            "new_snapshot_id": new_id,
+                            "added_count":   diff.added.len(),
+                            "removed_count": diff.removed.len(),
+                            "changed_count": diff.changed.len(),
+                        }))
                     }
                     "ax_value" => {
                         let backend_id = input.get("backend_id").and_then(Value::as_u64)

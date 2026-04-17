@@ -13,10 +13,17 @@
 //! - [`enable`] — `Accessibility.enable` once per page lifecycle
 //! - [`get_full_tree`] — full a11y tree as Vec<[`AxNode`]> with literal text
 //! - [`find_by_role_and_name`] — common case: locate element by role + text
+//! - [`find_all_by_role_and_name`] — multi-match variant with limit
+//! - [`ax_snapshot`] — capture + store a named tree snapshot
+//! - [`ax_diff`] — diff two stored snapshots (added/removed/changed)
+//! - [`wait_for_ax_change`] — poll until tree mutates from a baseline
 //! - [`click_backend`] — click element via CDP `DOM.getBoxModel` + center point
 //! - [`focus_backend`] — `DOM.focus` for input fields
 //! - [`type_into_backend`] — focus + insertText (multi-char)
 //! - [`enable_flutter_semantics`] — trigger Flutter's a11y bridge
+
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 use headless_chrome::protocol::cdp::{Accessibility, DOM, Input};
 use serde::{Deserialize, Serialize};
@@ -62,14 +69,35 @@ pub struct AxNode {
 }
 
 impl AxNode {
-    /// True if `role` matches and `name` contains the substring (case-insensitive).
-    pub fn matches(&self, role: Option<&str>, name_substring: Option<&str>) -> bool {
+    /// True if node passes all supplied filters (all are optional / additive):
+    /// - `role` — exact role match
+    /// - `name_substring` — case-insensitive substring of name
+    /// - `name_regex` — full Rust regex applied to name (invalid pattern → no match)
+    /// - `not_name_matches` — exclude node if name contains ANY of these strings (case-insensitive)
+    pub fn matches(
+        &self,
+        role: Option<&str>,
+        name_substring: Option<&str>,
+        name_regex: Option<&str>,
+        not_name_matches: &[String],
+    ) -> bool {
         if let Some(r) = role {
             if self.role.as_deref().unwrap_or("") != r { return false; }
         }
         if let Some(needle) = name_substring {
             let hay = self.name.as_deref().unwrap_or("").to_lowercase();
             if !hay.contains(&needle.to_lowercase()) { return false; }
+        }
+        if let Some(pattern) = name_regex {
+            let hay = self.name.as_deref().unwrap_or("");
+            match regex::Regex::new(pattern) {
+                Ok(re) => { if !re.is_match(hay) { return false; } }
+                Err(_) => { return false; } // invalid regex → no match
+            }
+        }
+        for excl in not_name_matches {
+            let hay = self.name.as_deref().unwrap_or("").to_lowercase();
+            if hay.contains(&excl.to_lowercase()) { return false; }
         }
         true
     }
@@ -165,10 +193,175 @@ fn json_ax_value(node: &serde_json::Value, field: &str) -> Option<String> {
 }
 
 /// Convenience: find the first node matching role + name (substring, case-insensitive).
-pub fn find_by_role_and_name(role: Option<&str>, name_substring: Option<&str>) -> Result<Option<AxNode>, String> {
+/// Also supports `name_regex` (Rust regex) and `not_name_matches` exclusion list.
+pub fn find_by_role_and_name(
+    role: Option<&str>,
+    name_substring: Option<&str>,
+    name_regex: Option<&str>,
+    not_name_matches: &[String],
+) -> Result<Option<AxNode>, String> {
     let tree = get_full_tree(false)?;
-    Ok(tree.into_iter().find(|n| n.matches(role, name_substring)))
+    Ok(tree.into_iter().find(|n| n.matches(role, name_substring, name_regex, not_name_matches)))
 }
+
+/// Find all nodes matching the supplied filters, up to `limit`.
+pub fn find_all_by_role_and_name(
+    role: Option<&str>,
+    name_substring: Option<&str>,
+    name_regex: Option<&str>,
+    not_name_matches: &[String],
+    limit: usize,
+) -> Result<Vec<AxNode>, String> {
+    let tree = get_full_tree(false)?;
+    let results: Vec<_> = tree
+        .into_iter()
+        .filter(|n| n.matches(role, name_substring, name_regex, not_name_matches))
+        .take(limit)
+        .collect();
+    Ok(results)
+}
+
+// ── Snapshot store (T-M07) ───────────────────────────────────────────────────
+
+/// In-memory snapshot store. Key = snapshot_id (user-provided or auto-generated).
+static SNAPSHOTS: OnceLock<Mutex<HashMap<String, Vec<AxNode>>>> = OnceLock::new();
+
+fn snapshots() -> &'static Mutex<HashMap<String, Vec<AxNode>>> {
+    SNAPSHOTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Take an ax tree snapshot and store it under the given ID.
+/// If `id` is None, generates one from the current timestamp.
+pub fn ax_snapshot(id: Option<&str>) -> Result<String, String> {
+    let tree = get_full_tree(false)?;
+    let snap_id = id.map(String::from).unwrap_or_else(|| {
+        format!(
+            "snap_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+        )
+    });
+    snapshots()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(snap_id.clone(), tree);
+    Ok(snap_id)
+}
+
+/// Describes nodes whose name or value changed between two snapshots.
+#[derive(Debug, Serialize)]
+pub struct AxNodeChange {
+    pub node_id: String,
+    pub before_name:  Option<String>,
+    pub after_name:   Option<String>,
+    pub before_value: Option<String>,
+    pub after_value:  Option<String>,
+}
+
+/// Result of comparing two ax tree snapshots.
+#[derive(Debug, Serialize)]
+pub struct AxDiff {
+    /// Nodes present in `after` but not in `before`.
+    pub added:   Vec<AxNode>,
+    /// Nodes present in `before` but not in `after`.
+    pub removed: Vec<AxNode>,
+    /// Nodes present in both whose name or value differs.
+    pub changed: Vec<AxNodeChange>,
+}
+
+/// Compare two stored snapshots and return a diff.
+pub fn ax_diff(before_id: &str, after_id: &str) -> Result<AxDiff, String> {
+    let store = snapshots().lock().unwrap_or_else(|e| e.into_inner());
+    let before = store
+        .get(before_id)
+        .ok_or_else(|| format!("snapshot '{before_id}' not found"))?;
+    let after = store
+        .get(after_id)
+        .ok_or_else(|| format!("snapshot '{after_id}' not found"))?;
+
+    let before_map: HashMap<&str, &AxNode> = before
+        .iter()
+        .map(|n| (n.node_id.as_str(), n))
+        .collect();
+    let after_map: HashMap<&str, &AxNode> = after
+        .iter()
+        .map(|n| (n.node_id.as_str(), n))
+        .collect();
+
+    let added: Vec<AxNode> = after
+        .iter()
+        .filter(|n| !before_map.contains_key(n.node_id.as_str()))
+        .cloned()
+        .collect();
+    let removed: Vec<AxNode> = before
+        .iter()
+        .filter(|n| !after_map.contains_key(n.node_id.as_str()))
+        .cloned()
+        .collect();
+    let changed: Vec<AxNodeChange> = after
+        .iter()
+        .filter_map(|n_after| {
+            let n_before = before_map.get(n_after.node_id.as_str())?;
+            if n_before.name != n_after.name || n_before.value != n_after.value {
+                Some(AxNodeChange {
+                    node_id:      n_after.node_id.clone(),
+                    before_name:  n_before.name.clone(),
+                    after_name:   n_after.name.clone(),
+                    before_value: n_before.value.clone(),
+                    after_value:  n_after.value.clone(),
+                })
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    Ok(AxDiff { added, removed, changed })
+}
+
+/// Poll until the ax tree differs from the stored baseline, or timeout.
+///
+/// Returns `(new_snapshot_id, diff)` on first detected change.
+/// Runs synchronously (polling with `thread::sleep`) — safe inside `spawn_blocking`.
+pub fn wait_for_ax_change(baseline_id: &str, timeout_ms: u64) -> Result<(String, AxDiff), String> {
+    let baseline: Vec<AxNode> = {
+        let store = snapshots().lock().unwrap_or_else(|e| e.into_inner());
+        store
+            .get(baseline_id)
+            .ok_or_else(|| format!("snapshot '{baseline_id}' not found"))?
+            .clone()
+    };
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+
+    loop {
+        if std::time::Instant::now() > deadline {
+            return Err(format!("wait_for_ax_change: timeout after {timeout_ms}ms"));
+        }
+        let current = get_full_tree(false)?;
+
+        // Quick change detection: different node count or any name/value diff.
+        let changed = current.len() != baseline.len()
+            || current.iter().any(|n| {
+                baseline
+                    .iter()
+                    .find(|b| b.node_id == n.node_id)
+                    .map_or(true, |b| b.name != n.name || b.value != n.value)
+            });
+
+        if changed {
+            let new_id = ax_snapshot(None)?;
+            let diff = ax_diff(baseline_id, &new_id)?;
+            return Ok((new_id, diff));
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+}
+
+// ── Read helpers ─────────────────────────────────────────────────────────────
 
 /// Read the literal `name` or `value` text of a node (used for assertions).
 /// Returns `value` if present, else `name`.  Empty string if neither.
@@ -364,8 +557,8 @@ mod tests {
             name: Some("Submit".into()),
             value: None, description: None, child_ids: vec![],
         };
-        assert!(n.matches(Some("button"), None));
-        assert!(!n.matches(Some("textbox"), None));
+        assert!(n.matches(Some("button"), None, None, &[]));
+        assert!(!n.matches(Some("textbox"), None, None, &[]));
     }
 
     #[test]
@@ -377,10 +570,10 @@ mod tests {
             name: Some("Wallet Balance: $7376.80".into()),
             value: None, description: None, child_ids: vec![],
         };
-        assert!(n.matches(None, Some("balance")));
-        assert!(n.matches(None, Some("$7376.80")));
-        assert!(n.matches(Some("text"), Some("WALLET")));
-        assert!(!n.matches(None, Some("staking")));
+        assert!(n.matches(None, Some("balance"), None, &[]));
+        assert!(n.matches(None, Some("$7376.80"), None, &[]));
+        assert!(n.matches(Some("text"), Some("WALLET"), None, &[]));
+        assert!(!n.matches(None, Some("staking"), None, &[]));
     }
 
     #[test]
@@ -391,7 +584,87 @@ mod tests {
             role: None, name: None,
             value: None, description: None, child_ids: vec![],
         };
-        assert!(n.matches(None, None));
+        assert!(n.matches(None, None, None, &[]));
+    }
+
+    // ── T-M06 new filter tests ────────────────────────────────────────────────
+
+    #[test]
+    fn ax_node_matches_with_not_name() {
+        let n = AxNode {
+            node_id: "2".into(),
+            backend_id: None,
+            role: Some("textbox".into()),
+            name: Some("Enter password".into()),
+            value: None, description: None, child_ids: vec![],
+        };
+        // Should be excluded when "password" is in the not_name_matches list.
+        let excl = vec!["password".to_string()];
+        assert!(!n.matches(None, None, None, &excl));
+        // Other exclusion terms that don't match should not exclude it.
+        let excl2 = vec!["username".to_string()];
+        assert!(n.matches(None, None, None, &excl2));
+    }
+
+    #[test]
+    fn ax_node_matches_with_regex() {
+        let n = AxNode {
+            node_id: "3".into(),
+            backend_id: None,
+            role: Some("button".into()),
+            name: Some("Confirm Order #1234".into()),
+            value: None, description: None, child_ids: vec![],
+        };
+        // Regex that matches the full name.
+        assert!(n.matches(None, None, Some(r"Confirm.*"), &[]));
+        // Regex that does NOT match.
+        assert!(!n.matches(None, None, Some(r"Cancel.*"), &[]));
+        // Invalid regex → no match.
+        assert!(!n.matches(None, None, Some(r"[invalid"), &[]));
+    }
+
+    // ── T-M07 diff tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn ax_diff_detects_added_removed() {
+        let node_a = AxNode {
+            node_id: "a".into(), backend_id: None,
+            role: Some("button".into()), name: Some("A".into()),
+            value: None, description: None, child_ids: vec![],
+        };
+        let node_b = AxNode {
+            node_id: "b".into(), backend_id: None,
+            role: Some("button".into()), name: Some("B".into()),
+            value: None, description: None, child_ids: vec![],
+        };
+        let node_b_changed = AxNode {
+            node_id: "b".into(), backend_id: None,
+            role: Some("button".into()), name: Some("B-updated".into()),
+            value: None, description: None, child_ids: vec![],
+        };
+        let node_c = AxNode {
+            node_id: "c".into(), backend_id: None,
+            role: Some("text".into()), name: Some("C".into()),
+            value: None, description: None, child_ids: vec![],
+        };
+
+        // Manually insert snapshots into the store.
+        {
+            let mut store = snapshots().lock().unwrap_or_else(|e| e.into_inner());
+            store.insert("test_before".to_string(), vec![node_a.clone(), node_b.clone()]);
+            store.insert("test_after".to_string(),  vec![node_b_changed.clone(), node_c.clone()]);
+        }
+
+        let diff = ax_diff("test_before", "test_after").unwrap();
+        // node_c added; node_a removed; node_b changed name.
+        assert_eq!(diff.added.len(), 1);
+        assert_eq!(diff.added[0].node_id, "c");
+        assert_eq!(diff.removed.len(), 1);
+        assert_eq!(diff.removed[0].node_id, "a");
+        assert_eq!(diff.changed.len(), 1);
+        assert_eq!(diff.changed[0].node_id, "b");
+        assert_eq!(diff.changed[0].before_name.as_deref(), Some("B"));
+        assert_eq!(diff.changed[0].after_name.as_deref(), Some("B-updated"));
     }
 
     #[test]
