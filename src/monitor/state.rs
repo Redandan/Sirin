@@ -10,10 +10,11 @@
 //!
 //! This caps memory at roughly 5 MB per the DESIGN_MONITOR §8 budget.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, RwLock};
 
 use chrono::{DateTime, Utc};
+use tokio::sync::oneshot;
 
 use super::events::ServerEvent;
 
@@ -21,6 +22,15 @@ use super::events::ServerEvent;
 
 pub const MAX_EVENTS: usize = 1_000;
 pub const MAX_SCREENSHOTS: usize = 50;
+
+// ── AuthzDecisionResult ───────────────────────────────────────────────────────
+
+/// Result sent back from UI → mcp_server via the oneshot channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthzDecisionResult {
+    Allow,
+    Deny,
+}
 
 // ── Inner state ───────────────────────────────────────────────────────────────
 
@@ -41,6 +51,10 @@ pub struct MonitorStateInner {
 
     /// Set of currently-connected client IDs.
     pub clients: HashSet<String>,
+
+    /// Pending authz asks waiting for human decision.
+    /// Key = request_id, Value = oneshot sender.
+    pub pending_asks: HashMap<String, oneshot::Sender<AuthzDecisionResult>>,
 }
 
 impl MonitorStateInner {
@@ -51,6 +65,7 @@ impl MonitorStateInner {
             view_active: false,
             paused_stream: false,
             clients: HashSet::new(),
+            pending_asks: HashMap::new(),
         }
     }
 }
@@ -131,6 +146,47 @@ impl MonitorState {
         } else {
             inner.clients.remove(client_id);
         }
+    }
+
+    // ── Authz ask registry ───────────────────────────────────────────────────
+
+    /// Register an authz ask. Returns a receiver that resolves when the user
+    /// clicks Allow/Deny (or times out externally).
+    pub fn register_authz_ask(&self, request_id: &str) -> oneshot::Receiver<AuthzDecisionResult> {
+        let (tx, rx) = oneshot::channel();
+        self.0
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .pending_asks
+            .insert(request_id.to_string(), tx);
+        rx
+    }
+
+    /// Resolve a pending ask from the UI. Returns true if the ask existed.
+    pub fn resolve_authz_ask(&self, request_id: &str, decision: AuthzDecisionResult) -> bool {
+        let tx = self
+            .0
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .pending_asks
+            .remove(request_id);
+        if let Some(tx) = tx {
+            let _ = tx.send(decision);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// IDs of all currently pending authz asks (for UI to show).
+    pub fn pending_ask_ids(&self) -> Vec<String> {
+        self.0
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .pending_asks
+            .keys()
+            .cloned()
+            .collect()
     }
 
     /// Clear the event queue and screenshot buffer (e.g. user pressed "Clear").
@@ -281,6 +337,26 @@ mod tests {
         state.mark_client("claude-desktop", false);
         assert_eq!(state.clients_snapshot().len(), 1);
         assert!(state.clients_snapshot().contains("claude-code"));
+    }
+
+    // ── Authz ask registry ───────────────────────────────────────────────────
+
+    #[test]
+    fn pending_ask_roundtrip() {
+        let state = MonitorState::new();
+        let rx = state.register_authz_ask("test-1");
+        assert!(state.pending_ask_ids().contains(&"test-1".to_string()));
+        let resolved = state.resolve_authz_ask("test-1", AuthzDecisionResult::Allow);
+        assert!(resolved);
+        assert!(state.pending_ask_ids().is_empty());
+        // rx would be ready but we don't need to poll it in sync test
+        drop(rx);
+    }
+
+    #[test]
+    fn resolve_nonexistent_ask_returns_false() {
+        let state = MonitorState::new();
+        assert!(!state.resolve_authz_ask("nonexistent", AuthzDecisionResult::Deny));
     }
 
     // ── Clear ────────────────────────────────────────────────────────────────

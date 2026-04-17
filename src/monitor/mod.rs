@@ -30,13 +30,14 @@ use serde_json::Value;
 
 pub mod control;
 pub mod events;
+pub mod replay;
 pub mod screenshot_pump;
 pub mod state;
 pub mod trace_writer;
 
 pub use control::{ControlSnapshot, ControlState};
 pub use events::{AuthzDecision, ClientCommand, ServerEvent, SubscribeChannel};
-pub use state::MonitorState;
+pub use state::{AuthzDecisionResult, MonitorState};
 pub use trace_writer::TraceWriter;
 
 // ── Global singleton ──────────────────────────────────────────────────────────

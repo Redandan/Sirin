@@ -1,6 +1,7 @@
 //! Live Monitor view — real-time browser action feed + screenshot stream.
 
 mod action_feed;
+mod authz_modal;
 mod control_bar;
 mod screenshot_pane;
 
@@ -14,6 +15,18 @@ pub struct MonitorViewState {
     last_screenshot_ts: Option<chrono::DateTime<chrono::Utc>>,
     /// Whether the action feed is auto-scrolled to the bottom.
     auto_scroll: bool,
+
+    // ── Replay mode ──────────────────────────────────────────────────────────
+    /// Whether we're showing live events or a loaded replay.
+    pub replay_mode: bool,
+    /// Events loaded from a trace file (empty = not loaded).
+    pub replay_events: Vec<crate::monitor::events::ServerEvent>,
+    /// Name of the loaded trace file (for display).
+    pub replay_file_name: String,
+    /// Whether the trace file picker dropdown is open.
+    pub show_file_picker: bool,
+    /// Cached list of available trace files (refreshed on picker open).
+    pub trace_files: Vec<std::path::PathBuf>,
 }
 
 impl Default for MonitorViewState {
@@ -22,6 +35,11 @@ impl Default for MonitorViewState {
             screenshot_tex: None,
             last_screenshot_ts: None,
             auto_scroll: true,
+            replay_mode: false,
+            replay_events: Vec::new(),
+            replay_file_name: String::new(),
+            show_file_picker: false,
+            trace_files: Vec::new(),
         }
     }
 }
@@ -94,6 +112,84 @@ pub fn show(ui: &mut egui::Ui, state: &mut MonitorViewState) {
 
     ui.add_space(crate::ui_egui::theme::SP_SM);
 
+    // ── Replay mode bar ──────────────────────────────────────────────────
+    crate::ui_egui::theme::card(ui, |ui| {
+        ui.horizontal(|ui| {
+            if state.replay_mode {
+                // In replay mode: show file name + "Back to Live" button
+                ui.colored_label(
+                    crate::ui_egui::theme::INFO,
+                    egui::RichText::new("\u{25b6} REPLAY")
+                        .size(crate::ui_egui::theme::FONT_SMALL)
+                        .strong(),
+                );
+                ui.add_space(crate::ui_egui::theme::SP_SM);
+                ui.label(
+                    egui::RichText::new(&state.replay_file_name)
+                        .size(crate::ui_egui::theme::FONT_SMALL)
+                        .color(crate::ui_egui::theme::TEXT_DIM),
+                );
+                ui.add_space(crate::ui_egui::theme::SP_MD);
+                if ui.small_button("\u{25c9} Live").clicked() {
+                    state.replay_mode = false;
+                    state.replay_events.clear();
+                    state.replay_file_name.clear();
+                }
+            } else {
+                // Live mode: show "Load trace" button
+                ui.label(
+                    egui::RichText::new("Trace:")
+                        .size(crate::ui_egui::theme::FONT_SMALL)
+                        .color(crate::ui_egui::theme::TEXT_DIM),
+                );
+                ui.add_space(crate::ui_egui::theme::SP_SM);
+                if ui.small_button("\u{1f4c2} Load replay\u{2026}").clicked() {
+                    state.show_file_picker = !state.show_file_picker;
+                    if state.show_file_picker {
+                        state.trace_files = crate::monitor::replay::list_trace_files();
+                    }
+                }
+            }
+        });
+
+        // File picker dropdown
+        if state.show_file_picker && !state.replay_mode {
+            ui.add_space(crate::ui_egui::theme::SP_SM);
+            if state.trace_files.is_empty() {
+                ui.colored_label(
+                    crate::ui_egui::theme::TEXT_DIM,
+                    egui::RichText::new("No trace files found in .sirin/")
+                        .size(crate::ui_egui::theme::FONT_SMALL),
+                );
+            } else {
+                for path in state.trace_files.clone() {
+                    let name = crate::monitor::replay::display_name(&path);
+                    if ui
+                        .selectable_label(
+                            false,
+                            egui::RichText::new(&name).size(crate::ui_egui::theme::FONT_SMALL),
+                        )
+                        .clicked()
+                    {
+                        let events = crate::monitor::replay::load_trace(&path);
+                        state.replay_events = events;
+                        state.replay_file_name = name;
+                        state.replay_mode = true;
+                        state.show_file_picker = false;
+                        state.auto_scroll = false; // replay starts at top
+                    }
+                }
+            }
+        }
+    });
+
+    ui.add_space(crate::ui_egui::theme::SP_SM);
+
+    // ── Authz asks panel (shown when pending decisions exist) ────────────
+    if authz_modal::show(ui) {
+        ui.add_space(crate::ui_egui::theme::SP_SM);
+    }
+
     // ── Two-column layout: screenshot + control | action feed ───────────
     let available = ui.available_size();
     let left_w = (available.x * 0.42).max(280.0).min(480.0);
@@ -115,7 +211,15 @@ pub fn show(ui: &mut egui::Ui, state: &mut MonitorViewState) {
 
         // Right column: action feed
         ui.vertical(|ui| {
-            action_feed::show(ui, &monitor_state, &mut state.auto_scroll);
+            let events: Vec<crate::monitor::events::ServerEvent> = if state.replay_mode {
+                state.replay_events.clone()
+            } else {
+                monitor_state
+                    .as_ref()
+                    .map(|ms| ms.events_snapshot())
+                    .unwrap_or_default()
+            };
+            action_feed::show(ui, &events, &mut state.auto_scroll);
         });
     });
 }

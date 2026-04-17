@@ -1,14 +1,12 @@
 //! Real-time action event feed.
 
-use std::sync::Arc;
 use eframe::egui::{self, RichText, ScrollArea};
 use crate::monitor::events::ServerEvent;
-use crate::monitor::state::MonitorState;
 use crate::ui_egui::theme;
 
 pub fn show(
     ui: &mut egui::Ui,
-    monitor_state: &Option<Arc<MonitorState>>,
+    events: &[ServerEvent],
     auto_scroll: &mut bool,
 ) {
     theme::card(ui, |ui| {
@@ -28,11 +26,6 @@ pub fn show(
         });
         ui.add_space(theme::SP_SM);
 
-        let events = monitor_state
-            .as_ref()
-            .map(|ms| ms.events_snapshot())
-            .unwrap_or_default();
-
         ScrollArea::vertical()
             .id_salt("monitor_feed")
             .auto_shrink([false, false])
@@ -48,7 +41,7 @@ pub fn show(
                     return;
                 }
 
-                for event in &events {
+                for event in events {
                     render_event(ui, event);
                 }
             });
