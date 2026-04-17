@@ -52,7 +52,9 @@ impl Default for TelegramChannelConfig {
             api_id: "${TG_API_ID}".to_string(),
             api_hash: "${TG_API_HASH}".to_string(),
             phone: "${TG_PHONE}".to_string(),
-            session_file: "data/sessions/agent.session".to_string(),
+            session_file: crate::platform::app_data_dir()
+                .join("sessions").join("agent.session")
+                .to_string_lossy().to_string(),
             reply_private: true,
             reply_groups: false,
             group_ids: Vec::new(),
@@ -425,13 +427,13 @@ impl Default for AgentsFile {
 
 impl AgentsFile {
     pub fn load() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let content = fs::read_to_string("config/agents.yaml")?;
+        let content = fs::read_to_string(crate::platform::config_path("agents.yaml"))?;
         Ok(serde_yaml::from_str(&content)?)
     }
 
     pub fn save(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let yaml = serde_yaml::to_string(self)?;
-        fs::write("config/agents.yaml", yaml)?;
+        fs::write(crate::platform::config_path("agents.yaml"), yaml)?;
         Ok(())
     }
 }

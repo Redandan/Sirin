@@ -312,17 +312,18 @@ async fn capture_screenshot(
             if let Some(rid) = run_id {
                 crate::test_runner::runs::set_screenshot(rid, Ok(bytes.clone()));
             }
-            let path = format!("data/test_failures/{test_id}_{}.png",
-                chrono::Local::now().format("%Y%m%d_%H%M%S"));
-            if let Err(e) = std::fs::create_dir_all("data/test_failures") {
+            let failures_dir = crate::platform::app_data_dir().join("test_failures");
+            let path = failures_dir.join(format!("{test_id}_{}.png",
+                chrono::Local::now().format("%Y%m%d_%H%M%S")));
+            if let Err(e) = std::fs::create_dir_all(&failures_dir) {
                 let msg = format!("mkdir failed: {e}");
                 return ScreenshotCapture { path: None, error: Some(msg) };
             }
             if let Err(e) = std::fs::write(&path, &bytes) {
-                let msg = format!("write {path} failed: {e}");
+                let msg = format!("write {:?} failed: {e}", path);
                 return ScreenshotCapture { path: None, error: Some(msg) };
             }
-            ScreenshotCapture { path: Some(path), error: None }
+            ScreenshotCapture { path: Some(path.to_string_lossy().to_string()), error: None }
         }
         Err(e) => {
             if let Some(rid) = run_id {

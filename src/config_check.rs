@@ -8,11 +8,20 @@
 
 use std::path::Path;
 
-/// Files that `apply_fixes` is allowed to modify.  Hardcoded — never bypass.
+/// Short canonical names allowed in AI-proposed fixes.
+/// The LLM outputs these names (see the prompt template below).
+/// `resolve_config_fix_path()` maps them to absolute paths at runtime.
 const ALLOWED_FILES: &[&str] = &[
     "config/llm.yaml",
     "config/persona.yaml",
 ];
+
+/// Resolve a short canonical config name to its absolute path.
+fn resolve_config_fix_path(name: &str) -> std::path::PathBuf {
+    // strip leading "config/" if present, resolve via platform
+    let rel = name.strip_prefix("config/").unwrap_or(name);
+    crate::platform::config_path(rel)
+}
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -73,22 +82,23 @@ pub fn run_diagnostics() -> Vec<ConfigIssue> {
 // ── Individual checks ────────────────────────────────────────────────────────
 
 fn check_config_files(issues: &mut Vec<ConfigIssue>) {
-    for (path, name) in [
-        ("config/persona.yaml", "Persona"),
-        ("config/agents.yaml", "Agents"),
+    for (rel, name) in [
+        ("persona.yaml", "Persona"),
+        ("agents.yaml", "Agents"),
     ] {
-        if !Path::new(path).exists() {
+        let path = crate::platform::config_path(rel);
+        if !path.exists() {
             issues.push(ConfigIssue {
                 severity: Severity::Error,
                 category: "Config",
-                message: format!("{name} config not found: {path}"),
+                message: format!("{name} config not found: {}", path.display()),
                 suggestion: Some("Run Sirin once to generate default config, or create manually.".into()),
             });
         } else {
             issues.push(ConfigIssue {
                 severity: Severity::Ok,
                 category: "Config",
-                message: format!("{name} config: {path}"),
+                message: format!("{name} config: {}", path.display()),
                 suggestion: None,
             });
         }
@@ -419,9 +429,9 @@ pub async fn ai_analyze() -> Result<AiAdvice, String> {
     let issues = run_diagnostics();
     let issues_md = format_report(&issues);
 
-    let llm_yaml = std::fs::read_to_string("config/llm.yaml")
+    let llm_yaml = std::fs::read_to_string(crate::platform::config_path("llm.yaml"))
         .unwrap_or_else(|_| "# (missing)".into());
-    let persona_yaml = std::fs::read_to_string("config/persona.yaml")
+    let persona_yaml = std::fs::read_to_string(crate::platform::config_path("persona.yaml"))
         .unwrap_or_else(|_| "# (missing)".into());
     let env_provider = std::env::var("LLM_PROVIDER").unwrap_or_default();
     let env_gemini_model = std::env::var("GEMINI_MODEL").unwrap_or_default();
@@ -506,16 +516,18 @@ pub fn apply_fixes(fixes: &[ConfigFix]) -> Result<Vec<String>, String> {
     }
 
     for (file, file_fixes) in by_file {
+        let abs_path = resolve_config_fix_path(file);
+        let abs_str = abs_path.to_string_lossy();
         // Backup
-        let backup_path = format!("{file}.bak.{ts}");
-        std::fs::copy(file, &backup_path)
-            .map_err(|e| format!("Failed to backup {file}: {e}"))?;
+        let backup_path = format!("{abs_str}.bak.{ts}");
+        std::fs::copy(&abs_path, &backup_path)
+            .map_err(|e| format!("Failed to backup {abs_str}: {e}"))?;
 
         // Read → mutate → write
-        let content = std::fs::read_to_string(file)
-            .map_err(|e| format!("Failed to read {file}: {e}"))?;
+        let content = std::fs::read_to_string(&abs_path)
+            .map_err(|e| format!("Failed to read {abs_str}: {e}"))?;
         let mut yaml_value: serde_yaml::Value = serde_yaml::from_str(&content)
-            .map_err(|e| format!("Failed to parse {file}: {e}"))?;
+            .map_err(|e| format!("Failed to parse {abs_str}: {e}"))?;
 
         for fix in &file_fixes {
             set_field_by_path(&mut yaml_value, &fix.field_path, &fix.new_value)
@@ -523,9 +535,9 @@ pub fn apply_fixes(fixes: &[ConfigFix]) -> Result<Vec<String>, String> {
         }
 
         let new_content = serde_yaml::to_string(&yaml_value)
-            .map_err(|e| format!("Failed to serialize {file}: {e}"))?;
-        std::fs::write(file, new_content)
-            .map_err(|e| format!("Failed to write {file}: {e}"))?;
+            .map_err(|e| format!("Failed to serialize {abs_str}: {e}"))?;
+        std::fs::write(&abs_path, new_content)
+            .map_err(|e| format!("Failed to write {abs_str}: {e}"))?;
 
         for fix in &file_fixes {
             applied.push(format!("{}::{} = {}", fix.file, fix.field_path, fix.new_value));

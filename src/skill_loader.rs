@@ -37,11 +37,11 @@ pub fn invalidate_cache() {
 
 fn scan_skills_dir() -> Vec<SkillDefinition> {
     let mut skills = Vec::new();
-    let dir = std::path::Path::new("config/skills");
+    let dir = crate::platform::config_dir().join("skills");
     if !dir.exists() {
         return skills;
     }
-    let entries = match std::fs::read_dir(dir) {
+    let entries = match std::fs::read_dir(&dir) {
         Ok(e) => e,
         Err(e) => {
             eprintln!("[skill_loader] Cannot read config/skills/: {e}");

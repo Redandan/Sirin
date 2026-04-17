@@ -78,7 +78,7 @@ pub(super) fn set_persona_name(_svc: &RealService, name: &str) {
     if let Ok(mut p) = crate::persona::Persona::load() {
         p.identity.name = name.to_string();
         if let Ok(yaml) = serde_yaml::to_string(&p) {
-            let _ = std::fs::write("config/persona.yaml", yaml);
+            let _ = std::fs::write(crate::platform::config_path("persona.yaml"), yaml);
             crate::persona::Persona::reload_cache();
         }
     }
@@ -92,7 +92,7 @@ pub(super) fn set_persona_objectives(_svc: &RealService, objectives: Vec<String>
     if let Ok(mut p) = crate::persona::Persona::load() {
         p.objectives = objectives;
         if let Ok(yaml) = serde_yaml::to_string(&p) {
-            let _ = std::fs::write("config/persona.yaml", yaml);
+            let _ = std::fs::write(crate::platform::config_path("persona.yaml"), yaml);
             crate::persona::Persona::reload_cache();
         }
     }
@@ -108,7 +108,7 @@ pub(super) fn set_persona_voice(_svc: &RealService, voice: &str) {
     if let Ok(mut p) = crate::persona::Persona::load() {
         p.response_style.voice = voice.to_string();
         if let Ok(yaml) = serde_yaml::to_string(&p) {
-            let _ = std::fs::write("config/persona.yaml", yaml);
+            let _ = std::fs::write(crate::platform::config_path("persona.yaml"), yaml);
             crate::persona::Persona::reload_cache();
         }
     }
@@ -131,13 +131,13 @@ pub(super) fn set_main_model(svc: &RealService, model: &str) {
 // ── Config export/import ─────────────────────────────────────────────────────
 
 pub(super) fn export_config(_svc: &RealService) -> String {
-    std::fs::read_to_string("config/agents.yaml").unwrap_or_else(|_| "# empty".to_string())
+    std::fs::read_to_string(crate::platform::config_path("agents.yaml")).unwrap_or_else(|_| "# empty".to_string())
 }
 
 pub(super) fn import_config(svc: &RealService, yaml: &str) -> Result<(), String> {
     let _: crate::agent_config::AgentsFile = serde_yaml::from_str(yaml)
         .map_err(|e| format!("YAML 解析失敗: {e}"))?;
-    std::fs::write("config/agents.yaml", yaml).map_err(|e| format!("寫入失敗: {e}"))?;
+    std::fs::write(crate::platform::config_path("agents.yaml"), yaml).map_err(|e| format!("寫入失敗: {e}"))?;
     svc.push_toast(ToastLevel::Success, "設定已匯入");
     Ok(())
 }

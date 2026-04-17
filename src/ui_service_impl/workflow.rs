@@ -54,7 +54,7 @@ pub(super) fn workflow_stage_prompt(_svc: &RealService) -> Option<String> {
 }
 
 pub(super) fn workflow_reset(_svc: &RealService) {
-    let _ = std::fs::remove_file("data/workflow.json");
+    let _ = std::fs::remove_file(crate::platform::app_data_dir().join("workflow.json"));
 }
 
 pub(super) fn workflow_generate(svc: &RealService) -> Option<String> {

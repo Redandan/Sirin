@@ -29,6 +29,7 @@ mod mcp_server;
 pub mod monitor;
 mod rhai_engine;
 mod rpc_server;
+pub mod updater;
 #[allow(dead_code)] mod teams;
 #[allow(dead_code)] mod skill_loader;
 mod skills;
@@ -55,39 +56,40 @@ fn ensure_first_run_dirs() {
     use std::fs;
 
     let data = platform::app_data_dir();
-    for sub in &["tracking", "memory", "code_graph", "context"] {
+    for sub in &["tracking", "memory", "code_graph", "context",
+                 "pending_replies", "sessions", "teams_profile", "test_failures"] {
         let _ = fs::create_dir_all(data.join(sub));
     }
 
-    for sub in &["data/pending_replies", "data/sessions", "data/teams_profile"] {
-        let _ = fs::create_dir_all(sub);
+    let cfg = platform::config_dir();
+    for sub in &["", "skills", "scripts", "tests"] {
+        let _ = fs::create_dir_all(cfg.join(sub));
     }
-    let _ = fs::create_dir_all("data");
-    let _ = fs::create_dir_all("config");
-    let _ = fs::create_dir_all("config/skills");
-    let _ = fs::create_dir_all("config/scripts");
 
-    if !std::path::Path::new("config/agents.yaml").exists() {
+    if !cfg.join("agents.yaml").exists() {
         let default_file = agent_config::AgentsFile::default();
         if let Ok(yaml) = serde_yaml::to_string(&default_file) {
-            let _ = fs::write("config/agents.yaml", yaml);
+            let _ = fs::write(cfg.join("agents.yaml"), yaml);
             eprintln!("[main] Created default config/agents.yaml");
         }
     }
 
-    if !std::path::Path::new(".env").exists()
-        && std::path::Path::new(".env.example").exists()
-            && fs::copy(".env.example", ".env").is_ok() {
-                eprintln!("[main] Created .env from .env.example");
-            }
+    // .env: prefer app_data_dir, fall back to CWD (dev mode)
+    let env_path = data.join(".env");
+    if !env_path.exists() {
+        let env_example = data.join(".env.example");
+        if env_example.exists() && fs::copy(&env_example, &env_path).is_ok() {
+            eprintln!("[main] Created .env from .env.example");
+        }
+    }
 
-    if !std::path::Path::new("config/persona.yaml").exists() {
+    if !cfg.join("persona.yaml").exists() {
         let default_yaml = "\
 identity:\n  name: 助手1\n  professional_tone: brief\n\
 response_style:\n  voice: 自然、親切\n  ack_prefix: 收到。\n  compliance_line: 我來協助你。\n\
 objectives: []\nroi_thresholds:\n  min_usd_to_notify: 5.0\n  min_usd_to_call_remote_llm: 25.0\n\
 coding_agent:\n  enabled: true\n  auto_approve_writes: true\n  max_iterations: 10\n";
-        let _ = fs::write("config/persona.yaml", default_yaml);
+        let _ = fs::write(cfg.join("persona.yaml"), default_yaml);
         eprintln!("[main] Created default config/persona.yaml");
     }
 }
@@ -125,9 +127,18 @@ fn init_tracing() {
 fn main() {
     init_tracing();
 
-    match dotenvy::dotenv() {
-        Ok(path) => eprintln!("[main] Loaded .env from {path:?}"),
-        Err(e) => eprintln!("[main] .env not loaded: {e}"),
+    // Try app_data_dir/.env first (installed mode), then CWD (dev mode)
+    let env_file = platform::app_data_dir().join(".env");
+    if env_file.exists() {
+        match dotenvy::from_path(&env_file) {
+            Ok(_)  => eprintln!("[main] Loaded .env from {env_file:?}"),
+            Err(e) => eprintln!("[main] .env load error: {e}"),
+        }
+    } else {
+        match dotenvy::dotenv() {
+            Ok(path) => eprintln!("[main] Loaded .env from {path:?}"),
+            Err(e)   => eprintln!("[main] .env not loaded: {e}"),
+        }
     }
 
     ensure_first_run_dirs();
@@ -225,6 +236,9 @@ fn main() {
 
         // Screenshot pump — starts only when Monitor view is active
         monitor::spawn_screenshot_pump();
+
+        // Background update check — non-blocking, shows banner in UI if new version found
+        updater::spawn_check();
     }
 
     std::mem::forget(rt);

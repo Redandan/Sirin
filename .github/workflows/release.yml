@@ -1,0 +1,89 @@
+name: Release
+
+# Trigger on version tags: v0.2.0, v1.0.0, etc.
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows installer
+    runs-on: windows-latest
+
+    steps:
+      # ── Checkout ───────────────────────────────────────────────────────────
+      - uses: actions/checkout@v4
+
+      # ── Rust toolchain ─────────────────────────────────────────────────────
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      # ── Cache cargo registry / build ───────────────────────────────────────
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      # ── Build release binary ────────────────────────────────────────────────
+      - name: cargo build --release
+        run: cargo build --release --target x86_64-pc-windows-msvc
+        env:
+          RUSTFLAGS: "-C target-feature=+crt-static"
+
+      # Copy binary to expected path for Inno Setup
+      - name: Copy binary
+        run: |
+          mkdir -p target\release
+          copy target\x86_64-pc-windows-msvc\release\sirin.exe target\release\sirin.exe
+        shell: cmd
+
+      # ── Inno Setup installer ────────────────────────────────────────────────
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $ver = $tag.TrimStart('v')
+          echo "VERSION=$ver" >> $env:GITHUB_OUTPUT
+        shell: pwsh
+
+      - name: Build installer
+        run: |
+          iscc /DMyAppVersion=${{ steps.version.outputs.VERSION }} sirin.iss
+        shell: cmd
+
+      # ── Package portable zip (for self_update download) ────────────────────
+      - name: Package portable zip
+        run: |
+          mkdir portable
+          copy target\release\sirin.exe portable\sirin.exe
+          copy .env.example portable\.env.example
+          Compress-Archive -Path portable\* -DestinationPath Output\sirin-windows-x86_64.zip
+        shell: pwsh
+
+      # ── Create GitHub Release ───────────────────────────────────────────────
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Sirin v${{ steps.version.outputs.VERSION }}"
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            Output/SirinSetup-${{ steps.version.outputs.VERSION }}.exe
+            Output/sirin-windows-x86_64.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

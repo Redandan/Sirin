@@ -41,3 +41,30 @@ pub fn app_data_dir() -> PathBuf {
     #[allow(unreachable_code)]
     PathBuf::from("data")
 }
+
+/// Returns the `config/` directory.
+///
+/// | Mode | Path |
+/// |------|------|
+/// | Production (installed) | `app_data_dir()/config` |
+/// | Test builds (`cargo test`) | `./config` (repo-relative) |
+///
+/// Tests use the repo's `config/` so they can find their fixture YAML files
+/// without requiring a pre-populated `%LOCALAPPDATA%\Sirin\config\`.
+pub fn config_dir() -> PathBuf {
+    #[cfg(test)]
+    return PathBuf::from("config");
+
+    #[cfg(not(test))]
+    app_data_dir().join("config")
+}
+
+/// Returns `config_dir()/<rel>`.
+///
+/// Drop-in replacement for hard-coded `"config/foo.yaml"` literals:
+/// ```ignore
+/// std::fs::read_to_string(platform::config_path("persona.yaml"))
+/// ```
+pub fn config_path(rel: impl AsRef<std::path::Path>) -> PathBuf {
+    config_dir().join(rel)
+}

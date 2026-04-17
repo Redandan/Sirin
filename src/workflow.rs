@@ -1,6 +1,6 @@
 //! Development workflow tracker — Define → Plan → Build → Verify → Review → Ship.
 //!
-//! State is persisted to `data/workflow.json` so progress survives restarts.
+//! State is persisted to `<app_data_dir>/workflow.json` so progress survives restarts.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -52,7 +52,9 @@ pub enum StageStatus {
     Pending,
 }
 
-const STATE_PATH: &str = "data/workflow.json";
+fn state_path() -> std::path::PathBuf {
+    crate::platform::app_data_dir().join("workflow.json")
+}
 
 impl WorkflowState {
     pub fn new(
@@ -72,13 +74,13 @@ impl WorkflowState {
     }
 
     pub fn load() -> Option<Self> {
-        let content = std::fs::read_to_string(STATE_PATH).ok()?;
+        let content = std::fs::read_to_string(state_path()).ok()?;
         serde_json::from_str(&content).ok()
     }
 
     pub fn save(&self) {
         if let Ok(json) = serde_json::to_string_pretty(self) {
-            let _ = std::fs::write(STATE_PATH, json);
+            let _ = std::fs::write(state_path(), json);
         }
     }
 
@@ -159,7 +161,7 @@ pub fn stage_context(
 
     // M1: For Review, inject the actual script from disk (overrides stale AI output)
     if stage_id == "review" {
-        let script_path = format!("config/scripts/{skill_id}.rhai");
+        let script_path = crate::platform::config_dir().join("scripts").join(format!("{skill_id}.rhai"));
         if let Ok(code) = std::fs::read_to_string(&script_path) {
             parts.push(format!(
                 "\n## 待審查腳本（磁碟最新版，以此為準）\n```rhai\n{code}\n```"

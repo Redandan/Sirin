@@ -167,7 +167,7 @@ static PERSONA_CACHE: std::sync::OnceLock<std::sync::RwLock<Persona>> = std::syn
 
 impl Persona {
     pub fn load() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let content = fs::read_to_string("config/persona.yaml")?;
+        let content = fs::read_to_string(crate::platform::config_path("persona.yaml"))?;
         let persona = serde_yaml::from_str(&content)?;
         Ok(persona)
     }

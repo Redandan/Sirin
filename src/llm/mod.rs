@@ -163,12 +163,14 @@ pub struct LlmUiConfig {
 }
 
 impl LlmUiConfig {
-    const PATH: &'static str = "config/llm.yaml";
+    fn path() -> std::path::PathBuf {
+        crate::platform::config_path("llm.yaml")
+    }
 
     pub fn load() -> Self {
-        match std::fs::read_to_string(Self::PATH) {
+        match std::fs::read_to_string(Self::path()) {
             Ok(content) => serde_yaml::from_str(&content).unwrap_or_else(|e| {
-                crate::sirin_log!("[llm] Failed to parse {}: {e}", Self::PATH);
+                crate::sirin_log!("[llm] Failed to parse llm.yaml: {e}");
                 Self::default()
             }),
             Err(_) => Self::default(),
@@ -176,8 +178,10 @@ impl LlmUiConfig {
     }
 
     pub fn save(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let p = Self::path();
+        if let Some(parent) = p.parent() { let _ = std::fs::create_dir_all(parent); }
         let content = serde_yaml::to_string(self)?;
-        std::fs::write(Self::PATH, content)?;
+        std::fs::write(&p, content)?;
         Ok(())
     }
 }

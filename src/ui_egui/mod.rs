@@ -57,6 +57,9 @@ pub struct SirinApp {
     meeting_state: meeting::MeetingState,
     browser_state: browser::BrowserUiState,
     monitor_state: monitor::MonitorViewState,
+
+    /// Dismissed once per session so the banner doesn't reappear after dismiss
+    update_banner_dismissed: bool,
 }
 
 impl SirinApp {
@@ -75,6 +78,7 @@ impl SirinApp {
             settings_state: Default::default(), workflow_state: Default::default(),
             meeting_state: Default::default(), browser_state: Default::default(),
             monitor_state: Default::default(),
+            update_banner_dismissed: false,
         }
     }
 
@@ -139,6 +143,11 @@ impl eframe::App for SirinApp {
                 });
             });
 
+        // ── Update banner (shown when a new version is available) ────────
+        if !self.update_banner_dismissed {
+            show_update_banner(ctx, &mut self.update_banner_dismissed);
+        }
+
         // ── Central panel ────────────────────────────────────────────────
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(theme::BG).inner_margin(egui::vec2(theme::SP_XL, theme::SP_LG)))
@@ -194,6 +203,75 @@ fn setup_fonts(ctx: &egui::Context) {
             break;
         }
     }
+}
+
+// ── Update banner ─────────────────────────────────────────────────────────────
+
+/// Renders a slim banner when an update is available / applying / done.
+/// Sets `dismissed = true` when the user clicks ✕.
+fn show_update_banner(ctx: &egui::Context, dismissed: &mut bool) {
+    use crate::updater::{UpdateStatus, apply_update};
+
+    let status = crate::updater::get_status();
+
+    // Only show for actionable states
+    let (msg, accent, show_apply_btn, version) = match &status {
+        UpdateStatus::Available(v) => (
+            format!("🆕  Sirin v{v} 可用"),
+            egui::Color32::from_rgb(0, 160, 80),
+            true,
+            Some(v.clone()),
+        ),
+        UpdateStatus::Applying => (
+            "⏳  下載更新中…".into(),
+            egui::Color32::from_rgb(80, 130, 200),
+            false,
+            None,
+        ),
+        UpdateStatus::RestartRequired => (
+            "✅  更新完成 — 重啟 Sirin 生效".into(),
+            egui::Color32::from_rgb(0, 200, 100),
+            false,
+            None,
+        ),
+        UpdateStatus::ApplyFailed(e) => (
+            format!("❌  更新失敗: {e}"),
+            egui::Color32::from_rgb(200, 60, 60),
+            false,
+            None,
+        ),
+        _ => return, // Idle / Checking / UpToDate — nothing to show
+    };
+
+    egui::TopBottomPanel::top("update_banner")
+        .exact_height(28.0)
+        .frame(
+            egui::Frame::new()
+                .fill(accent.linear_multiply(0.18))
+                .inner_margin(egui::vec2(12.0, 4.0))
+                .stroke(egui::Stroke::new(0.0, egui::Color32::TRANSPARENT)),
+        )
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.colored_label(accent, RichText::new(&msg).size(12.0));
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("✕").clicked() {
+                        *dismissed = true;
+                    }
+                    if show_apply_btn {
+                        if let Some(ref v) = version {
+                            let v_clone = v.clone();
+                            if ui.add(egui::Button::new(
+                                RichText::new("立即更新").size(11.0).color(accent)
+                            ).frame(false)).clicked() {
+                                std::thread::spawn(move || { let _ = apply_update(&v_clone); });
+                            }
+                        }
+                    }
+                });
+            });
+        });
 }
 
 pub fn launch(svc: Arc<dyn AppService>) {

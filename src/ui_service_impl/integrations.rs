@@ -133,9 +133,9 @@ pub(super) fn trigger_research(svc: &RealService, topic: &str, url: Option<&str>
 // ── Skill execution ──────────────────────────────────────────────────────────
 
 pub(super) fn execute_skill(_svc: &RealService, skill_id: &str, input: &str) -> String {
-    let script_path = format!("config/scripts/{skill_id}.rhai");
-    if std::path::Path::new(&script_path).exists() {
-        return crate::rhai_engine::run_rhai_script(&script_path, skill_id, input, None)
+    let script_path = crate::platform::config_dir().join("scripts").join(format!("{skill_id}.rhai"));
+    if script_path.exists() {
+        return crate::rhai_engine::run_rhai_script(script_path.to_str().unwrap_or(""), skill_id, input, None)
             .unwrap_or_else(|e| format!("錯誤: {e}"));
     }
     format!("技能 {skill_id} 沒有可執行的腳本")

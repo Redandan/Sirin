@@ -90,7 +90,7 @@ mod tests {
     #[test]
     fn test_btc_price_script() {
         let result = run_rhai_script(
-            "config/scripts/btc_price.rhai",
+            &crate::platform::config_path("scripts/btc_price.rhai").to_string_lossy(),
             "btc_price",
             "查看BTC價格",
             None,

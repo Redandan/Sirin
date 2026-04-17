@@ -114,7 +114,7 @@ fn default_locale() -> String { "zh-TW".into() }
 
 /// Directory containing YAML test definitions.
 fn tests_dir() -> PathBuf {
-    PathBuf::from("config").join("tests")
+    crate::platform::config_dir().join("tests")
 }
 
 /// Load all YAML tests from `config/tests/`.
