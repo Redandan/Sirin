@@ -39,7 +39,10 @@ jobs:
       - name: cargo build --release
         run: cargo build --release --target x86_64-pc-windows-msvc
         env:
-          RUSTFLAGS: "-C target-feature=+crt-static"
+          # crt-static: embed MSVCRT so .exe runs without redistributable
+          # /FORCE:MULTIPLE: suppress LNK2005 from libsql-ffi + libsqlite3-sys both bundling SQLite
+          #   (grammers-session pulls libsql; rusqlite pulls libsqlite3-sys — same symbols, safe to deduplicate)
+          RUSTFLAGS: "-C target-feature=+crt-static -C link-arg=/FORCE:MULTIPLE"
 
       # Copy binary to expected path for Inno Setup
       - name: Copy binary
