@@ -4,6 +4,14 @@ version = "0.3.0"
 edition = "2021"
 description = "A pure-Rust desktop AI agent (egui + Tokio)"
 
+[[bin]]
+name = "sirin"
+path = "src/main.rs"
+
+[[bin]]
+name = "sirin-call"
+path = "src/bin/sirin_call.rs"
+
 [dependencies]
 eframe = { version = "0.31", features = ["default"] }
 egui = { version = "0.31", features = ["default"] }

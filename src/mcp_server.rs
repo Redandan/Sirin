@@ -354,14 +354,14 @@ fn handle_tools_list() -> Result<Value, String> {
             },
             {
                 "name": "browser_exec",
-                "description": "即席執行瀏覽器動作，不走完整 test goal。適合 debug / 探索 / 單步操作。action 可用：goto, screenshot, screenshot_analyze, click, click_point, type, read, eval, wait, exists, attr, scroll, key, console, network, url, title, close, set_viewport。Accessibility tree（literal text，精確比對）：enable_a11y, ax_tree, ax_find（支援 name_regex / not_name_matches / limit）, ax_value, ax_click, ax_focus, ax_type, ax_type_verified。AX snapshots：ax_snapshot, ax_diff, wait_for_ax_change。Test isolation / multi-tab / network races：clear_state, wait_new_tab, wait_request。",
+                "description": "即席執行瀏覽器動作，不走完整 test goal。適合 debug / 探索 / 單步操作。\n\n基本導航：goto, screenshot, screenshot_analyze, click, click_point, type, read, eval, wait, exists, attr, scroll, key, console, network, url, title, close, set_viewport\n\nAX tree（literal text，精確比對）：enable_a11y, ax_tree, ax_find（支援 scroll / scroll_max / name_regex / not_name_matches / limit）, ax_value, ax_click, ax_focus, ax_type, ax_type_verified\n\nAX snapshots：ax_snapshot, ax_diff, wait_for_ax_change\n\nCondition waits（取代 sleep）：wait_for_url, wait_for_ax_ready, wait_for_network_idle\n\nAssertions：assert_ax_contains, assert_url_matches\n\nMulti-session（跨角色 E2E）：list_sessions, close_session；所有動作可加 session_id 參數切換 tab\n\nTest isolation / popup：clear_state, wait_new_tab, wait_request",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "action":             { "type": "string", "description": "web_navigate action 名稱" },
-                        "target":             { "type": "string", "description": "URL / CSS selector / JS expr / screenshot_analyze 的問題，視 action 而定" },
+                        "action":             { "type": "string", "description": "browser action 名稱" },
+                        "target":             { "type": "string", "description": "URL / CSS selector / JS expr / 文字，視 action 而定。close_session 時為 session_id" },
                         "text":               { "type": "string", "description": "type / ax_type 動作的輸入文字" },
-                        "timeout":            { "type": "number", "description": "wait / wait_for_ax_change 動作的 ms" },
+                        "timeout":            { "type": "number", "description": "wait* 動作的 ms timeout（wait_for_url/ax_ready 預設 10000，wait_for_network_idle 預設 15000）" },
                         "x":                  { "type": "number", "description": "click_point 的 x 座標 (CSS px)" },
                         "y":                  { "type": "number", "description": "click_point 的 y 座標 (CSS px)" },
                         "width":              { "type": "number", "description": "set_viewport 的 width (px)" },
@@ -375,11 +375,16 @@ fn handle_tools_list() -> Result<Value, String> {
                         "name_regex":         { "type": "string", "description": "ax_find: Rust regex 對 name 全文比對（比 name 子字串更精確）" },
                         "not_name_matches":   { "type": "array", "items": { "type": "string" }, "description": "ax_find: 排除 name 包含任一字串的節點" },
                         "limit":              { "type": "number", "description": "ax_find: >1 時返回 nodes 陣列（多節點），=1 時返回單節點（預設 1）" },
+                        "scroll":             { "type": "boolean", "description": "ax_find: true 時自動往下捲動直到找到元素（Flutter ListView / 分頁）" },
+                        "scroll_max":         { "type": "number", "description": "ax_find scroll 最多捲幾次（預設 10，每次 400px）" },
                         "include_ignored":    { "type": "boolean", "description": "ax_tree 是否包含 ignored / generic 節點 (預設 false)" },
                         "id":                 { "type": "string", "description": "ax_snapshot: 自訂快照 ID（省略則自動生成）" },
                         "before_id":          { "type": "string", "description": "ax_diff: 前一個快照 ID" },
                         "after_id":           { "type": "string", "description": "ax_diff: 後一個快照 ID" },
-                        "baseline_id":        { "type": "string", "description": "wait_for_ax_change: 基準快照 ID" }
+                        "baseline_id":        { "type": "string", "description": "wait_for_ax_change: 基準快照 ID" },
+                        "min_nodes":          { "type": "number", "description": "wait_for_ax_ready: AX tree 最少需要幾個節點（預設 20）" },
+                        "idle_ms":            { "type": "number", "description": "wait_for_network_idle: 網路安靜多久算完成（預設 500ms）" },
+                        "session_id":         { "type": "string", "description": "多 session 支援：每個 session_id 對應一個獨立 tab（e.g. buyer_a / buyer_b）。省略時使用當前 active tab" }
                     },
                     "required": ["action"]
                 }
@@ -759,6 +764,12 @@ async fn call_browser_exec(args: Value) -> Result<Value, String> {
     let role_arg = args.get("role").and_then(Value::as_str).map(String::from);
     let name_arg = args.get("name").and_then(Value::as_str).map(String::from);
     let include_ignored = args.get("include_ignored").and_then(Value::as_bool).unwrap_or(false);
+    // Issue #19 new args
+    let session_id_arg = args.get("session_id").and_then(Value::as_str).map(String::from);
+    let scroll_arg = args.get("scroll").and_then(Value::as_bool).unwrap_or(false);
+    let scroll_max_arg = args.get("scroll_max").and_then(Value::as_u64).unwrap_or(10) as usize;
+    let min_nodes_arg = args.get("min_nodes").and_then(Value::as_u64).unwrap_or(20) as usize;
+    let idle_ms_arg = args.get("idle_ms").and_then(Value::as_u64).unwrap_or(500);
 
     // ── Async-only actions (need LLM call, can't go in spawn_blocking) ────
     if action == "screenshot_analyze" {
@@ -793,6 +804,17 @@ async fn call_browser_exec(args: Value) -> Result<Value, String> {
     let result = tokio::task::spawn_blocking(move || -> Result<Value, String> {
         use crate::browser;
         let want_headless = headless_override.unwrap_or_else(browser::default_headless);
+
+        // ── Session switching (Issue #19 P1) ─────────────────────────────
+        // For goto with session_id: ensure browser open with correct headless
+        // mode BEFORE switching, so the new tab is launched correctly.
+        if let Some(ref sid) = session_id_arg {
+            if action.as_str() == "goto" {
+                browser::ensure_open(want_headless)?;
+            }
+            browser::session_switch(sid)?;
+        }
+
         match action.as_str() {
             "goto" => {
                 if target.is_empty() { return Err("'goto' requires 'target' URL".into()); }
@@ -911,6 +933,20 @@ async fn call_browser_exec(args: Value) -> Result<Value, String> {
                     .unwrap_or_default();
                 let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(1) as usize;
 
+                // scroll=true: scroll-aware find (Issue #19 P1)
+                if scroll_arg {
+                    let (node, scrolled) = crate::browser_ax::find_scrolling_by_role_and_name(
+                        role_arg.as_deref(), name_arg.as_deref(),
+                        name_regex_arg.as_deref(), &not_name_matches,
+                        scroll_max_arg, 400.0,
+                    )?;
+                    return Ok(json!({
+                        "found": node.is_some(),
+                        "node": node,
+                        "scrolled_times": scrolled,
+                    }));
+                }
+
                 if limit <= 1 {
                     match crate::browser_ax::find_by_role_and_name(
                         role_arg.as_deref(), name_arg.as_deref(),
@@ -1005,6 +1041,75 @@ async fn call_browser_exec(args: Value) -> Result<Value, String> {
                 let raw = browser::wait_for_request(&target, to_ms)?;
                 let val: Value = serde_json::from_str(&raw).unwrap_or(json!({}));
                 Ok(json!({ "request": val }))
+            }
+            // ── Condition-based waits (Issue #19 P0) ─────────────────
+            "wait_for_url" => {
+                if target.is_empty() {
+                    return Err("'wait_for_url' requires 'target' (URL substring or /regex/)".into());
+                }
+                let to_ms = timeout.unwrap_or(10000);
+                let elapsed = browser::wait_for_url(&target, to_ms)?;
+                let url = browser::current_url().unwrap_or_default();
+                Ok(json!({ "status": "ready", "elapsed_ms": elapsed, "url": url }))
+            }
+            "wait_for_ax_ready" => {
+                let to_ms = timeout.unwrap_or(10000);
+                let (elapsed, count) = crate::browser_ax::wait_for_ax_ready(min_nodes_arg, to_ms)?;
+                Ok(json!({ "status": "ready", "elapsed_ms": elapsed, "ax_node_count": count }))
+            }
+            "wait_for_network_idle" => {
+                let to_ms = timeout.unwrap_or(15000);
+                let elapsed = browser::wait_for_network_idle(idle_ms_arg, to_ms)?;
+                Ok(json!({ "status": "idle", "elapsed_ms": elapsed }))
+            }
+            // ── Assertions (Issue #19 bonus) ──────────────────────────
+            "assert_ax_contains" => {
+                if target.is_empty() {
+                    return Err("'assert_ax_contains' requires 'target' = text to find".into());
+                }
+                let tree = crate::browser_ax::get_full_tree(false)?;
+                let needle = target.to_lowercase();
+                let found = tree.iter().any(|n| {
+                    n.name.as_deref().unwrap_or("").to_lowercase().contains(&needle)
+                        || n.value.as_deref().unwrap_or("").to_lowercase().contains(&needle)
+                });
+                let preview: Vec<String> = tree.iter().take(20)
+                    .filter_map(|n| n.name.clone().or_else(|| n.value.clone()))
+                    .collect();
+                Ok(json!({
+                    "passed": found,
+                    "target": target,
+                    "actual_ax_tree_preview": preview.join(" | "),
+                }))
+            }
+            "assert_url_matches" => {
+                if target.is_empty() {
+                    return Err("'assert_url_matches' requires 'target' (URL substring or /regex/)".into());
+                }
+                let url = browser::current_url().unwrap_or_default();
+                let is_regex = target.starts_with('/') && target.ends_with('/') && target.len() > 2;
+                let passed = if is_regex {
+                    let pattern = &target[1..target.len() - 1];
+                    regex::Regex::new(pattern).map(|re| re.is_match(&url)).unwrap_or(false)
+                } else {
+                    url.contains(&target)
+                };
+                Ok(json!({ "passed": passed, "target": target, "actual_url": url }))
+            }
+            // ── Named sessions (Issue #19 P1) ─────────────────────────
+            "list_sessions" => {
+                let sessions = browser::list_sessions().unwrap_or_default();
+                let items: Vec<Value> = sessions.into_iter().map(|(id, idx, url)| {
+                    json!({ "session_id": id, "tab_index": idx, "url": url })
+                }).collect();
+                Ok(json!({ "count": items.len(), "sessions": items }))
+            }
+            "close_session" => {
+                if target.is_empty() {
+                    return Err("'close_session' requires 'target' = session_id".into());
+                }
+                browser::close_session(&target)?;
+                Ok(json!({ "status": "closed", "session_id": target }))
             }
             other   => Err(format!("Unknown browser_exec action: {other}")),
         }

@@ -192,6 +192,33 @@ fn json_ax_value(node: &serde_json::Value, field: &str) -> Option<String> {
     }
 }
 
+/// Poll until the AX tree contains at least `min_nodes` non-ignored nodes.
+/// Returns `(elapsed_ms, actual_count)` on success.
+///
+/// Use after Flutter navigation to wait for the semantics tree to populate:
+/// ```json
+/// {"action":"wait_for_ax_ready","min_nodes":20,"timeout":10000}
+/// ```
+pub fn wait_for_ax_ready(min_nodes: usize, timeout_ms: u64) -> Result<(u64, usize), String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    let t0 = std::time::Instant::now();
+    loop {
+        match get_full_tree(false) {
+            Ok(tree) if tree.len() >= min_nodes => {
+                return Ok((t0.elapsed().as_millis() as u64, tree.len()));
+            }
+            _ => {}
+        }
+        if std::time::Instant::now() >= deadline {
+            let count = get_full_tree(false).map(|t| t.len()).unwrap_or(0);
+            return Err(format!(
+                "wait_for_ax_ready: timeout after {timeout_ms}ms (got {count} nodes, need {min_nodes})"
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
 /// Convenience: find the first node matching role + name (substring, case-insensitive).
 /// Also supports `name_regex` (Rust regex) and `not_name_matches` exclusion list.
 pub fn find_by_role_and_name(
@@ -219,6 +246,39 @@ pub fn find_all_by_role_and_name(
         .take(limit)
         .collect();
     Ok(results)
+}
+
+/// Scroll-aware find: search the AX tree, scrolling down by `scroll_step_px`
+/// up to `scroll_max` times if the node is not yet visible.
+///
+/// Flutter ListView / infinite scroll pages only expose on-screen items in
+/// the AX tree.  This helper scrolls incrementally to reveal them.
+///
+/// Returns `(node, scrolled_times)`.  `scrolled_times = 0` means found
+/// immediately without scrolling.
+pub fn find_scrolling_by_role_and_name(
+    role: Option<&str>,
+    name_substring: Option<&str>,
+    name_regex: Option<&str>,
+    not_name_matches: &[String],
+    scroll_max: usize,
+    scroll_step_px: f64,
+) -> Result<(Option<AxNode>, usize), String> {
+    for scroll_count in 0..=scroll_max {
+        let tree = get_full_tree(false)?;
+        if let Some(node) = tree
+            .into_iter()
+            .find(|n| n.matches(role, name_substring, name_regex, not_name_matches))
+        {
+            return Ok((Some(node), scroll_count));
+        }
+        if scroll_count < scroll_max {
+            crate::browser::scroll_by(0.0, scroll_step_px)?;
+            // Wait for Flutter ListView to load newly-visible items into the tree
+            std::thread::sleep(std::time::Duration::from_millis(400));
+        }
+    }
+    Ok((None, scroll_max))
 }
 
 // ── Snapshot store (T-M07) ───────────────────────────────────────────────────

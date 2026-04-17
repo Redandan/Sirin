@@ -20,6 +20,7 @@ use headless_chrome::protocol::cdp::Page::CaptureScreenshotFormatOption;
 use headless_chrome::protocol::cdp::{Emulation, Network, Page};
 use headless_chrome::{Browser, LaunchOptions, Tab};
 use serde_json::json;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 // ── Singleton ────────────────────────────────────────────────────────────────
@@ -36,6 +37,10 @@ struct BrowserInner {
     active: usize,
     #[allow(dead_code)]
     headless: bool,
+    /// Named sessions: session_id → tab index.
+    /// Allows callers to maintain multiple independent browser contexts
+    /// (e.g. buyer_a / buyer_b for cross-role E2E tests).
+    sessions: HashMap<String, usize>,
 }
 
 impl BrowserInner {
@@ -100,7 +105,7 @@ pub fn ensure_open(headless: bool) -> Result<bool, String> {
     // (esp. after a mode switch).
     std::thread::sleep(std::time::Duration::from_millis(600));
 
-    *guard = Some(BrowserInner { browser, tabs: vec![tab], active: 0, headless });
+    *guard = Some(BrowserInner { browser, tabs: vec![tab], active: 0, headless, sessions: HashMap::new() });
     tracing::info!("[browser] launched Chrome (headless={headless})");
     Ok(true)
 }
@@ -996,6 +1001,157 @@ pub fn local_storage_set(key: &str, value: &str) -> Result<(), String> {
         serde_json::to_string(key).unwrap(),
         serde_json::to_string(value).unwrap(),
     ))?;
+    Ok(())
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  CONDITION-BASED WAITS  (P0 — Issue #19)
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Poll until the current URL **contains** `target` (substring match) or
+/// matches the `/pattern/` regex.  Returns elapsed milliseconds on success.
+///
+/// ```json
+/// {"action":"wait_for_url","target":"#/home","timeout":10000}
+/// {"action":"wait_for_url","target":"/\\/wallet\\//","timeout":8000}
+/// ```
+pub fn wait_for_url(target: &str, timeout_ms: u64) -> Result<u64, String> {
+    let is_regex = target.starts_with('/') && target.ends_with('/') && target.len() > 2;
+    let re = if is_regex {
+        let pattern = &target[1..target.len() - 1];
+        Some(regex::Regex::new(pattern).map_err(|e| format!("wait_for_url: invalid regex: {e}"))?)
+    } else {
+        None
+    };
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    let t0 = std::time::Instant::now();
+    loop {
+        let url = current_url().unwrap_or_default();
+        let matched = if let Some(ref re) = re { re.is_match(&url) } else { url.contains(target) };
+        if matched {
+            return Ok(t0.elapsed().as_millis() as u64);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!(
+                "wait_for_url: timeout after {timeout_ms}ms (pattern={target:?}, url={url:?})"
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+/// Poll until the network capture log has been stable (no new requests) for
+/// at least `idle_ms` milliseconds.  Auto-installs the capture hook.
+/// Returns elapsed milliseconds on success.
+///
+/// ```json
+/// {"action":"wait_for_network_idle","timeout":15000}
+/// ```
+pub fn wait_for_network_idle(idle_ms: u64, timeout_ms: u64) -> Result<u64, String> {
+    install_network_capture()?;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    let t0 = std::time::Instant::now();
+    let mut last_count = get_net_request_count()?;
+    let mut stable_since = std::time::Instant::now();
+
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let count = get_net_request_count()?;
+        if count != last_count {
+            last_count = count;
+            stable_since = std::time::Instant::now();
+        }
+        if stable_since.elapsed().as_millis() as u64 >= idle_ms {
+            return Ok(t0.elapsed().as_millis() as u64);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!("wait_for_network_idle: timeout after {timeout_ms}ms"));
+        }
+    }
+}
+
+fn get_net_request_count() -> Result<usize, String> {
+    let r = evaluate_js("(window.__sirin_net||[]).length")?;
+    Ok(r.parse::<usize>().unwrap_or(0))
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  NAMED SESSIONS  (P1 — Issue #19)
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Switch the active tab to a named session.  If the session doesn't exist
+/// yet, a new tab is opened and registered under `session_id`.
+///
+/// All subsequent `with_tab` calls on the current thread will target this tab
+/// until another `session_switch` call is made.
+///
+/// Typical flow:
+/// ```json
+/// {"action":"goto","target":"https://...","session_id":"buyer_a"}
+/// {"action":"goto","target":"https://...","session_id":"buyer_b"}
+/// {"action":"ax_find","role":"button","name":"下單","session_id":"buyer_a"}
+/// ```
+pub fn session_switch(session_id: &str) -> Result<usize, String> {
+    ensure_open_reusing()?;
+    let mut guard = global().lock().unwrap_or_else(|e| e.into_inner());
+    let inner = guard.as_mut().ok_or("browser not open")?;
+
+    if let Some(&idx) = inner.sessions.get(session_id) {
+        if idx < inner.tabs.len() {
+            inner.active = idx;
+            return Ok(idx);
+        }
+        // Stale index — tab was closed, recreate below
+        inner.sessions.remove(session_id);
+    }
+
+    // Create a new tab for this session
+    let tab = inner.browser.new_tab().map_err(|e| format!("session_switch new_tab: {e}"))?;
+    inner.tabs.push(tab);
+    let idx = inner.tabs.len() - 1;
+    inner.active = idx;
+    inner.sessions.insert(session_id.to_string(), idx);
+    tracing::debug!("[browser] created session '{session_id}' → tab {idx}");
+    Ok(idx)
+}
+
+/// List all named sessions: returns Vec of (session_id, tab_index, url).
+pub fn list_sessions() -> Result<Vec<(String, usize, String)>, String> {
+    let guard = global().lock().unwrap_or_else(|e| e.into_inner());
+    let inner = guard.as_ref().ok_or("browser not open")?;
+    let mut result: Vec<(String, usize, String)> = inner
+        .sessions
+        .iter()
+        .map(|(id, &idx)| {
+            let url = inner.tabs.get(idx).map(|t| t.get_url()).unwrap_or_default();
+            (id.clone(), idx, url)
+        })
+        .collect();
+    result.sort_by_key(|(_, idx, _)| *idx);
+    Ok(result)
+}
+
+/// Close a named session and its associated tab.
+pub fn close_session(session_id: &str) -> Result<(), String> {
+    let mut guard = global().lock().unwrap_or_else(|e| e.into_inner());
+    let inner = guard.as_mut().ok_or("browser not open")?;
+    let idx = inner.sessions.remove(session_id)
+        .ok_or_else(|| format!("session '{session_id}' not found"))?;
+    if inner.tabs.len() <= 1 {
+        return Err("cannot close the last tab".into());
+    }
+    if idx < inner.tabs.len() {
+        inner.tabs.remove(idx);
+        if inner.active >= inner.tabs.len() {
+            inner.active = inner.tabs.len() - 1;
+        }
+        // Shift down any session indices pointing past the removed tab
+        for idx_ref in inner.sessions.values_mut() {
+            if *idx_ref > idx { *idx_ref -= 1; }
+        }
+    }
     Ok(())
 }
 
