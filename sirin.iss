@@ -7,10 +7,10 @@
 #define MyAppURL        "https://github.com/Redandan/Sirin"
 #define MyAppExeName    "sirin.exe"
 
-; Version injected by CI: iscc /DMyAppVersion=0.2.0 sirin.iss
-; Falls back to 0.2.0 if not passed.
+; Version injected by CI: iscc /DMyAppVersion=0.3.0 sirin.iss
+; Falls back to 0.3.0 if not passed.
 #ifndef MyAppVersion
-  #define MyAppVersion "0.2.0"
+  #define MyAppVersion "0.3.0"
 #endif
 
 [Setup]

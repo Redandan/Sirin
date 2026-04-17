@@ -112,7 +112,12 @@ fn show_expanded(
             if resp.clicked() { *collapsed = true; }
         });
     });
-    ui.add_space(theme::SP_LG);
+    ui.horizontal(|ui| {
+        ui.add_space(theme::SP_MD);
+        ui.colored_label(theme::TEXT_DIM,
+            RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).size(theme::FONT_CAPTION));
+    });
+    ui.add_space(theme::SP_MD);
 
     // ── AGENTS ───────────────────────────────────────────────────────
     group_label(ui, "AGENTS");
