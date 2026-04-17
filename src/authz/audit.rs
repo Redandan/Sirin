@@ -19,15 +19,42 @@ use std::path::Path;
 
 // ─── Public helpers ───────────────────────────────────────────────────────────
 
+/// Rotate `log_path` once it exceeds 10 MiB, keeping up to 5 backups.
+///
+/// Rotation order: `.5` is deleted, `.4`→`.5`, `.3`→`.4`, `.2`→`.3`,
+/// `.1`→`.2`, `audit.ndjson`→`.1`.  A fresh file is then opened by the
+/// caller.
+fn maybe_rotate(path: &str) {
+    let p = std::path::Path::new(path);
+    if p.metadata().map(|m| m.len()).unwrap_or(0) < 10 * 1024 * 1024 {
+        return;
+    }
+    // Delete the oldest backup first to make room.
+    let oldest = format!("{path}.5");
+    let _ = std::fs::remove_file(&oldest);
+    // Shift backups: .4 → .5, .3 → .4, .2 → .3, .1 → .2
+    for i in (1..5usize).rev() {
+        let from = format!("{path}.{i}");
+        let to   = format!("{path}.{}", i + 1);
+        let _ = std::fs::rename(&from, &to);
+    }
+    // Current log → .1
+    let _ = std::fs::rename(path, &format!("{path}.1"));
+}
+
 /// Write a single NDJSON event to the audit log at `log_path`.
 ///
 /// Creates the file (and parent dirs) if it doesn't exist.
+/// Rotates the file if it has grown beyond 10 MiB (keeps 5 backups).
 /// Silently swallows write errors (audit failure must not block the call).
 pub fn append_event(log_path: &str, event: &JsonValue) {
     let path = Path::new(log_path);
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
+
+    // Size-based rotation before opening for append.
+    maybe_rotate(log_path);
 
     let mut line = serde_json::to_string(event).unwrap_or_else(|_| "{}".to_string());
     line.push('\n');

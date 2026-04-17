@@ -239,7 +239,7 @@ impl AuthzConfig {
 /// Built-in hard-coded baseline (loaded when no YAML file exists).
 pub fn defaults() -> AuthzConfig {
     AuthzConfig {
-        mode: Mode::Selective,
+        mode: Mode::Permissive,
         readonly_allow: default_readonly_allow(),
         clients: std::collections::HashMap::new(),
         allow: vec![],
@@ -398,7 +398,7 @@ mod config_test {
         let cfg = defaults();
         let yaml = serde_yaml::to_string(&cfg).expect("serialize");
         let back: AuthzConfig = serde_yaml::from_str(&yaml).expect("deserialize");
-        assert_eq!(back.mode, Mode::Selective);
+        assert_eq!(back.mode, Mode::Permissive);
         assert!(back.readonly_allow.contains(&"screenshot".to_string()));
         assert!(!back.deny.is_empty());
     }

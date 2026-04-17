@@ -300,6 +300,27 @@ fn handle_tools_list() -> Result<Value, String> {
                 "inputSchema": { "type": "object", "properties": {} }
             },
             {
+                "name": "page_state",
+                "description": "一次回傳當前瀏覽器頁面的完整狀態 — URL、title、ax_tree 文字片段、JPEG 截圖（Base64）、console 錯誤、最近網路請求。比分別呼叫多個 browser_exec 動作更快，適合 AI agent 做 situational awareness。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "include_screenshot": {
+                            "type": "boolean",
+                            "description": "是否包含截圖（預設 true）。截圖為 JPEG 80% Base64"
+                        },
+                        "include_ax": {
+                            "type": "boolean",
+                            "description": "是否包含 ax_tree 文字摘要（預設 true）"
+                        },
+                        "max_ax_nodes": {
+                            "type": "number",
+                            "description": "ax_tree 最多返回幾個節點（預設 50）"
+                        }
+                    }
+                }
+            },
+            {
                 "name": "browser_exec",
                 "description": "即席執行瀏覽器動作，不走完整 test goal。適合 debug / 探索 / 單步操作。action 可用：goto, screenshot, screenshot_analyze, click, click_point, type, read, eval, wait, exists, attr, scroll, key, console, network, url, title, close, set_viewport。Accessibility tree（literal text，精確比對）：enable_a11y, ax_tree, ax_find, ax_value, ax_click, ax_focus, ax_type, ax_type_verified。Test isolation / multi-tab / network races：clear_state, wait_new_tab, wait_request。",
                 "inputSchema": {
@@ -346,6 +367,7 @@ async fn handle_tools_call(params: Value) -> Result<Value, String> {
         "list_fixes"           => return call_list_fixes(arguments).map(wrap_json),
         "config_diagnostics"   => return call_config_diagnostics().map(wrap_json),
         "browser_exec"         => return call_browser_exec(arguments).await.map(wrap_json),
+        "page_state"           => return call_page_state(arguments).await.map(wrap_json),
         _ => {}
     }
 
@@ -620,13 +642,53 @@ async fn call_browser_exec(args: Value) -> Result<Value, String> {
             crate::authz::audit::log_ask(
                 &cfg.audit.log_path, &client_id, &action_name, &args, &current_url, reason,
             );
-            return Err(format!("authz ask (no interactive GUI yet): {reason}"));
+            let req_id = format!("ask-{}-{}", &action_name, uuid_v4_short());
+            crate::monitor::emit_authz_ask(
+                &req_id, &client_id, &action_name, args.clone(),
+                current_url.as_deref().unwrap_or(""),
+                30_000, // timeout_ms
+                false,  // learn: false
+            ).await;
+            // Wait for human decision (30s timeout → deny)
+            if let Some(ms) = crate::monitor::state() {
+                let rx = ms.register_authz_ask(&req_id);
+                match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
+                    Ok(Ok(crate::monitor::AuthzDecisionResult::Allow)) => {
+                        // User clicked Allow — continue execution
+                    }
+                    Ok(Ok(crate::monitor::AuthzDecisionResult::Deny)) | Ok(Err(_)) | Err(_) => {
+                        return Err(format!("authz ask denied by operator (or timed out): {reason}"));
+                    }
+                }
+            } else {
+                return Err(format!("authz ask (no monitor GUI): {reason}"));
+            }
         }
         crate::authz::Decision::AskWithLearn => {
             crate::authz::audit::log_ask(
-                &cfg.audit.log_path, &client_id, &action_name, &args, &current_url, "ask (no GUI)",
+                &cfg.audit.log_path, &client_id, &action_name, &args, &current_url, "ask+learn",
             );
-            return Err("authz ask (no interactive GUI yet): ask (no GUI)".to_string());
+            let req_id = format!("ask-{}-{}", &action_name, uuid_v4_short());
+            crate::monitor::emit_authz_ask(
+                &req_id, &client_id, &action_name, args.clone(),
+                current_url.as_deref().unwrap_or(""),
+                30_000, // timeout_ms
+                true,   // learn: true
+            ).await;
+            // Wait for human decision (30s timeout → deny)
+            if let Some(ms) = crate::monitor::state() {
+                let rx = ms.register_authz_ask(&req_id);
+                match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
+                    Ok(Ok(crate::monitor::AuthzDecisionResult::Allow)) => {
+                        // User clicked Allow — continue execution
+                    }
+                    Ok(Ok(crate::monitor::AuthzDecisionResult::Deny)) | Ok(Err(_)) | Err(_) => {
+                        return Err("authz ask denied by operator (or timed out): ask+learn".to_string());
+                    }
+                }
+            } else {
+                return Err("authz ask (no monitor GUI): ask+learn".to_string());
+            }
         }
     }
 
@@ -861,6 +923,71 @@ async fn call_browser_exec(args: Value) -> Result<Value, String> {
         Err(e) => crate::monitor::emit_action_error(&action_id, e).await,
     }
     result
+}
+
+async fn call_page_state(args: Value) -> Result<Value, String> {
+    let include_screenshot = args.get("include_screenshot").and_then(Value::as_bool).unwrap_or(true);
+    let include_ax         = args.get("include_ax").and_then(Value::as_bool).unwrap_or(true);
+    let max_ax_nodes       = args.get("max_ax_nodes").and_then(Value::as_u64).unwrap_or(50) as usize;
+
+    tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        use crate::browser;
+
+        // Basic state — always collected.
+        let url   = browser::current_url().unwrap_or_default();
+        let title = browser::page_title().unwrap_or_default();
+
+        // Console messages (last 20 entries).
+        let console_raw = browser::console_messages(20).unwrap_or_else(|_| "[]".into());
+        let console_val: Value = serde_json::from_str(&console_raw).unwrap_or(json!([]));
+
+        // Recent network requests (last 20 entries).
+        let network_raw = browser::captured_requests(20).unwrap_or_else(|_| "[]".into());
+        let network_val: Value = serde_json::from_str(&network_raw).unwrap_or(json!([]));
+
+        let mut result = json!({
+            "url":     url,
+            "title":   title,
+            "console": console_val,
+            "network": network_val,
+        });
+
+        // Accessibility tree — slim text summary.
+        if include_ax {
+            match crate::browser_ax::get_full_tree(false) {
+                Ok(nodes) => {
+                    let limited: Vec<_> = nodes.into_iter().take(max_ax_nodes).collect();
+                    let text = limited.iter()
+                        .map(|n| format!(
+                            "[{}] {} \"{}\"",
+                            n.role.as_deref().unwrap_or("?"),
+                            n.backend_id.map(|id| id.to_string()).unwrap_or_else(|| "-".into()),
+                            n.name.as_deref().unwrap_or(""),
+                        ))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    result["ax_tree_text"]  = json!(text);
+                    result["ax_node_count"] = json!(limited.len());
+                }
+                Err(e) => { result["ax_error"] = json!(e); }
+            }
+        }
+
+        // Screenshot — JPEG 80% quality, Base64 encoded.
+        if include_screenshot {
+            match browser::screenshot_jpeg(80) {
+                Ok(jpeg) => {
+                    result["screenshot_jpeg_b64"]   = json!(base64_encode(&jpeg));
+                    result["screenshot_size_bytes"] = json!(jpeg.len());
+                }
+                Err(e) => { result["screenshot_error"] = json!(e); }
+            }
+        }
+
+        Ok(result)
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking: {e}"))?
 }
 
 fn call_get_full_observation(args: Value) -> Result<Value, String> {
