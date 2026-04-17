@@ -103,6 +103,17 @@ Tokio Background Tasks
 
 **完整 MCP API 參考：** [`docs/MCP_API.md`](docs/MCP_API.md)
 
+## 給開發者（包含 AI session 接手開發）
+
+如果你要修改 Sirin 本身（不是用 Sirin 測別的 app），讀：
+
+1. [`CLAUDE.md`](CLAUDE.md) — 架構決策、不可重啟議的選擇
+2. [`.claude/skills/sirin-dev/SKILL.md`](.claude/skills/sirin-dev/SKILL.md) — 開發工作流、加新動作的 4 處改動清單、已踩過的雷
+3. [`docs/test-runner-roadmap.md`](docs/test-runner-roadmap.md) — 進度與已拒絕的提案
+4. [`~/.claude/broadcasts/2026-04-*-sirin-*.md`](~/.claude/broadcasts/) — 上一個 session 的最新狀態
+
+`sirin-dev` skill 會在 Claude session 進入 Sirin repo 時自動載入，不必手動讀。
+
 ---
 
 ## 技術堆疊
