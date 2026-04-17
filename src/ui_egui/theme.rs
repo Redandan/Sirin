@@ -120,18 +120,6 @@ pub fn badge(ui: &mut egui::Ui, label: &str, color: Color32) {
         });
 }
 
-/// Count badge.
-pub fn count_badge(ui: &mut egui::Ui, count: usize) {
-    if count == 0 { return; }
-    egui::Frame::new()
-        .fill(ACCENT)
-        .corner_radius(8.0)
-        .inner_margin(egui::vec2(5.0, 1.0))
-        .show(ui, |ui| {
-            ui.label(RichText::new(format!("{count}")).size(FONT_CAPTION).strong().color(BG));
-        });
-}
-
 /// Status dot (small circle) + label text. Available for future use.
 #[allow(dead_code)]
 pub fn status_dot(ui: &mut egui::Ui, label: &str, ok: bool) {

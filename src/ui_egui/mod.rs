@@ -6,8 +6,6 @@ mod sidebar;
 mod workspace;
 mod settings;
 mod log_view;
-mod workflow;
-mod meeting;
 mod browser;
 mod monitor;
 
@@ -21,7 +19,7 @@ use crate::ui_service::*;
 // ── View ─────────────────────────────────────────────────────────────────────
 
 #[derive(PartialEq, Clone)]
-enum View { Workspace(usize), Settings, Log, Workflow, Meeting, Browser, Monitor }
+enum View { Workspace(usize), Settings, Log, Browser, Monitor }
 
 // ── Toast ────────────────────────────────────────────────────────────────────
 
@@ -53,8 +51,6 @@ pub struct SirinApp {
     log_state: log_view::LogState,
     workspace_state: workspace::WorkspaceState,
     settings_state: settings::SettingsState,
-    workflow_state: workflow::WorkflowUiState,
-    meeting_state: meeting::MeetingState,
     browser_state: browser::BrowserUiState,
     monitor_state: monitor::MonitorViewState,
 
@@ -75,8 +71,7 @@ impl SirinApp {
             toasts: VecDeque::new(),
             renaming: None,
             log_state: Default::default(), workspace_state: Default::default(),
-            settings_state: Default::default(), workflow_state: Default::default(),
-            meeting_state: Default::default(), browser_state: Default::default(),
+            settings_state: Default::default(), browser_state: Default::default(),
             monitor_state: Default::default(),
             update_banner_dismissed: false,
         }
@@ -109,40 +104,6 @@ impl eframe::App for SirinApp {
 
         sidebar::show(ctx, &self.svc, &self.agents, &self.pending_counts, &mut self.view, &mut self.renaming);
 
-        // ── Top bar — shows current page context ─────────────────────────
-        egui::TopBottomPanel::top("top_bar")
-            .exact_height(34.0)
-            .frame(egui::Frame::new().fill(theme::BG)
-                .inner_margin(egui::vec2(theme::SP_XL, theme::SP_SM))
-                .stroke(egui::Stroke::new(0.5, theme::BORDER)))
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    // Page context
-                    let title = match &self.view {
-                        View::Workspace(idx) => {
-                            let name = self.agents.get(*idx).map(|a| a.name.as_str()).unwrap_or("—");
-                            name.to_string()
-                        }
-                        View::Settings => "系統設定".into(),
-                        View::Log => "系統 Log".into(),
-                        View::Workflow => "Skill 開發".into(),
-                        View::Meeting => "會議室".into(),
-                        View::Browser => "Browser".into(),
-                        View::Monitor => "Monitor".into(),
-                    };
-                    ui.label(RichText::new(&title).size(theme::FONT_HEADING).strong().color(theme::TEXT));
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let total_pending: usize = self.pending_counts.values().sum();
-                        if total_pending > 0 {
-                            theme::count_badge(ui, total_pending);
-                            ui.add_space(theme::SP_XS);
-                            ui.colored_label(theme::TEXT_DIM, RichText::new("待審").size(theme::FONT_CAPTION));
-                        }
-                    });
-                });
-            });
-
         // ── Update banner (shown when a new version is available) ────────
         if !self.update_banner_dismissed {
             show_update_banner(ctx, &mut self.update_banner_dismissed);
@@ -156,8 +117,6 @@ impl eframe::App for SirinApp {
                     View::Workspace(idx) => workspace::show(ui, &self.svc, &self.agents, idx, &self.tasks, &self.pending_counts, &mut self.workspace_state),
                     View::Settings => settings::show(ui, &self.svc, &self.agents, &mut self.settings_state),
                     View::Log => log_view::show(ui, &self.svc, &mut self.log_state),
-                    View::Workflow => workflow::show(ui, &self.svc, &mut self.workflow_state),
-                    View::Meeting => meeting::show(ui, &self.svc, &self.agents, &mut self.meeting_state),
                     View::Browser => browser::show(ui, &self.svc, &mut self.browser_state),
                     View::Monitor => monitor::show(ui, &mut self.monitor_state),
                 }

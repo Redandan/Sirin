@@ -37,15 +37,14 @@ pub fn show(
 
     // Tab bar (underline style)
     let pending_label = format!("待確認 ({pending_n})");
-    let tab_labels = ["💬 對話", "概覽", "思考流", &pending_label, "設定"];
+    let tab_labels = ["💬 對話", "概覽", &pending_label, "設定"];
     theme::tab_bar(ui, &tab_labels, &mut state.tab);
 
     match state.tab {
         0 => show_chat(ui, svc, &agent.id, state),
         1 => show_overview(ui, svc, tasks, state),
-        2 => show_thinking(ui, tasks),
-        3 => show_pending(ui, svc, &agent.id, state),
-        4 => show_agent_settings(ui, svc, &agent.id, state),
+        2 => show_pending(ui, svc, &agent.id, state),
+        3 => show_agent_settings(ui, svc, &agent.id, state),
         _ => {}
     }
 }
@@ -165,43 +164,6 @@ fn show_overview(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, tasks: &[TaskView
     });
 }
 
-fn show_thinking(ui: &mut egui::Ui, tasks: &[TaskView]) {
-    ui.label(RichText::new("Agent 執行追蹤").strong().color(theme::TEXT_DIM));
-    ui.add_space(theme::SP_SM);
-
-    let thinking: Vec<&TaskView> = tasks.iter()
-        .filter(|t| ["adk", "chat", "research", "coding", "router", "planner"].iter().any(|k| t.event.contains(k)))
-        .take(50).collect();
-
-    if thinking.is_empty() {
-        ui.add_space(theme::SP_XL);
-        ui.vertical_centered(|ui| {
-            ui.label(RichText::new("🧠").size(theme::SP_XL));
-            ui.colored_label(theme::TEXT_DIM, "暫無 Agent 執行記錄");
-            ui.colored_label(theme::TEXT_DIM, RichText::new("Agent 處理訊息時會顯示推理過程").size(theme::FONT_SMALL));
-        });
-        return;
-    }
-
-    ScrollArea::vertical().id_salt("thinking").show(ui, |ui| {
-        for task in thinking {
-            let icon = if task.event.contains("research") { "🔍" }
-                else if task.event.contains("coding") { "💻" }
-                else if task.event.contains("chat") { "💬" }
-                else { "🧠" };
-            theme::card(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(icon);
-                    ui.label(RichText::new(&task.event).size(theme::FONT_BODY).color(theme::INFO));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.colored_label(theme::TEXT_DIM, RichText::new(&task.timestamp).size(theme::FONT_SMALL));
-                    });
-                });
-                if let Some(r) = &task.reason { ui.colored_label(theme::TEXT_DIM, RichText::new(r).size(theme::FONT_SMALL)); }
-            });
-        }
-    });
-}
 
 fn show_pending(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &str, state: &mut WorkspaceState) {
     if state.pending_loaded_for != agent_id {

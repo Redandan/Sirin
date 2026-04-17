@@ -121,14 +121,6 @@ pub fn show(
             ui.add_space(theme::SP_XS);
             theme::thin_separator(ui);
 
-            // ── DEVELOP ──────────────────────────────────────────────────
-            group_label(ui, "DEVELOP");
-            nav_item(ui, "Skill 開發", View::Workflow, view);
-            nav_item(ui, "會議室", View::Meeting, view);
-
-            ui.add_space(theme::SP_XS);
-            theme::thin_separator(ui);
-
             // ── TOOLS ───────────────────────────────────────────────────
             group_label(ui, "TOOLS");
             nav_item(ui, "Browser", View::Browser, view);
