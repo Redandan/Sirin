@@ -239,6 +239,42 @@ pub fn type_into_backend(backend_id: u32, text: &str) -> Result<(), String> {
     })
 }
 
+/// Outcome of a verified type — what we tried to type vs what the input
+/// actually shows after a settle delay.  Use this when you need to confirm
+/// the keystroke landed (Flutter Canvas inputs sometimes drop characters,
+/// formatted/masked inputs may transform the value).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TypeVerifyResult {
+    pub backend_id: u32,
+    pub typed: String,
+    pub actual: String,
+    /// True iff `actual.contains(typed)` (substring match — handles masking
+    /// like `tel: '+1 555 ____'` where the input adds formatting).
+    pub matched: bool,
+}
+
+/// Type into a backend node, then read back the value via the a11y tree to
+/// verify the keystroke actually landed.  300ms settle delay between insert
+/// and read-back to allow framework re-render (React controlled inputs,
+/// Flutter rebuild).
+///
+/// Returns a [`TypeVerifyResult`] so the caller can branch on `matched`.
+/// Doesn't throw on mismatch — callers decide whether substring is enough
+/// or they need exact equality.
+pub fn type_into_backend_verified(backend_id: u32, text: &str) -> Result<TypeVerifyResult, String> {
+    type_into_backend(backend_id, text)?;
+    // Settle so React/Flutter has time to re-render + a11y tree updates.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let actual = read_node_text(backend_id).unwrap_or_default();
+    let matched = actual.contains(text);
+    Ok(TypeVerifyResult {
+        backend_id,
+        typed: text.to_string(),
+        actual,
+        matched,
+    })
+}
+
 // ── Flutter semantics bridge ─────────────────────────────────────────────────
 
 /// Trigger Flutter Web's a11y semantics tree.

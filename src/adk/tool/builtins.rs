@@ -867,6 +867,36 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                         crate::browser_ax::type_into_backend(backend_id as u32, &text)?;
                         Ok(json!({ "status": "typed", "backend_id": backend_id, "length": text.len() }))
                     }
+                    "ax_type_verified" => {
+                        let backend_id = input.get("backend_id").and_then(Value::as_u64)
+                            .ok_or("'ax_type_verified' requires 'backend_id' (number)")?;
+                        let r = crate::browser_ax::type_into_backend_verified(backend_id as u32, &text)?;
+                        Ok(json!(r))
+                    }
+
+                    // ── Test isolation ───────────────────────────
+                    "clear_state" => {
+                        browser::clear_browser_state()?;
+                        Ok(json!({ "status": "cleared" }))
+                    }
+
+                    // ── Multi-tab / popup ────────────────────────
+                    "wait_new_tab" => {
+                        let timeout = input.get("timeout").and_then(Value::as_u64).unwrap_or(10000);
+                        // baseline = current tab count
+                        let baseline = browser::list_tabs().map(|v| v.len()).unwrap_or(1);
+                        let idx = browser::wait_for_new_tab(baseline, timeout)?;
+                        Ok(json!({ "status": "new tab opened", "active_tab": idx }))
+                    }
+
+                    // ── Network ──────────────────────────────────
+                    "wait_request" => {
+                        if target.is_empty() { return Err("'wait_request' requires 'target' = URL substring".into()); }
+                        let timeout = input.get("timeout").and_then(Value::as_u64).unwrap_or(10000);
+                        let raw = browser::wait_for_request(&target, timeout)?;
+                        let val: Value = serde_json::from_str(&raw).unwrap_or(json!({}));
+                        Ok(json!({ "request": val }))
+                    }
 
                     // ── Vision: screenshot + LLM analysis ────────
                     "screenshot_analyze" => {

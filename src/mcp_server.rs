@@ -269,7 +269,7 @@ fn handle_tools_list() -> Result<Value, String> {
             },
             {
                 "name": "browser_exec",
-                "description": "即席執行瀏覽器動作，不走完整 test goal。適合 debug / 探索 / 單步操作。action 可用：goto, screenshot, screenshot_analyze, click, click_point, type, read, eval, wait, exists, attr, scroll, key, console, network, url, title, close, set_viewport。Accessibility tree（literal text，可做精確比對）：enable_a11y, ax_tree, ax_find, ax_value, ax_click, ax_focus, ax_type。",
+                "description": "即席執行瀏覽器動作，不走完整 test goal。適合 debug / 探索 / 單步操作。action 可用：goto, screenshot, screenshot_analyze, click, click_point, type, read, eval, wait, exists, attr, scroll, key, console, network, url, title, close, set_viewport。Accessibility tree（literal text，精確比對）：enable_a11y, ax_tree, ax_find, ax_value, ax_click, ax_focus, ax_type, ax_type_verified。Test isolation / multi-tab / network races：clear_state, wait_new_tab, wait_request。",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -737,6 +737,33 @@ async fn call_browser_exec(args: Value) -> Result<Value, String> {
                 let id = backend_id.ok_or("'ax_type' requires 'backend_id' (number)")?;
                 crate::browser_ax::type_into_backend(id, &text)?;
                 Ok(json!({ "status": "typed", "backend_id": id, "length": text.len() }))
+            }
+            "ax_type_verified" => {
+                let id = backend_id.ok_or("'ax_type_verified' requires 'backend_id' (number)")?;
+                let r = crate::browser_ax::type_into_backend_verified(id, &text)?;
+                Ok(serde_json::to_value(&r).unwrap_or(json!({})))
+            }
+            // ── Test isolation ──────────────────────────────────────
+            "clear_state" => {
+                browser::clear_browser_state()?;
+                Ok(json!({ "status": "cleared" }))
+            }
+            // ── Multi-tab / popup ───────────────────────────────────
+            "wait_new_tab" => {
+                let to_ms = timeout.unwrap_or(10000);
+                let baseline = browser::list_tabs().map(|v| v.len()).unwrap_or(1);
+                let idx = browser::wait_for_new_tab(baseline, to_ms)?;
+                Ok(json!({ "status": "new tab opened", "active_tab": idx }))
+            }
+            // ── Network ─────────────────────────────────────────────
+            "wait_request" => {
+                if target.is_empty() {
+                    return Err("'wait_request' requires 'target' = URL substring".into());
+                }
+                let to_ms = timeout.unwrap_or(10000);
+                let raw = browser::wait_for_request(&target, to_ms)?;
+                let val: Value = serde_json::from_str(&raw).unwrap_or(json!({}));
+                Ok(json!({ "request": val }))
             }
             other   => Err(format!("Unknown browser_exec action: {other}")),
         }

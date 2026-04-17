@@ -348,16 +348,27 @@ fn build_prompt(test: &TestGoal, history: &[TestStep], parse_error_hint: Option<
 
 ## Accessibility tree actions (literal text, no vision approximation)
 For exact-string assertions ($7376.80, error messages, token counts):
-- enable_a11y    — trigger Flutter semantics bridge first (only needed once for Canvas apps)
-- ax_tree        — list all a11y nodes with role + literal name + value + backend_id
-- ax_find        — role and/or name (substring); returns single match
-- ax_value       — backend_id → exact text (value || name)
-- ax_click       — backend_id → click via DOM box model centre
-- ax_focus       — backend_id → DOM focus
-- ax_type        — backend_id, text → focus + insertText
+- enable_a11y       — trigger Flutter semantics bridge first (Canvas apps)
+- ax_tree           — list all a11y nodes (role + literal name + value + backend_id)
+- ax_find           — role and/or name (substring); returns single match
+- ax_value          — backend_id → exact text (value || name)
+- ax_click          — backend_id → click via DOM box model centre
+- ax_focus          — backend_id → DOM focus
+- ax_type           — backend_id, text → focus + insertText
+- ax_type_verified  — same as ax_type + read-back; returns {{typed, actual, matched}}
 
 When you need EXACT text comparison (numbers, IDs), prefer ax_* over
 screenshot_analyze (which approximates).
+
+## Robustness actions (test isolation + race-free)
+- clear_state    — wipe cookies / localStorage / sessionStorage / IndexedDB / caches
+                   (call between tests to prevent cross-test leakage)
+- wait_new_tab   — block until a new tab opens; param: timeout (ms, default 10000)
+                   (use after clicking OAuth / popup buttons)
+- wait_request   — block until a network request matching `target` (URL substring)
+                   appears in the capture; param: timeout (ms, default 10000)
+                   (auto-installs network capture; eliminates "click then read"
+                   race conditions before asserting on request body)
 
 ## Separate tool: expand_observation
 When a previous Observation was truncated (you'll see "[truncated: ...]"),

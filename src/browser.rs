@@ -554,6 +554,66 @@ pub fn close_tab(index: usize) -> Result<(), String> {
     Ok(())
 }
 
+/// Wait for a new tab to open (e.g. from `target="_blank"` click, OAuth popup,
+/// `window.open`).  Polls every 200ms until the tab count grows beyond
+/// `baseline_count` or `timeout_ms` elapses.
+///
+/// On success, the new tab is registered into the singleton's internal tab
+/// list, becomes the **active** tab, and its index is returned (caller can
+/// `switch_tab` back later).
+///
+/// Use case: OAuth flows that pop a Google/Telegram window — Sirin
+/// previously only saw the original tab and missed the popup entirely.
+pub fn wait_for_new_tab(baseline_count: usize, timeout_ms: u64) -> Result<usize, String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+
+    loop {
+        // Force the underlying Browser to discover tabs created via window.open
+        // — without this, headless_chrome only sees tabs it spawned itself.
+        {
+            let guard = global().lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(inner) = guard.as_ref() {
+                inner.browser.register_missing_tabs();
+            }
+        }
+
+        // Snapshot Browser-level tab count (may be > our cached singleton)
+        let browser_tabs: Vec<Arc<Tab>> = {
+            let guard = global().lock().unwrap_or_else(|e| e.into_inner());
+            let inner = guard.as_ref().ok_or("browser not open")?;
+            let tabs_arc = inner.browser.get_tabs().clone();
+            let locked = tabs_arc.lock().unwrap_or_else(|e| e.into_inner());
+            locked.iter().cloned().collect()
+        };
+
+        if browser_tabs.len() > baseline_count {
+            // Find the new tab(s) and adopt them into our singleton.
+            let mut guard = global().lock().unwrap_or_else(|e| e.into_inner());
+            let inner = guard.as_mut().ok_or("browser not open")?;
+            // Add any browser tab not already in inner.tabs.
+            let existing_ids: std::collections::HashSet<String> = inner.tabs.iter()
+                .map(|t| t.get_target_id().to_string())
+                .collect();
+            for t in &browser_tabs {
+                if !existing_ids.contains(&t.get_target_id().to_string()) {
+                    inner.tabs.push(t.clone());
+                }
+            }
+            // Switch active to the most recent (newest is last in browser_tabs).
+            inner.active = inner.tabs.len() - 1;
+            return Ok(inner.active);
+        }
+
+        if std::time::Instant::now() >= deadline {
+            return Err(format!(
+                "wait_for_new_tab: no new tab within {timeout_ms}ms (count still {})",
+                browser_tabs.len()
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
 /// List all tabs: returns Vec of (index, url).
 pub fn list_tabs() -> Result<Vec<(usize, String)>, String> {
     let guard = global().lock().unwrap_or_else(|e| e.into_inner());
@@ -639,18 +699,33 @@ pub fn network_requests(limit: usize) -> Result<String, String> {
 /// Install a fetch/XHR interceptor that logs request/response pairs.
 /// Call once after navigation.
 pub fn install_network_capture() -> Result<(), String> {
+    // Captures both request body (req_body) and response body (body) for fetch + XHR.
+    // Request body matters for K14-style "did the user actually send amount=99.30"
+    // assertions — without it, you can only see the response.
     evaluate_js(r#"(() => {
         if (window.__sirin_net) return;
         window.__sirin_net = [];
+        const reqBodyToString = (b) => {
+            if (b == null) return '';
+            if (typeof b === 'string') return b.substring(0, 4000);
+            if (b instanceof FormData) {
+                try { const o = {}; for (const [k,v] of b.entries()) o[k] = String(v); return JSON.stringify(o); } catch(e) { return '[FormData]'; }
+            }
+            if (b instanceof URLSearchParams) return b.toString().substring(0, 4000);
+            if (b instanceof Blob || b instanceof ArrayBuffer) return `[binary ${b.size||b.byteLength||'?'} bytes]`;
+            try { return JSON.stringify(b).substring(0, 4000); } catch(e) { return String(b).substring(0, 4000); }
+        };
         const origFetch = window.fetch;
         window.fetch = async function(...args) {
             const url = typeof args[0] === 'string' ? args[0] : args[0]?.url || '?';
-            const method = args[1]?.method || 'GET';
-            const entry = { url, method, status: 0, body: '', ts: Date.now() };
+            const init = args[1] || (args[0] && typeof args[0] === 'object' ? args[0] : {});
+            const method = init?.method || 'GET';
+            const req_body = reqBodyToString(init?.body);
+            const entry = { url, method, status: 0, req_body, body: '', ts: Date.now() };
             try {
                 const resp = await origFetch.apply(this, args);
                 entry.status = resp.status;
-                try { entry.body = await resp.clone().text(); } catch(e) {}
+                try { entry.body = (await resp.clone().text()).substring(0, 4000); } catch(e) {}
                 window.__sirin_net.push(entry);
                 if (window.__sirin_net.length > 100) window.__sirin_net.shift();
                 return resp;
@@ -664,14 +739,15 @@ pub fn install_network_capture() -> Result<(), String> {
         const origXhrOpen = XMLHttpRequest.prototype.open;
         const origXhrSend = XMLHttpRequest.prototype.send;
         XMLHttpRequest.prototype.open = function(method, url) {
-            this.__sirin = { url, method, status: 0, body: '', ts: Date.now() };
+            this.__sirin = { url, method, status: 0, req_body: '', body: '', ts: Date.now() };
             return origXhrOpen.apply(this, arguments);
         };
-        XMLHttpRequest.prototype.send = function() {
+        XMLHttpRequest.prototype.send = function(body) {
+            if (this.__sirin) this.__sirin.req_body = reqBodyToString(body);
             this.addEventListener('load', function() {
                 if (this.__sirin) {
                     this.__sirin.status = this.status;
-                    this.__sirin.body = this.responseText?.substring(0, 2000) || '';
+                    this.__sirin.body = this.responseText?.substring(0, 4000) || '';
                     window.__sirin_net.push(this.__sirin);
                     if (window.__sirin_net.length > 100) window.__sirin_net.shift();
                 }
@@ -687,6 +763,45 @@ pub fn captured_requests(limit: usize) -> Result<String, String> {
     evaluate_js(&format!(
         "JSON.stringify((window.__sirin_net||[]).slice(-{limit}))"
     ))
+}
+
+/// Block until a captured request matching `url_substring` appears, or
+/// `timeout_ms` elapses.  Returns the JSON-stringified entry on success,
+/// or Err on timeout.
+///
+/// Use case: click a button → POST /api/checkout fires → assert against
+/// its body.  Without `wait_for_request`, callers race between firing the
+/// click and reading `captured_requests` before the request lands.
+///
+/// Auto-installs the network capture if not yet active.
+pub fn wait_for_request(url_substring: &str, timeout_ms: u64) -> Result<String, String> {
+    install_network_capture()?;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    let needle = serde_json::to_string(url_substring)
+        .map_err(|e| format!("escape pattern: {e}"))?;
+
+    loop {
+        // Look for a matching entry without holding any lock between polls.
+        let js = format!(
+            r#"(() => {{
+                const arr = window.__sirin_net || [];
+                const needle = {needle};
+                const hit = arr.find(e => e.url && e.url.includes(needle));
+                return hit ? JSON.stringify(hit) : '';
+            }})()"#
+        );
+        let result = evaluate_js(&js)?;
+        if !result.is_empty() && result != "null" {
+            return Ok(result);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!(
+                "wait_for_request: no captured request matched {url_substring:?} within {timeout_ms}ms"
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
 }
 
 // ── File upload ──────────────────────────────────────────────────────────────
@@ -795,6 +910,46 @@ pub fn set_http_auth(username: &str, password: &str) -> Result<(), String> {
 }
 
 // ── localStorage / sessionStorage ────────────────────────────────────────────
+
+/// Clear browser state for the current page's origin.
+/// Wipes: cookies (all domains), localStorage, sessionStorage, IndexedDB,
+/// caches.  Use between sequential tests to prevent cookie/auth leakage.
+///
+/// Does NOT close the browser or current tab — same Chrome process is
+/// reused for speed.
+pub fn clear_browser_state() -> Result<(), String> {
+    use headless_chrome::protocol::cdp::Network;
+    with_tab(|tab| {
+        // Clear ALL cookies via CDP (covers all domains, not just current).
+        tab.call_method(Network::ClearBrowserCookies(None))
+            .map_err(|e| format!("clear cookies: {e}"))?;
+        Ok(())
+    })?;
+
+    // Clear page-side storage via JS (localStorage, sessionStorage, IndexedDB).
+    // Best-effort — some origins block storage access (sandboxed iframes).
+    let _ = evaluate_js(r#"(async () => {
+        try { localStorage.clear(); } catch(e) {}
+        try { sessionStorage.clear(); } catch(e) {}
+        try {
+            if (window.indexedDB && indexedDB.databases) {
+                const dbs = await indexedDB.databases();
+                for (const db of dbs) {
+                    if (db.name) indexedDB.deleteDatabase(db.name);
+                }
+            }
+        } catch(e) {}
+        try {
+            if (window.caches) {
+                const keys = await caches.keys();
+                for (const k of keys) await caches.delete(k);
+            }
+        } catch(e) {}
+        return 'cleared';
+    })()"#);
+
+    Ok(())
+}
 
 /// Get a localStorage value.
 pub fn local_storage_get(key: &str) -> Result<String, String> {
