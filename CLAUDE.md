@@ -98,6 +98,21 @@ src/test_runner/             AI-driven browser testing
   store.rs                   SQLite test_runs + auto_fix_history (with verification)
   runs.rs                    In-memory async run registry
   i18n.rs                    Locale (zh-TW / en / zh-CN) prompt strings
+src/platform.rs              Cross-platform data/config dir resolution
+                             — app_data_dir() → %LOCALAPPDATA%\Sirin (Win)
+                               ~/Library/Application Support/Sirin (mac)
+                               ~/.local/share/sirin (Linux)
+                             — config_dir() → app_data_dir()/config (prod)
+                               OR ./config in #[cfg(test)] builds
+                             — config_path("foo.yaml") → shorthand
+                             RULE: NEVER use "config/foo.yaml" literals.
+                             ALWAYS call platform::config_path() / app_data_dir()
+src/updater.rs               Auto-update via GitHub Releases (self_update crate)
+                             — spawn_check() called once on startup
+                             — get_status() → UpdateStatus for UI banner
+                             — apply_update(ver) downloads zip, replaces binary
+                             — GitHub asset: sirin-windows-x86_64.zip / sirin.exe
+                             — Tag format: v0.2.0 triggers release CI
 src/claude_session.rs        Spawn `claude` CLI for cross-repo bug fixing
 src/config_check.rs          Diagnostics + AI fix proposal (dual-stage confirm)
 src/mcp_client.rs            External MCP server proxy
@@ -120,7 +135,24 @@ src/followup/                mod (worker loop) + candidates (self-assign)
 
 ```bash
 cargo check          # 0 errors
-cargo test --bin sirin   # 174 passed, 5 ignored (need LM Studio)
-cargo clippy             # 11 warnings (false positives + architectural)
+cargo test --bin sirin   # 345 passed, 17 ignored
+cargo clippy             # warnings (false positives + architectural)
 cargo build --release
+
+# Windows installer (requires Inno Setup 6 installed)
+& 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' /DMyAppVersion=X.Y.Z sirin.iss
+# → Output\SirinSetup-X.Y.Z.exe
+
+# Release CI: push a semver tag → GitHub Actions builds + publishes
+git tag vX.Y.Z && git push origin vX.Y.Z
 ```
+
+## Where user data lives (installed vs dev)
+
+| Mode | Binary | Config | Data | .env |
+|------|--------|--------|------|------|
+| Installed (Windows) | `C:\Program Files\Sirin\` | `%LOCALAPPDATA%\Sirin\config\` | `%LOCALAPPDATA%\Sirin\` | `%LOCALAPPDATA%\Sirin\.env` |
+| Dev (`cargo build`) | `target/release/` | `%LOCALAPPDATA%\Sirin\config\` | `%LOCALAPPDATA%\Sirin\` | `%LOCALAPPDATA%\Sirin\.env` or CWD fallback |
+| Test (`cargo test`) | — | `./config/` (repo) | — | — |
+
+Always use `platform::config_path()` / `platform::app_data_dir()` — never hardcode.

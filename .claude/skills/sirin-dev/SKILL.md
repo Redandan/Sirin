@@ -1,7 +1,7 @@
 ---
 name: sirin-dev
 description: Use this skill when developing on the Sirin project itself (not when using Sirin to test other apps) — adding a new browser action, MCP endpoint, agent skill, test_runner feature, or fixing a bug in the Rust code.  Trigger phrases include "add a Sirin action", "fix Sirin's X", "extend Sirin", "modify Sirin", "Sirin internals", "how does Sirin X work", or any task that involves editing files under `~/IdeaProjects/Sirin/src/`.  This skill is for AI sessions picking up Sirin development cold — covers architecture, common workflows, conventions, and the gotchas that have already cost us time.
-version: 1.0.0
+version: 1.1.0
 ---
 
 # Sirin Development Skill
@@ -45,6 +45,20 @@ src/
 │                           K14-style exact assertions; uses raw JSON
 │                           Method to bypass headless_chrome strict
 │                           enum bug; auto-retriggers Flutter semantics)
+├── platform.rs             Cross-platform path helpers (v0.2.0+)
+│                           — app_data_dir() → %LOCALAPPDATA%\Sirin (Win)
+│                           — config_dir()   → app_data_dir()/config (prod)
+│                                              ./config in #[cfg(test)]
+│                           — config_path("x.yaml") → config_dir().join("x.yaml")
+│                           ⚠ NEVER use "config/foo.yaml" literals
+│                           ⚠ NEVER use "data/..." literals
+│                           Always go through platform:: helpers.
+├── updater.rs              Auto-update via GitHub Releases (self_update 0.42)
+│                           — spawn_check() → background thread on startup
+│                           — get_status() → UpdateStatus enum (UI polls this)
+│                           — apply_update(ver) → downloads zip, self-replaces
+│                           — Expects asset: sirin-windows-x86_64.zip / sirin.exe
+│                           — Tag v0.2.0 push triggers release CI
 ├── claude_session.rs       Spawn `claude` CLI cross-repo bug fixing
 ├── config_check.rs         Diagnostics + AI fix proposal (dual-confirm)
 ├── test_runner/            AI test runner (browser, not unit tests)
@@ -96,8 +110,8 @@ config/
 
 ```bash
 cargo check          # 0 errors required before commit
-cargo test --bin sirin    # currently 333 tests, all should pass
-cargo build --release     # ~5-7 min cold
+cargo test --bin sirin    # 345 passed, 17 ignored — all should pass
+cargo build --release     # ~5-7 min cold (8 min on GitHub Actions cold)
 ./target/release/sirin.exe                       # launch GUI on port 7700
 SIRIN_RPC_PORT=7701 ./target/release/sirin.exe   # alt port if 7700 stuck
 SIRIN_BROWSER_HEADLESS=false ./target/release/... # for Flutter / WebGL
@@ -190,6 +204,34 @@ Three files MUST be touched:
 5. `src/mcp_server.rs` schema — add to inputSchema
 6. Add a unit test for parsing
 7. Document in skills + MCP_API
+
+### Release a new version (Windows installer + auto-update)
+
+1. Bump `version` in `Cargo.toml` (e.g. `0.2.0` → `0.2.1`)
+2. `cargo build --release` locally to verify
+3. Build installer locally to smoke-test:
+   ```powershell
+   & 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' /DMyAppVersion=0.2.1 sirin.iss
+   # → Output\SirinSetup-0.2.1.exe
+   ```
+4. Commit + push main
+5. Push a tag → **GitHub Actions auto-builds + publishes Release**:
+   ```bash
+   git tag v0.2.1 && git push origin v0.2.1
+   ```
+6. CI (`.github/workflows/release.yml`) creates:
+   - `Output/SirinSetup-0.2.1.exe` (Inno Setup installer)
+   - `Output/sirin-windows-x86_64.zip` (portable, used by `apply_update()`)
+   - GitHub Release: "Sirin v0.2.1" with both assets
+
+Users running old versions will see the update banner on next launch.
+
+**ISS gotchas (paid for):**
+- Use `{localappdata}` NOT `{userappdata}` — they're different folders on Windows
+  (`%LOCALAPPDATA%` ≠ `%APPDATA%`). Rust uses `%LOCALAPPDATA%`.
+- Registry entries spanning lines need `\` line continuation or it parses
+  the second line as a new incomplete entry ("Root not specified" error).
+- `LicenseFile=LICENSE` → must have `LICENSE` file in repo root.
 
 ### Add a built-in skill (Sirin's own agents)
 
@@ -343,12 +385,15 @@ cargo test --bin sirin browser_lifecycle -- --ignored --nocapture
 |------|-------|
 | Process-wide Chrome session | `OnceLock<Mutex<Option<BrowserInner>>>` in `browser.rs` |
 | Active test runs | `OnceLock<Mutex<HashMap<String, RunState>>>` in `test_runner/runs.rs` |
-| Test history | SQLite `data/test_memory.db` (gitignored) |
-| Failure screenshots | `data/test_failures/<id>_<ts>.png` (gitignored) |
-| LLM config | `.env` (gitignored) + `config/llm.yaml` (override) |
+| Test history | SQLite `%LOCALAPPDATA%\Sirin\data\test_memory.db` |
+| Failure screenshots | `%LOCALAPPDATA%\Sirin\test_failures\<id>_<ts>.png` |
+| LLM config | `%LOCALAPPDATA%\Sirin\.env` + `config/llm.yaml` (override) |
 | Skill registry | `OnceLock` cache + `config/skills/*.yaml` |
 | LLM fleet | `OnceLock<Arc<AgentFleet>>` in `llm/probe.rs` |
 | MCP server bind | `:7700` (or `SIRIN_RPC_PORT` override) |
+| Update status | `OnceLock<Mutex<UpdateStatus>>` in `updater.rs` |
+| Installed binary | `C:\Program Files\Sirin\sirin.exe` |
+| User data root | `%LOCALAPPDATA%\Sirin\` (all modes except `#[cfg(test)]`) |
 
 ## When you're done
 
