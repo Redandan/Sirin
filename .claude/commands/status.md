@@ -1,10 +1,17 @@
-Quick project health check. Run these in parallel and report a compact summary:
-1. `cargo check 2>&1 | grep -c "warning:"` → warning count
-2. `cargo check 2>&1 | grep "^error" | wc -l` → error count
-3. `git status -s | grep -v ".claude/worktrees" | wc -l` → uncommitted files
-4. `wc -l src/ui_egui/*.rs src/ui_service*.rs` → UI line counts
+Quick project health check. Use Bash tool with `timeout: 120000`.
 
-Format as a single compact block:
+Run these commands — cargo check ONCE (pipe to two greps), git and wc in parallel:
+
+```bash
+# Single cargo check, capture output once
+CARGO_OUT=$(cargo check 2>&1)
+WARN=$(echo "$CARGO_OUT" | grep -c "warning:" || echo 0)
+ERR=$(echo "$CARGO_OUT" | grep -c "^error" || echo 0)
+UNCOMMITTED=$(git status -s 2>/dev/null | grep -v ".claude/worktrees" | wc -l)
+UI=$(wc -l src/ui_egui/*.rs src/ui_service*.rs 2>/dev/null | tail -1 | awk '{print $1}')
+echo "Errors: $ERR | Warnings: $WARN | Uncommitted: $UNCOMMITTED | UI: $UI lines"
 ```
-Errors: 0 | Warnings: 0 | Uncommitted: 0 | UI: 1636 lines
-```
+
+**NEVER** use `run_in_background=true` for cargo commands.
+
+Report the single output line verbatim.

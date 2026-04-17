@@ -22,7 +22,7 @@
 //! - [`type_into_backend`] — focus + insertText (multi-char)
 //! - [`enable_flutter_semantics`] — trigger Flutter's a11y bridge
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 
 use headless_chrome::protocol::cdp::{Accessibility, DOM, Input};
@@ -103,17 +103,62 @@ impl AxNode {
     }
 }
 
+// ── Per-tab a11y enabled tracking ────────────────────────────────────────────
+//
+// Tracks which tab indices have already received `Accessibility.Enable`.
+// Prevents re-sending the CDP command after Flutter idle-collapse, which resets
+// the page URL to about:blank (Issue #21).
+
+static A11Y_ENABLED_TABS: OnceLock<Mutex<HashSet<usize>>> = OnceLock::new();
+
+fn a11y_tabs() -> &'static Mutex<HashSet<usize>> {
+    A11Y_ENABLED_TABS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// Clear all per-tab a11y tracking.  Call when Chrome is re-launched so new
+/// tabs start clean and `Accessibility.Enable` fires once on first use.
+pub fn reset_a11y_enabled() {
+    a11y_tabs().lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+
+/// Remove a specific tab from a11y tracking.  Call when a named session/tab
+/// is closed so its slot can be reused cleanly; also shifts down indices above
+/// the removed tab to stay in sync with the tab `Vec`.
+pub fn remove_a11y_tab(index: usize) {
+    let mut set = a11y_tabs().lock().unwrap_or_else(|e| e.into_inner());
+    set.remove(&index);
+    // Mirror the tab-Vec reindex that close_session() does: all slots above
+    // the removed index shift down by one.
+    let shifted: HashSet<usize> = set.iter().map(|&i| if i > index { i - 1 } else { i }).collect();
+    *set = shifted;
+}
+
 // ── Enable / fetch ───────────────────────────────────────────────────────────
 
-/// Enable the Accessibility domain.  Idempotent — safe to call before every
-/// `get_full_tree`.  Some Chrome versions auto-enable, but explicit call is
-/// the documented contract.
+/// Enable the Accessibility domain for the active tab.
+///
+/// **Idempotent within a tab's lifetime** (Issue #21 guard): on Flutter Web
+/// apps that have idle-collapsed their semantics tree, re-sending
+/// `Accessibility.Enable` resets the page URL to about:blank.  We track which
+/// tab indices have already been enabled and skip the CDP call on repeat calls.
+///
+/// The tracking is cleared on Chrome re-launch ([`reset_a11y_enabled`]) and
+/// on tab close ([`remove_a11y_tab`]).
 pub fn enable() -> Result<(), String> {
+    let active = crate::browser::active_tab().unwrap_or(0);
+    {
+        let set = a11y_tabs().lock().unwrap_or_else(|e| e.into_inner());
+        if set.contains(&active) {
+            return Ok(()); // already enabled — skip re-send (Issue #21)
+        }
+    }
     with_tab(|tab| {
         tab.call_method(Accessibility::Enable(None))
             .map_err(|e| format!("Accessibility.enable: {e}"))?;
         Ok(())
-    })
+    })?;
+    a11y_tabs().lock().unwrap_or_else(|e| e.into_inner()).insert(active);
+    Ok(())
 }
 
 /// Get the full a11y tree.  `include_ignored=false` filters out
@@ -609,10 +654,15 @@ pub fn enable_flutter_semantics() -> Result<(), String> {
     }
 
     // ── Strategy B: flt-semantics-placeholder JS click ───────────────────
+    // On idle-collapse Flutter removes the placeholder element, so we recreate
+    // it before clicking — triggering semantics bridge re-initialisation.
     let clicked = crate::browser::evaluate_js(
         r#"(() => {
-            const ph = document.querySelector('flt-semantics-placeholder');
-            if (!ph) return "false";
+            let ph = document.querySelector('flt-semantics-placeholder');
+            if (!ph) {
+                ph = document.createElement('flt-semantics-placeholder');
+                document.body.appendChild(ph);
+            }
             ph.click();
             return "true";
         })()"#

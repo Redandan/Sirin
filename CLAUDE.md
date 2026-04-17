@@ -58,6 +58,17 @@ Central Panel:  ScrollArea 包裹, 內邊距 12pt
 - **Never re-explore.** Don't analyze code twice in same session.
 - **No architecture detours.** STOP and ask before switching frameworks.
 
+## Cargo / build rules (CRITICAL — prevent 2h deadlocks)
+
+- **NEVER** run `cargo` with `run_in_background=true` — Cargo uses an exclusive
+  file lock on `target/`; background tasks queue forever and cause deadlocks.
+- **ALWAYS** set `timeout: 600000` (10 min) on any `cargo test` Bash call.
+- **One cargo at a time.** Never launch a second `cargo` command while one is running.
+- **cargo check once.** If you need both error count and warning count, capture
+  output to a variable and grep twice — never run cargo check twice.
+- **Deadlock signal:** if a cargo output file stays at 0 bytes for >30s, the
+  process is waiting for the lock — kill it and retry.
+
 ## Project layout
 
 ```

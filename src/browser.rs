@@ -106,6 +106,8 @@ pub fn ensure_open(headless: bool) -> Result<bool, String> {
     std::thread::sleep(std::time::Duration::from_millis(600));
 
     *guard = Some(BrowserInner { browser, tabs: vec![tab], active: 0, headless, sessions: HashMap::new() });
+    // Clear per-tab a11y state so the new session's tab index 0 starts fresh.
+    crate::browser_ax::reset_a11y_enabled();
     tracing::info!("[browser] launched Chrome (headless={headless})");
     Ok(true)
 }
@@ -1151,6 +1153,8 @@ pub fn close_session(session_id: &str) -> Result<(), String> {
         for idx_ref in inner.sessions.values_mut() {
             if *idx_ref > idx { *idx_ref -= 1; }
         }
+        // Mirror the reindex in the a11y enabled-tab tracker.
+        crate::browser_ax::remove_a11y_tab(idx);
     }
     Ok(())
 }

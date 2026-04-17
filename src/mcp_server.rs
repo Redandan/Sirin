@@ -918,11 +918,27 @@ async fn call_browser_exec(args: Value) -> Result<Value, String> {
             // ── Accessibility tree (literal text — for exact assertions) ──
             "enable_a11y" => {
                 // Use get_full_tree() which bootstraps Flutter semantics only when
-                // needed (tree ≤2 nodes) and uses the safe Strategy A/B/C priority.
+                // needed (tree ≤2 nodes) and uses the safe Strategy A/B priority.
                 // Do NOT call enable_flutter_semantics() directly — after login /
-                // hash-route navigation the Tab fallback (Strategy C) causes
-                // side-effect navigation and resets the tab URL to about:blank.
+                // hash-route navigation the Tab fallback (removed Strategy C)
+                // causes side-effect navigation and resets the tab URL to
+                // about:blank.
+                //
+                // Safety net (Issue #21): if Flutter idle-collapsed its tree and the
+                // re-bootstrap somehow resets the URL, detect and restore it.
+                let saved_url = crate::browser::current_url().ok();
                 let tree = crate::browser_ax::get_full_tree(false)?;
+                if let Some(ref url) = saved_url {
+                    let cur = crate::browser::current_url().unwrap_or_default();
+                    if cur.contains("about:blank") && !url.contains("about:blank") && !url.is_empty() {
+                        tracing::warn!(
+                            "[browser_ax] enable_a11y: URL reset detected (about:blank) — \
+                             restoring {url:?}"
+                        );
+                        let _ = crate::browser::navigate(url);
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                    }
+                }
                 Ok(json!({ "status": "semantics enabled", "ax_node_count": tree.len() }))
             }
             "ax_tree" => {
