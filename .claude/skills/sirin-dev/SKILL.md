@@ -96,7 +96,7 @@ config/
 
 ```bash
 cargo check          # 0 errors required before commit
-cargo test --bin sirin    # currently 257 tests, all should pass
+cargo test --bin sirin    # currently 333 tests, all should pass
 cargo build --release     # ~5-7 min cold
 ./target/release/sirin.exe                       # launch GUI on port 7700
 SIRIN_RPC_PORT=7701 ./target/release/sirin.exe   # alt port if 7700 stuck
@@ -104,6 +104,27 @@ SIRIN_BROWSER_HEADLESS=false ./target/release/... # for Flutter / WebGL
 ```
 
 Avoid `cargo run` (debug build, slow startup, LLM calls may time out).
+
+### Preferred: `./scripts/dev-relaunch.sh`
+
+For any **smoke test or live-debug session**, use the helper script
+instead of the raw commands:
+
+```bash
+./scripts/dev-relaunch.sh                        # default 7700, headless
+SIRIN_RPC_PORT=7702 ./scripts/dev-relaunch.sh    # alt port
+SIRIN_BROWSER_HEADLESS=false ./scripts/dev-relaunch.sh  # for Flutter
+./scripts/dev-relaunch.sh --build-only           # just build, no launch
+```
+
+It chains: **kill old sirin → cargo build → print binary mtime + latest
+commit → fall-through to +1 port if zombie → exec**.
+
+Why it matters: bypassing this chain causes the "stale .exe" bug —
+running yesterday's binary against today's source.  This bit us when
+testing the eab8537 robustness actions (binary 10h older than commit
+returned `Unknown action` for everything).  Always use the script when
+the actions you're testing came from a recent commit.
 
 ## Common workflows
 
@@ -253,7 +274,16 @@ powershell -c "Get-Process sirin -ErrorAction SilentlyContinue | Stop-Process -F
 ### Can't rebuild while Sirin is running
 Windows holds the .exe open.  Kill Sirin (above) before
 `cargo build --release`, otherwise you get "access denied" silently
-keeping a stale binary.
+keeping a stale binary.  **Use `./scripts/dev-relaunch.sh`** to do
+this automatically (kill → build → relaunch in one shot).
+
+### Stale binary even when build "succeeded"
+Worse failure mode: you forget to kill, build appears to succeed (it
+re-uses .o files, only the final link fails on Windows file-lock,
+sometimes silently), and you launch the *previous* exe against new
+source.  Symptom: actions you just added in source return
+`Unknown browser_exec action: <name>` from MCP.  The script catches
+this by killing pre-build + verifying mtime post-build.
 
 ### `cargo run` vs `./target/release/sirin.exe`
 Always run release for any real work.  Debug build's LLM calls take
