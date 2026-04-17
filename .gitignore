@@ -53,3 +53,7 @@ Thumbs.db
 !/config/*.yaml
 .claude/settings.local.json
 sirin_*.log
+
+# ── Test launch captures (sirin-7700.err / sirin-boot.out / etc.) ─────────────
+sirin-*.err
+sirin-*.out

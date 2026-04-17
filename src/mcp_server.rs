@@ -42,11 +42,24 @@
 
 use axum::{
     extract::Json,
+    http::StatusCode,
     response::IntoResponse,
     routing::post,
     Router,
 };
 use serde_json::{json, Value};
+use std::time::Duration;
+use tower_http::timeout::TimeoutLayer;
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+/// Max duration any single MCP request may run before the server aborts it.
+/// Generous enough for slow `browser_exec` actions (screenshot_analyze → vision
+/// LLM ≈ 30–60 s) but short enough to prevent CLOSE_WAIT buildup when a handler
+/// hangs on a dead Chrome connection.  Long-running work (run_adhoc_test,
+/// run_test_async) already returns immediately with a `run_id`, so they are
+/// unaffected.
+const MCP_REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
 
 // ── Client ID tracker ─────────────────────────────────────────────────────────
 
@@ -74,7 +87,17 @@ fn uuid_v4_short() -> String {
 // ── Router ────────────────────────────────────────────────────────────────────
 
 pub fn mcp_router() -> Router {
-    Router::new().route("/mcp", post(mcp_handler))
+    // TimeoutLayer enforces a hard deadline on every `/mcp` request.  When it
+    // fires, axum drops the handler future and returns 408; the socket is then
+    // closed cleanly by hyper (proper FIN) instead of lingering in CLOSE_WAIT
+    // while a hung handler (e.g. dead Chrome transport) keeps the connection
+    // half-open.  Fixes the zombie-socket pattern observed on ports 7700/7710.
+    Router::new()
+        .route("/mcp", post(mcp_handler))
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            MCP_REQUEST_TIMEOUT,
+        ))
 }
 
 // ── Handler ───────────────────────────────────────────────────────────────────
@@ -1345,6 +1368,26 @@ mod test_runner_mcp_tests {
 
         let d2 = decide("test@1.0", "ax_click", &json!({"backend_id": 1}), &None, &cfg);
         assert!(matches!(d2, Decision::Allow(_)), "permissive should allow ax_click: {d2:?}");
+    }
+
+    #[test]
+    fn mcp_router_is_constructible() {
+        // Smoke test — router should build without panic.  Exercises the
+        // TimeoutLayer wiring (layer type inference in particular breaks
+        // easily when axum / tower-http versions drift).
+        let _: Router = mcp_router();
+    }
+
+    #[test]
+    fn mcp_request_timeout_is_reasonable() {
+        // Must exceed the authz "ask" wait (30 s at L708/734) so that an
+        // operator who clicks "Allow" after 25 s still sees the action
+        // complete.  Must be short enough to prevent CLOSE_WAIT buildup
+        // when a handler stalls on a dead Chrome transport.
+        assert!(MCP_REQUEST_TIMEOUT >= Duration::from_secs(60),
+            "timeout must outlive authz ask window (30s) + slowest handler");
+        assert!(MCP_REQUEST_TIMEOUT <= Duration::from_secs(600),
+            "timeout must not exceed 10min (defeats purpose of layer)");
     }
 }
 
