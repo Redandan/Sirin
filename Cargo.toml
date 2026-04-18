@@ -78,7 +78,7 @@ strip = false
 # semantics.  Under `panic = "abort"` a single bad request would crash the
 # whole Sirin process and leave a zombie listening socket (observed on 7700 /
 # 7710).  The ~2-3 MB binary-size cost is amortized by LTO + strip below.
-codegen-units = 1
-lto = true
+codegen-units = 4      # 4 parallel codegen units (was 1) — ~2x faster link
+lto = "thin"           # thin LTO: ~90% of fat LTO's optimization, 3-4x faster
 opt-level = "s"
 strip = true
