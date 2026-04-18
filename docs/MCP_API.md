@@ -99,7 +99,7 @@ Kick off a research task.
 
 ---
 
-### Test Runner (11 tools)
+### Test Runner (12 tools)
 
 #### `list_tests`
 Enumerate test YAMLs in `config/tests/`.
@@ -159,6 +159,42 @@ ignored.
 Synthetic test_id format: `adhoc_<YYYYMMDD_HHMMSS_mmm>`. Results persist to
 `test_runs` table with tag `adhoc`. Adhoc runs **skip** auto-fix verification
 (no YAML to re-run).
+
+#### `persist_adhoc_run`
+Promote a successful ad-hoc exploration into a permanent regression test by
+writing `config/tests/<test_id>.yaml`. Closes the explore → save → re-run loop:
+the AI explores against an unknown URL, locks in what worked, and the result is
+a YAML test that any future `run_test_async` call can re-execute as regression.
+```json
+{"name":"persist_adhoc_run","arguments":{
+  "run_id":"run_20260418_143015_872_0",
+  "test_id":"login_flow",
+  "name":"Login flow regression",
+  "tags":["smoke","auth"],
+  "bump_iterations":true,
+  "overwrite":false
+}}
+```
+**Returns:** `{test_id, yaml_path, iterations_used, criteria_count, tags}`.
+
+**Validation (returns Err on violation):**
+- `test_id` must match `[a-z0-9_]+` — no uppercase, hyphens, dots
+- `test_id` must NOT start with `adhoc_` (reserved for in-flight runs)
+- `run_id` must exist in the in-memory registry (pruned after 1 hour)
+- run must be `Complete(passed)` — refuses queued / running / failed / error
+- file must not exist unless `overwrite=true`
+
+**Field carry-over from the original ad-hoc TestGoal:**
+- `url`, `goal`, `success_criteria`, `locale`, `url_query`, `browser_headless`,
+  `fixture`, `timeout_secs`, `retry_on_parse_error` — verbatim
+- `name` — caller-supplied or auto-stripped of `Ad-hoc: ` prefix
+- `tags` — caller-supplied OR original tags with `adhoc` removed and
+  `adhoc-derived` added (so `list_tests` filters can distinguish)
+- `max_iterations` — when `bump_iterations=true` (default), bumped to
+  `max(iterations_used + 5, original)` so regression has slack for variance
+
+After persist, subsequent regression runs use `run_test_async` with the new
+`test_id` — the synthetic ad-hoc namespace stays clean.
 
 #### `get_test_result`
 Poll a run by id.

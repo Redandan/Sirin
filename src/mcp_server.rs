@@ -387,6 +387,26 @@ fn handle_tools_list() -> Result<Value, String> {
                 }
             },
             {
+                "name": "persist_adhoc_run",
+                "description": "把一次成功的 ad-hoc 探索升級為永久 regression test。\n\n工作流：\n1. AI 用 run_adhoc_test 探索 → 拿 run_id\n2. 用 get_test_result 確認 status=passed\n3. 用 persist_adhoc_run(run_id, test_id='login_flow') 寫出 config/tests/login_flow.yaml\n4. 之後 run_test_async + test_id='login_flow' 就是 regression test\n\n會拒絕：失敗/未完成的 run、test_id 含大寫或連字符、test_id 以 'adhoc_' 開頭、檔案已存在（除非 overwrite=true）、run 超過 1 小時被 prune。\n\n預設行為：strip 'Ad-hoc: ' 前綴 / 把 'adhoc' tag 換成 'adhoc-derived' / max_iterations 提升到 max(used+5, original) 以容忍 regression 變異。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "run_id":  { "type": "string", "description": "run_adhoc_test 返回的 run_id（必須在 1 小時內、且狀態為 passed）" },
+                        "test_id": { "type": "string", "description": "新測試的永久 id，必須符合 [a-z0-9_]+，不能以 adhoc_ 開頭。會變成 config/tests/<test_id>.yaml" },
+                        "name":    { "type": "string", "description": "可選的人類可讀名稱；省略時沿用 ad-hoc 名稱（自動 strip 'Ad-hoc: ' 前綴）" },
+                        "tags":    {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "可選 tags 覆蓋；省略時沿用原 tags（'adhoc' 會被換成 'adhoc-derived'）"
+                        },
+                        "bump_iterations": { "type": "boolean", "description": "true 時將 max_iterations 提升到 max(used+5, original)，給 regression 留 slack；預設 true" },
+                        "overwrite":       { "type": "boolean", "description": "覆蓋現存檔案；預設 false（避免誤刪手寫測試）" }
+                    },
+                    "required": ["run_id", "test_id"]
+                }
+            },
+            {
                 "name": "list_recent_runs",
                 "description": "查詢歷史測試執行記錄。不指定 test_id 時列所有測試的近期 runs。用來看 pattern / flakiness / 最近失敗原因。",
                 "inputSchema": {
@@ -493,6 +513,7 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         "list_tests"           => return call_list_tests(arguments).map(wrap_json),
         "run_test_async"       => return call_run_test_async(arguments).map(wrap_json),
         "run_adhoc_test"       => return call_run_adhoc_test(arguments).map(wrap_json),
+        "persist_adhoc_run"    => return call_persist_adhoc_run(arguments).map(wrap_json),
         "get_test_result"      => return call_get_test_result(arguments).map(wrap_json),
         "get_screenshot"       => return call_get_screenshot(arguments).map(wrap_json),
         "get_full_observation" => return call_get_full_observation(arguments).map(wrap_json),
@@ -690,6 +711,32 @@ fn call_run_adhoc_test(args: Value) -> Result<Value, String> {
         "status": "queued",
         "poll_with": "get_test_result",
     }))
+}
+
+/// Promote a successful ad-hoc run into a permanent regression test
+/// (writes `config/tests/<test_id>.yaml`).  See the schema description
+/// for the full validation contract.
+fn call_persist_adhoc_run(args: Value) -> Result<Value, String> {
+    let run_id = args["run_id"].as_str().ok_or("Missing run_id")?.to_string();
+    let test_id = args["test_id"].as_str().ok_or("Missing test_id")?.to_string();
+    let name = args.get("name").and_then(Value::as_str).map(String::from);
+    let tags: Option<Vec<String>> = args.get("tags")
+        .and_then(Value::as_array)
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect());
+    // Default both flags to the SAFE option — refuse silent overwrites; bump
+    // iterations so regression has slack vs. the (often tightly-fit) ad-hoc run.
+    let bump_iterations = args.get("bump_iterations").and_then(Value::as_bool).unwrap_or(true);
+    let overwrite = args.get("overwrite").and_then(Value::as_bool).unwrap_or(false);
+
+    let result = crate::test_runner::persist_adhoc_run(crate::test_runner::PersistAdhocParams {
+        run_id,
+        test_id,
+        name,
+        tags,
+        bump_iterations,
+        overwrite,
+    })?;
+    serde_json::to_value(&result).map_err(|e| format!("serialize result: {e}"))
 }
 
 fn call_list_recent_runs(args: Value) -> Result<Value, String> {

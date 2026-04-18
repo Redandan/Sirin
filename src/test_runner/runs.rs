@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use super::executor::{TestResult, TestStatus};
+use super::parser::TestGoal;
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -35,6 +36,13 @@ pub struct RunState {
     /// None for runs without failure screenshots.
     pub screenshot_bytes: Option<Vec<u8>>,
     pub screenshot_error: Option<String>,
+    /// The full TestGoal that drove this run.  Stored so that
+    /// `persist_adhoc_run` can recover the goal/url/criteria of a
+    /// successful exploration and write it out as a permanent YAML
+    /// regression test.  Always populated when the executor starts a
+    /// run; may be `None` for the brief window between `new_run` and
+    /// the first `set_goal` call.
+    pub test_goal: Option<TestGoal>,
 }
 
 // ── Registry singleton ───────────────────────────────────────────────────────
@@ -60,11 +68,29 @@ pub fn new_run(test_id: &str) -> String {
         full_observations: Vec::new(),
         screenshot_bytes: None,
         screenshot_error: None,
+        test_goal: None,
     };
     registry().lock().unwrap_or_else(|e| e.into_inner())
         .insert(run_id.clone(), state);
     prune_old_runs();
     run_id
+}
+
+/// Attach the TestGoal that drove this run.  Called by the executor /
+/// `spawn_adhoc_run` so the run is fully self-describing for later
+/// `persist_adhoc_run` calls.  No-op when `run_id` doesn't exist.
+pub fn set_goal(run_id: &str, goal: TestGoal) {
+    let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(s) = reg.get_mut(run_id) {
+        s.test_goal = Some(goal);
+    }
+}
+
+/// Get the TestGoal stored for `run_id`.  Returns `None` if the run
+/// has been pruned, was never started, or `set_goal` was not called.
+pub fn get_goal(run_id: &str) -> Option<TestGoal> {
+    registry().lock().unwrap_or_else(|e| e.into_inner())
+        .get(run_id)?.test_goal.clone()
 }
 
 /// Update phase (called by executor as it progresses).

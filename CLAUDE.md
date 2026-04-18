@@ -137,7 +137,7 @@ src/updater.rs               Auto-update via GitHub Releases (self_update crate)
 src/claude_session.rs        Spawn `claude` CLI for cross-repo bug fixing
 src/config_check.rs          Diagnostics + AI fix proposal (dual-stage confirm)
 src/mcp_client.rs            External MCP server proxy
-src/mcp_server.rs            MCP HTTP server (:7700/mcp) — 16 tools exposed
+src/mcp_server.rs            MCP HTTP server (:7700/mcp) — 17 tools exposed
 src/telegram/                MTProto listener — mod + filter + handler +
                              reply + commands + config + language + llm
 src/teams/                   Chrome CDP (Teams MutationObserver)

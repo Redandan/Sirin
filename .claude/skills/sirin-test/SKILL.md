@@ -43,6 +43,7 @@ Drive Sirin's AI-powered browser testing from external Claude Code sessions. Unl
 | `list_tests` | Enumerate YAML tests in `config/tests/` | "What tests exist?" |
 | `run_test_async` | Run a YAML-defined test | When matching test_id exists |
 | `run_adhoc_test` | Test a URL with inline goal, no YAML | **User wants to test arbitrary URL** |
+| `persist_adhoc_run` | Promote a passing ad-hoc run → permanent YAML test | **User says "save this as a regression test"** after a successful ad-hoc explore |
 | `get_test_result` | Poll run status by `run_id` | Every 3-5s while test runs |
 | `get_screenshot` | Fetch base64 PNG of failure | status=failed/timeout/error |
 | `get_full_observation` | Un-truncated tool output | Observation mentions `[truncated: ...]` |
@@ -152,6 +153,39 @@ existing test.  Don't refuse the user with "no such test".
 **Flutter/WebGL ad-hoc:** pass `browser_headless: false`. Same reason
 as the Flutter playbook section below — CanvasKit won't paint in
 headless Chrome.
+
+### Workflow B.5.1 — Promote ad-hoc → permanent regression test
+
+Once an ad-hoc explore passes, save it so the next regression cycle
+re-runs it automatically:
+
+```
+1. run_adhoc_test({...}) → run_id
+2. Poll get_test_result until status == "passed"
+3. persist_adhoc_run({
+     run_id,
+     test_id: "login_flow",        // [a-z0-9_]+, NOT starting with adhoc_
+     name:    "Login flow regression",  // optional override
+     tags:    ["smoke","auth"],     // optional override
+     bump_iterations: true,         // default; max(used+5, original)
+     overwrite: false               // default; refuses if file exists
+   })
+   → { test_id, yaml_path, iterations_used, criteria_count, tags }
+```
+
+Now `run_test_async({test_id:"login_flow"})` re-runs the same goal as
+regression. **Do not** call `persist_adhoc_run` for failed runs — it
+refuses (would write a YAML that always fails).
+
+The persisted YAML carries over `goal`, `success_criteria`, `locale`,
+`url_query`, `browser_headless`, `fixture`, `timeout_secs`, and
+`retry_on_parse_error` from the original ad-hoc run. The `adhoc` tag
+is stripped and replaced with `adhoc-derived` so `list_tests` can
+distinguish persisted runs from in-flight ones.
+
+**When to suggest this proactively:** if the user says
+"that worked, save it" / "make it a regression" / "next time too" /
+"let's add this to the suite" right after a successful ad-hoc run.
 
 ### Workflow B.6 — Imperative browser debug
 
