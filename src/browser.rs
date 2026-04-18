@@ -81,6 +81,11 @@ struct BrowserInner {
     /// Allows callers to maintain multiple independent browser contexts
     /// (e.g. buyer_a / buyer_b for cross-role E2E tests).
     sessions: HashMap<String, usize>,
+    /// Last viewport set via set_viewport() — (width, height, scale, mobile).
+    /// Re-applied automatically after goto/clear_state/new_tab because
+    /// CDP Emulation.setDeviceMetricsOverride does NOT persist across
+    /// full navigations or new-tab creation (Issue #27).
+    viewport: Option<(u32, u32, f64, bool)>,
 }
 
 impl BrowserInner {
@@ -166,7 +171,7 @@ pub fn ensure_open(headless: bool) -> Result<bool, String> {
     // (esp. after a mode switch).
     std::thread::sleep(std::time::Duration::from_millis(600));
 
-    *guard = Some(BrowserInner { browser, tabs: vec![tab], active: 0, headless, sessions: HashMap::new() });
+    *guard = Some(BrowserInner { browser, tabs: vec![tab], active: 0, headless, sessions: HashMap::new(), viewport: None });
     // Clear per-tab a11y state so the new session's tab index 0 starts fresh.
     crate::browser_ax::reset_a11y_enabled();
     tracing::info!("[browser] launched Chrome (headless={headless})");
@@ -251,6 +256,12 @@ fn navigate_with_retry(url: &str, attempts: u32) -> Result<(), String> {
             std::thread::sleep(std::time::Duration::from_millis(500));
             return navigate_with_retry(url, attempts - 1);
         }
+    }
+
+    // Re-apply cached viewport after a full navigation (Issue #27):
+    // Emulation.setDeviceMetricsOverride resets on page load.
+    if result.is_ok() {
+        reapply_viewport();
     }
     result
 }
@@ -550,6 +561,10 @@ pub fn scroll_into_view(selector: &str) -> Result<(), String> {
 // ── Viewport / device emulation ──────────────────────────────────────────────
 
 /// Set the browser viewport size (device emulation).
+/// The dimensions are cached in the session state and automatically
+/// re-applied after `navigate`, `clear_browser_state`, and `wait_for_new_tab`
+/// because CDP `Emulation.setDeviceMetricsOverride` does not persist across
+/// full navigations or new-tab creation (Issue #27).
 pub fn set_viewport(width: u32, height: u32, device_scale: f64, mobile: bool) -> Result<(), String> {
     with_tab(|tab| {
         tab.call_method(Emulation::SetDeviceMetricsOverride {
@@ -569,7 +584,49 @@ pub fn set_viewport(width: u32, height: u32, device_scale: f64, mobile: bool) ->
             device_posture: None,
         }).map_err(|e| format!("set_viewport: {e}"))?;
         Ok(())
-    })
+    })?;
+    // Cache for automatic re-application after navigation / new-tab.
+    let mut guard = global().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(inner) = guard.as_mut() {
+        inner.viewport = Some((width, height, device_scale, mobile));
+    }
+    Ok(())
+}
+
+/// Re-apply the last cached viewport to the active tab.
+/// No-op when no viewport has been set yet.
+/// Errors are logged as warnings but not propagated — caller is not expected
+/// to handle a viewport re-apply failure as fatal.
+fn reapply_viewport() {
+    // Read cache first, release lock before the CDP call (which re-acquires it).
+    let cached = {
+        let guard = global().lock().unwrap_or_else(|e| e.into_inner());
+        guard.as_ref().and_then(|i| i.viewport)
+    };
+    if let Some((w, h, scale, mobile)) = cached {
+        let r = with_tab(|tab| {
+            tab.call_method(Emulation::SetDeviceMetricsOverride {
+                width: w,
+                height: h,
+                device_scale_factor: scale,
+                mobile,
+                scale: None,
+                screen_width: None,
+                screen_height: None,
+                position_x: None,
+                position_y: None,
+                dont_set_visible_size: None,
+                screen_orientation: None,
+                viewport: None,
+                display_feature: None,
+                device_posture: None,
+            }).map_err(|e| format!("reapply_viewport: {e}"))?;
+            Ok(())
+        });
+        if let Err(e) = r {
+            tracing::warn!("[browser] reapply_viewport failed (non-fatal): {e}");
+        }
+    }
 }
 
 // ── Console capture ──────────────────────────────────────────────────────────
@@ -760,20 +817,26 @@ pub fn wait_for_new_tab(baseline_count: Option<usize>, timeout_ms: u64) -> Resul
 
         if browser_tabs.len() > baseline {
             // Find the new tab(s) and adopt them into our singleton.
-            let mut guard = global().lock().unwrap_or_else(|e| e.into_inner());
-            let inner = guard.as_mut().ok_or("browser not open")?;
-            // Add any browser tab not already in inner.tabs.
-            let existing_ids: std::collections::HashSet<String> = inner.tabs.iter()
-                .map(|t| t.get_target_id().to_string())
-                .collect();
-            for t in &browser_tabs {
-                if !existing_ids.contains(&t.get_target_id().to_string()) {
-                    inner.tabs.push(t.clone());
+            let tab_idx = {
+                let mut guard = global().lock().unwrap_or_else(|e| e.into_inner());
+                let inner = guard.as_mut().ok_or("browser not open")?;
+                // Add any browser tab not already in inner.tabs.
+                let existing_ids: std::collections::HashSet<String> = inner.tabs.iter()
+                    .map(|t| t.get_target_id().to_string())
+                    .collect();
+                for t in &browser_tabs {
+                    if !existing_ids.contains(&t.get_target_id().to_string()) {
+                        inner.tabs.push(t.clone());
+                    }
                 }
-            }
-            // Switch active to the most recent (newest is last in browser_tabs).
-            inner.active = inner.tabs.len() - 1;
-            return Ok(inner.active);
+                // Switch active to the most recent (newest is last in browser_tabs).
+                inner.active = inner.tabs.len() - 1;
+                inner.active
+            };
+            // New tabs don't inherit Emulation.setDeviceMetricsOverride from the
+            // parent tab — re-apply the cached viewport if one was set (Issue #27).
+            reapply_viewport();
+            return Ok(tab_idx);
         }
 
         if std::time::Instant::now() >= deadline {
@@ -1119,6 +1182,10 @@ pub fn clear_browser_state() -> Result<(), String> {
         } catch(e) {}
         return 'cleared';
     })()"#);
+
+    // Re-apply cached viewport — clear_state may have reloaded the page which
+    // resets Emulation.setDeviceMetricsOverride (Issue #27).
+    reapply_viewport();
 
     Ok(())
 }

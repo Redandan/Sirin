@@ -125,8 +125,10 @@ config/
 
 ```bash
 cargo check          # 0 errors required before commit
-cargo test --bin sirin    # 392+ passed, 17 ignored — all should pass
-cargo build --release     # ~5-7 min cold (8 min on GitHub Actions cold)
+# Tests — MUST use file-redirect form; pipe | tail kills cargo in background mode
+cargo test --bin sirin > /tmp/sirin_test.txt 2>&1 ; tail -8 /tmp/sirin_test.txt
+# (384 passed, 18 ignored as of v0.4.2)
+cargo build --release     # ~2-4 min incremental (see benchmarks below)
 ./target/release/sirin.exe                       # launch GUI on port 7700
 SIRIN_RPC_PORT=7701 ./target/release/sirin.exe   # alt port if 7700 stuck
 SIRIN_BROWSER_HEADLESS=false ./target/release/... # for Flutter / WebGL
@@ -164,29 +166,32 @@ testing the eab8537 robustness actions (binary 10h older than commit
 returned `Unknown action` for everything).  Always use the script when
 the actions you're testing came from a recent commit.
 
-### Build time benchmarks (as of v0.4.1, 2026-04-18)
+### Build time benchmarks (v0.4.1→v0.4.2 optimization history)
 
 Actual measurements on this machine (Ryzen 7700-class):
 
 | Scenario | Time | Notes |
 |----------|------|-------|
-| `--release` incremental (fat LTO, 1 crate changed) | **8m 31s** | LTO merges all 570 crates' bitcode in 1 thread |
-| After switching to thin LTO (cold rebuild forced) | **5m 44s** | Profile change always forces full cold |
-| After removing self_update + parking_lot | **4m 40s** | Cargo.lock changed → partial cold |
-| After tightening tokio features | **3m 08s** | Only 14 affected crates rebuilt |
-| Incremental single `.rs` change (steady state) | **~1-2 min** | Expected normal dev cycle |
+| Baseline: fat LTO, 1 crate changed | **8m 31s** | LTO merges all 570 crates in 1 thread |
+| Round 1: thin LTO (cold rebuild forced) | **5m 44s** | Profile change → full cold |
+| Round 1: remove self_update + parking_lot | **4m 40s** | Cargo.lock changed → partial cold |
+| Round 1: tighten tokio features | **3m 08s** | Only 14 crates rebuilt |
+| Round 2: remove scraper (html5ever C gone) | **3m 47s** | First cold after dep removal |
+| Round 2: futures→futures-util, version pin cleanup | **~2m** | Incremental |
+| Incremental single `.rs` change (steady state) | **~1m 50s** | Normal dev cycle |
 | `--profile dev-fast` cold | **~2-3 min** | Local iteration profile |
 
-**Changes that enabled v0.4.1 → 3-4x faster builds:**
+**Dep optimizations applied (v0.4.1 → v0.4.2):**
 
-1. `lto = "thin"` (was `lto = true` / fat) — **biggest win**.  Fat LTO merges all crate
-   bitcode in a single thread; thin LTO gets ≈90% of the optimization in 3-4x less time.
-2. `codegen-units = 4` (was `1`) — parallel code generation during compile.
-3. Removed `self_update 0.42` — it pulled in reqwest **0.12** as a second copy alongside
-   Sirin's reqwest 0.13.  Cargo cannot unify different major versions → double compile.
-4. Removed `parking_lot 0.12` → `std::sync` everywhere (3 transitive crates gone).
-5. Tightened `tokio` from `features = ["full"]` to explicit list — drops
-   `signal`, `io-std`, `test-util` (saves ~14 dependent crate rebuilds per change).
+1. `lto = "thin"` (was fat) + `codegen-units = 4` — 3-4x faster link
+2. Removed `self_update 0.42` (pulled in reqwest 0.12 duplicate)
+3. Removed `parking_lot 0.12` → `std::sync` everywhere
+4. Tightened `tokio` from `features = ["full"]` to explicit list
+5. Removed `scraper 0.19` (html5ever C parser + cssparser + selectors eliminated)
+   - `researcher/fetch.rs`: regex-based tag stripping
+   - `skills.rs DDG HTML`: string-split fallback parser
+6. `futures = "0.3"` → `futures-util = "0.3"` (deduplicate with grammers dep)
+7. Version pins loosened: serde/serde_json/reqwest/regex/chrono/dotenvy
 
 **`dev-fast` profile** — for local dev loops:
 
@@ -328,6 +333,12 @@ Users running old versions will see the update banner on next launch.
 - **CRLF git warnings on Windows**: cosmetic, ignore them
 - **Don't `unwrap()` on env vars or std::env::var**: returns Err if
   unset, we want graceful default
+- **`cargo test` pipe bug**: `cargo test ... | tail -8` silently kills
+  cargo when Bash tool auto-backgrounds the command. Always use:
+  `cargo test --bin sirin > /tmp/sirin_test.txt 2>&1 ; tail -8 /tmp/sirin_test.txt`
+- **Bash tool auto-backgrounds long commands**: can't be prevented.
+  When it happens, do NOT call TaskOutput (blocks for timeout duration).
+  Just wait for the `<task-notification>` event, then Read the output file.
 
 ## Gotchas already paid for
 
