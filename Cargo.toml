@@ -40,7 +40,6 @@ globset = "0.4"
 regex = "1.10"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-self_update = { version = "0.42", default-features = false, features = ["archive-zip", "compression-zip-deflate", "rustls"] }
 
 [package.metadata.bundle]
 name = "Sirin"
