@@ -29,7 +29,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use parking_lot::RwLock;
+use std::sync::RwLock;
 use serde::{Deserialize, Serialize};
 
 // ── Public types ───────────────────────────────────────────────────────────────
@@ -69,7 +69,7 @@ fn graph_cache() -> &'static RwLock<Option<Vec<CallGraphEntry>>> {
 
 /// Invalidate the in-process cache so the next query reloads from disk.
 pub fn invalidate_cache() {
-    *graph_cache().write() = None;
+    *graph_cache().write().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 // ── File-system paths ──────────────────────────────────────────────────────────
@@ -313,7 +313,7 @@ pub fn refresh_call_graph() -> Result<usize, Box<dyn std::error::Error + Send + 
     }
 
     // Refresh the in-process cache.
-    *graph_cache().write() = Some(entries.clone());
+    *graph_cache().write().unwrap_or_else(|e| e.into_inner()) = Some(entries.clone());
 
     Ok(entries.len())
 }
@@ -322,7 +322,7 @@ pub fn refresh_call_graph() -> Result<usize, Box<dyn std::error::Error + Send + 
 /// loaded.
 pub fn ensure_call_graph() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Fast path: already loaded.
-    if graph_cache().read().is_some() {
+    if graph_cache().read().unwrap_or_else(|e| e.into_inner()).is_some() {
         return Ok(());
     }
 
@@ -347,7 +347,7 @@ pub fn ensure_call_graph() -> Result<(), Box<dyn std::error::Error + Send + Sync
         }
     };
 
-    *graph_cache().write() = Some(entries);
+    *graph_cache().write().unwrap_or_else(|e| e.into_inner()) = Some(entries);
     Ok(())
 }
 
@@ -365,7 +365,7 @@ pub fn query_call_graph(
 ) -> Result<CallGraphResult, Box<dyn std::error::Error + Send + Sync>> {
     let _ = ensure_call_graph();
 
-    let guard = graph_cache().read();
+    let guard = graph_cache().read().unwrap_or_else(|e| e.into_inner());
     let entries = match guard.as_deref() {
         Some(e) => e,
         None => {
@@ -536,7 +536,7 @@ enum Color { Red, Green, Blue }
     fn query_returns_callers_and_callees() {
         // Manually populate the cache with the parsed entries.
         let entries = parse_rust_file("test.rs", SIMPLE_SRC);
-        *graph_cache().write() = Some(entries);
+        *graph_cache().write().unwrap_or_else(|e| e.into_inner()) = Some(entries);
 
         let result = query_call_graph("greet", 1).unwrap();
         assert!(

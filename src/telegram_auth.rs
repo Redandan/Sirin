@@ -18,7 +18,7 @@
 //!    Tauri command feeds it into the waiting receiver so the listener
 //!    can continue without ever touching stdin.
 
-use parking_lot::Mutex;
+use std::sync::Mutex;
 use serde::Serialize;
 use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
 use tokio::sync::{oneshot, Notify};
@@ -101,17 +101,17 @@ impl TelegramAuthState {
     // ── Called from the listener task ─────────────────────────────────────────
 
     pub fn set_connected(&self) {
-        self.inner.lock().status = TelegramStatus::Connected;
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).status = TelegramStatus::Connected;
     }
 
     pub fn set_disconnected(&self, reason: impl Into<String>) {
-        self.inner.lock().status = TelegramStatus::Disconnected {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).status = TelegramStatus::Disconnected {
             reason: reason.into(),
         };
     }
 
     pub fn set_error(&self, message: impl Into<String>) {
-        self.inner.lock().status = TelegramStatus::Error {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).status = TelegramStatus::Error {
             message: message.into(),
         };
     }
@@ -122,7 +122,7 @@ impl TelegramAuthState {
     pub async fn request_code(&self, timeout_secs: u64) -> Option<String> {
         let (tx, rx) = oneshot::channel();
         {
-            let mut inner = self.inner.lock();
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             inner.status = TelegramStatus::CodeRequired;
             inner.code_tx = Some(tx);
         }
@@ -141,7 +141,7 @@ impl TelegramAuthState {
     ) -> Option<String> {
         let (tx, rx) = oneshot::channel();
         {
-            let mut inner = self.inner.lock();
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             inner.status = TelegramStatus::PasswordRequired { hint: hint.into() };
             inner.password_tx = Some(tx);
         }
@@ -155,13 +155,13 @@ impl TelegramAuthState {
 
     /// Return the current status (serialisable snapshot).
     pub fn status(&self) -> TelegramStatus {
-        self.inner.lock().status.clone()
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).status.clone()
     }
 
     /// Feed a login code from the UI into the waiting listener.
     /// Returns `true` when there was a pending receiver, `false` otherwise.
     pub fn submit_code(&self, code: String) -> bool {
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(tx) = inner.code_tx.take() {
             let _ = tx.send(code);
             true
@@ -172,7 +172,7 @@ impl TelegramAuthState {
 
     /// Feed a 2-FA password from the UI.
     pub fn submit_password(&self, password: String) -> bool {
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(tx) = inner.password_tx.take() {
             let _ = tx.send(password);
             true
