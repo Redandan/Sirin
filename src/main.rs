@@ -10,6 +10,7 @@ mod platform;
 #[allow(dead_code)] mod browser_ax;
 #[allow(dead_code)] mod claude_session;
 #[allow(dead_code)] mod config_check;
+mod diagnose;
 #[allow(dead_code)] mod test_runner;
 #[allow(dead_code)] mod agents;
 mod code_graph;
@@ -126,6 +127,7 @@ fn init_tracing() {
 
 fn main() {
     init_tracing();
+    diagnose::record_startup();
 
     // Try app_data_dir/.env first (installed mode), then CWD (dev mode)
     let env_file = platform::app_data_dir().join(".env");

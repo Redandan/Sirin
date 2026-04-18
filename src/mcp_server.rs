@@ -414,6 +414,11 @@ fn handle_tools_list() -> Result<Value, String> {
                 "inputSchema": { "type": "object", "properties": {} }
             },
             {
+                "name": "diagnose",
+                "description": "Sirin 自我診斷快照 — 回傳 version / git commit / build date / platform / uptime / Chrome 狀態 / LLM provider+model / update 狀態 / 最近 ERROR/WARN log，外加一個預先填好環境資訊的 GitHub issue 模板（report_issue_template.body）。\n\n用法：外部 AI 在 Sirin MCP 操作遇到 bug 時，先呼叫 diagnose 拿快照，據此判斷：(1) 重試（transient）；(2) 提示用戶升級（你在 0.3.0 但 0.3.2 修了這個）；(3) 用 report_issue_template 開 issue（環境區塊已填好，用戶只要補 reproduction）。\n\n成本：~5–20 ms（一次 CDP getVersion + log tail）。安全在 caller 的 error path 每次呼叫。",
+                "inputSchema": { "type": "object", "properties": {} }
+            },
+            {
                 "name": "page_state",
                 "description": "一次回傳當前瀏覽器頁面的完整狀態 — URL、title、ax_tree 文字片段、JPEG 截圖（Base64）、console 錯誤、最近網路請求。比分別呼叫多個 browser_exec 動作更快，適合 AI agent 做 situational awareness。",
                 "inputSchema": {
@@ -494,6 +499,7 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         "list_recent_runs"     => return call_list_recent_runs(arguments).map(wrap_json),
         "list_fixes"           => return call_list_fixes(arguments).map(wrap_json),
         "config_diagnostics"   => return call_config_diagnostics().map(wrap_json),
+        "diagnose"             => return Ok(wrap_json(crate::diagnose::snapshot())),
         "browser_exec"         => return call_browser_exec(arguments, user_agent).await.map(wrap_json),
         "page_state"           => return call_page_state(arguments).await.map(wrap_json),
         _ => {}

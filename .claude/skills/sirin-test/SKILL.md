@@ -49,6 +49,7 @@ Drive Sirin's AI-powered browser testing from external Claude Code sessions. Unl
 | `list_recent_runs` | Historical test executions (SQLite) | Debug flakiness / see patterns |
 | `list_fixes` | Auto-fix history (claude_session spawns) | Check if a fix is in-flight |
 | `config_diagnostics` | LLM/router/vision health report | Tests failing mysteriously — self-diagnose |
+| `diagnose` | Sirin self-diagnostic snapshot (version/build/host/Chrome/LLM/recent errors + pre-filled GitHub issue body) | **You hit a bug in Sirin itself — call this BEFORE bothering the user.** Use the snapshot to decide retry / suggest upgrade / file issue with `report_issue_template.body` |
 | `page_state` | URL + title + AX summary + console + screenshot | **Quick orientation before deeper inspection** |
 | `browser_exec` | Single imperative browser action | **Debug / one-off exploration without a goal** |
 
@@ -399,6 +400,37 @@ browser_exec({action: "assert_ax_contains", role: "text", name: "Welcome"})
 browser_exec({action: "assert_url_matches", target: "#/dashboard"})
 → { passed: true, url: "https://app/#/dashboard" }
 ```
+
+### Workflow B.14.5 — When Sirin itself misbehaves: `diagnose` first
+
+**Two-tier diagnostic protocol.** When you (Tier 1, external Claude session)
+hit a bug *in Sirin* — `browser_exec` returns nonsense, MCP errors out, a
+test produces obviously-wrong output — do this BEFORE bothering the user:
+
+```
+1. diagnose() → snapshot
+   {
+     identity:   { version, git_commit, build_date, uptime_secs, ... },
+     chrome:     { running, version, headless, tab_count, ... },
+     llm:        { provider, model, vision_capable_hint },
+     update:     { state, current, latest, release_notes_url },
+     recent_errors: ["...20 most recent ERROR/WARN log lines..."],
+     report_issue_template: { title_hint, body, github_url }
+   }
+```
+
+Decision matrix from the snapshot:
+
+| Symptom in snapshot | Action |
+|---|---|
+| `update.state == "update_available"` and you're on an older version | Tell the user "you're on {current} but {latest} is out — please update" and link `release_notes_url`. Don't file an issue against the old version. |
+| `uptime_secs < 30` and `recent_errors` shows startup race | Likely cold-start race — wait 5s and retry the original call. |
+| `chrome.running == false` and you tried a `browser_exec` | Sirin's Chrome isn't bound — call `browser_exec(action: goto, target: ...)` first to launch it, then retry. |
+| `llm.vision_capable_hint == false` and you needed `screenshot_analyze` | Wrong model for the job — tell the user to switch (e.g. `OLLAMA_MODEL=gemma3:12b`). |
+| Nothing obvious — looks like a real bug | File an issue at `report_issue_template.github_url` with: title = `report_issue_template.title_hint` (replace `<one-line summary>` with your own), body = `report_issue_template.body` plus your **Reproduction** and **What you tried** sections (the env block is already filled in for you). |
+
+Cost: ~5–20 ms. Safe to call on every error in your error-handling path.
+Sirin doesn't cache; cost is dominated by one CDP round-trip to Chrome.
 
 ### Workflow B.15 — Multi-session (parallel Chrome tabs)
 

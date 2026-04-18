@@ -231,6 +231,45 @@ message, suggestion}], text_report}`
 
 Use when tests are mysteriously failing across the board.
 
+#### `diagnose`
+Self-diagnostic snapshot for the **two-tier diagnostic workflow**: an external
+AI (Tier 1) hits a bug, calls `diagnose`, and gets a single rich blob with
+Sirin's version, build, host, browser, LLM and recent error log. It can then
+decide:
+- retry (transient)
+- tell the user "you're on 0.3.0 but 0.3.2 fixes this — please update"
+- file an issue using `report_issue_template.body` (already populated with
+  the env block, so the user / Tier 2 dev gets reproduction context for free)
+
+```json
+{"name":"diagnose","arguments":{}}
+```
+**Returns:**
+```json
+{
+  "identity": {
+    "name": "sirin", "version": "0.3.2", "git_commit": "37cfaf5",
+    "build_date": "2026-04-18T02:59:04Z",
+    "binary_path": "C:\\...\\sirin.exe",
+    "platform": "windows-x86_64",
+    "uptime_secs": 13, "rpc_port": 7711
+  },
+  "chrome": { "running": false, "reason": "no browser session open" },
+  "llm":    { "provider": "gemini", "model": "llama3.2", "vision_capable_hint": false },
+  "update": { "state": "up_to_date", "current": "0.3.2", "latest": null,
+              "release_notes_url": "https://github.com/Redandan/Sirin/releases" },
+  "recent_errors": ["..."],
+  "report_issue_template": {
+    "title_hint": "[bug] <one-line summary>",
+    "body":       "## Environment\n- Sirin version : 0.3.2 ...\n## Reproduction\n<! ... !>\n",
+    "github_url": "https://github.com/Redandan/Sirin/issues/new"
+  }
+}
+```
+Cost: ~5–20 ms (one CDP `Browser.getVersion` + log tail). Safe to call on
+every error in the caller — Sirin doesn't cache, but cost is dominated by
+one round-trip to Chrome.
+
 #### `page_state`
 Single-call page snapshot: URL + title + condensed AX tree summary + last 5
 console messages + JPEG thumbnail. Use instead of four separate `browser_exec`

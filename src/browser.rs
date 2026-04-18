@@ -251,6 +251,45 @@ pub fn page_title() -> Result<String, String> {
     with_tab(|tab| tab.get_title().map_err(|e| format!("title: {e}")))
 }
 
+/// Snapshot of the running Chrome process — used by `diagnose` MCP tool to give
+/// external AI clients enough context to triage a bug report without asking
+/// the user follow-up questions.
+///
+/// Returns `Ok(None)` when no browser is open (a perfectly valid state, not an
+/// error from a diagnostic perspective).
+pub fn diagnostic_snapshot() -> Result<Option<DiagnosticSnapshot>, String> {
+    let guard = global().lock().unwrap_or_else(|e| e.into_inner());
+    let Some(inner) = guard.as_ref() else { return Ok(None); };
+
+    // Browser.getVersion is best-effort — a stale/dead transport returns Err
+    // and we still want to report `tabs` + `headless`, so we fall back to None.
+    let (chrome_version, user_agent) = match inner.browser.get_version() {
+        Ok(v) => (Some(v.product), Some(v.user_agent)),
+        Err(_) => (None, None),
+    };
+
+    Ok(Some(DiagnosticSnapshot {
+        chrome_version,
+        user_agent,
+        headless: inner.headless,
+        active_tab_index: inner.active,
+        tab_count: inner.tabs.len(),
+        named_sessions: inner.sessions.keys().cloned().collect(),
+    }))
+}
+
+/// Lightweight diagnostic snapshot — see [`diagnostic_snapshot`].
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DiagnosticSnapshot {
+    /// e.g. "Chrome/124.0.6367.92" — None if `Browser.getVersion` failed.
+    pub chrome_version: Option<String>,
+    pub user_agent:     Option<String>,
+    pub headless:       bool,
+    pub active_tab_index: usize,
+    pub tab_count:      usize,
+    pub named_sessions: Vec<String>,
+}
+
 pub fn click(selector: &str) -> Result<(), String> {
     with_tab(|tab| {
         tab.wait_for_element(selector)
