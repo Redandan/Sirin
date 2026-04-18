@@ -175,11 +175,14 @@ fn show_update_banner(ctx: &egui::Context, dismissed: &mut bool) {
 
     let status = crate::updater::get_status();
 
-    // Only show for actionable states
-    let (msg, accent, show_apply_btn, version) = match &status {
+    // Only show for actionable states. `show_download_btn` toggles the
+    // 📥 fallback (opens GitHub Releases in the default browser) — used both
+    // for the proactive "available" state and the failure-recovery state.
+    let (msg, accent, show_apply_btn, show_download_btn, version) = match &status {
         UpdateStatus::Available(v) => (
             format!("🆕  Sirin v{v} 可用"),
             egui::Color32::from_rgb(0, 160, 80),
+            true,
             true,
             Some(v.clone()),
         ),
@@ -187,25 +190,31 @@ fn show_update_banner(ctx: &egui::Context, dismissed: &mut bool) {
             "⏳  下載更新中…".into(),
             egui::Color32::from_rgb(80, 130, 200),
             false,
+            false,
             None,
         ),
         UpdateStatus::RestartRequired => (
             "✅  更新完成 — 重啟 Sirin 生效".into(),
             egui::Color32::from_rgb(0, 200, 100),
             false,
+            false,
             None,
         ),
         UpdateStatus::ApplyFailed(e) => (
-            format!("❌  更新失敗: {e}"),
+            format!("❌  更新失敗：{e}"),
             egui::Color32::from_rgb(200, 60, 60),
             false,
+            true, // show 📥 escape hatch
             None,
         ),
         _ => return, // Idle / Checking / UpToDate — nothing to show
     };
 
+    // Failed-state banner needs more vertical room — multi-line error text.
+    let banner_height = if matches!(status, UpdateStatus::ApplyFailed(_)) { 56.0 } else { 28.0 };
+
     egui::TopBottomPanel::top("update_banner")
-        .exact_height(28.0)
+        .exact_height(banner_height)
         .frame(
             egui::Frame::new()
                 .fill(accent.linear_multiply(0.18))
@@ -219,6 +228,23 @@ fn show_update_banner(ctx: &egui::Context, dismissed: &mut bool) {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.small_button("✕").clicked() {
                         *dismissed = true;
+                    }
+                    if show_download_btn {
+                        // Open GitHub Releases in the default browser — works
+                        // even when self-update is blocked by perms.
+                        if ui.add(egui::Button::new(
+                            RichText::new("📥 手動下載").size(11.0).color(accent)
+                        ).frame(false)).clicked() {
+                            let url = crate::updater::release_page_url();
+                            // Best-effort; ignore failure (no display, etc.).
+                            #[cfg(target_os = "windows")]
+                            let _ = std::process::Command::new("cmd")
+                                .args(["/C", "start", "", &url]).spawn();
+                            #[cfg(target_os = "macos")]
+                            let _ = std::process::Command::new("open").arg(&url).spawn();
+                            #[cfg(all(unix, not(target_os = "macos")))]
+                            let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+                        }
                     }
                     if show_apply_btn {
                         if let Some(ref v) = version {

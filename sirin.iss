@@ -71,8 +71,13 @@ Root: HKCU; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Run"; \
   Tasks: startupentry; Flags: uninsdeletevalue
 
 [Run]
+; Auto-launch after install — runs in both interactive and silent modes.
+; Silent mode is used by Sirin's in-app self-update flow, so we MUST relaunch
+; (otherwise the user sees Sirin disappear with no feedback).  Removing
+; "skipifsilent" enables this; "runasoriginaluser" ensures we drop back from
+; the elevated installer context to the user's normal session.
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; \
-  Flags: nowait postinstall skipifsilent
+  Flags: nowait postinstall runasoriginaluser
 
 [Code]
 function AlwaysTrue: Boolean;

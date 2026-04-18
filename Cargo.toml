@@ -1,6 +1,6 @@
 [package]
 name = "sirin"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 description = "A pure-Rust desktop AI agent (egui + Tokio)"
 
@@ -54,6 +54,22 @@ icon = ["assets/icon.icns", "assets/icon.png"]
 osx_minimum_system_version = "12.0"
 
 [build-dependencies]
+
+# dev-fast: for local dev loops and E2E test iterations.
+# ~2-3 min build vs 6-10 min for release.  Not for production distribution.
+#
+# Usage:
+#   cargo build --profile dev-fast
+#   ./target/dev-fast/sirin.exe
+#
+# Compared to release: no LTO, 16 codegen-units, opt-level 1.
+# Compared to debug: faster binary (avoids LLM call timeout on slow machines).
+[profile.dev-fast]
+inherits = "release"
+opt-level = 1
+lto = false
+codegen-units = 16
+strip = false
 
 [profile.release]
 # Intentionally leave `panic` unset (defaults to "unwind").  The MCP server's

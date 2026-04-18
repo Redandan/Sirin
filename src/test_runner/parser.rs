@@ -107,7 +107,10 @@ impl TestGoal {
     }
 }
 
-fn default_max_iter() -> u32 { 15 }
+/// Default iteration ceiling.  20 gives Flutter/SPA tests enough room for
+/// multi-step flows without per-test YAML overrides.  Complex flows (checkout,
+/// OAuth, multi-page wizards) should still set `max_iterations: 30` in YAML.
+fn default_max_iter() -> u32 { 20 }
 fn default_timeout() -> u64 { 120 }
 fn default_parse_retries() -> u32 { 3 }
 fn default_locale() -> String { "zh-TW".into() }
@@ -165,7 +168,7 @@ goal: "Load home page and see welcome text"
 "#;
         let g: TestGoal = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(g.id, "smoke_home");
-        assert_eq!(g.max_iterations, 15); // default
+        assert_eq!(g.max_iterations, 20); // default bumped from 15→20 (#22-4)
         assert_eq!(g.timeout_secs, 120);
         assert!(g.tags.is_empty());
     }
