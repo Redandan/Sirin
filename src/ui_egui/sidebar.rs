@@ -97,10 +97,12 @@ fn show_expanded(
     renaming: &mut Option<(usize, String)>,
     collapsed: &mut bool,
 ) {
-    ui.add_space(theme::SP_LG);
+    ui.add_space(theme::SP_SM);
 
-    // ── Collapse button ──────────────────────────────────────────────
+    // ── AGENTS header + collapse button (same row) ───────────────────
     ui.horizontal(|ui| {
+        ui.add_space(theme::SP_MD);
+        ui.label(RichText::new("AGENTS").size(theme::FONT_CAPTION).strong().color(theme::TEXT_DIM));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let (rect, resp) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::click());
             let col = if resp.hovered() { theme::TEXT } else { theme::TEXT_DIM };
@@ -110,10 +112,7 @@ fn show_expanded(
             if resp.clicked() { *collapsed = true; }
         });
     });
-    ui.add_space(theme::SP_MD);
-
-    // ── AGENTS ───────────────────────────────────────────────────────
-    group_label(ui, "AGENTS");
+    ui.add_space(theme::SP_XS);
 
     ScrollArea::vertical().id_salt("agents")
         .max_height(ui.available_height() - 180.0)
