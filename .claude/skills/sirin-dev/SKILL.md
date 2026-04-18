@@ -60,12 +60,15 @@ src/
 │                           ⚠ NEVER use "config/foo.yaml" literals
 │                           ⚠ NEVER use "data/..." literals
 │                           Always go through platform:: helpers.
-├── updater.rs              Auto-update via GitHub Releases (self_update 0.42)
+├── updater.rs              Auto-update via GitHub Releases API (pure reqwest,
+│                           no self_update crate — removed v0.4.1)
 │                           — spawn_check() → background thread on startup
 │                           — get_status() → UpdateStatus enum (UI polls this)
-│                           — apply_update(ver) → downloads zip, self-replaces
-│                           — Expects asset: sirin-windows-x86_64.zip / sirin.exe
-│                           — Tag v0.3.0 push triggers release CI
+│                           — apply_update(ver) → Windows: downloads SirinSetup-{ver}.exe
+│                             from GH Releases, spawns with /SILENT /SUPPRESSMSGBOXES
+│                             (UAC auto-triggers via Inno Setup manifest), self-exits 2s
+│                           — Non-Windows: opens browser to releases page (no self-replace)
+│                           — Tag vX.Y.Z push triggers release CI
 ├── bin/sirin_call.rs       Thin CLI wrapper for the MCP API — avoids bash
 │                           shell-escaping pain with CJK/Unicode payloads;
 │                           `key=value` syntax (auto-typed JSON) or stdin JSON;
@@ -160,6 +163,49 @@ running yesterday's binary against today's source.  This bit us when
 testing the eab8537 robustness actions (binary 10h older than commit
 returned `Unknown action` for everything).  Always use the script when
 the actions you're testing came from a recent commit.
+
+### Build time benchmarks (as of v0.4.1, 2026-04-18)
+
+Actual measurements on this machine (Ryzen 7700-class):
+
+| Scenario | Time | Notes |
+|----------|------|-------|
+| `--release` incremental (fat LTO, 1 crate changed) | **8m 31s** | LTO merges all 570 crates' bitcode in 1 thread |
+| After switching to thin LTO (cold rebuild forced) | **5m 44s** | Profile change always forces full cold |
+| After removing self_update + parking_lot | **4m 40s** | Cargo.lock changed → partial cold |
+| After tightening tokio features | **3m 08s** | Only 14 affected crates rebuilt |
+| Incremental single `.rs` change (steady state) | **~1-2 min** | Expected normal dev cycle |
+| `--profile dev-fast` cold | **~2-3 min** | Local iteration profile |
+
+**Changes that enabled v0.4.1 → 3-4x faster builds:**
+
+1. `lto = "thin"` (was `lto = true` / fat) — **biggest win**.  Fat LTO merges all crate
+   bitcode in a single thread; thin LTO gets ≈90% of the optimization in 3-4x less time.
+2. `codegen-units = 4` (was `1`) — parallel code generation during compile.
+3. Removed `self_update 0.42` — it pulled in reqwest **0.12** as a second copy alongside
+   Sirin's reqwest 0.13.  Cargo cannot unify different major versions → double compile.
+4. Removed `parking_lot 0.12` → `std::sync` everywhere (3 transitive crates gone).
+5. Tightened `tokio` from `features = ["full"]` to explicit list — drops
+   `signal`, `io-std`, `test-util` (saves ~14 dependent crate rebuilds per change).
+
+**`dev-fast` profile** — for local dev loops:
+
+```bash
+cargo build --profile dev-fast   # ~2-3 min cold, ~30-60s incremental
+./target/dev-fast/sirin.exe
+```
+
+Settings: `opt-level=1, lto=false, codegen-units=16`.  Fast enough for real LLM calls
+(debug build times out LLM calls on slow machines).  Not for production distribution.
+
+**reqwest 0.13 pitfall**: Feature `rustls-tls-ring` does **not exist** in reqwest 0.13.
+Use `"rustls"` (defaults to aws-lc-rs).  `aws-lc-rs` has C++ build deps (bundled) —
+unavoidable until reqwest exposes a pure-Rust TLS option.
+
+**parking_lot → std::sync migration rule** (CLAUDE.md enforced):
+`parking_lot` is infallible (returns guard directly).  `std::sync` returns `LockResult`.
+When migrating, add `unwrap_or_else(|e| e.into_inner())` to **all** `.lock()`, `.read()`,
+`.write()` calls.  Missing one = compile error ("expected `MutexGuard`, got `LockResult`").
 
 ## Common workflows
 

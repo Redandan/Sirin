@@ -1,6 +1,6 @@
 [package]
 name = "sirin"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 description = "A pure-Rust desktop AI agent (egui + Tokio)"
 
