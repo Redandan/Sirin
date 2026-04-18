@@ -102,7 +102,8 @@ fn show_expanded(
     // ── Title + collapse button ──────────────────────────────────────
     ui.horizontal(|ui| {
         ui.add_space(theme::SP_MD);
-        ui.label(RichText::new("Sirin").size(theme::FONT_TITLE).strong().color(theme::TEXT));
+        ui.label(RichText::new(concat!("Sirin v", env!("CARGO_PKG_VERSION")))
+            .size(theme::FONT_TITLE).strong().color(theme::TEXT));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let (rect, resp) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::click());
             let col = if resp.hovered() { theme::TEXT } else { theme::TEXT_DIM };
@@ -111,11 +112,6 @@ fn show_expanded(
                 egui::FontId::proportional(18.0), col);
             if resp.clicked() { *collapsed = true; }
         });
-    });
-    ui.horizontal(|ui| {
-        ui.add_space(theme::SP_MD);
-        ui.colored_label(theme::TEXT_DIM,
-            RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).size(theme::FONT_CAPTION));
     });
     ui.add_space(theme::SP_MD);
 
