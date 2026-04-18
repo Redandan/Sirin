@@ -63,9 +63,11 @@ pub fn active_port() -> Option<u16> {
 /// recently-killed previous instance in TCP TIME_WAIT), retries up to 3 times
 /// with 2-second backoff.  Gives up with a clear diagnostic afterwards.
 pub async fn start_rpc_server() {
-    let app = Router::new()
-        .route("/", get(ws_upgrade_handler))
-        .merge(crate::mcp_server::mcp_router());
+    let app = crate::ext_server::add_ext_routes(
+        Router::new()
+            .route("/", get(ws_upgrade_handler))
+            .merge(crate::mcp_server::mcp_router()),
+    );
 
     let port = configured_port();
     let addr = format!("127.0.0.1:{port}");

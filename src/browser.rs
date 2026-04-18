@@ -23,6 +23,46 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
+// ── Companion extension discovery (stub — see DESIGN_BROWSER_AUTHORITY.md) ──
+//
+// Look for `ext/manifest.json` next to the binary first (installed mode), then
+// in CWD (dev mode).  Returns the *directory* path Chrome would `--load-extension=`.
+//
+// Currently UNUSED at runtime: Chrome 147 ignores `--load-extension` even with
+// every opt-out flag, so `launch_with_mode` no longer plumbs this through.
+// Kept compiled (with `#[allow(dead_code)]`) so the discovery contract stays
+// frozen — the day we ship Chrome for Testing as a sidecar, only the launch
+// site needs to change.
+#[allow(dead_code)]
+fn locate_companion_ext() -> Option<std::path::PathBuf> {
+    // Chrome resolves `--load-extension=<path>` relative to its own CWD, NOT
+    // ours. Always pass an absolute path; otherwise the extension silently
+    // fails to load (no error, no SW, no diagnostic — just nothing).
+    let candidates = [
+        std::env::current_exe().ok().and_then(|p| p.parent().map(|p| p.join("ext"))),
+        std::env::current_dir().ok().map(|p| p.join("ext")),
+    ];
+    for cand in candidates.into_iter().flatten() {
+        if cand.join("manifest.json").is_file() {
+            // Canonicalize so Chrome gets a stable absolute path. Windows
+            // canonicalize returns `\\?\C:\...` (UNC verbatim) which Chrome
+            // refuses; strip that prefix.
+            let abs = std::fs::canonicalize(&cand).unwrap_or(cand);
+            #[cfg(windows)]
+            let abs = {
+                let s = abs.to_string_lossy();
+                if let Some(rest) = s.strip_prefix(r"\\?\") {
+                    std::path::PathBuf::from(rest)
+                } else {
+                    abs
+                }
+            };
+            return Some(abs);
+        }
+    }
+    None
+}
+
 // ── Singleton ────────────────────────────────────────────────────────────────
 
 static SESSION: OnceLock<Arc<Mutex<Option<BrowserInner>>>> = OnceLock::new();
@@ -91,6 +131,27 @@ pub fn ensure_open(headless: bool) -> Result<bool, String> {
         }
     }
 
+    // Sirin Companion extension auto-load — DISABLED.
+    //
+    // Original plan: pass `--load-extension=` to push authoritative tab state
+    // from chrome.tabs.* / chrome.webNavigation.* into Sirin via WebSocket.
+    //
+    // Verified 2026-04-18 (Chrome 147): `--load-extension` is a no-op.  Chrome
+    // 122 deprecated it; Chrome ~147 removed the opt-out feature flag
+    // `DisableLoadExtensionCommandLineSwitch`, so even with every right flag
+    // the unpacked extension is silently ignored — no warning, no SW spawn,
+    // chrome.developerPrivate.getExtensionsInfo() returns zero unpacked items.
+    //
+    // We keep `locate_companion_ext()`, `ext/`, and `src/ext_server.rs` in
+    // tree as stubs for the day we ship Chrome for Testing alongside Sirin
+    // (CfT preserves the legacy command-line behaviour).  The runtime cost
+    // of the unused WS endpoint is ~0 — it just never receives a connection.
+    //
+    // The user-visible problem (#23 stale URL/title) is now solved by reading
+    // live page state via `Runtime.evaluate` in `current_url()` /
+    // `page_title()` instead of `Tab::get_url()` / `Tab::get_title()`.
+    //
+    // See: docs/DESIGN_BROWSER_AUTHORITY.md
     let opts = LaunchOptions::default_builder()
         .headless(headless)
         .build()
@@ -243,12 +304,44 @@ pub fn navigate_and_screenshot(url: &str) -> Result<Vec<u8>, String> {
     screenshot()
 }
 
+/// Live URL of the active tab.  Uses `Runtime.evaluate("window.location.href")`
+/// rather than `Tab::get_url()` so we get the rendered page's truth, not
+/// headless_chrome's `target_info` cache which goes stale on:
+///   - `about:blank` reset (no `Page.frameNavigated` fires)
+///   - Cross-origin redirect race (cache lags `Target.targetInfoChanged`)
+///   - SPA hash-only navigation (Chrome emits no `frameNavigated`)
+///
+/// See `docs/DESIGN_BROWSER_AUTHORITY.md` for the postmortem of why we did
+/// not solve this with a Chrome companion extension (Chrome 147+ blocks
+/// `--load-extension` outright).
+///
+/// Falls back to the cached `tab.get_url()` if `Runtime.evaluate` fails
+/// (no exec context yet, debugger paused) — at worst no-worse-than-before.
 pub fn current_url() -> Result<String, String> {
-    with_tab(|tab| Ok(tab.get_url()))
+    with_tab(|tab| {
+        match tab.evaluate("window.location.href", false) {
+            Ok(obj) => match obj.value {
+                Some(serde_json::Value::String(s)) => Ok(s),
+                _ => Ok(tab.get_url()), // unexpected shape — fall back
+            },
+            Err(_) => Ok(tab.get_url()), // navigation race / no context
+        }
+    })
 }
 
+/// Live title of the active tab.  Same rationale as `current_url()` —
+/// uses `Runtime.evaluate("document.title")` to read the live DOM rather
+/// than the `target_info` cache.
 pub fn page_title() -> Result<String, String> {
-    with_tab(|tab| tab.get_title().map_err(|e| format!("title: {e}")))
+    with_tab(|tab| {
+        match tab.evaluate("document.title", false) {
+            Ok(obj) => match obj.value {
+                Some(serde_json::Value::String(s)) => Ok(s),
+                _ => tab.get_title().map_err(|e| format!("title: {e}")),
+            },
+            Err(_) => tab.get_title().map_err(|e| format!("title: {e}")),
+        }
+    })
 }
 
 /// Snapshot of the running Chrome process — used by `diagnose` MCP tool to give
@@ -1482,6 +1575,61 @@ mod tests {
         assert_eq!(&jpg[..3], &[0xFF, 0xD8, 0xFF], "not a JPEG");
         assert!(jpg.len() > 100, "too small");
         assert!(jpg.len() < 500_000, "unexpectedly large (quality too high?)");
+    }
+
+    /// Regression test for #23 — `current_url()` and `page_title()` must
+    /// reflect changes that happen *after* a navigation event the
+    /// `headless_chrome` cache fails to observe (hash-only navigation,
+    /// `document.title` mutated by JS, `about:blank` reset).
+    ///
+    /// Before the fix, `tab.get_url()` / `tab.get_title()` returned the cached
+    /// snapshot from the last `Target.targetInfoChanged` event — which Chrome
+    /// does not emit for any of these.  The fix routes both through
+    /// `Runtime.evaluate` so we read live page state.
+    #[test]
+    #[ignore] // needs Chrome; integration test
+    fn url_and_title_bypass_target_info_cache() {
+        close();
+        ensure_open(true).expect("launch");
+
+        // 1. Baseline navigation — both APIs agree with the cache.
+        navigate("data:text/html,<title>Initial</title><body>x</body>").expect("nav");
+        assert_eq!(page_title().expect("t0"), "Initial");
+        let url0 = current_url().expect("u0");
+        assert!(url0.starts_with("data:text/html"), "url0={url0}");
+
+        // 2. Mutate document.title in-page — Chrome fires NO target_info event,
+        //    so `Tab::get_title()` would still report "Initial".
+        evaluate_js(r#"document.title = "MutatedByJS""#).expect("set title");
+        assert_eq!(
+            page_title().expect("t1"),
+            "MutatedByJS",
+            "page_title() must read live document.title, not cached target_info"
+        );
+
+        // 3. Hash-only navigation — Chrome emits no Page.frameNavigated, so
+        //    `Tab::get_url()` would still report the URL without the fragment.
+        evaluate_js(r##"window.location.hash = "#/dashboard""##).expect("set hash");
+        // Small settle — the JS assignment is sync but cache update is racey;
+        // we want the test to prove our fix is robust without relying on luck.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let url1 = current_url().expect("u1");
+        assert!(
+            url1.contains("#/dashboard"),
+            "current_url() must reflect hash change; got {url1}"
+        );
+
+        // 4. about:blank reset via JS — same cache-blindness as case 3.
+        evaluate_js(r#"window.location.replace("about:blank")"#).expect("blank");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let url2 = current_url().expect("u2");
+        assert_eq!(
+            url2, "about:blank",
+            "current_url() must reflect about:blank reset; got {url2}"
+        );
+
+        close();
+        println!("✓ url_and_title_bypass_target_info_cache: all 3 cache-miss scenarios fixed");
     }
 
     #[test]

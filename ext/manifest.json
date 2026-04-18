@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Sirin Companion",
+  "version": "0.1.0",
+  "description": "Authoritative tab observability for Sirin AI agent — pushes navigation/tab events that CDP-attach misses (about:blank reset, target migration, hash-only nav).",
+  "permissions": [
+    "tabs",
+    "webNavigation",
+    "storage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "minimum_chrome_version": "109"
+}

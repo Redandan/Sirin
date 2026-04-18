@@ -1225,6 +1225,25 @@ async fn call_browser_exec(args: Value, user_agent: &str) -> Result<Value, Strin
                 browser::close_session(&target)?;
                 Ok(json!({ "status": "closed", "session_id": target }))
             }
+            // ── Sirin Companion extension probes (POC) ───────────────────────
+            "ext_status" => {
+                Ok(serde_json::to_value(crate::ext_server::status())
+                    .map_err(|e| format!("ext_status serialize: {e}"))?)
+            }
+            "ext_url" => {
+                // Authoritative URL from extension; falls back to CDP cache.
+                let tab_id = args.get("tab_id").and_then(Value::as_i64);
+                match crate::ext_server::authoritative_url(tab_id) {
+                    Some(u) => Ok(json!({ "url": u, "source": "extension" })),
+                    None    => Ok(json!({
+                        "url":    browser::current_url().unwrap_or_default(),
+                        "source": "cdp_cache_fallback",
+                    })),
+                }
+            }
+            "ext_tabs" => {
+                Ok(json!({ "tabs": crate::ext_server::list_tabs() }))
+            }
             other   => Err(format!("Unknown browser_exec action: {other}")),
         }
     })

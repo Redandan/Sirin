@@ -109,6 +109,8 @@ pub fn snapshot() -> Value {
     let llm = llm_snapshot();
     let updates = update_snapshot();
     let errors = recent_errors(20);
+    let extension = serde_json::to_value(crate::ext_server::status())
+        .unwrap_or_else(|_| json!({ "connected": false, "error": "serialize" }));
 
     let body = format!(
         "## Environment\n\
@@ -141,6 +143,7 @@ pub fn snapshot() -> Value {
     json!({
         "identity":     identity,
         "chrome":       chrome,
+        "extension":    extension,
         "llm":          llm,
         "update":       updates,
         "recent_errors": errors,
