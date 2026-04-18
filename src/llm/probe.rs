@@ -330,19 +330,19 @@ impl AgentFleet {
         }
     }
 
-    /// Write a human-readable fleet summary to stderr.
+    /// Write a human-readable fleet summary to the tracing log + UI buffer.
     pub fn log_summary(&self) {
-        eprintln!("[fleet] Agent fleet configured:");
-        eprintln!("  chat   → {} (general conversation)", self.chat_model);
-        eprintln!(
+        tracing::info!(target: "sirin", "[fleet] Agent fleet configured:");
+        tracing::info!(target: "sirin", "  chat   → {} (general conversation)", self.chat_model);
+        tracing::info!(target: "sirin",
             "  router → {}",
             self.router_model.as_deref().unwrap_or("(uses chat model)")
         );
-        eprintln!(
+        tracing::info!(target: "sirin",
             "  coder  → {}",
             self.coding_model.as_deref().unwrap_or("(uses chat model)")
         );
-        eprintln!(
+        tracing::info!(target: "sirin",
             "  large  → {}",
             self.large_model.as_deref().unwrap_or("(uses chat model)")
         );
@@ -354,7 +354,7 @@ impl AgentFleet {
                 .filter(|m| m.has(&ModelCapability::Vision))
                 .map(|m| m.info.name.as_str())
                 .collect();
-            eprintln!(
+            tracing::info!(target: "sirin",
                 "  vision → {} (multimodal — image input capable)",
                 names.join(", ")
             );
@@ -366,7 +366,7 @@ impl AgentFleet {
                 .filter(|m| m.has(&ModelCapability::Embedding))
                 .map(|m| m.info.name.as_str())
                 .collect();
-            eprintln!("  embed  → {} (vector embeddings)", names.join(", "));
+            tracing::info!(target: "sirin", "  embed  → {} (vector embeddings)", names.join(", "));
         }
     }
 }
@@ -494,8 +494,8 @@ fn assign_fleet_role(
             if is_model_available(name, classified) {
                 Some(name.clone())
             } else {
-                eprintln!(
-                    "[fleet] WARNING: {role} model '{name}' not found — \
+                tracing::warn!(target: "sirin",
+                    "[fleet] {role} model '{name}' not found — \
                      falling back to chat model '{chat_model}'"
                 );
                 None
@@ -525,7 +525,7 @@ async fn auto_probe_local_backends(
             _ => list_lmstudio_models(client, url, None).await,
         };
         if !models.is_empty() {
-            eprintln!(
+            tracing::info!(target: "sirin",
                 "[fleet] auto-detected {} at '{}' ({} model(s))",
                 match backend {
                     LlmBackend::Ollama   => "Ollama",
@@ -572,7 +572,7 @@ pub async fn probe_and_build_fleet(client: &reqwest::Client) -> AgentFleet {
     // If the configured backend is unreachable or empty, auto-probe local services.
     let (active_backend, active_url, active_api_key) =
         if raw_models.is_empty() && matches!(baseline.backend, LlmBackend::Ollama | LlmBackend::LmStudio) {
-            eprintln!(
+            tracing::warn!(target: "sirin",
                 "[fleet] {} at '{}' returned no models — probing local services…",
                 baseline.backend_name(),
                 baseline.base_url,
@@ -581,7 +581,7 @@ pub async fn probe_and_build_fleet(client: &reqwest::Client) -> AgentFleet {
                 raw_models = models;
                 (b, url, None)
             } else {
-                eprintln!("[fleet] No local LLM service found. Start Ollama or LM Studio to enable AI.");
+                tracing::warn!(target: "sirin", "[fleet] No local LLM service found. Start Ollama or LM Studio to enable AI.");
                 return AgentFleet {
                     backend:           baseline.backend,
                     base_url:          baseline.base_url,
@@ -598,7 +598,7 @@ pub async fn probe_and_build_fleet(client: &reqwest::Client) -> AgentFleet {
         };
 
     if raw_models.is_empty() {
-        eprintln!(
+        tracing::warn!(target: "sirin",
             "[fleet] {} at '{}' returned no models — using env-only config",
             baseline.backend_name(),
             active_url,
@@ -625,7 +625,7 @@ pub async fn probe_and_build_fleet(client: &reqwest::Client) -> AgentFleet {
         .collect();
 
     // Log the discovered catalogue.
-    eprintln!(
+    tracing::info!(target: "sirin",
         "[fleet] {} model(s) found on {} ({})",
         classified.len(),
         baseline.backend_name(),
@@ -643,8 +643,8 @@ pub async fn probe_and_build_fleet(client: &reqwest::Client) -> AgentFleet {
             .map(|m| m.info.name.clone())
             .unwrap_or(baseline.model.clone());
         if fallback != baseline.model {
-            eprintln!(
-                "[fleet] WARNING: main model '{}' not found — \
+            tracing::warn!(target: "sirin",
+                "[fleet] main model '{}' not found — \
                  using first available Chat model '{fallback}'",
                 baseline.model
             );

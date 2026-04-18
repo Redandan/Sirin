@@ -59,9 +59,17 @@ pub fn active_port() -> Option<u16> {
 
 /// Bind the WebSocket + MCP server and serve forever. Spawn this as a Tokio task.
 ///
-/// Binds to `SIRIN_RPC_PORT` (default 7700).  On transient failure (e.g.
-/// recently-killed previous instance in TCP TIME_WAIT), retries up to 3 times
-/// with 2-second backoff.  Gives up with a clear diagnostic afterwards.
+/// ## Port selection
+/// Tries `SIRIN_RPC_PORT` (default 7700) first.  On bind failure, walks up
+/// to [`MAX_PORT_FALLBACK`] sequential ports (e.g. 7700 → 7701 → 7702 → 7703)
+/// before giving up.  Each individual port is retried twice with a 1-second
+/// backoff to handle TCP TIME_WAIT churn.
+///
+/// Why fallback instead of just retrying: when 7700 is held by a stuck
+/// previous Sirin instance the user can't kill, retrying the same port for
+/// 6 seconds then dying is unhelpful — fallback ports let us self-heal.
+/// The chosen port is recorded in [`active_port`] so external clients can
+/// discover it via `diagnose.identity.rpc_port`.
 pub async fn start_rpc_server() {
     let app = crate::ext_server::add_ext_routes(
         Router::new()
@@ -69,34 +77,70 @@ pub async fn start_rpc_server() {
             .merge(crate::mcp_server::mcp_router()),
     );
 
-    let port = configured_port();
-    let addr = format!("127.0.0.1:{port}");
-
-    // Retry on transient bind failure — helps when a recently-killed Sirin
-    // left the socket in TIME_WAIT / CLOSE_WAIT for a few seconds.
-    const MAX_ATTEMPTS: u32 = 3;
-    let listener = loop_bind(&addr, MAX_ATTEMPTS).await;
-    let listener = match listener {
-        Some(l) => l,
+    let primary = configured_port();
+    let (listener, bound_port) = match try_bind_with_fallback(primary).await {
+        Some(pair) => pair,
         None => {
-            eprintln!(
-                "[rpc] ⚠️  Gave up binding {addr} after {MAX_ATTEMPTS} attempts. \
-                 Set SIRIN_RPC_PORT=<alt_port> in .env to use a different port, \
-                 or wait ~2 minutes for Windows TCP TIME_WAIT to clear."
+            tracing::error!(
+                target: "sirin",
+                "[rpc] Gave up after exhausting ports {primary}..={last}. \
+                 Set SIRIN_RPC_PORT=<alt_port> in .env, or run \
+                 `Get-Process sirin | Stop-Process -Force` to clear stale binds.",
+                last = primary.saturating_add(MAX_PORT_FALLBACK as u16)
             );
             return;
         }
     };
 
-    ACTIVE_PORT.store(port, Ordering::Relaxed);
+    ACTIVE_PORT.store(bound_port, Ordering::Relaxed);
     RUNNING.store(true, Ordering::Relaxed);
-    eprintln!("[rpc] Listening on ws://{addr} + http://{addr}/mcp");
+    if bound_port == primary {
+        tracing::info!(target: "sirin", "[rpc] Listening on ws://127.0.0.1:{bound_port} + http://127.0.0.1:{bound_port}/mcp");
+    } else {
+        tracing::warn!(
+            target: "sirin",
+            "[rpc] Primary port {primary} unavailable — bound fallback port {bound_port} \
+             (ws://127.0.0.1:{bound_port} + http://127.0.0.1:{bound_port}/mcp). \
+             External MCP clients will need to know about the new port."
+        );
+    }
 
     if let Err(e) = axum::serve(listener, app).await {
-        eprintln!("[rpc] Server error: {e}");
+        tracing::error!(target: "sirin", "[rpc] Server error: {e}");
         RUNNING.store(false, Ordering::Relaxed);
         ACTIVE_PORT.store(0, Ordering::Relaxed);
     }
+}
+
+/// Maximum number of sequential alternate ports to try after the primary fails.
+/// 3 fallbacks (e.g. 7700 → 7701/7702/7703) covers the common multi-zombie case
+/// without colliding with arbitrary other services higher up in the range.
+const MAX_PORT_FALLBACK: u32 = 3;
+
+/// Attempt to bind `primary`, then `primary+1`, …, up to `MAX_PORT_FALLBACK`
+/// alternate ports.  Each port is tried twice with a 1-second backoff in case
+/// the previous Sirin's socket is in TCP TIME_WAIT.  Returns `None` if all
+/// candidates fail.
+async fn try_bind_with_fallback(primary: u16) -> Option<(tokio::net::TcpListener, u16)> {
+    for offset in 0..=MAX_PORT_FALLBACK {
+        // u16 saturating add — if primary is e.g. u16::MAX, we just stop trying.
+        let port = match primary.checked_add(offset as u16) {
+            Some(p) => p,
+            None => break,
+        };
+        let addr = format!("127.0.0.1:{port}");
+        if let Some(listener) = loop_bind(&addr, 2).await {
+            return Some((listener, port));
+        }
+        if offset < MAX_PORT_FALLBACK {
+            tracing::warn!(
+                target: "sirin",
+                "[rpc] Port {port} unavailable — trying {next} next",
+                next = port.saturating_add(1)
+            );
+        }
+    }
+    None
 }
 
 async fn loop_bind(addr: &str, max_attempts: u32) -> Option<tokio::net::TcpListener> {
@@ -105,11 +149,13 @@ async fn loop_bind(addr: &str, max_attempts: u32) -> Option<tokio::net::TcpListe
             Ok(l) => return Some(l),
             Err(e) => {
                 if attempt == max_attempts {
-                    eprintln!("[rpc] Bind {addr} failed on final attempt {attempt}/{max_attempts}: {e}");
+                    // Suppress final-attempt log here — the caller (try_bind_with_fallback)
+                    // logs whether to advance to the next port or give up entirely.
+                    tracing::debug!(target: "sirin", "[rpc] Bind {addr} failed (attempt {attempt}/{max_attempts}): {e}");
                     return None;
                 }
-                eprintln!("[rpc] Bind {addr} failed (attempt {attempt}/{max_attempts}): {e} — retrying in 2s");
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                tracing::debug!(target: "sirin", "[rpc] Bind {addr} retry (attempt {attempt}/{max_attempts}): {e}");
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             }
         }
     }
@@ -247,5 +293,28 @@ mod tests {
         assert_eq!(configured_port(), DEFAULT_RPC_PORT);
         if let Some(v) = orig { std::env::set_var("SIRIN_RPC_PORT", v); }
         else { std::env::remove_var("SIRIN_RPC_PORT"); }
+    }
+
+    /// Verifies the fallback walks up to a free port when the primary is held.
+    /// We hold an unrelated socket on `primary`, then ask `try_bind_with_fallback`
+    /// to bind starting at that primary — it should advance to `primary+1` (or
+    /// further) and return that bound port.
+    #[tokio::test]
+    async fn try_bind_with_fallback_advances_when_primary_held() {
+        // Pick an ephemeral high port the OS gives us, then deliberately
+        // attempt to bind starting from there with the listener still alive.
+        let blocker = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let primary = blocker.local_addr().unwrap().port();
+
+        let result = try_bind_with_fallback(primary).await;
+        let (listener, bound) = result.expect("fallback should succeed");
+        assert_ne!(bound, primary,
+            "expected fallback to advance past held primary {primary}, got {bound}");
+        assert!(bound > primary && bound <= primary.saturating_add(MAX_PORT_FALLBACK as u16),
+            "bound port {bound} outside fallback window {primary}..={}",
+            primary.saturating_add(MAX_PORT_FALLBACK as u16));
+
+        drop(listener);
+        drop(blocker);
     }
 }

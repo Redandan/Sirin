@@ -72,7 +72,7 @@ fn ensure_first_run_dirs() {
         let default_file = agent_config::AgentsFile::default();
         if let Ok(yaml) = serde_yaml::to_string(&default_file) {
             let _ = fs::write(cfg.join("agents.yaml"), yaml);
-            eprintln!("[main] Created default config/agents.yaml");
+            tracing::info!(target: "sirin", "[main] Created default config/agents.yaml");
         }
     }
 
@@ -81,7 +81,7 @@ fn ensure_first_run_dirs() {
     if !env_path.exists() {
         let env_example = data.join(".env.example");
         if env_example.exists() && fs::copy(&env_example, &env_path).is_ok() {
-            eprintln!("[main] Created .env from .env.example");
+            tracing::info!(target: "sirin", "[main] Created .env from .env.example");
         }
     }
 
@@ -92,7 +92,7 @@ response_style:\n  voice: 自然、親切\n  ack_prefix: 收到。\n  compliance
 objectives: []\nroi_thresholds:\n  min_usd_to_notify: 5.0\n  min_usd_to_call_remote_llm: 25.0\n\
 coding_agent:\n  enabled: true\n  auto_approve_writes: true\n  max_iterations: 10\n";
         let _ = fs::write(cfg.join("persona.yaml"), default_yaml);
-        eprintln!("[main] Created default config/persona.yaml");
+        tracing::info!(target: "sirin", "[main] Created default config/persona.yaml");
     }
 }
 
@@ -134,13 +134,15 @@ fn main() {
     let env_file = platform::app_data_dir().join(".env");
     if env_file.exists() {
         match dotenvy::from_path(&env_file) {
-            Ok(_)  => eprintln!("[main] Loaded .env from {env_file:?}"),
-            Err(e) => eprintln!("[main] .env load error: {e}"),
+            Ok(_)  => tracing::info!(target: "sirin", "[main] Loaded .env from {env_file:?}"),
+            // .env load failure is meaningful — surface as warn so it lands in diagnose.recent_errors
+            Err(e) => tracing::warn!(target: "sirin", "[main] .env load error: {e}"),
         }
     } else {
         match dotenvy::dotenv() {
-            Ok(path) => eprintln!("[main] Loaded .env from {path:?}"),
-            Err(e)   => eprintln!("[main] .env not loaded: {e}"),
+            Ok(path) => tracing::info!(target: "sirin", "[main] Loaded .env from {path:?}"),
+            // Common in fresh/installed mode — info is enough
+            Err(e)   => tracing::info!(target: "sirin", "[main] .env not loaded: {e}"),
         }
     }
 
@@ -148,7 +150,7 @@ fn main() {
 
     // ── AuthZ engine init ────────────────────────────────────────────────────
     authz::init(Some(std::path::Path::new(".")));
-    eprintln!("[main] AuthZ engine initialized");
+    tracing::info!(target: "sirin", "[main] AuthZ engine initialized");
 
     // ── Live Monitor init ────────────────────────────────────────────────────
     {
@@ -157,13 +159,14 @@ fn main() {
             trace_dir: std::path::PathBuf::from(".sirin"),
             trace_size_limit: None,
         });
-        eprintln!("[main] Live Monitor initialized");
+        tracing::info!(target: "sirin", "[main] Live Monitor initialized");
     }
 
     match memory::ensure_codebase_index() {
-        Ok(count) if count > 0 => eprintln!("[main] Refreshed codebase index ({count} files)"),
+        Ok(count) if count > 0 => tracing::info!(target: "sirin", "[main] Refreshed codebase index ({count} files)"),
         Ok(_) => {}
-        Err(e) => eprintln!("[main] Codebase index refresh skipped: {e}"),
+        // Index failure should surface — code_graph features quietly degrade otherwise
+        Err(e) => tracing::warn!(target: "sirin", "[main] Codebase index refresh skipped: {e}"),
     }
 
     let tracker = TaskTracker::new(task_log_path());
@@ -176,7 +179,8 @@ fn main() {
         let fleet = rt.block_on(llm::probe_and_build_fleet(&client));
         fleet.log_summary();
         if fleet.chat_model.is_empty() {
-            eprintln!("⚠️  [main] WARNING: No LLM models discovered.");
+            // No models = AI is dead — must surface in diagnose.recent_errors
+            tracing::warn!(target: "sirin", "[main] No LLM models discovered — AI features will be unavailable");
         }
         llm::init_shared_llm(fleet.to_llm_config());
         llm::init_agent_fleet(fleet);
@@ -191,7 +195,7 @@ fn main() {
     {
         let tools = rt.block_on(mcp_client::init());
         if !tools.is_empty() {
-            eprintln!("[main] MCP client: {} external tool(s) available", tools.len());
+            tracing::info!(target: "sirin", "[main] MCP client: {} external tool(s) available", tools.len());
         }
     }
 
@@ -226,7 +230,7 @@ fn main() {
         }
 
         if !primary_auth_assigned {
-            eprintln!("[main] No Telegram channel in agents.yaml — falling back to env-var listener");
+            tracing::info!(target: "sirin", "[main] No Telegram channel in agents.yaml — falling back to env-var listener");
             let tg_tracker = tracker.clone();
             let tg_auth_spawn = tg_auth.clone();
             rt.spawn(async move {
@@ -236,6 +240,11 @@ fn main() {
 
         rt.spawn(followup::run_worker(tracker.clone()));
         rt.spawn(rpc_server::start_rpc_server());
+
+        // Background LLM reachability probe — feeds diagnose.llm.reachable.
+        // Cheap (one HTTP GET every 30s); ensures stale "model configured but
+        // Ollama is down" cases get reported truthfully via the MCP tool.
+        diagnose::spawn_reachability_probe();
 
         // Screenshot pump — starts only when Monitor view is active
         monitor::spawn_screenshot_pump();
