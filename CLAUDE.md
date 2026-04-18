@@ -137,7 +137,10 @@ src/updater.rs               Auto-update via GitHub Releases (self_update crate)
 src/claude_session.rs        Spawn `claude` CLI for cross-repo bug fixing
 src/config_check.rs          Diagnostics + AI fix proposal (dual-stage confirm)
 src/mcp_client.rs            External MCP server proxy
-src/mcp_server.rs            MCP HTTP server (:7700/mcp) — 17 tools exposed
+src/mcp_server.rs            MCP HTTP server (:7700/mcp) — 18 tools exposed
+                             (run_test_batch added v0.4.0 — parallel YAML
+                             test fan-out via tokio Semaphore + per-test
+                             session_id; max 8 concurrent tabs)
 src/telegram/                MTProto listener — mod + filter + handler +
                              reply + commands + config + language + llm
 src/teams/                   Chrome CDP (Teams MutationObserver)
@@ -156,9 +159,11 @@ src/followup/                mod (worker loop) + candidates (self-assign)
 
 ```bash
 cargo check          # 0 errors
-cargo test --bin sirin   # 345 passed, 17 ignored
+cargo test --bin sirin   # 398+ passed, 17 ignored
 cargo clippy             # warnings (false positives + architectural)
 cargo build --release
+./target/release/sirin.exe --headless        # no-GUI mode (server / CI / SSH)
+SIRIN_HEADLESS=1 ./target/release/sirin.exe  # equivalent env-var form
 
 # Windows installer (requires Inno Setup 6 installed)
 & 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' /DMyAppVersion=X.Y.Z sirin.iss
@@ -167,6 +172,10 @@ cargo build --release
 # Release CI: push a semver tag → GitHub Actions builds + publishes
 git tag vX.Y.Z && git push origin vX.Y.Z
 ```
+
+Headless mode (added v0.4.0) skips `eframe::run_native()` only — RPC/MCP
+server, browser singleton, telegram listeners, and test_runner all start
+normally. Process parks the main thread until SIGINT/SIGTERM.
 
 ## Where user data lives (installed vs dev)
 

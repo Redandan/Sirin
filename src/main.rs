@@ -126,6 +126,17 @@ fn init_tracing() {
         .init();
 }
 
+/// Detect whether we should run without the egui UI.  Triggered by either
+/// the `--headless` CLI flag or `SIRIN_HEADLESS=1` env var.  In headless mode
+/// Sirin still launches the RPC/MCP server, browser singleton, Telegram
+/// listeners, etc. — only the desktop GUI is skipped so the binary can run
+/// on a server / over SSH / inside Docker.
+fn is_headless() -> bool {
+    std::env::args().any(|a| a == "--headless")
+        || std::env::var("SIRIN_HEADLESS").map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+}
+
 fn main() {
     init_tracing();
     diagnose::record_startup();
@@ -254,6 +265,22 @@ fn main() {
     }
 
     std::mem::forget(rt);
+
+    if is_headless() {
+        tracing::info!(target: "sirin",
+            "[main] Headless mode — RPC/MCP server on :{}, no GUI. Press Ctrl-C to exit.",
+            std::env::var("SIRIN_RPC_PORT").unwrap_or_else(|_| "7700".into())
+        );
+        // Drop the unused service builder so we don't allocate UI state.
+        drop((tracker, tg_auth));
+        // Park forever — background threads (RPC server, telegram listener,
+        // followup worker, screenshot pump) keep working.  Ctrl-C / taskkill
+        // brings the process down cleanly.
+        loop {
+            std::thread::park();
+        }
+    }
+
     let svc = StdArc::new(ui_service_impl::RealService::new(tracker, tg_auth));
     ui_egui::launch(svc);
 }

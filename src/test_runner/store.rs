@@ -35,7 +35,10 @@ fn db() -> &'static Mutex<rusqlite::Connection> {
                 failure_category TEXT, \
                 ai_analysis TEXT, \
                 screenshot_path TEXT, \
-                history_json TEXT \
+                history_json TEXT, \
+                goal_json TEXT, \
+                run_id TEXT, \
+                iterations INTEGER \
             ); \
             CREATE INDEX IF NOT EXISTS idx_tr_test ON test_runs(test_id, started_at); \
             CREATE TABLE IF NOT EXISTS test_knowledge ( \
@@ -71,6 +74,14 @@ fn db() -> &'static Mutex<rusqlite::Connection> {
         let _ = conn.execute("ALTER TABLE auto_fix_history ADD COLUMN verification_run_id TEXT", []);
         let _ = conn.execute("ALTER TABLE auto_fix_history ADD COLUMN verified_at TEXT", []);
 
+        // Migration: pre-v0.4.0 DBs are missing test_runs columns added for
+        // persist_adhoc_run SQLite-fallback recovery.  Ignore the
+        // "duplicate column" error on fresh DBs that already have them.
+        let _ = conn.execute("ALTER TABLE test_runs ADD COLUMN goal_json TEXT", []);
+        let _ = conn.execute("ALTER TABLE test_runs ADD COLUMN run_id TEXT", []);
+        let _ = conn.execute("ALTER TABLE test_runs ADD COLUMN iterations INTEGER", []);
+        let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_tr_runid ON test_runs(run_id)", []);
+
         Mutex::new(conn)
     })
 }
@@ -100,19 +111,54 @@ pub struct NewRun<'a> {
     pub ai_analysis: Option<&'a str>,
     pub screenshot_path: Option<&'a str>,
     pub history_json: Option<&'a str>,
+    /// Serialized TestGoal — populated for ad-hoc runs so
+    /// `persist_adhoc_run` can recover the goal after the in-memory
+    /// run state is pruned (1 hour TTL).
+    pub goal_json: Option<&'a str>,
+    /// In-memory run_id (e.g. `run_20260418_153015_872_0`).  Distinct
+    /// from the AUTOINCREMENT `id` — that's the SQLite row pk.
+    pub run_id: Option<&'a str>,
+    /// Iterations actually consumed.  Stored separately from
+    /// history_json for cheap aggregate queries.
+    pub iterations: Option<u32>,
 }
 
 pub fn record_run(r: NewRun<'_>) -> Result<i64, String> {
     let conn = db().lock().unwrap_or_else(|e| e.into_inner());
     conn.execute(
-        "INSERT INTO test_runs(test_id, started_at, duration_ms, status, failure_category, ai_analysis, screenshot_path, history_json) \
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+        "INSERT INTO test_runs(test_id, started_at, duration_ms, status, failure_category, \
+                               ai_analysis, screenshot_path, history_json, goal_json, run_id, iterations) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
         rusqlite::params![
             r.test_id, r.started_at, r.duration_ms, r.status,
-            r.failure_category, r.ai_analysis, r.screenshot_path, r.history_json
+            r.failure_category, r.ai_analysis, r.screenshot_path, r.history_json,
+            r.goal_json, r.run_id, r.iterations,
         ],
     ).map_err(|e| format!("insert run: {e}"))?;
     Ok(conn.last_insert_rowid())
+}
+
+/// Fallback recovery for `persist_adhoc_run`: when the in-memory run
+/// state has been pruned (>1 hour old), look up the goal + iteration
+/// count by `run_id` from SQLite.
+///
+/// Returns `(goal_json, status, iterations)` — caller deserializes goal
+/// and verifies status == "passed".
+pub fn find_run_by_run_id(run_id: &str) -> Option<(String, String, u32)> {
+    let conn = db().lock().unwrap_or_else(|e| e.into_inner());
+    conn.query_row(
+        "SELECT goal_json, status, iterations FROM test_runs \
+         WHERE run_id = ?1 ORDER BY id DESC LIMIT 1",
+        rusqlite::params![run_id],
+        |row| {
+            let goal_json: Option<String> = row.get(0)?;
+            let status: String = row.get(1)?;
+            let iterations: Option<i64> = row.get(2)?;
+            Ok((goal_json, status, iterations.unwrap_or(0) as u32))
+        },
+    )
+    .ok()
+    .and_then(|(g, s, i)| g.map(|gj| (gj, s, i)))
 }
 
 /// Return the most recent test runs across ALL tests.  Used by the
@@ -386,10 +432,42 @@ mod tests {
                 ai_analysis: None,
                 screenshot_path: None,
                 history_json: None,
+                goal_json: None,
+                run_id: None,
+                iterations: None,
             }).unwrap();
             // Small delay so started_at ordering is deterministic
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
+    }
+
+    #[test]
+    fn find_run_by_run_id_recovers_goal() {
+        let unique = chrono::Local::now().timestamp_nanos_opt().unwrap_or(0);
+        let tid = format!("test_find_{unique}");
+        let rid = format!("run_test_{unique}");
+        let goal_json = r#"{"id":"x","goal":"y"}"#;
+        let now = chrono::Local::now().to_rfc3339();
+        record_run(NewRun {
+            test_id: &tid,
+            started_at: &now,
+            duration_ms: Some(123),
+            status: "passed",
+            failure_category: None,
+            ai_analysis: None,
+            screenshot_path: None,
+            history_json: None,
+            goal_json: Some(goal_json),
+            run_id: Some(&rid),
+            iterations: Some(7),
+        }).unwrap();
+        let recovered = find_run_by_run_id(&rid).expect("must find by run_id");
+        assert_eq!(recovered.0, goal_json);
+        assert_eq!(recovered.1, "passed");
+        assert_eq!(recovered.2, 7);
+
+        // Unknown run_id returns None
+        assert!(find_run_by_run_id("does_not_exist").is_none());
     }
 
     #[test]

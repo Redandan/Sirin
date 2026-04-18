@@ -107,7 +107,32 @@ headless mode (test screenshots come out all-black). Per-test YAML
 override: `browser_headless: false` in the goal file.
 
 **Important:** Sirin opens an egui window. On systems without a display,
-the launch will fail silently. Warn the user if no display is available.
+the launch will fail silently. Warn the user if no display is available —
+or use **headless mode** (next section).
+
+### Headless mode (no GUI — for servers, SSH, CI)
+
+Skip eframe entirely. RPC/MCP, browser singleton, telegram listeners,
+test_runner all start normally; only the desktop window is suppressed.
+
+```bash
+# CLI flag
+./target/release/sirin.exe --headless > sirin.log 2>&1 &
+
+# OR env var (precedence: identical)
+SIRIN_HEADLESS=1 ./target/release/sirin.exe > sirin.log 2>&1 &
+
+# Combine with non-default port
+SIRIN_RPC_PORT=7710 ./target/release/sirin.exe --headless > sirin.log 2>&1 &
+```
+
+Headless mode is the right default when:
+- Running on a server / Docker / SSH session without an X display
+- CI is invoking Sirin via MCP only (no human ever needs the egui UI)
+- You're benchmarking the MCP API and want to remove UI overhead
+
+To stop: same `taskkill` / `pkill` as GUI mode (the process parks the
+main thread on `std::thread::park()`; SIGINT/SIGTERM ends it cleanly).
 
 ### Step 3 — Wait for MCP readiness (up to 15s)
 

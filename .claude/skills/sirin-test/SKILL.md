@@ -42,6 +42,7 @@ Drive Sirin's AI-powered browser testing from external Claude Code sessions. Unl
 |------|---------|------------|
 | `list_tests` | Enumerate YAML tests in `config/tests/` | "What tests exist?" |
 | `run_test_async` | Run a YAML-defined test | When matching test_id exists |
+| `run_test_batch` | Fan-out N YAML tests in parallel (independent tabs) | **Smoke / nightly suite** — many at once |
 | `run_adhoc_test` | Test a URL with inline goal, no YAML | **User wants to test arbitrary URL** |
 | `persist_adhoc_run` | Promote a passing ad-hoc run → permanent YAML test | **User says "save this as a regression test"** after a successful ad-hoc explore |
 | `get_test_result` | Poll run status by `run_id` | Every 3-5s while test runs |
@@ -125,6 +126,30 @@ run_test_async(test_id="checkout_flow", auto_fix=true)
 # auto_fix=true makes Sirin spawn a Claude Code session in the
 # frontend/backend repo when the failure is classified as
 # ui_bug or api_bug. Fire-and-forget; check repo for commits.
+```
+
+### Workflow B' — Smoke / nightly suite (parallel batch)
+
+```
+1. list_tests(tag="smoke")
+   → 5 ids: wiki_smoke / login_flow / checkout / search / settings
+
+2. run_test_batch(test_ids=[...all five...], max_concurrency=3)
+   → { count: 5, max_concurrency: 3,
+       runs: [{test_id, run_id}, ...] }
+
+3. For each run_id, poll get_test_result independently.
+   3 run in parallel on dedicated chrome tabs; the other 2 queue
+   on a Semaphore and start as permits free.
+
+4. Tally pass/fail across the batch.
+
+# Restrictions:
+#  - max_concurrency clamped to [1, 8] (CDP can't handle hundreds
+#    of simultaneous tabs).
+#  - Any unknown test_id aborts the entire batch (fail-fast).
+#  - No auto_fix in batch mode — re-run individual failures with
+#    run_test_async + auto_fix=true if you want triage.
 ```
 
 ### Workflow B.5 — Ad-hoc URL test (NO YAML needed)

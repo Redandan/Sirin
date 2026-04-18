@@ -40,6 +40,28 @@ nested fields.
 
 ---
 
+## Headless mode (no GUI)
+
+Sirin can run without the egui desktop window — useful for servers, SSH
+sessions, CI runners, and Docker containers. Headless mode skips
+`eframe::run_native()` only; the RPC/MCP server, browser singleton,
+Telegram listeners, and test_runner all start normally.
+
+```bash
+# CLI flag
+./sirin --headless
+
+# OR env var (precedence: same)
+SIRIN_HEADLESS=1 ./sirin
+
+# Combine with non-default RPC port
+SIRIN_RPC_PORT=7710 ./sirin --headless
+```
+
+Logs the bound RPC port on startup, then parks the main thread until Ctrl-C
+(or taskkill on Windows). All MCP tool catalog entries below work identically
+in headless mode — the MCP transport is the same TCP listener.
+
 ## Transport
 
 All requests POST JSON-RPC 2.0 to `/mcp`:
@@ -99,7 +121,7 @@ Kick off a research task.
 
 ---
 
-### Test Runner (12 tools)
+### Test Runner (13 tools)
 
 #### `list_tests`
 Enumerate test YAMLs in `config/tests/`.
@@ -120,6 +142,32 @@ Fire-and-forget run of a YAML-defined test. Returns run_id immediately.
 
 If `auto_fix: true`, failed runs trigger a `claude_session` spawn + verification
 re-run (see the Failure Category table below).
+
+#### `run_test_batch`
+Fan-out N YAML tests in parallel onto independent chrome tabs (one
+`session_id` per test). Returns N `run_id`s immediately; poll each separately.
+```json
+{"name":"run_test_batch","arguments":{
+  "test_ids":["wiki_smoke","login_flow","checkout_smoke"],
+  "max_concurrency": 3
+}}
+```
+**Returns:** `{count, max_concurrency, runs:[{test_id, run_id}], status:"queued",
+poll_each_with:"get_test_result"}`.
+
+**`max_concurrency`:** clamped to `[1, 8]` (CDP isn't designed for hundreds of
+simultaneous tabs). Default `3`. Tests beyond the cap queue on a Semaphore and
+start as permits free.
+
+**Restrictions:**
+- Any unknown `test_id` aborts the entire batch (fail-fast).
+- Each run gets `session_id = batch_<batch_id>_<idx>`; tabs are auto-closed when
+  the run completes (success or failure).
+- **No auto-fix in batch mode** — re-run individual failures with
+  `run_test_async + auto_fix=true` if you want triage.
+- Triage / persistence to SQLite still happen per run.
+
+Use this for nightly / smoke suites; use `run_test_async` for one-off triage.
 
 #### `run_adhoc_test`
 Test any URL without pre-creating a YAML goal. The most important tool for
@@ -180,7 +228,11 @@ a YAML test that any future `run_test_async` call can re-execute as regression.
 **Validation (returns Err on violation):**
 - `test_id` must match `[a-z0-9_]+` — no uppercase, hyphens, dots
 - `test_id` must NOT start with `adhoc_` (reserved for in-flight runs)
-- `run_id` must exist in the in-memory registry (pruned after 1 hour)
+- `run_id` must be recoverable. **Two-tier lookup:**
+  1. In-memory registry (fast, lives 1 hour after run completes)
+  2. SQLite `test_runs` table (persistent — works for runs older than 1 hour
+     as long as the goal was recorded; ad-hoc runs since v0.4.0 store
+     `goal_json` for exactly this reason)
 - run must be `Complete(passed)` — refuses queued / running / failed / error
 - file must not exist unless `overwrite=true`
 

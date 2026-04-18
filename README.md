@@ -153,6 +153,10 @@ cargo run
 cargo build --release
 .\target\release\sirin.exe
 
+# 無 GUI 模式（伺服器 / SSH / CI；MCP 仍正常 listen）
+.\target\release\sirin.exe --headless
+$env:SIRIN_HEADLESS=1; .\target\release\sirin.exe   # 等價的 env 形式
+
 # 測試
 cargo test
 ```

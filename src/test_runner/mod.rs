@@ -85,7 +85,7 @@ async fn run_test_with_run_id(
     } else {
         ctx.clone()
     };
-    let result = executor::execute_test_tracked(&ctx_with_run, &test, run_id).await;
+    let result = executor::execute_test_tracked(&ctx_with_run, &test, run_id, None).await;
 
     // Triage non-passed results
     let (category, analysis, fix_triggered) = if matches!(result.status, TestStatus::Passed) {
@@ -100,8 +100,10 @@ async fn run_test_with_run_id(
         )
     };
 
-    // Persist to SQLite
+    // Persist to SQLite — goal + run_id stored so persist_adhoc_run
+    // can recover after the in-memory state is pruned.
     let history_json = serde_json::to_string(&result.history).ok();
+    let goal_json = serde_json::to_string(&test).ok();
     let _ = store::record_run(store::NewRun {
         test_id: &test.id,
         started_at: &started,
@@ -116,6 +118,9 @@ async fn run_test_with_run_id(
         ai_analysis: analysis.as_deref(),
         screenshot_path: result.screenshot_path.as_deref(),
         history_json: history_json.as_deref(),
+        goal_json: goal_json.as_deref(),
+        run_id,
+        iterations: Some(result.iterations),
     });
 
     if fix_triggered {
@@ -219,7 +224,7 @@ pub fn spawn_adhoc_run(req: AdhocRunRequest) -> Result<String, String> {
                 .with_metadata("test_run_id", &run_id_clone);
 
             let started = chrono::Local::now().to_rfc3339();
-            let result = executor::execute_test_tracked(&ctx, &test_clone, Some(&run_id_clone)).await;
+            let result = executor::execute_test_tracked(&ctx, &test_clone, Some(&run_id_clone), None).await;
 
             // Persist to SQLite — ad-hoc runs are still worth recording
             let history_json = serde_json::to_string(&result.history).ok();
@@ -229,6 +234,9 @@ pub fn spawn_adhoc_run(req: AdhocRunRequest) -> Result<String, String> {
                 TestStatus::Timeout => "timeout",
                 TestStatus::Error   => "error",
             };
+            // Persist the goal too so persist_adhoc_run can recover after
+            // the in-memory run state is pruned (1 hour TTL).
+            let goal_json = serde_json::to_string(&test_clone).ok();
             let _ = store::record_run(store::NewRun {
                 test_id: &test_clone.id,
                 started_at: &started,
@@ -238,6 +246,9 @@ pub fn spawn_adhoc_run(req: AdhocRunRequest) -> Result<String, String> {
                 ai_analysis: result.final_analysis.as_deref(),
                 screenshot_path: result.screenshot_path.as_deref(),
                 history_json: history_json.as_deref(),
+                goal_json: goal_json.as_deref(),
+                run_id: Some(&run_id_clone),
+                iterations: Some(result.iterations),
             });
 
             runs::set_phase(&run_id_clone, runs::RunPhase::Complete(result));
@@ -245,6 +256,126 @@ pub fn spawn_adhoc_run(req: AdhocRunRequest) -> Result<String, String> {
     });
 
     Ok(run_id)
+}
+
+/// Spawn N test runs in parallel, each on its own dedicated chrome tab
+/// (`session_id = batch_<batch_id>_<idx>`).  `max_concurrency` caps the number
+/// of tests running simultaneously via a [`tokio::sync::Semaphore`]; the rest
+/// queue up and start as permits free.
+///
+/// Returns one `run_id` per test in the same order as the input — callers can
+/// poll [`runs::get`] to track each independently.
+///
+/// Persistence and triage are skipped on the batch path (caller can re-run
+/// individual tests via the regular `run_test` API if a failure needs auto-fix).
+/// Results are still recorded to SQLite via [`store::record_run`].
+pub fn spawn_batch_run(
+    test_ids: Vec<String>,
+    max_concurrency: usize,
+) -> Result<Vec<String>, String> {
+    if test_ids.is_empty() {
+        return Err("test_ids is empty".into());
+    }
+    // Pre-validate everything before spawning anything — fail fast.
+    for tid in &test_ids {
+        if parser::find(tid).is_none() {
+            return Err(format!("Test '{tid}' not found"));
+        }
+    }
+
+    let batch_id = format!("batch_{}", chrono::Local::now().format("%Y%m%d_%H%M%S_%3f"));
+    let mut run_ids: Vec<String> = Vec::with_capacity(test_ids.len());
+    for tid in &test_ids {
+        run_ids.push(runs::new_run(tid));
+    }
+
+    let cap = max_concurrency.max(1);
+    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(cap));
+
+    for (idx, (test_id, run_id)) in test_ids.iter().zip(run_ids.iter()).enumerate() {
+        let sem_clone = sem.clone();
+        let test_id_clone = test_id.clone();
+        let run_id_clone = run_id.clone();
+        let session_id = format!("{batch_id}_{idx:02}");
+
+        std::thread::spawn(move || {
+            let rt = match tokio::runtime::Runtime::new() {
+                Ok(r) => r,
+                Err(e) => {
+                    runs::set_phase(&run_id_clone, runs::RunPhase::Error(
+                        format!("failed to create runtime: {e}")
+                    ));
+                    return;
+                }
+            };
+            rt.block_on(async {
+                // Wait for a slot — Semaphore::acquire is fair (FIFO).
+                let _permit = match sem_clone.acquire().await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        runs::set_phase(&run_id_clone, runs::RunPhase::Error(
+                            format!("semaphore closed: {e}")
+                        ));
+                        return;
+                    }
+                };
+
+                let test = match parser::find(&test_id_clone) {
+                    Some(t) => t,
+                    None => {
+                        runs::set_phase(&run_id_clone, runs::RunPhase::Error(
+                            format!("test '{test_id_clone}' not found")
+                        ));
+                        return;
+                    }
+                };
+
+                let tools = crate::adk::tool::default_tool_registry();
+                let ctx = crate::adk::context::AgentContext::new("mcp_batch", tools)
+                    .with_metadata("test_run_id", &run_id_clone);
+
+                let started = chrono::Local::now().to_rfc3339();
+                let result = executor::execute_test_tracked(
+                    &ctx, &test, Some(&run_id_clone), Some(&session_id)
+                ).await;
+
+                // Persist to SQLite — same shape as spawn_run_async.
+                let history_json = serde_json::to_string(&result.history).ok();
+                let status_str = match result.status {
+                    TestStatus::Passed  => "passed",
+                    TestStatus::Failed  => "failed",
+                    TestStatus::Timeout => "timeout",
+                    TestStatus::Error   => "error",
+                };
+                let goal_json = serde_json::to_string(&test).ok();
+                let _ = store::record_run(store::NewRun {
+                    test_id: &test.id,
+                    started_at: &started,
+                    duration_ms: Some(result.duration_ms as i64),
+                    status: status_str,
+                    failure_category: None,
+                    ai_analysis: result.final_analysis.as_deref(),
+                    screenshot_path: result.screenshot_path.as_deref(),
+                    history_json: history_json.as_deref(),
+                    goal_json: goal_json.as_deref(),
+                    run_id: Some(&run_id_clone),
+                    iterations: Some(result.iterations),
+                });
+
+                runs::set_phase(&run_id_clone, runs::RunPhase::Complete(result));
+
+                // Best-effort close the dedicated tab.  Browser actions hold
+                // the session in `OnceLock<Mutex>` — release it so the next
+                // batch doesn't accumulate ghost tabs.
+                let sid = session_id.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    let _ = crate::browser::close_session(&sid);
+                }).await;
+            });
+        });
+    }
+
+    Ok(run_ids)
 }
 
 /// Run all tests matching the optional tag filter.
@@ -340,50 +471,65 @@ pub fn persist_adhoc_run(p: PersistAdhocParams) -> Result<PersistAdhocResult, St
                     for in-flight runs.  Use a permanent name like 'login_flow'".into());
     }
 
-    // Recover the run state.  If pruned (older than 1 hour), we can't
-    // reconstruct the goal — surface that clearly so the caller can
-    // re-run rather than silently writing a half-empty YAML.
-    let state = runs::get(&p.run_id)
-        .ok_or_else(|| format!(
-            "run_id '{}' not found in registry — runs are pruned after 1 hour.  \
-             Re-run the exploration if you want to persist it.",
-            p.run_id
-        ))?;
-
-    // Goal storage was added in this same change; for runs spawned before
-    // restart this can be None.  Be explicit about why.
-    let goal = state.test_goal.clone()
-        .ok_or_else(|| format!(
+    // Two-tier recovery: fast path (in-memory registry, set within the
+    // last hour), slow path (SQLite test_runs row by run_id).  This
+    // means an external AI can explore at 9am and persist at 5pm —
+    // the in-memory state is gone but the YAML goal + iteration count
+    // were committed to disk at run completion.
+    let (goal, iterations_used, status_passed) = if let Some(state) = runs::get(&p.run_id) {
+        // Fast path — read directly from in-memory state.
+        let goal = state.test_goal.clone().ok_or_else(|| format!(
             "run_id '{}' has no stored TestGoal.  This usually means the run \
              was started before Sirin was upgraded to support persist — \
              re-run the exploration to capture the goal.",
             p.run_id
         ))?;
-
-    // Refuse to persist incomplete or failed runs.  Persisting a failed
-    // exploration would create a broken regression test that always fails;
-    // not what the caller wants.
-    let (iterations_used, status) = match &state.phase {
-        runs::RunPhase::Complete(r) => (r.iterations, r.status.clone()),
-        runs::RunPhase::Queued => return Err(format!(
-            "run '{}' is still queued — wait for completion before persisting", p.run_id
-        )),
-        runs::RunPhase::Running { step, .. } => return Err(format!(
-            "run '{}' is still running (step {step}) — wait for completion", p.run_id
-        )),
-        runs::RunPhase::Error(e) => return Err(format!(
-            "run '{}' errored — refusing to persist a broken test: {e}", p.run_id
-        )),
+        let (iters, passed) = match &state.phase {
+            runs::RunPhase::Complete(r) => (
+                r.iterations,
+                matches!(r.status, executor::TestStatus::Passed),
+            ),
+            runs::RunPhase::Queued => return Err(format!(
+                "run '{}' is still queued — wait for completion before persisting", p.run_id
+            )),
+            runs::RunPhase::Running { step, .. } => return Err(format!(
+                "run '{}' is still running (step {step}) — wait for completion", p.run_id
+            )),
+            runs::RunPhase::Error(e) => return Err(format!(
+                "run '{}' errored — refusing to persist a broken test: {e}", p.run_id
+            )),
+        };
+        if !passed {
+            return Err(format!(
+                "run '{}' did not pass — refusing to persist a regression \
+                 test that would always fail.  If the goal is right but the \
+                 page is buggy, fix the page first then re-run.",
+                p.run_id
+            ));
+        }
+        (goal, iters, true)
+    } else {
+        // Slow path — in-memory state pruned, but the SQLite row survives.
+        let (goal_json, status, iters) = store::find_run_by_run_id(&p.run_id)
+            .ok_or_else(|| format!(
+                "run_id '{}' not found in either in-memory registry or SQLite \
+                 history — either the run never happened, or it predates \
+                 Sirin v0.4.0 (which added SQLite goal persistence).  Re-run \
+                 the exploration to capture the goal.",
+                p.run_id
+            ))?;
+        if status != "passed" {
+            return Err(format!(
+                "run '{}' has SQLite status='{}' — refusing to persist a regression \
+                 test that would always fail",
+                p.run_id, status
+            ));
+        }
+        let goal: TestGoal = serde_json::from_str(&goal_json)
+            .map_err(|e| format!("recovered goal_json failed to parse: {e}"))?;
+        (goal, iters, true)
     };
-
-    if !matches!(status, executor::TestStatus::Passed) {
-        return Err(format!(
-            "run '{}' did not pass (status={:?}) — refusing to persist a regression \
-             test that would always fail.  If the goal is right but the page is buggy, \
-             fix the page first then re-run.",
-            p.run_id, status
-        ));
-    }
+    let _ = status_passed; // bound for clarity but the early returns made it redundant
 
     // Build the permanent TestGoal.  Most fields carry over verbatim — the
     // only mutations are:
@@ -621,6 +767,71 @@ mod persist_tests {
     }
 
     #[test]
+    fn recovers_pruned_run_from_sqlite() {
+        // Simulate the "explored at 9am, came back at 5pm" scenario:
+        // the in-memory run state was pruned, but the SQLite row still
+        // has the goal_json + iterations.  persist_adhoc_run must
+        // succeed via the slow-path recovery branch.
+        let unique = chrono::Local::now().timestamp_nanos_opt().unwrap_or(0);
+        let test_id = format!("persist_recovered_{unique}");
+        let synthetic_run_id = format!("run_pruned_{unique}");
+        let goal = TestGoal {
+            id: format!("adhoc_{unique}"),
+            name: "Ad-hoc: test recovery".into(),
+            url: "https://example.com/recovery".into(),
+            goal: "verify recovery flow".into(),
+            max_iterations: 10,
+            timeout_secs: 60,
+            retry_on_parse_error: 3,
+            locale: "en".into(),
+            url_query: Default::default(),
+            browser_headless: Some(true),
+            success_criteria: vec!["Recovered OK".into()],
+            tags: vec!["adhoc".into()],
+            fixture: None,
+        };
+        // Insert directly into SQLite — simulates the row that
+        // record_run wrote at the original run completion.
+        let goal_json_str = serde_json::to_string(&goal).unwrap();
+        store::record_run(store::NewRun {
+            test_id: &goal.id,
+            started_at: &chrono::Local::now().to_rfc3339(),
+            duration_ms: Some(8_000),
+            status: "passed",
+            failure_category: None,
+            ai_analysis: None,
+            screenshot_path: None,
+            history_json: None,
+            goal_json: Some(&goal_json_str),
+            run_id: Some(&synthetic_run_id),
+            iterations: Some(6),
+        }).unwrap();
+
+        // NOTE: we deliberately do NOT call runs::new_run() — the in-memory
+        // state is absent, so persist_adhoc_run must hit the SQLite fallback.
+        let result = persist_adhoc_run(PersistAdhocParams {
+            run_id: synthetic_run_id,
+            test_id: test_id.clone(),
+            name: None,
+            tags: None,
+            bump_iterations: true,
+            overwrite: false,
+        }).expect("recovery via SQLite must succeed");
+        assert_eq!(result.test_id, test_id);
+        assert_eq!(result.iterations_used, 6);
+
+        // Round-trip the persisted YAML
+        let loaded = parser::load_file(std::path::Path::new(&result.yaml_path))
+            .expect("YAML parseable");
+        assert_eq!(loaded.url, "https://example.com/recovery");
+        assert_eq!(loaded.success_criteria, vec!["Recovered OK".to_string()]);
+        // bump_iterations=true → max(used+5, original) = max(11, 10) = 11
+        assert_eq!(loaded.max_iterations, 11);
+
+        let _ = std::fs::remove_file(&result.yaml_path);
+    }
+
+    #[test]
     fn refuses_to_overwrite_without_flag() {
         let unique_id = format!("persist_overwrite_{}", chrono::Local::now().format("%H%M%S%3f"));
 
@@ -661,5 +872,40 @@ mod persist_tests {
 
         // Cleanup
         let _ = std::fs::remove_file(&first.yaml_path);
+    }
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_empty_test_ids() {
+        let result = spawn_batch_run(Vec::new(), 3);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("empty"));
+    }
+
+    #[test]
+    fn rejects_unknown_test_id() {
+        // Even a single bogus id should abort the entire batch — fail fast.
+        let result = spawn_batch_run(
+            vec!["this_test_does_not_exist_xyz_999".into()],
+            3,
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("not found"), "err was: {err}");
+    }
+
+    #[test]
+    fn aborts_when_any_id_unknown() {
+        // wiki_smoke does exist (ships in config/tests), but the second is bogus.
+        // The whole call must be rejected without spawning anything.
+        let result = spawn_batch_run(
+            vec!["wiki_smoke".into(), "totally_bogus_xyz_999".into()],
+            3,
+        );
+        assert!(result.is_err(), "any unknown id must abort entire batch");
     }
 }

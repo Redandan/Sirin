@@ -300,6 +300,25 @@ fn handle_tools_list() -> Result<Value, String> {
                 }
             },
             {
+                "name": "run_test_batch",
+                "description": "並行啟動多個 YAML test，每個跑在獨立 chrome tab（session_id 自動分配）。立即返回 N 個 run_id。\n\n適用場景：smoke suite / nightly regression / 一次跑完多個 tag。\n\n限制：max_concurrency 最大 8（避免 CDP 連線過載）；不會自動 triage 或 auto_fix（失敗請用個別 run_test_async 重跑）；任一 test_id 找不到就整批拒絕。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "test_ids": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "要並行跑的 test_id 清單（必須都存在於 config/tests/*.yaml）"
+                        },
+                        "max_concurrency": {
+                            "type": "number",
+                            "description": "最大同時執行數量；預設 3，最大 8"
+                        }
+                    },
+                    "required": ["test_ids"]
+                }
+            },
+            {
                 "name": "get_test_result",
                 "description": "依 run_id 取得測試狀態。可能狀態：queued | running | passed | failed | timeout | error。",
                 "inputSchema": {
@@ -512,6 +531,7 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
     match name {
         "list_tests"           => return call_list_tests(arguments).map(wrap_json),
         "run_test_async"       => return call_run_test_async(arguments).map(wrap_json),
+        "run_test_batch"       => return call_run_test_batch(arguments).map(wrap_json),
         "run_adhoc_test"       => return call_run_adhoc_test(arguments).map(wrap_json),
         "persist_adhoc_run"    => return call_persist_adhoc_run(arguments).map(wrap_json),
         "get_test_result"      => return call_get_test_result(arguments).map(wrap_json),
@@ -647,6 +667,38 @@ fn call_run_test_async(args: Value) -> Result<Value, String> {
         "auto_fix": auto_fix,
         "status": "queued",
         "poll_with": "get_test_result",
+    }))
+}
+
+/// Spawn N tests in parallel, each on its own dedicated chrome tab.
+///
+/// `max_concurrency` clamped to [1, 8].  CDP isn't designed for hundreds
+/// of simultaneous tabs — 8 is conservative; if you need a wider sweep,
+/// shard externally and call this multiple times.
+fn call_run_test_batch(args: Value) -> Result<Value, String> {
+    let test_ids: Vec<String> = args.get("test_ids")
+        .and_then(Value::as_array)
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .ok_or("Missing test_ids (array of strings)")?;
+    if test_ids.is_empty() {
+        return Err("test_ids is empty".into());
+    }
+    let raw_cap = args.get("max_concurrency")
+        .and_then(Value::as_u64)
+        .unwrap_or(3) as usize;
+    let cap = raw_cap.clamp(1, 8);
+
+    let run_ids = crate::test_runner::spawn_batch_run(test_ids.clone(), cap)?;
+    // Pair each input test with its assigned run_id for client clarity.
+    let pairs: Vec<Value> = test_ids.iter().zip(run_ids.iter())
+        .map(|(tid, rid)| json!({ "test_id": tid, "run_id": rid }))
+        .collect();
+    Ok(json!({
+        "count": pairs.len(),
+        "max_concurrency": cap,
+        "runs": pairs,
+        "status": "queued",
+        "poll_each_with": "get_test_result",
     }))
 }
 
@@ -1421,6 +1473,33 @@ mod test_runner_mcp_tests {
         let result = call_get_test_result(json!({"run_id": "run_fake_12345"}));
         assert!(result.is_err());
     }
+
+    #[test]
+    fn run_test_batch_rejects_missing_test_ids() {
+        assert!(call_run_test_batch(json!({})).is_err());
+    }
+
+    #[test]
+    fn run_test_batch_rejects_empty_array() {
+        let result = call_run_test_batch(json!({"test_ids": []}));
+        assert!(result.is_err(), "should reject empty test_ids");
+    }
+
+    #[test]
+    fn run_test_batch_rejects_unknown_test_id() {
+        // The batch should fail-fast if ANY id is unknown.
+        let result = call_run_test_batch(json!({
+            "test_ids": ["wiki_smoke", "totally_does_not_exist_xyz"],
+        }));
+        assert!(result.is_err(), "any unknown id must abort the whole batch");
+    }
+
+    // Note: a positive-path test that calls call_run_test_batch with a real
+    // test_id would spawn a background chrome thread (asynchronous, fully
+    // detached from the test).  That risks leaking browser processes and
+    // making `cargo test` flaky.  The clamp/dispatch logic is exercised by
+    // direct unit tests in `test_runner::mod` instead — see
+    // spawn_batch_run_validates_ids and spawn_batch_run_returns_run_ids.
 
     #[test]
     fn base64_encode_roundtrip() {

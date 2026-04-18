@@ -37,10 +37,22 @@ pub enum TestStatus { Passed, Failed, Timeout, Error }
 /// Truncate observation text past this many chars in LLM history.
 const OBS_TRUNCATE_CHARS: usize = 800;
 
+/// Merge a `session_id` field into a browser action's JSON args (no-op if
+/// the caller didn't request a session).  Used to fan a single test out
+/// onto a dedicated chrome tab when `run_test_batch` runs N tests in
+/// parallel.  Browser actions that don't recognise the field ignore it.
+fn inject_session(args: &mut Value, session_id: Option<&str>) {
+    if let (Some(sid), Some(obj)) = (session_id, args.as_object_mut()) {
+        // Don't overwrite if the LLM (or fixture) explicitly set its own.
+        obj.entry("session_id").or_insert_with(|| json!(sid));
+    }
+}
+
 /// Run a single fixture step via the `web_navigate` tool.
 async fn run_fixture_step(
     ctx: &crate::adk::context::AgentContext,
     step: &crate::test_runner::parser::FixtureStep,
+    session_id: Option<&str>,
 ) -> Result<(), String> {
     let mut args = json!({
         "action": step.action,
@@ -50,6 +62,7 @@ async fn run_fixture_step(
     if let Some(ms) = step.timeout_ms {
         args["timeout"] = json!(ms);
     }
+    inject_session(&mut args, session_id);
     ctx.call_tool("web_navigate", args).await
         .map(|_| ())
         .map_err(|e| format!("fixture step '{}' failed: {}", step.action, e))
@@ -60,15 +73,19 @@ pub async fn execute_test(
     ctx: &crate::adk::context::AgentContext,
     test: &TestGoal,
 ) -> TestResult {
-    execute_test_tracked(ctx, test, None).await
+    execute_test_tracked(ctx, test, None, None).await
 }
 
 /// Same as [`execute_test`] but reports live progress to an async run registry.
 /// `run_id` — key in [`crate::test_runner::runs`] to update as steps progress.
+/// `session_id` — when `Some`, every browser tool call gets a `session_id` field
+/// merged into its args, isolating this run to a dedicated chrome tab.  Used by
+/// `run_test_batch` to fan out parallel runs over independent tabs.
 pub async fn execute_test_tracked(
     ctx: &crate::adk::context::AgentContext,
     test: &TestGoal,
     run_id: Option<&str>,
+    session_id: Option<&str>,
 ) -> TestResult {
     use crate::test_runner::runs;
 
@@ -95,23 +112,26 @@ pub async fn execute_test_tracked(
 
     // 1) Navigate to the test URL (with url_query params merged in).
     let nav_url = test.full_url();
-    let nav_input = json!({ "action": "goto", "target": &nav_url });
+    let mut nav_input = json!({ "action": "goto", "target": &nav_url });
+    inject_session(&mut nav_input, session_id);
     if let Err(e) = ctx.call_tool("web_navigate", nav_input).await {
         return finalize_early(ctx, run_id, test, &history, format!("navigate failed: {e}")).await;
     }
 
     // 2) Install console + network capture (best effort)
-    let _ = ctx.call_tool("web_navigate", json!({ "action": "install_capture" })).await;
+    let mut cap_input = json!({ "action": "install_capture" });
+    inject_session(&mut cap_input, session_id);
+    let _ = ctx.call_tool("web_navigate", cap_input).await;
 
     // 2b) Run fixture setup steps (failure aborts the test before the ReAct loop).
     if let Some(fixture) = &test.fixture {
         for step in &fixture.setup {
-            if let Err(e) = run_fixture_step(ctx, step).await {
+            if let Err(e) = run_fixture_step(ctx, step, session_id).await {
                 let result = finalize_early(ctx, run_id, test, &history, format!("fixture setup failed: {e}")).await;
                 // Still run cleanup even when setup fails.
                 if let Some(fix) = &test.fixture {
                     for cs in &fix.cleanup {
-                        if let Err(ce) = run_fixture_step(ctx, cs).await {
+                        if let Err(ce) = run_fixture_step(ctx, cs, session_id).await {
                             tracing::warn!("[fixture] cleanup step '{}' failed: {ce}", cs.action);
                         }
                     }
@@ -204,7 +224,8 @@ pub async fn execute_test_tracked(
             }
 
             // Execute the browser tool call
-            let action_input = step.action_input.clone();
+            let mut action_input = step.action_input.clone();
+            inject_session(&mut action_input, session_id);
             let action_label = action_input.get("action").and_then(Value::as_str).unwrap_or("?").to_string();
             if let Some(rid) = run_id {
                 runs::set_phase(rid, runs::RunPhase::Running {
@@ -255,7 +276,7 @@ pub async fn execute_test_tracked(
     // 4) Fixture cleanup — always runs regardless of test pass/fail/timeout/error.
     if let Some(fixture) = &test.fixture {
         for step in &fixture.cleanup {
-            if let Err(e) = run_fixture_step(ctx, step).await {
+            if let Err(e) = run_fixture_step(ctx, step, session_id).await {
                 tracing::warn!("[fixture] cleanup step '{}' failed: {e}", step.action);
             }
         }

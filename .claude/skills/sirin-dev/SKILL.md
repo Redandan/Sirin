@@ -122,12 +122,21 @@ config/
 
 ```bash
 cargo check          # 0 errors required before commit
-cargo test --bin sirin    # 345 passed, 17 ignored — all should pass
+cargo test --bin sirin    # 392+ passed, 17 ignored — all should pass
 cargo build --release     # ~5-7 min cold (8 min on GitHub Actions cold)
 ./target/release/sirin.exe                       # launch GUI on port 7700
 SIRIN_RPC_PORT=7701 ./target/release/sirin.exe   # alt port if 7700 stuck
 SIRIN_BROWSER_HEADLESS=false ./target/release/... # for Flutter / WebGL
+./target/release/sirin.exe --headless            # no GUI (server / SSH / CI)
+SIRIN_HEADLESS=1 ./target/release/sirin.exe      # equivalent env-var form
 ```
+
+**Headless mode** (added v0.4.0): Skip `eframe::run_native()` entirely;
+keep RPC/MCP server, browser singleton, telegram listeners, and test_runner
+running. Triggered by either the `--headless` CLI flag or `SIRIN_HEADLESS=1`
+env var. Process parks the main thread until SIGINT/SIGTERM. Useful for:
+servers without a display, Docker containers, CI pipelines invoking via MCP
+only, and benchmarking the MCP API without UI overhead.
 
 Avoid `cargo run` (debug build, slow startup, LLM calls may time out).
 
