@@ -42,12 +42,14 @@
 
 use axum::{
     extract::Json,
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::post,
     Router,
 };
 use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tower_http::timeout::TimeoutLayer;
 
@@ -61,16 +63,60 @@ use tower_http::timeout::TimeoutLayer;
 /// unaffected.
 const MCP_REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
 
-// ── Client ID tracker ─────────────────────────────────────────────────────────
+// ── Client ID session store ───────────────────────────────────────────────────
+//
+// Maps each client's transport identity (HTTP `User-Agent`) to the nice
+// client_id derived from its `initialize` params (e.g. "claude-desktop@1.2.3").
+// Two concurrent clients with distinct UAs cannot clobber each other — the
+// previous `static Mutex<String> CURRENT_CLIENT_ID` had a race where client B's
+// `initialize` would overwrite client A's identity mid-flight, leading to
+// mis-attributed audit log entries and authz decisions.
 
-static CURRENT_CLIENT_ID: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+static CLIENT_SESSIONS: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
 
-fn set_client_id(id: &str) {
-    *CURRENT_CLIENT_ID.lock().unwrap_or_else(|e| e.into_inner()) = id.to_string();
+fn sessions() -> &'static Mutex<HashMap<String, String>> {
+    CLIENT_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn get_client_id() -> String {
-    CURRENT_CLIENT_ID.lock().unwrap_or_else(|e| e.into_inner()).clone()
+fn remember_client_id(user_agent: &str, client_id: &str) {
+    sessions().lock().unwrap_or_else(|e| e.into_inner())
+        .insert(user_agent.to_string(), client_id.to_string());
+}
+
+/// Resolve a request's client_id from its `User-Agent`.  Falls back to the UA
+/// itself when the client hasn't yet called `initialize` (e.g. curl probes,
+/// sirin-call ad-hoc calls) — better than a stale global or empty string.
+fn resolve_client_id(user_agent: &str) -> String {
+    sessions().lock().unwrap_or_else(|e| e.into_inner())
+        .get(user_agent)
+        .cloned()
+        .unwrap_or_else(|| user_agent.to_string())
+}
+
+// ── Blocking helper with panic recovery ──────────────────────────────────────
+
+/// Run a CPU-bound or blocking-I/O operation on the tokio blocking pool and
+/// convert any panic in the closure into an `Err` — NOT a process abort.
+///
+/// `tokio::task::spawn_blocking` catches panics and reports them via
+/// `JoinError::is_panic()`, but only when the binary is built with
+/// `panic = "unwind"` (the default — Cargo.toml deliberately leaves `panic`
+/// unset in `[profile.release]`).  Under `panic = "abort"` a single bad
+/// request would crash the entire Sirin process and leave a zombie listening
+/// socket.
+async fn blocking<T, F>(label: &'static str, f: F) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::task::spawn_blocking(f).await {
+        Ok(inner) => inner,
+        Err(e) if e.is_panic() => {
+            tracing::error!(label, "handler panicked — recovered by blocking()");
+            Err(format!("{label}: handler panicked — see server logs"))
+        }
+        Err(e) => Err(format!("{label}: join error: {e}")),
+    }
 }
 
 // ── UUID short helper ─────────────────────────────────────────────────────────
@@ -102,12 +148,23 @@ pub fn mcp_router() -> Router {
 
 // ── Handler ───────────────────────────────────────────────────────────────────
 
-async fn mcp_handler(Json(req): Json<Value>) -> impl IntoResponse {
+async fn mcp_handler(
+    headers: HeaderMap,
+    Json(req): Json<Value>,
+) -> impl IntoResponse {
     let id     = req.get("id").cloned().unwrap_or(json!(null));
     let method = req["method"].as_str().unwrap_or("").to_string();
     let params = req.get("params").cloned().unwrap_or(json!({}));
+    // Transport-level client identity — stable across tools/call requests for
+    // the same HTTP client (same User-Agent).  Feeds resolve_client_id so
+    // audit logs and authz decisions use the right identity instead of a
+    // last-writer-wins global.
+    let user_agent = headers.get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown")
+        .to_string();
 
-    let result = dispatch(&method, params).await;
+    let result = dispatch(&method, params, &user_agent).await;
 
     let body = match result {
         Ok(v) => json!({
@@ -127,11 +184,11 @@ async fn mcp_handler(Json(req): Json<Value>) -> impl IntoResponse {
 
 // ── Dispatcher ────────────────────────────────────────────────────────────────
 
-async fn dispatch(method: &str, params: Value) -> Result<Value, String> {
+async fn dispatch(method: &str, params: Value, user_agent: &str) -> Result<Value, String> {
     match method {
-        "initialize" => handle_initialize(params),
+        "initialize" => handle_initialize(params, user_agent),
         "tools/list" => handle_tools_list(),
-        "tools/call" => handle_tools_call(params).await,
+        "tools/call" => handle_tools_call(params, user_agent).await,
         // Notifications (no response required, but we must not error)
         "notifications/initialized" => Ok(json!({})),
         other => Err(format!("Method not found: {other}")),
@@ -140,12 +197,14 @@ async fn dispatch(method: &str, params: Value) -> Result<Value, String> {
 
 // ── initialize ────────────────────────────────────────────────────────────────
 
-fn handle_initialize(params: Value) -> Result<Value, String> {
+fn handle_initialize(params: Value, user_agent: &str) -> Result<Value, String> {
     // Parse clientInfo → "name@version", fallback "unknown@unknown"
     let name    = params["clientInfo"]["name"].as_str().unwrap_or("unknown");
     let version = params["clientInfo"]["version"].as_str().unwrap_or("unknown");
     let client_id = format!("{name}@{version}");
-    set_client_id(&client_id);
+    // Remember this nice id for the duration of the client's session (keyed
+    // by User-Agent, so concurrent clients with different UAs don't collide).
+    remember_client_id(user_agent, &client_id);
     // Register with monitor
     if let Some(state) = crate::monitor::state() {
         state.mark_client(&client_id, true);
@@ -418,11 +477,13 @@ fn handle_tools_list() -> Result<Value, String> {
 
 // ── tools/call ────────────────────────────────────────────────────────────────
 
-async fn handle_tools_call(params: Value) -> Result<Value, String> {
+async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, String> {
     let name      = params["name"].as_str().ok_or("Missing 'name'")?;
     let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
     // Tools that return structured JSON (not just text) bypass the text wrapper.
+    // Only `browser_exec` currently needs the caller's identity (for authz +
+    // audit); other tools are read-only w.r.t. authz.
     match name {
         "list_tests"           => return call_list_tests(arguments).map(wrap_json),
         "run_test_async"       => return call_run_test_async(arguments).map(wrap_json),
@@ -433,7 +494,7 @@ async fn handle_tools_call(params: Value) -> Result<Value, String> {
         "list_recent_runs"     => return call_list_recent_runs(arguments).map(wrap_json),
         "list_fixes"           => return call_list_fixes(arguments).map(wrap_json),
         "config_diagnostics"   => return call_config_diagnostics().map(wrap_json),
-        "browser_exec"         => return call_browser_exec(arguments).await.map(wrap_json),
+        "browser_exec"         => return call_browser_exec(arguments, user_agent).await.map(wrap_json),
         "page_state"           => return call_page_state(arguments).await.map(wrap_json),
         _ => {}
     }
@@ -469,13 +530,12 @@ async fn call_memory_search(args: Value) -> Result<String, String> {
     let query = args["query"].as_str().ok_or("Missing query")?.to_string();
     let limit = args["limit"].as_u64().unwrap_or(5) as usize;
 
-    tokio::task::spawn_blocking(move || {
+    blocking("memory_search", move || {
         crate::memory::memory_search(&query, limit, "")
             .map(|results| results.join("\n\n"))
             .map_err(|e| e.to_string())
     })
     .await
-    .map_err(|e| format!("spawn_blocking: {e}"))?
 }
 
 fn call_skill_list() -> String {
@@ -695,10 +755,12 @@ fn call_config_diagnostics() -> Result<Value, String> {
     }))
 }
 
-async fn call_browser_exec(args: Value) -> Result<Value, String> {
+async fn call_browser_exec(args: Value, user_agent: &str) -> Result<Value, String> {
     // ── AuthZ gate ────────────────────────────────────────────────────────────
     let action_name = args["action"].as_str().unwrap_or("").to_string();
-    let client_id   = get_client_id();
+    // Resolve per-request — never read a global.  Concurrent clients each
+    // carry their own UA, so the session lookup is race-free.
+    let client_id   = resolve_client_id(user_agent);
     let current_url = crate::browser::current_url().ok();
     let cfg         = crate::authz::global_config();
     let decision    = crate::authz::decide(&client_id, &action_name, &args, &current_url, &cfg);
@@ -811,8 +873,8 @@ async fn call_browser_exec(args: Value) -> Result<Value, String> {
         // Ensure browser open in correct mode first (might trigger vision-needing
         // re-launch for Flutter/WebGL).
         let want_headless = headless_override.unwrap_or_else(crate::browser::default_headless);
-        tokio::task::spawn_blocking(move || crate::browser::ensure_open(want_headless))
-            .await.map_err(|e| format!("spawn: {e}"))??;
+        blocking("ensure_open", move || crate::browser::ensure_open(want_headless))
+            .await?;
         let llm = crate::llm::shared_llm();
         let client = crate::llm::shared_http();
         match crate::llm::analyze_screenshot(&client, &llm, &target).await {
@@ -831,7 +893,7 @@ async fn call_browser_exec(args: Value) -> Result<Value, String> {
 
     // Dispatch directly to crate::browser to avoid requiring an AgentContext
     // for simple imperative calls.  Mirrors the web_navigate action set.
-    let result = tokio::task::spawn_blocking(move || -> Result<Value, String> {
+    let result = blocking("browser_exec_sync", move || -> Result<Value, String> {
         use crate::browser;
         let want_headless = headless_override.unwrap_or_else(browser::default_headless);
 
@@ -1160,8 +1222,7 @@ async fn call_browser_exec(args: Value) -> Result<Value, String> {
             other   => Err(format!("Unknown browser_exec action: {other}")),
         }
     })
-    .await
-    .map_err(|e| format!("spawn_blocking: {e}"))?;
+    .await;
 
     let dur = t0.elapsed().as_millis() as u64;
     match &result {
@@ -1176,7 +1237,7 @@ async fn call_page_state(args: Value) -> Result<Value, String> {
     let include_ax         = args.get("include_ax").and_then(Value::as_bool).unwrap_or(true);
     let max_ax_nodes       = args.get("max_ax_nodes").and_then(Value::as_u64).unwrap_or(50) as usize;
 
-    tokio::task::spawn_blocking(move || -> Result<Value, String> {
+    blocking("page_state", move || -> Result<Value, String> {
         use crate::browser;
 
         // Basic state — always collected.
@@ -1233,7 +1294,6 @@ async fn call_page_state(args: Value) -> Result<Value, String> {
         Ok(result)
     })
     .await
-    .map_err(|e| format!("spawn_blocking: {e}"))?
 }
 
 fn call_get_full_observation(args: Value) -> Result<Value, String> {
@@ -1341,17 +1401,33 @@ mod test_runner_mcp_tests {
     #[test]
     fn browser_exec_rejects_missing_action() {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let r = rt.block_on(call_browser_exec(json!({})));
+        let r = rt.block_on(call_browser_exec(json!({}), "test-client"));
         assert!(r.is_err());
     }
 
     #[test]
-    fn get_client_id_defaults_to_empty_before_initialize() {
-        // Static state may already be set by other tests; at minimum the call
-        // must not panic and must return a String.
-        let id = get_client_id();
-        // Must be a valid UTF-8 string (no panic)
-        let _ = id.len();
+    fn resolve_client_id_falls_back_to_user_agent() {
+        // A UA that hasn't called `initialize` yet resolves to itself, so
+        // audit logs are never empty even for ad-hoc curl probes.
+        let id = resolve_client_id("curl/8.7.1");
+        assert_eq!(id, "curl/8.7.1");
+    }
+
+    #[test]
+    fn remember_then_resolve_returns_remembered_client_id() {
+        remember_client_id("test-ua-xyz", "my-client@9.9.9");
+        assert_eq!(resolve_client_id("test-ua-xyz"), "my-client@9.9.9");
+    }
+
+    #[test]
+    fn sessions_isolate_clients_by_user_agent() {
+        // Race regression guard: two UAs must map to independent client_ids,
+        // no matter the order of writes.
+        remember_client_id("ua-a", "alice@1.0");
+        remember_client_id("ua-b", "bob@2.0");
+        remember_client_id("ua-a", "alice@1.0");  // idempotent re-register
+        assert_eq!(resolve_client_id("ua-a"), "alice@1.0");
+        assert_eq!(resolve_client_id("ua-b"), "bob@2.0");
     }
 
     #[test]

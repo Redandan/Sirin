@@ -56,7 +56,12 @@ osx_minimum_system_version = "12.0"
 [build-dependencies]
 
 [profile.release]
-panic = "abort"
+# Intentionally leave `panic` unset (defaults to "unwind").  The MCP server's
+# spawn_blocking helpers rely on tokio's JoinError::is_panic() to convert a
+# handler panic into a JSON-RPC error response — that only works with unwind
+# semantics.  Under `panic = "abort"` a single bad request would crash the
+# whole Sirin process and leave a zombie listening socket (observed on 7700 /
+# 7710).  The ~2-3 MB binary-size cost is amortized by LTO + strip below.
 codegen-units = 1
 lto = true
 opt-level = "s"
