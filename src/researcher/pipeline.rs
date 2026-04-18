@@ -185,7 +185,7 @@ pub(super) async fn pipeline(
         })
         .collect();
 
-    let qa_outcomes = futures::future::join_all(qa_futures).await;
+    let qa_outcomes = futures_util::future::join_all(qa_futures).await;
 
     // Collect results in original order; propagate first hard error if all fail.
     let mut qa_results: Vec<String> = Vec::new();

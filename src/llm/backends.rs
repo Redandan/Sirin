@@ -6,7 +6,7 @@
 //! and OpenAI's SSE `data: {…}\n\n` framing.  429 rate-limit responses are
 //! retried up to 3 times with exponential back-off.
 
-use futures::StreamExt;
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 
 // ── HTTP request / response types (private to this module) ───────────────────

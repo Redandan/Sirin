@@ -17,7 +17,7 @@ mod intent;
 
 use std::sync::Arc;
 
-use futures::FutureExt;
+use futures_util::FutureExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -106,7 +106,7 @@ impl Agent for ChatAgent {
         &'a self,
         ctx: &'a AgentContext,
         input: Value,
-    ) -> futures::future::BoxFuture<'a, Result<Value, String>> {
+    ) -> futures_util::future::BoxFuture<'a, Result<Value, String>> {
         async move {
             let request: ChatRequest = serde_json::from_value(input)
                 .map_err(|e| format!("Invalid chat request payload: {e}"))?;

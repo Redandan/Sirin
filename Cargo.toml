@@ -21,17 +21,16 @@ tokio = { version = "1", features = [
     "sync", "time", "net", "fs",
     "process", "io-util",
 ] }
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.116"
-serde_yaml = "0.9.34"
-dotenvy = "0.15.7"
-chrono = { version = "0.4.38", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+dotenvy = "0.15"
+chrono = { version = "0.4", features = ["serde"] }
 grammers-client = "0.9.0"
 grammers-session = "0.9.0"
-reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls", "query", "stream", "blocking"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "query", "stream", "blocking"] }
 rhai = { version = "1", features = ["sync", "serde"] }
-scraper = "0.19.0"
-futures = "0.3.31"
+futures-util = "0.3"
 tree-sitter = "0.22"
 tree-sitter-rust = "0.21"
 rusqlite = { version = "0.31", features = ["bundled"] }
@@ -40,7 +39,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 axum = { version = "0.8", features = ["ws"] }
 tower-http = { version = "0.6", features = ["timeout"] }
 globset = "0.4"
-regex = "1.10"
+regex = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

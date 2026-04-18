@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 
-use futures::{future::BoxFuture, FutureExt};
+use futures_util::{future::BoxFuture, FutureExt};
 use serde_json::Value;
 
 use crate::adk::context::AgentContext;

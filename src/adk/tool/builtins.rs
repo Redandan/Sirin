@@ -6,7 +6,7 @@
 //! evaluation, call graph, web navigation, agent handoff, and plan execution.
 //! External MCP tools discovered at startup are appended last.
 
-use futures::FutureExt;
+use futures_util::FutureExt;
 use serde_json::{json, Value};
 
 use super::fs_helpers::{list_directory_tree, safe_project_path};

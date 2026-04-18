@@ -181,6 +181,86 @@ async fn search_ddg_instant(
     }
 }
 
+/// Parse DuckDuckGo HTML results without a full DOM parser.
+/// Splits by `result__body` markers and extracts href/title/snippet via
+/// simple string scans.  Falls back gracefully if the format changes.
+fn parse_ddg_html_cards(html: &str) -> Vec<SearchResult> {
+    let mut results = Vec::new();
+    // Each chunk is the content *after* a "result__body" marker.
+    for chunk in html.split("result__body").skip(1).take(10) {
+        let (href, title) = first_link_in(chunk);
+        if href.is_empty() || title.is_empty() {
+            continue;
+        }
+        let snippet = class_text_in(chunk, "result__snippet");
+        results.push(SearchResult {
+            title: trim_snippet(&title, 80),
+            url: href,
+            snippet: trim_snippet(&snippet, 180),
+        });
+    }
+    results
+}
+
+/// Extract (href, link-text) of the first `<a href="...">` in `text`.
+fn first_link_in(text: &str) -> (String, String) {
+    let href_start = match text.find("href=\"") {
+        Some(i) => i + 6,
+        None    => return (String::new(), String::new()),
+    };
+    let href_end = match text[href_start..].find('"') {
+        Some(i) => href_start + i,
+        None    => return (String::new(), String::new()),
+    };
+    let href = &text[href_start..href_end];
+    if href.is_empty() || href.starts_with('#') {
+        return (String::new(), String::new());
+    }
+    // Link text is between the closing `>` of the <a> tag and `</a>`.
+    let after = &text[href_end..];
+    let gt = match after.find('>') {
+        Some(i) => href_end + i + 1,
+        None    => return (href.to_string(), String::new()),
+    };
+    let end = match text[gt..].find("</a>") {
+        Some(i) => gt + i,
+        None    => return (href.to_string(), String::new()),
+    };
+    let title = strip_inline_tags(&text[gt..end]).trim().to_string();
+    (href.to_string(), title)
+}
+
+/// Extract text content of the first element with `class="<class_name>..."`.
+fn class_text_in(chunk: &str, class_name: &str) -> String {
+    let marker = match chunk.find(class_name) {
+        Some(i) => i,
+        None    => return String::new(),
+    };
+    let content_start = match chunk[marker..].find('>') {
+        Some(i) => marker + i + 1,
+        None    => return String::new(),
+    };
+    let content_end = match chunk[content_start..].find("</") {
+        Some(i) => content_start + i,
+        None    => return String::new(),
+    };
+    strip_inline_tags(&chunk[content_start..content_end]).trim().to_string()
+}
+
+/// Remove HTML tags from a short string (titles, snippets).
+fn strip_inline_tags(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_tag = false;
+    for c in s.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _   => if !in_tag { out.push(c) },
+        }
+    }
+    out
+}
+
 async fn search_ddg_html(
     client: &reqwest::Client,
     query: &str,
@@ -205,40 +285,7 @@ async fn search_ddg_html(
         ));
     }
 
-    let document = scraper::Html::parse_document(&html);
-    let result_sel = scraper::Selector::parse(".result__body")
-        .map_err(|_| "Failed to parse DuckDuckGo result selector")?;
-    let title_sel = scraper::Selector::parse(".result__title a")
-        .map_err(|_| "Failed to parse DuckDuckGo title selector")?;
-    let snippet_sel = scraper::Selector::parse(".result__snippet")
-        .map_err(|_| "Failed to parse DuckDuckGo snippet selector")?;
-
-    let mut results = Vec::new();
-    for card in document.select(&result_sel).take(10) {
-        let title_el = card.select(&title_sel).next();
-        let snippet_el = card.select(&snippet_sel).next();
-
-        let title = title_el
-            .map(|el| el.text().collect::<String>().trim().to_string())
-            .unwrap_or_default();
-
-        let url = title_el
-            .and_then(|el| el.value().attr("href"))
-            .unwrap_or_default()
-            .to_string();
-
-        let snippet = snippet_el
-            .map(|el| el.text().collect::<String>().trim().to_string())
-            .unwrap_or_default();
-
-        if !title.is_empty() && !url.is_empty() {
-            results.push(SearchResult {
-                title,
-                url,
-                snippet,
-            });
-        }
-    }
+    let results = parse_ddg_html_cards(&html);
 
     let deduped = dedupe_results(results, 10);
     if deduped.is_empty() {

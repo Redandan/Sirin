@@ -5,6 +5,7 @@
 //! concatenates readable body text with deduplication, capped at
 //! `MAX_PAGE_TEXT` characters.
 
+use regex::Regex;
 use std::sync::OnceLock;
 
 pub(super) const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
@@ -25,13 +26,38 @@ pub(super) fn scraping_http() -> &'static reqwest::Client {
     })
 }
 
-/// Returns a cached `Selector` for page content extraction (compiled once per process).
-fn page_content_selector() -> &'static scraper::Selector {
-    static SEL: OnceLock<scraper::Selector> = OnceLock::new();
-    SEL.get_or_init(|| {
-        scraper::Selector::parse("body p, body h1, body h2, body h3, body li, body span, body div")
-            .unwrap()
-    })
+/// Strip `<script>`, `<style>`, `<noscript>` and `<head>` blocks, then all
+/// remaining HTML tags.  Pure-Rust regex — no C parser dependency.
+fn extract_text_from_html(html: &str) -> String {
+    static STRIP_ELEM: OnceLock<Regex> = OnceLock::new();
+    static STRIP_TAGS: OnceLock<Regex> = OnceLock::new();
+
+    let strip_elem = STRIP_ELEM.get_or_init(|| {
+        Regex::new(r"(?si)<(script|style|noscript|head)[^>]*>.*?</\1>").unwrap()
+    });
+    let strip_tags = STRIP_TAGS.get_or_init(|| {
+        Regex::new(r"<[^>]+>").unwrap()
+    });
+
+    let cleaned = strip_elem.replace_all(html, " ");
+    let plain   = strip_tags.replace_all(&cleaned, " ");
+
+    // Basic HTML entity decoding.
+    let plain = plain
+        .replace("&amp;",  "&")
+        .replace("&lt;",   "<")
+        .replace("&gt;",   ">")
+        .replace("&nbsp;", " ")
+        .replace("&#39;",  "'")
+        .replace("&quot;", "\"");
+
+    let mut seen = std::collections::HashSet::new();
+    plain
+        .lines()
+        .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|l| l.len() > 20 && seen.insert(l.clone()))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Fetch a URL and extract readable text from the HTML body.
@@ -46,28 +72,6 @@ pub(super) async fn fetch_page_text(http: &reqwest::Client, url: &str) -> Result
         .await
         .map_err(|e| format!("Read body failed: {e}"))?;
 
-    let doc = scraper::Html::parse_document(&html);
-
-    // Remove script / style elements from consideration by only selecting body text nodes.
-    let sel = page_content_selector();
-
-    let mut parts: Vec<String> = Vec::new();
-    for el in doc.select(sel) {
-        let text: String = el.text().collect::<Vec<_>>().join(" ");
-        let trimmed = text.split_whitespace().collect::<Vec<_>>().join(" ");
-        if trimmed.len() > 20 {
-            parts.push(trimmed);
-        }
-    }
-
-    let combined = parts.join("\n");
-    // Deduplicate adjacent identical lines and truncate.
-    let mut seen = std::collections::HashSet::new();
-    let deduped: Vec<&str> = combined
-        .lines()
-        .filter(|l| seen.insert(l.to_string()))
-        .collect();
-
-    let result = deduped.join("\n");
-    Ok(result.chars().take(MAX_PAGE_TEXT).collect())
+    let text = extract_text_from_html(&html);
+    Ok(text.chars().take(MAX_PAGE_TEXT).collect())
 }
