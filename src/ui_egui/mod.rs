@@ -264,9 +264,9 @@ fn show_update_banner(ctx: &egui::Context, dismissed: &mut bool) {
 pub fn launch(svc: Arc<dyn AppService>) {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Sirin").with_inner_size([1100.0, 740.0]).with_min_inner_size([640.0, 480.0]),
+            .with_title(concat!("Sirin v", env!("CARGO_PKG_VERSION"))).with_inner_size([1100.0, 740.0]).with_min_inner_size([640.0, 480.0]),
         ..Default::default()
     };
-    eframe::run_native("Sirin", options, Box::new(move |cc| Ok(Box::new(SirinApp::new(svc, cc)))))
+    eframe::run_native(concat!("Sirin v", env!("CARGO_PKG_VERSION")), options, Box::new(move |cc| Ok(Box::new(SirinApp::new(svc, cc)))))
         .expect("Failed to run Sirin UI");
 }
