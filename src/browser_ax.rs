@@ -17,7 +17,8 @@
 //! - [`ax_snapshot`] — capture + store a named tree snapshot
 //! - [`ax_diff`] — diff two stored snapshots (added/removed/changed)
 //! - [`wait_for_ax_change`] — poll until tree mutates from a baseline
-//! - [`click_backend`] — click element via CDP `DOM.getBoxModel` + center point
+//! - [`click_backend`] — click element via `DOM.getBoxModel` + JS-injected
+//!   5-event PointerEvent + MouseEvent sequence (Flutter-compatible)
 //! - [`focus_backend`] — `DOM.focus` for input fields
 //! - [`type_into_backend`] — focus + insertText (multi-char)
 //! - [`enable_flutter_semantics`] — trigger Flutter's a11y bridge
@@ -513,37 +514,59 @@ pub fn read_node_text(backend_id: u32) -> Result<String, String> {
 // ── Interaction by backend_id ────────────────────────────────────────────────
 
 /// Click an element given its DOM backend node id.  Resolves via `DOM.getBoxModel`
-/// to the element's centre and dispatches a synthetic mouse event there.  More
-/// reliable than CSS selectors on Flutter Canvas / shadow DOM.
+/// to the element's centre, then dispatches the **full 5-event PointerEvent +
+/// MouseEvent sequence** (`pointerdown` → `mousedown` → `pointerup` → `mouseup`
+/// → `click`) via injected JavaScript.
+///
+/// ## Why JavaScript instead of CDP `Input.dispatchMouseEvent`
+///
+/// CDP's `Input.dispatchMouseEvent` only synthesizes mouse events
+/// (`mousedown`/`mouseup`/`click`) — it does **not** synthesize PointerEvents.
+/// Flutter 3.13+'s gesture detector requires the **complete 5-event sequence**
+/// including `pointerdown` / `pointerup` to recognise a tap; without them the
+/// tap is silently dropped (`ax_click` returned success, but the route never
+/// changed — Issue #22-3).
+///
+/// Injecting the events from JavaScript via `Element.dispatchEvent` covers
+/// both event families in one call, works on Flutter Canvas + shadow DOM, and
+/// remains a strict superset of the old behaviour for plain HTML / React
+/// (extra pointer events are simply ignored if the page doesn't listen).
 pub fn click_backend(backend_id: u32) -> Result<(), String> {
-    let (x, y) = center_of_backend(backend_id)?;
-    with_tab(|tab| {
-        // Mouse pressed
-        tab.call_method(Input::DispatchMouseEvent {
-            Type: Input::DispatchMouseEventTypeOption::MousePressed,
-            x, y,
-            button: Some(Input::MouseButton::Left),
-            buttons: Some(1),
-            click_count: Some(1),
-            modifiers: None, timestamp: None,
-            delta_x: None, delta_y: None, pointer_Type: None,
-            force: None, tangential_pressure: None,
-            tilt_x: None, tilt_y: None, twist: None,
-        }).map_err(|e| format!("ax_click pressed: {e}"))?;
-        // Mouse released
-        tab.call_method(Input::DispatchMouseEvent {
-            Type: Input::DispatchMouseEventTypeOption::MouseReleased,
-            x, y,
-            button: Some(Input::MouseButton::Left),
-            buttons: Some(0),
-            click_count: Some(1),
-            modifiers: None, timestamp: None,
-            delta_x: None, delta_y: None, pointer_Type: None,
-            force: None, tangential_pressure: None,
-            tilt_x: None, tilt_y: None, twist: None,
-        }).map_err(|e| format!("ax_click released: {e}"))?;
-        Ok(())
-    })
+    let (cx, cy) = center_of_backend(backend_id)?;
+
+    // Inject 5-event sequence at (cx, cy).  `document.elementFromPoint` resolves
+    // the actual hit target — for Flutter that's the `flt-semantics` element at
+    // those coords, for plain HTML it's the underlying button/anchor/etc.
+    //
+    // Note on `format!` + braces in raw strings: outer `{{` / `}}` escape to
+    // literal braces in the JS source — see CLAUDE.md "format strings in raw
+    // docs" gotcha.
+    let js = format!(
+        r#"(() => {{
+            const x = {cx}, y = {cy};
+            const target = document.elementFromPoint(x, y);
+            if (!target) return JSON.stringify({{ ok: false, reason: 'no element at point' }});
+            const opts = {{ clientX: x, clientY: y, bubbles: true, cancelable: true, button: 0, isPrimary: true, pointerId: 1, view: window }};
+            ['pointerdown','mousedown','pointerup','mouseup','click'].forEach(t => {{
+                const EC = t.startsWith('pointer') ? PointerEvent : MouseEvent;
+                target.dispatchEvent(new EC(t, opts));
+            }});
+            return JSON.stringify({{ ok: true, tag: target.tagName, role: target.getAttribute('role') }});
+        }})()"#,
+    );
+
+    let result = crate::browser::evaluate_js(&js)
+        .map_err(|e| format!("ax_click(backend_id={backend_id}, x={cx}, y={cy}): {e}"))?;
+
+    // Surface the "no element at point" case as a hard error so callers don't
+    // silently miss buttons that scrolled out of view between getBoxModel and
+    // the dispatch.
+    if result.contains("\"ok\":false") {
+        return Err(format!(
+            "ax_click(backend_id={backend_id}): no element at viewport ({cx},{cy}); element may be off-screen or covered"
+        ));
+    }
+    Ok(())
 }
 
 /// Focus an element by backend id.
