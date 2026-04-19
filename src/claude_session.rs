@@ -18,9 +18,10 @@
 //!                  Primary session  ←  answer  →  continues
 //! ```
 
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use crate::platform::NoWindow;
 
@@ -324,30 +325,113 @@ fn looks_like_question(text: &str) -> bool {
 /// continuity across calls.
 ///
 /// Returns `(assistant_output, session_id)`.
+///
+/// This is a thin wrapper around [`run_one_turn_scoped`] with `allowed_tools = None`
+/// (i.e. `--dangerously-skip-permissions`).  Existing call-sites require no change.
 pub fn run_one_turn(
     cwd: &str,
     prompt: &str,
     continuation: bool,
+) -> Result<(String, String), String> {
+    run_one_turn_scoped(cwd, prompt, continuation, None)
+}
+
+/// Same as [`run_one_turn`] but with an optional per-role tool whitelist.
+///
+/// - `allowed_tools = None`       → uses `--dangerously-skip-permissions` (god mode, existing behaviour).
+/// - `allowed_tools = Some(&[…])` → uses `--allowedTools "<comma-joined>"` instead; no skip flag.
+///
+/// Used by `multi_agent::PersistentSession` to restrict each role to only the
+/// tools it actually needs, reducing blast radius and preventing cross-role writes.
+pub fn run_one_turn_scoped(
+    cwd: &str,
+    prompt: &str,
+    continuation: bool,
+    allowed_tools: Option<&[&str]>,
 ) -> Result<(String, String), String> {
     let cwd_path = Path::new(cwd);
     if !cwd_path.exists() {
         return Err(format!("cwd does not exist: {cwd}"));
     }
 
-    // Use the same args/invocation as run_sync so Windows cmd.exe
-    // handles the prompt encoding consistently (run_sync already proven to work).
-    let mut args = vec!["-p", prompt, "--output-format", "stream-json",
-                        "--verbose", "--dangerously-skip-permissions"];
+    // Build base args; permission flag depends on whitelist.
+    let joined; // must outlive `args`
+    let mut args = vec!["-p", prompt, "--output-format", "stream-json", "--verbose"];
+    match allowed_tools {
+        None => {
+            args.push("--dangerously-skip-permissions");
+        }
+        Some(tools) => {
+            joined = tools.join(",");
+            args.push("--allowedTools");
+            args.push(&joined);
+        }
+    }
     if continuation { args.push("--continue"); }
 
-    let raw = run_claude(&args, Some(cwd_path))?;
-    let stdout = String::from_utf8_lossy(&raw.stdout);
+    // Fix B: stream stdout line-by-line instead of buffering all 80-100 MB of
+    // stream-json into a Vec<u8>.  Bypasses run_claude()'s read_to_end()
+    // because we don't need the full output — we only keep the final
+    // assistant text + session_id.  Each parsed line is dropped immediately,
+    // capping per-call peak memory at ~max(line_size) + len(output).
+    //
+    // stderr is dropped at OS level (Stdio::null) — caller never reads it
+    // anyway, and capturing it would re-introduce buffering pressure.
+    //
+    // Hard wall-clock timeout enforced by a watchdog thread that kills the
+    // child after 600s.  If the child is killed, BufReader hits EOF naturally
+    // and we proceed to wait().
+    let bin = claude_bin();
+    let mut cmd = if bin.extension().map(|e| e == "cmd").unwrap_or(false) {
+        let mut c = Command::new("cmd");
+        c.no_window().arg("/c").arg(&bin);
+        c
+    } else {
+        let mut c = Command::new(&bin);
+        c.no_window();
+        c
+    };
+    cmd.current_dir(cwd_path)
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+
+    let mut child = cmd.spawn().map_err(|e| format!("spawn claude: {e}"))?;
+    let stdout    = child.stdout.take().ok_or("no stdout")?;
+
+    // Watchdog: kill the child after 600s if still running.
+    let pid = child.id();
+    let watchdog_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let watchdog_done_clone = watchdog_done.clone();
+    let watchdog = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(600);
+        while Instant::now() < deadline {
+            if watchdog_done_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        // Timeout — try to kill via taskkill (cross-platform fallback).
+        #[cfg(windows)]
+        {
+            let _ = Command::new("taskkill")
+                .no_window()
+                .args(["/F", "/T", "/PID", &pid.to_string()])
+                .output();
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = Command::new("kill").arg("-9").arg(pid.to_string()).output();
+        }
+    });
 
     let mut output     = String::new();
     let mut session_id = String::new();
 
-    for line in stdout.lines() {
-        let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+    for line in BufReader::new(stdout).lines() {
+        let Ok(line) = line else { continue };
+        let Ok(val)  = serde_json::from_str::<serde_json::Value>(&line) else { continue };
         match val["type"].as_str() {
             Some("assistant") => {
                 if let Some(t) = extract_assistant_text(&val) { output = t; }
@@ -358,7 +442,14 @@ pub fn run_one_turn(
             }
             _ => {}
         }
+        // `line` and `val` drop here — per-iteration memory freed.
     }
+
+    // Signal watchdog we're done so it stops waiting.
+    watchdog_done.store(true, std::sync::atomic::Ordering::Relaxed);
+    let _ = child.wait();
+    let _ = watchdog.join();
+
     Ok((output, session_id))
 }
 
@@ -415,11 +506,26 @@ fn claude_bin() -> PathBuf {
 
 /// Run the claude binary with given args, handling .cmd on Windows.
 ///
-/// On Windows, `claude` is installed as `claude.cmd`. Wrapping via
-/// `cmd /c` breaks multi-line prompt arguments (cmd.exe treats embedded
-/// newlines as command separators).  We detect this case and invoke
-/// Node.js directly, which handles Unicode and newlines correctly.
+/// Thin wrapper around `run_claude_with_timeout` with a 10-minute default.
 fn run_claude(args: &[&str], cwd: Option<&Path>) -> Result<std::process::Output, String> {
+    run_claude_with_timeout(args, cwd, Duration::from_secs(600))
+}
+
+/// Run claude with a hard wall-clock timeout.
+///
+/// If the subprocess does not complete within `timeout`, the child is killed
+/// and `Err("claude subprocess timed out after Ns")` is returned.  This
+/// prevents squad worker threads from blocking indefinitely when the
+/// Anthropic API hangs or rate-limits at high concurrency (N=4 workers).
+///
+/// On Windows, `claude` is installed as `claude.cmd`. We detect this and
+/// invoke Node.js directly (not `cmd /c`) because cmd.exe treats embedded
+/// newlines as command separators, truncating multi-line prompts.
+fn run_claude_with_timeout(
+    args: &[&str],
+    cwd: Option<&Path>,
+    timeout: Duration,
+) -> Result<std::process::Output, String> {
     let bin = claude_bin();
 
     let mut cmd = if bin.extension().map(|e| e == "cmd").unwrap_or(false) {
@@ -452,9 +558,61 @@ fn run_claude(args: &[&str], cwd: Option<&Path>) -> Result<std::process::Output,
 
     cmd.args(args);
     if let Some(dir) = cwd { cmd.current_dir(dir); }
-    // Explicitly close stdin: Claude CLI waits 3s for stdin if inherited.
-    cmd.stdin(Stdio::null());
-    cmd.output().map_err(|e| format!("claude failed ({bin:?}): {e}"))
+    // Pipe stdout/stderr so we can drain them in background threads.
+    // Explicitly null stdin: Claude CLI waits 3s for stdin if inherited.
+    cmd.stdin(Stdio::null())
+       .stdout(Stdio::piped())
+       .stderr(Stdio::piped());
+
+    let child = cmd.spawn().map_err(|e| format!("spawn claude ({bin:?}): {e}"))?;
+    wait_child_with_timeout(child, timeout)
+}
+
+/// Drive a spawned child to completion, killing it if it exceeds `timeout`.
+///
+/// Stdout and stderr are drained on background threads to prevent the OS
+/// pipe buffer from filling up and blocking the child process.
+fn wait_child_with_timeout(
+    mut child: std::process::Child,
+    timeout: Duration,
+) -> Result<std::process::Output, String> {
+    let mut stdout_pipe = child.stdout.take().ok_or("no stdout pipe".to_string())?;
+    let mut stderr_pipe = child.stderr.take().ok_or("no stderr pipe".to_string())?;
+
+    // Drain pipes on background threads; the child may not exit until its
+    // stdout buffer is consumed (OS pipe buffer is typically 64 KB).
+    let stdout_handle = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stdout_pipe.read_to_end(&mut buf);
+        buf
+    });
+    let stderr_handle = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stderr_pipe.read_to_end(&mut buf);
+        buf
+    });
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait().map_err(|e| format!("wait: {e}"))? {
+            Some(status) => {
+                let stdout = stdout_handle.join().unwrap_or_default();
+                let stderr = stderr_handle.join().unwrap_or_default();
+                return Ok(std::process::Output { status, stdout, stderr });
+            }
+            None => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!(
+                        "claude subprocess timed out after {}s",
+                        timeout.as_secs()
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        }
+    }
 }
 
 /// Find the Node.js script that backs `claude.cmd`.
@@ -495,6 +653,36 @@ pub fn cli_version() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_subprocess_timeout_kills_child() {
+        // Spawn a long-running process (30 s), apply a 2-second timeout.
+        // Expects Err containing "timed out"; child must not become a zombie.
+        #[cfg(windows)]
+        let mut cmd = {
+            // ping /n 31 loops for ~30 s without requiring interactive stdin
+            let mut c = Command::new("ping");
+            c.args(["/n", "31", "127.0.0.1"]);
+            c
+        };
+        #[cfg(not(windows))]
+        let mut cmd = {
+            let mut c = Command::new("sleep");
+            c.arg("30");
+            c
+        };
+        cmd.stdin(Stdio::null())
+           .stdout(Stdio::piped())
+           .stderr(Stdio::piped());
+
+        let child = cmd.spawn().expect("spawn long-running process");
+        let result = wait_child_with_timeout(child, Duration::from_secs(2));
+        assert!(result.is_err(), "expected timeout error, got {:?}", result);
+        assert!(
+            result.unwrap_err().contains("timed out"),
+            "error message should mention 'timed out'"
+        );
+    }
 
     #[test]
     fn repo_path_resolves_aliases() {
@@ -553,6 +741,63 @@ mod tests {
         println!("Output: {}", &result.output[..result.output.len().min(500)]);
         assert!(result.success, "session should succeed");
         assert!(result.output.contains("SIRIN_TEST_OK"), "output should contain marker");
+    }
+
+    /// Verify that `run_one_turn_scoped` selects the right permission flag.
+    ///
+    /// We cannot actually spawn Claude in unit tests, but we can inspect the
+    /// args that *would* be built.  The helper below mirrors the arg-building
+    /// logic so we can assert without I/O.
+    #[test]
+    fn scoped_args_none_uses_skip_permissions() {
+        // None → --dangerously-skip-permissions present, --allowedTools absent
+        let args = build_scoped_args("hello", false, None);
+        assert!(args.contains(&"--dangerously-skip-permissions"),
+            "None should add --dangerously-skip-permissions");
+        assert!(!args.iter().any(|a| *a == "--allowedTools"),
+            "None must NOT add --allowedTools");
+    }
+
+    #[test]
+    fn scoped_args_some_uses_allowed_tools() {
+        let tools = &["Read", "Grep", "Glob"];
+        let args = build_scoped_args("hello", false, Some(tools));
+        assert!(!args.contains(&"--dangerously-skip-permissions"),
+            "Some(tools) must NOT add --dangerously-skip-permissions");
+        let idx = args.iter().position(|a| *a == "--allowedTools")
+            .expect("--allowedTools must be present");
+        assert_eq!(args[idx + 1], "Read,Grep,Glob",
+            "tools must be comma-joined");
+    }
+
+    #[test]
+    fn scoped_args_continuation_appended() {
+        let args_no_cont  = build_scoped_args("p", false, None);
+        let args_cont     = build_scoped_args("p", true,  None);
+        assert!(!args_no_cont.contains(&"--continue"));
+        assert!( args_cont.contains(&"--continue"));
+    }
+
+    /// Mirror of the arg-building logic in `run_one_turn_scoped`, without I/O.
+    fn build_scoped_args<'a>(
+        prompt: &'a str,
+        continuation: bool,
+        allowed_tools: Option<&'a [&'a str]>,
+    ) -> Vec<&'a str> {
+        // We need a place to store the joined string; in the real function it's
+        // a local `joined` variable.  Here we leak a tiny allocation so the
+        // &str lives long enough for the test assertion.
+        let mut args: Vec<&str> = vec!["-p", prompt, "--output-format", "stream-json", "--verbose"];
+        match allowed_tools {
+            None => { args.push("--dangerously-skip-permissions"); }
+            Some(tools) => {
+                let joined: &'static str = Box::leak(tools.join(",").into_boxed_str());
+                args.push("--allowedTools");
+                args.push(joined);
+            }
+        }
+        if continuation { args.push("--continue"); }
+        args
     }
 
     #[test]
