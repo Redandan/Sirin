@@ -17,6 +17,12 @@ pub const PM: &str = r#"
 
 記憶格式（每次學到新東西時附在回覆末尾）：
 [📝 學到: <一行描述錯誤與修復方式>]
+
+VERDICT FORMAT (machine-parsed, required on every review reply):
+End every review with ONE of these tokens on its own line with nothing after it:
+  <<<VERDICT: APPROVED>>>
+  <<<VERDICT: NEEDS_FIX: <one-line reason>>>
+Do not put any text after the verdict line. The system reads this token programmatically.
 "#;
 
 pub const ENGINEER: &str = r#"
@@ -49,3 +55,32 @@ pub const TESTER: &str = r#"
 [Tester 結果] ✅ cargo check 通過 / ❌ 編譯失敗
 失敗：<檔案:行號> — <一行原因>
 "#;
+
+// ── Per-role tool whitelists ──────────────────────────────────────────────────
+//
+// These constants are used by `multi_agent::PersistentSession::send` to pass
+// `--allowedTools` to the Claude CLI, replacing `--dangerously-skip-permissions`.
+//
+// Design rationale:
+// - PM    : read-only review — no writes, no shell execution.
+// - Tester: may run `cargo check` / `cargo test --no-run` via Bash, but must
+//           not write or edit source files.
+// - Engineer: full read/write/exec access needed to implement tasks.
+//
+// Intentionally excluded from ALL roles:
+// - WebFetch, WebSearch  — squad work is local; no external lookups needed.
+// - Agent                — spawning sub-agents from within a squad worker adds
+//                          uncontrolled recursion and cost.
+// - NotebookEdit         — not used in this project.
+
+/// PM can only read and search — zero write or exec capability.
+pub const ALLOWED_TOOLS_PM: &[&str] = &["Read", "Grep", "Glob"];
+
+/// Tester can read, search, and run shell commands (cargo check / test),
+/// but cannot modify any files.
+pub const ALLOWED_TOOLS_TESTER: &[&str] = &["Read", "Grep", "Glob", "Bash"];
+
+/// Engineer has full read/write/exec access required to implement tasks.
+pub const ALLOWED_TOOLS_ENGINEER: &[&str] = &[
+    "Read", "Write", "Edit", "MultiEdit", "Grep", "Glob", "Bash",
+];

@@ -1,0 +1,35 @@
+id: agora_logout_flow
+name: "登出流程測試"
+url: "https://agoramarket.purrtechllc.com"
+
+browser_headless: false
+max_iterations: 15
+timeout_secs: 180
+
+locale: zh-TW
+
+goal: |
+  測試 AgoraMarket 登出流程，確認 session 正確清除。
+
+  ⚠️ Flutter CanvasKit app：用 screenshot_analyze 做所有 UI 判斷。
+
+  執行步驟：
+  1. 等待 5 秒讓 Flutter 載入
+  2. screenshot_analyze "頁面顯示什麼？目前是否已登入？是否顯示用戶名或頭像？"
+  3. 若未登入，使用 demo 帳號登入後繼續
+  4. screenshot_analyze "確認已登入狀態：頂部或側欄是否顯示用戶名/頭像？"
+  5. 導航至個人頁或側欄，尋找登出按鈕
+  6. screenshot_analyze "登出按鈕是否可見？位於何處？"
+  7. 點擊登出按鈕
+  8. 等待 3 秒
+  9. screenshot_analyze "登出後頁面顯示什麼？是否跳轉至登入頁或首頁？頂部是否不再顯示用戶名？"
+  10. 嘗試導航至個人頁（/me 或 profile 相關路徑）
+  11. screenshot_analyze "嘗試訪問個人頁後，是否被重導至登入頁或顯示未授權提示？"
+
+success_criteria:
+  - "點擊登出後成功跳轉至登入頁或首頁"
+  - "登出後頂部導航列不再顯示用戶名或已登入狀態"
+  - "登出後嘗試訪問個人頁（/me）被重導至登入頁或顯示未授權提示"
+  - "登出後購物車 badge 清空或歸零（無殘留 session 資料）"
+
+tags: [agora, regression, auth]

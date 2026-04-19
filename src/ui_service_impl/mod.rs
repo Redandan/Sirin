@@ -176,12 +176,13 @@ impl BrowserService for RealService {
 }
 
 impl MultiAgentService for RealService {
-    fn team_dashboard(&self)                 -> TeamDashView          { team::team_dashboard(self) }
-    fn team_queue(&self)                     -> Vec<TeamTaskView>     { team::team_queue(self) }
-    fn team_enqueue(&self, desc: &str)       -> String                { team::team_enqueue(self, desc) }
-    fn team_start_worker(&self)              { team::team_start_worker(self) }
-    fn team_clear_completed(&self)           { team::team_clear_completed(self) }
-    fn team_reset_member(&self, role: &str)  { team::team_reset_member(self, role) }
+    fn team_dashboard(&self)                          -> TeamDashView      { team::team_dashboard(self) }
+    fn team_queue(&self)                              -> Vec<TeamTaskView> { team::team_queue(self) }
+    fn team_enqueue(&self, desc: &str)                -> String            { team::team_enqueue(self, desc) }
+    fn team_start_worker(&self)                       { team::team_start_worker(self) }
+    fn team_clear_completed(&self)                    { team::team_clear_completed(self) }
+    fn team_reset_member(&self, role: &str)           { team::team_reset_member(self, role) }
+    fn team_token_usage(&self, window_secs: u64)      -> TokenUsageView    { team::team_token_usage(self, window_secs) }
 }
 
 // `impl AppService for RealService` is satisfied automatically by the blanket

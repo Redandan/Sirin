@@ -51,12 +51,17 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, state: &mut TeamPanelS
         None => return,
     };
 
+    // Token usage — backend caches 5s, safe to call every frame
+    let usage = svc.team_token_usage(300);
+
     ScrollArea::vertical()
         .auto_shrink([false; 2])
         .show(ui, |ui| {
             show_header(ui, svc, &dash, state);
             ui.add_space(theme::SP_MD);
             show_member_cards(ui, svc, &dash, state);
+            ui.add_space(theme::SP_MD);
+            show_token_burn_card(ui, &usage);
             ui.add_space(theme::SP_MD);
             theme::thin_separator(ui);
             ui.add_space(theme::SP_SM);
@@ -240,6 +245,114 @@ fn role_display(role: &str) -> &str {
         "tester"   => "Tester",
         other      => other,
     }
+}
+
+// ── Token Burn card ───────────────────────────────────────────────────────────
+
+fn show_token_burn_card(ui: &mut egui::Ui, usage: &crate::ui_service::TokenUsageView) {
+    egui::Frame::new()
+        .fill(theme::CARD)
+        .corner_radius(4.0)
+        .stroke(egui::Stroke::new(1.0, theme::BORDER))
+        .inner_margin(theme::SP_MD)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+
+            // Section title
+            ui.label(
+                RichText::new("Token Burn")
+                    .size(theme::FONT_SMALL)
+                    .strong()
+                    .color(theme::TEXT_DIM),
+            );
+            ui.add_space(theme::SP_XS);
+
+            // Primary metrics row: tokens/min + cost/hr
+            ui.horizontal(|ui| {
+                // Tokens/min (large, accent)
+                ui.vertical(|ui| {
+                    ui.label(
+                        RichText::new(format!("{}", usage.tokens_per_min))
+                            .text_style(egui::TextStyle::Monospace)
+                            .size(theme::FONT_HEADING)
+                            .color(theme::ACCENT),
+                    );
+                    ui.label(
+                        RichText::new("tok/min")
+                            .size(theme::FONT_CAPTION)
+                            .color(theme::TEXT_DIM),
+                    );
+                });
+
+                ui.add_space(theme::SP_LG);
+
+                // Cost/hr (large, white)
+                ui.vertical(|ui| {
+                    ui.label(
+                        RichText::new(format!("${:.2}/hr", usage.cost_per_hour))
+                            .text_style(egui::TextStyle::Monospace)
+                            .size(theme::FONT_HEADING)
+                            .color(theme::VALUE),
+                    );
+                    ui.label(
+                        RichText::new(format!("5-min window ({} calls)", usage.api_calls))
+                            .size(theme::FONT_CAPTION)
+                            .color(theme::TEXT_DIM),
+                    );
+                });
+            });
+
+            ui.add_space(theme::SP_SM);
+            theme::thin_separator(ui);
+            ui.add_space(theme::SP_XS);
+
+            // Breakdown rows: input / output / cache_r / cache_w per min
+            let rows = [
+                ("input",    usage.input_per_min),
+                ("output",   usage.output_per_min),
+                ("cache_r",  usage.cache_r_per_min),
+                ("cache_w",  usage.cache_w_per_min),
+            ];
+            for (label, val) in rows {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!("{label:<8}"))
+                            .text_style(egui::TextStyle::Monospace)
+                            .size(theme::FONT_CAPTION)
+                            .color(theme::TEXT_DIM),
+                    );
+                    ui.label(
+                        RichText::new(format!("{val} tok/min"))
+                            .text_style(egui::TextStyle::Monospace)
+                            .size(theme::FONT_CAPTION)
+                            .color(theme::VALUE),
+                    );
+                });
+            }
+
+            ui.add_space(theme::SP_XS);
+
+            // Cache hit %
+            let hit_color = if usage.cache_hit_pct >= 50.0 {
+                theme::ACCENT
+            } else {
+                theme::TEXT_DIM
+            };
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("cache hit")
+                        .text_style(egui::TextStyle::Monospace)
+                        .size(theme::FONT_CAPTION)
+                        .color(theme::TEXT_DIM),
+                );
+                ui.label(
+                    RichText::new(format!("{:.1}%", usage.cache_hit_pct))
+                        .text_style(egui::TextStyle::Monospace)
+                        .size(theme::FONT_CAPTION)
+                        .color(hit_color),
+                );
+            });
+        });
 }
 
 // ── Queue section ─────────────────────────────────────────────────────────────

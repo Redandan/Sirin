@@ -187,6 +187,20 @@ pub struct TeamMemberView {
     pub resume_cmd: String,
 }
 
+/// Live token burn snapshot from the last N seconds of squad worker sessions.
+#[derive(Debug, Clone, Default)]
+pub struct TokenUsageView {
+    pub window_secs:     u64,
+    pub api_calls:       u64,
+    pub tokens_per_min:  u64,
+    pub input_per_min:   u64,
+    pub output_per_min:  u64,
+    pub cache_r_per_min: u64,
+    pub cache_w_per_min: u64,
+    pub cost_per_hour:   f64,
+    pub cache_hit_pct:   f64,
+}
+
 /// 整個小隊的即時狀態快照。
 #[derive(Debug, Clone, PartialEq)]
 pub struct TeamDashView {
@@ -331,6 +345,8 @@ pub trait MultiAgentService: Send + Sync + 'static {
     fn team_clear_completed(&self);
     /// 重置指定角色的 session（開新對話）。
     fn team_reset_member(&self, role: &str);
+    /// Live token burn snapshot over the given window (default 300s = 5 min).
+    fn team_token_usage(&self, window_secs: u64) -> TokenUsageView;
 }
 
 /// Browser automation — persistent Chrome session control.

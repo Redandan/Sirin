@@ -1,0 +1,38 @@
+id: agora_cart_add_remove
+name: "購物車加入移除測試"
+url: "https://agoramarket.purrtechllc.com"
+
+browser_headless: false
+max_iterations: 15
+timeout_secs: 180
+
+locale: zh-TW
+
+goal: |
+  測試 AgoraMarket 購物車加入/移除流程。
+
+  ⚠️ Flutter CanvasKit app：用 screenshot_analyze 做所有 UI 判斷。
+
+  執行步驟：
+  1. 等待 5 秒讓 Flutter 載入
+  2. screenshot_analyze "頁面顯示什麼？是否需要登入？"
+  3. 若需要登入，使用測試帳號登入後繼續
+  4. 瀏覽商品列表，點擊任一商品進入商品詳情頁
+  5. screenshot_analyze "商品詳情頁是否顯示『加入購物車』按鈕？購物車 badge 目前數量為何？"
+  6. 點擊『加入購物車』按鈕
+  7. 等待 2 秒
+  8. screenshot_analyze "購物車 badge 數量是否增加了 1？是否有成功提示訊息？"
+  9. 導航至購物車頁面
+  10. screenshot_analyze "購物車列表中是否包含剛加入的商品？"
+  11. 點擊商品旁的移除按鈕（或滑動刪除）
+  12. 等待 2 秒
+  13. screenshot_analyze "購物車是否已清空？badge 數量是否歸零或消失？"
+
+success_criteria:
+  - "商品詳情頁顯示『加入購物車』按鈕"
+  - "點擊加入購物車後，頂部購物車 badge 數量增加（+1）"
+  - "進入購物車頁，列表中可見剛加入的商品名稱"
+  - "點擊移除後，該商品從購物車列表消失"
+  - "購物車清空後，badge 數量歸零或 badge 不再顯示"
+
+tags: [agora, regression, cart]

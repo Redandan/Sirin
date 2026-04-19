@@ -1,0 +1,39 @@
+id: agora_navigation_breadcrumb
+name: "頁面導航與返回測試"
+url: "https://agoramarket.purrtechllc.com"
+
+browser_headless: false
+max_iterations: 15
+timeout_secs: 180
+
+locale: zh-TW
+
+goal: |
+  測試 AgoraMarket 多頁面導航與返回行為。
+
+  ⚠️ Flutter CanvasKit app：用 screenshot_analyze 做所有 UI 判斷。
+
+  執行步驟：
+  1. 等待 5 秒讓 Flutter 載入
+  2. screenshot_analyze "首頁顯示什麼？可以看到商品分類列表嗎？目前 URL 為何？"
+  3. 點擊任一商品分類（例如「新品」、「熱門」或任何可見分類）
+  4. 等待 2 秒
+  5. screenshot_analyze "目前是否已進入分類頁面？URL 是否改變？頁面顯示什麼商品？"
+  6. 點擊任一商品進入商品詳情頁
+  7. 等待 2 秒
+  8. screenshot_analyze "是否成功進入商品詳情頁？URL 路徑是否包含商品 ID 或詳情路由？"
+  9. 按下瀏覽器返回鈕（browser_back 或 navigate 至上一頁）
+  10. 等待 2 秒
+  11. screenshot_analyze "是否回到分類頁？URL 是否正確還原？頁面是否有內容（非白屏）？"
+  12. 再次按下瀏覽器返回鈕
+  13. 等待 2 秒
+  14. screenshot_analyze "是否回到首頁？URL 是否為根路徑？"
+
+success_criteria:
+  - "進入商品分類頁後，URL 路徑改變（非根路徑）且頁面有商品列表"
+  - "進入商品詳情頁後，URL 包含詳情路由且頁面顯示商品資訊"
+  - "按返回後回到分類頁，頁面有內容（非白屏），URL 正確還原"
+  - "再次按返回後回到首頁，URL 為根路徑或首頁路由"
+  - "整個導航流程中無白屏或頁面崩潰"
+
+tags: [agora, regression, navigation]

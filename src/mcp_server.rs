@@ -583,8 +583,9 @@ fn handle_tools_list() -> Result<Value, String> {
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "task": { "type": "string", "description": "任務描述（越具體越好）" },
-                        "cwd":  { "type": "string", "description": "工作目錄（repo 路徑）。省略時用 sirin repo" }
+                        "task":     { "type": "string", "description": "任務描述（越具體越好）" },
+                        "cwd":      { "type": "string", "description": "工作目錄（repo 路徑）。省略時用 sirin repo" },
+                        "priority": { "type": "integer", "minimum": 0, "maximum": 255, "description": "任務優先級：0=緊急，50=正常（預設），255=最低" }
                     },
                     "required": ["task"]
                 }
@@ -1111,8 +1112,12 @@ fn call_agent_reset(args: Value) -> Result<Value, String> {
 
 fn call_agent_enqueue(args: Value) -> Result<Value, String> {
     let task = args["task"].as_str().ok_or("Missing 'task'")?;
-    let id = crate::multi_agent::queue::enqueue(task);
-    tracing::info!(target: "sirin", "[mcp] agent_enqueue: task_id={id} task={:.60}", task);
+    let priority = args.get("priority")
+        .and_then(|v| v.as_u64())
+        .map(|n| n.min(255) as u8)
+        .unwrap_or(50);
+    let id = crate::multi_agent::queue::enqueue_with_priority(task, priority);
+    tracing::info!(target: "sirin", "[mcp] agent_enqueue: task_id={id} priority={priority} task={:.60}", task);
     Ok(serde_json::json!({
         "task_id": id,
         "status":  "queued",

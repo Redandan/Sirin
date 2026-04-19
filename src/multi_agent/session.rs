@@ -68,10 +68,20 @@ impl PersistentSession {
             message.to_string()
         };
 
-        let (output, session_id) = crate::claude_session::run_one_turn(
+        // Select per-role tool whitelist; unknown roles keep god mode to avoid
+        // accidentally locking out future roles.
+        let whitelist: Option<&[&str]> = match self.role.as_str() {
+            "pm"       => Some(crate::multi_agent::roles::ALLOWED_TOOLS_PM),
+            "tester"   => Some(crate::multi_agent::roles::ALLOWED_TOOLS_TESTER),
+            "engineer" => Some(crate::multi_agent::roles::ALLOWED_TOOLS_ENGINEER),
+            _          => None,
+        };
+
+        let (output, session_id) = crate::claude_session::run_one_turn_scoped(
             &self.cwd,
             &prompt,
             !is_new,   // continuation = true when session already exists
+            whitelist,
         )?;
 
         // 第一次才存 session_id（--continue 不會改 id）

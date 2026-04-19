@@ -32,6 +32,8 @@ impl std::fmt::Display for TaskStatus {
     }
 }
 
+fn default_priority() -> u8 { 50 }
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TeamTask {
     pub id:          String,
@@ -42,6 +44,8 @@ pub struct TeamTask {
     pub finished_at: Option<String>,
     #[serde(default)]
     pub retry_count: u8,
+    #[serde(default = "default_priority")]
+    pub priority:    u8,
 }
 
 // ── 全局鎖 ────────────────────────────────────────────────────────────────────
@@ -65,6 +69,11 @@ fn queue_path() -> PathBuf {
 
 /// 加入新任務。回傳任務 ID（毫秒時間戳）。
 pub fn enqueue(description: &str) -> String {
+    enqueue_with_priority(description, default_priority())
+}
+
+/// 加入新任務並指定優先級。0=最緊急，50=正常（預設），255=最低優先。
+pub fn enqueue_with_priority(description: &str, priority: u8) -> String {
     let _g = lock().lock().unwrap_or_else(|e| e.into_inner());
     let id = chrono::Local::now().timestamp_millis().to_string();
     let task = TeamTask {
@@ -75,6 +84,7 @@ pub fn enqueue(description: &str) -> String {
         result:      None,
         finished_at: None,
         retry_count: 0,
+        priority,
     };
     append_unlocked(&task);
     id
@@ -92,18 +102,25 @@ pub fn enqueue_with_retry(description: &str, retry_count: u8) -> String {
         result:      None,
         finished_at: None,
         retry_count,
+        priority:    default_priority(),
     };
     append_unlocked(&task);
     id
 }
 
 /// 取得下一個 Queued 狀態的任務（不 pop，需呼叫 `update_status` 標記 Running）。
+/// 依 (priority ASC, created_at ASC) 排序，回傳最高優先（數值最小）且最早入隊的任務。
 ///
 /// ⚠️  非原子！多 worker 環境會兩個 worker 搶到同個任務。
 /// 多 worker 請改用 [`take_next_queued`]。
 pub fn next_queued() -> Option<TeamTask> {
     let _g = lock().lock().unwrap_or_else(|e| e.into_inner());
-    read_all_unlocked().into_iter().find(|t| t.status == TaskStatus::Queued)
+    let mut queued: Vec<TeamTask> = read_all_unlocked()
+        .into_iter()
+        .filter(|t| t.status == TaskStatus::Queued)
+        .collect();
+    queued.sort_by_key(|t| (t.priority, t.created_at.clone()));
+    queued.into_iter().next()
 }
 
 /// 原子操作：取出最早的 Queued 任務，**同時**把它標記為 Running，回寫磁碟。
@@ -115,13 +132,11 @@ pub fn next_queued() -> Option<TeamTask> {
 pub fn take_next_queued() -> Option<TeamTask> {
     let _g = lock().lock().unwrap_or_else(|e| e.into_inner());
     let mut tasks = read_all_unlocked();
-    let mut found_idx = None;
-    for (i, t) in tasks.iter().enumerate() {
-        if t.status == TaskStatus::Queued {
-            found_idx = Some(i);
-            break;
-        }
-    }
+    // 找 priority 最小（最緊急）、同 priority 則最早 created_at 的 Queued 任務
+    let found_idx = tasks.iter().enumerate()
+        .filter(|(_, t)| t.status == TaskStatus::Queued)
+        .min_by_key(|(_, t)| (t.priority, t.created_at.clone()))
+        .map(|(i, _)| i);
     if let Some(i) = found_idx {
         tasks[i].status = TaskStatus::Running;
         let taken = tasks[i].clone();
@@ -242,15 +257,15 @@ mod tests {
             let _g = lock().lock().unwrap_or_else(|e| e.into_inner());
             let t1 = TeamTask {
                 id: (base + CTR.fetch_add(1, Ordering::SeqCst)).to_string(),
-                description: "first".into(), created_at: "".into(),
+                description: "first".into(), created_at: "2026-01-01T00:00:01Z".into(),
                 status: TaskStatus::Queued, result: None, finished_at: None,
-                retry_count: 0,
+                retry_count: 0, priority: 50,
             };
             let t2 = TeamTask {
                 id: (base + CTR.fetch_add(1, Ordering::SeqCst)).to_string(),
-                description: "second".into(), created_at: "".into(),
+                description: "second".into(), created_at: "2026-01-01T00:00:02Z".into(),
                 status: TaskStatus::Queued, result: None, finished_at: None,
-                retry_count: 0,
+                retry_count: 0, priority: 50,
             };
             append_unlocked(&t1);
             append_unlocked(&t2);

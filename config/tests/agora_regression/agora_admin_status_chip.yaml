@@ -6,6 +6,8 @@ browser_headless: false
 max_iterations: 12
 timeout_secs: 180
 
+locale: zh-TW
+
 goal: |
   驗證 AgoraMarket admin 商品狀態 chip 在 Issue #70 #22（StatusConfig.getStatusConfig() 重構）後色碼渲染正確。
 
@@ -32,4 +34,4 @@ success_criteria:
   - "沒有 chip 顯示為灰色或無色（StatusConfig.getStatusConfig() 重構後仍正確回傳）"
   - "頁面無 console error 或明顯異常訊息"
 
-tags: [admin, status-chip, agora, issue-70, regression, visual]
+tags: [agora, regression, admin]

@@ -15,6 +15,7 @@
 mod roles;
 mod session;
 pub mod queue;
+pub mod usage;
 pub mod worker;
 
 pub use session::PersistentSession;
@@ -100,10 +101,10 @@ impl AgentTeam {
             )?;
 
             // 4. 判斷是否核准
-            let approved = review.contains("[PM ✓")
-                || review.contains("核准")
-                || review.contains("Approved")
-                || review.contains("LGTM");
+            // T1-6: structured token takes priority; old keyword is fallback for
+            // sessions that pre-date this prompt update (no <<<VERDICT>>> in prompt).
+            let approved = review.contains("<<<VERDICT: APPROVED>>>")
+                || (review.contains("核准") && !review.contains("<<<VERDICT: NEEDS_FIX"));
 
             if approved {
                 return Ok(review);

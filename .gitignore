@@ -12,7 +12,9 @@ sirin.log
 
 # ── Build artifacts ───────────────────────────────────────────────────────────
 /target/
+/target_*/
 .claude/worktrees/*/target/
+.claude/tmp/
 dist/
 out/
 build/

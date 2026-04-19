@@ -1,0 +1,35 @@
+id: agora_pickup_time_picker
+name: "取貨時間選擇器測試"
+url: "https://agoramarket.purrtechllc.com"
+
+browser_headless: false
+max_iterations: 12
+timeout_secs: 180
+
+goal: |
+  測試訂單下單流程的取貨時間選擇器。
+
+  ⚠️ Flutter CanvasKit app：用 screenshot_analyze 做所有 UI 判斷。
+
+  執行步驟：
+  1. 等待 5 秒讓 Flutter 載入
+  2. screenshot_analyze "頁面顯示什麼？是否需要登入？"
+  3. 若需要買家登入，嘗試以測試帳號登入；若無法登入，記錄限制
+  4. 進入任一商品頁面（從首頁找尋已上架商品）
+  5. 點擊「加入購物車」或「立即購買」按鈕
+  6. 進入結帳或取貨設定頁面
+  7. screenshot_analyze "頁面是否有取貨時間選擇器或時段下拉選單？"
+  8. 找到取貨時間選擇器，點擊展開時段清單
+  9. screenshot_analyze "時段清單目前顯示的選項為何？是否有可選項目？是否包含今日時段？"
+  10. 確認清單非空，有今日或明日時段可選
+  11. 確認不包含已過去的時間（例如今日早已過去的時段不應出現，或標記為不可選）
+  12. 嘗試選擇一個有效時段，screenshot_analyze "選擇後時段是否正確顯示於欄位中？"
+
+success_criteria:
+  - "取貨時間選擇器可以正常展開，顯示時段清單"
+  - "時段清單非空（至少有一個可選時段）"
+  - "可選擇今日或未來時段，選擇後正確顯示於欄位"
+  - "不顯示已過去的時段（或過去時段標記為不可選）"
+  - "時段時間符合本地時區，不出現異常時區偏移"
+
+tags: [agora, regression, pickup, checkout]

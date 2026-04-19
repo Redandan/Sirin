@@ -1,7 +1,7 @@
 //! MultiAgentService impl — 直接呼叫 `multi_agent` 模組。
 
 use crate::multi_agent::{self, queue::{self, TaskStatus}, SessionInfo};
-use crate::ui_service::{TeamDashView, TeamMemberView, TeamTaskView};
+use crate::ui_service::{TeamDashView, TeamMemberView, TeamTaskView, TokenUsageView};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -96,5 +96,21 @@ pub fn team_reset_member(_svc: &super::RealService, role: &str) {
     let mut guard = multi_agent::get_or_init(&cwd);
     if let Some(team) = guard.as_mut() {
         team.reset_role(role);
+    }
+}
+
+pub fn team_token_usage(_svc: &super::RealService, window_secs: u64) -> TokenUsageView {
+    let s = crate::multi_agent::usage::snapshot(window_secs);
+    let w = window_secs.max(1) as f64;
+    TokenUsageView {
+        window_secs,
+        api_calls:       s.api_calls,
+        tokens_per_min:  s.tokens_per_min,
+        input_per_min:   (s.input_tokens  as f64 * 60.0 / w) as u64,
+        output_per_min:  (s.output_tokens as f64 * 60.0 / w) as u64,
+        cache_r_per_min: (s.cache_read    as f64 * 60.0 / w) as u64,
+        cache_w_per_min: (s.cache_write   as f64 * 60.0 / w) as u64,
+        cost_per_hour:   s.cost_per_hour,
+        cache_hit_pct:   s.cache_hit_pct,
     }
 }
