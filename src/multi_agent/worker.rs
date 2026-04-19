@@ -78,10 +78,12 @@ fn run_loop(cwd: String) {
                     }
                 }
 
-                // Engineer context window 保護：超過 20 輪就開新 session
-                if team.engineer.turns() > 20 {
+                // Engineer context window 保護：超過 40 輪就開新 session
+                // (raised from 20 → 40 because T1-4 keeps context within a task,
+                //  so a 5-iter task can use up to 5 turns before inter-task reset)
+                if team.engineer.turns() > 40 {
                     tracing::info!(target: "sirin",
-                        "[team-worker] Engineer turns > 20 — resetting for fresh context");
+                        "[team-worker] Engineer turns > 40 — resetting for fresh context");
                     team.engineer.reset();
                 }
             }

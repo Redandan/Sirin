@@ -50,8 +50,8 @@ impl AgentTeam {
     /// - Engineer session 每輪重置（避免 --continue 累積歷史爆 context window）
     /// - 傳入各 session 的訊息截斷至 MAX_MSG_CHARS
     pub fn assign_task(&mut self, task: &str) -> Result<String, String> {
-        const MAX_ITER:      usize = 3;
-        const MAX_MSG_CHARS: usize = 8_000; // 每條訊息上限，避免 "Prompt is too long"
+        const MAX_ITER:      usize = 5;      // was 3; UI/multi-file tasks need more room
+        const MAX_MSG_CHARS: usize = 24_000; // was 8K; Claude 200K window can handle this
 
         // 安全截斷 helper（找 max_bytes 內最後一個 char boundary）
         fn trunc(s: &str, max: usize) -> &str {
@@ -69,10 +69,9 @@ impl AgentTeam {
         let mut last_review = String::new();
 
         for iter in 0..MAX_ITER {
-            // 每輪重置 engineer session，防止 --continue 歷史無限累積
-            if iter > 0 {
-                self.engineer.reset();
-            }
+            // T1-4: Don't reset engineer between iterations of the SAME task —
+            // engineer retains context (what it tried, what failed) across retries.
+            // Cross-task context bloat is handled by worker.rs: turns > 20 → reset.
 
             // 2. 工程師執行（每輪從 task + plan + PM feedback 重建 context）
             let engineer_msg = if iter == 0 {
