@@ -258,7 +258,7 @@ fn run_one_round(
 
     cmd.current_dir(cwd)
         .args(["-p", prompt, "--output-format", "stream-json",
-               "--dangerously-skip-permissions"])
+               "--verbose", "--dangerously-skip-permissions"])
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
 
