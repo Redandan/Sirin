@@ -1,0 +1,33 @@
+id: agora_webrtc_permission
+name: "AgoraMarket WebRTC Permission 修復驗證 (Issue #70 #1)"
+url: "https://agoramarket.purrtechllc.com"
+
+# Flutter CanvasKit: headless Chrome 不 paint，必須開啟實體視窗
+browser_headless: false
+
+max_iterations: 10
+timeout_secs: 180
+
+goal: |
+  驗證 AgoraMarket WebRTC 麥克風/攝影機 permission 問題已修復（Issue #70 Critical Bug #1）。
+
+  ⚠️ 這是 Flutter CanvasKit app：DOM 為空，所有互動用 screenshot_analyze 做 vision 判斷。
+
+  執行步驟：
+  1. 等待 5 秒讓 Flutter 完成 bootstrap 和首次 paint
+  2. screenshot_analyze "頁面是否正常載入？顯示什麼主要內容？"
+  3. 尋找通話、視訊、客服通話相關的 UI 元素（例如電話圖示、視訊按鈕、賣家諮詢）
+  4. 若找到通話功能入口，點擊後 screenshot_analyze "是否出現瀏覽器 permission 請求彈窗（請求麥克風/攝影機授權）？還是直接顯示錯誤？"
+  5. 若無通話功能，screenshot_analyze "頁面整體功能是否正常？有無明顯錯誤訊息？"
+
+  判定通過條件：
+  - 頁面有實際內容（不是全黑/全白）
+  - 若有通話功能：出現 permission 請求，而非「麥克風/攝影機永遠拒絕」的錯誤
+  - 整體頁面沒有白屏或嚴重崩潰
+
+success_criteria:
+  - "頁面正常載入，有實際內容（非全黑或白屏）"
+  - "通話相關功能入口可見，或 WebRTC permission dialog 正常出現"
+  - "沒有顯示 camera/microphone 永久 denied 或授權永遠失敗的錯誤"
+
+tags: [regression, webrtc, agora, critical, issue-70]

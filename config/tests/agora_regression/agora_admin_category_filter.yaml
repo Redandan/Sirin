@@ -1,0 +1,32 @@
+id: agora_admin_category_filter
+name: "AgoraMarket Admin 商品匯入 Category Filter 驗證 (Issue #70 #4)"
+url: "https://agoramarket.purrtechllc.com"
+
+browser_headless: false
+max_iterations: 12
+timeout_secs: 180
+
+goal: |
+  驗證 AgoraMarket admin 商品匯入頁的 category filter 修復（Issue #70 Critical Bug #4）。
+  修復前：product_import_pc_page.dart 的 category filter 點擊後無效，列表不更新。
+
+  ⚠️ Flutter CanvasKit app：用 screenshot_analyze 做所有 UI 判斷。
+
+  執行步驟：
+  1. 等待 5 秒讓 Flutter 載入
+  2. screenshot_analyze "頁面顯示什麼？"
+  3. 尋找 admin 登入入口（可能有 /admin 路徑或 admin 按鈕）
+  4. 若需要 admin 登入，記錄此限制
+  5. 嘗試導航到商品匯入頁（Product Import / 商品匯入）
+  6. screenshot_analyze "是否看到商品匯入頁面？頁面上有哪些 filter 控件？"
+  7. 找到 category 下拉篩選器，截圖記錄初始狀態（商品總數或列表）
+  8. 選擇一個 category 選項（例如第一個非「全部」的選項）
+  9. 等待 1 秒後 screenshot_analyze "選擇 category 後商品列表是否有更新？比之前少了或是列表有變化？"
+  10. 判定：列表有更新即通過，列表完全不變則標記 filter bug 可能仍存在
+
+success_criteria:
+  - "商品匯入頁面（或 admin 後台）可以開啟"
+  - "Category filter 下拉選單可以操作（能看到選項）"
+  - "選擇 category 後，商品列表有對應更新（數量變化或列表篩選）"
+
+tags: [regression, admin, category-filter, agora, critical, issue-70]

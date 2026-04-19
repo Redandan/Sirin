@@ -1,0 +1,22 @@
+id: agora_chat_sse
+name: "AgoraMarket 智能客服 SSE 即時訊息驗證"
+url: "https://agoramarket.purrtechllc.com"
+browser_headless: false
+max_iterations: 12
+timeout_secs: 180
+goal: |
+  驗證 AgoraMarket 智能客服聊天功能的即時訊息顯示（Issue #9 回歸）。
+  步驟：
+  1. 頁面載入完成後，尋找智能客服/客服諮詢的入口（floating button 或 FAQ/客服頁面）
+  2. 開啟客服聊天視窗
+  3. 嘗試發送一條訊息（例如「你好」）
+  4. 觀察訊息是否在 3 秒內出現在聊天記錄中，不需手動重整
+  5. 使用 eval 檢查 browser console 是否有 SSE error（搜尋 window.__sseErrors 或 console.errors）
+  若需要登入才能使用客服，截圖確認：登入頁面正常，沒有 JS exception。
+
+success_criteria:
+  - "客服聊天入口可以找到並開啟"
+  - "發送訊息後 3 秒內在視窗中顯示（不需 reload）"
+  - "Console 沒有 Failed to handle new message 或 SSE connection lost 錯誤"
+
+tags: [regression, chat, sse, agora, issue-9]

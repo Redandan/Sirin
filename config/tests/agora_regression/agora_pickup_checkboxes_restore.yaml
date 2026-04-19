@@ -1,0 +1,35 @@
+id: agora_pickup_checkboxes_restore
+name: "AgoraMarket Pickup Checkboxes 還原驗證 (Issue #70 #5)"
+url: "https://agoramarket.purrtechllc.com"
+
+browser_headless: false
+max_iterations: 15
+timeout_secs: 180
+
+goal: |
+  驗證 AgoraMarket 商品編輯 pickup checkboxes 還原修復（Issue #70 Critical Bug #5）。
+  修復前：product_form.dart 的 pickup options checkboxes 在取消編輯後不還原，
+  導致下次開啟時顯示修改後（未儲存）的值。
+
+  ⚠️ Flutter CanvasKit app：用 screenshot_analyze 做所有 UI 判斷。
+
+  執行步驟：
+  1. 等待 5 秒讓 Flutter 載入
+  2. screenshot_analyze "頁面顯示什麼？是否需要賣家登入？"
+  3. 若需要賣家登入，記錄此限制
+  4. 找到已有的商品列表，選擇一個商品進入編輯頁
+  5. screenshot_analyze "商品編輯頁面中，pickup options checkboxes 目前是什麼狀態？哪些已勾選？"
+     記錄初始狀態（例如：「自取 ✓ 宅配 ✓ 快遞 ✗」）
+  6. 修改至少一個 checkbox 狀態（例如取消勾選一個已勾選的項目）
+  7. screenshot_analyze "修改後 checkboxes 狀態是什麼？"
+  8. 點擊 Cancel / 取消 按鈕（不儲存）
+  9. 再次進入同一商品的編輯頁
+  10. screenshot_analyze "重新開啟後 checkboxes 狀態是什麼？和步驟 5 的初始狀態相同嗎？"
+  11. 判定：回到初始狀態即通過，仍顯示修改後的值則標記 bug 仍存在
+
+success_criteria:
+  - "商品編輯頁面可以開啟"
+  - "取消編輯後重新開啟，pickup checkboxes 值回到修改前的原始狀態"
+  - "未儲存的修改不會殘留到下次開啟"
+
+tags: [regression, product, pickup, checkboxes, agora, critical, issue-70]

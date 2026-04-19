@@ -1,0 +1,32 @@
+id: agora_notification_delete
+name: "AgoraMarket 通知刪除修復驗證 (Issue #70 #2)"
+url: "https://agoramarket.purrtechllc.com"
+
+browser_headless: false
+max_iterations: 12
+timeout_secs: 180
+
+goal: |
+  驗證 AgoraMarket 通知清單刪除功能已修復（Issue #70 Critical Bug #2）。
+  修復前：刪除通知後清單不更新，需要重整才能消失。
+
+  ⚠️ Flutter CanvasKit app：用 screenshot_analyze 做所有 UI 判斷。
+
+  執行步驟：
+  1. 等待 5 秒讓 Flutter 完成 bootstrap
+  2. screenshot_analyze "頁面是否載入完成？是否看到登入表單或主頁面？"
+  3. 若看到登入頁，記錄「需要登入才能測試通知功能」，嘗試找到測試帳號登入
+  4. 若已登入或進入主頁，尋找通知鈴鐺圖示（notification bell）
+  5. screenshot_analyze "是否可見通知圖示？位置在哪裡？"
+  6. 點擊通知圖示，進入通知中心
+  7. screenshot_analyze "通知清單顯示什麼內容？是否有通知項目？"
+  8. 若有通知，找到刪除按鈕（X 或垃圾桶圖示）點擊
+  9. 不要 reload 頁面，等待 2 秒後 screenshot_analyze "通知是否從清單消失？"
+  10. 判斷：消失即通過，需要 reload 才消失則標記 bug 仍存在
+
+success_criteria:
+  - "通知中心頁面可以正常開啟"
+  - "刪除通知後，通知從清單消失（不需 page reload）"
+  - "若通知清單為空，頁面顯示空白/無通知狀態（而非錯誤）"
+
+tags: [regression, notification, agora, critical, issue-70]

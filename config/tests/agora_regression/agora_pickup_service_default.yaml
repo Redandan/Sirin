@@ -1,0 +1,31 @@
+id: agora_pickup_service_default
+name: "AgoraMarket Pickup Service Type 預設值驗證 (Issue #70 #3)"
+url: "https://agoramarket.purrtechllc.com"
+
+browser_headless: false
+max_iterations: 12
+timeout_secs: 180
+
+goal: |
+  驗證 AgoraMarket 商品 pickup service type 預設值修復（Issue #70 Critical Bug #3）。
+  修復前：pickup_address_setting_page.dart 的 service type 預設值錯誤，導致商品建立後
+  service type 為空或錯誤值。
+
+  ⚠️ Flutter CanvasKit app：用 screenshot_analyze 做所有 UI 判斷。
+
+  執行步驟：
+  1. 等待 5 秒讓 Flutter 載入
+  2. screenshot_analyze "頁面顯示什麼？是否需要登入？"
+  3. 若需要賣家登入，記錄此限制並盡可能導航到賣家商品區域
+  4. 找到「新增商品」或「建立商品」按鈕，點擊進入商品表單
+  5. 在商品表單中，導航到 Pickup / 自取設定區塊
+  6. screenshot_analyze "Pickup service type 欄位目前顯示什麼預設值？是否為空白？"
+  7. 若有預設值（例如「標準配送」「自取」等），記錄值並判定通過
+  8. 若欄位為空且顯示「請選擇」驗證提示，標記 bug 可能仍存在
+
+success_criteria:
+  - "商品表單頁面可以開啟"
+  - "Pickup / shipping service type 欄位有預設值（非空白）"
+  - "不顯示「必填」或 service type 未選擇的驗證錯誤（在未修改任何欄位的情況下）"
+
+tags: [regression, product, pickup, agora, critical, issue-70]
