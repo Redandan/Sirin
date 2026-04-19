@@ -37,37 +37,77 @@ impl AgentTeam {
         }
     }
 
-    /// PM 分配任務 → 工程師執行 → PM review。
-    /// 回傳 PM 最終的 review 結果。
+    /// PM 分配任務 → 工程師執行 → PM review → (不通過則迭代修改)。
+    ///
+    /// 最多執行 `MAX_ITER` 輪 Engineer → PM review 循環。
+    /// PM 回覆中包含「[PM ✓」或「核准」即視為通過，提前結束。
+    /// 超過輪次上限回傳 Err。
     pub fn assign_task(&mut self, task: &str) -> Result<String, String> {
-        // 1. PM 分析任務、出指令
+        const MAX_ITER: usize = 3;
+
+        // 1. PM 分析任務、拆解指令
         let plan = self.pm.send(
             &format!("新任務：{task}\n\n請拆解成具體步驟，給出明確指令讓工程師執行。")
         )?;
 
-        // 2. 工程師執行
-        let result = self.engineer.send(
-            &format!("PM 指令：\n{plan}\n\n請開始執行，完成後回報結果。")
-        )?;
+        let mut engineer_ctx = format!("PM 指令：\n{plan}\n\n請開始執行，完成後回報結果。");
+        let mut last_review  = String::new();
 
-        // 3. PM review，順便記錄學習
-        let review = self.pm.send(
-            &format!("工程師回報：\n{result}\n\n請 review。有問題指出具體修改方向；沒問題就核准。")
-        )?;
+        for iter in 0..MAX_ITER {
+            // 2. 工程師執行（或依 PM 意見修改）
+            let result = self.engineer.send(&engineer_ctx)?;
 
-        Ok(review)
+            // 3. PM review
+            let review = self.pm.send(
+                &format!("工程師回報（第 {} 輪）：\n{result}\n\n請 review。有問題指出具體修改方向；沒問題就核准。",
+                    iter + 1)
+            )?;
+
+            // 4. 判斷是否核准
+            let approved = review.contains("[PM ✓")
+                || review.contains("核准")
+                || review.contains("Approved")
+                || review.contains("LGTM");
+
+            if approved {
+                return Ok(review);
+            }
+
+            // 5. 未核准 — 把 PM 意見帶給工程師進行下一輪
+            last_review   = review.clone();
+            engineer_ctx  = format!(
+                "PM Review（第 {} 輪）未通過，要求修改：\n{review}\n\n請修正後重新回報。",
+                iter + 1
+            );
+        }
+
+        // 超過輪次但有最後一次 review，仍回傳（讓呼叫端決定怎麼處理）
+        if last_review.is_empty() {
+            Err(format!("assign_task: {MAX_ITER} 輪後 PM 仍未核准"))
+        } else {
+            Err(format!("assign_task: {MAX_ITER} 輪後 PM 仍未核准\n最後 review：\n{last_review}"))
+        }
     }
 
-    /// 測試循環：Tester 執行 → 失敗則 Engineer 修 → PM 記錄。
-    /// 回傳最終測試結果摘要。
+    /// 測試循環：Tester 執行 cargo check → 失敗則 Engineer 修 → PM 記錄。
+    /// 回傳最終驗證結果摘要。
+    ///
+    /// ⚠️  使用 cargo check 而非 cargo test，避免與呼叫者的 cargo 進程產生
+    ///     file lock 衝突（cargo 使用排他鎖，重入會造成死鎖）。
     pub fn test_cycle(&mut self) -> Result<String, String> {
-        // 1. Tester 跑測試
-        let test_result = self.tester.send("請執行完整測試套件，回報結果。")?;
+        // 1. Tester 驗證編譯
+        let test_result = self.tester.send(
+            "請執行 cargo check 驗證編譯，回報結果（0 errors = 通過）。"
+        )?;
 
         // 2. 有失敗 → 工程師修
+        // 偵測模式涵蓋：cargo check 錯誤、cargo test 失敗、Tester 回報格式
         let has_failure = test_result.contains("FAILED")
             || test_result.contains("failed")
-            || test_result.contains("❌");
+            || test_result.contains("❌")
+            || test_result.contains("error[")     // Rust 編譯錯誤 (e.g. error[E0308])
+            || test_result.contains("error: ")    // Rust linker / proc-macro 錯誤
+            || test_result.contains("编译失败");   // Tester 中文回報
 
         if has_failure {
             let fix = self.engineer.send(
@@ -263,7 +303,7 @@ GUI 優化需求：改善 src/ui_egui/workspace.rs 的聊天 tab（show_chat 函
         let review = team.assign_task(task).expect("assign_task");
         println!("\n=== PM 最終 Review ===\n{review}");
 
-        // 執行完後讓 Tester 驗證 cargo check
+        // 執行完後讓 Tester 驗證（cargo check，不會有 lock 衝突）
         println!("\n--- Tester 驗證 ---");
         let test_result = team.test_cycle().expect("test_cycle");
         println!("\n=== Tester 報告 ===\n{test_result}");

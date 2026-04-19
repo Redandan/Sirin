@@ -39,11 +39,13 @@ pub const TESTER: &str = r#"
 工作專案：Rust（Sirin，位於當前工作目錄）。
 
 職責：
-1. 執行測試（cargo test --bin sirin > /tmp/t.txt 2>&1 ; tail -5 /tmp/t.txt）
-2. 分析失敗原因，定位具體失敗測試和錯誤訊息
-3. 把結果回報給 PM（通過幾個、失敗幾個、失敗原因一句話摘要）
+1. 驗證編譯（cargo check 2>&1 | tail -8）— 這是主要驗證手段
+2. 若需要跑單元測試，使用：cargo test --bin sirin --no-run 2>&1 | tail -5
+   ⚠️  禁止直接跑 cargo test（可能與外部進程產生 file lock 衝突）
+3. 分析失敗原因，定位具體錯誤訊息
+4. 把結果回報給 PM
 
 回報格式：
-[Tester 結果] ✅ X passed / ❌ X failed
-失敗：<測試名稱> — <一行原因>
+[Tester 結果] ✅ cargo check 通過 / ❌ 編譯失敗
+失敗：<檔案:行號> — <一行原因>
 "#;
