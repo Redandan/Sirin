@@ -49,8 +49,13 @@ fn run_loop(cwd: String) {
     loop {
         match queue::next_queued() {
             Some(task) => {
+                // 安全截斷：找 80 bytes 內最後的 char boundary
+                let preview_end = {
+                    let max = task.description.len().min(80);
+                    (0..=max).rev().find(|&i| task.description.is_char_boundary(i)).unwrap_or(0)
+                };
                 tracing::info!(target: "sirin",
-                    "[team-worker] Starting task {} — {:.80}", task.id, task.description);
+                    "[team-worker] Starting task {} — {}", task.id, &task.description[..preview_end]);
 
                 queue::update_status(&task.id, TaskStatus::Running, None);
 

@@ -1122,14 +1122,22 @@ fn call_agent_enqueue(args: Value) -> Result<Value, String> {
 
 fn call_agent_queue_status() -> Result<Value, String> {
     let tasks = crate::multi_agent::queue::list_all();
+
+    // 安全截斷輔助：找 max_bytes 內最後一個 char boundary
+    fn safe_truncate(s: &str, max_bytes: usize) -> &str {
+        let end = s.len().min(max_bytes);
+        let boundary = (0..=end).rev().find(|&i| s.is_char_boundary(i)).unwrap_or(0);
+        &s[..boundary]
+    }
+
     let summary: Vec<_> = tasks.iter().map(|t| serde_json::json!({
         "id":          t.id,
         "status":      t.status.to_string(),
-        "description": &t.description[..t.description.len().min(80)],
+        "description": safe_truncate(&t.description, 80),
         "created_at":  t.created_at,
         "finished_at": t.finished_at,
         "result_preview": t.result.as_deref()
-            .map(|r| r[..r.len().min(120)].to_string()),
+            .map(|r| safe_truncate(r, 120).to_string()),
     })).collect();
     Ok(serde_json::json!({
         "total":   tasks.len(),
@@ -1212,11 +1220,19 @@ fn call_supervised_run(args: Value) -> Result<Value, String> {
 
     let result = claude_session::run_supervised(cwd, prompt, &policy, &|event| {
         let line = match &event {
-            SupervisionEvent::Working    { text }     => format!("working: {}", &text[..text.len().min(120)]),
+            SupervisionEvent::Working    { text }   => {
+                let e = text.len().min(120);
+                let e = (0..=e).rev().find(|&i| text.is_char_boundary(i)).unwrap_or(0);
+                format!("working: {}", &text[..e])
+            },
             SupervisionEvent::UsingTool  { name }     => format!("tool: {name}"),
             SupervisionEvent::Paused     { question } => format!("paused: {question}"),
             SupervisionEvent::Consulting { question } => format!("consulting: {question}"),
-            SupervisionEvent::GotAdvice  { advice }   => format!("advice: {}", &advice[..advice.len().min(200)]),
+            SupervisionEvent::GotAdvice  { advice }   => {
+                let e = advice.len().min(200);
+                let e = (0..=e).rev().find(|&i| advice.is_char_boundary(i)).unwrap_or(0);
+                format!("advice: {}", &advice[..e])
+            },
             SupervisionEvent::Continuing { round }    => format!("continuing round {round}"),
             SupervisionEvent::Done       { .. }       => "done".into(),
         };
