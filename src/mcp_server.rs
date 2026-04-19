@@ -577,6 +577,39 @@ fn handle_tools_list() -> Result<Value, String> {
                 }
             },
             {
+                "name": "agent_enqueue",
+                "description": "把一個任務加入 AI 小隊的任務佇列。Worker 執行緒會自動依序執行（PM→Engineer→PM review）。\
+回傳任務 ID，可用 agent_queue_status 查詢進度。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task": { "type": "string", "description": "任務描述（越具體越好）" },
+                        "cwd":  { "type": "string", "description": "工作目錄（repo 路徑）。省略時用 sirin repo" }
+                    },
+                    "required": ["task"]
+                }
+            },
+            {
+                "name": "agent_queue_status",
+                "description": "查看 AI 小隊任務佇列現況（所有任務的 id / status / 結果摘要）。",
+                "inputSchema": { "type": "object", "properties": {} }
+            },
+            {
+                "name": "agent_start_worker",
+                "description": "啟動 AI 小隊的背景工作執行緒（若尚未啟動）。啟動後持續消費佇列直到進程結束。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "cwd": { "type": "string", "description": "工作目錄（repo 路徑）。省略時用 sirin repo" }
+                    }
+                }
+            },
+            {
+                "name": "agent_clear_completed",
+                "description": "清除任務佇列中所有已完成（done / failed）的任務，保留 queued / running。",
+                "inputSchema": { "type": "object", "properties": {} }
+            },
+            {
                 "name": "consult",
                 "description": "把一個問題交給另一個 Claude Code session 回答。\
 Sirin 會在指定工作目錄（可以是另一個 repo）啟動一個顧問 session，\
@@ -646,6 +679,10 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         "agent_team_test"      => return call_agent_team_test(arguments).map(wrap_json),
         "agent_send"           => return call_agent_send(arguments).map(wrap_json),
         "agent_reset"          => return call_agent_reset(arguments).map(wrap_json),
+        "agent_enqueue"        => return call_agent_enqueue(arguments).map(wrap_json),
+        "agent_queue_status"   => return call_agent_queue_status().map(wrap_json),
+        "agent_start_worker"   => return call_agent_start_worker(arguments).map(wrap_json),
+        "agent_clear_completed"=> return call_agent_clear_completed().map(wrap_json),
         _ => {}
     }
 
@@ -1067,6 +1104,64 @@ fn call_agent_reset(args: Value) -> Result<Value, String> {
     }
 
     Ok(serde_json::json!({ "reset": role, "status": "ok" }))
+}
+
+// ── 任務佇列 + Worker ─────────────────────────────────────────────────────────
+
+fn call_agent_enqueue(args: Value) -> Result<Value, String> {
+    let task = args["task"].as_str().ok_or("Missing 'task'")?;
+    let id = crate::multi_agent::queue::enqueue(task);
+    tracing::info!(target: "sirin", "[mcp] agent_enqueue: task_id={id} task={:.60}", task);
+    Ok(serde_json::json!({
+        "task_id": id,
+        "status":  "queued",
+        "message": "任務已加入佇列。用 agent_start_worker 確保 Worker 正在執行，\
+                    用 agent_queue_status 查詢進度。"
+    }))
+}
+
+fn call_agent_queue_status() -> Result<Value, String> {
+    let tasks = crate::multi_agent::queue::list_all();
+    let summary: Vec<_> = tasks.iter().map(|t| serde_json::json!({
+        "id":          t.id,
+        "status":      t.status.to_string(),
+        "description": &t.description[..t.description.len().min(80)],
+        "created_at":  t.created_at,
+        "finished_at": t.finished_at,
+        "result_preview": t.result.as_deref()
+            .map(|r| r[..r.len().min(120)].to_string()),
+    })).collect();
+    Ok(serde_json::json!({
+        "total":   tasks.len(),
+        "queued":  tasks.iter().filter(|t| t.status == crate::multi_agent::TaskStatus::Queued).count(),
+        "running": tasks.iter().filter(|t| t.status == crate::multi_agent::TaskStatus::Running).count(),
+        "done":    tasks.iter().filter(|t| t.status == crate::multi_agent::TaskStatus::Done).count(),
+        "failed":  tasks.iter().filter(|t| t.status == crate::multi_agent::TaskStatus::Failed).count(),
+        "tasks":   summary,
+    }))
+}
+
+fn call_agent_start_worker(args: Value) -> Result<Value, String> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static STARTED: AtomicBool = AtomicBool::new(false);
+
+    if STARTED.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+        let cwd = resolve_cwd(&args);
+        crate::multi_agent::worker::spawn(&cwd);
+        Ok(serde_json::json!({ "status": "started", "cwd": cwd }))
+    } else {
+        Ok(serde_json::json!({ "status": "already_running" }))
+    }
+}
+
+fn call_agent_clear_completed() -> Result<Value, String> {
+    let before = crate::multi_agent::queue::list_all().len();
+    crate::multi_agent::queue::clear_completed();
+    let after = crate::multi_agent::queue::list_all().len();
+    Ok(serde_json::json!({
+        "removed": before - after,
+        "remaining": after,
+    }))
 }
 
 // ── consult / supervised_run ──────────────────────────────────────────────────

@@ -14,8 +14,11 @@
 
 mod roles;
 mod session;
+pub mod queue;
+pub mod worker;
 
 pub use session::PersistentSession;
+pub use queue::{TeamTask, TaskStatus};
 use serde::Serialize;
 
 // ── AgentTeam ─────────────────────────────────────────────────────────────────
