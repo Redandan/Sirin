@@ -250,16 +250,9 @@ fn run_one_round(
     continuation: bool,
     on_event: &(impl Fn(SupervisionEvent) + Sync),
 ) -> Result<(i32, String, String, String), String> {
-    let bin = claude_bin();
-    let mut cmd = if bin.extension().map(|e| e == "cmd").unwrap_or(false) {
-        let mut c = Command::new("cmd");
-        c.no_window().arg("/c").arg(&bin);
-        c
-    } else {
-        let mut c = Command::new(&bin);
-        c.no_window();
-        c
-    };
+    // build_claude_command() bypasses cmd.exe on Windows when possible,
+    // preventing multi-line prompt truncation (see helper docs).
+    let mut cmd = build_claude_command();
 
     cmd.current_dir(cwd)
         .args(["-p", prompt, "--output-format", "stream-json",
@@ -381,16 +374,12 @@ pub fn run_one_turn_scoped(
     // Hard wall-clock timeout enforced by a watchdog thread that kills the
     // child after 600s.  If the child is killed, BufReader hits EOF naturally
     // and we proceed to wait().
-    let bin = claude_bin();
-    let mut cmd = if bin.extension().map(|e| e == "cmd").unwrap_or(false) {
-        let mut c = Command::new("cmd");
-        c.no_window().arg("/c").arg(&bin);
-        c
-    } else {
-        let mut c = Command::new(&bin);
-        c.no_window();
-        c
-    };
+    //
+    // Fix C: build_claude_command() bypasses cmd.exe on Windows so multi-line
+    // squad prompts (PM↔Engineer format!() strings) are not truncated at the
+    // first newline — Fix B's original spawn used `cmd /c` and silently broke
+    // every squad task.
+    let mut cmd = build_claude_command();
     cmd.current_dir(cwd_path)
         .args(&args)
         .stdin(Stdio::null())
@@ -511,6 +500,45 @@ fn run_claude(args: &[&str], cwd: Option<&Path>) -> Result<std::process::Output,
     run_claude_with_timeout(args, cwd, Duration::from_secs(600))
 }
 
+/// Build a `Command` to invoke the `claude` CLI, bypassing `cmd.exe` on Windows
+/// when possible.
+///
+/// On Windows, `claude` ships as `claude.cmd` which wraps a Node.js CLI script.
+/// Invoking `cmd /c claude.cmd -p "<multi-line>"` causes `cmd.exe` to treat
+/// embedded newlines as command separators, **silently truncating multi-line
+/// prompts** at the first `\n`.  This breaks the squad's PM↔Engineer loop
+/// because role messages are multi-line `format!()` strings.
+///
+/// We resolve the underlying `cli.js` (at `%APPDATA%\npm\node_modules\…\cli.js`)
+/// and invoke `node` directly.  Falls back to `cmd /c claude.cmd` only if the
+/// JS script is not found at the expected npm-global location.
+///
+/// All claude-spawning sites (`run_one_round`, `run_one_turn_scoped`,
+/// `run_claude_with_timeout`) MUST go through this helper to avoid the
+/// truncation regression.
+fn build_claude_command() -> Command {
+    let bin = claude_bin();
+    if bin.extension().map(|e| e == "cmd").unwrap_or(false) {
+        if let Some(script) = resolve_claude_node_script(&bin) {
+            let mut c = Command::new("node");
+            c.no_window().arg(script);
+            return c;
+        }
+        // Fallback: cmd /c (multi-line prompts WILL be truncated; warn at log).
+        tracing::warn!(target: "sirin",
+            "claude CLI: cli.js not found, falling back to `cmd /c claude.cmd` \
+             — multi-line prompts will be truncated. Install/locate the npm \
+             global @anthropic-ai/claude-code to fix.");
+        let mut c = Command::new("cmd");
+        c.no_window().arg("/c").arg(&bin);
+        c
+    } else {
+        let mut c = Command::new(&bin);
+        c.no_window();
+        c
+    }
+}
+
 /// Run claude with a hard wall-clock timeout.
 ///
 /// If the subprocess does not complete within `timeout`, the child is killed
@@ -518,44 +546,15 @@ fn run_claude(args: &[&str], cwd: Option<&Path>) -> Result<std::process::Output,
 /// prevents squad worker threads from blocking indefinitely when the
 /// Anthropic API hangs or rate-limits at high concurrency (N=4 workers).
 ///
-/// On Windows, `claude` is installed as `claude.cmd`. We detect this and
-/// invoke Node.js directly (not `cmd /c`) because cmd.exe treats embedded
+/// On Windows, `claude` is installed as `claude.cmd`. `build_claude_command()`
+/// invokes Node.js directly (not `cmd /c`) because cmd.exe treats embedded
 /// newlines as command separators, truncating multi-line prompts.
 fn run_claude_with_timeout(
     args: &[&str],
     cwd: Option<&Path>,
     timeout: Duration,
 ) -> Result<std::process::Output, String> {
-    let bin = claude_bin();
-
-    let mut cmd = if bin.extension().map(|e| e == "cmd").unwrap_or(false) {
-        // Resolve the Node.js entry point that claude.cmd wraps.
-        // claude.cmd lives at e.g. %APPDATA%\npm\claude.cmd
-        // The actual JS is at %APPDATA%\npm\node_modules\@anthropic-ai\claude-code\cli.js
-        //
-        // We invoke Node directly (not `cmd /c claude.cmd`) because cmd.exe treats
-        // embedded newlines in arguments as command separators, which truncates
-        // multi-line prompts and strips flags like --output-format stream-json.
-        let node_script = resolve_claude_node_script(&bin);
-        match node_script {
-            Some(script) => {
-                let mut c = Command::new("node");
-                c.no_window().arg(script);
-                c
-            }
-            None => {
-                // Fallback: cmd /c (may break for multi-line prompts on Windows)
-                let mut c = Command::new("cmd");
-                c.no_window().arg("/c").arg(&bin);
-                c
-            }
-        }
-    } else {
-        let mut c = Command::new(&bin);
-        c.no_window();
-        c
-    };
-
+    let mut cmd = build_claude_command();
     cmd.args(args);
     if let Some(dir) = cwd { cmd.current_dir(dir); }
     // Pipe stdout/stderr so we can drain them in background threads.
@@ -564,7 +563,7 @@ fn run_claude_with_timeout(
        .stdout(Stdio::piped())
        .stderr(Stdio::piped());
 
-    let child = cmd.spawn().map_err(|e| format!("spawn claude ({bin:?}): {e}"))?;
+    let child = cmd.spawn().map_err(|e| format!("spawn claude: {e}"))?;
     wait_child_with_timeout(child, timeout)
 }
 
