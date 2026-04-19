@@ -11,7 +11,13 @@ use std::path::PathBuf;
 
 /// Returns the platform-appropriate directory for Sirin's persistent data.
 /// The directory is **not** guaranteed to exist; callers must `create_dir_all`.
+///
+/// In `cargo test` builds returns a repo-local `./test_data/` directory
+/// to avoid unit tests accidentally clobbering the production queue/DB.
 pub fn app_data_dir() -> PathBuf {
+    #[cfg(test)]
+    return PathBuf::from("test_data");
+
     #[cfg(target_os = "windows")]
     if let Ok(local) = std::env::var("LOCALAPPDATA") {
         return PathBuf::from(local).join("Sirin");
