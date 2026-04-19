@@ -259,6 +259,7 @@ fn run_one_round(
     cmd.current_dir(cwd)
         .args(["-p", prompt, "--output-format", "stream-json",
                "--verbose", "--dangerously-skip-permissions"])
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
 
@@ -329,30 +330,20 @@ pub fn run_one_turn(
         return Err(format!("cwd does not exist: {cwd}"));
     }
 
-    let bin = claude_bin();
-    let mut cmd = if bin.extension().map(|e| e == "cmd").unwrap_or(false) {
-        let mut c = Command::new("cmd");
-        c.arg("/c").arg(&bin);
-        c
-    } else {
-        Command::new(&bin)
-    };
-    cmd.current_dir(cwd_path)
-        .args(["-p", prompt, "--output-format", "stream-json",
-               "--verbose", "--dangerously-skip-permissions"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    if continuation { cmd.arg("--continue"); }
+    // Use the same args/invocation as run_sync so Windows cmd.exe
+    // handles the prompt encoding consistently (run_sync already proven to work).
+    let mut args = vec!["-p", prompt, "--output-format", "stream-json",
+                        "--verbose", "--dangerously-skip-permissions"];
+    if continuation { args.push("--continue"); }
 
-    let mut child    = cmd.spawn().map_err(|e| format!("spawn: {e}"))?;
-    let     stdout   = child.stdout.take().ok_or("no stdout")?;
+    let raw = run_claude(&args, Some(cwd_path))?;
+    let stdout = String::from_utf8_lossy(&raw.stdout);
 
     let mut output     = String::new();
     let mut session_id = String::new();
 
-    for line in BufReader::new(stdout).lines() {
-        let Ok(line) = line else { continue };
-        let Ok(val)  = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+    for line in stdout.lines() {
+        let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else { continue };
         match val["type"].as_str() {
             Some("assistant") => {
                 if let Some(t) = extract_assistant_text(&val) { output = t; }
@@ -364,7 +355,6 @@ pub fn run_one_turn(
             _ => {}
         }
     }
-    let _ = child.wait();
     Ok((output, session_id))
 }
 
@@ -420,18 +410,69 @@ fn claude_bin() -> PathBuf {
 }
 
 /// Run the claude binary with given args, handling .cmd on Windows.
+///
+/// On Windows, `claude` is installed as `claude.cmd`. Wrapping via
+/// `cmd /c` breaks multi-line prompt arguments (cmd.exe treats embedded
+/// newlines as command separators).  We detect this case and invoke
+/// Node.js directly, which handles Unicode and newlines correctly.
 fn run_claude(args: &[&str], cwd: Option<&Path>) -> Result<std::process::Output, String> {
     let bin = claude_bin();
+
     let mut cmd = if bin.extension().map(|e| e == "cmd").unwrap_or(false) {
-        let mut c = Command::new("cmd");
-        c.arg("/c").arg(&bin);
-        c
+        // Resolve the Node.js entry point that claude.cmd wraps.
+        // claude.cmd lives at e.g. %APPDATA%\npm\claude.cmd
+        // The actual JS is at %APPDATA%\npm\node_modules\@anthropic-ai\claude-code\cli.js
+        //
+        // We invoke Node directly (not `cmd /c claude.cmd`) because cmd.exe treats
+        // embedded newlines in arguments as command separators, which truncates
+        // multi-line prompts and strips flags like --output-format stream-json.
+        let node_script = resolve_claude_node_script(&bin);
+        match node_script {
+            Some(script) => {
+                let mut c = Command::new("node");
+                c.arg(script);
+                c
+            }
+            None => {
+                // Fallback: cmd /c (may break for multi-line prompts on Windows)
+                let mut c = Command::new("cmd");
+                c.arg("/c").arg(&bin);
+                c
+            }
+        }
     } else {
         Command::new(&bin)
     };
+
     cmd.args(args);
     if let Some(dir) = cwd { cmd.current_dir(dir); }
+    // Explicitly close stdin: Claude CLI waits 3s for stdin if inherited.
+    cmd.stdin(Stdio::null());
     cmd.output().map_err(|e| format!("claude failed ({bin:?}): {e}"))
+}
+
+/// Find the Node.js script that backs `claude.cmd`.
+/// claude.cmd is an npm shim; the real entry point is:
+///   <npm_prefix>\node_modules\@anthropic-ai\claude-code\cli.js
+fn resolve_claude_node_script(claude_cmd: &Path) -> Option<PathBuf> {
+    // When claude_bin() returns a bare filename like "claude.cmd" (no directory),
+    // parent() returns an empty path.  Fall back to the standard npm global location.
+    let npm_dir: PathBuf = {
+        let parent = claude_cmd.parent().unwrap_or(Path::new(""));
+        if parent.as_os_str().is_empty() {
+            // Bare filename — locate via %APPDATA%\npm (Windows npm global)
+            let appdata = std::env::var("APPDATA").ok()?;
+            PathBuf::from(appdata).join("npm")
+        } else {
+            parent.to_path_buf()
+        }
+    };
+    let candidate = npm_dir
+        .join("node_modules")
+        .join("@anthropic-ai")
+        .join("claude-code")
+        .join("cli.js");
+    if candidate.exists() { Some(candidate) } else { None }
 }
 
 /// Check if Claude CLI is available on the system.
