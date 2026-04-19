@@ -8,6 +8,7 @@ mod settings;
 mod log_view;
 mod browser;
 mod monitor;
+mod team_panel;
 
 use std::sync::Arc;
 use std::collections::VecDeque;
@@ -19,7 +20,7 @@ use crate::ui_service::*;
 // ── View ─────────────────────────────────────────────────────────────────────
 
 #[derive(PartialEq, Clone)]
-enum View { Workspace(usize), Settings, Log, Browser, Monitor }
+enum View { Workspace(usize), Settings, Log, Browser, Monitor, Team }
 
 // ── Toast ────────────────────────────────────────────────────────────────────
 
@@ -54,6 +55,7 @@ pub struct SirinApp {
     settings_state: settings::SettingsState,
     browser_state: browser::BrowserUiState,
     monitor_state: monitor::MonitorViewState,
+    team_state: team_panel::TeamPanelState,
 
     /// Dismissed once per session so the banner doesn't reappear after dismiss
     update_banner_dismissed: bool,
@@ -74,7 +76,7 @@ impl SirinApp {
             sidebar_collapsed: false,
             log_state: Default::default(), workspace_state: Default::default(),
             settings_state: Default::default(), browser_state: Default::default(),
-            monitor_state: Default::default(),
+            monitor_state: Default::default(), team_state: Default::default(),
             update_banner_dismissed: false,
         }
     }
@@ -121,6 +123,7 @@ impl eframe::App for SirinApp {
                     View::Log => log_view::show(ui, &self.svc, &mut self.log_state),
                     View::Browser => browser::show(ui, &self.svc, &mut self.browser_state),
                     View::Monitor => monitor::show(ui, &mut self.monitor_state),
+                    View::Team => team_panel::show(ui, &self.svc, &mut self.team_state),
                 }
             });
 

@@ -12,12 +12,23 @@
 //! multi_agent::worker::spawn("C:/repos/Sirin");
 //! ```
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use super::{AgentTeam, queue, queue::TaskStatus};
 
-/// 啟動持續工作執行緒（只呼叫一次）。
+static STARTED: AtomicBool = AtomicBool::new(false);
+
+/// Worker 執行緒是否已啟動（給 UI / 其他模組查詢）。
+pub fn is_running() -> bool {
+    STARTED.load(Ordering::Relaxed)
+}
+
+/// 啟動持續工作執行緒（只呼叫一次，重複呼叫為 no-op）。
 /// 已有 Running 狀態的任務會先被重置為 Queued（防止上次崩潰留下殘留）。
 pub fn spawn(cwd: &str) {
+    if STARTED.swap(true, Ordering::SeqCst) {
+        return; // 已啟動，idempotent
+    }
     // 把上次未完成的 Running 任務重設為 Queued
     reset_stale_running();
 

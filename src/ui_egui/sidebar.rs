@@ -201,6 +201,7 @@ fn show_expanded(
     group_label(ui, "TOOLS");
     nav_item(ui, "Browser", View::Browser, view);
     nav_item(ui, "Monitor", View::Monitor, view);
+    nav_item(ui, "開發小隊", View::Team, view);
 
     // ── Bottom status ─────────────────────────────────────────────────
     ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {

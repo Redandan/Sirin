@@ -16,6 +16,7 @@ mod browser;
 mod integrations;
 mod pending;
 mod system;
+mod team;
 mod workflow;
 
 use std::sync::Mutex;
@@ -172,6 +173,15 @@ impl BrowserService for RealService {
     fn browser_set_viewport(&self, width: u32, height: u32, mobile: bool) -> Result<(), String> { browser::browser_set_viewport(self, width, height, mobile) }
     fn browser_console(&self, limit: usize) -> String { browser::browser_console(self, limit) }
     fn browser_tab_count(&self) -> usize { browser::browser_tab_count(self) }
+}
+
+impl MultiAgentService for RealService {
+    fn team_dashboard(&self)                 -> TeamDashView          { team::team_dashboard(self) }
+    fn team_queue(&self)                     -> Vec<TeamTaskView>     { team::team_queue(self) }
+    fn team_enqueue(&self, desc: &str)       -> String                { team::team_enqueue(self, desc) }
+    fn team_start_worker(&self)              { team::team_start_worker(self) }
+    fn team_clear_completed(&self)           { team::team_clear_completed(self) }
+    fn team_reset_member(&self, role: &str)  { team::team_reset_member(self, role) }
 }
 
 // `impl AppService for RealService` is satisfied automatically by the blanket

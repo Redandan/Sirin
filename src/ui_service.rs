@@ -165,6 +165,41 @@ pub struct AiAdviceView {
     pub proposed_fixes: Vec<ConfigFixView>,
 }
 
+// ── Multi-Agent team types ────────────────────────────────────────────────────
+
+/// 單一佇列任務的 UI 視圖。
+#[derive(Debug, Clone, PartialEq)]
+pub struct TeamTaskView {
+    pub id: String,
+    pub description: String,
+    pub status: String,           // "queued" | "running" | "done" | "failed"
+    pub result: Option<String>,
+    pub created_at: String,
+    pub finished_at: Option<String>,
+}
+
+/// PM / Engineer / Tester 其中一人的狀態。
+#[derive(Debug, Clone, PartialEq)]
+pub struct TeamMemberView {
+    pub role: String,
+    pub session_id: Option<String>,
+    pub turns: u32,
+    pub resume_cmd: String,
+}
+
+/// 整個小隊的即時狀態快照。
+#[derive(Debug, Clone, PartialEq)]
+pub struct TeamDashView {
+    pub pm: TeamMemberView,
+    pub engineer: TeamMemberView,
+    pub tester: TeamMemberView,
+    pub worker_running: bool,
+    pub queued: usize,
+    pub running: usize,
+    pub done: usize,
+    pub failed: usize,
+}
+
 // ── Service traits ───────────────────────────────────────────────────────────
 //
 // Split by domain so UI consumers (and future alternative implementations) can
@@ -282,6 +317,22 @@ pub trait SystemService: Send + Sync + 'static {
     fn config_apply_fixes(&self, fixes: Vec<ConfigFixView>) -> Result<Vec<String>, String>;
 }
 
+/// 開發小隊狀態感知 — 佇列讀寫、Worker 控制、成員重置。
+pub trait MultiAgentService: Send + Sync + 'static {
+    /// 取得整個小隊的即時狀態（含 Worker 是否在跑、佇列計數）。
+    fn team_dashboard(&self) -> TeamDashView;
+    /// 取得所有任務列表（最新在前）。
+    fn team_queue(&self) -> Vec<TeamTaskView>;
+    /// 加入新任務，回傳任務 ID。
+    fn team_enqueue(&self, description: &str) -> String;
+    /// 啟動背景 Worker（idempotent）。
+    fn team_start_worker(&self);
+    /// 清除所有 Done / Failed 任務。
+    fn team_clear_completed(&self);
+    /// 重置指定角色的 session（開新對話）。
+    fn team_reset_member(&self, role: &str);
+}
+
 /// Browser automation — persistent Chrome session control.
 pub trait BrowserService: Send + Sync + 'static {
     fn browser_is_open(&self) -> bool;
@@ -309,10 +360,11 @@ pub trait BrowserService: Send + Sync + 'static {
 
 /// Aggregate trait the UI consumes as `Arc<dyn AppService>`.
 ///
-/// Any type that implements all six sub-traits automatically gets
+/// Any type that implements all seven sub-traits automatically gets
 /// `AppService` via the blanket impl below — no separate impl block required.
 pub trait AppService:
-    AgentService + PendingReplyService + WorkflowService + IntegrationService + SystemService + BrowserService
+    AgentService + PendingReplyService + WorkflowService + IntegrationService
+    + SystemService + BrowserService + MultiAgentService
 {
 }
 
@@ -323,6 +375,7 @@ impl<T> AppService for T where
         + IntegrationService
         + SystemService
         + BrowserService
+        + MultiAgentService
         + ?Sized
 {
 }
