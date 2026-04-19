@@ -134,7 +134,7 @@ Output strictly valid JSON (no markdown fence):
 ///
 /// **Outcome tracking**: the spawned thread calls `complete_fix(fix_id, ...)`
 /// when claude_session returns, so future callers can query `recent_fixes()`.
-pub fn trigger_auto_fix(test: &TestGoal, result: &TestResult, outcome: &TriageOutcome) -> bool {
+pub fn trigger_auto_fix(test: &TestGoal, result: &TestResult, outcome: &TriageOutcome, run_id: Option<&str>) -> bool {
     let Some(repo) = outcome.category.fix_repo() else { return false; };
     let Some(cwd) = crate::claude_session::repo_path(repo) else {
         tracing::warn!("auto_fix: repo alias '{repo}' not found");
@@ -148,7 +148,7 @@ pub fn trigger_auto_fix(test: &TestGoal, result: &TestResult, outcome: &TriageOu
     if super::store::has_pending_fix(&test_id, 30) {
         let _ = super::store::record_skipped_fix(
             &test_id,
-            None,
+            run_id,
             &category,
             "another fix for this test is still pending (within 30 min)",
         );
@@ -191,7 +191,7 @@ pub fn trigger_auto_fix(test: &TestGoal, result: &TestResult, outcome: &TriageOu
     // Record as pending BEFORE spawning so concurrent callers see it
     let fix_id = match super::store::record_pending_fix(
         &test_id,
-        None,  // TODO: thread run_id through
+        run_id,
         &category,
         &bug_prompt,
     ) {

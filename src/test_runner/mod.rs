@@ -93,7 +93,7 @@ async fn run_test_with_run_id(
         (None, None, false)
     } else {
         let outcome = triage::triage(ctx, &test, &result).await;
-        let triggered = auto_fix && triage::trigger_auto_fix(&test, &result, &outcome);
+        let triggered = auto_fix && triage::trigger_auto_fix(&test, &result, &outcome, run_id);
         (
             Some(outcome.category.as_str().to_string()),
             Some(outcome.reason.clone()),
