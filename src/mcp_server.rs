@@ -514,6 +514,41 @@ fn handle_tools_list() -> Result<Value, String> {
                     },
                     "required": ["action"]
                 }
+            },
+            {
+                "name": "consult",
+                "description": "把一個問題交給另一個 Claude Code session 回答。\
+Sirin 會在指定工作目錄（可以是另一個 repo）啟動一個顧問 session，\
+讓它讀取程式碼後給出簡潔可執行的建議，再把答案帶回來。\
+適合：「這個 API 格式對嗎？」「後端怎麼實作這個？」等需要跨 repo 判斷的問題。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "question":   { "type": "string", "description": "要問顧問的問題" },
+                        "context":    { "type": "string", "description": "背景說明（目前在做什麼）" },
+                        "cwd":        { "type": "string", "description": "顧問 session 的工作目錄（repo 路徑）。省略時用 sirin 自身目錄" }
+                    },
+                    "required": ["question"]
+                }
+            },
+            {
+                "name": "supervised_run",
+                "description": "在指定 repo 啟動一個受監督的 Claude Code session。\
+當主 session 停下來（問問題 / 達到輪次上限），Sirin 自動決定怎麼回應：\
+- policy=auto：直接回「yes, continue」\
+- policy=consult：把問題轉給另一個 Claude session 取得建議再回答\
+最多執行 5 輪，全部完成後回傳結果摘要（含每輪事件）。\
+注意：可能需要 1-5 分鐘，視任務複雜度而定。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "cwd":            { "type": "string", "description": "主 session 工作目錄（repo 路徑）" },
+                        "prompt":         { "type": "string", "description": "給 Claude Code 的任務描述" },
+                        "policy":         { "type": "string", "enum": ["auto", "consult"], "description": "auto=直接回 yes；consult=問另一個 session（預設 auto）" },
+                        "consultant_cwd": { "type": "string", "description": "顧問 session 的工作目錄，policy=consult 時有效（省略則與 cwd 相同）" }
+                    },
+                    "required": ["cwd", "prompt"]
+                }
             }
         ]
     }))
@@ -543,6 +578,8 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         "diagnose"             => return Ok(wrap_json(crate::diagnose::snapshot())),
         "browser_exec"         => return call_browser_exec(arguments, user_agent).await.map(wrap_json),
         "page_state"           => return call_page_state(arguments).await.map(wrap_json),
+        "consult"              => return call_consult(arguments).map(wrap_json),
+        "supervised_run"       => return call_supervised_run(arguments).map(wrap_json),
         _ => {}
     }
 
@@ -858,6 +895,83 @@ fn call_config_diagnostics() -> Result<Value, String> {
         "issues":   items,
         "text_report": summary,
     }))
+}
+
+// ── consult / supervised_run ──────────────────────────────────────────────────
+
+/// 把問題轉給另一個 Claude session，帶回建議。
+fn call_consult(args: Value) -> Result<Value, String> {
+    use crate::claude_session;
+
+    let question = args["question"].as_str().ok_or("Missing 'question'")?;
+    let context  = args["context"].as_str().unwrap_or("");
+    let cwd = args["cwd"].as_str()
+        .map(|s| s.to_string())
+        .or_else(|| claude_session::repo_path("sirin"))
+        .ok_or("Missing 'cwd' and sirin repo path not found")?;
+
+    if !claude_session::cli_available() {
+        return Err("Claude CLI not available — install with: npm install -g @anthropic-ai/claude-code".into());
+    }
+
+    let advice = claude_session::consult(question, context, &cwd)?;
+    Ok(json!({
+        "advice": advice,
+        "consultant_cwd": cwd,
+    }))
+}
+
+/// 以受監督模式執行 Claude Code session。
+/// 遇到停頓時根據 policy 自動回應（auto=yes；consult=問另一個 session）。
+fn call_supervised_run(args: Value) -> Result<Value, String> {
+    use crate::claude_session::{self, SupervisionPolicy, SupervisionEvent};
+
+    let cwd    = args["cwd"].as_str().ok_or("Missing 'cwd'")?;
+    let prompt = args["prompt"].as_str().ok_or("Missing 'prompt'")?;
+
+    if !claude_session::cli_available() {
+        return Err("Claude CLI not available — install with: npm install -g @anthropic-ai/claude-code".into());
+    }
+
+    let policy = match args["policy"].as_str().unwrap_or("auto") {
+        "consult" => SupervisionPolicy::Consult {
+            consultant_cwd: args["consultant_cwd"].as_str().map(|s| s.to_string()),
+        },
+        _ => SupervisionPolicy::AutoApprove,
+    };
+
+    // Collect events for the summary response
+    let events: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+    let result = claude_session::run_supervised(cwd, prompt, &policy, &|event| {
+        let line = match &event {
+            SupervisionEvent::Working    { text }     => format!("working: {}", &text[..text.len().min(120)]),
+            SupervisionEvent::UsingTool  { name }     => format!("tool: {name}"),
+            SupervisionEvent::Paused     { question } => format!("paused: {question}"),
+            SupervisionEvent::Consulting { question } => format!("consulting: {question}"),
+            SupervisionEvent::GotAdvice  { advice }   => format!("advice: {}", &advice[..advice.len().min(200)]),
+            SupervisionEvent::Continuing { round }    => format!("continuing round {round}"),
+            SupervisionEvent::Done       { .. }       => "done".into(),
+        };
+        events.lock().unwrap_or_else(|e| e.into_inner()).push(line);
+    });
+
+    let event_log = events.into_inner().unwrap_or_default();
+
+    match result {
+        Ok(r) => Ok(json!({
+            "success":    r.success,
+            "exit_code":  r.exit_code,
+            "output":     r.output,
+            "rounds":     event_log.iter().filter(|e| e.starts_with("continuing")).count() + 1,
+            "event_log":  event_log,
+        })),
+        Err(e) => Ok(json!({
+            "success":   false,
+            "error":     e,
+            "event_log": event_log,
+        })),
+    }
 }
 
 async fn call_browser_exec(args: Value, user_agent: &str) -> Result<Value, String> {
