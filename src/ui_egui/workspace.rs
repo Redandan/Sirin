@@ -20,7 +20,7 @@ pub struct WorkspaceState {
     new_objective: String,
     // Chat
     chat_input: String,
-    chat_history: Vec<(String, String)>,
+    chat_history: Vec<(String, String, String)>, // (role, text, timestamp)
     chat_loading: bool,
     chat_rx: Option<std::sync::mpsc::Receiver<String>>,
     // Delete confirmation (agent_id being confirmed)
@@ -53,7 +53,8 @@ fn show_chat(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &str, state
     // Poll for async reply
     if let Some(rx) = &state.chat_rx {
         if let Ok(reply) = rx.try_recv() {
-            state.chat_history.push(("agent".into(), reply));
+            let ts = chrono::Local::now().format("%H:%M").to_string();
+            state.chat_history.push(("agent".into(), reply, ts));
             state.chat_loading = false;
             state.chat_rx = None;
         }
@@ -61,7 +62,7 @@ fn show_chat(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &str, state
 
     // Message history
     ScrollArea::vertical().id_salt("chat").stick_to_bottom(true).auto_shrink(false)
-        .max_height(ui.available_height() - 50.0).show(ui, |ui| {
+        .max_height(ui.available_height() - 96.0).show(ui, |ui| {
             ui.set_max_width(600.0);
             if state.chat_history.is_empty() && !state.chat_loading {
                 ui.add_space(theme::SP_XL);
@@ -73,11 +74,14 @@ fn show_chat(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &str, state
                     ui.colored_label(theme::TEXT_DIM, "輸入訊息開始對話，Agent 會使用 AI 回覆");
                 });
             }
-            for (role, text) in &state.chat_history {
+            for (role, text, ts) in &state.chat_history {
                 let (color, prefix) = if role == "user" { (theme::TEXT, "你") } else { (theme::ACCENT, "Agent") };
                 theme::card(ui, |ui| {
                     ui.colored_label(color, RichText::new(prefix).size(theme::FONT_SMALL).strong());
                     ui.label(RichText::new(text).size(theme::FONT_BODY).color(theme::TEXT));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                        ui.colored_label(theme::TEXT_DIM, RichText::new(ts).size(theme::FONT_CAPTION));
+                    });
                 });
             }
             if state.chat_loading {
@@ -88,15 +92,25 @@ fn show_chat(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &str, state
     // Input bar
     ui.add_space(theme::SP_SM);
     ui.horizontal(|ui| {
-        let input_width = (ui.available_width() - 60.0).min(540.0);
-        let resp = ui.add_sized([input_width, 28.0],
-            egui::TextEdit::singleline(&mut state.chat_input).hint_text("輸入訊息..."));
-        let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        // 清空按鈕（僅在有歷史時顯示）
+        if !state.chat_history.is_empty() {
+            if ui.add(egui::Button::new(RichText::new("清空").size(theme::FONT_SMALL).color(theme::DANGER.linear_multiply(0.7)))
+                .fill(theme::DANGER.linear_multiply(0.08)).corner_radius(4.0)).clicked() {
+                state.chat_history.clear();
+            }
+        }
+        let send_btn_width = 60.0;
+        let clear_btn_width = if state.chat_history.is_empty() { 0.0 } else { 46.0 };
+        let input_width = (ui.available_width() - send_btn_width - clear_btn_width).min(540.0);
+        let resp = ui.add_sized([input_width, 72.0],
+            egui::TextEdit::multiline(&mut state.chat_input).hint_text("輸入訊息... (Enter 送出，Shift+Enter 換行)"));
+        let enter = resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift);
         let can_send = !state.chat_input.trim().is_empty() && !state.chat_loading;
         if ui.add_enabled(can_send, egui::Button::new(RichText::new("發送").color(theme::BG)).fill(theme::ACCENT).corner_radius(4.0)).clicked() || (enter && can_send)
         {
             let msg = state.chat_input.trim().to_string();
-            state.chat_history.push(("user".into(), msg.clone()));
+            let ts = chrono::Local::now().format("%H:%M").to_string();
+            state.chat_history.push(("user".into(), msg.clone(), ts));
             state.chat_input.clear();
             state.chat_loading = true;
 
