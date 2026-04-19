@@ -327,9 +327,10 @@ pub(super) fn build_full_registry() -> ToolRegistry {
             }))
         })
         .register_fn("file_diff", |input| async move {
+            use crate::platform::NoWindow;
             let path_arg = optional_string_field(&input, "path");
             let mut cmd = std::process::Command::new("git");
-            cmd.arg("diff").arg("HEAD");
+            cmd.no_window().arg("diff").arg("HEAD");
             if let Some(ref p) = path_arg {
                 cmd.arg("--").arg(p);
             }
@@ -380,7 +381,9 @@ pub(super) fn build_full_registry() -> ToolRegistry {
             let program = parts.next().unwrap_or("sh");
             let args: Vec<&str> = parts.collect();
 
+            use crate::platform::NoWindow;
             let output = std::process::Command::new(program)
+                .no_window()
                 .args(&args)
                 .output()
                 .map_err(|e| format!("Failed to run `{command}`: {e}"))?;
@@ -569,7 +572,9 @@ pub(super) fn build_full_registry() -> ToolRegistry {
             }))
         })
         .register_fn("git_status", |_input| async move {
+            use crate::platform::NoWindow;
             let out = std::process::Command::new("git")
+                .no_window()
                 .args(["status", "--short"])
                 .output()
                 .map_err(|e| format!("git status failed: {e}"))?;
@@ -582,8 +587,10 @@ pub(super) fn build_full_registry() -> ToolRegistry {
             }))
         })
         .register_fn("git_log", |input| async move {
+            use crate::platform::NoWindow;
             let limit = limit_from_input(&input, 10);
             let out = std::process::Command::new("git")
+                .no_window()
                 .args(["log", "--oneline", &format!("-{limit}")])
                 .output()
                 .map_err(|e| format!("git log failed: {e}"))?;

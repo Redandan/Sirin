@@ -22,6 +22,8 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use crate::platform::NoWindow;
+
 /// Result of a spawned Claude session.
 #[derive(Debug, Clone)]
 pub struct SessionResult {
@@ -250,10 +252,12 @@ fn run_one_round(
     let bin = claude_bin();
     let mut cmd = if bin.extension().map(|e| e == "cmd").unwrap_or(false) {
         let mut c = Command::new("cmd");
-        c.arg("/c").arg(&bin);
+        c.no_window().arg("/c").arg(&bin);
         c
     } else {
-        Command::new(&bin)
+        let mut c = Command::new(&bin);
+        c.no_window();
+        c
     };
 
     cmd.current_dir(cwd)
@@ -397,7 +401,7 @@ fn claude_bin() -> PathBuf {
         "claude.cmd",
     ];
     for c in candidates {
-        if Command::new(c).arg("--version").output().map(|o| o.status.success()).unwrap_or(false) {
+        if Command::new(c).no_window().arg("--version").output().map(|o| o.status.success()).unwrap_or(false) {
             return PathBuf::from(c);
         }
     }
@@ -430,18 +434,20 @@ fn run_claude(args: &[&str], cwd: Option<&Path>) -> Result<std::process::Output,
         match node_script {
             Some(script) => {
                 let mut c = Command::new("node");
-                c.arg(script);
+                c.no_window().arg(script);
                 c
             }
             None => {
                 // Fallback: cmd /c (may break for multi-line prompts on Windows)
                 let mut c = Command::new("cmd");
-                c.arg("/c").arg(&bin);
+                c.no_window().arg("/c").arg(&bin);
                 c
             }
         }
     } else {
-        Command::new(&bin)
+        let mut c = Command::new(&bin);
+        c.no_window();
+        c
     };
 
     cmd.args(args);

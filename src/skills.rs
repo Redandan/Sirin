@@ -733,8 +733,10 @@ pub async fn execute_skill(
     use std::process::Stdio;
     use tokio::io::AsyncWriteExt;
     use tokio::process::Command;
+    use crate::platform::NoWindow;
 
     let mut child = Command::new(interpreter)
+        .no_window()
         .arg(script_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

@@ -45,24 +45,50 @@ impl AgentTeam {
     /// 最多執行 `MAX_ITER` 輪 Engineer → PM review 循環。
     /// PM 回覆中包含「[PM ✓」或「核准」即視為通過，提前結束。
     /// 超過輪次上限回傳 Err。
+    ///
+    /// Context overflow prevention:
+    /// - Engineer session 每輪重置（避免 --continue 累積歷史爆 context window）
+    /// - 傳入各 session 的訊息截斷至 MAX_MSG_CHARS
     pub fn assign_task(&mut self, task: &str) -> Result<String, String> {
-        const MAX_ITER: usize = 3;
+        const MAX_ITER:      usize = 3;
+        const MAX_MSG_CHARS: usize = 8_000; // 每條訊息上限，避免 "Prompt is too long"
+
+        // 安全截斷 helper（找 max_bytes 內最後一個 char boundary）
+        fn trunc(s: &str, max: usize) -> &str {
+            let end = s.len().min(max);
+            let b = (0..=end).rev().find(|&i| s.is_char_boundary(i)).unwrap_or(0);
+            &s[..b]
+        }
 
         // 1. PM 分析任務、拆解指令
         let plan = self.pm.send(
             &format!("新任務：{task}\n\n請拆解成具體步驟，給出明確指令讓工程師執行。")
         )?;
+        let plan_short = trunc(&plan, MAX_MSG_CHARS);
 
-        let mut engineer_ctx = format!("PM 指令：\n{plan}\n\n請開始執行，完成後回報結果。");
-        let mut last_review  = String::new();
+        let mut last_review = String::new();
 
         for iter in 0..MAX_ITER {
-            // 2. 工程師執行（或依 PM 意見修改）
-            let result = self.engineer.send(&engineer_ctx)?;
+            // 每輪重置 engineer session，防止 --continue 歷史無限累積
+            if iter > 0 {
+                self.engineer.reset();
+            }
+
+            // 2. 工程師執行（每輪從 task + plan + PM feedback 重建 context）
+            let engineer_msg = if iter == 0 {
+                format!("PM 指令：\n{plan_short}\n\n請開始執行，完成後回報結果。")
+            } else {
+                let review_short = trunc(&last_review, MAX_MSG_CHARS / 2);
+                format!(
+                    "任務：{task}\n\nPM 指令（摘要）：\n{plan_short}\n\nPM Review（第 {iter} 輪未通過），修改要求：\n{review_short}\n\n請修正後重新執行並回報。"
+                )
+            };
+            let result = self.engineer.send(&engineer_msg)?;
+            let result_short = trunc(&result, MAX_MSG_CHARS);
 
             // 3. PM review
             let review = self.pm.send(
-                &format!("工程師回報（第 {} 輪）：\n{result}\n\n請 review。有問題指出具體修改方向；沒問題就核准。",
+                &format!("工程師回報（第 {} 輪）：\n{result_short}\n\n請 review。有問題指出具體修改方向；沒問題就核准。",
                     iter + 1)
             )?;
 
@@ -76,12 +102,8 @@ impl AgentTeam {
                 return Ok(review);
             }
 
-            // 5. 未核准 — 把 PM 意見帶給工程師進行下一輪
-            last_review   = review.clone();
-            engineer_ctx  = format!(
-                "PM Review（第 {} 輪）未通過，要求修改：\n{review}\n\n請修正後重新回報。",
-                iter + 1
-            );
+            // 5. 未核准 — 記錄 PM 意見供下輪使用
+            last_review = review;
         }
 
         // 超過輪次但有最後一次 review，仍回傳（讓呼叫端決定怎麼處理）

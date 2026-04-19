@@ -156,8 +156,10 @@ async fn get_diff(ctx: &AgentContext) -> Option<String> {
 /// Stage only the files this task modified and create a commit.
 /// Returns true on success. Never panics — all errors are logged and ignored.
 async fn auto_commit(task: &str, files_modified: &[String]) -> bool {
+    use crate::platform::NoWindow;
     // Stage only the modified files (never `git add -A`).
     let add_ok = std::process::Command::new("git")
+        .no_window()
         .arg("add")
         .arg("--")
         .args(files_modified)
@@ -180,6 +182,7 @@ async fn auto_commit(task: &str, files_modified: &[String]) -> bool {
     );
 
     let commit_ok = std::process::Command::new("git")
+        .no_window()
         .args(["commit", "-m", &msg])
         .status()
         .map(|s| s.success())

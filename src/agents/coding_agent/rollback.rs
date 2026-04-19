@@ -31,8 +31,10 @@ pub(super) fn perform_rollback(
     let mut rolled_back = Vec::new();
     let mut rollback_errors = Vec::new();
 
+    use crate::platform::NoWindow;
     for path in files_modified {
         let result = std::process::Command::new("git")
+            .no_window()
             .args(["show", &format!("{commit}:{path}")])
             .output();
 

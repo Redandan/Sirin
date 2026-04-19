@@ -618,7 +618,9 @@ fn url_to_addr(url: &str) -> Option<std::net::SocketAddr> {
 }
 
 fn which(name: &str) -> bool {
+    use crate::platform::NoWindow;
     std::process::Command::new(name)
+        .no_window()
         .arg("--version")
         .output()
         .map(|o| o.status.success())

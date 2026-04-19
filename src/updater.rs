@@ -194,7 +194,9 @@ fn download_and_run_installer(version: &str) -> Result<(), String> {
     std::fs::write(&installer_path, &bytes)
         .map_err(|e| format!("write installer to {}: {e}", installer_path.display()))?;
 
+    use crate::platform::NoWindow;
     std::process::Command::new(&installer_path)
+        .no_window()
         .args(["/SILENT", "/SUPPRESSMSGBOXES"])
         .spawn()
         .map_err(|e| format!("spawn installer: {e}"))?;

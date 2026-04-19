@@ -205,7 +205,9 @@ async fn run_react_loop(
     // Call git directly — bypasses the shell_exec allowlist which only permits
     // cargo commands. Never panics; baseline is simply None if git is absent.
     let baseline_commit = if !dry_run {
+        use crate::platform::NoWindow;
         std::process::Command::new("git")
+            .no_window()
             .args(["rev-parse", "HEAD"])
             .output()
             .ok()

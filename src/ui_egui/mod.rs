@@ -241,8 +241,12 @@ fn show_update_banner(ctx: &egui::Context, dismissed: &mut bool) {
                             let url = crate::updater::release_page_url();
                             // Best-effort; ignore failure (no display, etc.).
                             #[cfg(target_os = "windows")]
-                            let _ = std::process::Command::new("cmd")
-                                .args(["/C", "start", "", &url]).spawn();
+                            {
+                                use crate::platform::NoWindow;
+                                let _ = std::process::Command::new("cmd")
+                                    .no_window()
+                                    .args(["/C", "start", "", &url]).spawn();
+                            }
                             #[cfg(target_os = "macos")]
                             let _ = std::process::Command::new("open").arg(&url).spawn();
                             #[cfg(all(unix, not(target_os = "macos")))]
