@@ -2,9 +2,25 @@
 //!
 //! Uses `claude -p` (print mode) which runs non-interactively on the user's
 //! Max plan — no API key needed.
+//!
+//! # Supervision pattern
+//!
+//! `run_supervised()` watches a primary Claude Code session and, whenever it
+//! stops (question at end, max-turns hit, etc.), automatically decides what to
+//! reply — either a simple "yes/continue" or by consulting a **second** Claude
+//! session that can read a different repo and return an informed recommendation.
+//!
+//! ```text
+//! Primary session  →  stops with question
+//!                        ↓ Sirin detects pause
+//!                  Consultant session  ←  question + context
+//!                        ↓ advice
+//!                  Primary session  ←  answer  →  continues
+//! ```
 
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// Result of a spawned Claude session.
 #[derive(Debug, Clone)]
@@ -75,6 +91,235 @@ pub fn build_bug_prompt(
     }
     parts.push("\nPlease investigate and fix the issue. Run tests after fixing.".into());
     parts.join("\n\n")
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SUPERVISION — 監控主 session，遇到停頓自動決定怎麼回答
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// 主 session 暫停時 Sirin 的處理策略。
+#[derive(Debug, Clone)]
+pub enum SupervisionPolicy {
+    /// 全部直接回「yes / continue」— 適合純跑任務不需判斷的場景。
+    AutoApprove,
+    /// 把問題轉給另一個 Claude session（顧問），帶著答案回來繼續。
+    Consult {
+        /// 顧問 session 的工作目錄；None = 與主 session 相同目錄。
+        consultant_cwd: Option<String>,
+    },
+}
+
+/// `run_supervised` 每個步驟的事件回調 — 可轉發到 Telegram / UI。
+#[derive(Debug, Clone)]
+pub enum SupervisionEvent {
+    /// 主 session 正在思考 / 輸出文字
+    Working { text: String },
+    /// 主 session 正在呼叫工具
+    UsingTool { name: String },
+    /// 主 session 停了，最後一句像個問題
+    Paused { question: String },
+    /// 去問顧問 session 中
+    Consulting { question: String },
+    /// 顧問回答了
+    GotAdvice { advice: String },
+    /// 進入下一輪（--continue）
+    Continuing { round: usize },
+    /// 全部完成
+    Done { output: String },
+}
+
+// ── consult() ────────────────────────────────────────────────────────────────
+
+/// 把問題轉包給另一個 Claude session，取回建議。
+///
+/// - `question`         — 主 session 停下來的那句話 / 問題
+/// - `working_context`  — 主 session 到目前為止做了什麼（讓顧問有背景）
+/// - `consultant_cwd`   — 顧問 session 的工作目錄（可以是另一個 repo）
+///
+/// 回傳顧問的建議文字（已 trim，簡潔可執行）。
+pub fn consult(
+    question: &str,
+    working_context: &str,
+    consultant_cwd: &str,
+) -> Result<String, String> {
+    let prompt = format!(
+        "You are a senior technical advisor reviewing another AI coding session.\n\
+         \n\
+         ## What the primary session has done so far\n\
+         {working_context}\n\
+         \n\
+         ## Question / decision point\n\
+         {question}\n\
+         \n\
+         Give a concise, actionable recommendation (2-5 lines).\n\
+         Start directly with the answer — no preamble."
+    );
+    let result = run_sync(consultant_cwd, &prompt)?;
+    Ok(result.output.trim().to_string())
+}
+
+// ── run_supervised() ─────────────────────────────────────────────────────────
+
+/// 執行一個「被監督的」Claude Code session。
+///
+/// 每當主 session 停下來（問問題 / 達到輪次上限 / 需要確認），
+/// Sirin 根據 `policy` 決定怎麼回應，然後用 `--continue` 讓它繼續。
+/// 最多重試 `MAX_ROUNDS` 輪，超過回傳 Err。
+///
+/// `on_event` 會在每個步驟被呼叫，可用來把進度推送到 Telegram 或 UI。
+pub fn run_supervised(
+    cwd: &str,
+    initial_prompt: &str,
+    policy: &SupervisionPolicy,
+    on_event: &(impl Fn(SupervisionEvent) + Sync),
+) -> Result<SessionResult, String> {
+    let cwd_path = Path::new(cwd);
+    if !cwd_path.exists() {
+        return Err(format!("cwd does not exist: {cwd}"));
+    }
+
+    let mut prompt          = initial_prompt.to_string();
+    let mut is_continuation = false;
+    let mut context_so_far  = String::new();   // 累積，給顧問當背景
+    const MAX_ROUNDS: usize = 5;
+
+    for round in 0..MAX_ROUNDS {
+        if round > 0 {
+            on_event(SupervisionEvent::Continuing { round });
+        }
+
+        // ── 跑這一輪 ──────────────────────────────────────────────────────
+        let (exit_code, last_text, final_output, subtype) =
+            run_one_round(cwd_path, &prompt, is_continuation, on_event)?;
+
+        context_so_far.push_str(&last_text);
+        context_so_far.push('\n');
+
+        // ── 成功退出 → 完成 ───────────────────────────────────────────────
+        if exit_code == 0 || subtype == "success" {
+            on_event(SupervisionEvent::Done { output: final_output.clone() });
+            return Ok(SessionResult { success: true, output: final_output, exit_code });
+        }
+
+        // ── 最後一輪 → 放棄 ───────────────────────────────────────────────
+        if round + 1 >= MAX_ROUNDS {
+            break;
+        }
+
+        // ── 偵測問題：最後一句有 ? 或常見猶豫詞 ─────────────────────────
+        let last_line = last_text.lines().last().unwrap_or("").trim().to_string();
+        let question = if looks_like_question(&last_line) {
+            last_line.clone()
+        } else {
+            "Please continue with the next step.".to_string()
+        };
+
+        on_event(SupervisionEvent::Paused { question: question.clone() });
+
+        // ── 根據 policy 決定怎麼回答 ──────────────────────────────────────
+        prompt = match policy {
+            SupervisionPolicy::AutoApprove => {
+                "Yes, please continue.".to_string()
+            }
+            SupervisionPolicy::Consult { consultant_cwd } => {
+                let c_cwd = consultant_cwd.as_deref().unwrap_or(cwd);
+                on_event(SupervisionEvent::Consulting { question: question.clone() });
+                let advice = consult(&question, &context_so_far, c_cwd)?;
+                on_event(SupervisionEvent::GotAdvice { advice: advice.clone() });
+                advice
+            }
+        };
+
+        is_continuation = true;
+    }
+
+    Err(format!("supervised: max rounds ({MAX_ROUNDS}) reached without success"))
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+/// 執行一輪 `claude -p ... --output-format stream-json`，
+/// 解析每一行 JSON，透過 on_event 通知，
+/// 回傳 (exit_code, last_assistant_text, final_result_text, result_subtype)。
+fn run_one_round(
+    cwd: &Path,
+    prompt: &str,
+    continuation: bool,
+    on_event: &(impl Fn(SupervisionEvent) + Sync),
+) -> Result<(i32, String, String, String), String> {
+    let bin = claude_bin();
+    let mut cmd = if bin.extension().map(|e| e == "cmd").unwrap_or(false) {
+        let mut c = Command::new("cmd");
+        c.arg("/c").arg(&bin);
+        c
+    } else {
+        Command::new(&bin)
+    };
+
+    cmd.current_dir(cwd)
+        .args(["-p", prompt, "--output-format", "stream-json",
+               "--dangerously-skip-permissions"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+
+    if continuation { cmd.arg("--continue"); }
+
+    let mut child = cmd.spawn().map_err(|e| format!("spawn claude: {e}"))?;
+    let stdout    = child.stdout.take().ok_or("no stdout")?;
+
+    let mut last_text    = String::new();
+    let mut final_output = String::new();
+    let mut subtype      = String::new();
+
+    for line in BufReader::new(stdout).lines() {
+        let Ok(line) = line else { continue };
+        let Ok(val)  = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+
+        match val.get("type").and_then(|t| t.as_str()) {
+            Some("assistant") => {
+                if let Some(text) = extract_assistant_text(&val) {
+                    on_event(SupervisionEvent::Working { text: text.clone() });
+                    last_text = text;
+                }
+            }
+            Some("tool_use") => {
+                let name = val["name"].as_str().unwrap_or("?").to_string();
+                on_event(SupervisionEvent::UsingTool { name });
+            }
+            Some("result") => {
+                subtype      = val["subtype"].as_str().unwrap_or("").to_string();
+                final_output = val["result"].as_str().unwrap_or("").to_string();
+            }
+            _ => {}
+        }
+    }
+
+    let exit_code = child.wait()
+        .map(|s| s.code().unwrap_or(-1))
+        .unwrap_or(-1);
+
+    let out = if final_output.is_empty() { last_text.clone() } else { final_output };
+    Ok((exit_code, last_text, out, subtype))
+}
+
+/// 判斷一段文字是否像個需要回答的問題。
+fn looks_like_question(text: &str) -> bool {
+    if text.is_empty() { return false; }
+    text.ends_with('?')
+        || text.to_lowercase().contains("should i")
+        || text.to_lowercase().contains("do you want")
+        || text.to_lowercase().contains("which approach")
+        || text.to_lowercase().contains("would you like")
+        || text.to_lowercase().contains("shall i")
+}
+
+/// 從 stream-json assistant message 中抽出純文字。
+fn extract_assistant_text(val: &serde_json::Value) -> Option<String> {
+    let blocks = val.get("message")?.get("content")?.as_array()?;
+    let texts: Vec<&str> = blocks.iter().filter_map(|b| {
+        if b.get("type")?.as_str()? == "text" { b["text"].as_str() } else { None }
+    }).collect();
+    if texts.is_empty() { None } else { Some(texts.join("")) }
 }
 
 /// Well-known repo paths (configurable via env).
@@ -207,6 +452,78 @@ mod tests {
         println!("Output: {}", &result.output[..result.output.len().min(500)]);
         assert!(result.success, "session should succeed");
         assert!(result.output.contains("SIRIN_TEST_OK"), "output should contain marker");
+    }
+
+    #[test]
+    fn looks_like_question_detects_patterns() {
+        assert!(looks_like_question("Should I refactor this?"));
+        assert!(looks_like_question("Do you want me to proceed?"));
+        assert!(looks_like_question("Which approach is better?"));
+        assert!(looks_like_question("Shall I push the commit?"));
+        assert!(looks_like_question("Is this correct?"));
+        assert!(!looks_like_question("I have fixed the bug."));
+        assert!(!looks_like_question(""));
+        assert!(!looks_like_question("Running tests now..."));
+    }
+
+    #[test]
+    fn extract_assistant_text_parses_content() {
+        let val: serde_json::Value = serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "text", "text": "Hello "},
+                    {"type": "tool_use", "name": "Read"},
+                    {"type": "text", "text": "world"}
+                ]
+            }
+        });
+        let text = extract_assistant_text(&val).unwrap();
+        assert_eq!(text, "Hello world");
+    }
+
+    #[test]
+    #[ignore] // needs Claude CLI + Max plan
+    fn consult_returns_advice() {
+        let cwd = repo_path("sirin").expect("sirin path");
+        let advice = consult(
+            "Should I use a HashMap or BTreeMap for storing agent IDs?",
+            "Working on src/agents/mod.rs, adding an agent registry.",
+            &cwd,
+        ).expect("consult");
+        println!("Advice: {advice}");
+        assert!(!advice.is_empty());
+    }
+
+    #[test]
+    #[ignore] // needs Claude CLI + Max plan
+    fn supervised_auto_approve() {
+        let cwd = repo_path("sirin").expect("sirin path");
+        let events = std::sync::Mutex::new(Vec::new());
+        let result = run_supervised(
+            &cwd,
+            "Reply with exactly: SUPERVISED_OK",
+            &SupervisionPolicy::AutoApprove,
+            &|e| { events.lock().unwrap().push(format!("{e:?}")); },
+        ).expect("supervised");
+        println!("Output: {}", result.output);
+        println!("Events: {:?}", events.lock().unwrap());
+        assert!(result.output.contains("SUPERVISED_OK"));
+    }
+
+    #[test]
+    #[ignore] // needs Claude CLI + Max plan
+    fn supervised_consult_pattern() {
+        let cwd = repo_path("sirin").expect("sirin path");
+        let result = run_supervised(
+            &cwd,
+            "Look at src/claude_session.rs, then ask me whether you should \
+             add more tests. Wait for my answer before proceeding.",
+            &SupervisionPolicy::Consult { consultant_cwd: Some(cwd.clone()) },
+            &|e| println!("[event] {e:?}"),
+        ).expect("supervised consult");
+        println!("Final: {}", result.output);
+        assert!(result.success);
     }
 
     /// Full pipeline: browser test → detect issue → build prompt → spawn Claude
