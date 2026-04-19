@@ -135,7 +135,21 @@ pub fn record_run(r: NewRun<'_>) -> Result<i64, String> {
             r.goal_json, r.run_id, r.iterations,
         ],
     ).map_err(|e| format!("insert run: {e}"))?;
-    Ok(conn.last_insert_rowid())
+    let row_id = conn.last_insert_rowid();
+
+    // Fire-and-forget Telegram notification on failure only.
+    if r.status == "failed" {
+        let reason = r.ai_analysis
+            .or(r.failure_category)
+            .unwrap_or("unknown reason");
+        super::notify::notify_failure(
+            r.test_id,
+            reason,
+            r.duration_ms.unwrap_or(0) as u64,
+        );
+    }
+
+    Ok(row_id)
 }
 
 /// Fallback recovery for `persist_adhoc_run`: when the in-memory run

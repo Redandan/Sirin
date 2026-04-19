@@ -17,6 +17,7 @@ pub mod triage;
 pub mod store;
 pub mod runs;
 pub mod i18n;
+pub mod notify;
 
 pub use parser::{TestGoal, Fixture};
 pub use executor::{TestResult, TestStatus};
