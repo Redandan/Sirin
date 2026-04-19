@@ -78,9 +78,38 @@ pub fn enqueue(description: &str) -> String {
 }
 
 /// 取得下一個 Queued 狀態的任務（不 pop，需呼叫 `update_status` 標記 Running）。
+///
+/// ⚠️  非原子！多 worker 環境會兩個 worker 搶到同個任務。
+/// 多 worker 請改用 [`take_next_queued`]。
 pub fn next_queued() -> Option<TeamTask> {
     let _g = lock().lock().unwrap_or_else(|e| e.into_inner());
     read_all_unlocked().into_iter().find(|t| t.status == TaskStatus::Queued)
+}
+
+/// 原子操作：取出最早的 Queued 任務，**同時**把它標記為 Running，回寫磁碟。
+///
+/// 多 worker 平行執行時必用此函數，避免兩個 worker 搶到同個任務。
+/// 整個 read → mutate → rewrite 在同一個 LOCK 內完成。
+///
+/// 回傳的 `TeamTask` 已是 Running 狀態（`status` 欄位已更新）。
+pub fn take_next_queued() -> Option<TeamTask> {
+    let _g = lock().lock().unwrap_or_else(|e| e.into_inner());
+    let mut tasks = read_all_unlocked();
+    let mut found_idx = None;
+    for (i, t) in tasks.iter().enumerate() {
+        if t.status == TaskStatus::Queued {
+            found_idx = Some(i);
+            break;
+        }
+    }
+    if let Some(i) = found_idx {
+        tasks[i].status = TaskStatus::Running;
+        let taken = tasks[i].clone();
+        rewrite_unlocked(&tasks);
+        Some(taken)
+    } else {
+        None
+    }
 }
 
 /// 更新任務狀態（Done / Failed 時自動記錄完成時間）。

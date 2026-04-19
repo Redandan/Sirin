@@ -30,13 +30,21 @@ pub struct AgentTeam {
 }
 
 impl AgentTeam {
-    /// 從磁碟還原（或建立全新的）team 狀態。
+    /// 從磁碟還原（或建立全新的）team 狀態（worker 0，向後相容）。
     /// `cwd` 是三個 session 共用的工作目錄（通常是 Sirin repo）。
     pub fn load(cwd: &str) -> Self {
+        Self::load_for_worker(cwd, 0)
+    }
+
+    /// 從磁碟還原指定 worker 的 team 狀態。
+    ///
+    /// `worker_id == 0` 走原有 session 檔（向後相容），`worker_id >= 1`
+    /// 走 `w{worker_id}_{role}.json` 命名空間 — 多 worker 平行時各自獨立。
+    pub fn load_for_worker(cwd: &str, worker_id: usize) -> Self {
         Self {
-            pm:       PersistentSession::load("pm",       cwd, roles::PM),
-            engineer: PersistentSession::load("engineer", cwd, roles::ENGINEER),
-            tester:   PersistentSession::load("tester",   cwd, roles::TESTER),
+            pm:       PersistentSession::load_for_worker("pm",       worker_id, cwd, roles::PM),
+            engineer: PersistentSession::load_for_worker("engineer", worker_id, cwd, roles::ENGINEER),
+            tester:   PersistentSession::load_for_worker("tester",   worker_id, cwd, roles::TESTER),
         }
     }
 

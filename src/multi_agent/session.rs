@@ -27,13 +27,22 @@ pub struct PersistentSession {
     pub role:          String,
     pub cwd:           String,
     pub system_prompt: String,
+    pub worker_id:     usize,    // T1-1: per-worker session isolation
     state:             SessionFile,
 }
 
 impl PersistentSession {
-    /// 從磁碟載入（或建立新的）session 狀態。
+    /// 從磁碟載入（或建立新的）session 狀態（worker 0，向後相容）。
     pub fn load(role: &str, cwd: &str, system_prompt: &str) -> Self {
-        let path = state_path(role);
+        Self::load_for_worker(role, 0, cwd, system_prompt)
+    }
+
+    /// 從磁碟載入指定 worker 的 session 狀態。
+    ///
+    /// `worker_id == 0` 走原有路徑 `data/multi_agent/{role}.json`（向後相容）。
+    /// `worker_id >= 1` 走 `data/multi_agent/w{worker_id}_{role}.json`。
+    pub fn load_for_worker(role: &str, worker_id: usize, cwd: &str, system_prompt: &str) -> Self {
+        let path = state_path_for(role, worker_id);
         let state = std::fs::read_to_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str::<SessionFile>(&s).ok())
@@ -44,6 +53,7 @@ impl PersistentSession {
             role:          role.to_string(),
             cwd:           cwd.to_string(),
             system_prompt: system_prompt.to_string(),
+            worker_id,
             state,
         }
     }
@@ -88,11 +98,11 @@ impl PersistentSession {
         self.state = SessionFile {
             role: self.role.clone(), ..Default::default()
         };
-        let _ = std::fs::remove_file(state_path(&self.role));
+        let _ = std::fs::remove_file(state_path_for(&self.role, self.worker_id));
     }
 
     fn save(&self) {
-        let path = state_path(&self.role);
+        let path = state_path_for(&self.role, self.worker_id);
         if let Some(parent) = path.parent() { let _ = std::fs::create_dir_all(parent); }
         if let Ok(json) = serde_json::to_string_pretty(&self.state) {
             let _ = std::fs::write(&path, json);
@@ -100,9 +110,19 @@ impl PersistentSession {
     }
 }
 
-fn state_path(role: &str) -> PathBuf {
+/// State file path for a (role, worker_id) pair.
+///
+/// Worker 0 uses the legacy path `data/multi_agent/{role}.json` so existing
+/// PM/Engineer/Tester history survives the upgrade.  Workers 1+ use namespaced
+/// paths `data/multi_agent/w{worker_id}_{role}.json`.
+fn state_path_for(role: &str, worker_id: usize) -> PathBuf {
+    let filename = if worker_id == 0 {
+        format!("{role}.json")
+    } else {
+        format!("w{worker_id}_{role}.json")
+    };
     platform::app_data_dir()
         .join("data")
         .join("multi_agent")
-        .join(format!("{role}.json"))
+        .join(filename)
 }
