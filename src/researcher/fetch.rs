@@ -33,7 +33,9 @@ fn extract_text_from_html(html: &str) -> String {
     static STRIP_TAGS: OnceLock<Regex> = OnceLock::new();
 
     let strip_elem = STRIP_ELEM.get_or_init(|| {
-        Regex::new(r"(?si)<(script|style|noscript|head)[^>]*>.*?</\1>").unwrap()
+        Regex::new(
+            r"(?si)<script[^>]*>.*?</script>|<style[^>]*>.*?</style>|<noscript[^>]*>.*?</noscript>|<head[^>]*>.*?</head>",
+        ).unwrap()
     });
     let strip_tags = STRIP_TAGS.get_or_init(|| {
         Regex::new(r"<[^>]+>").unwrap()

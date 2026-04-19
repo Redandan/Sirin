@@ -1,11 +1,11 @@
-/// 持久化的 Claude Code session。
-///
-/// 每個角色（PM / Engineer / Tester）擁有一個 `PersistentSession`。
-/// 第一次 `send()` 時建立新 session 並記錄 session_id；
-/// 之後每次 `send()` 都加 `--continue`，讓對話在同一個 session 延續。
-///
-/// session_id 存在 `data/multi_agent/<role>.json`，重啟 Sirin 後仍可繼續。
-/// 使用者可在自己的 terminal 執行 `claude --resume <session_id>` 查看對話歷史。
+//! 持久化的 Claude Code session。
+//!
+//! 每個角色（PM / Engineer / Tester）擁有一個 `PersistentSession`。
+//! 第一次 `send()` 時建立新 session 並記錄 session_id；
+//! 之後每次 `send()` 都加 `--continue`，讓對話在同一個 session 延續。
+//!
+//! session_id 存在 `data/multi_agent/<role>.json`，重啟 Sirin 後仍可繼續。
+//! 使用者可在自己的 terminal 執行 `claude --resume <session_id>` 查看對話歷史。
 
 use std::path::PathBuf;
 use serde::{Deserialize, Serialize};

@@ -18,7 +18,7 @@ pub mod queue;
 pub mod worker;
 
 pub use session::PersistentSession;
-pub use queue::{TeamTask, TaskStatus};
+pub use queue::TaskStatus;
 use serde::Serialize;
 
 // ── AgentTeam ─────────────────────────────────────────────────────────────────
@@ -252,6 +252,73 @@ mod tests {
         ).expect("assign_task");
         println!("PM review: {review}");
         assert!(!review.is_empty());
+    }
+
+    /// 執行佇列裡的所有 Queued 任務（用 worker 循環）
+    /// 適合：先用 enqueue_three_tasks 推任務，再跑這個讓小隊工作
+    #[test]
+    #[ignore] // long-running; modifies real source files
+    fn run_queued_tasks() {
+        use std::time::{Duration, Instant};
+        let cwd = claude_session::repo_path("sirin").expect("sirin path");
+
+        // 把上次崩潰或中斷留下的 Running 任務重設為 Queued
+        for t in queue::list_by_status(&queue::TaskStatus::Running) {
+            println!("⚠ 重設殘留 Running 任務 {} → Queued", t.id);
+            queue::update_status(&t.id, queue::TaskStatus::Queued, None);
+        }
+
+        let pending = queue::list_by_status(&queue::TaskStatus::Queued);
+        if pending.is_empty() {
+            println!("佇列是空的，沒有任務可以執行");
+            return;
+        }
+        println!("=== 小隊開始工作：{} 個 Queued 任務 ===", pending.len());
+
+        let mut team = AgentTeam::load(&cwd);
+        let timeout = Duration::from_secs(60 * 30); // 最多 30 分鐘
+        let start = Instant::now();
+
+        loop {
+            let Some(task) = queue::next_queued() else {
+                println!("\n✅ 佇列清空，所有任務處理完畢");
+                break;
+            };
+            if start.elapsed() > timeout {
+                println!("\n⏰ 超時（30 分鐘），停止");
+                break;
+            }
+
+            println!("\n─── 任務 {} ───", &task.id);
+            println!("描述：{:.100}", task.description);
+            queue::update_status(&task.id, queue::TaskStatus::Running, None);
+
+            match team.assign_task(&task.description) {
+                Ok(review) => {
+                    // 安全截斷：尋找 300 bytes 內最後一個有效 char boundary
+                    let end = {
+                        let max = review.len().min(300);
+                        (0..=max).rev().find(|&i| review.is_char_boundary(i)).unwrap_or(0)
+                    };
+                    println!("[✓ 完成]\n{}", &review[..end]);
+                    queue::update_status(&task.id, queue::TaskStatus::Done, Some(review));
+                    let _ = team.test_cycle();
+                }
+                Err(e) => {
+                    println!("[✗ 失敗] {e}");
+                    queue::update_status(&task.id, queue::TaskStatus::Failed, Some(e));
+                }
+            }
+            // Engineer context 保護
+            if team.engineer.turns() > 20 { team.engineer.reset(); }
+        }
+
+        // 印最終佇列狀態
+        let all = queue::list_all();
+        println!("\n=== 佇列最終狀態 ===");
+        for t in &all {
+            println!("  [{}] {:.60}", t.status, t.description);
+        }
     }
 
     /// GUI 優化任務 — 由 PM / Engineer / Tester 小隊執行

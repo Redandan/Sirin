@@ -23,8 +23,8 @@
 //! - [`add_ext_routes`] — mount `/ext/ws` on the existing rpc Router.
 //! - [`status`]            — for the `diagnose` MCP tool (connected? last event?).
 //! - [`authoritative_url`] — what `current_url()` *should* return when the
-//!                            extension is alive (POC: caller decides; future
-//!                            work hooks this into `browser::current_url`).
+//!   extension is alive (POC: caller decides; future work hooks this into
+//!   `browser::current_url`).
 //! - [`list_tabs`]         — list every tab the browser knows about.
 //!
 //! ## POC scope

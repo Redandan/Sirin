@@ -124,6 +124,7 @@ pub fn snapshot() -> Value {
     let extension = serde_json::to_value(crate::ext_server::status())
         .unwrap_or_else(|_| json!({ "connected": false, "error": "serialize" }));
 
+    let platform_str = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
     let body = format!(
         "## Environment\n\
          - Sirin version : {ver} (commit {commit}, built {built})\n\
@@ -144,7 +145,7 @@ pub fn snapshot() -> Value {
         ver       = env!("CARGO_PKG_VERSION"),
         commit    = git_commit(),
         built     = build_date_iso(),
-        platform  = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
+        platform  = platform_str,
         uptime    = uptime_secs(),
         chrome_v  = chrome.get("version").and_then(|v| v.as_str()).unwrap_or("(not running)"),
         llm_l     = llm.get("provider").and_then(|v| v.as_str()).unwrap_or("(unknown)"),

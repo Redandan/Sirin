@@ -25,6 +25,8 @@ pub struct WorkspaceState {
     chat_rx: Option<std::sync::mpsc::Receiver<String>>,
     // Delete confirmation (agent_id being confirmed)
     delete_confirming: bool,
+    // Overview tab filter: 0=全部, 1=執行中, 2=完成, 3=失敗
+    overview_filter: usize,
 }
 
 pub fn show(
@@ -150,8 +152,26 @@ fn show_overview(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, tasks: &[TaskView
     }
 
     ui.add_space(theme::SP_MD);
-    ui.label(RichText::new("近期活動").strong().color(theme::TEXT_DIM));
-    if tasks.is_empty() {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("近期活動").strong().color(theme::TEXT_DIM));
+    });
+
+    // Filter tab bar
+    let filter_labels = ["全部", "執行中", "完成", "失敗"];
+    theme::tab_bar(ui, &filter_labels, &mut state.overview_filter);
+    ui.add_space(theme::SP_SM);
+
+    let filtered: Vec<&crate::ui_service::TaskView> = tasks.iter().filter(|t| {
+        let s = t.status.as_deref().unwrap_or("").to_uppercase();
+        match state.overview_filter {
+            1 => s == "RUNNING" || s == "PENDING",
+            2 => s == "DONE",
+            3 => s == "FAILED" || s == "ERROR",
+            _ => true,
+        }
+    }).collect();
+
+    if filtered.is_empty() {
         ui.add_space(theme::SP_XL);
         ui.vertical_centered(|ui| {
             ui.label(RichText::new("📊").size(theme::SP_XL));
@@ -162,7 +182,7 @@ fn show_overview(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, tasks: &[TaskView
     }
 
     ScrollArea::vertical().id_salt("tasks").show(ui, |ui| {
-        for task in tasks.iter().take(30) {
+        for task in filtered.iter().take(30) {
             theme::card(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(&task.event).size(theme::FONT_BODY).color(theme::TEXT));
