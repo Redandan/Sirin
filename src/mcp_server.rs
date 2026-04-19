@@ -516,6 +516,67 @@ fn handle_tools_list() -> Result<Value, String> {
                 }
             },
             {
+                "name": "agent_team_status",
+                "description": "查看 PM / Engineer / Tester 三個 session 的目前狀態。\
+回傳每個 session 的 session_id 和 resume 指令（可直接在 terminal 執行 `claude --resume <id>` 查看對話歷史）。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "cwd": { "type": "string", "description": "工作目錄（repo 路徑）。省略時用 sirin repo" }
+                    }
+                }
+            },
+            {
+                "name": "agent_team_task",
+                "description": "派一個任務給 AI 團隊：PM 拆解 → Engineer 執行 → PM review。\
+回傳 PM 的最終 review 結果。每個角色的對話歷史都會自動保留，可用 agent_team_status 取得 resume 指令查看。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task": { "type": "string", "description": "任務描述" },
+                        "cwd":  { "type": "string", "description": "工作目錄（repo 路徑）。省略時用 sirin repo" }
+                    },
+                    "required": ["task"]
+                }
+            },
+            {
+                "name": "agent_team_test",
+                "description": "觸發測試循環：Tester 跑測試 → 失敗則 Engineer 修 → PM 記錄學習。\
+回傳最終測試結果摘要。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "cwd": { "type": "string", "description": "工作目錄（repo 路徑）。省略時用 sirin repo" }
+                    }
+                }
+            },
+            {
+                "name": "agent_send",
+                "description": "直接送一條訊息給指定角色（pm / engineer / tester），取得回覆。\
+對話歷史自動延續。適合：查詢 PM 的學習記錄、問工程師問題、請測試 session 執行特定測試。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "role":    { "type": "string", "enum": ["pm", "engineer", "tester"], "description": "目標角色" },
+                        "message": { "type": "string", "description": "要送的訊息" },
+                        "cwd":     { "type": "string", "description": "工作目錄（repo 路徑）。省略時用 sirin repo" }
+                    },
+                    "required": ["role", "message"]
+                }
+            },
+            {
+                "name": "agent_reset",
+                "description": "重置指定角色的 session（清除對話歷史，開新對話）。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "role": { "type": "string", "enum": ["pm", "engineer", "tester", "all"], "description": "要重置的角色" },
+                        "cwd":  { "type": "string", "description": "工作目錄（repo 路徑）。省略時用 sirin repo" }
+                    },
+                    "required": ["role"]
+                }
+            },
+            {
                 "name": "consult",
                 "description": "把一個問題交給另一個 Claude Code session 回答。\
 Sirin 會在指定工作目錄（可以是另一個 repo）啟動一個顧問 session，\
@@ -580,6 +641,11 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         "page_state"           => return call_page_state(arguments).await.map(wrap_json),
         "consult"              => return call_consult(arguments).map(wrap_json),
         "supervised_run"       => return call_supervised_run(arguments).map(wrap_json),
+        "agent_team_status"    => return call_agent_team_status(arguments).map(wrap_json),
+        "agent_team_task"      => return call_agent_team_task(arguments).map(wrap_json),
+        "agent_team_test"      => return call_agent_team_test(arguments).map(wrap_json),
+        "agent_send"           => return call_agent_send(arguments).map(wrap_json),
+        "agent_reset"          => return call_agent_reset(arguments).map(wrap_json),
         _ => {}
     }
 
@@ -895,6 +961,112 @@ fn call_config_diagnostics() -> Result<Value, String> {
         "issues":   items,
         "text_report": summary,
     }))
+}
+
+// ── multi_agent MCP handlers ──────────────────────────────────────────────────
+
+fn resolve_cwd(args: &Value) -> String {
+    args["cwd"].as_str()
+        .map(|s| s.to_string())
+        .or_else(|| crate::claude_session::repo_path("sirin"))
+        .unwrap_or_else(|| ".".to_string())
+}
+
+fn call_agent_team_status(args: Value) -> Result<Value, String> {
+    let cwd = resolve_cwd(&args);
+    let guard = crate::multi_agent::get_or_init(&cwd);
+    let team  = guard.as_ref().ok_or("team not initialized")?;
+    Ok(serde_json::to_value(team.status()).unwrap_or(serde_json::json!({})))
+}
+
+fn call_agent_team_task(args: Value) -> Result<Value, String> {
+    let task = args["task"].as_str().ok_or("Missing 'task'")?;
+    let cwd  = resolve_cwd(&args);
+
+    if !crate::claude_session::cli_available() {
+        return Err("Claude CLI not available".into());
+    }
+
+    let mut guard = crate::multi_agent::get_or_init(&cwd);
+    let team = guard.as_mut().ok_or("team not initialized")?;
+
+    let review = team.assign_task(task)?;
+    let status = team.status();
+    Ok(serde_json::json!({
+        "pm_review": review,
+        "sessions":  serde_json::to_value(status).unwrap_or_default(),
+    }))
+}
+
+fn call_agent_team_test(args: Value) -> Result<Value, String> {
+    let cwd = resolve_cwd(&args);
+
+    if !crate::claude_session::cli_available() {
+        return Err("Claude CLI not available".into());
+    }
+
+    let mut guard = crate::multi_agent::get_or_init(&cwd);
+    let team = guard.as_mut().ok_or("team not initialized")?;
+
+    let result = team.test_cycle()?;
+    let status = team.status();
+    Ok(serde_json::json!({
+        "test_result": result,
+        "sessions":    serde_json::to_value(status).unwrap_or_default(),
+    }))
+}
+
+fn call_agent_send(args: Value) -> Result<Value, String> {
+    let role    = args["role"].as_str().ok_or("Missing 'role'")?;
+    let message = args["message"].as_str().ok_or("Missing 'message'")?;
+    let cwd     = resolve_cwd(&args);
+
+    if !crate::claude_session::cli_available() {
+        return Err("Claude CLI not available".into());
+    }
+
+    let mut guard = crate::multi_agent::get_or_init(&cwd);
+    let team = guard.as_mut().ok_or("team not initialized")?;
+
+    let reply = match role {
+        "pm"       => team.pm.send(message)?,
+        "engineer" => team.engineer.send(message)?,
+        "tester"   => team.tester.send(message)?,
+        other      => return Err(format!("Unknown role: {other}")),
+    };
+
+    let sid = match role {
+        "pm"       => team.pm.session_id().map(|s| s.to_string()),
+        "engineer" => team.engineer.session_id().map(|s| s.to_string()),
+        "tester"   => team.tester.session_id().map(|s| s.to_string()),
+        _          => None,
+    };
+
+    Ok(serde_json::json!({
+        "role":       role,
+        "reply":      reply,
+        "session_id": sid,
+        "resume_cmd": sid.as_deref().map(|id| format!("claude --resume {id}"))
+                        .unwrap_or_else(|| "(no session yet)".into()),
+    }))
+}
+
+fn call_agent_reset(args: Value) -> Result<Value, String> {
+    let role = args["role"].as_str().ok_or("Missing 'role'")?;
+    let cwd  = resolve_cwd(&args);
+
+    let mut guard = crate::multi_agent::get_or_init(&cwd);
+    let team = guard.as_mut().ok_or("team not initialized")?;
+
+    if role == "all" {
+        team.reset_role("pm");
+        team.reset_role("engineer");
+        team.reset_role("tester");
+    } else {
+        team.reset_role(role);
+    }
+
+    Ok(serde_json::json!({ "reset": role, "status": "ok" }))
 }
 
 // ── consult / supervised_run ──────────────────────────────────────────────────

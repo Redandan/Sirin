@@ -314,6 +314,60 @@ fn looks_like_question(text: &str) -> bool {
 }
 
 /// 從 stream-json assistant message 中抽出純文字。
+/// Single-turn run that captures the `session_id` emitted in the stream-json
+/// result line.  Used by `multi_agent::PersistentSession` to track conversation
+/// continuity across calls.
+///
+/// Returns `(assistant_output, session_id)`.
+pub fn run_one_turn(
+    cwd: &str,
+    prompt: &str,
+    continuation: bool,
+) -> Result<(String, String), String> {
+    let cwd_path = Path::new(cwd);
+    if !cwd_path.exists() {
+        return Err(format!("cwd does not exist: {cwd}"));
+    }
+
+    let bin = claude_bin();
+    let mut cmd = if bin.extension().map(|e| e == "cmd").unwrap_or(false) {
+        let mut c = Command::new("cmd");
+        c.arg("/c").arg(&bin);
+        c
+    } else {
+        Command::new(&bin)
+    };
+    cmd.current_dir(cwd_path)
+        .args(["-p", prompt, "--output-format", "stream-json",
+               "--verbose", "--dangerously-skip-permissions"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    if continuation { cmd.arg("--continue"); }
+
+    let mut child    = cmd.spawn().map_err(|e| format!("spawn: {e}"))?;
+    let     stdout   = child.stdout.take().ok_or("no stdout")?;
+
+    let mut output     = String::new();
+    let mut session_id = String::new();
+
+    for line in BufReader::new(stdout).lines() {
+        let Ok(line) = line else { continue };
+        let Ok(val)  = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+        match val["type"].as_str() {
+            Some("assistant") => {
+                if let Some(t) = extract_assistant_text(&val) { output = t; }
+            }
+            Some("result") => {
+                if let Some(r) = val["result"].as_str()     { output     = r.to_string(); }
+                if let Some(s) = val["session_id"].as_str() { session_id = s.to_string(); }
+            }
+            _ => {}
+        }
+    }
+    let _ = child.wait();
+    Ok((output, session_id))
+}
+
 fn extract_assistant_text(val: &serde_json::Value) -> Option<String> {
     let blocks = val.get("message")?.get("content")?.as_array()?;
     let texts: Vec<&str> = blocks.iter().filter_map(|b| {

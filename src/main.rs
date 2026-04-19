@@ -9,6 +9,7 @@ mod platform;
 #[allow(dead_code)] mod browser;
 #[allow(dead_code)] mod browser_ax;
 #[allow(dead_code)] mod claude_session;
+#[allow(dead_code)] mod multi_agent;
 #[allow(dead_code)] mod config_check;
 mod diagnose;
 mod ext_server;
