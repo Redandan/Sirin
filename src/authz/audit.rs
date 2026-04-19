@@ -157,9 +157,19 @@ mod audit_test {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
 
     fn tmp_log_path() -> String {
+        // PID + counter alone is not enough on Windows — PIDs get reused, and
+        // /tmp accumulates stale `authz_audit_<pid>_<n>/audit.ndjson` files
+        // from earlier `cargo test` runs.  When a recycled PID lands on a
+        // counter value with leftover data, log_*() appends to the stale file
+        // and `lines.len()` assertions fail with `2 != 1`.  Include nanos so
+        // every run gets a fresh path even on PID collision.
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
         let dir = std::env::temp_dir()
-            .join(format!("authz_audit_{}_{}", std::process::id(), n));
+            .join(format!("authz_audit_{}_{}_{}", std::process::id(), nanos, n));
         fs::create_dir_all(&dir).unwrap();
         dir.join("audit.ndjson").to_string_lossy().to_string()
     }
