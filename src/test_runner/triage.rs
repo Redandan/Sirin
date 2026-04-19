@@ -163,7 +163,7 @@ pub fn trigger_auto_fix(test: &TestGoal, result: &TestResult, outcome: &TriageOu
     if recent.len() >= 3 && recent.iter().all(|f| f.outcome == "failed") {
         let _ = super::store::record_skipped_fix(
             &test_id,
-            None,
+            run_id,
             &category,
             "last 3 auto-fix attempts all failed — giving up",
         );

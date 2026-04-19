@@ -1,0 +1,31 @@
+id: agora_staking
+name: "AgoraMarket Staking 質押功能驗證 (Issue #34)"
+url: "https://agoramarket.purrtechllc.com"
+
+browser_headless: false
+max_iterations: 15
+timeout_secs: 240
+
+goal: |
+  驗證 AgoraMarket 質押（Staking）功能完整流程（Issue #34，長期追蹤）。
+  ⚠️ Flutter CanvasKit app：所有 UI 判斷使用 screenshot_analyze。
+
+  執行步驟（AC-1 至 AC-5）：
+  1. 等待 5 秒讓 Flutter 載入；screenshot_analyze "頁面狀態？是否需要登入？"
+  2. 若需要登入，嘗試以測試帳號登入後繼續；若無法登入，記錄並盡可能前進
+  3. [AC-1] 導航至質押頁面（Staking）；screenshot_analyze "質押頁面是否載入？利率是否顯示非零、非 N/A 值？"
+  4. [AC-1] 確認頁面顯示用戶當前可質押金額，無白屏或 JS error
+  5. [AC-2] 輸入有效質押金額，點擊確認/質押按鈕；screenshot_analyze "是否出現確認對話框或 loading？成功後餘額是否扣款？狀態是否更新為質押中？"
+  6. [AC-3] 找到解質押按鈕，確認可見且可點擊；點擊後 screenshot_analyze "是否出現確認對話框？狀態是否更新為已解質押或結算中？"
+  7. [AC-4] 導航至質押歷史記錄頁；screenshot_analyze "是否可見進行中 / 已結算 / 已解質押三種狀態？各記錄是否顯示金額、日期、利率、狀態？"
+  8. [AC-5] 檢視任一質押金額數值；screenshot_analyze "金額小數位是否正常？是否出現 0.10000000001 / 0.0999999999 類浮點問題？"
+
+success_criteria:
+  - "質押頁面可正常開啟，無白屏或錯誤訊息"
+  - "質押利率顯示非零、非 N/A、非空白的數值"
+  - "質押發起流程完成後餘額扣款正確，狀態顯示質押中或進行中"
+  - "解質押按鈕可見可點擊，確認後狀態更新為已解質押或結算中"
+  - "質押歷史記錄頁顯示三種狀態：進行中 / 已結算 / 已解質押"
+  - "質押金額小數位精度正常，無浮點顯示錯誤"
+
+tags: [staking, agora, issue-34, regression]

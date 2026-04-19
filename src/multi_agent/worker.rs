@@ -94,7 +94,25 @@ fn run_loop(cwd: String, worker_id: usize) {
                     Err(e) => {
                         tracing::warn!(target: "sirin",
                             "[team-worker:w{worker_id}] Task {} failed: {e}", task.id);
-                        queue::update_status(&task.id, TaskStatus::Failed, Some(e));
+                        queue::update_status(&task.id, TaskStatus::Failed, Some(e.clone()));
+
+                        if task.retry_count == 0 {
+                            // 安全截斷到 200 bytes 的 char boundary
+                            let err_end = {
+                                let max = e.len().min(200);
+                                (0..=max).rev().find(|&i| e.is_char_boundary(i)).unwrap_or(0)
+                            };
+                            let retry_desc = format!(
+                                "[auto-retry] {}\n\nOriginal failure: {}",
+                                task.description, &e[..err_end]
+                            );
+                            queue::enqueue_with_retry(&retry_desc, 1);
+                            tracing::info!(target: "sirin",
+                                "[team-worker] Auto-retrying task {} (1st retry)", task.id);
+                        } else {
+                            tracing::warn!(target: "sirin",
+                                "[team-worker] Task {} failed after retry", task.id);
+                        }
                     }
                 }
 

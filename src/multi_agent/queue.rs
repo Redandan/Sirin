@@ -40,6 +40,8 @@ pub struct TeamTask {
     pub status:      TaskStatus,
     pub result:      Option<String>,
     pub finished_at: Option<String>,
+    #[serde(default)]
+    pub retry_count: u8,
 }
 
 // ── 全局鎖 ────────────────────────────────────────────────────────────────────
@@ -72,6 +74,24 @@ pub fn enqueue(description: &str) -> String {
         status:      TaskStatus::Queued,
         result:      None,
         finished_at: None,
+        retry_count: 0,
+    };
+    append_unlocked(&task);
+    id
+}
+
+/// 加入新任務並帶入指定 retry_count（內部使用，供 auto-retry 機制呼叫）。
+pub fn enqueue_with_retry(description: &str, retry_count: u8) -> String {
+    let _g = lock().lock().unwrap_or_else(|e| e.into_inner());
+    let id = chrono::Local::now().timestamp_millis().to_string();
+    let task = TeamTask {
+        id:          id.clone(),
+        description: description.to_string(),
+        created_at:  chrono::Local::now().to_rfc3339(),
+        status:      TaskStatus::Queued,
+        result:      None,
+        finished_at: None,
+        retry_count,
     };
     append_unlocked(&task);
     id
@@ -224,11 +244,13 @@ mod tests {
                 id: (base + CTR.fetch_add(1, Ordering::SeqCst)).to_string(),
                 description: "first".into(), created_at: "".into(),
                 status: TaskStatus::Queued, result: None, finished_at: None,
+                retry_count: 0,
             };
             let t2 = TeamTask {
                 id: (base + CTR.fetch_add(1, Ordering::SeqCst)).to_string(),
                 description: "second".into(), created_at: "".into(),
                 status: TaskStatus::Queued, result: None, finished_at: None,
+                retry_count: 0,
             };
             append_unlocked(&t1);
             append_unlocked(&t2);

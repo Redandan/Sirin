@@ -21,39 +21,46 @@ Task pipeline: PM plan → Engineer execute → PM review (max iter) → test_cy
 | 2026-04-19 | T1 | MAX_ITER 3→5 | (this session) | UI and multi-file tasks need more room |
 | 2026-04-19 | T1 | MAX_MSG_CHARS 8K→24K | (this session) | Claude 200K window can handle it |
 | 2026-04-19 | T1 | Engineer no per-iter reset (T1-4) | (this session) | Retains context across retries; cross-task guard stays at 40 turns |
+| 2026-04-19 | T1 | **T1-1 Parallel workers (N threads)** | (pending build) | `spawn_n(cwd, n)` + atomic `take_next_queued()` + `worker_id`-namespaced session files; MCP `agent_start_worker` accepts `n:1-8` |
 
 ---
 
 ## Tier 1 — Speed / Reliability (1–3 hours each)
 
 ### T1-1 — Parallel Workers (N threads) ★★★★★
-**Status:** Planned (next, manager implements)
+**Status:** ✅ Shipped 2026-04-19 (manager-implemented; pending build + relaunch)
 
-- Spawn N independent worker threads, each with its own AgentTeam
-- Each team uses role-namespaced session files: `w1_pm.json`, `w1_engineer.json`, etc.
-- `next_queued()` uses `UPDATE … RETURNING` to atomically claim one task per thread
-- Start with N=2; tunable via `SIRIN_SQUAD_WORKERS` env var (default 2)
-- **Risk:** multiple claude CLI processes competing for API quota
+**What landed:**
+- `worker::spawn_n(cwd, n)` spawns N independent threads, each with its own
+  `AgentTeam::load_for_worker(cwd, worker_id)`
+- `worker::spawn(cwd)` kept as 1-worker wrapper (backward compat — UI's
+  `team_start()` still works)
+- Per-worker session files: worker 0 → legacy paths (`pm.json`); worker 1+ →
+  `w{N}_{role}.json`. Existing PM/Engineer/Tester history survives.
+- `queue::take_next_queued()` — atomic SELECT-and-mark-Running under the
+  global queue Mutex. Two workers cannot grab the same task.
+- `queue::next_queued()` kept (peek-only) but marked unsafe-for-multi in docs.
+- MCP `agent_start_worker` accepts optional `n: integer` (clamp 1-8). Old
+  callers with no `n` get N=1 by default.
+- Logs prefixed `[team-worker:w{worker_id}]` for separation in tracing output.
 
-**Implementation sketch:**
-```rust
-// worker.rs
-pub fn spawn_n(cwd: &str, n: usize) {
-    for w in 0..n {
-        let cwd = cwd.to_string();
-        std::thread::Builder::new()
-            .name(format!("multi-agent-worker-{w}"))
-            .spawn(move || {
-                let mut team = AgentTeam::load_for_worker(&cwd, w);
-                run_loop_team(&mut team);
-            })
-            .expect("spawn worker");
-    }
-}
-// session.rs — state_path("pm", 1) → data/multi_agent/w1_pm.json
-```
+**Files touched:**
+- `src/multi_agent/queue.rs` — added `take_next_queued()`
+- `src/multi_agent/session.rs` — added `worker_id` field +
+  `load_for_worker()` + renamed `state_path_for(role, worker_id)`
+- `src/multi_agent/mod.rs` — added `AgentTeam::load_for_worker()`
+- `src/multi_agent/worker.rs` — added `spawn_n()`, `run_loop` takes
+  `worker_id`, switched to `take_next_queued()` (no more separate
+  `update_status(Running)`)
+- `src/mcp_server.rs` — `agent_start_worker` schema + handler accepts `n`
 
-**Queue change needed:** `next_queued()` must be atomic (SELECT + UPDATE in one transaction to prevent two workers grabbing the same task).
+**Caveat (T2-4 will fix):** all workers share the same `cwd` (the Sirin
+repo). Edits to different files are usually fine, but two workers editing
+the same file will git-stage-conflict. T2-4 (worktree isolation) is the
+real fix.
+
+**Risk live now:** multiple claude CLI processes competing for Anthropic
+API rate limit. Recommend N=2 to start, bump to 3 once observed stable.
 
 ---
 

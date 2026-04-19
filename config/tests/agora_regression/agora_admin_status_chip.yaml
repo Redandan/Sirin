@@ -1,0 +1,35 @@
+id: agora_admin_status_chip
+name: "AgoraMarket Admin 商品狀態 Chip 色碼驗證 (Issue #70 #22)"
+url: "https://agoramarket.purrtechllc.com"
+
+browser_headless: false
+max_iterations: 12
+timeout_secs: 180
+
+goal: |
+  驗證 AgoraMarket admin 商品狀態 chip 在 Issue #70 #22（StatusConfig.getStatusConfig() 重構）後色碼渲染正確。
+
+  ⚠️ Flutter CanvasKit app：所有 UI 判斷須使用 screenshot_analyze，不做 pixel-exact 比較。
+
+  ⚠️ Admin 登入限制：若環境未預設 admin 帳號，無法進入後台時，請記錄「Admin 登入未設定，跳過測試」並標記受限通過（不視為 fail）。
+
+  執行步驟：
+  1. 等待 5 秒讓 Flutter 載入
+  2. screenshot_analyze "目前頁面顯示什麼？是否已登入 admin？"
+  3. 若未登入，嘗試導航至 /admin 路徑或尋找 Admin 入口按鈕
+  4. 若需 admin 帳號且環境無法提供，記錄此限制並結束（不算 fail）
+  5. 成功進入後台後，導航至商品管理頁（Products / 商品列表）
+  6. screenshot_analyze "商品管理頁是否載入？可見哪些商品及其狀態 chip？"
+  7. 找出至少 2 個不同狀態的商品（如 approved、pending、rejected）
+  8. screenshot_analyze "各商品的狀態 chip 顯示什麼顏色？語意是否正確（approved=綠, pending=黃/橙, rejected=紅）？"
+  9. 確認沒有任何 chip 顯示為灰色或無色（灰色代表 StatusConfig.getStatusConfig() 回傳 null/default）
+  10. screenshot_analyze "畫面上是否有 console error 或明顯異常訊息？"
+
+success_criteria:
+  - "Admin 商品管理頁可開啟（若需登入則記錄此限制，不算失敗）"
+  - "至少 2 個不同狀態的商品 chip 可見"
+  - "每個 chip 的色碼與狀態語意一致（approved/published=綠, pending=黃/橙, rejected/disabled=紅）"
+  - "沒有 chip 顯示為灰色或無色（StatusConfig.getStatusConfig() 重構後仍正確回傳）"
+  - "頁面無 console error 或明顯異常訊息"
+
+tags: [admin, status-chip, agora, issue-70, regression, visual]

@@ -596,11 +596,12 @@ fn handle_tools_list() -> Result<Value, String> {
             },
             {
                 "name": "agent_start_worker",
-                "description": "啟動 AI 小隊的背景工作執行緒（若尚未啟動）。啟動後持續消費佇列直到進程結束。",
+                "description": "啟動 AI 小隊的背景工作執行緒（若尚未啟動）。啟動後持續消費佇列直到進程結束。可選 n 啟動多個平行 worker（T1-1）。",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "cwd": { "type": "string", "description": "工作目錄（repo 路徑）。省略時用 sirin repo" }
+                        "cwd": { "type": "string", "description": "工作目錄（repo 路徑）。省略時用 sirin repo" },
+                        "n":   { "type": "integer", "description": "Worker 執行緒數量（預設 1，最大 8；建議 2-3）。每 worker 有獨立的 PM/Engineer/Tester session。", "minimum": 1, "maximum": 8 }
                     }
                 }
             },
@@ -1155,8 +1156,15 @@ fn call_agent_start_worker(args: Value) -> Result<Value, String> {
 
     if STARTED.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
         let cwd = resolve_cwd(&args);
-        crate::multi_agent::worker::spawn(&cwd);
-        Ok(serde_json::json!({ "status": "started", "cwd": cwd }))
+        // T1-1: optional `n` for parallel workers (default 1, capped at 8 to
+        // protect Anthropic API rate limit).
+        let n = args.get("n")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(1)
+            .clamp(1, 8);
+        crate::multi_agent::worker::spawn_n(&cwd, n);
+        Ok(serde_json::json!({ "status": "started", "cwd": cwd, "workers": n }))
     } else {
         Ok(serde_json::json!({ "status": "already_running" }))
     }

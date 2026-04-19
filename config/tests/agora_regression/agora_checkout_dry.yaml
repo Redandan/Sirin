@@ -1,0 +1,49 @@
+id: agora_checkout_dry
+name: "AgoraMarket Checkout DRY 驗證 (Issue #70 #45)"
+url: "https://agoramarket.purrtechllc.com"
+
+browser_headless: false
+max_iterations: 18
+timeout_secs: 300
+
+goal: |
+  驗證 AgoraMarket cart_checkout 與 checkout 合併為共用 widgets 的 DRY 重構後
+  （Issue #70 #45），兩條結帳流程仍可正常運作且 UI 元件顯示一致。
+
+  ⚠️ Flutter CanvasKit app：用 screenshot_analyze 做所有 UI 判斷。
+  ⚠️ 安全模式：本測試絕對不提交訂單、不輸入真實付款資料。
+     驗證止步於「下單按鈕為可點擊狀態」即算通過，不要按下「Place Order」。
+
+  ── Flow A：直接購買（Buy Now）──
+  1. 等待 5 秒讓 Flutter 載入
+  2. screenshot_analyze "頁面顯示什麼？是否需要買家登入？"
+  3. 若需登入，以買家帳號登入（或記錄此限制）
+  4. 瀏覽商品列表，選取任意一個有庫存的商品
+  5. screenshot_analyze "是否出現 'Buy Now' 或直接購買按鈕？"
+  6. 點擊「Buy Now」，進入結帳頁（/checkout 路由）
+  7. screenshot_analyze "結帳頁是否顯示：訂單摘要、商品名稱、金額總計、地址選擇、付款方式？"
+  8. 確認「下單」或「Place Order」按鈕存在且為可點擊狀態（非 disabled / greyed-out）
+  9. 記錄 Flow A 結果，不要點擊下單
+
+  ── Flow B：加入購物車後結帳（Cart → Checkout）──
+  10. 返回商品頁，選取一個商品，點擊「Add to Cart」
+  11. 導航到購物車頁（/cart 路由）
+  12. screenshot_analyze "購物車頁面是否顯示剛加入的商品與金額？"
+  13. 點擊購物車頁面的「Checkout」按鈕，進入結帳頁
+  14. screenshot_analyze "結帳頁是否顯示：訂單摘要、商品名稱、金額總計、地址選擇、付款方式？"
+  15. 確認「下單」或「Place Order」按鈕存在且為可點擊狀態
+  16. 記錄 Flow B 結果，不要點擊下單
+
+  ── 一致性比對 ──
+  17. 比對兩條 flow 的結帳頁截圖：訂單摘要區塊、地址選擇器、付款選項是否使用
+      相同的 widget 結構（共用 DRY widgets）？有無顯示異常或版面錯位？
+  18. 確認 console 無 'Something went wrong' 或紅色錯誤訊息
+
+success_criteria:
+  - "直接購買 flow 可進入結帳頁，看到訂單摘要與金額"
+  - "加入購物車後再結帳的 flow 可進入結帳頁，看到訂單摘要與金額"
+  - "兩條 flow 的「下單」按鈕在資料有效時為可點擊狀態（非 disabled）"
+  - "兩條 flow 顯示一致的 UI 元件（共用 widgets 沒有顯示異常）"
+  - "沒有 console error 或 'Something went wrong' 訊息"
+
+tags: [checkout, agora, issue-70, regression, refactor-verification]
