@@ -43,6 +43,18 @@ regex = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# Windows Job Object — KILL_ON_JOB_CLOSE so all child processes (claude, node,
+# git, ...) are auto-terminated when sirin.exe exits.  Prevents the orphan
+# claude.exe accumulation observed during 2026-04-19 dev session (12 zombies
+# from earlier crashes, several with 1-2 hours of CPU time).
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
 [package.metadata.bundle]
 name = "Sirin"
 identifier = "com.sirin.app"

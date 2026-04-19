@@ -30,6 +30,7 @@ mod log_buffer;
 #[allow(dead_code)] mod mcp_client;
 mod mcp_server;
 pub mod monitor;
+mod process_group;
 mod rhai_engine;
 mod rpc_server;
 pub mod updater;
@@ -140,6 +141,14 @@ fn is_headless() -> bool {
 
 fn main() {
     init_tracing();
+
+    // Install the process-tree kill switch BEFORE any subprocess spawns.
+    // On Windows this assigns sirin.exe to a Job Object with
+    // KILL_ON_JOB_CLOSE — every child spawned afterwards (claude, node,
+    // git, chrome, ...) is auto-terminated when sirin exits, even on
+    // crash / taskkill / panic.  Prevents orphan claude.exe accumulation.
+    process_group::install();
+
     diagnose::record_startup();
 
     // Try app_data_dir/.env first (installed mode), then CWD (dev mode)
