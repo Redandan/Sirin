@@ -269,9 +269,34 @@ pub async fn execute_test_tracked(
 
             let hint_for_llm = parse_error_hint.take(); // reset — only used for the next turn
 
-            let raw = match call_test_llm(ctx, test, &history, hint_for_llm.as_deref()).await {
-                Ok(s) => s,
-                Err(e) => break 'react finalize_early(ctx, run_id, test, &history, format!("LLM error: {e}")).await,
+            // LLM call with retry for transient network errors (e.g. "error decoding
+            // response body" from Gemini when Chrome crashes cause concurrent request
+            // interference).  We retry up to 3× with a short back-off before giving up.
+            let raw = {
+                let mut last_err = String::new();
+                let mut raw_opt: Option<String> = None;
+                for attempt in 0u32..3 {
+                    if attempt > 0 {
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    }
+                    match call_test_llm(ctx, test, &history, hint_for_llm.as_deref()).await {
+                        Ok(s) => { raw_opt = Some(s); break; }
+                        Err(e) => {
+                            tracing::warn!(
+                                "[test_runner] '{}' iter {} LLM error (attempt {}/3): {e}",
+                                test.id, iteration, attempt + 1
+                            );
+                            last_err = e;
+                        }
+                    }
+                }
+                match raw_opt {
+                    Some(s) => s,
+                    None => break 'react finalize_early(
+                        ctx, run_id, test, &history,
+                        format!("LLM error after 3 attempts: {last_err}")
+                    ).await,
+                }
             };
 
             let step = parse_step(&raw);
@@ -603,7 +628,10 @@ For Flutter/CanvasKit canvas apps AND exact-string assertions:
                        return empty because the semantics bridge is inactive. Call again after
                        any route change (tree collapses temporarily after navigation).
 - ax_tree           — list all a11y nodes (role + literal name + value + backend_id)
-- ax_find           — role and/or name (substring); returns single match
+- ax_find           — role and/or name (substring, case-insensitive); optional name_regex for EXACT match
+                       (e.g. name_regex="^登入$" to match only "登入" and not "使用 Google 登入");
+                       not_name_matches=[...] array to exclude by substring; returns single match.
+                       ⚠️ Use name_regex="^<exact>$" when the target name is a substring of other node names.
 - ax_value          — backend_id → exact text (value || name)
 - ax_click          — backend_id → click via DOM box model centre (Flutter-compatible 5-event sequence)
 - ax_focus          — backend_id → DOM focus

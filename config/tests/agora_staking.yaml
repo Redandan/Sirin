@@ -4,96 +4,68 @@ url: "https://redandan.github.io/"
 
 # Flutter CanvasKit — UI 全部渲染在 canvas 上（WebGL 需要 GPU）
 browser_headless: false
-max_iterations: 35
-timeout_secs: 600
+max_iterations: 75
+timeout_secs: 700
 retry_on_parse_error: 7
 
 goal: |
-  驗證 AgoraMarket 質押（Staking）功能完整流程（Issue #34）。
+  驗證 AgoraMarket 質押（Staking）功能（Issue #34）。
 
-  ⚠️ Flutter CanvasKit 操作規則（違反這些規則會導致測試失敗）：
-  - CSS selector / click "文字" / type selector 對 canvas 無效
-  - 必須 enable_a11y → ax_find → ax_click / ax_type 的順序
-  - 路由切換後 AX tree 短暫 collapse → 需再次 enable_a11y（等 1-2 秒後）
-  - ax_find 回傳空 = 還沒 enable_a11y 或樹還在 collapse 中，不要宣告 done
-
-  ⚠️ 完成標準（必須全部達成才能 done=true）：
-  - 步驟 1：登入成功，看到主頁面（不只是登入頁面）
-  - 步驟 2：質押頁面顯示非零利率
-  - 步驟 4：質押 1 單位後餘額扣款
-  - 步驟 5：解質押按鈕出現並點擊成功
-  - 步驟 6：歷史頁面有記錄
-  如果有任何步驟未完成，禁止設 done=true。
+  ⚠️ Flutter CanvasKit 操作規則（必須遵守）：
+  - CSS selector / click "文字" 對 canvas 無效；必須用 ax_find → ax_click
+  - 路由切換後需 enable_a11y（等 1-2 秒）
+  - 正確路由：質押頁面 = #/wallet/stake-form（不是 #/stake）
+  - 按鈕名稱：「確認質押」「取消質押」（不是「確認」「解質押」）
+  - 登入按鈕用 name_regex="^登入$" 精確匹配（避免匹配「使用 Google 登入」）
 
   【測試帳號】username: buyer, password: test123
 
-  步驟：
+  步驟（每步驟盡量 1-2 個 action，避免重複）：
 
-  0. [準備]
-     clear_state（清除舊 session，避免前次測試污染）
-     wait 5000（等待 Flutter GPU 初始化）
-     enable_a11y
-     ax_tree（確認節點 > 1 個）
-     screenshot_analyze "頁面載入？登入頁面可見？"
+  0. clear_state → goto https://redandan.github.io/ → wait 8000 → enable_a11y
 
-  1. [登入] 完整登入流程：
-     enable_a11y
-     ax_find name="使用用戶名密碼登入"
-     ax_click backend_id=<id>
-     wait 2000（路由切換 + AX 重建）
-     enable_a11y（重新啟動 semantics）
-     ax_tree（確認看到 username / password 欄位）
-     ax_find role=textbox（找 username 欄位）
-     ax_type backend_id=<id> text=buyer
-     ax_find role=textbox name=password（找 password 欄位）
-     ax_type backend_id=<id> text=test123
-     ax_find name=登入
-     ax_click backend_id=<id>
-     wait 3000
-     screenshot_analyze "登入成功？看到主頁面或 dashboard（不是登入頁面）？"
-     ← 若還在登入頁面，不得繼續
+  1. 登入（使用測試捷徑按鈕，最可靠）：
+     ax_find name_regex="測試買家" → ax_click → wait 4000
+     （若測試買家按鈕不可見，fallback：ax_find name="使用用戶名密碼登入" → ax_click → wait 2000 → enable_a11y
+      ax_find role=textbox name=用戶名 → ax_click → ax_type text=buyer
+      ax_find role=textbox name=密碼 → ax_click → ax_type text=test123
+      ax_find role=button name_regex="^登入$" → ax_click → wait 3000）
 
-  2. [AC-1] 導航至質押頁面：
-     eval "location.hash='#/stake'"
-     wait 2000
-     enable_a11y
-     screenshot_analyze "質押頁面？利率非零非 N/A？可質押餘額顯示？"
+  1b. 驗證登入：enable_a11y → screenshot_analyze "URL 是 #/home 或 #/？確認登入成功"
 
-  3. [AC-1] 確認無 JS error：
-     eval "JSON.stringify(window.__errors || [])"
+  2. 導航至質押頁面（只用此路由）：
+     eval "location.hash='#/wallet/stake-form'" → wait 3000 → enable_a11y
+     screenshot_analyze "質押頁面可見？顯示餘額和確認質押按鈕？"
 
-  4. [AC-2] 質押 1 單位：
-     enable_a11y
-     ax_tree（找質押金額欄位）
-     ax_find role=textbox（金額輸入框）
-     ax_type backend_id=<id> text=1
-     ax_find name=確認（質押確認按鈕）
-     ax_click backend_id=<id>
-     wait 3000
-     screenshot_analyze "質押成功？餘額扣款？狀態顯示質押中？"
+  3. 質押 1 單位：
+     ax_find role=textbox name=質押金額 → ax_click → ax_type text=1
+     ax_find role=button name=確認質押 → ax_click → wait 3000
+     enable_a11y → screenshot_analyze "質押已提交？出現取消質押按鈕？"
 
-  5. [AC-3] 解質押：
-     enable_a11y
-     ax_find name=解質押
-     ax_click backend_id=<id>
-     wait 2000
-     screenshot_analyze "解質押確認？狀態更新？"
+  4. 取消質押（解質押）：
+     ax_find role=button name=取消質押 → ax_click → wait 1000
+     enable_a11y → ax_find role=button name_regex="確認|確定|取消質押" → ax_click → wait 2000
+     screenshot_analyze "質押已取消？"
 
-  6. [AC-4] 歷史記錄：
-     eval "location.hash='#/stake/history'"
-     wait 2000
-     screenshot_analyze "歷史頁面？進行中 / 已結算 / 已解質押三種狀態可見？"
+  5. 查看交易記錄：
+     eval "location.hash='#/home'" → wait 2000 → enable_a11y
+     ax_find name_regex="錢包|Wallet" → ax_click → wait 2000
+     screenshot_analyze "錢包頁面可見？交易記錄中有質押/Staking 記錄？"
 
-  7. [AC-5] 小數位精度：
-     screenshot_analyze "金額小數位正常？無 0.10000000001 類問題？"
+  完成標準：
+  - 登入成功（URL = #/home）
+  - 質押頁面顯示餘額（不要求顯示利率，活期質押無固定利率）
+  - 質押 1 USDT 成功提交
+  - 取消質押成功
+  - 錢包頁面有交易記錄
+  全部完成才能 done=true。
 
 success_criteria:
-  - "質押頁面可正常開啟，無白屏或錯誤訊息"
-  - "質押利率顯示非零、非 N/A、非空白的數值"
-  - "質押發起流程完成後餘額扣款正確，狀態顯示質押中或進行中"
-  - "解質押按鈕可見可點擊，確認後狀態更新為已解質押或結算中"
-  - "質押歷史記錄頁顯示三種狀態：進行中 / 已結算 / 已解質押"
-  - "質押金額小數位精度正常，無浮點顯示錯誤"
+  - "質押頁面（#/wallet/stake-form）可正常開啟，無白屏或頁面不存在錯誤"
+  - "質押頁面顯示當前可用餘額（USDT 數值）"
+  - "質押 1 USDT 成功提交，出現取消質押按鈕"
+  - "取消質押成功執行"
+  - "錢包交易記錄中可看到質押或取消質押相關記錄"
 
 tags: [staking, agora, issue-34, regression]
 

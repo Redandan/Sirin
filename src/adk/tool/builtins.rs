@@ -1012,11 +1012,22 @@ pub(super) fn build_full_registry() -> ToolRegistry {
             // Handle vision analysis (requires async LLM call)
             if result.get("__vision").and_then(|v| v.as_bool()).unwrap_or(false) {
                 let prompt = result["prompt"].as_str().unwrap_or("Describe this page");
+                // Preserve size_bytes + url from the blocking screenshot call so that
+                // executor.rs::is_all_black_screenshot() can detect black frames even
+                // when the action is screenshot_analyze (not just screenshot).
+                let size_bytes = result.get("png_len").and_then(|v| v.as_u64()).unwrap_or(u64::MAX);
+                let url = tokio::task::spawn_blocking(|| {
+                    crate::browser::get_current_url().unwrap_or_default()
+                }).await.unwrap_or_default();
                 let llm = crate::llm::shared_llm();
                 let client = crate::llm::shared_http();
                 let analysis = crate::llm::analyze_screenshot(&client, &llm, prompt).await
                     .map_err(|e| format!("vision analysis failed: {e}"))?;
-                return Ok(json!({ "analysis": analysis }));
+                return Ok(json!({
+                    "analysis": analysis,
+                    "size_bytes": size_bytes,
+                    "url": url,
+                }));
             }
 
             Ok(result)

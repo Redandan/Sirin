@@ -74,6 +74,10 @@ static SESSION: OnceLock<Arc<Mutex<Option<BrowserInner>>>> = OnceLock::new();
 /// (instead of falling back to `default_headless()` which is always `true`).
 static TEST_DESIRED_HEADLESS: AtomicBool = AtomicBool::new(true);
 
+/// Signal that stops the CDP keepalive heartbeat thread.
+/// Set to `true` by `close()` before dropping the browser session.
+static HEARTBEAT_STOP: AtomicBool = AtomicBool::new(false);
+
 /// Called by the test executor at test start to register the desired
 /// headless mode.  Recovery paths read this to re-launch Chrome correctly
 /// even if the process-level default is `headless=true`.
@@ -223,9 +227,12 @@ pub fn ensure_open(headless: bool) -> Result<bool, String> {
     // (esp. after a mode switch).
     std::thread::sleep(std::time::Duration::from_millis(600));
 
+    let tab_arc = tab.clone();
     *guard = Some(BrowserInner { browser, tabs: vec![tab], active: 0, headless, sessions: HashMap::new(), viewport: None });
     // Clear per-tab a11y state so the new session's tab index 0 starts fresh.
     crate::browser_ax::reset_a11y_enabled();
+    // Spawn keepalive so the CDP transport loop stays alive on quiet pages.
+    spawn_cdp_heartbeat(tab_arc);
     tracing::info!("[browser] launched Chrome (headless={headless})");
     Ok(true)
 }
@@ -240,8 +247,34 @@ pub fn is_headless() -> Option<bool> {
 }
 
 pub fn close() {
+    HEARTBEAT_STOP.store(true, Ordering::Relaxed);
     let mut guard = global().lock().unwrap_or_else(|e| e.into_inner());
     *guard = None;
+}
+
+/// Spawns a background thread that calls `Runtime.evaluate("1", false)` every
+/// 25 seconds, generating CDP round-trips that prevent headless_chrome's
+/// transport loop from timing out on quiet pages (e.g. idle Flutter app).
+///
+/// headless_chrome's transport loop exits after 30 s with no CDP events.
+/// This keepalive fires every 25 s to stay safely inside that window.
+fn spawn_cdp_heartbeat(tab: Arc<Tab>) {
+    HEARTBEAT_STOP.store(false, Ordering::Relaxed);
+    std::thread::spawn(move || {
+        loop {
+            // Sleep in small increments so we notice the stop signal quickly
+            for _ in 0..25 {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                if HEARTBEAT_STOP.load(Ordering::Relaxed) {
+                    return;
+                }
+            }
+            // Send a trivial CDP request to keep the event loop alive
+            if tab.evaluate("undefined", false).is_err() {
+                return; // Chrome/tab is dead — exit silently
+            }
+        }
+    });
 }
 
 /// Ensures a browser session exists, **preserving current mode if already open**.
@@ -256,11 +289,20 @@ pub fn close() {
 /// Fixes: #10 — `with_tab()` used to call `ensure_open(true)` which triggered
 /// the mode-switch logic from `bd08841`, flipping a user-requested
 /// `SIRIN_BROWSER_HEADLESS=false` session back to headless.
+///
+/// Fixes: #35 — when a test requests `browser_headless=false` and Chrome crashes
+/// mid-test, `ensure_open_reusing()` used to call `ensure_open(default_headless())`
+/// which always returns `true`, relaunching Chrome in headless mode and causing
+/// Flutter/WebGL content to render all-black for the rest of the test.
+/// Now uses `TEST_DESIRED_HEADLESS` so crash recovery respects the test's mode.
 pub fn ensure_open_reusing() -> Result<bool, String> {
     if is_open() {
         return Ok(false);
     }
-    ensure_open(default_headless())
+    // Use the mode last registered by a test (set_test_headless_mode), or the
+    // process default if no test has run yet.  This ensures crash recovery
+    // during Flutter/WebGL tests re-launches Chrome in the correct visible mode.
+    ensure_open(TEST_DESIRED_HEADLESS.load(std::sync::atomic::Ordering::Relaxed))
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -342,6 +384,11 @@ pub fn screenshot() -> Result<Vec<u8>, String> {
         tab.capture_screenshot(CaptureScreenshotFormatOption::Png, None, None, true)
             .map_err(|e| format!("screenshot: {e}"))
     })
+}
+
+/// Returns the current tab's URL, or an empty string if the browser is not open.
+pub fn get_current_url() -> Result<String, String> {
+    with_tab(|tab| Ok(tab.get_url()))
 }
 
 /// Capture current tab as JPEG with the given quality (1-100).
@@ -1528,6 +1575,10 @@ fn is_connection_closed(err: &str) -> bool {
     err.contains("underlying connection is closed")
         || err.contains("TaskCancelled")
         || err.contains("ChannelClosed")
+        // CDP transport-layer timeouts (headless_chrome phrases):
+        || err.contains("event waited for never came")   // wait_until_navigated / wait_for_element
+        || err.contains("timed out")                     // generic CDP timeout
+        || err.contains("transport loop")                // WebSocket transport died
 }
 
 fn base64_encode(input: &str) -> String {

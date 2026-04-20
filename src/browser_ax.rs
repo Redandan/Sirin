@@ -583,8 +583,22 @@ pub fn focus_backend(backend_id: u32) -> Result<(), String> {
 
 /// Focus an input + insert text.  Use this instead of [`crate::browser::type_text`]
 /// when you have an a11y backend_id but no CSS selector (Flutter, shadow DOM).
+///
+/// Uses `click_backend` instead of `DOM.focus` because Flutter Web text fields
+/// are rendered in a shadow DOM and `DOM.focus` does not reliably transfer focus
+/// to the Flutter-owned input element.  A pointer-event click (dispatched at the
+/// element's viewport centre) causes Flutter to focus the field through its own
+/// event handler, after which `Input.InsertText` types correctly.
+///
+/// 300 ms settle delay between click and insert gives Flutter's rebuild cycle
+/// time to set up the text cursor.
 pub fn type_into_backend(backend_id: u32, text: &str) -> Result<(), String> {
-    focus_backend(backend_id)?;
+    // Click to focus (Flutter-compatible).  Ignore errors — if the element is
+    // off-screen `click_backend` returns Err but we still attempt the insert;
+    // the worst outcome is typing into the wrong element, which `ax_type_verified`
+    // can detect.
+    let _ = click_backend(backend_id);
+    std::thread::sleep(std::time::Duration::from_millis(300));
     with_tab(|tab| {
         tab.call_method(Input::InsertText { text: text.to_string() })
             .map_err(|e| format!("Input.insertText: {e}"))?;
@@ -685,14 +699,22 @@ pub fn enable_flutter_semantics() -> Result<(), String> {
                                 return Ok(());
                             }
                             Ok((cx, cy)) => {
-                                // Off-viewport: use keyboard activation to avoid false router click.
+                                // Off-viewport: cannot use click_backend (elementFromPoint at
+                                // negative coords hits Flutter router → about:blank).
+                                // Cannot use press_key (Flutter global keydown handler intercepts
+                                // Space and routes it through the hash router → about:blank).
+                                // Safe path: DOM.focus the button, then programmatic
+                                // document.activeElement.click() — triggers the button's own
+                                // onclick without involving coordinates or keyboard events.
                                 tracing::info!(
                                     "[browser_ax] Strategy A: 'Enable accessibility' button \
                                      backend_id={bid} off-viewport ({cx:.1},{cy:.1}) — \
-                                     activating via DOM.focus + Space key"
+                                     activating via DOM.focus + activeElement.click()"
                                 );
                                 if focus_backend(bid as u32).is_ok() {
-                                    let _ = crate::browser::press_key(" ");
+                                    let _ = crate::browser::evaluate_js(
+                                        "document.activeElement && document.activeElement.click()"
+                                    );
                                     std::thread::sleep(std::time::Duration::from_millis(800));
                                     return Ok(());
                                 }

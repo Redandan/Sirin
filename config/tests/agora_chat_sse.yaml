@@ -25,8 +25,9 @@ goal: |
 
   0. [準備]
      clear_state（清除前次測試殘留 session，防止跨測試污染）
+     goto https://agoramarket.purrtechllc.com（clear_state 後必須重新載入 Flutter）
      set_viewport width=1280 height=1600
-     wait 8000（production Flutter 初始化比 test site 慢）
+     wait 10000（production Flutter 初始化比 test site 慢，需要更多時間）
      enable_a11y
      ax_tree（確認節點 > 1，若仍只有 1 個節點再等 3 秒重試）
      screenshot_analyze "頁面載入狀態？看到什麼頁面？是否有登入按鈕或直接看到主頁？"
