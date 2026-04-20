@@ -32,11 +32,16 @@ fn limit_from_input(input: &Value, default_limit: usize) -> usize {
 }
 
 fn optional_string_field(input: &Value, key: &str) -> Option<String> {
-    input
-        .get(key)
-        .and_then(Value::as_str)
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+    input.get(key).and_then(|v| {
+        // Accept both JSON strings and JSON numbers (LLMs sometimes send numbers
+        // for numeric targets like {"target": 2000} instead of {"target": "2000"}).
+        let s = match v {
+            Value::String(s) => s.trim().to_string(),
+            Value::Number(n) => n.to_string(),
+            _ => return None,
+        };
+        if s.is_empty() { None } else { Some(s) }
+    })
 }
 
 fn required_string_field(input: &Value, key: &str) -> Result<String, String> {
