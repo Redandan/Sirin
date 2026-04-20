@@ -163,10 +163,9 @@ pub async fn execute_test_tracked(
                 };
             }
 
-            let prompt = build_prompt(test, &history, parse_error_hint.as_deref());
-            parse_error_hint = None;  // reset — only used for the next turn
+            let hint_for_llm = parse_error_hint.take(); // reset — only used for the next turn
 
-            let raw = match call_test_llm(ctx, test, prompt).await {
+            let raw = match call_test_llm(ctx, test, &history, hint_for_llm.as_deref()).await {
                 Ok(s) => s,
                 Err(e) => break 'react finalize_early(ctx, run_id, test, &history, format!("LLM error: {e}")).await,
             };
@@ -364,15 +363,50 @@ fn truncate_with_hint(full: &str, step_idx: usize) -> String {
 
 // ── Prompt building ──────────────────────────────────────────────────────────
 
+/// Full prompt — all history, 500-char observations.  Used by Gemini / main LLM.
 fn build_prompt(test: &TestGoal, history: &[TestStep], parse_error_hint: Option<&str>) -> String {
-    let history_str = if history.is_empty() {
+    build_prompt_with_limits(test, history, parse_error_hint, usize::MAX, 500)
+}
+
+/// Compact prompt for `claude_cli` backend.
+///
+/// Keeps only the last 3 history steps and truncates observations to 200 chars,
+/// preventing the 10-20 KB prompt that causes `claude -p` to hang on iteration 2+
+/// (observed 2026-04-20: full prompt with screenshot-analysis history reliably
+/// hit the 600 s subprocess watchdog; compact prompt completes in ~6 s).
+fn build_prompt_compact(test: &TestGoal, history: &[TestStep], parse_error_hint: Option<&str>) -> String {
+    build_prompt_with_limits(test, history, parse_error_hint, 3, 200)
+}
+
+fn build_prompt_with_limits(
+    test: &TestGoal,
+    history: &[TestStep],
+    parse_error_hint: Option<&str>,
+    max_history_steps: usize,
+    obs_max_chars: usize,
+) -> String {
+    // Trim history to the last N steps if needed.
+    let skipped = history.len().saturating_sub(max_history_steps);
+    let visible = &history[skipped..];
+
+    let history_str = if visible.is_empty() && skipped == 0 {
         "(none yet)".to_string()
     } else {
-        history.iter().enumerate().map(|(i, s)| {
-            let obs = truncate(&s.observation, 500);
-            format!("[Step {}]\nThought: {}\nAction: {}\nObservation: {}\n",
-                i + 1, s.thought, s.action, obs)
-        }).collect::<Vec<_>>().join("---\n")
+        let prefix = if skipped > 0 {
+            format!(
+                "[{skipped} earlier step(s) omitted — showing last {} for context]\n---\n",
+                visible.len()
+            )
+        } else {
+            String::new()
+        };
+        let steps: String = visible.iter().enumerate().map(|(i, s)| {
+            let obs = truncate(&s.observation, obs_max_chars);
+            let step_n = skipped + i + 1;
+            format!("[Step {step_n}]\nThought: {}\nAction: {}\nObservation: {obs}\n",
+                s.thought, s.action)
+        }).collect::<Vec<_>>().join("---\n");
+        format!("{prefix}{steps}")
     };
 
     let hint_block = parse_error_hint
@@ -497,22 +531,31 @@ fn resolve_llm_backend(test: &TestGoal) -> String {
         .to_lowercase()
 }
 
-/// Dispatch the prompt to the right LLM backend based on test config.
+/// Dispatch the next ReAct prompt to the right LLM backend based on test config.
 ///
-/// `claude_cli` / `claude` → spawn `claude -p` subprocess via
-/// [`claude_session::run_sync`].  Anything else falls back to Sirin's
-/// main LLM (Gemini / LM Studio / Ollama / Anthropic HTTP).
+/// Accepts raw `history` + `parse_error_hint` so it can build the appropriate
+/// prompt variant per backend:
+/// - `claude_cli` / `claude` → compact prompt (last 3 steps, 200-char obs) to
+///   stay well under the ~10 KB threshold that causes `claude -p` to hang.
+/// - anything else → full prompt via Sirin's main LLM config.
 async fn call_test_llm(
     ctx: &crate::adk::context::AgentContext,
     test: &TestGoal,
-    prompt: String,
+    history: &[TestStep],
+    parse_error_hint: Option<&str>,
 ) -> Result<String, String> {
     let backend = resolve_llm_backend(test);
     match backend.as_str() {
-        "claude_cli" | "claude" => call_claude_cli(prompt).await,
-        _ => crate::llm::call_coding_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), prompt)
-            .await
-            .map_err(|e| e.to_string()),
+        "claude_cli" | "claude" => {
+            let prompt = build_prompt_compact(test, history, parse_error_hint);
+            call_claude_cli(prompt).await
+        }
+        _ => {
+            let prompt = build_prompt(test, history, parse_error_hint);
+            crate::llm::call_coding_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), prompt)
+                .await
+                .map_err(|e| e.to_string())
+        }
     }
 }
 
