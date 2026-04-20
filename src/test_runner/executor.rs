@@ -586,26 +586,33 @@ fn build_prompt_with_limits(
 - type           — target: CSS selector, text: input text
 - read           — target: CSS selector → returns innerText
 - eval           — target: JS expression → returns result
-- wait           — target: CSS selector, timeout: ms
+- wait           — target: CSS selector (waits for element) OR plain ms number (sleeps, e.g. "2000")
 - exists         — target: CSS selector → true/false
 - attr           — target: selector, text: attribute name
 - scroll         — x, y: pixels (default 0, 300)
 - scroll_to      — target: selector
+- click_point    — x, y: viewport pixel coords; use for Flutter/CanvasKit canvas apps where CSS selectors don't work
 - key            — target: key name (Enter/Tab/Escape)
 - screenshot_analyze — target: question for vision LLM about the page
 - console        — return captured console messages
 - network        — return captured fetch/XHR
 
 ## Accessibility tree actions (literal text, no vision approximation)
-For exact-string assertions ($7376.80, error messages, token counts):
-- enable_a11y       — trigger Flutter semantics bridge first (Canvas apps)
+For Flutter/CanvasKit canvas apps AND exact-string assertions:
+- enable_a11y       — ⚠️ MUST call first on Flutter/CanvasKit apps; without it ax_find/ax_tree
+                       return empty because the semantics bridge is inactive. Call again after
+                       any route change (tree collapses temporarily after navigation).
 - ax_tree           — list all a11y nodes (role + literal name + value + backend_id)
 - ax_find           — role and/or name (substring); returns single match
 - ax_value          — backend_id → exact text (value || name)
-- ax_click          — backend_id → click via DOM box model centre
+- ax_click          — backend_id → click via DOM box model centre (Flutter-compatible 5-event sequence)
 - ax_focus          — backend_id → DOM focus
 - ax_type           — backend_id, text → focus + insertText
 - ax_type_verified  — same as ax_type + read-back; returns {{typed, actual, matched}}
+
+Flutter/CanvasKit interaction pattern (ALWAYS follow this order):
+  1. enable_a11y  2. ax_find  3. ax_click / ax_type
+  After route change: wait ≥ 1000ms then enable_a11y again before next ax_find.
 
 When you need EXACT text comparison (numbers, IDs), prefer ax_* over
 screenshot_analyze (which approximates).

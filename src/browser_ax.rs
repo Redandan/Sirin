@@ -666,12 +666,14 @@ pub fn enable_flutter_semantics() -> Result<(), String> {
                     .to_lowercase();
                 if name.contains("enable accessibility") {
                     if let Some(bid) = node.get("backendDOMNodeId").and_then(|v| v.as_u64()) {
-                        // Safety: only dispatch if element is within viewport.
-                        // The "Enable accessibility" button is often positioned at
-                        // (-0.5, -0.5) — one pixel off-screen.  Dispatching events
-                        // there routes through `document.elementFromPoint(-0.5,-0.5)`
-                        // which returns the Flutter router element at the corner,
-                        // causing the hash-router to navigate away (about:blank).
+                        // The "Enable accessibility" button is often at (-0.5,-0.5) —
+                        // off-viewport.  We CANNOT use click_backend() there because
+                        // `document.elementFromPoint(-0.5,-0.5)` returns the Flutter
+                        // hash-router element instead, causing navigation to about:blank.
+                        //
+                        // Fix: check viewport bounds.
+                        //   • In-viewport  → coordinate click (PointerEvent sequence).
+                        //   • Off-viewport → DOM.focus + Space-key activation (no coords).
                         match center_of_backend(bid as u32) {
                             Ok((cx, cy)) if cx >= 0.0 && cy >= 0.0 => {
                                 tracing::info!(
@@ -683,11 +685,18 @@ pub fn enable_flutter_semantics() -> Result<(), String> {
                                 return Ok(());
                             }
                             Ok((cx, cy)) => {
-                                tracing::warn!(
+                                // Off-viewport: use keyboard activation to avoid false router click.
+                                tracing::info!(
                                     "[browser_ax] Strategy A: 'Enable accessibility' button \
-                                     backend_id={bid} is off-viewport ({cx:.1},{cy:.1}) — \
-                                     skipping to avoid false-click on Flutter router"
+                                     backend_id={bid} off-viewport ({cx:.1},{cy:.1}) — \
+                                     activating via DOM.focus + Space key"
                                 );
+                                if focus_backend(bid as u32).is_ok() {
+                                    let _ = crate::browser::press_key(" ");
+                                    std::thread::sleep(std::time::Duration::from_millis(800));
+                                    return Ok(());
+                                }
+                                tracing::warn!("[browser_ax] Strategy A: DOM.focus({bid}) failed, falling through to Strategy B");
                             }
                             Err(e) => {
                                 tracing::warn!("[browser_ax] Strategy A: getBoxModel failed: {e}");

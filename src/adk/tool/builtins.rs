@@ -658,10 +658,16 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                         Ok(json!({ "result": browser::evaluate_js(&target)? }))
                     }
                     "wait" => {
-                        if target.is_empty() { return Err("'wait' requires 'target' selector".into()); }
-                        let ms = input.get("timeout").and_then(|v| v.as_u64()).unwrap_or(5000);
-                        browser::wait_for_ms(&target, ms)?;
-                        Ok(json!({ "status": "found", "selector": target }))
+                        if target.is_empty() { return Err("'wait' requires 'target' selector or ms number".into()); }
+                        // Plain number → millisecond sleep (e.g. {"action":"wait","target":"2000"}).
+                        if let Ok(ms) = target.trim().parse::<u64>() {
+                            std::thread::sleep(std::time::Duration::from_millis(ms));
+                            Ok(json!({ "status": "slept", "ms": ms }))
+                        } else {
+                            let ms = input.get("timeout").and_then(|v| v.as_u64()).unwrap_or(5000);
+                            browser::wait_for_ms(&target, ms)?;
+                            Ok(json!({ "status": "found", "selector": target }))
+                        }
                     }
                     "exists" => {
                         if target.is_empty() { return Err("'exists' requires 'target' selector".into()); }
