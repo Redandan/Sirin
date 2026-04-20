@@ -17,6 +17,28 @@ pub struct TeamPanelState {
     dash: Option<TeamDashView>,
     tasks: Vec<TeamTaskView>,
     expanded_id: Option<String>,
+    // ── GitHub bridge (dev_team_*) ────────────────────────────────────────
+    gh_open:             bool,         // whole section expanded?
+    gh_repo:             String,       // "Redandan/AgoraMarket"
+    gh_issue_str:        String,       // "#34" or "34" — parsed on submit
+    gh_project_key:      String,       // "agora_market" / "sirin" / ...
+    gh_dry_run:          bool,         // default true (set in helper)
+    gh_action_msg:       Option<(bool, String)>,  // (is_error, text)
+    gh_issue_preview:    Option<GhIssueView>,
+    gh_previews:         Option<Vec<DryRunPreviewView>>,
+    gh_expanded_preview: Option<String>,
+}
+
+/// Sensible defaults the moment the UI shows the section. We can't put these
+/// in `Default` because `gh_dry_run` would be `false` by default, but we want
+/// `true` as the safe starting state.
+fn ensure_bridge_defaults_initialised(state: &mut TeamPanelState) {
+    if state.gh_repo.is_empty() && state.gh_project_key.is_empty()
+        && state.gh_issue_str.is_empty() && !state.gh_dry_run {
+        state.gh_dry_run     = true;
+        state.gh_repo        = "Redandan/AgoraMarket".to_string();
+        state.gh_project_key = "agora_market".to_string();
+    }
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -62,6 +84,8 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, state: &mut TeamPanelS
             show_member_cards(ui, svc, &dash, state);
             ui.add_space(theme::SP_MD);
             show_token_burn_card(ui, &usage);
+            ui.add_space(theme::SP_MD);
+            show_github_bridge_section(ui, svc, state);
             ui.add_space(theme::SP_MD);
             theme::thin_separator(ui);
             ui.add_space(theme::SP_SM);
@@ -353,6 +377,408 @@ fn show_token_burn_card(ui: &mut egui::Ui, usage: &crate::ui_service::TokenUsage
                 );
             });
         });
+}
+
+// ── GitHub Bridge section (dev_team_*) ────────────────────────────────────────
+//
+// Form to enqueue a real GitHub issue → Sirin Dev Team, plus a list of saved
+// dry-run previews with a "Replay" button to actually post one to GitHub.
+//
+// Default dry_run=true; flipping it off shows a red warning (live mode WILL
+// post comments / may push commits depending on what Engineer decides).
+
+fn show_github_bridge_section(
+    ui: &mut egui::Ui,
+    svc: &Arc<dyn AppService>,
+    state: &mut TeamPanelState,
+) {
+    ensure_bridge_defaults_initialised(state);
+
+    egui::Frame::new()
+        .fill(theme::CARD)
+        .corner_radius(4.0)
+        .stroke(egui::Stroke::new(1.0, theme::BORDER))
+        .inner_margin(theme::SP_MD)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+
+            // ── Header (collapsible) ──────────────────────────────────────
+            ui.horizontal(|ui| {
+                let arrow = if state.gh_open { "▼" } else { "▶" };
+                let title = format!("{arrow}  GitHub Bridge — issue → 開發小隊");
+                if ui.add(
+                    egui::Button::new(
+                        RichText::new(title)
+                            .size(theme::FONT_SMALL)
+                            .strong()
+                            .color(theme::TEXT),
+                    )
+                    .fill(egui::Color32::TRANSPARENT)
+                    .stroke(egui::Stroke::NONE),
+                ).clicked() {
+                    state.gh_open = !state.gh_open;
+                    if state.gh_open && state.gh_previews.is_none() {
+                        state.gh_previews = Some(svc.dev_team_list_previews());
+                    }
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let preview_count = state.gh_previews
+                        .as_ref().map(|v| v.len()).unwrap_or(0);
+                    if preview_count > 0 {
+                        ui.label(
+                            RichText::new(format!("{preview_count} preview"))
+                                .size(theme::FONT_CAPTION)
+                                .color(theme::TEXT_DIM),
+                        );
+                    }
+                });
+            });
+
+            if !state.gh_open { return; }
+
+            ui.add_space(theme::SP_SM);
+            theme::thin_separator(ui);
+            ui.add_space(theme::SP_SM);
+
+            // ── Form ──────────────────────────────────────────────────────
+            show_bridge_form(ui, svc, state);
+
+            ui.add_space(theme::SP_SM);
+
+            // ── Issue preview (after Read button) ─────────────────────────
+            if let Some(issue) = state.gh_issue_preview.clone() {
+                show_issue_preview_card(ui, &issue);
+                ui.add_space(theme::SP_SM);
+            }
+
+            // ── Action result toast ───────────────────────────────────────
+            if let Some((is_err, msg)) = state.gh_action_msg.clone() {
+                let color = if is_err { theme::DANGER } else { theme::ACCENT };
+                ui.colored_label(color, RichText::new(&msg).size(theme::FONT_CAPTION));
+                ui.add_space(theme::SP_SM);
+            }
+
+            // ── Preview list ──────────────────────────────────────────────
+            theme::thin_separator(ui);
+            ui.add_space(theme::SP_SM);
+            show_preview_list(ui, svc, state);
+        });
+}
+
+fn show_bridge_form(
+    ui: &mut egui::Ui,
+    svc: &Arc<dyn AppService>,
+    state: &mut TeamPanelState,
+) {
+    // Row 1: project_key + gh_repo + issue
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("project").size(theme::FONT_CAPTION).color(theme::TEXT_DIM));
+        ui.add(egui::TextEdit::singleline(&mut state.gh_project_key)
+            .desired_width(110.0)
+            .hint_text("agora_market"));
+        ui.add_space(theme::SP_SM);
+
+        ui.label(RichText::new("repo").size(theme::FONT_CAPTION).color(theme::TEXT_DIM));
+        ui.add(egui::TextEdit::singleline(&mut state.gh_repo)
+            .desired_width(220.0)
+            .hint_text("Redandan/AgoraMarket"));
+        ui.add_space(theme::SP_SM);
+
+        ui.label(RichText::new("#").size(theme::FONT_CAPTION).color(theme::TEXT_DIM));
+        ui.add(egui::TextEdit::singleline(&mut state.gh_issue_str)
+            .desired_width(60.0)
+            .hint_text("34"));
+    });
+
+    ui.add_space(theme::SP_XS);
+
+    // Row 2: dry-run checkbox + buttons
+    ui.horizontal(|ui| {
+        // dry_run checkbox — when off, label turns red
+        let dry_color = if state.gh_dry_run { theme::ACCENT } else { theme::DANGER };
+        ui.checkbox(&mut state.gh_dry_run, "");
+        ui.colored_label(dry_color, RichText::new("DRY-RUN")
+            .size(theme::FONT_CAPTION).strong());
+        if !state.gh_dry_run {
+            ui.colored_label(theme::DANGER,
+                RichText::new("⚠ 會貼 GitHub 留言/可能 push！")
+                    .size(theme::FONT_CAPTION));
+        } else {
+            ui.colored_label(theme::TEXT_DIM,
+                RichText::new("不會碰 GitHub；review 存到 preview 檔")
+                    .size(theme::FONT_CAPTION));
+        }
+
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            // ── Enqueue button ────────────────────────────────────────
+            let enq_label = if state.gh_dry_run { "▶ 送進佇列 (DRY-RUN)" } else { "▶ 送進佇列 (LIVE)" };
+            let enq_color = if state.gh_dry_run { theme::ACCENT } else { theme::DANGER };
+            if ui.add(
+                egui::Button::new(
+                    RichText::new(enq_label).size(theme::FONT_SMALL).color(enq_color),
+                )
+                .fill(enq_color.linear_multiply(0.1))
+                .stroke(egui::Stroke::new(1.0, enq_color.linear_multiply(0.4)))
+                .corner_radius(4.0),
+            ).clicked() {
+                handle_enqueue(svc, state);
+            }
+            ui.add_space(theme::SP_SM);
+
+            // ── Read issue button ─────────────────────────────────────
+            if ui.add(
+                egui::Button::new(
+                    RichText::new("讀取 issue").size(theme::FONT_SMALL).color(theme::TEXT_DIM),
+                )
+                .fill(egui::Color32::TRANSPARENT)
+                .stroke(egui::Stroke::new(0.5, theme::BORDER)),
+            ).clicked() {
+                handle_read_issue(svc, state);
+            }
+            ui.add_space(theme::SP_SM);
+
+            // ── Refresh previews button ──────────────────────────────
+            if ui.add(
+                egui::Button::new(
+                    RichText::new("⟳ Previews").size(theme::FONT_SMALL).color(theme::TEXT_DIM),
+                )
+                .fill(egui::Color32::TRANSPARENT)
+                .stroke(egui::Stroke::new(0.5, theme::BORDER)),
+            ).clicked() {
+                state.gh_previews = Some(svc.dev_team_list_previews());
+            }
+        });
+    });
+}
+
+/// Parse and submit the form to `dev_team_enqueue_issue`.
+fn handle_enqueue(svc: &Arc<dyn AppService>, state: &mut TeamPanelState) {
+    let issue_str = state.gh_issue_str.trim().trim_start_matches('#');
+    let issue_num: u32 = match issue_str.parse() {
+        Ok(n) if n >= 1 => n,
+        _ => {
+            state.gh_action_msg = Some((true,
+                format!("issue 編號無效: '{}'", state.gh_issue_str)));
+            return;
+        }
+    };
+    let project = state.gh_project_key.trim();
+    let repo    = state.gh_repo.trim();
+    if project.is_empty() || repo.is_empty() {
+        state.gh_action_msg = Some((true, "project / repo 不能為空".into()));
+        return;
+    }
+
+    match svc.dev_team_enqueue_issue(project, repo, issue_num, state.gh_dry_run, 50) {
+        Ok(task_id) => {
+            let mode = if state.gh_dry_run { "DRY-RUN" } else { "LIVE" };
+            state.gh_action_msg = Some((false,
+                format!("✓ 已加入佇列 ({mode}) — task_id={task_id}")));
+            // Refresh queue immediately so user sees it
+            state.last_refresh = None;
+        }
+        Err(e) => {
+            state.gh_action_msg = Some((true, format!("✗ 加入佇列失敗：{e}")));
+        }
+    }
+}
+
+fn handle_read_issue(svc: &Arc<dyn AppService>, state: &mut TeamPanelState) {
+    let issue_str = state.gh_issue_str.trim().trim_start_matches('#');
+    let issue_num: u32 = match issue_str.parse() {
+        Ok(n) if n >= 1 => n,
+        _ => {
+            state.gh_action_msg = Some((true,
+                format!("issue 編號無效: '{}'", state.gh_issue_str)));
+            return;
+        }
+    };
+    let repo = state.gh_repo.trim();
+    if repo.is_empty() {
+        state.gh_action_msg = Some((true, "repo 不能為空".into()));
+        return;
+    }
+    match svc.dev_team_read_issue(repo, issue_num) {
+        Ok(issue) => {
+            state.gh_issue_preview = Some(issue);
+            state.gh_action_msg = None;
+        }
+        Err(e) => {
+            state.gh_action_msg = Some((true, format!("✗ gh issue view 失敗：{e}")));
+            state.gh_issue_preview = None;
+        }
+    }
+}
+
+fn show_issue_preview_card(ui: &mut egui::Ui, issue: &GhIssueView) {
+    egui::Frame::new()
+        .fill(theme::BG)
+        .corner_radius(4.0)
+        .stroke(egui::Stroke::new(1.0, theme::BORDER))
+        .inner_margin(theme::SP_SM)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            // Title + URL
+            ui.label(RichText::new(&issue.title).size(theme::FONT_SMALL).strong().color(theme::TEXT));
+            ui.label(RichText::new(&issue.url).size(theme::FONT_CAPTION)
+                .color(theme::INFO).underline());
+            // Labels
+            if !issue.labels.is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    for l in &issue.labels {
+                        ui.label(RichText::new(format!("[{l}]"))
+                            .size(theme::FONT_CAPTION).color(theme::TEXT_DIM));
+                    }
+                });
+            }
+            ui.add_space(theme::SP_XS);
+            // Body — char-boundary-safe trim to ~600 chars for the inline card
+            let body_short = trunc_at_char_boundary(&issue.body, 600);
+            ui.label(RichText::new(&body_short).size(theme::FONT_CAPTION).color(theme::TEXT_DIM));
+            if issue.body.len() > body_short.len() {
+                ui.label(RichText::new(format!("…（截斷，原 {} chars）", issue.body.len()))
+                    .size(theme::FONT_CAPTION).color(theme::TEXT_DIM).italics());
+            }
+        });
+}
+
+fn show_preview_list(
+    ui: &mut egui::Ui,
+    svc: &Arc<dyn AppService>,
+    state: &mut TeamPanelState,
+) {
+    ui.label(RichText::new("DRY-RUN Previews（人類 review → 點 Replay 真的貼到 GitHub）")
+        .size(theme::FONT_CAPTION).color(theme::TEXT_DIM));
+    ui.add_space(theme::SP_XS);
+
+    let previews = match state.gh_previews.as_ref() {
+        Some(v) if !v.is_empty() => v.clone(),
+        Some(_) => {
+            ui.colored_label(theme::TEXT_DIM,
+                RichText::new("（尚無 dry-run preview — 用上方表單跑一個 DRY-RUN 任務）")
+                    .size(theme::FONT_CAPTION));
+            return;
+        }
+        None => {
+            // Lazy load on first expand
+            let v = svc.dev_team_list_previews();
+            state.gh_previews = Some(v.clone());
+            v
+        }
+    };
+
+    // Cap rendered list at 25 — older entries still on disk via MCP.
+    for p in previews.iter().take(25) {
+        show_preview_row(ui, svc, state, p);
+        ui.add_space(theme::SP_XS);
+    }
+    if previews.len() > 25 {
+        ui.label(RichText::new(format!("…還有 {} 筆 — 用 MCP dev_team_list_previews 看完整清單",
+            previews.len() - 25))
+            .size(theme::FONT_CAPTION).color(theme::TEXT_DIM).italics());
+    }
+}
+
+fn show_preview_row(
+    ui: &mut egui::Ui,
+    svc: &Arc<dyn AppService>,
+    state: &mut TeamPanelState,
+    p: &DryRunPreviewView,
+) {
+    let is_expanded = state.gh_expanded_preview.as_deref() == Some(&p.task_id);
+    let stroke_color = if p.success {
+        theme::ACCENT.linear_multiply(0.35)
+    } else {
+        theme::DANGER.linear_multiply(0.35)
+    };
+
+    egui::Frame::new()
+        .fill(theme::BG)
+        .corner_radius(4.0)
+        .stroke(egui::Stroke::new(1.0, stroke_color))
+        .inner_margin(theme::SP_SM)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let icon = if p.success { "✓" } else { "✗" };
+                let icon_color = if p.success { theme::ACCENT } else { theme::DANGER };
+                ui.colored_label(icon_color, icon);
+                // task_id (short)
+                let short_id = if p.task_id.len() > 10 { &p.task_id[..10] } else { &p.task_id };
+                ui.label(RichText::new(short_id)
+                    .text_style(egui::TextStyle::Monospace)
+                    .size(theme::FONT_CAPTION).color(theme::TEXT));
+                ui.label(RichText::new(&p.issue_url)
+                    .size(theme::FONT_CAPTION).color(theme::INFO).underline());
+                ui.label(RichText::new(format!("· {}", short_time(&p.saved_at)))
+                    .size(theme::FONT_CAPTION).color(theme::TEXT_DIM));
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Replay button
+                    if ui.add(
+                        egui::Button::new(
+                            RichText::new("📤 Replay → GitHub")
+                                .size(theme::FONT_CAPTION).color(theme::DANGER),
+                        )
+                        .fill(theme::DANGER.linear_multiply(0.1))
+                        .stroke(egui::Stroke::new(1.0, theme::DANGER.linear_multiply(0.4)))
+                        .corner_radius(4.0),
+                    ).clicked() {
+                        match svc.dev_team_replay_preview(&p.task_id) {
+                            Ok(_) => state.gh_action_msg = Some((false,
+                                format!("✓ 已貼到 {}", p.issue_url))),
+                            Err(e) => state.gh_action_msg = Some((true,
+                                format!("✗ Replay 失敗：{e}"))),
+                        }
+                    }
+                    ui.add_space(theme::SP_XS);
+                    // Toggle body
+                    let toggle = if is_expanded { "▲ 收合" } else { "▼ 看內容" };
+                    if ui.add(
+                        egui::Button::new(
+                            RichText::new(toggle).size(theme::FONT_CAPTION).color(theme::TEXT_DIM),
+                        )
+                        .fill(egui::Color32::TRANSPARENT)
+                        .stroke(egui::Stroke::new(0.5, theme::BORDER)),
+                    ).clicked() {
+                        state.gh_expanded_preview = if is_expanded {
+                            None
+                        } else {
+                            Some(p.task_id.clone())
+                        };
+                    }
+                });
+            });
+
+            if is_expanded {
+                ui.add_space(theme::SP_XS);
+                theme::thin_separator(ui);
+                ui.add_space(theme::SP_XS);
+                // Body (full)
+                ui.label(RichText::new(&p.body)
+                    .text_style(egui::TextStyle::Monospace)
+                    .size(theme::FONT_CAPTION).color(theme::TEXT));
+            }
+        });
+}
+
+/// Char-boundary-safe truncation for inline previews.
+fn trunc_at_char_boundary(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes { return s.to_string(); }
+    let end = (0..=max_bytes).rev().find(|&i| s.is_char_boundary(i)).unwrap_or(0);
+    s[..end].to_string()
+}
+
+/// Pull "HH:MM" out of an RFC3339 timestamp for compact display. Falls back to
+/// the original string if parsing fails.
+fn short_time(rfc3339: &str) -> String {
+    if let Some(t_idx) = rfc3339.find('T') {
+        let after_t = &rfc3339[t_idx + 1..];
+        if after_t.len() >= 5 {
+            return after_t[..5].to_string();   // "HH:MM"
+        }
+    }
+    rfc3339.to_string()
 }
 
 // ── Queue section ─────────────────────────────────────────────────────────────

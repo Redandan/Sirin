@@ -1,7 +1,9 @@
 //! MultiAgentService impl — 直接呼叫 `multi_agent` 模組。
 
 use crate::multi_agent::{self, queue::{self, TaskStatus}, SessionInfo};
-use crate::ui_service::{TeamDashView, TeamMemberView, TeamTaskView, TokenUsageView};
+use crate::ui_service::{
+    DryRunPreviewView, GhIssueView, TeamDashView, TeamMemberView, TeamTaskView, TokenUsageView,
+};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -97,6 +99,61 @@ pub fn team_reset_member(_svc: &super::RealService, role: &str) {
     if let Some(team) = guard.as_mut() {
         team.reset_role(role);
     }
+}
+
+// ── GitHub bridge (dev_team_*) ──────────────────────────────────────────────
+
+pub fn dev_team_read_issue(
+    _svc: &super::RealService, gh_repo: &str, issue_number: u32,
+) -> Result<GhIssueView, String> {
+    let issue = multi_agent::github_adapter::read_issue(gh_repo, issue_number)?;
+    Ok(GhIssueView {
+        title:  issue.title,
+        body:   issue.body,
+        labels: issue.labels,
+        url:    format!("https://github.com/{gh_repo}/issues/{issue_number}"),
+    })
+}
+
+pub fn dev_team_enqueue_issue(
+    _svc:         &super::RealService,
+    project_key:  &str,
+    gh_repo:      &str,
+    issue_number: u32,
+    dry_run:      bool,
+    priority:     u8,
+) -> Result<String, String> {
+    if dry_run {
+        // Priority is ignored in dry_run path (always 50) — matches the
+        // `enqueue_from_issue_dry_run` API; verification runs aren't urgent.
+        let _ = priority;
+        multi_agent::github_adapter::enqueue_from_issue_dry_run(
+            project_key, gh_repo, issue_number,
+        )
+    } else {
+        multi_agent::github_adapter::enqueue_from_issue_with_priority(
+            project_key, gh_repo, issue_number, priority,
+        )
+    }
+}
+
+pub fn dev_team_list_previews(_svc: &super::RealService) -> Vec<DryRunPreviewView> {
+    // newest first — UI default order
+    let mut v = multi_agent::github_adapter::list_preview_comments();
+    v.reverse();
+    v.into_iter().map(|p| DryRunPreviewView {
+        task_id:   p.task_id,
+        issue_url: p.issue_url,
+        success:   p.success,
+        saved_at:  p.saved_at,
+        body:      p.body,
+    }).collect()
+}
+
+pub fn dev_team_replay_preview(_svc: &super::RealService, task_id: &str) -> Result<(), String> {
+    let preview = multi_agent::github_adapter::latest_preview_for(task_id)
+        .ok_or_else(|| format!("No preview found for task_id '{task_id}'"))?;
+    multi_agent::github_adapter::replay_preview(&preview)
 }
 
 pub fn team_token_usage(_svc: &super::RealService, window_secs: u64) -> TokenUsageView {

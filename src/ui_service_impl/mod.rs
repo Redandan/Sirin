@@ -183,6 +183,21 @@ impl MultiAgentService for RealService {
     fn team_clear_completed(&self)                    { team::team_clear_completed(self) }
     fn team_reset_member(&self, role: &str)           { team::team_reset_member(self, role) }
     fn team_token_usage(&self, window_secs: u64)      -> TokenUsageView    { team::team_token_usage(self, window_secs) }
+
+    fn dev_team_read_issue(&self, gh_repo: &str, n: u32) -> Result<GhIssueView, String> {
+        team::dev_team_read_issue(self, gh_repo, n)
+    }
+    fn dev_team_enqueue_issue(
+        &self, project_key: &str, gh_repo: &str, n: u32, dry_run: bool, priority: u8,
+    ) -> Result<String, String> {
+        team::dev_team_enqueue_issue(self, project_key, gh_repo, n, dry_run, priority)
+    }
+    fn dev_team_list_previews(&self) -> Vec<DryRunPreviewView> {
+        team::dev_team_list_previews(self)
+    }
+    fn dev_team_replay_preview(&self, task_id: &str) -> Result<(), String> {
+        team::dev_team_replay_preview(self, task_id)
+    }
 }
 
 // `impl AppService for RealService` is satisfied automatically by the blanket

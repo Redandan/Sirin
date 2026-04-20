@@ -214,6 +214,25 @@ pub struct TeamDashView {
     pub failed: usize,
 }
 
+/// One saved dry-run preview (would-be GitHub comment) for the panel list.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DryRunPreviewView {
+    pub task_id:   String,
+    pub issue_url: String,
+    pub success:   bool,
+    pub saved_at:  String,
+    pub body:      String,
+}
+
+/// Read-only snapshot of a GitHub issue for the verification form's preview.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GhIssueView {
+    pub title:  String,
+    pub body:   String,
+    pub labels: Vec<String>,
+    pub url:    String,
+}
+
 // ── Service traits ───────────────────────────────────────────────────────────
 //
 // Split by domain so UI consumers (and future alternative implementations) can
@@ -347,6 +366,26 @@ pub trait MultiAgentService: Send + Sync + 'static {
     fn team_reset_member(&self, role: &str);
     /// Live token burn snapshot over the given window (default 300s = 5 min).
     fn team_token_usage(&self, window_secs: u64) -> TokenUsageView;
+
+    // ── GitHub bridge (dev_team_*) ────────────────────────────────────────
+    /// Read a GitHub issue (title/body/labels) without enqueueing — used by
+    /// the verification panel to show a preview before commit.
+    fn dev_team_read_issue(&self, gh_repo: &str, issue_number: u32) -> Result<GhIssueView, String>;
+    /// Enqueue an issue as a TeamTask. Returns the new task_id.
+    /// `dry_run=true` is the safe default: review goes to preview JSONL, no
+    /// `gh issue comment` is invoked when the worker finishes.
+    fn dev_team_enqueue_issue(
+        &self,
+        project_key:  &str,
+        gh_repo:      &str,
+        issue_number: u32,
+        dry_run:      bool,
+        priority:     u8,
+    ) -> Result<String, String>;
+    /// List all saved dry-run previews (newest first).
+    fn dev_team_list_previews(&self) -> Vec<DryRunPreviewView>;
+    /// Replay (i.e. actually post) a saved preview to its issue.
+    fn dev_team_replay_preview(&self, task_id: &str) -> Result<(), String>;
 }
 
 /// Browser automation — persistent Chrome session control.
