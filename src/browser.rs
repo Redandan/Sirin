@@ -180,24 +180,30 @@ pub fn ensure_open(headless: bool) -> Result<bool, String> {
     // --disable-hang-monitor:            don't kill renderer on slow Flutter bootstrap
     // NOT added: --disable-gpu / --no-sandbox — those break WebGL / Flutter CanvasKit
     //
-    // Flutter rendering mode on Windows (no real GPU in CI/VMs):
-    //   --use-angle=swiftshader alone → Flutter detects software rendering →
-    //   falls back to HTML renderer.  HTML renderer uses real DOM, so CSS
-    //   selectors and click/type work normally.  This is our intended mode.
+    // Flutter rendering on Windows: use --disable-gpu (full CPU rendering).
     //
-    //   --ignore-gpu-blocklist was tried to keep WebGL2 so Flutter uses
-    //   CanvasKit.  Result: CanvasKit *attempts* to render on SwiftShader but
-    //   produces an all-black screen (< 8 KB PNG).  REMOVED — HTML renderer
-    //   is reliable; CanvasKit + SwiftShader is not.
+    // History of attempts:
+    //   --use-angle=swiftshader: software WebGL → Flutter detects software
+    //     rendering and falls back to HTML renderer.  But SwiftShader still
+    //     processes WebGL calls; Chrome times out (CDP 30-s event silence)
+    //     during Flutter's JS initialisation → repeated crashes mid-test.
+    //   --use-angle=swiftshader + --ignore-gpu-blocklist: forces CanvasKit,
+    //     which then fails on SwiftShader → all-black screen.  REMOVED.
+    //   --disable-gpu: no GPU or WebGL at all.  Flutter unconditionally uses
+    //     HTML renderer.  No WebGL processing → no 30-s CDP silence →
+    //     no timeouts.  This is the stable solution.
+    //
+    // Note: --disable-gpu is listed in Puppeteer/Playwright recommended CI
+    // flags and is safe for HTML renderer + CSS/DOM testing.
     let stability_args: Vec<&str> = vec![
         "--disable-dev-shm-usage",
         "--disable-background-timer-throttling",
         "--disable-backgrounding-occluded-windows",
         "--disable-renderer-backgrounding",
         "--disable-hang-monitor",
-        // SwiftShader: software WebGL — prevents GPU driver crashes.
-        // Flutter detects software rendering and uses HTML renderer (intended).
-        "--use-angle=swiftshader",
+        // Disable all GPU acceleration — forces Flutter to HTML renderer,
+        // eliminates WebGL-related CDP timeouts and driver crashes.
+        "--disable-gpu",
     ];
     let opts = LaunchOptions::default_builder()
         .headless(headless)

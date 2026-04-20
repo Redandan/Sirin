@@ -64,9 +64,13 @@ fn is_all_black_screenshot(ss_val: &Value) -> bool {
         return true;
     }
 
-    // Real rendered pages: ≥ 15 000 bytes.  All-black / about:blank: ≤ 3 000.
-    // Threshold 8 000 gives comfortable margin for both ends.
-    size_bytes < 8_000
+    // Real rendered pages (Flutter HTML renderer, SPA): typically ≥ 15 000 bytes.
+    // Truly all-black / about:blank: ≤ 3 000 bytes.
+    // Near-black (Chrome crashed during Flutter init, recovery just launched):
+    //   observed at ~12 000 bytes — just above the old 8 000 threshold.
+    // Threshold 14 000 catches all known rendering-failure cases while staying
+    // well below the ≥ 15 000 floor of real rendered pages.
+    size_bytes < 14_000
 }
 
 fn inject_session(args: &mut Value, session_id: Option<&str>) {
@@ -164,10 +168,16 @@ pub async fn execute_test_tracked(
         return finalize_early(ctx, run_id, test, &history, format!("navigate failed: {e}")).await;
     }
 
-    // 1b) Black-screen guard: after navigation, take a screenshot and check
-    // if the page is all-black.  This catches Chrome crashing mid-navigate
-    // and recovering in headless mode — which silently breaks Flutter/WebGL.
+    // 1b) Black-screen guard: wait 5 s for Flutter / SPA to initialise, then
+    // take a screenshot and check if the page is all-black.
+    // Without the wait, the screenshot is taken during Flutter's JS boot
+    // (which can take 3-10 s) and always comes back black — causing repeated
+    // false-positive recovery loops.
     {
+        let mut wait_input = json!({"action": "wait", "timeout_ms": 5000});
+        inject_session(&mut wait_input, session_id);
+        let _ = ctx.call_tool("web_navigate", wait_input).await;
+
         let mut ss_input = json!({"action": "screenshot"});
         inject_session(&mut ss_input, session_id);
         if let Ok(ss_val) = ctx.call_tool("web_navigate", ss_input).await {

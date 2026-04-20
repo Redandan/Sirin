@@ -409,19 +409,39 @@ or via MCP: `{"action":"wait_for_ax_ready","min_nodes":20,"timeout_ms":5000}`
 WebGL doesn't paint in Chrome headless mode.  Set `browser_headless:
 false` per-test, or `SIRIN_BROWSER_HEADLESS=false` env globally.
 
-### Flutter CanvasKit + Chrome GPU crashes on Windows
-Chrome crashes 3×/test run when Flutter CanvasKit uses native GPU (WebGL).
-Fixed by two Chrome flags in `browser.rs` `launch_with_mode()`:
+### Flutter + SwiftShader: HTML renderer is correct, CanvasKit is not
 
-```
---use-angle=swiftshader    # software WebGL — no GPU driver crashes
---ignore-gpu-blocklist     # CRITICAL: without this Flutter detects software
-                           # rendering and falls back to HTML renderer,
-                           # losing the semantics tree + test account buttons
-```
+Chrome crashes 3×/test run on native GPU (Flutter CanvasKit + Windows GPU).
+Fixed by `--use-angle=swiftshader` in `browser.rs` `launch_with_mode()`.
 
-**Do NOT remove `--ignore-gpu-blocklist`** — symptom if missing: page renders
-fine but `ax_find role=button name=測試買家` returns `found: false`.
+#### What SwiftShader actually does to Flutter
+
+| Flag combination | Flutter mode | Result |
+|---|---|---|
+| Native GPU (no flags) | CanvasKit | Works — but Chrome crashes 3×/run (GPU driver) |
+| `--use-angle=swiftshader` alone | HTML renderer | Chrome still crashes (~30s CDP timeout during Flutter JS init) |
+| `--use-angle=swiftshader` + `--ignore-gpu-blocklist` | CanvasKit attempted | ❌ All-black screen (CanvasKit fails on SwiftShader) |
+| `--disable-gpu` | HTML renderer | ✅ **Stable — current approach** |
+
+**Current approach: `--disable-gpu`** (commit `b2e6xxx`):
+- No GPU or WebGL at all → Flutter unconditionally uses HTML renderer
+- No SwiftShader WebGL processing → no 30-second CDP event silence → no timeouts
+- `--disable-gpu` is the standard Puppeteer/Playwright CI flag
+
+**`--use-angle=swiftshader`** was tried:
+- Even without `--ignore-gpu-blocklist`, Chrome timed out (~30s) during Flutter JS init
+- SwiftShader still processes WebGL calls, causing headless_chrome's event loop to time out
+- Removed
+
+#### What this means for tests
+
+With `--disable-gpu` (HTML renderer mode):
+- Flutter renders as real HTML DOM — CSS selectors, `click`, `type`, `find` all work
+- Semantics tree is NOT available — `ax_find`/`ax_click` will not work
+- Use `screenshot_analyze` for visual state, `click`/`type`/`find` for interaction
+- Keep `browser_headless: false` per-test (HTML renderer + visible window for CDP)
+- Add `url_query: {flutter-web-renderer: html}` to YAML as belt+suspenders
+- The executor waits 5 s after `goto` before first screenshot check (Flutter init time)
 
 ### Chrome recovery re-launches in wrong headless mode
 `with_tab()` recovery used to call `ensure_open_reusing()` → `default_headless()`
