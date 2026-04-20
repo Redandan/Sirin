@@ -5,12 +5,12 @@ url: "https://agoramarket.purrtechllc.com"
 browser_headless: false
 max_iterations: 15
 timeout_secs: 360
-# Use claude CLI for higher JSON-output reliability — gemini-2.5-flash often
-# returns malformed JSON for complex Flutter pages, killing the test with
-# 'too many invalid LLM responses'. claude_cli adds ~3-5s/iter overhead but
-# virtually eliminates parse errors. Requires `claude` CLI on PATH (Max plan,
-# no API key).
-llm_backend: claude_cli
+# NOTE (2026-04-20): claude_cli backend currently hangs on iteration-2 ReAct
+# prompts (10-20KB with screenshot history) — full 600s watchdog kill.
+# Reverted to Gemini default. The original "too many invalid LLM responses"
+# problem still applies — if it recurs, increase retry_on_parse_error or
+# wait for the claude_cli hang fix.
+# llm_backend: claude_cli
 
 goal: |
   驗證 AgoraMarket 質押（Staking）功能完整流程（Issue #34，長期追蹤）。
