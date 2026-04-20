@@ -185,6 +185,11 @@ pub fn ensure_open(headless: bool) -> Result<bool, String> {
         "--disable-backgrounding-occluded-windows",
         "--disable-renderer-backgrounding",
         "--disable-hang-monitor",
+        // Force software WebGL rendering via SwiftShader.
+        // Flutter CanvasKit needs WebGL2 but native GPU rendering crashes Chrome
+        // frequently on Windows test machines.  SwiftShader is slower but stable.
+        // Chrome 90+: --use-angle=swiftshader replaces the old --use-gl=swiftshader.
+        "--use-angle=swiftshader",
     ];
     let opts = LaunchOptions::default_builder()
         .headless(headless)

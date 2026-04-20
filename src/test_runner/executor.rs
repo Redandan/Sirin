@@ -316,6 +316,50 @@ pub async fn execute_test_tracked(
                 Ok(v) => v.to_string(),
                 Err(e) => format!("ERROR: {e}"),
             };
+
+            // Mid-loop black screen guard: if a screenshot action returns an all-
+            // black image, Chrome likely crashed and recovered in headless mode
+            // after the initial navigate check passed.  Re-navigate + tell LLM.
+            if matches!(action_label.as_str(), "screenshot" | "screenshot_analyze") {
+                if let Ok(ss_val) = &raw_result {
+                    if is_all_black_screenshot(ss_val) {
+                        tracing::warn!(
+                            "[test_runner] ⚠️  '{}' iter {} — mid-loop black screen. \
+                             Chrome crashed again; resetting + re-navigating.",
+                            test.id, iteration
+                        );
+                        let wh = want_headless;
+                        let nav_clone = nav_url.clone();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            crate::browser::close();
+                            crate::browser::set_test_headless_mode(wh);
+                            crate::browser::ensure_open(wh)
+                        }).await;
+                        let mut nav_retry = json!({"action": "goto", "target": &nav_clone});
+                        inject_session(&mut nav_retry, session_id);
+                        let re_obs = ctx.call_tool("web_navigate", nav_retry).await
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|e| format!("re-navigate error: {e}"));
+                        let recovery_obs = format!(
+                            "⚠️ 螢幕全黑（Chrome 在 headless 模式下重啟）。已強制重開並重新導航至 {}。\
+                             請重新執行 semantics bootstrap（eval flt-semantics-placeholder click）再繼續。\
+                             重導航結果: {}",
+                            nav_clone,
+                            &re_obs[..re_obs.len().min(300)],
+                        );
+                        if let Some(rid) = run_id {
+                            runs::push_observation(rid, recovery_obs.clone());
+                        }
+                        history.push(TestStep {
+                            thought: step.thought,
+                            action: action_input,
+                            observation: recovery_obs,
+                        });
+                        continue;  // next iteration — LLM will see recovery message
+                    }
+                }
+            }
+
             // Store full observation before truncation
             if let Some(rid) = run_id {
                 runs::push_observation(rid, full_obs.clone());
