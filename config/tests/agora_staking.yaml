@@ -6,6 +6,11 @@ browser_headless: false
 max_iterations: 25
 timeout_secs: 480
 
+# claude_cli backend: compact prompt (last 3 steps, 200-char obs) keeps payload
+# under 3 KB, avoiding the 600-s watchdog kill that happened on older runs.
+# Gemini is less reliable at step 17+ when context grows.
+llm_backend: claude_cli
+
 # Rendering mode: Flutter HTML renderer
 # --disable-gpu in browser.rs removes all WebGL → Flutter uses HTML renderer.
 # url_query adds flutter-web-renderer=html as belt+suspenders.
