@@ -1,7 +1,7 @@
 ---
 name: sirin-dev
 description: Use this skill when developing on the Sirin project itself (not when using Sirin to test other apps) — adding a new browser action, MCP endpoint, agent skill, test_runner feature, or fixing a bug in the Rust code.  Trigger phrases include "add a Sirin action", "fix Sirin's X", "extend Sirin", "modify Sirin", "Sirin internals", "how does Sirin X work", or any task that involves editing files under `~/IdeaProjects/Sirin/src/`.  This skill is for AI sessions picking up Sirin development cold — covers architecture, common workflows, conventions, and the gotchas that have already cost us time.
-version: 1.2.0
+version: 1.3.0
 ---
 
 # Sirin Development Skill
@@ -408,7 +408,42 @@ or via MCP: `{"action":"wait_for_ax_ready","min_nodes":20,"timeout_ms":5000}`
 ### Flutter CanvasKit + headless = blank
 WebGL doesn't paint in Chrome headless mode.  Set `browser_headless:
 false` per-test, or `SIRIN_BROWSER_HEADLESS=false` env globally.
-The `agora_market_smoke.yaml` example doc tests this.
+
+### Flutter CanvasKit + Chrome GPU crashes on Windows
+Chrome crashes 3×/test run when Flutter CanvasKit uses native GPU (WebGL).
+Fixed by two Chrome flags in `browser.rs` `launch_with_mode()`:
+
+```
+--use-angle=swiftshader    # software WebGL — no GPU driver crashes
+--ignore-gpu-blocklist     # CRITICAL: without this Flutter detects software
+                           # rendering and falls back to HTML renderer,
+                           # losing the semantics tree + test account buttons
+```
+
+**Do NOT remove `--ignore-gpu-blocklist`** — symptom if missing: page renders
+fine but `ax_find role=button name=測試買家` returns `found: false`.
+
+### Chrome recovery re-launches in wrong headless mode
+`with_tab()` recovery used to call `ensure_open_reusing()` → `default_headless()`
+(always `true`). Fixed by `static TEST_DESIRED_HEADLESS: AtomicBool` in `browser.rs`.
+
+- Executor calls `crate::browser::set_test_headless_mode(want_headless)` before `ensure_open()`
+- Recovery calls `ensure_open(TEST_DESIRED_HEADLESS.load(...))` — not `ensure_open_reusing()`
+
+### Black screen detection (`is_all_black_screenshot`)
+Heuristic in `executor.rs`: if screenshot `size_bytes < 8_000` → all-black/blank.
+Real rendered pages ≥ 15 KB; all-black PNG ≈ 2 KB.
+
+Two check points:
+1. After initial `goto` — if black: close + reopen + re-navigate
+2. After every `screenshot`/`screenshot_analyze` in ReAct loop — same recovery
+   + inject `"⚠️ 螢幕全黑...請重新執行 semantics bootstrap"` into history
+
+### `rendering_failure` triage category
+When `triage.rs` finds `screenshot_path` file < 8 KB, it immediately returns
+`RenderingFailure` — **no auto-fix triggered**, no `claude_session` spawned.
+This prevents wasting tokens fixing non-existent frontend bugs.
+Category string: `"rendering_failure"` (serde snake_case).
 
 ### Hash-only navigation hangs
 `tab.navigate_to(url).wait_until_navigated()` waits for
