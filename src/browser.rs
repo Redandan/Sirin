@@ -180,30 +180,33 @@ pub fn ensure_open(headless: bool) -> Result<bool, String> {
     // --disable-hang-monitor:            don't kill renderer on slow Flutter bootstrap
     // NOT added: --disable-gpu / --no-sandbox — those break WebGL / Flutter CanvasKit
     //
-    // Flutter rendering on Windows: use --disable-gpu (full CPU rendering).
+    // Flutter rendering on Windows:
     //
-    // History of attempts:
-    //   --use-angle=swiftshader: software WebGL → Flutter detects software
-    //     rendering and falls back to HTML renderer.  But SwiftShader still
-    //     processes WebGL calls; Chrome times out (CDP 30-s event silence)
-    //     during Flutter's JS initialisation → repeated crashes mid-test.
-    //   --use-angle=swiftshader + --ignore-gpu-blocklist: forces CanvasKit,
-    //     which then fails on SwiftShader → all-black screen.  REMOVED.
-    //   --disable-gpu: no GPU or WebGL at all.  Flutter unconditionally uses
-    //     HTML renderer.  No WebGL processing → no 30-s CDP silence →
-    //     no timeouts.  This is the stable solution.
+    // --use-angle=swiftshader: software WebGL (no GPU driver crashes).
+    //   Flutter detects software rendering → falls back to HTML renderer.
+    //   HTML renderer uses real DOM: click/type/find all work normally.
     //
-    // Note: --disable-gpu is listed in Puppeteer/Playwright recommended CI
-    // flags and is safe for HTML renderer + CSS/DOM testing.
+    // CDP keepalive note: headless_chrome drops the connection if no CDP
+    //   events arrive for 30 s.  During Flutter JS init Chrome can be silent.
+    //   Fix: call `install_capture` immediately after `goto` (before any wait)
+    //   so Network/Page events from Flutter's resource loading flow keep the
+    //   CDP connection alive.  See executor.rs pre-loop ordering.
+    //
+    // --disable-gpu was tried: forces full CPU compositing → Flutter startup
+    //   screenshot takes 5-10 min (Skia software renderer for everything).
+    //   REMOVED.
+    //
+    // --ignore-gpu-blocklist was tried: forces CanvasKit with SwiftShader →
+    //   all-black screen (CanvasKit fails on SwiftShader).  REMOVED.
     let stability_args: Vec<&str> = vec![
         "--disable-dev-shm-usage",
         "--disable-background-timer-throttling",
         "--disable-backgrounding-occluded-windows",
         "--disable-renderer-backgrounding",
         "--disable-hang-monitor",
-        // Disable all GPU acceleration — forces Flutter to HTML renderer,
-        // eliminates WebGL-related CDP timeouts and driver crashes.
-        "--disable-gpu",
+        // SwiftShader: software WebGL — prevents GPU driver crashes.
+        // Flutter detects software rendering → HTML renderer (our intended mode).
+        "--use-angle=swiftshader",
     ];
     let opts = LaunchOptions::default_builder()
         .headless(headless)

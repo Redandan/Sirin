@@ -168,13 +168,32 @@ pub async fn execute_test_tracked(
         return finalize_early(ctx, run_id, test, &history, format!("navigate failed: {e}")).await;
     }
 
-    // 1b) Black-screen guard: wait 5 s for Flutter / SPA to initialise, then
-    // take a screenshot and check if the page is all-black.
-    // Without the wait, the screenshot is taken during Flutter's JS boot
-    // (which can take 3-10 s) and always comes back black — causing repeated
-    // false-positive recovery loops.
+    // 1b) Install console + network capture IMMEDIATELY after navigate.
+    //
+    // CRITICAL ORDER: install_capture MUST come before the wait and
+    // black-screen screenshot check.
+    //
+    // Why: headless_chrome drops the CDP WebSocket if no events arrive for
+    // 30 s.  During Flutter's JS initialisation (SwiftShader WebGL + Dart
+    // engine boot) Chrome can be silent for 30-40 s, causing the CDP
+    // "timeout while listening for browser events" error (false crash).
+    //
+    // install_capture subscribes to Network.*, Console.*, and Page.* events.
+    // As Flutter loads its Dart/JS bundle (many network requests) Chrome emits
+    // events that reset the 30-s timer — keeping the connection alive while
+    // Flutter boots silently from the JS perspective.
     {
-        let mut wait_input = json!({"action": "wait", "timeout_ms": 5000});
+        let mut cap_input = json!({ "action": "install_capture" });
+        inject_session(&mut cap_input, session_id);
+        let _ = ctx.call_tool("web_navigate", cap_input).await;
+    }
+
+    // 1c) Black-screen guard: wait 8 s for Flutter / SPA to initialise, then
+    // take a screenshot and check if the page is all-black.
+    // The wait gives Flutter enough time to render its first frame.
+    // install_capture (above) keeps the CDP connection alive during this wait.
+    {
+        let mut wait_input = json!({"action": "wait", "timeout_ms": 8000});
         inject_session(&mut wait_input, session_id);
         let _ = ctx.call_tool("web_navigate", wait_input).await;
 
@@ -193,6 +212,10 @@ pub async fn execute_test_tracked(
                     crate::browser::set_test_headless_mode(want_headless);
                     crate::browser::ensure_open(want_headless)
                 }).await;
+                // Re-subscribe to events on the new Chrome instance.
+                let mut cap2 = json!({ "action": "install_capture" });
+                inject_session(&mut cap2, session_id);
+                let _ = ctx.call_tool("web_navigate", cap2).await;
                 // Re-navigate.
                 let mut nav2 = json!({ "action": "goto", "target": &nav_url });
                 inject_session(&mut nav2, session_id);
@@ -203,11 +226,6 @@ pub async fn execute_test_tracked(
             }
         }
     }
-
-    // 2) Install console + network capture (best effort)
-    let mut cap_input = json!({ "action": "install_capture" });
-    inject_session(&mut cap_input, session_id);
-    let _ = ctx.call_tool("web_navigate", cap_input).await;
 
     // 2b) Run fixture setup steps (failure aborts the test before the ReAct loop).
     if let Some(fixture) = &test.fixture {
