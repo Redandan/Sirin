@@ -1368,13 +1368,23 @@ where
 {
     ensure_open_reusing()?;
 
-    let result = {
+    // ── Clone Arc<Tab> under short lock, then release before the CDP call ──
+    // Previously the lock was held for the full duration of f(), which caused
+    // deadlocks when Chrome crashed mid-run: the hung CDP call kept the mutex
+    // locked, preventing all concurrent callers from checking or resetting the
+    // singleton.  Cloning the Arc<Tab> and dropping the guard first means:
+    //   • other threads can still acquire the lock to clear a dead session;
+    //   • the Tab object stays alive (Arc refcount ≥ 1) so the CDP call
+    //     proceeds safely on the cloned reference.
+    let tab: Arc<Tab> = {
         let guard = global().lock().unwrap_or_else(|e| e.into_inner());
         match guard.as_ref() {
-            Some(inner) => f.clone()(inner.tab()),
-            None => Err("browser session lost".into()),
+            Some(inner) => Arc::clone(inner.tab()),
+            None => return Err("browser session lost".into()),
         }
-    };
+    }; // mutex released here — NOT held during the CDP call
+
+    let result = f.clone()(&tab);
 
     // If the call failed with a connection-closed error, try one auto-recover.
     if let Err(ref e) = result {
@@ -1384,11 +1394,15 @@ where
             *global().lock().unwrap_or_else(|e| e.into_inner()) = None;
             // Re-launch — preserve user-requested mode if previously set
             ensure_open_reusing()?;
-            // Retry exactly once
-            let guard = global().lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(inner) = guard.as_ref() {
-                return f(inner.tab());
-            }
+            // Retry exactly once with a fresh tab from the new session
+            let tab: Arc<Tab> = {
+                let guard = global().lock().unwrap_or_else(|e| e.into_inner());
+                match guard.as_ref() {
+                    Some(inner) => Arc::clone(inner.tab()),
+                    None => return Err("browser session lost after recovery".into()),
+                }
+            };
+            return f(&tab);
         }
     }
 

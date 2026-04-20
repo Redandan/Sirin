@@ -612,7 +612,8 @@ pub(super) fn build_full_registry() -> ToolRegistry {
             let target = optional_string_field(&input, "target").unwrap_or_default();
             let text = optional_string_field(&input, "text").unwrap_or_default();
 
-            let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
+            let action_label = action.clone(); // preserved for timeout diagnostics (action moves into closure)
+            let blocking_fut = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
                 use crate::browser;
                 match action.as_str() {
                     // ── Navigation ───────────────────────────────────
@@ -972,9 +973,30 @@ pub(super) fn build_full_registry() -> ToolRegistry {
 
                     other => Err(format!("Unknown web_navigate action: {other}")),
                 }
-            })
-            .await
-            .map_err(|e| format!("spawn_blocking: {e}"))??;
+            });
+            // ── CDP call timeout ──────────────────────────────────────────────
+            // If Chrome crashes mid-call the spawned blocking thread can block
+            // indefinitely on a dead WebSocket.  120 s covers the slowest
+            // legitimate navigations; on expiry we reset the singleton so the
+            // next call triggers a fresh Chrome launch instead of reusing the
+            // dead process.
+            let result = match tokio::time::timeout(
+                std::time::Duration::from_secs(120),
+                blocking_fut,
+            ).await {
+                Ok(join_result) => join_result.map_err(|e| format!("spawn_blocking: {e}"))??,
+                Err(_elapsed) => {
+                    tracing::warn!(
+                        "[browser] web_navigate '{}' timed out (120 s) — closing browser singleton",
+                        action_label
+                    );
+                    crate::browser::close();
+                    return Err(format!(
+                        "CDP call '{action_label}' timed out (120 s) — \
+                         browser singleton reset; Chrome will re-launch on next call"
+                    ));
+                }
+            };
 
             // Handle vision analysis (requires async LLM call)
             if result.get("__vision").and_then(|v| v.as_bool()).unwrap_or(false) {
