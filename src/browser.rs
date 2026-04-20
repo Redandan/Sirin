@@ -179,19 +179,25 @@ pub fn ensure_open(headless: bool) -> Result<bool, String> {
     // --disable-renderer-backgrounding:  renderer priority stays high throughout test
     // --disable-hang-monitor:            don't kill renderer on slow Flutter bootstrap
     // NOT added: --disable-gpu / --no-sandbox — those break WebGL / Flutter CanvasKit
+    //
+    // Flutter rendering mode on Windows (no real GPU in CI/VMs):
+    //   --use-angle=swiftshader alone → Flutter detects software rendering →
+    //   falls back to HTML renderer.  HTML renderer uses real DOM, so CSS
+    //   selectors and click/type work normally.  This is our intended mode.
+    //
+    //   --ignore-gpu-blocklist was tried to keep WebGL2 so Flutter uses
+    //   CanvasKit.  Result: CanvasKit *attempts* to render on SwiftShader but
+    //   produces an all-black screen (< 8 KB PNG).  REMOVED — HTML renderer
+    //   is reliable; CanvasKit + SwiftShader is not.
     let stability_args: Vec<&str> = vec![
         "--disable-dev-shm-usage",
         "--disable-background-timer-throttling",
         "--disable-backgrounding-occluded-windows",
         "--disable-renderer-backgrounding",
         "--disable-hang-monitor",
-        // Force software WebGL via SwiftShader ANGLE backend.
-        // Prevents GPU driver crashes (Flutter CanvasKit + Chrome on Windows).
-        // --ignore-gpu-blocklist: forces Chrome to keep WebGL2 even on
-        //   "blocked" GPU configs — without this Flutter detects software
-        //   rendering and falls back to HTML renderer (losing semantics tree).
+        // SwiftShader: software WebGL — prevents GPU driver crashes.
+        // Flutter detects software rendering and uses HTML renderer (intended).
         "--use-angle=swiftshader",
-        "--ignore-gpu-blocklist",
     ];
     let opts = LaunchOptions::default_builder()
         .headless(headless)

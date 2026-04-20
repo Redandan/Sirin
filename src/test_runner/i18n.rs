@@ -104,21 +104,21 @@ impl Locale {
 - flaky:             偶發、時序、非確定性 (但歷史上不常失敗)
 - env:               瀏覽器崩潰、網路 timeout、DNS 失敗等基礎設施
 - obsolete:          Selector 找不到元素、UI 改版，測試本身需要更新
-- rendering_failure: 截圖全黑 — Chrome 在 headless 模式下重啟，Flutter/WebGL 無法渲染；非代碼問題，不觸發修復",
+- rendering_failure: 截圖全黑 — Flutter CanvasKit 在 SwiftShader 上嘗試渲染失敗，或 Chrome headless 模式下 WebGL 無法輸出；非代碼問題，不觸發修復",
             Self::En => "\
 - ui_bug:            Frontend UI error (element not rendering, unresponsive button, blank page, JS error)
 - api_bug:           Backend API error (network log shows 4xx/5xx, bad response body)
 - flaky:             Intermittent, timing-related (not historically frequent)
 - env:               Browser crash, network timeout, DNS failure, infrastructure
 - obsolete:          Selector not found, UI changed — the test itself needs update
-- rendering_failure: Screenshot is all-black — Chrome recovered in headless mode; Flutter/WebGL cannot render headless. Not a code bug, no auto-fix.",
+- rendering_failure: Screenshot is all-black — Flutter CanvasKit attempted on SwiftShader and failed, or Chrome headless + WebGL produced no output. Not a code bug, no auto-fix.",
             Self::ZhCn => "\
 - ui_bug:            前端 UI 错误 (元素未渲染、按钮无反应、页面空白、JS error)
 - api_bug:           后端 API 错误 (network log 显示 4xx/5xx、response body 错误)
 - flaky:             偶发、时序、非确定性 (但历史上不常失败)
 - env:               浏览器崩溃、网络 timeout、DNS 失败等基础设施
 - obsolete:          Selector 找不到元素、UI 改版，测试本身需要更新
-- rendering_failure: 截图全黑 — Chrome 在 headless 模式下重启，Flutter/WebGL 无法渲染；非代码问题，不触发修复",
+- rendering_failure: 截图全黑 — Flutter CanvasKit 在 SwiftShader 上尝试渲染失败，或 Chrome headless 下 WebGL 无法输出；非代码问题，不触发修复",
         }
     }
 
