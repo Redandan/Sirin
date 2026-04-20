@@ -3,7 +3,10 @@ name: "AgoraMarket 智能客服 SSE 即時訊息驗證"
 url: "https://agoramarket.purrtechllc.com"
 browser_headless: false
 max_iterations: 15
-timeout_secs: 180
+timeout_secs: 270
+# Use claude CLI for higher JSON-output reliability (see agora_staking.yaml
+# for rationale). Trade ~3-5s/iter overhead for stable parse-error-free runs.
+llm_backend: claude_cli
 goal: |
   ⚠️ Flutter CanvasKit app：DOM 為空，所有 UI 狀態判斷必須用 screenshot_analyze。
   驗證 AgoraMarket 智能客服聊天功能的即時訊息顯示（Issue #9 回歸）。

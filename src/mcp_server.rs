@@ -369,6 +369,7 @@ fn handle_tools_list() -> Result<Value, String> {
                         "max_iterations":   { "type": "number", "description": "預設 15" },
                         "timeout_secs":     { "type": "number", "description": "預設 120" },
                         "browser_headless": { "type": "boolean", "description": "Flutter CanvasKit/WebGL 必須設 false 才能 paint。預設讀 SIRIN_BROWSER_HEADLESS env（預設 true）" },
+                        "llm_backend":      { "type": "string", "description": "可選 LLM backend override：'claude_cli'/'claude' = 用 claude -p subprocess（Max plan、JSON 輸出最穩、~3-5s/呼叫 overhead）；省略或其他值 = 用 Sirin 主 LLM 設定（Gemini/LM Studio 等）。優先順序：此參數 > TEST_RUNNER_LLM_BACKEND env > 主設定" },
                         "fixture": {
                             "type": "object",
                             "description": "可選的 fixture：setup（測試前執行）和 cleanup（測試後執行，無論成敗）。",
@@ -948,6 +949,7 @@ fn call_run_adhoc_test(args: Value) -> Result<Value, String> {
     let max_iter = args.get("max_iterations").and_then(Value::as_u64).map(|n| n as u32);
     let timeout = args.get("timeout_secs").and_then(Value::as_u64);
     let headless = args.get("browser_headless").and_then(Value::as_bool);
+    let llm_backend = args.get("llm_backend").and_then(Value::as_str).map(String::from);
     let fixture: Option<crate::test_runner::parser::Fixture> = args.get("fixture")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
 
@@ -959,6 +961,7 @@ fn call_run_adhoc_test(args: Value) -> Result<Value, String> {
         max_iterations: max_iter,
         timeout_secs: timeout,
         browser_headless: headless,
+        llm_backend,
         fixture,
     })?;
     Ok(json!({

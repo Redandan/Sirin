@@ -166,11 +166,7 @@ pub async fn execute_test_tracked(
             let prompt = build_prompt(test, &history, parse_error_hint.as_deref());
             parse_error_hint = None;  // reset — only used for the next turn
 
-            let raw = match crate::llm::call_coding_prompt(
-                ctx.http.as_ref(),
-                ctx.llm.as_ref(),
-                prompt,
-            ).await {
+            let raw = match call_test_llm(ctx, test, prompt).await {
                 Ok(s) => s,
                 Err(e) => break 'react finalize_early(ctx, run_id, test, &history, format!("LLM error: {e}")).await,
             };
@@ -482,6 +478,65 @@ struct ParsedStep {
     done: bool,
     final_answer: Option<String>,
     parse_error: Option<String>,
+}
+
+/// Resolve which LLM backend to use for this test.
+/// Precedence: per-test YAML field → `TEST_RUNNER_LLM_BACKEND` env → default ("").
+/// Default ("" / unrecognized) means: use Sirin's main LLM config
+/// (`call_coding_prompt`).
+fn resolve_llm_backend(test: &TestGoal) -> String {
+    if let Some(b) = test.llm_backend.as_deref() {
+        let trimmed = b.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_lowercase();
+        }
+    }
+    std::env::var("TEST_RUNNER_LLM_BACKEND")
+        .unwrap_or_default()
+        .trim()
+        .to_lowercase()
+}
+
+/// Dispatch the prompt to the right LLM backend based on test config.
+///
+/// `claude_cli` / `claude` → spawn `claude -p` subprocess via
+/// [`claude_session::run_sync`].  Anything else falls back to Sirin's
+/// main LLM (Gemini / LM Studio / Ollama / Anthropic HTTP).
+async fn call_test_llm(
+    ctx: &crate::adk::context::AgentContext,
+    test: &TestGoal,
+    prompt: String,
+) -> Result<String, String> {
+    let backend = resolve_llm_backend(test);
+    match backend.as_str() {
+        "claude_cli" | "claude" => call_claude_cli(prompt).await,
+        _ => crate::llm::call_coding_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), prompt)
+            .await
+            .map_err(|e| e.to_string()),
+    }
+}
+
+/// Spawn a `claude -p` subprocess and return its stdout as the LLM response.
+///
+/// Runs on a blocking task pool (claude CLI is a synchronous subprocess).
+/// Uses the current working directory as `cwd` — the test_runner doesn't
+/// need a specific repo context for browser-driving prompts.
+async fn call_claude_cli(prompt: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let cwd = std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| ".".into());
+        crate::claude_session::run_sync(&cwd, &prompt)
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking: {e}"))?
+    .and_then(|r| {
+        if r.success {
+            Ok(r.output)
+        } else {
+            Err(format!("claude exit {}: {}", r.exit_code, r.output))
+        }
+    })
 }
 
 fn parse_step(raw: &str) -> ParsedStep {

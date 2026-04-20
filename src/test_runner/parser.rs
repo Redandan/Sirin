@@ -59,6 +59,18 @@ pub struct TestGoal {
     /// `SIRIN_BROWSER_HEADLESS` env var (which itself defaults to true).
     #[serde(default)]
     pub browser_headless: Option<bool>,
+    /// Override the LLM backend used by the ReAct executor for this test.
+    /// Recognized values:
+    /// - `"claude_cli"` / `"claude"` — spawn `claude -p` subprocess
+    ///   (Max plan, no API key, much higher JSON-output reliability,
+    ///   ~3-5s per call overhead)
+    /// - any other value or `None` — use Sirin's main LLM config
+    ///   (Gemini / LM Studio / Ollama / Anthropic HTTP API)
+    ///
+    /// Resolution order: this field → `TEST_RUNNER_LLM_BACKEND` env var
+    /// → main LLM config.
+    #[serde(default)]
+    pub llm_backend: Option<String>,
     #[serde(default)]
     pub success_criteria: Vec<String>,
     #[serde(default)]
@@ -245,6 +257,31 @@ url_query:
   flutter-web-renderer: html
 "#).unwrap();
         assert_eq!(g.full_url(), "https://app.example.com/?flutter-web-renderer=html");
+    }
+
+    #[test]
+    fn parse_yaml_with_llm_backend() {
+        let yaml = r#"
+id: heavy_test
+name: "Heavy LLM test"
+url: "https://example.com"
+goal: "do something complex"
+llm_backend: claude_cli
+"#;
+        let g: TestGoal = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(g.llm_backend.as_deref(), Some("claude_cli"));
+    }
+
+    #[test]
+    fn parse_yaml_without_llm_backend_defaults_to_none() {
+        let yaml = r#"
+id: regular_test
+name: "Regular test"
+url: "https://example.com"
+goal: "do something"
+"#;
+        let g: TestGoal = serde_yaml::from_str(yaml).unwrap();
+        assert!(g.llm_backend.is_none());
     }
 
     #[test]

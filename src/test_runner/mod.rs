@@ -39,6 +39,10 @@ pub struct AdhocRunRequest {
     pub timeout_secs: Option<u64>,
     pub browser_headless: Option<bool>,
     pub fixture: Option<Fixture>,
+    /// Override LLM backend for this run.  See [`TestGoal::llm_backend`].
+    /// Common value: `Some("claude_cli")` to use `claude -p` subprocess
+    /// instead of the configured Gemini/HTTP backend.
+    pub llm_backend: Option<String>,
 }
 
 /// Run a single test by id, record the result, and optionally auto-fix.
@@ -197,6 +201,7 @@ pub fn spawn_adhoc_run(req: AdhocRunRequest) -> Result<String, String> {
         locale: req.locale.unwrap_or_else(|| "zh-TW".into()),
         url_query: Default::default(),
         browser_headless: req.browser_headless,
+        llm_backend: req.llm_backend,
         success_criteria: req.success_criteria,
         tags: vec!["adhoc".into()],
         fixture: req.fixture,
@@ -573,6 +578,7 @@ pub fn persist_adhoc_run(p: PersistAdhocParams) -> Result<PersistAdhocResult, St
         locale: goal.locale.clone(),
         url_query: goal.url_query.clone(),
         browser_headless: goal.browser_headless,
+        llm_backend: goal.llm_backend.clone(),
         success_criteria: goal.success_criteria.clone(),
         tags: tags.clone(),
         fixture: goal.fixture.clone(),
@@ -629,6 +635,7 @@ mod persist_tests {
             locale: "en".into(),
             url_query: Default::default(),
             browser_headless: Some(false),
+            llm_backend: None,
             success_criteria: vec!["URL contains /dashboard".into()],
             tags: vec!["adhoc".into()],
             fixture: None,
@@ -709,6 +716,7 @@ mod persist_tests {
             locale: "en".into(),
             url_query: Default::default(),
             browser_headless: None,
+            llm_backend: None,
             success_criteria: vec![],
             tags: vec![],
             fixture: None,
@@ -787,6 +795,7 @@ mod persist_tests {
             locale: "en".into(),
             url_query: Default::default(),
             browser_headless: Some(true),
+            llm_backend: None,
             success_criteria: vec!["Recovered OK".into()],
             tags: vec!["adhoc".into()],
             fixture: None,
