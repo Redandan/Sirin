@@ -181,6 +181,7 @@ external Claude Code sessions that receive requests against arbitrary URLs.
   "max_iterations":10,
   "timeout_secs":90,
   "browser_headless":false,
+  "llm_backend":"claude_cli",
   "fixture":{
     "setup":[
       {"action":"goto","target":"https://example.com/login"},
@@ -197,6 +198,21 @@ external Claude Code sessions that receive requests against arbitrary URLs.
 WebGL targets (they won't paint in headless Chrome → screenshots come back
 black). Default reads `SIRIN_BROWSER_HEADLESS` env (itself defaulting to
 `true`).
+
+**`llm_backend` (optional):** Switches the ReAct LLM driver for this run.
+- `"claude_cli"` / `"claude"` — spawn `claude -p` subprocess (Max plan, no
+  API key, much higher JSON-output reliability, ~3-5s per call overhead).
+- `null` / omitted / any other value — use Sirin's main LLM config
+  (Gemini / LM Studio / Ollama / Anthropic HTTP API).
+
+⚠ **Known issue (2026-04-20):** `claude_cli` hangs on iteration-2+
+ReAct prompts that include screenshot history (10-20KB), hitting the
+600s subprocess watchdog. Use the default Gemini backend until the
+follow-up "Investigate claude_cli ReAct hang" task lands a fix. The
+dispatcher itself is correct — both the YAML field and this MCP arg
+are wired through `resolve_llm_backend()` in `executor.rs`.
+
+Resolution order: this arg → `TEST_RUNNER_LLM_BACKEND` env → main LLM config.
 
 **`fixture` (optional):** `setup` steps run before the ReAct loop; `cleanup`
 steps run unconditionally after the loop (even on timeout/error). Each step

@@ -1,7 +1,7 @@
 ---
 name: sirin-dev
 description: Use this skill when developing on the Sirin project itself (not when using Sirin to test other apps) — adding a new browser action, MCP endpoint, agent skill, test_runner feature, or fixing a bug in the Rust code.  Trigger phrases include "add a Sirin action", "fix Sirin's X", "extend Sirin", "modify Sirin", "Sirin internals", "how does Sirin X work", or any task that involves editing files under `~/IdeaProjects/Sirin/src/`.  This skill is for AI sessions picking up Sirin development cold — covers architecture, common workflows, conventions, and the gotchas that have already cost us time.
-version: 1.1.0
+version: 1.2.0
 ---
 
 # Sirin Development Skill
@@ -78,11 +78,18 @@ src/
 ├── config_check.rs         Diagnostics + AI fix proposal (dual-confirm)
 ├── test_runner/            AI test runner (browser, not unit tests)
 │   ├── parser.rs           YAML TestGoal (locale, retry, url_query,
-│   │                       browser_headless, success_criteria, tags)
+│   │                       browser_headless, llm_backend, success_criteria,
+│   │                       tags). `llm_backend: claude_cli` switches a single
+│   │                       test to the claude subprocess (00c0bc2) — but see
+│   │                       "claude_cli ReAct hang" gotcha; default is Gemini.
 │   ├── executor.rs         ReAct loop driving web_navigate;
 │   │                       ALSO contains the LLM prompt — when adding
 │   │                       a new web_navigate action, advertise it
-│   │                       in the prompt's "Available actions" list
+│   │                       in the prompt's "Available actions" list.
+│   │                       `resolve_llm_backend()` + `call_test_llm()`
+│   │                       dispatch per-test backend; `call_claude_cli()`
+│   │                       wraps `claude_session::run_sync` in
+│   │                       `tokio::task::spawn_blocking`.
 │   ├── triage.rs           Failure → ui_bug/api_bug/flaky/env/obsolete
 │   │                       → spawn claude_session + verification re-run
 │   ├── store.rs            SQLite test_runs + auto_fix_history
@@ -93,11 +100,18 @@ src/
 │                           you MUST also add to this file's
 │                           web_navigate match arm OR register a new
 │                           top-level tool (e.g. expand_observation).
-├── mcp_server.rs           HTTP MCP server on :7700/mcp.  When adding
-│                           a browser action that should be externally
+├── mcp_server.rs           HTTP MCP server on :7700/mcp (18 tools).  When
+│                           adding a browser action that should be externally
 │                           callable, ALSO add to this file's
 │                           call_browser_exec match arm AND the
 │                           tools/list schema.
+│                           Direct browser/observability tools that bypass the
+│                           ReAct loop entirely (use these to verify state when
+│                           an AI test fails ambiguously):
+│                             • `page_state` — JSON with title/URL/text excerpt
+│                             • `get_screenshot` — PNG base64 from last failure
+│                             • `get_full_observation` — combined snapshot
+│                             • `browser_exec` — fire any single browser action
 ├── llm/                    Multi-backend LLM (Ollama/LMStudio/Gemini/
 │                           Claude) + vision multimodal
 ├── ui_egui/                egui UI — sidebar, settings, browser panel,
@@ -427,6 +441,74 @@ Always run release for any real work.  Debug build's LLM calls take
 Both `python` and `python3` resolve to the Microsoft Store stub
 ("No installed Python found").  Use `node`, `jq`, or shell tools
 instead — don't rely on Python for testing or scripting.
+
+### Browser singleton hangs forever when CDP disconnects mid-call
+**Symptom (2026-04-20):** two parallel `run_test_async` runs against a
+Flutter SPA. Chrome crashed ~35s after launch (`TargetDestroyed` fired
+in CDP logs). Both runs got stuck at `step:0, current_action:"goto"`
+forever; `get_test_result` polling never showed progress; the watchdog
+on the Tokio task didn't fire because `executor.rs` `await`s a sync
+`navigate()` call whose underlying CDP socket is already dead.
+**Diagnosis:** `browser::with_tab` returns the cached `Tab` handle
+without health-checking the WebSocket. When the Chrome target dies, the
+next CDP method call blocks until OS-level TCP timeout (effectively never).
+**Workarounds:**
+- Don't fire concurrent `run_test_async` against the same singleton on
+  Flutter targets — serialize them, or use `run_test_batch` (uses
+  per-run `session_id` so each gets its own tab).
+- If a run is "queued" or "running, step 0" for >60s, kill Sirin +
+  Chrome and restart. The in-memory run will be lost; SQLite has nothing.
+**Fix needed:** wrap each CDP call in a tokio timeout; on timeout, mark
+the singleton dead so the next call relaunches Chrome instead of
+silently reusing the corpse. Tracked as task chip "Fix browser singleton
+hang on CDP disconnect".
+
+### `claude_cli` LLM backend hangs on big ReAct prompts
+**Symptom (2026-04-20):** YAML `llm_backend: claude_cli` switches a test
+to spawning `claude -p` per LLM call. Iteration 1 works (~6s, small
+prompt). Iteration 2's prompt grows to 10-20KB (history + screenshot
+data url) and the subprocess never returns — hits the 600s watchdog kill
+in `claude_session::run_claude_with_timeout`. The outer test then errors
+with `claude subprocess timed out after 600s`.
+**Confirmed:** dispatcher (`resolve_llm_backend` → `call_claude_cli` →
+`spawn_blocking` → `run_sync`) routes correctly. stdin is already
+`Stdio::null()` (line 566 of `claude_session.rs`). Node-direct on
+Windows. The hang is inside the `claude` CLI itself, not in our wrapper.
+**Workaround applied:** YAML files revert to default Gemini (commit
+`cd5f2f7`). Comments left in `agora_chat_sse.yaml` and
+`agora_staking.yaml` explaining the revert and how to re-enable.
+**Fix needed:** investigate whether `claude` CLI has its own bug with
+big prompts on Windows, or whether we need to chunk the ReAct context
+before sending. Tracked as task chip "Investigate claude_cli ReAct hang
+in test_runner".
+
+### Flutter blank screenshot from headless ping-pong
+Even with `browser_headless: false` in YAML, if Sirin's singleton was
+launched in headless mode for an earlier call (say a wiki smoke test),
+the Chrome process stays headless until killed. The Flutter test then
+runs against a CanvasKit page that has never painted — failure
+screenshot is solid dark gray.
+**Detection:** read `failed.png`; if it's near-uniform color, your
+"AI couldn't find the button" error is actually "page never rendered".
+**Fix:** kill Chrome before the Flutter run so Sirin re-launches with
+the YAML's headless preference, OR set `SIRIN_BROWSER_HEADLESS=false`
+globally before any test runs.
+
+### Pivot to direct MCP when AI test loop is unreliable
+When a test fails with `too many invalid LLM responses` AND the
+screenshot is blank/ambiguous, **don't** keep retrying the AI loop —
+pivot to direct verification:
+```bash
+sirin_call browser_exec action=goto target=https://app.example.com
+sirin_call page_state                    # title + url + text excerpt
+sirin_call browser_exec action=ax_tree   # accessibility nodes — Flutter-friendly
+sirin_call browser_exec action=eval target='fetch("/version.json").then(r=>r.text())'
+```
+This was how Issue #34 (staking N/A) was verified on prod 1.0.991+992 on
+2026-04-20 after both Gemini and claude_cli AI loops failed. ax_tree
+returned 7 nodes including the expected "提交" button — proof the page
+renders even though the AI loop couldn't see it. Save the AI loop for
+multi-step exploratory flows; use direct MCP for single-shot verification.
 
 ## Useful test commands
 
