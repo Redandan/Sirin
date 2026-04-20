@@ -41,6 +41,34 @@ const OBS_TRUNCATE_CHARS: usize = 800;
 /// the caller didn't request a session).  Used to fan a single test out
 /// onto a dedicated chrome tab when `run_test_batch` runs N tests in
 /// parallel.  Browser actions that don't recognise the field ignore it.
+/// Returns `true` if the screenshot looks like a completely black/blank frame.
+///
+/// Uses two heuristics:
+/// 1. `size_bytes` < 8 000 — all-black PNGs compress to near-nothing (~2 KB).
+///    A real rendered page (Flutter, React, etc.) is always ≥ 15 KB.
+/// 2. `url` is `about:blank` — browser hasn't navigated yet (shouldn't happen
+///    after a successful `goto`, but guards against race conditions).
+///
+/// This catches the Flutter CanvasKit "headless = blank canvas" failure without
+/// needing a base64 decoder dependency.
+fn is_all_black_screenshot(ss_val: &Value) -> bool {
+    // Guard: if the result has an error key, don't treat it as black
+    if ss_val.get("error").is_some() {
+        return false;
+    }
+
+    let size_bytes = ss_val.get("size_bytes").and_then(|v| v.as_u64()).unwrap_or(u64::MAX);
+    let url = ss_val.get("url").and_then(|v| v.as_str()).unwrap_or("");
+
+    if url == "about:blank" {
+        return true;
+    }
+
+    // Real rendered pages: ≥ 15 000 bytes.  All-black / about:blank: ≤ 3 000.
+    // Threshold 8 000 gives comfortable margin for both ends.
+    size_bytes < 8_000
+}
+
 fn inject_session(args: &mut Value, session_id: Option<&str>) {
     if let (Some(sid), Some(obj)) = (session_id, args.as_object_mut()) {
         // Don't overwrite if the LLM (or fixture) explicitly set its own.
@@ -114,7 +142,13 @@ pub async fn execute_test_tracked(
     // 0) Ensure browser launched in the right headless mode.
     // Flutter CanvasKit/WebGL needs headless=false to actually paint.
     let want_headless = test.browser_headless.unwrap_or_else(crate::browser::default_headless);
-    if let Err(e) = tokio::task::spawn_blocking(move || crate::browser::ensure_open(want_headless))
+    if let Err(e) = tokio::task::spawn_blocking(move || {
+        // Register the desired mode BEFORE ensure_open so that mid-call
+        // recovery in with_tab() can re-launch in the same mode, not
+        // the process default (which is always headless=true).
+        crate::browser::set_test_headless_mode(want_headless);
+        crate::browser::ensure_open(want_headless)
+    })
         .await
         .map_err(|e| format!("spawn_blocking: {e}"))
         .and_then(|r| r)
@@ -128,6 +162,36 @@ pub async fn execute_test_tracked(
     inject_session(&mut nav_input, session_id);
     if let Err(e) = ctx.call_tool("web_navigate", nav_input).await {
         return finalize_early(ctx, run_id, test, &history, format!("navigate failed: {e}")).await;
+    }
+
+    // 1b) Black-screen guard: after navigation, take a screenshot and check
+    // if the page is all-black.  This catches Chrome crashing mid-navigate
+    // and recovering in headless mode — which silently breaks Flutter/WebGL.
+    {
+        let mut ss_input = json!({"action": "screenshot"});
+        inject_session(&mut ss_input, session_id);
+        if let Ok(ss_val) = ctx.call_tool("web_navigate", ss_input).await {
+            if is_all_black_screenshot(&ss_val) {
+                tracing::warn!(
+                    "[test_runner] ⚠️  '{}' — post-navigate screenshot is all-black. \
+                     Likely Chrome recovered in headless mode. Resetting browser and retrying navigate.",
+                    test.id
+                );
+                // Force-close and re-open in the correct mode.
+                let _ = tokio::task::spawn_blocking(move || {
+                    crate::browser::close();
+                    crate::browser::set_test_headless_mode(want_headless);
+                    crate::browser::ensure_open(want_headless)
+                }).await;
+                // Re-navigate.
+                let mut nav2 = json!({ "action": "goto", "target": &nav_url });
+                inject_session(&mut nav2, session_id);
+                if let Err(e) = ctx.call_tool("web_navigate", nav2).await {
+                    return finalize_early(ctx, run_id, test, &history,
+                        format!("navigate retry after black-screen reset failed: {e}")).await;
+                }
+            }
+        }
     }
 
     // 2) Install console + network capture (best effort)

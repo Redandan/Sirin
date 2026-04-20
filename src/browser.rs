@@ -21,6 +21,7 @@ use headless_chrome::protocol::cdp::{Emulation, Network, Page};
 use headless_chrome::{Browser, LaunchOptions, Tab};
 use serde_json::json;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 // ── Companion extension discovery (stub — see DESIGN_BROWSER_AUTHORITY.md) ──
@@ -66,6 +67,19 @@ fn locate_companion_ext() -> Option<std::path::PathBuf> {
 // ── Singleton ────────────────────────────────────────────────────────────────
 
 static SESSION: OnceLock<Arc<Mutex<Option<BrowserInner>>>> = OnceLock::new();
+
+/// Tracks the headless mode desired by the currently-running test.
+/// Set by `set_test_headless_mode()` at test start so that mid-call
+/// recovery in `with_tab()` can re-launch Chrome in the correct mode
+/// (instead of falling back to `default_headless()` which is always `true`).
+static TEST_DESIRED_HEADLESS: AtomicBool = AtomicBool::new(true);
+
+/// Called by the test executor at test start to register the desired
+/// headless mode.  Recovery paths read this to re-launch Chrome correctly
+/// even if the process-level default is `headless=true`.
+pub fn set_test_headless_mode(headless: bool) {
+    TEST_DESIRED_HEADLESS.store(headless, Ordering::Relaxed);
+}
 
 fn global() -> &'static Arc<Mutex<Option<BrowserInner>>> {
     SESSION.get_or_init(|| Arc::new(Mutex::new(None)))
@@ -1392,8 +1406,11 @@ where
             tracing::warn!("[browser] mid-call connection closed — attempting one-shot recovery");
             // Clear singleton
             *global().lock().unwrap_or_else(|e| e.into_inner()) = None;
-            // Re-launch — preserve user-requested mode if previously set
-            ensure_open_reusing()?;
+            // Re-launch in the mode the current test requested (not default_headless()).
+            // Flutter CanvasKit needs headless=false — using default would silently
+            // re-launch headless and cause a black screen for the rest of the test.
+            let recovery_headless = TEST_DESIRED_HEADLESS.load(Ordering::Relaxed);
+            ensure_open(recovery_headless)?;
             // Retry exactly once with a fresh tab from the new session
             let tab: Arc<Tab> = {
                 let guard = global().lock().unwrap_or_else(|e| e.into_inner());
