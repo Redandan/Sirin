@@ -171,8 +171,24 @@ pub fn ensure_open(headless: bool) -> Result<bool, String> {
     // `page_title()` instead of `Tab::get_url()` / `Tab::get_title()`.
     //
     // See: docs/DESIGN_BROWSER_AUTHORITY.md
+    // Stability flags — selected to reduce Chrome crashes on heavy JS/WebGL pages
+    // (e.g. Flutter CanvasKit) without disabling GPU or breaking rendering.
+    // --disable-dev-shm-usage:           prevent /dev/shm OOM on Linux; no-op on Windows
+    // --disable-background-timer-throttling: JS timers run at full speed in background
+    // --disable-backgrounding-occluded-windows: don't throttle off-screen tabs
+    // --disable-renderer-backgrounding:  renderer priority stays high throughout test
+    // --disable-hang-monitor:            don't kill renderer on slow Flutter bootstrap
+    // NOT added: --disable-gpu / --no-sandbox — those break WebGL / Flutter CanvasKit
+    let stability_args: Vec<&str> = vec![
+        "--disable-dev-shm-usage",
+        "--disable-background-timer-throttling",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+        "--disable-hang-monitor",
+    ];
     let opts = LaunchOptions::default_builder()
         .headless(headless)
+        .args(stability_args.iter().map(|s| std::ffi::OsStr::new(s)).collect())
         .build()
         .map_err(|e| format!("LaunchOptions: {e}"))?;
     let browser = Browser::new(opts).map_err(|e| format!("Browser::new: {e}"))?;

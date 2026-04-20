@@ -15,22 +15,29 @@ pub enum FailureCategory {
     Flaky,
     Env,
     Obsolete,
+    /// Browser rendered a completely black frame — typically Chrome crashed
+    /// mid-test and recovered in headless mode, preventing Flutter/WebGL from
+    /// painting.  NOT a code bug; auto-fix must NOT be triggered.
+    RenderingFailure,
     Unknown,
 }
 
 impl FailureCategory {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::UiBug    => "ui_bug",
-            Self::ApiBug   => "api_bug",
-            Self::Flaky    => "flaky",
-            Self::Env      => "env",
-            Self::Obsolete => "obsolete",
-            Self::Unknown  => "unknown",
+            Self::UiBug            => "ui_bug",
+            Self::ApiBug           => "api_bug",
+            Self::Flaky            => "flaky",
+            Self::Env              => "env",
+            Self::Obsolete         => "obsolete",
+            Self::RenderingFailure => "rendering_failure",
+            Self::Unknown          => "unknown",
         }
     }
 
     /// Which repo a session fix should target, if any.
+    /// `RenderingFailure` returns `None` — it's a browser/infra issue,
+    /// not a code bug; spawning claude_session would waste tokens.
     pub fn fix_repo(&self) -> Option<&'static str> {
         match self {
             Self::UiBug  => Some("frontend"),
@@ -80,7 +87,31 @@ pub async fn triage(
         };
     }
 
-    // 3. LLM classification
+    // 3. Rendering failure — all-black screenshot means Chrome recovered in
+    //    headless mode (Flutter CanvasKit / WebGL cannot paint headless).
+    //    Detected by screenshot file size < 8 KB: all-black PNGs compress to
+    //    ~2 KB while real rendered pages are ≥ 15 KB.
+    //    Must be checked BEFORE LLM triage to prevent auto-fix being triggered
+    //    on non-existent frontend bugs.
+    if let Some(ref path) = result.screenshot_path {
+        if is_screenshot_all_black(path) {
+            tracing::warn!(
+                "[triage] '{}' — screenshot is all-black ({} bytes). \
+                 Classified as rendering_failure (no auto-fix).",
+                test.id,
+                std::fs::metadata(path).map(|m| m.len()).unwrap_or(0),
+            );
+            return TriageOutcome {
+                category: FailureCategory::RenderingFailure,
+                reason: "failure screenshot is all-black — Chrome likely recovered in headless \
+                         mode during the test; Flutter/WebGL cannot render headless. \
+                         Re-run the test; if it fails again check Chrome stability.".into(),
+                auto_fix_triggered: false,
+            };
+        }
+    }
+
+    // 4. LLM classification
     let locale = crate::test_runner::i18n::Locale::from_yaml(&test.locale);
     let context = collect_failure_context(test, result);
     let prompt = format!(r#"{header}
@@ -92,7 +123,7 @@ Categories:
 
 Output strictly valid JSON (no markdown fence):
 {{
-  "category": "ui_bug | api_bug | flaky | env | obsolete",
+  "category": "ui_bug | api_bug | flaky | env | obsolete | rendering_failure",
   "reason": "<{lang} {reason_hint}>",
   "suggested_repo": "frontend | backend | none"
 }}
@@ -358,12 +389,13 @@ fn parse_triage(raw: &str) -> ParsedTriage {
         Ok(v) => {
             let cat = v.get("category").and_then(Value::as_str).unwrap_or("");
             let category = match cat {
-                "ui_bug"   => FailureCategory::UiBug,
-                "api_bug"  => FailureCategory::ApiBug,
-                "flaky"    => FailureCategory::Flaky,
-                "env"      => FailureCategory::Env,
-                "obsolete" => FailureCategory::Obsolete,
-                _          => FailureCategory::Unknown,
+                "ui_bug"            => FailureCategory::UiBug,
+                "api_bug"           => FailureCategory::ApiBug,
+                "flaky"             => FailureCategory::Flaky,
+                "env"               => FailureCategory::Env,
+                "obsolete"          => FailureCategory::Obsolete,
+                "rendering_failure" => FailureCategory::RenderingFailure,
+                _                   => FailureCategory::Unknown,
             };
             let reason = v.get("reason").and_then(Value::as_str).unwrap_or("").to_string();
             ParsedTriage { category, reason }
@@ -424,6 +456,40 @@ mod tests {
         assert_eq!(FailureCategory::Flaky.fix_repo(), None);
         assert_eq!(FailureCategory::Env.fix_repo(), None);
         assert_eq!(FailureCategory::Obsolete.fix_repo(), None);
+        // RenderingFailure must NOT trigger auto-fix — not a code bug
+        assert_eq!(FailureCategory::RenderingFailure.fix_repo(), None);
+    }
+
+    #[test]
+    fn parse_rendering_failure_category() {
+        let raw = r#"{"category":"rendering_failure","reason":"黑屏","suggested_repo":"none"}"#;
+        let p = parse_triage(raw);
+        assert_eq!(p.category, FailureCategory::RenderingFailure);
+    }
+
+    #[test]
+    fn rendering_failure_as_str() {
+        assert_eq!(FailureCategory::RenderingFailure.as_str(), "rendering_failure");
+    }
+
+    #[test]
+    fn is_screenshot_all_black_small_file() {
+        // Create a temp file smaller than 8 000 bytes → should be "black"
+        let dir = std::env::temp_dir();
+        let path = dir.join("test_black.png");
+        std::fs::write(&path, vec![0u8; 100]).unwrap();
+        assert!(is_screenshot_all_black(path.to_str().unwrap()));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn is_screenshot_all_black_large_file() {
+        // A file ≥ 8 000 bytes → real render, not black
+        let dir = std::env::temp_dir();
+        let path = dir.join("test_real.png");
+        std::fs::write(&path, vec![42u8; 20_000]).unwrap();
+        assert!(!is_screenshot_all_black(path.to_str().unwrap()));
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
@@ -431,6 +497,16 @@ mod tests {
         assert_eq!(strip_fences("```json\n{\"a\":1}\n```"), "{\"a\":1}");
         assert_eq!(strip_fences("prefix {\"a\":1} suffix"), "{\"a\":1}");
     }
+}
+
+/// Returns `true` if the screenshot at `path` is all-black.
+///
+/// Uses file-size heuristic: all-black PNGs compress to ≤ 3 KB; real
+/// rendered pages produce ≥ 15 KB.  Threshold 8 KB gives safe margin.
+fn is_screenshot_all_black(path: &str) -> bool {
+    std::fs::metadata(path)
+        .map(|m| m.len() < 8_000)
+        .unwrap_or(false)
 }
 
 // Remove unused json! import warning
