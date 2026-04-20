@@ -16,6 +16,21 @@ Sirin's MCP API to test other apps, see `sirin-test` instead.
 - Investigating Sirin internals to answer "how does X work?"
 - Fixing a bug reported against Sirin (vs in a target app)
 
+## ⛔ 執行任何 config/tests/*.yaml 前的強制 checklist
+
+**跳過這步 = 預期浪費一次空跑（帳號/viewport/flow 錯誤）**
+
+1. 讀 `list_tests` 輸出，看 `docs_refs` 欄位有沒有列文件
+2. 把每個 `docs_refs` 裡的文件讀完（帳號密碼、viewport 要求、登入 flow、AC）
+3. 確認以下三項再跑：
+   - 測試帳號 username / password ✓
+   - 是否需要特定 viewport（Flutter app 通常需要 1280×1600）✓
+   - 登入 flow（test button? username/password form? ax_find 哪個 button?）✓
+4. **確認後才呼叫 run_test_async / run_adhoc_test**
+
+`run_test_async` 回應會包含 `docs_refs` + `warning` 欄位 — 若看到這個欄位卻沒讀，
+下一個 session 接手時必須重跑，成本加倍。
+
 ## Read these FIRST (in order)
 
 1. **`CLAUDE.md`** at repo root — architecture decisions, project layout,

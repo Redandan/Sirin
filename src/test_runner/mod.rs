@@ -205,6 +205,7 @@ pub fn spawn_adhoc_run(req: AdhocRunRequest) -> Result<String, String> {
         success_criteria: req.success_criteria,
         tags: vec!["adhoc".into()],
         fixture: req.fixture,
+        docs_refs: vec![],  // ad-hoc runs have no pre-defined required reading
     };
 
     let run_id = runs::new_run(&test_id);
@@ -582,6 +583,7 @@ pub fn persist_adhoc_run(p: PersistAdhocParams) -> Result<PersistAdhocResult, St
         success_criteria: goal.success_criteria.clone(),
         tags: tags.clone(),
         fixture: goal.fixture.clone(),
+        docs_refs: goal.docs_refs.clone(),  // propagate required-reading from source run
     };
 
     // Serialize and write.  serde_yaml uses 2-space indent and never
@@ -639,6 +641,7 @@ mod persist_tests {
             success_criteria: vec!["URL contains /dashboard".into()],
             tags: vec!["adhoc".into()],
             fixture: None,
+            docs_refs: vec![],
         };
         let run_id = runs::new_run(test_id);
         runs::set_goal(&run_id, goal.clone());
@@ -720,6 +723,7 @@ mod persist_tests {
             success_criteria: vec![],
             tags: vec![],
             fixture: None,
+            docs_refs: vec![],
         });
         runs::set_phase(&run_id, runs::RunPhase::Running {
             step: 2,
@@ -799,6 +803,7 @@ mod persist_tests {
             success_criteria: vec!["Recovered OK".into()],
             tags: vec!["adhoc".into()],
             fixture: None,
+            docs_refs: vec![],
         };
         // Insert directly into SQLite — simulates the row that
         // record_run wrote at the original run completion.

@@ -78,6 +78,15 @@ pub struct TestGoal {
     /// Optional fixture: setup steps (before test) and cleanup steps (after).
     #[serde(default)]
     pub fixture: Option<Fixture>,
+    /// Documents that MUST be read before running or interpreting this test.
+    ///
+    /// Shown in `list_tests` output and included in the `run_test_async` MCP
+    /// response as a `docs_refs` field + warning so callers cannot miss them.
+    /// Typical entries: test-account docs, acceptance-criteria files, E2E skill.
+    ///
+    /// Paths are relative to the repo root (or absolute).
+    #[serde(default)]
+    pub docs_refs: Vec<String>,
 }
 
 impl TestGoal {
@@ -282,6 +291,30 @@ goal: "do something"
 "#;
         let g: TestGoal = serde_yaml::from_str(yaml).unwrap();
         assert!(g.llm_backend.is_none());
+    }
+
+    #[test]
+    fn parse_yaml_with_docs_refs() {
+        let yaml = r#"
+id: agora_staking
+name: "Staking test"
+url: "https://example.com"
+goal: "verify staking"
+docs_refs:
+  - AgoraMarket/.claude/skills/agora-market-e2e/SKILL.md
+  - docs/acceptance/issue_34_pledge.md
+"#;
+        let g: TestGoal = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(g.docs_refs.len(), 2);
+        assert!(g.docs_refs[0].contains("SKILL.md"));
+        assert!(g.docs_refs[1].contains("issue_34"));
+    }
+
+    #[test]
+    fn parse_yaml_without_docs_refs_defaults_to_empty() {
+        let yaml = "id: x\nname: y\nurl: https://example.com\ngoal: g\n";
+        let g: TestGoal = serde_yaml::from_str(yaml).unwrap();
+        assert!(g.docs_refs.is_empty());
     }
 
     #[test]

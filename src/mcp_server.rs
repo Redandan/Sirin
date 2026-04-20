@@ -857,6 +857,8 @@ fn call_list_tests(args: Value) -> Result<Value, String> {
             "tags": t.tags,
             "max_iterations": t.max_iterations,
             "timeout_secs": t.timeout_secs,
+            // Surface docs_refs so callers see required reading before running.
+            "docs_refs": t.docs_refs,
         }))
         .collect();
     Ok(json!({ "count": items.len(), "tests": items }))
@@ -865,14 +867,35 @@ fn call_list_tests(args: Value) -> Result<Value, String> {
 fn call_run_test_async(args: Value) -> Result<Value, String> {
     let test_id = args["test_id"].as_str().ok_or("Missing test_id")?.to_string();
     let auto_fix = args.get("auto_fix").and_then(Value::as_bool).unwrap_or(false);
+
+    // Look up the test goal before spawning so we can surface docs_refs.
+    // spawn_run_async will also look it up internally; this double-read is
+    // cheap (small YAML dir) and lets us surface the warning before the run.
+    let docs_refs = crate::test_runner::parser::find(&test_id)
+        .map(|g| g.docs_refs)
+        .unwrap_or_default();
+
     let run_id = crate::test_runner::spawn_run_async(test_id.clone(), auto_fix)?;
-    Ok(json!({
+
+    let mut resp = json!({
         "run_id": run_id,
         "test_id": test_id,
         "auto_fix": auto_fix,
         "status": "queued",
         "poll_with": "get_test_result",
-    }))
+    });
+
+    // Surface docs_refs as a hard-to-miss field so callers cannot skip
+    // reading required documentation before interpreting results.
+    if !docs_refs.is_empty() {
+        resp["docs_refs"] = json!(&docs_refs);
+        resp["warning"] = json!(format!(
+            "⚠️ Read ALL {} doc(s) in docs_refs BEFORE running or interpreting this test.",
+            docs_refs.len()
+        ));
+    }
+
+    Ok(resp)
 }
 
 /// Spawn N tests in parallel, each on its own dedicated chrome tab.

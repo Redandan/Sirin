@@ -99,6 +99,18 @@ pub async fn execute_test_tracked(
         runs::set_phase(rid, runs::RunPhase::Running { step: 0, current_action: "goto".into() });
     }
 
+    // 0-pre) Warn if the test declares required reading that the caller must
+    // have done before this run.  Surfaced here so it appears in Sirin logs
+    // even for runs started without going through the MCP layer.
+    if !test.docs_refs.is_empty() {
+        tracing::warn!(
+            "[test_runner] ⚠️  '{}' has {} required doc(s) — confirm read before interpreting results:\n{}",
+            test.id,
+            test.docs_refs.len(),
+            test.docs_refs.iter().map(|d| format!("  • {d}")).collect::<Vec<_>>().join("\n")
+        );
+    }
+
     // 0) Ensure browser launched in the right headless mode.
     // Flutter CanvasKit/WebGL needs headless=false to actually paint.
     let want_headless = test.browser_headless.unwrap_or_else(crate::browser::default_headless);

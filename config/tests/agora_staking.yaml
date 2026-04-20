@@ -3,28 +3,50 @@ name: "AgoraMarket Staking 質押功能驗證 (Issue #34)"
 url: "https://agoramarket.purrtechllc.com"
 
 browser_headless: false
-max_iterations: 15
-timeout_secs: 360
-# NOTE (2026-04-20): claude_cli backend currently hangs on iteration-2 ReAct
-# prompts (10-20KB with screenshot history) — full 600s watchdog kill.
-# Reverted to Gemini default. The original "too many invalid LLM responses"
-# problem still applies — if it recurs, increase retry_on_parse_error or
-# wait for the claude_cli hang fix.
-# llm_backend: claude_cli
+max_iterations: 25
+timeout_secs: 480
+# NOTE (2026-04-20): claude_cli hang fixed in commit 908bb75 — compact prompt
+# (last 3 steps, 200-char obs) keeps payload under 3 KB and avoids the 600 s
+# subprocess watchdog.  Re-enabled below.
+llm_backend: claude_cli
 
 goal: |
-  驗證 AgoraMarket 質押（Staking）功能完整流程（Issue #34，長期追蹤）。
-  ⚠️ Flutter CanvasKit app：所有 UI 判斷使用 screenshot_analyze。
+  驗證 AgoraMarket 質押（Staking）功能完整流程（Issue #34 驗收）。
+  ⚠️ Flutter CanvasKit app：DOM 為空，UI 判斷使用 screenshot_analyze 或 ax_* 系列動作。
 
-  執行步驟（AC-1 至 AC-5）：
-  1. 等待 5 秒讓 Flutter 載入；screenshot_analyze "頁面狀態？是否需要登入？"
-  2. 若需要登入，嘗試以測試帳號登入後繼續；若無法登入，記錄並盡可能前進
-  3. [AC-1] 導航至質押頁面（Staking）；screenshot_analyze "質押頁面是否載入？利率是否顯示非零、非 N/A 值？"
-  4. [AC-1] 確認頁面顯示用戶當前可質押金額，無白屏或 JS error
-  5. [AC-2] 輸入有效質押金額，點擊確認/質押按鈕；screenshot_analyze "是否出現確認對話框或 loading？成功後餘額是否扣款？狀態是否更新為質押中？"
-  6. [AC-3] 找到解質押按鈕，確認可見且可點擊；點擊後 screenshot_analyze "是否出現確認對話框？狀態是否更新為已解質押或結算中？"
-  7. [AC-4] 導航至質押歷史記錄頁；screenshot_analyze "是否可見進行中 / 已結算 / 已解質押三種狀態？各記錄是否顯示金額、日期、利率、狀態？"
-  8. [AC-5] 檢視任一質押金額數值；screenshot_analyze "金額小數位是否正常？是否出現 0.10000000001 / 0.0999999999 類浮點問題？"
+  【測試帳號】username: buyer, password: test123
+  【登入方式】頁面有「測試買家」快速登入按鈕（Flutter semantics button），用 ax_find 找到後 ax_click。
+
+  執行步驟：
+
+  0. [準備] 設定 viewport 為 1280×1600（測試按鈕需要這個高度才可見）：
+     action=set_viewport width=1280 height=1600
+     等待 5 秒讓 Flutter bootstrap；執行 semantics bootstrap：
+     eval "document.querySelector('flt-semantics-placeholder')?.click()"
+     再等 3 秒。
+
+  1. [登入] ax_find role=button name=測試買家 → 取得 backend_id → ax_click 登入。
+     若找不到 ax node，改用 screenshot_analyze 確認頁面狀態再決定下一步。
+     登入後等待 3 秒讓頁面跳轉，再執行一次 semantics bootstrap（eval 同上）。
+
+  2. [AC-1] 導航至質押頁面：
+     嘗試 eval "location.hash='#/stake'" 或用 ax_find 找「質押」/「Staking」按鈕。
+     screenshot_analyze "質押頁面是否載入？利率是否顯示非零、非 N/A 值？可質押餘額是否顯示？"
+
+  3. [AC-1] 確認質押頁面無白屏、無 JS error（eval "window.__errors || []"）。
+
+  4. [AC-2] 輸入有效質押金額（例如 1），點擊確認/質押按鈕。
+     screenshot_analyze "是否出現確認對話框或 loading？"
+     若成功：screenshot_analyze "餘額是否扣款？狀態是否更新為質押中？"
+
+  5. [AC-3] 找到解質押按鈕（ax_find name=解質押 或 Unstake），確認可點擊。
+     點擊後 screenshot_analyze "是否出現確認對話框？確認後狀態是否更新？"
+
+  6. [AC-4] 導航至質押歷史記錄頁（hash=#/stake/history 或從 UI 找入口）。
+     screenshot_analyze "是否可見進行中 / 已結算 / 已解質押三種狀態？各記錄是否有金額/日期/利率/狀態？"
+
+  7. [AC-5] 用 ax_value 取得任一質押金額的字面值。
+     確認不含 0.10000000001 / 0.0999999999 類浮點誤差。
 
 success_criteria:
   - "質押頁面可正常開啟，無白屏或錯誤訊息"
@@ -35,3 +57,8 @@ success_criteria:
   - "質押金額小數位精度正常，無浮點顯示錯誤"
 
 tags: [staking, agora, issue-34, regression]
+
+docs_refs:
+  - AgoraMarket/.claude/skills/agora-market-e2e/SKILL.md
+  - AgoraMarket/.claude/e2e-reports/TEST_PLAN.md
+  - docs/acceptance/issue_34_pledge.md
