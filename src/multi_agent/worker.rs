@@ -21,6 +21,7 @@
 //! - 三個 worker **共用同一 cwd**（Sirin repo），改不同檔通常 OK；改同檔會
 //!   git-stage 衝突。徹底解決靠 T2-4 worktree 隔離。
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use super::{AgentTeam, queue, queue::TaskStatus};
@@ -63,8 +64,16 @@ pub fn spawn_n(cwd: &str, n: usize) {
 
 // ── Main loop ─────────────────────────────────────────────────────────────────
 
-fn run_loop(cwd: String, worker_id: usize) {
-    let mut team = AgentTeam::load_for_worker(&cwd, worker_id);
+fn run_loop(default_cwd: String, worker_id: usize) {
+    // Per-project team pool — keyed by normalized project_key ("" / "sirin" /
+    // "agora_market" / ...). Lazy: each project's team is loaded on first
+    // task that references it. Sirin team is preloaded so legacy queues
+    // (no `project` field) keep behaving identically.
+    let mut teams: HashMap<String, AgentTeam> = HashMap::new();
+    teams.insert(
+        String::new(),
+        AgentTeam::load_for_worker_project(&default_cwd, worker_id, ""),
+    );
 
     loop {
         // 原子操作：取任務同時標記 Running，多 worker 安全
@@ -75,26 +84,71 @@ fn run_loop(cwd: String, worker_id: usize) {
                     let max = task.description.len().min(80);
                     (0..=max).rev().find(|&i| task.description.is_char_boundary(i)).unwrap_or(0)
                 };
+
+                // Resolve which (project_key, cwd, extra_tools) this task targets.
+                // No `project` field on legacy tasks → empty key + default Sirin cwd.
+                let (project_key, project_cwd, extra_tools) =
+                    resolve_project(&task, &default_cwd);
+
                 tracing::info!(target: "sirin",
-                    "[team-worker:w{worker_id}] Starting task {} — {}",
-                    task.id, &task.description[..preview_end]);
+                    "[team-worker:w{worker_id}] Starting task {} [{}] — {}",
+                    task.id,
+                    if project_key.is_empty() { "sirin" } else { project_key.as_str() },
+                    &task.description[..preview_end]);
+
+                // Look up (or lazily build) the team for this project.
+                let team = teams.entry(project_key.clone()).or_insert_with(|| {
+                    AgentTeam::load_for_worker_project(&project_cwd, worker_id, &project_key)
+                });
+                team.set_extra_tools(&extra_tools);
+                let dry_run = task.project.as_ref()
+                    .map(|p| p.dry_run).unwrap_or(false);
+                team.set_dry_run(dry_run);
+
+                // Capture issue_url before assign_task — task may be moved/cloned.
+                let issue_url = task.project.as_ref()
+                    .and_then(|p| p.issue_url.clone());
 
                 match team.assign_task(&task.description) {
                     Ok(review) => {
                         tracing::info!(target: "sirin",
                             "[team-worker:w{worker_id}] Task {} done ✓", task.id);
-                        queue::update_status(&task.id, TaskStatus::Done, Some(review));
+                        queue::update_status(&task.id, TaskStatus::Done, Some(review.clone()));
 
-                        // 驗證編譯（cargo check）
-                        if let Err(e) = team.test_cycle() {
-                            tracing::warn!(target: "sirin",
-                                "[team-worker:w{worker_id}] test_cycle after task {}: {e}", task.id);
+                        // 驗證編譯（cargo check）— only for Sirin team; cross-repo
+                        // projects don't necessarily have Rust / cargo.
+                        if project_key.is_empty() || project_key.eq_ignore_ascii_case("sirin") {
+                            if let Err(e) = team.test_cycle() {
+                                tracing::warn!(target: "sirin",
+                                    "[team-worker:w{worker_id}] test_cycle after task {}: {e}", task.id);
+                            }
+                        }
+
+                        // Loop closure: post review back to GitHub issue if linked.
+                        // dry_run → divert to preview file (no GitHub write).
+                        // Non-fatal — gh failure shouldn't crash the worker.
+                        if let Some(url) = issue_url.as_deref() {
+                            if dry_run {
+                                save_preview_comment(&task.id, url, &review, true);
+                            } else {
+                                post_issue_comment(&task.id, url, &review, true);
+                            }
                         }
                     }
                     Err(e) => {
                         tracing::warn!(target: "sirin",
                             "[team-worker:w{worker_id}] Task {} failed: {e}", task.id);
                         queue::update_status(&task.id, TaskStatus::Failed, Some(e.clone()));
+
+                        // Same loop closure on failure — surface the error to the
+                        // human watching the issue, not just the Sirin UI.
+                        if let Some(url) = issue_url.as_deref() {
+                            if dry_run {
+                                save_preview_comment(&task.id, url, &e, false);
+                            } else {
+                                post_issue_comment(&task.id, url, &e, false);
+                            }
+                        }
 
                         if task.retry_count == 0 {
                             // 安全截斷到 200 bytes 的 char boundary
@@ -116,6 +170,12 @@ fn run_loop(cwd: String, worker_id: usize) {
                     }
                 }
 
+                // Always clear extra_tools / dry_run after the task — the next
+                // task may run on the same team but must not inherit per-task
+                // permissions or guardrails.
+                team.set_extra_tools(&[]);
+                team.set_dry_run(false);
+
                 // Engineer context window 保護：超過 40 輪就開新 session
                 // (raised from 20 → 40 because T1-4 keeps context within a task,
                 //  so a 5-iter task can use up to 5 turns before inter-task reset)
@@ -131,6 +191,123 @@ fn run_loop(cwd: String, worker_id: usize) {
             }
         }
     }
+}
+
+// ── Project routing ───────────────────────────────────────────────────────────
+
+/// DRY-RUN diversion: save the comment that WOULD have been posted to a
+/// `preview_comments.jsonl` file so a human can inspect + approve before
+/// anything touches GitHub.
+///
+/// Location: `data/multi_agent/preview_comments.jsonl` (one JSON object per
+/// line, same dir as the task queue).
+///
+/// Each record carries enough context for a human or the `replay_preview`
+/// helper in `github_adapter` to re-post manually after review.
+///
+/// `pub(super)` so integration tests in sibling modules (e.g.
+/// `github_adapter::tests`) can replicate the worker's task-completion
+/// branch when validating dry-run end-to-end.
+pub(super) fn save_preview_comment(task_id: &str, issue_url: &str, body: &str, success: bool) {
+    let record = serde_json::json!({
+        "task_id":   task_id,
+        "issue_url": issue_url,
+        "success":   success,
+        "body":      body,
+        "saved_at":  chrono::Local::now().to_rfc3339(),
+    });
+    let path = crate::platform::app_data_dir()
+        .join("data")
+        .join("multi_agent")
+        .join("preview_comments.jsonl");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    use std::io::Write;
+    let result = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut f| writeln!(f, "{record}"));
+
+    match result {
+        Ok(_) => tracing::info!(target: "sirin",
+            "[team-worker] [DRY-RUN] Comment preview saved for task {task_id} → {}",
+            path.display()),
+        Err(e) => tracing::warn!(target: "sirin",
+            "[team-worker] [DRY-RUN] Failed to save preview for task {task_id}: {e}"),
+    }
+}
+
+/// Post the task's final review (or error) back to a linked GitHub issue.
+///
+/// `success=true` → "[Sirin Dev Team ✓ Done]" header
+/// `success=false` → "[Sirin Dev Team ✗ Failed]" header
+///
+/// Failure (gh missing / network down / not authenticated) is logged at
+/// `warn` level but never propagates — the queue should keep flowing
+/// even if GitHub is unreachable.
+fn post_issue_comment(task_id: &str, issue_url: &str, body: &str, success: bool) {
+    let header = if success { "✓ Done" } else { "✗ Failed" };
+    // Cap body — GitHub comments support 65k chars but readability dies past 4k.
+    let body_capped = {
+        let max = body.len().min(4_000);
+        let end = (0..=max).rev()
+            .find(|&i| body.is_char_boundary(i))
+            .unwrap_or(0);
+        if end < body.len() {
+            format!("{}\n\n_…(truncated, full review in Sirin queue: task `{task_id}`)_",
+                &body[..end])
+        } else {
+            body.to_string()
+        }
+    };
+    let comment = format!(
+        "**[Sirin Dev Team {header}]**\n\n{body_capped}\n\n\
+         <sub>Posted automatically by Sirin AgentTeam worker · task `{task_id}`</sub>",
+    );
+
+    match super::github_adapter::comment_on_issue_url(issue_url, &comment) {
+        Ok(_) => tracing::info!(target: "sirin",
+            "[team-worker] Posted review for task {task_id} to {issue_url}"),
+        Err(e) => tracing::warn!(target: "sirin",
+            "[team-worker] Failed to post comment for task {task_id} to {issue_url}: {e}"),
+    }
+}
+
+/// Decide which (project_key, cwd, extra_tools) a task should run under.
+///
+/// Rules:
+/// - No `project` field, empty repo, or `repo == "sirin"` → ("", default_cwd, [])
+///   (preserves legacy behaviour for every existing queued task).
+/// - Otherwise → resolve repo via `claude_session::repo_path()`. If unknown,
+///   fall back to default_cwd but keep the project key for session isolation
+///   (so tasks targeting an undefined repo still get their own session_id and
+///   don't pollute Sirin's PM/Engineer/Tester history).
+fn resolve_project(
+    task: &queue::TeamTask,
+    default_cwd: &str,
+) -> (String, String, Vec<String>) {
+    let Some(ctx) = task.project.as_ref() else {
+        return (String::new(), default_cwd.to_string(), Vec::new());
+    };
+
+    let repo = ctx.repo.trim();
+    if repo.is_empty() || repo.eq_ignore_ascii_case("sirin") {
+        return (String::new(), default_cwd.to_string(), ctx.extra_tools.clone());
+    }
+
+    // Normalize project key (lowercase, ascii) to match session file naming.
+    let key = repo.to_ascii_lowercase();
+    let cwd = crate::claude_session::repo_path(repo)
+        .unwrap_or_else(|| {
+            tracing::warn!(target: "sirin",
+                "[team-worker] Unknown repo '{repo}' — falling back to default cwd, \
+                 but keeping project session namespace");
+            default_cwd.to_string()
+        });
+    (key, cwd, ctx.extra_tools.clone())
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

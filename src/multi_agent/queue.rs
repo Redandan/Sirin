@@ -34,6 +34,49 @@ impl std::fmt::Display for TaskStatus {
 
 fn default_priority() -> u8 { 50 }
 
+/// Per-task project context — overrides the worker's default `cwd` and lets
+/// a task ask for extra tools beyond the role's default whitelist.
+///
+/// `repo` is resolved via `crate::claude_session::repo_path()` (recognised
+/// names: "sirin", "agora_market", "agora_market_api", or any name backed
+/// by a `SIRIN_REPO_<NAME>` env var). Empty string or the literal "sirin"
+/// keeps the default Sirin repo.
+///
+/// `extra_tools` are appended (deduped) to the role's static whitelist —
+/// e.g. `["WebFetch"]` to let Engineer read GitHub raw URLs while keeping
+/// PM read-only. Use sparingly; each entry widens the attack surface of the
+/// claude CLI session.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct ProjectContext {
+    #[serde(default)]
+    pub repo:        String,
+    #[serde(default)]
+    pub extra_tools: Vec<String>,
+    /// Optional GitHub issue URL (e.g. `https://github.com/owner/repo/issues/42`).
+    /// When present, the worker will auto-post the task's final review back as
+    /// a comment on this issue — closing the loop for issue-driven Dev Team work.
+    #[serde(default)]
+    pub issue_url:   Option<String>,
+    /// Verification / preview mode.
+    ///
+    /// When `true`:
+    ///   - Soft: PM / Engineer / Tester get a system-prompt addendum forbidding
+    ///     irreversible external writes (`gh issue comment`, `gh pr create`,
+    ///     `git push`, force-pushed commits)
+    ///   - Hard: worker SKIPS the auto `comment_on_issue` after task completion
+    ///     and instead appends the would-be comment to
+    ///     `data/multi_agent/preview_comments.jsonl` for human review
+    ///   - Local file edits, read-only gh, and language build commands
+    ///     (cargo / flutter / mvn) are still allowed — the goal is to let the
+    ///     team work normally but trap the only-actions-that-leak-outside-this-host
+    ///
+    /// Use for: validation runs against real issues, first-time runs against
+    /// new repos, anything where you want to inspect the team's plan before
+    /// it touches the outside world.
+    #[serde(default)]
+    pub dry_run:     bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TeamTask {
     pub id:          String,
@@ -46,6 +89,11 @@ pub struct TeamTask {
     pub retry_count: u8,
     #[serde(default = "default_priority")]
     pub priority:    u8,
+    /// Optional project context. `None` (default) → run on Sirin repo with
+    /// the role's standard tool whitelist (legacy behaviour, fully
+    /// backward-compatible with pre-existing JSONL records).
+    #[serde(default)]
+    pub project:     Option<ProjectContext>,
 }
 
 // ── 全局鎖 ────────────────────────────────────────────────────────────────────
@@ -74,24 +122,32 @@ pub fn enqueue(description: &str) -> String {
 
 /// 加入新任務並指定優先級。0=最緊急，50=正常（預設），255=最低優先。
 pub fn enqueue_with_priority(description: &str, priority: u8) -> String {
-    let _g = lock().lock().unwrap_or_else(|e| e.into_inner());
-    let id = chrono::Local::now().timestamp_millis().to_string();
-    let task = TeamTask {
-        id:          id.clone(),
-        description: description.to_string(),
-        created_at:  chrono::Local::now().to_rfc3339(),
-        status:      TaskStatus::Queued,
-        result:      None,
-        finished_at: None,
-        retry_count: 0,
-        priority,
-    };
-    append_unlocked(&task);
-    id
+    enqueue_full(description, priority, 0, None)
 }
 
 /// 加入新任務並帶入指定 retry_count（內部使用，供 auto-retry 機制呼叫）。
 pub fn enqueue_with_retry(description: &str, retry_count: u8) -> String {
+    enqueue_full(description, default_priority(), retry_count, None)
+}
+
+/// 加入帶有 `ProjectContext` 的任務 — 指定 repo 與 extra_tools，讓 worker
+/// 把 task 路由到對應 cwd 的 session pool（例如 AgoraMarket）。
+pub fn enqueue_with_project(
+    description: &str,
+    priority: u8,
+    project: ProjectContext,
+) -> String {
+    enqueue_full(description, priority, 0, Some(project))
+}
+
+/// 內部統一的 enqueue 實作 — 上面 4 個 public API 都 thin-wrap 到這裡，
+/// 確保新增 TeamTask 欄位時只有一處需要改。
+fn enqueue_full(
+    description: &str,
+    priority:    u8,
+    retry_count: u8,
+    project:     Option<ProjectContext>,
+) -> String {
     let _g = lock().lock().unwrap_or_else(|e| e.into_inner());
     let id = chrono::Local::now().timestamp_millis().to_string();
     let task = TeamTask {
@@ -102,7 +158,8 @@ pub fn enqueue_with_retry(description: &str, retry_count: u8) -> String {
         result:      None,
         finished_at: None,
         retry_count,
-        priority:    default_priority(),
+        priority,
+        project,
     };
     append_unlocked(&task);
     id
@@ -259,13 +316,13 @@ mod tests {
                 id: (base + CTR.fetch_add(1, Ordering::SeqCst)).to_string(),
                 description: "first".into(), created_at: "2026-01-01T00:00:01Z".into(),
                 status: TaskStatus::Queued, result: None, finished_at: None,
-                retry_count: 0, priority: 50,
+                retry_count: 0, priority: 50, project: None,
             };
             let t2 = TeamTask {
                 id: (base + CTR.fetch_add(1, Ordering::SeqCst)).to_string(),
                 description: "second".into(), created_at: "2026-01-01T00:00:02Z".into(),
                 status: TaskStatus::Queued, result: None, finished_at: None,
-                retry_count: 0, priority: 50,
+                retry_count: 0, priority: 50, project: None,
             };
             append_unlocked(&t1);
             append_unlocked(&t2);

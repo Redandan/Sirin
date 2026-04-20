@@ -14,6 +14,7 @@
 
 mod roles;
 mod session;
+pub mod github_adapter;
 pub mod queue;
 pub mod usage;
 pub mod worker;
@@ -42,11 +43,52 @@ impl AgentTeam {
     /// `worker_id == 0` 走原有 session 檔（向後相容），`worker_id >= 1`
     /// 走 `w{worker_id}_{role}.json` 命名空間 — 多 worker 平行時各自獨立。
     pub fn load_for_worker(cwd: &str, worker_id: usize) -> Self {
+        Self::load_for_worker_project(cwd, worker_id, "")
+    }
+
+    /// 從磁碟還原指定 (worker, project) 的 team 狀態。
+    ///
+    /// `project_key` 為空字串或 "sirin" 時與 `load_for_worker` 結果完全相同
+    /// （走 legacy session 檔名）。其他值如 "agora_market" 會在檔名加
+    /// `p{key}_` 命名空間，讓不同專案的 PM/Engineer/Tester 對話歷史互不干擾
+    /// — 例如 PM 對 Sirin 與 PM 對 AgoraMarket 是獨立 session_id。
+    pub fn load_for_worker_project(cwd: &str, worker_id: usize, project_key: &str) -> Self {
         Self {
-            pm:       PersistentSession::load_for_worker("pm",       worker_id, cwd, roles::PM),
-            engineer: PersistentSession::load_for_worker("engineer", worker_id, cwd, roles::ENGINEER),
-            tester:   PersistentSession::load_for_worker("tester",   worker_id, cwd, roles::TESTER),
+            pm: PersistentSession::load_for_worker_project(
+                "pm",       worker_id, project_key, cwd, roles::PM,
+            ),
+            engineer: PersistentSession::load_for_worker_project(
+                "engineer", worker_id, project_key, cwd, roles::ENGINEER,
+            ),
+            tester: PersistentSession::load_for_worker_project(
+                "tester",   worker_id, project_key, cwd, roles::TESTER,
+            ),
         }
+    }
+
+    /// 為下一個任務動態設定 extra tools（套用於 PM / Engineer / Tester 全部）。
+    ///
+    /// 用於 `ProjectContext.extra_tools` — 例如要讓 Engineer 透過 `gh` CLI
+    /// 操作 GitHub issue 時，傳 `&["Bash".to_string()]`（PM 也會拿到，雖然
+    /// 它的靜態 whitelist 沒有 Bash）。
+    ///
+    /// 不會持久化；reload 後重置為空。每個任務開始前由 worker 呼叫一次，
+    /// 結束後再以 `&[]` 清掉。
+    pub fn set_extra_tools(&mut self, extra: &[String]) {
+        self.pm.extra_tools       = extra.to_vec();
+        self.engineer.extra_tools = extra.to_vec();
+        self.tester.extra_tools   = extra.to_vec();
+    }
+
+    /// 為下一個任務啟用/停用 dry-run 驗證模式（套用於 PM / Engineer / Tester
+    /// 三個 session）。詳細語意見 `queue::ProjectContext::dry_run` 文件。
+    ///
+    /// 不會持久化；reload 後重置為 `false`。每個任務開始前由 worker 呼叫一次，
+    /// 結束後再以 `false` 清掉。
+    pub fn set_dry_run(&mut self, dry_run: bool) {
+        self.pm.dry_run       = dry_run;
+        self.engineer.dry_run = dry_run;
+        self.tester.dry_run   = dry_run;
     }
 
     /// PM 分配任務 → 工程師執行 → PM review → (不通過則迭代修改)。

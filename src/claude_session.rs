@@ -462,8 +462,12 @@ pub fn repo_path(name: &str) -> Option<String> {
         .or_else(|_| std::env::var("HOME"))
         .unwrap_or_default();
     match name.to_lowercase().as_str() {
-        "backend" | "api" => Some(format!("{home}/IdeaProjects/AgoraMarketAPI")),
-        "frontend" | "flutter" | "pwa" => Some(format!("{home}/IdeaProjects/AgoraMarketFlutter")),
+        "backend" | "api" | "agora_api" | "agoramarketapi"
+            => Some(format!("{home}/IdeaProjects/AgoraMarketAPI")),
+        // The Flutter app's repo was renamed: AgoraMarketFlutter → AgoraMarket.
+        // Keep all known aliases so older callers / configs still resolve.
+        "frontend" | "flutter" | "pwa" | "agora_market" | "agora" | "agoramarket"
+            => Some(format!("{home}/IdeaProjects/AgoraMarket")),
         "sirin" => Some(format!("{home}/IdeaProjects/Sirin")),
         _ => None,
     }
