@@ -87,10 +87,13 @@ pub async fn triage(
         };
     }
 
-    // 3. Rendering failure — all-black screenshot means Chrome recovered in
-    //    headless mode (Flutter CanvasKit / WebGL cannot paint headless).
-    //    Detected by screenshot file size < 8 KB: all-black PNGs compress to
-    //    ~2 KB while real rendered pages are ≥ 15 KB.
+    // 3. Rendering failure — all-black / near-black screenshot means Chrome
+    //    crashed and recovered before Flutter finished rendering (Flutter HTML
+    //    renderer initialises asynchronously; a crash mid-init leaves a dark
+    //    or blank viewport).
+    //    Detected by screenshot file size < 14 KB: truly black PNGs compress
+    //    to ~2 KB; near-black "not yet rendered" frames observed at ~12 KB;
+    //    real rendered pages (Flutter HTML renderer) are ≥ 15 KB.
     //    Must be checked BEFORE LLM triage to prevent auto-fix being triggered
     //    on non-existent frontend bugs.
     if let Some(ref path) = result.screenshot_path {
@@ -474,17 +477,17 @@ mod tests {
 
     #[test]
     fn is_screenshot_all_black_small_file() {
-        // Create a temp file smaller than 8 000 bytes → should be "black"
+        // A file < 14 000 bytes → should be detected as black/not rendered
         let dir = std::env::temp_dir();
         let path = dir.join("test_black.png");
-        std::fs::write(&path, vec![0u8; 100]).unwrap();
+        std::fs::write(&path, vec![0u8; 12_000]).unwrap(); // near-black case
         assert!(is_screenshot_all_black(path.to_str().unwrap()));
         let _ = std::fs::remove_file(path);
     }
 
     #[test]
     fn is_screenshot_all_black_large_file() {
-        // A file ≥ 8 000 bytes → real render, not black
+        // A file ≥ 14 000 bytes → real render, not black
         let dir = std::env::temp_dir();
         let path = dir.join("test_real.png");
         std::fs::write(&path, vec![42u8; 20_000]).unwrap();
@@ -504,8 +507,12 @@ mod tests {
 /// Uses file-size heuristic: all-black PNGs compress to ≤ 3 KB; real
 /// rendered pages produce ≥ 15 KB.  Threshold 8 KB gives safe margin.
 fn is_screenshot_all_black(path: &str) -> bool {
+    // Threshold mirrors executor.rs: 14 000 bytes.
+    // Near-black screenshots (Chrome recovered, Flutter not yet rendered)
+    // observed at ~12 KB — above the old 8 KB threshold.
+    // Real rendered pages (Flutter HTML renderer) are ≥ 15 KB.
     std::fs::metadata(path)
-        .map(|m| m.len() < 8_000)
+        .map(|m| m.len() < 14_000)
         .unwrap_or(false)
 }
 
