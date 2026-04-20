@@ -582,7 +582,7 @@ fn build_prompt_with_limits(
 ## Available browser actions (call via tool "web_navigate", field "action")
 - goto           — target: URL
 - screenshot     — capture page PNG
-- click          — target: CSS selector
+- click          — target: CSS selector OR plain text label (e.g. "使用用戶名密碼登入"); plain text triggers XPath text search
 - type           — target: CSS selector, text: input text
 - read           — target: CSS selector → returns innerText
 - eval           — target: JS expression → returns result

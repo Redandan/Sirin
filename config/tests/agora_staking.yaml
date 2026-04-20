@@ -1,54 +1,44 @@
 id: agora_staking
 name: "AgoraMarket Staking 質押功能驗證 (Issue #34)"
-url: "https://agoramarket.purrtechllc.com"
+url: "https://redandan.github.io/"
 
-browser_headless: false
+# React SPA — 標準 HTML DOM，不需要 Flutter 相關設定
+# browser_headless 使用預設值（true）
 max_iterations: 25
 timeout_secs: 480
-
-# claude_cli backend: compact prompt (last 3 steps, 200-char obs) keeps payload
-# under 3 KB, avoiding the 600-s watchdog kill that happened on older runs.
-# Gemini is less reliable at step 17+ when context grows.
-llm_backend: claude_cli
-
-# Rendering mode: Flutter HTML renderer
-# --disable-gpu in browser.rs removes all WebGL → Flutter uses HTML renderer.
-# url_query adds flutter-web-renderer=html as belt+suspenders.
-url_query:
-  flutter-web-renderer: html
+retry_on_parse_error: 7
 
 goal: |
   驗證 AgoraMarket 質押（Staking）功能完整流程（Issue #34，長期追蹤）。
 
-  ⚠️ 渲染模式：Flutter HTML renderer（--disable-gpu → 無 WebGL → HTML DOM）
-     使用 screenshot_analyze 判斷頁面狀態，用 click/type/find 操作 DOM 元素。
-     不要使用 ax_find / ax_click（semantics tree 不可用）。
+  這是 React SPA，使用 hash routing（#/login, #/stake）。
+  可以用標準 CSS selector 和 click/type 操作 DOM。
 
   【測試帳號】username: buyer, password: test123
   【登入頁面】預設顯示電子郵件登入。按「使用用戶名密碼登入」切換到帳密表單。
 
   執行步驟：
 
-  0. [準備] 等待 Flutter HTML 初始化（頁面載入後再等 3 秒）：
-     wait 3000
+  0. [準備] 等待頁面載入（React SPA 通常 2 秒內就緒）：
+     wait 2000
      screenshot_analyze "頁面載入狀態？是否看到 Agora Market 登入頁面？"
 
   1. [登入] 切換到帳密登入：
-     click "使用用戶名密碼登入" 連結（看起來像藍色文字，在電子郵件輸入框下方）
-     wait 1000
+     click "使用用戶名密碼登入" 連結（藍色文字，在電子郵件輸入框下方）
+     wait 500
      screenshot_analyze "是否看到 username / password 輸入框？"
-     type username input → "buyer"
-     type password input → "test123"
+     type username 或 name=username 的 input → "buyer"
+     type password 或 name=password 的 input → "test123"
      click 登入 / Login 按鈕
-     wait 3000
+     wait 2000
      screenshot_analyze "登入是否成功？是否看到主頁面或 dashboard？"
 
   2. [AC-1] 導航至質押頁面：
-     eval "location.hash='#/stake'" 或點擊 Staking/質押 導航連結
-     wait 2000
+     eval "location.hash='#/stake'"
+     wait 1500
      screenshot_analyze "質押頁面是否載入？利率是否顯示非零、非 N/A 值？可質押餘額是否顯示？"
 
-  3. [AC-1] 確認質押頁面無白屏、無 JS error：
+  3. [AC-1] 確認質押頁面無 JS error：
      eval "JSON.stringify(window.__errors || [])"
 
   4. [AC-2] 輸入有效質押金額（如 1），點擊確認/質押按鈕：
@@ -65,8 +55,8 @@ goal: |
      screenshot_analyze "是否出現確認對話框？確認後狀態是否更新為已解質押或結算中？"
 
   6. [AC-4] 導航至質押歷史記錄頁：
-     eval "location.hash='#/stake/history'" 或從 UI 找入口
-     wait 2000
+     eval "location.hash='#/stake/history'"
+     wait 1500
      screenshot_analyze "是否可見進行中 / 已結算 / 已解質押三種狀態？各記錄是否有金額/日期/利率/狀態？"
 
   7. [AC-5] 檢視質押金額小數位精度：

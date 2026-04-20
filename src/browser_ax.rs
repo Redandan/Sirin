@@ -666,10 +666,33 @@ pub fn enable_flutter_semantics() -> Result<(), String> {
                     .to_lowercase();
                 if name.contains("enable accessibility") {
                     if let Some(bid) = node.get("backendDOMNodeId").and_then(|v| v.as_u64()) {
-                        tracing::info!("[browser_ax] clicking 'Enable accessibility' button (backend_id={bid})");
-                        let _ = click_backend(bid as u32);
-                        std::thread::sleep(std::time::Duration::from_millis(800));
-                        return Ok(());
+                        // Safety: only dispatch if element is within viewport.
+                        // The "Enable accessibility" button is often positioned at
+                        // (-0.5, -0.5) — one pixel off-screen.  Dispatching events
+                        // there routes through `document.elementFromPoint(-0.5,-0.5)`
+                        // which returns the Flutter router element at the corner,
+                        // causing the hash-router to navigate away (about:blank).
+                        match center_of_backend(bid as u32) {
+                            Ok((cx, cy)) if cx >= 0.0 && cy >= 0.0 => {
+                                tracing::info!(
+                                    "[browser_ax] Strategy A: clicking 'Enable accessibility' \
+                                     button backend_id={bid} at ({cx:.1},{cy:.1})"
+                                );
+                                let _ = click_backend(bid as u32);
+                                std::thread::sleep(std::time::Duration::from_millis(800));
+                                return Ok(());
+                            }
+                            Ok((cx, cy)) => {
+                                tracing::warn!(
+                                    "[browser_ax] Strategy A: 'Enable accessibility' button \
+                                     backend_id={bid} is off-viewport ({cx:.1},{cy:.1}) — \
+                                     skipping to avoid false-click on Flutter router"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!("[browser_ax] Strategy A: getBoxModel failed: {e}");
+                            }
+                        }
                     }
                 }
             }

@@ -446,13 +446,73 @@ pub struct DiagnosticSnapshot {
     pub named_sessions: Vec<String>,
 }
 
+/// Returns true when `s` is a CSS selector (starts with `#`, `.`, `[`, `:`, `*`,
+/// or is an ASCII-only string that looks like a tag name / combinator chain).
+/// Plain-text labels (e.g. Chinese menu items) return false → JS text-click.
+fn looks_like_css_selector(s: &str) -> bool {
+    let s = s.trim();
+    if s.is_empty() { return false; }
+    // Explicit CSS sigils
+    if matches!(s.chars().next(), Some('#') | Some('.') | Some('[') | Some(':') | Some('*')) {
+        return true;
+    }
+    // If it contains non-ASCII characters it is almost certainly text content, not CSS
+    if s.chars().any(|c| !c.is_ascii()) {
+        return false;
+    }
+    // All-ASCII: treat as CSS (tag name, class combo, attribute, etc.)
+    true
+}
+
 pub fn click(selector: &str) -> Result<(), String> {
-    with_tab(|tab| {
-        tab.wait_for_element(selector)
-            .map_err(|e| format!("click – find '{selector}': {e}"))?
-            .click().map_err(|e| format!("click '{selector}': {e}"))?;
-        Ok(())
-    })
+    if looks_like_css_selector(selector) {
+        // Standard CSS selector path
+        return with_tab(|tab| {
+            tab.wait_for_element(selector)
+                .map_err(|e| format!("click – find '{selector}': {e}"))?
+                .click()
+                .map(|_| ())
+                .map_err(|e| format!("click '{selector}': {e}"))
+        });
+    }
+    // Plain-text label (e.g. "使用用戶名密碼登入"): JavaScript innerText search.
+    //
+    // WHY NOT XPath: `wait_for_xpath` blocks for up to 30 seconds when the element
+    // is absent. During that silence the headless_chrome CDP WebSocket times out,
+    // triggering a false "Chrome crashed" recovery. JavaScript evaluate() is a
+    // one-shot CDP call — it never causes CDP silence regardless of the result.
+    //
+    // Strategy: iterate all DOM elements in document order, keep the LAST match.
+    // In Flutter HTML renderer, parent containers appear before their leaf children,
+    // so the last element with matching innerText is the innermost (most-clickable) one.
+    //
+    // Retry up to 10 times × 1 s so dynamic content has time to appear.
+    let safe = selector
+        .replace('\\', "\\\\")
+        .replace('`', "\\`");
+    let js = format!(
+        r#"(function(){{
+            var target=`{safe}`;
+            var all=document.querySelectorAll('*');
+            var match=null;
+            for(var i=0;i<all.length;i++){{
+                var t=(all[i].innerText||'').trim();
+                if(t===target)match=all[i];
+            }}
+            if(match){{match.click();return'clicked:'+match.tagName+(match.id?'#'+match.id:'');}}
+            return'not-found';
+        }})()"#
+    );
+    for attempt in 0..10u32 {
+        let result = evaluate_js(&js)?;
+        if !result.contains("not-found") {
+            return Ok(());
+        }
+        if attempt < 9 {
+            std::thread::sleep(std::time::Duration::from_millis(1000));
+        }
+    }
+    Err(format!("click – text-find '{selector}': element not found after 10s"))
 }
 
 pub fn type_text(selector: &str, text: &str) -> Result<(), String> {
