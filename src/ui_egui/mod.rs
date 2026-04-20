@@ -49,7 +49,7 @@ pub struct SirinApp {
     // Sidebar rename state (replaces unsafe static mut)
     renaming: Option<(usize, String)>,
 
-    sidebar_collapsed: bool,
+    sidebar_state: sidebar::SidebarState,
     log_state: log_view::LogState,
     workspace_state: workspace::WorkspaceState,
     settings_state: settings::SettingsState,
@@ -59,6 +59,11 @@ pub struct SirinApp {
 
     /// Dismissed once per session so the banner doesn't reappear after dismiss
     update_banner_dismissed: bool,
+
+    /// View transition tracking — show loading spinner briefly after switch
+    /// for instant click feedback (covers any per-panel first-render cost).
+    prev_view: View,
+    view_changed_at: std::time::Instant,
 }
 
 impl SirinApp {
@@ -73,11 +78,14 @@ impl SirinApp {
             last_refresh: std::time::Instant::now() - std::time::Duration::from_secs(60),
             toasts: VecDeque::new(),
             renaming: None,
-            sidebar_collapsed: false,
+            sidebar_state: Default::default(),
             log_state: Default::default(), workspace_state: Default::default(),
             settings_state: Default::default(), browser_state: Default::default(),
             monitor_state: Default::default(), team_state: Default::default(),
             update_banner_dismissed: false,
+            prev_view: View::Workspace(0),
+            // Far in the past so initial frame doesn't show a spurious loading.
+            view_changed_at: std::time::Instant::now() - std::time::Duration::from_secs(60),
         }
     }
 
@@ -106,7 +114,19 @@ impl eframe::App for SirinApp {
         let now = std::time::Instant::now();
         self.toasts.retain(|t| t.expires > now);
 
-        sidebar::show(ctx, &self.svc, &self.agents, &self.pending_counts, &mut self.view, &mut self.renaming, &mut self.sidebar_collapsed);
+        sidebar::show(ctx, &self.svc, &self.agents, &self.pending_counts, &mut self.view, &mut self.renaming, &mut self.sidebar_state);
+
+        // ── Detect view switch → start loading window ─────────────────────
+        // The sidebar may have just mutated `self.view`. If so, start a brief
+        // loading window so the click feels instant and we mask any per-panel
+        // first-frame layout cost. Re-paint after the window so it clears.
+        const LOADING_MS: u64 = 220;
+        if self.view != self.prev_view {
+            self.prev_view = self.view.clone();
+            self.view_changed_at = std::time::Instant::now();
+            ctx.request_repaint_after(std::time::Duration::from_millis(LOADING_MS + 30));
+        }
+        let loading = self.view_changed_at.elapsed() < std::time::Duration::from_millis(LOADING_MS);
 
         // ── Update banner (shown when a new version is available) ────────
         if !self.update_banner_dismissed {
@@ -117,13 +137,17 @@ impl eframe::App for SirinApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(theme::BG).inner_margin(egui::vec2(theme::SP_XL, theme::SP_LG)))
             .show(ctx, |ui| {
-                match self.view.clone() {
-                    View::Workspace(idx) => workspace::show(ui, &self.svc, &self.agents, idx, &self.tasks, &self.pending_counts, &mut self.workspace_state),
-                    View::Settings => settings::show(ui, &self.svc, &self.agents, &mut self.settings_state),
-                    View::Log => log_view::show(ui, &self.svc, &mut self.log_state),
-                    View::Browser => browser::show(ui, &self.svc, &mut self.browser_state),
-                    View::Monitor => monitor::show(ui, &mut self.monitor_state),
-                    View::Team => team_panel::show(ui, &self.svc, &mut self.team_state),
+                if loading {
+                    show_loading(ui);
+                } else {
+                    match self.view.clone() {
+                        View::Workspace(idx) => workspace::show(ui, &self.svc, &self.agents, idx, &self.tasks, &self.pending_counts, &mut self.workspace_state),
+                        View::Settings => settings::show(ui, &self.svc, &self.agents, &mut self.settings_state),
+                        View::Log => log_view::show(ui, &self.svc, &mut self.log_state),
+                        View::Browser => browser::show(ui, &self.svc, &mut self.browser_state),
+                        View::Monitor => monitor::show(ui, &mut self.monitor_state),
+                        View::Team => team_panel::show(ui, &self.svc, &mut self.team_state),
+                    }
                 }
             });
 
@@ -151,6 +175,21 @@ impl eframe::App for SirinApp {
                 });
         }
     }
+}
+
+/// Centered spinner overlay shown briefly after a view switch. Provides
+/// instant click feedback and masks any first-render layout cost in the
+/// destination panel (mostly the agent_detail YAML cache miss + workspace
+/// table layout).
+fn show_loading(ui: &mut egui::Ui) {
+    let avail = ui.available_size();
+    ui.vertical_centered(|ui| {
+        ui.add_space((avail.y * 0.38).max(40.0));
+        ui.add(egui::Spinner::new().size(28.0).color(theme::ACCENT));
+        ui.add_space(theme::SP_SM);
+        ui.colored_label(theme::TEXT_DIM,
+            RichText::new("載入中…").size(theme::FONT_CAPTION).monospace());
+    });
 }
 
 fn setup_fonts(ctx: &egui::Context) {

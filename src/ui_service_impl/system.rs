@@ -43,12 +43,35 @@ fn classify_log_level(line: &str) -> LogLevel {
 
 // ── System status + memory search ────────────────────────────────────────────
 
+/// `system_status()` is called on every UI frame from settings + workspace
+/// panels. Without a cache, mouse movement (which triggers repaint) re-locks
+/// 5 Mutexes and clones ~6 KB of MCP-tool/skill strings per call, causing
+/// noticeable view-switch lag. 2 s TTL keeps panels feeling fresh while
+/// removing the per-frame cost.
+fn system_status_cache() -> &'static std::sync::Mutex<(std::time::Instant, Option<SystemStatus>)> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<(std::time::Instant, Option<SystemStatus>)>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(
+        (std::time::Instant::now() - std::time::Duration::from_secs(60), None)
+    ))
+}
+
 pub(super) fn system_status(svc: &RealService) -> SystemStatus {
+    const TTL: std::time::Duration = std::time::Duration::from_secs(2);
+    {
+        let g = system_status_cache().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(v) = &g.1 {
+            if g.0.elapsed() < TTL {
+                return v.clone();
+            }
+        }
+    }
+
     let tg = svc.tg_auth.status();
     let tg_connected = matches!(tg, crate::telegram_auth::TelegramStatus::Connected);
     let llm = crate::llm::shared_llm();
     let router = crate::llm::shared_router_llm();
-    SystemStatus {
+    let v = SystemStatus {
         telegram_connected: tg_connected,
         telegram_status: format!("{:?}", tg),
         rpc_running: crate::rpc_server::is_running(),
@@ -61,7 +84,11 @@ pub(super) fn system_status(svc: &RealService) -> SystemStatus {
             .map(|t| McpToolInfo { name: t.registry_name(), description: t.description.clone() }).collect(),
         skills: crate::skills::list_skills().iter()
             .map(|s| SkillInfo { name: s.name.clone(), category: s.category.clone(), description: s.description.clone() }).collect(),
-    }
+    };
+
+    let mut g = system_status_cache().lock().unwrap_or_else(|e| e.into_inner());
+    *g = (std::time::Instant::now(), Some(v.clone()));
+    v
 }
 
 pub(super) fn search_memory(_svc: &RealService, query: &str, limit: usize) -> Vec<String> {
@@ -117,8 +144,23 @@ pub(super) fn set_persona_voice(_svc: &RealService, voice: &str) {
 // ── LLM model selection ──────────────────────────────────────────────────────
 
 pub(super) fn available_models(_svc: &RealService) -> Vec<String> {
+    // Fleet is discovered once at startup — cache 30 s to drop the per-frame
+    // string clone (50+ entries on a typical Gemini fleet).
+    const TTL: std::time::Duration = std::time::Duration::from_secs(30);
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<(std::time::Instant, Vec<String>)>> =
+        std::sync::OnceLock::new();
+    let cell = CACHE.get_or_init(|| std::sync::Mutex::new(
+        (std::time::Instant::now() - std::time::Duration::from_secs(60), Vec::new())
+    ));
+    {
+        let g = cell.lock().unwrap_or_else(|e| e.into_inner());
+        if !g.1.is_empty() && g.0.elapsed() < TTL { return g.1.clone(); }
+    }
     let fleet = crate::llm::shared_fleet();
-    fleet.classified_models.iter().map(|m| m.info.name.clone()).collect()
+    let v: Vec<String> = fleet.classified_models.iter().map(|m| m.info.name.clone()).collect();
+    let mut g = cell.lock().unwrap_or_else(|e| e.into_inner());
+    *g = (std::time::Instant::now(), v.clone());
+    v
 }
 
 pub(super) fn set_main_model(svc: &RealService, model: &str) {

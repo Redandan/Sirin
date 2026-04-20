@@ -34,7 +34,21 @@ pub(super) fn teams_running(_svc: &RealService) -> bool {
 // ── MCP ──────────────────────────────────────────────────────────────────────
 
 pub(super) fn mcp_tools(_svc: &RealService) -> Vec<McpToolDetail> {
-    crate::mcp_client::get_discovered_tools().iter().map(|t| {
+    // Settings panel calls this on every UI repaint. Each call clones every
+    // discovered tool's full schema (description + params). Cache 5 s — MCP
+    // tool list only changes when servers reconnect.
+    const TTL: std::time::Duration = std::time::Duration::from_secs(5);
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<(std::time::Instant, Vec<McpToolDetail>)>> =
+        std::sync::OnceLock::new();
+    let cell = CACHE.get_or_init(|| std::sync::Mutex::new(
+        (std::time::Instant::now() - std::time::Duration::from_secs(60), Vec::new())
+    ));
+    {
+        let g = cell.lock().unwrap_or_else(|e| e.into_inner());
+        if !g.1.is_empty() && g.0.elapsed() < TTL { return g.1.clone(); }
+    }
+
+    let v: Vec<McpToolDetail> = crate::mcp_client::get_discovered_tools().iter().map(|t| {
         let params = t.input_schema.get("properties")
             .and_then(|p| p.as_object())
             .map(|props| {
@@ -51,7 +65,11 @@ pub(super) fn mcp_tools(_svc: &RealService) -> Vec<McpToolDetail> {
             description: t.description.clone(),
             params,
         }
-    }).collect()
+    }).collect();
+
+    let mut g = cell.lock().unwrap_or_else(|e| e.into_inner());
+    *g = (std::time::Instant::now(), v.clone());
+    v
 }
 
 pub(super) fn mcp_call(_svc: &RealService, tool_name: &str, args_json: &str) -> Result<String, String> {
