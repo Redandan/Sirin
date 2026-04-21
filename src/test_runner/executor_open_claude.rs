@@ -109,31 +109,46 @@ pub async fn execute_test_open_claude(
             }
         };
 
-        // Step 2: Call Open Claude with screenshot
-        // TODO: Call ctx's LLM with screenshot + goal
-        // This would require access to the LLM service
-        // For now, we'll use a placeholder that shows the integration point
-        
-        let thought = format!(
-            "Iteration {}: Analyzing current page state with Open Claude to achieve: {}",
-            iteration + 1,
-            test.goal.lines().next().unwrap_or("(no goal)")
+        // Step 2: Call Open Claude with screenshot and goal
+        let open_claude_prompt = format!(
+            "Current page screenshot provided. Goal: {}. What should I do next? \
+             Return the exact action needed (click at coordinates, type text, scroll, etc)",
+            test.goal
         );
 
-        history.push(TestStep {
-            thought,
-            action: json!({"action": "screenshot_analyze", "target": &test.goal}),
-            observation: "Open Claude would analyze screenshot here".to_string(),
+        let screenshot_analyze_input = json!({
+            "action": "screenshot_analyze",
+            "target": open_claude_prompt
         });
 
-        // Step 3-4: (Placeholder for Open Claude action execution)
-        // In real implementation, Open Claude returns coordinates + action type
-        // Then we execute: click_point, type, scroll, etc.
+        match ctx.call_tool("web_navigate", screenshot_analyze_input).await {
+            Ok(analysis_val) => {
+                let thought = format!("Iteration {}: Analyzing page with goal in mind", iteration + 1);
+                
+                let observation = match analysis_val.get("text") {
+                    Some(serde_json::Value::String(text)) => text.clone(),
+                    _ => format!("{:?}", analysis_val),
+                };
+
+                history.push(TestStep {
+                    thought,
+                    action: json!({"action": "screenshot_analyze", "target": &open_claude_prompt}),
+                    observation,
+                });
+            }
+            Err(e) => {
+                history.push(TestStep {
+                    thought: "Open Claude analysis failed".to_string(),
+                    action: json!({"action": "screenshot_analyze", "error": e.to_string()}),
+                    observation: format!("Analysis error: {e}"),
+                });
+            }
+        }
 
         if let Some(rid) = run_id {
             runs::push_observation(
                 rid,
-                format!("Iter {}: Open Claude analysis (placeholder)", iteration + 1),
+                format!("Iter {}: Open Claude analysis", iteration + 1),
             );
         }
     }

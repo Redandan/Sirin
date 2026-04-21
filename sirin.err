@@ -116,3 +116,4 @@ SendError { .. }
 [2m2026-04-21T12:38:33.372749Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=4545
 [2m2026-04-21T12:38:40.264541Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=225
 [2m2026-04-21T12:39:58.030758Z[0m [32m INFO[0m [followup] Task log trimmed: removed 3 old entries (max=2000)
+[2m2026-04-21T12:43:18.007691Z[0m [32m INFO[0m [followup] Task log trimmed: removed 3 old entries (max=2000)
