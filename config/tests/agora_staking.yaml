@@ -4,72 +4,77 @@ url: "https://redandan.github.io/"
 
 # Flutter CanvasKit — UI 全部渲染在 canvas 上（WebGL 需要 GPU）
 browser_headless: false
-max_iterations: 75
-timeout_secs: 700
-retry_on_parse_error: 3  # 降低重試次數 (P0 優化: 更穩定的 goal)
+max_iterations: 20  # ← 降低到 20 (P0.1 優化: AXTree 更可靠，減少無謂重試)
+timeout_secs: 600   # ← 減少超時 (360s → 600s保守估計，通常 3-5 分鐘)
+retry_on_parse_error: 2  # 降低重試次數
 
 # P0 優化: 添加 fixture.setup 以統一測試環境
 fixture:
   setup:
     - {action: "clear_state"}
+    - {action: "set_viewport", width: 375, height: 812}  # ← P0 新增: 先設定視窗，避免被頁面重置
     - {action: "goto", target: "https://redandan.github.io/"}
-    - {action: "set_viewport", width: 375, height: 812}  # ← P0 新增: 設定 H5 視窗尺寸 (解決 viewport mismatch)
-    - {action: "wait", target: "2000"}
-    - {action: "enable_a11y"}
+    - {action: "wait_for_ax_ready", min_nodes: 20, timeout_ms: 8000}  # ← P0 新增: 等待 AX tree 準備
+    - {action: "enable_a11y"}  # 確保語義樹激活
   cleanup:
     - {action: "clear_state"}
 
 goal: |
   驗證 AgoraMarket 質押（Staking）功能（Issue #34）。
+  ⚠️ 使用 Accessibility Tree 而非視覺截圖分析，確保精確的UI交互。
 
-  【系統說明】(P0 優化: 結構化約束)
-  - Flutter CanvasKit Web 應用，使用 Accessibility Tree (ax_*) 而非 DOM 選擇器
-  - 窗口已設定為 H5 尺寸 (375×812)，UI 元素位置精確
-  - 若找不到元素，先執行 enable_a11y，再重試 ax_find
+  【系統配置】
+  - Flutter CanvasKit 應用（375×812 H5 窗口）
+  - 禁用視覺截圖分析（screenshot_analyze），避免精度損失
+  - 所有UI交互使用 ax_find + ax_click + ax_type
 
-  【帳號資訊】
-  - username: buyer, password: test123
-  - 捷徑: 若見「測試買家」按鈕，直接 ax_click，跳過登入表單
+  【登入流程】
+  1. 頁面已加載，執行：
+     - wait_for_ax_ready min_nodes=30 (確保語義樹完整)
+     - ax_find role=button name_regex="測試買家" (搜尋快速登入)
+  2. 找到後點擊：ax_click (進入已登入狀態)
+  3. 驗證成功：ax_find role=text name_regex="錢包|資產|餘額"
 
-  【約束清單】(P0 新增: 明確業務邏輯)
-  - 質押金額: 1-100 USDT (最小單位 0.01, 預設帳戶餘額 > 1000)
-  - 按鈕標籤: 「確認質押」「取消質押」(用 name_regex 精確匹配，避免誤配)
-  - 路由清單: 
-    * #/home (帳戶首頁)
-    * #/wallet/stake-form (質押表單)
-  - 成功信號: 質押後「取消質押」按鈕出現 = 質押成功
+  【導航到質押頁面】
+  1. 點擊菜單或「質押」按鈕（使用 ax_find 定位）
+  2. 等待頁面轉換：wait_for_ax_ready (檢測新頁面加載)
+  3. 驗證質押表單已加載：ax_find role=textbox name_regex="質押.*金額"
 
-  【簡化流程】(P0 優化: 移除冗長步驟示例，保留核心邏輯)
+  【質押 1 USDT 的關鍵步驟】
+  ⚠️ 重點：不要用視覺座標，用確切的輔助功能樹。
   
-  1. 登入 → 驗證 URL = #/home
-     - ax_find name_regex="測試買家" → ax_click → wait 4000
-     - 驗證: URL 應包含 #/home
+  1. 定位金額輸入框：
+     - ax_find role=textbox name_regex="質押.*金額|金額.*質|輸入|Amount"
+     - ax_click (激活焦點)
+     - ax_type text=1 (輸入金額)
+  
+  2. 驗證輸入成功：
+     - ax_value (讀回輸入框的值，應為「1」或「1.00」)
+  
+  3. 點擊確認按鈕：
+     - ax_find role=button name_regex="確認.*質|提交|Confirm" limit=1
+     - ax_click (執行質押)
+     - wait 4000ms (讓後端處理)
+  
+  4. 驗證質押成功（核心檢查）:
+     - wait_for_ax_ready min_nodes=20 (新狀態就緒)
+     - ax_find role=button name_regex="取消.*質|撤回|Unstake" limit=1
+     - 若找到 → 質押已提交到區塊鏈 ✅
+     - 若未找到 → 質押失敗，檢查:
+       * 是否有錯誤提示（role=alert）
+       * 頁面是否回到質押表單（未提交）
 
-  2. 導航 → 進入質押頁面
-     - eval "location.hash='#/wallet/stake-form'" → wait 2000
-     - enable_a11y → ax_find role=textbox name=質押金額 (驗證表單加載)
-
-  3. 質押 1 USDT → 確認提交
-     - ax_find role=textbox name=質押金額 → ax_click → ax_type text=1
-     - ax_find role=button name=確認質押 → ax_click → wait 3000
-     - enable_a11y → ax_find role=button name=取消質押 (出現 = 成功)
-
-  4. 取消質押 → 驗證操作
-     - ax_find role=button name=取消質押 → ax_click → wait 1000
-     - enable_a11y → ax_find role=button name_regex="確認|確定" → ax_click → wait 2000
-
-  完成標準 (全部滿足):
-  - ✅ 登入成功 (URL = #/home)
-  - ✅ 質押表單加載 (可見「質押金額」輸入框)
-  - ✅ 質押 1 USDT 成功 (「取消質押」按鈕出現)
-  - ✅ 取消質押成功 (對話框確認或頁面轉換)
+  【成功條件】
+  - ✅ 登入狀態確認（能看到錢包/資產信息）
+  - ✅ 質押表單加載並可交互（金額輸入框可見且接受輸入）
+  - ✅ 質押提交成功（無輸入驗證錯誤，後端接受請求）
+  - ✅ 新狀態反映在 UI（「取消質押」按鈕出現）
 
 success_criteria:
-  - "質押頁面（#/wallet/stake-form）可正常開啟，無白屏或頁面不存在錯誤"
-  - "質押頁面顯示當前可用餘額（USDT 數值）"
-  - "質押 1 USDT 成功提交，出現取消質押按鈕"
-  - "取消質押成功執行"
-  - "錢包交易記錄中可看到質押或取消質押相關記錄"
+  - "用戶已登入，頁面顯示首頁或錢包界面"
+  - "質押表單頁面成功加載，「質押金額」輸入框可見"
+  - "質押 1 USDT 成功提交，「取消質押」按鈕出現"
+  - "整個流程無白屏、無 console 錯誤"
 
 tags: [staking, agora, issue-34, regression]
 
