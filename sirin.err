@@ -1,19 +1,33 @@
-[2m2026-04-21T13:02:38.078909Z[0m [32m INFO[0m [process_group] Windows Job Object installed — children will be killed on Sirin exit
-[2m2026-04-21T13:02:38.080666Z[0m [32m INFO[0m [main] Loaded .env from "C:\\Users\\Redan\\AppData\\Local\\Sirin\\.env"
-[2m2026-04-21T13:02:38.083818Z[0m [32m INFO[0m [main] AuthZ engine initialized
-[2m2026-04-21T13:02:38.085078Z[0m [32m INFO[0m [main] Live Monitor initialized
-[2m2026-04-21T13:02:38.862701Z[0m [32m INFO[0m [main] Refreshed codebase index (280 files)
-[2m2026-04-21T13:02:39.286769Z[0m [32m INFO[0m [fleet] 53 model(s) found on gemini (https://generativelanguage.googleapis.com/v1beta/openai)
-[2m2026-04-21T13:02:39.290146Z[0m [32m INFO[0m [fleet] Agent fleet configured:
-[2m2026-04-21T13:02:39.290293Z[0m [32m INFO[0m   chat   → models/gemini-2.5-flash (general conversation)
-[2m2026-04-21T13:02:39.290409Z[0m [32m INFO[0m   router → (uses chat model)
-[2m2026-04-21T13:02:39.290649Z[0m [32m INFO[0m   coder  → (uses chat model)
-[2m2026-04-21T13:02:39.291018Z[0m [32m INFO[0m   large  → (uses chat model)
-[2m2026-04-21T13:02:39.291293Z[0m [32m INFO[0m   vision → models/gemma-3-1b-it, models/gemma-3-4b-it, models/gemma-3-12b-it, models/gemma-3-27b-it, models/gemma-3n-e4b-it, models/gemma-3n-e2b-it, models/gemma-4-26b-a4b-it, models/gemma-4-31b-it (multimodal — image input capable)
-[2m2026-04-21T13:02:39.291555Z[0m [32m INFO[0m   embed  → models/gemini-embedding-001, models/gemini-embedding-2-preview (vector embeddings)
-[2m2026-04-21T13:02:39.291762Z[0m [32m INFO[0m [llm] main  backend=gemini model=models/gemini-2.5-flash
-[2m2026-04-21T13:02:43.616831Z[0m [32m INFO[0m [telegram/助手1] Starting listener
-[2m2026-04-21T13:02:43.617627Z[0m [32m INFO[0m [rpc] Listening on ws://127.0.0.1:7730 + http://127.0.0.1:7730/mcp
-[2m2026-04-21T13:02:43.619160Z[0m [32m INFO[0m [main] Headless mode — RPC/MCP server on :7730, no GUI. Press Ctrl-C to exit.
-[2m2026-04-21T13:06:03.647887Z[0m [32m INFO[0m [followup] Task log trimmed: removed 3 old entries (max=2000)
-[2m2026-04-21T13:09:23.653472Z[0m [32m INFO[0m [followup] Task log trimmed: removed 3 old entries (max=2000)
+[2m2026-04-21T14:04:11.545364Z[0m [32m INFO[0m [process_group] Windows Job Object installed — children will be killed on Sirin exit
+[2m2026-04-21T14:04:11.547304Z[0m [32m INFO[0m [main] Loaded .env from "C:\\Users\\Redan\\AppData\\Local\\Sirin\\.env"
+[2m2026-04-21T14:04:11.549605Z[0m [32m INFO[0m [main] AuthZ engine initialized
+[2m2026-04-21T14:04:11.551554Z[0m [32m INFO[0m [main] Live Monitor initialized
+[2m2026-04-21T14:04:11.861117Z[0m [32m INFO[0m [fleet] 53 model(s) found on gemini (https://generativelanguage.googleapis.com/v1beta/openai)
+[2m2026-04-21T14:04:11.864716Z[0m [32m INFO[0m [fleet] Agent fleet configured:
+[2m2026-04-21T14:04:11.865061Z[0m [32m INFO[0m   chat   → models/gemini-2.5-flash (general conversation)
+[2m2026-04-21T14:04:11.865248Z[0m [32m INFO[0m   router → (uses chat model)
+[2m2026-04-21T14:04:11.865402Z[0m [32m INFO[0m   coder  → (uses chat model)
+[2m2026-04-21T14:04:11.865684Z[0m [32m INFO[0m   large  → (uses chat model)
+[2m2026-04-21T14:04:11.865966Z[0m [32m INFO[0m   vision → models/gemma-3-1b-it, models/gemma-3-4b-it, models/gemma-3-12b-it, models/gemma-3-27b-it, models/gemma-3n-e4b-it, models/gemma-3n-e2b-it, models/gemma-4-26b-a4b-it, models/gemma-4-31b-it (multimodal — image input capable)
+[2m2026-04-21T14:04:11.866250Z[0m [32m INFO[0m   embed  → models/gemini-embedding-001, models/gemini-embedding-2-preview (vector embeddings)
+[2m2026-04-21T14:04:11.866457Z[0m [32m INFO[0m [llm] main  backend=gemini model=models/gemini-2.5-flash
+[2m2026-04-21T14:04:15.316908Z[0m [32m INFO[0m [telegram/助手1] Starting listener
+[2m2026-04-21T14:04:15.317802Z[0m [32m INFO[0m Chrome bridge listening on 127.0.0.1:18765
+[2m2026-04-21T14:04:15.317819Z[0m [32m INFO[0m [rpc] Listening on ws://127.0.0.1:7730 + http://127.0.0.1:7730/mcp
+[2m2026-04-21T14:04:15.804161Z[0m [32m INFO[0m Bridge: New client connected from Some(127.0.0.1:63759)
+[2m2026-04-21T14:04:15.865889Z[0m [32m INFO[0m [llm] router backend=lmstudio model=gemma-4-e4b-it
+[2m2026-04-21T14:04:34.292325Z[0m [32m INFO[0m Bridge: New client connected from Some(127.0.0.1:56407)
+[2m2026-04-21T14:04:34.320040Z[0m [32m INFO[0m Bridge: Request from Sirin: tools/list
+[2m2026-04-21T14:04:34.321179Z[0m [32m INFO[0m Bridge: Sent request to Chrome, waiting for response...
+[2m2026-04-21T14:04:34.321317Z[0m [31mERROR[0m Bridge: Failed to read Chrome response: Failed to read message length: failed to fill whole buffer
+[2m2026-04-21T14:04:34.321480Z[0m [32m INFO[0m Bridge: Client handler shutting down
+[2m2026-04-21T14:04:47.095460Z[0m [32m INFO[0m Bridge: New client connected from Some(127.0.0.1:62209)
+[2m2026-04-21T14:04:47.121465Z[0m [32m INFO[0m Bridge: Request from Sirin: tools/list
+[2m2026-04-21T14:04:47.122163Z[0m [32m INFO[0m Bridge: Sent request to Chrome, waiting for response...
+[2m2026-04-21T14:04:47.122340Z[0m [31mERROR[0m Bridge: Failed to read Chrome response: Failed to read message length: failed to fill whole buffer
+[2m2026-04-21T14:04:47.122597Z[0m [32m INFO[0m Bridge: Client handler shutting down
+[2m2026-04-21T14:04:47.130742Z[0m [32m INFO[0m Bridge: New client connected from Some(127.0.0.1:62210)
+[2m2026-04-21T14:04:47.131702Z[0m [32m INFO[0m Bridge: Request from Sirin: tools/call
+[2m2026-04-21T14:04:47.132138Z[0m [32m INFO[0m Bridge: Sent request to Chrome, waiting for response...
+[2m2026-04-21T14:04:47.132408Z[0m [31mERROR[0m Bridge: Failed to read Chrome response: Failed to read message length: failed to fill whole buffer
+[2m2026-04-21T14:04:47.132680Z[0m [32m INFO[0m Bridge: Client handler shutting down
