@@ -54,6 +54,15 @@ pub struct RunState {
     /// Avoids sending full multi-KB JSON trees for each step.
     #[serde(skip)]
     pub ax_diff_context: crate::test_runner::ax_diff_context::AxDiffContext,
+    /// SoM (Set-of-Mark) label map: label_id → (x, y) coordinates (P1.1 vision).
+    /// Populated when screenshot_analyze runs with AX tree available.
+    /// Used to convert LLM's "click label 5" → actual pixel coordinates.
+    #[serde(skip)]
+    pub som_label_map: Option<crate::test_runner::som_renderer::SoMLabelMap>,
+    /// Most recent AX tree nodes (for SoM preparation in vision branch).
+    /// Updated whenever ax_tree is called; used to prepare SoM labels before vision LLM.
+    #[serde(skip)]
+    pub recent_ax_nodes: Option<Vec<serde_json::Value>>,
 }
 
 // ── Registry singleton ───────────────────────────────────────────────────────
@@ -82,6 +91,8 @@ pub fn new_run(test_id: &str) -> String {
         test_goal: None,
         screenshot_cache: std::collections::HashMap::new(),
         ax_diff_context: crate::test_runner::ax_diff_context::AxDiffContext::new(),
+        som_label_map: None,
+        recent_ax_nodes: None,
     };
     registry().lock().unwrap_or_else(|e| e.into_inner())
         .insert(run_id.clone(), state);
@@ -184,6 +195,37 @@ where
         f(&mut s.ax_diff_context);
     }
 }
+
+/// Store the most recent AX tree nodes for a test run (for SoM preparation).
+/// Called by ax_tree tool handler to cache nodes for later SoM rendering.
+pub fn set_recent_ax_nodes(run_id: &str, nodes: Vec<serde_json::Value>) {
+    let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(s) = reg.get_mut(run_id) {
+        s.recent_ax_nodes = Some(nodes);
+    }
+}
+
+/// Retrieve the most recent AX tree nodes for a test run (for SoM preparation).
+pub fn get_recent_ax_nodes(run_id: &str) -> Option<Vec<serde_json::Value>> {
+    registry().lock().unwrap_or_else(|e| e.into_inner())
+        .get(run_id)?.recent_ax_nodes.clone()
+}
+
+/// Store the SoM (Set-of-Mark) label map for a test run.
+/// `label_map` maps label_id (1, 2, 3, ...) to (x, y) pixel coordinates.
+pub fn set_som_label_map(run_id: &str, label_map: crate::test_runner::som_renderer::SoMLabelMap) {
+    let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(s) = reg.get_mut(run_id) {
+        s.som_label_map = Some(label_map);
+    }
+}
+
+/// Retrieve the SoM label map for a test run.
+pub fn get_som_label_map(run_id: &str) -> Option<crate::test_runner::som_renderer::SoMLabelMap> {
+    registry().lock().unwrap_or_else(|e| e.into_inner())
+        .get(run_id)?.som_label_map.clone()
+}
+
 
 pub fn list_active() -> Vec<String> {
     registry().lock().unwrap_or_else(|e| e.into_inner())

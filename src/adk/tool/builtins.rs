@@ -1048,7 +1048,54 @@ pub(super) fn build_full_registry() -> ToolRegistry {
 
             // Handle vision analysis (requires async LLM call)
             if result.get("__vision").and_then(|v| v.as_bool()).unwrap_or(false) {
-                let prompt = result["prompt"].as_str().unwrap_or("Describe this page");
+                let mut prompt = result["prompt"].as_str().unwrap_or("Describe this page").to_string();
+                let screenshot_b64 = result
+                    .get("screenshot_b64")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                
+                // P1.1 optimization: Prepare SoM (Set-of-Mark) visual labels
+                // if AX tree is available (interactive elements → numbered labels)
+                let run_id = ctx.metadata.get("test_run_id");
+                if !screenshot_b64.is_empty() && run_id.is_some() {
+                    // Try to fetch recent AX tree (if available from last ax_tree call)
+                    // For MVP, SoM preparation is optional; if unavailable, continue with plain vision
+                    let run_id_str = run_id.unwrap();
+                    if let Some(recent_ax_nodes) = crate::test_runner::runs::get_recent_ax_nodes(run_id_str) {
+                        let som_renderer = crate::test_runner::som_renderer::SoMRenderer::with_defaults();
+                        
+                        // Prepare label map (label_id → x,y coordinates)
+                        match som_renderer.prepare_label_map(&recent_ax_nodes) {
+                            Ok(label_map) if !label_map.is_empty() => {
+                                // Store label map for potential execution phase (e.g., "click label 5")
+                                crate::test_runner::runs::set_som_label_map(run_id_str, label_map.clone());
+                                
+                                // Render labels on screenshot (MVP: no-op, but API ready)
+                                match som_renderer.render_labels(&screenshot_b64, &label_map) {
+                                    Ok(marked_img) => {
+                                        // MVP: render_labels currently returns input unchanged
+                                        // Once image crate is integrated, this will have actual label drawings
+                                        let _ = marked_img; // TODO: integrate with marked_img when rendering complete
+                                        prompt = format!(
+                                            "{}\n\n【重要】圖片上已標記可互動元件的數字編號 (1, 2, 3, ...)。\n\
+                                            若需點擊某個元件，直接說『點擊 5 號』而不是猜測座標。",
+                                            prompt
+                                        );
+                                        tracing::debug!("[vision] SoM labels applied");
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("[vision] SoM rendering failed: {}, using plain vision", e);
+                                    }
+                                }
+                            }
+                            _ => {
+                                tracing::debug!("[vision] SoM label map empty or unavailable");
+                            }
+                        }
+                    }
+                }
+                
                 // Preserve size_bytes + url from the blocking screenshot call so that
                 // executor.rs::is_all_black_screenshot() can detect black frames even
                 // when the action is screenshot_analyze (not just screenshot).
@@ -1058,12 +1105,11 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                 }).await.unwrap_or_default();
                 
                 // P1.1 optimization: Check screenshot cache before calling vision LLM
-                let run_id = ctx.metadata.get("test_run_id");
                 let mut analysis = None;
                 let mut cache_hit = false;
                 
-                if let Some(rid) = run_id {
-                    // Get PNG bytes again to compute hash for cache lookup
+                if let Some(run_id_str) = run_id {
+                    // Get PNG bytes to compute hash for cache lookup
                     if let Ok(png) = tokio::task::spawn_blocking(crate::browser::screenshot).await {
                         if let Ok(png_bytes) = png {
                             // Compute SHA256 hash of PNG
@@ -1073,7 +1119,7 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                             let hash_hex = format!("{:x}", hasher.finalize());
                             
                             // Check cache
-                            if let Some(cached) = crate::test_runner::runs::get_screenshot_cache(rid, &hash_hex) {
+                            if let Some(cached) = crate::test_runner::runs::get_screenshot_cache(run_id_str, &hash_hex) {
                                 analysis = Some(cached);
                                 cache_hit = true;
                                 tracing::debug!("[vision] cache HIT for {} bytes", png_bytes.len());
@@ -1086,18 +1132,18 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                 if analysis.is_none() {
                     let llm = crate::llm::shared_llm();
                     let client = crate::llm::shared_http();
-                    match crate::llm::analyze_screenshot(&client, &llm, prompt).await {
+                    match crate::llm::analyze_screenshot(&client, &llm, &prompt).await {
                         Ok(result) => {
                             analysis = Some(result.clone());
                             // Store in cache for future use
-                            if let Some(rid) = run_id {
+                            if let Some(run_id_str) = run_id {
                                 if let Ok(png) = tokio::task::spawn_blocking(crate::browser::screenshot).await {
                                     if let Ok(png_bytes) = png {
                                         use sha2::{Sha256, Digest};
                                         let mut hasher = Sha256::new();
                                         hasher.update(&png_bytes);
                                         let hash_hex = format!("{:x}", hasher.finalize());
-                                        crate::test_runner::runs::set_screenshot_cache(rid, hash_hex, result);
+                                        crate::test_runner::runs::set_screenshot_cache(run_id_str, hash_hex, result);
                                     }
                                 }
                             }

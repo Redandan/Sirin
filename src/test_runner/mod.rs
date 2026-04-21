@@ -20,6 +20,8 @@ pub mod i18n;
 pub mod notify;
 pub mod screenshot_cache;
 pub mod ax_diff_context;
+pub mod som_renderer;
+pub mod action_verify;
 
 pub use parser::{TestGoal, Fixture};
 pub use executor::{TestResult, TestStatus};
