@@ -501,3 +501,4 @@ SendError { .. }
 [2m2026-04-21T12:23:43.618214Z[0m [32m INFO[0m [followup] Task log trimmed: removed 6 old entries (max=2000)
 [2m2026-04-21T12:27:03.626343Z[0m [32m INFO[0m [followup] Task log trimmed: removed 5 old entries (max=2000)
 [2m2026-04-21T12:30:23.623505Z[0m [32m INFO[0m [followup] Task log trimmed: removed 6 old entries (max=2000)
+[2m2026-04-21T12:33:43.632111Z[0m [32m INFO[0m [followup] Task log trimmed: removed 6 old entries (max=2000)

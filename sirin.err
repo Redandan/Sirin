@@ -1,48 +1,14 @@
-[2m2026-04-21T08:45:48.648346Z[0m [32m INFO[0m [process_group] Windows Job Object installed — children will be killed on Sirin exit
-[2m2026-04-21T08:45:48.651009Z[0m [32m INFO[0m [main] Loaded .env from "C:\\Users\\Redan\\AppData\\Local\\Sirin\\.env"
-[2m2026-04-21T08:45:48.654103Z[0m [32m INFO[0m [main] AuthZ engine initialized
-[2m2026-04-21T08:45:48.656023Z[0m [32m INFO[0m [main] Live Monitor initialized
-[2m2026-04-21T08:45:48.936602Z[0m [32m INFO[0m [fleet] 53 model(s) found on gemini (https://generativelanguage.googleapis.com/v1beta/openai)
-[2m2026-04-21T08:45:48.937934Z[0m [32m INFO[0m [fleet] Agent fleet configured:
-[2m2026-04-21T08:45:48.938880Z[0m [32m INFO[0m   chat   → models/gemini-2.5-flash (general conversation)
-[2m2026-04-21T08:45:48.939135Z[0m [32m INFO[0m   router → (uses chat model)
-[2m2026-04-21T08:45:48.939241Z[0m [32m INFO[0m   coder  → (uses chat model)
-[2m2026-04-21T08:45:48.939348Z[0m [32m INFO[0m   large  → (uses chat model)
-[2m2026-04-21T08:45:48.939473Z[0m [32m INFO[0m   vision → models/gemma-3-1b-it, models/gemma-3-4b-it, models/gemma-3-12b-it, models/gemma-3-27b-it, models/gemma-3n-e4b-it, models/gemma-3n-e2b-it, models/gemma-4-26b-a4b-it, models/gemma-4-31b-it (multimodal — image input capable)
-[2m2026-04-21T08:45:48.939598Z[0m [32m INFO[0m   embed  → models/gemini-embedding-001, models/gemini-embedding-2-preview (vector embeddings)
-[2m2026-04-21T08:45:48.939706Z[0m [32m INFO[0m [llm] main  backend=gemini model=models/gemini-2.5-flash
-[2m2026-04-21T08:45:52.873771Z[0m [32m INFO[0m [telegram/助手1] Starting listener
-[2m2026-04-21T08:45:52.874456Z[0m [32m INFO[0m [rpc] Listening on ws://127.0.0.1:7730 + http://127.0.0.1:7730/mcp
-[2m2026-04-21T08:45:53.239851Z[0m [32m INFO[0m [llm] router backend=lmstudio model=gemma-4-e4b-it
-[2m2026-04-21T08:49:12.918205Z[0m [32m INFO[0m [followup] Task log trimmed: removed 6 old entries (max=2000)
-[2m2026-04-21T08:51:10.249135Z[0m [32m INFO[0m [browser] launched Chrome (headless=true)
-[2m2026-04-21T08:51:13.282963Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=4635
-[2m2026-04-21T08:51:16.230228Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=380
-[2m2026-04-21T08:51:16.696942Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=5736
-[2m2026-04-21T08:51:19.262312Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=540
-[2m2026-04-21T08:51:19.271561Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=825
-[2m2026-04-21T08:51:22.985304Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=217
-[2m2026-04-21T08:51:41.816912Z[0m [31mERROR[0m Got a timeout while listening for browser events (Chrome #Some(30872))
-[2m2026-04-21T08:51:52.913333Z[0m [32m INFO[0m [followup] Task log trimmed: removed 3 old entries (max=2000)
-[2m2026-04-21T08:53:12.605211Z[0m [32m INFO[0m [browser] headless mode mismatch (current=true, requested=false) — re-launching
-[2m2026-04-21T08:53:12.664420Z[0m [33m WARN[0m Couldn't send browser an event: "TargetInfoChanged(TargetInfoChangedEvent { params: TargetInfoChangedEventParams { target_info: TargetInfo { target_id: \"3A5C86FA83A8DE41A65CC818D2E0E83A\", Type: \"page\", title: \"Home · Redandan/Redandan.github.io Wiki · GitHub\", url: \"https://github.com/Redandan/Redandan.github.io/wiki\", attached: false, opener_id: None, can_access_opener: false, opener_frame_id: None, parent_frame_id: None, browse"
-SendError { .. }
-[2m2026-04-21T08:53:14.903395Z[0m [32m INFO[0m [browser] launched Chrome (headless=false)
-[2m2026-04-21T08:53:17.344233Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=5176
-[2m2026-04-21T08:53:20.340682Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=386
-[2m2026-04-21T08:53:25.344718Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=5539
-[2m2026-04-21T08:53:27.632210Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=450
-[2m2026-04-21T08:53:28.200915Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=63
-[2m2026-04-21T08:53:33.333531Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=361
-[2m2026-04-21T08:53:33.336919Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=6434
-[2m2026-04-21T08:53:35.579773Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=383
-[2m2026-04-21T08:53:35.588901Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=1581
-[2m2026-04-21T08:53:38.163434Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=207
-[2m2026-04-21T08:53:47.783466Z[0m [31mERROR[0m Got a timeout while listening for browser events (Chrome #Some(19800))
-[2m2026-04-21T08:54:32.911605Z[0m [32m INFO[0m [followup] Task log trimmed: removed 2 old entries (max=2000)
-[2m2026-04-21T08:57:52.917043Z[0m [32m INFO[0m [followup] Task log trimmed: removed 4 old entries (max=2000)
-[2m2026-04-21T09:01:12.915057Z[0m [32m INFO[0m [followup] Task log trimmed: removed 3 old entries (max=2000)
-[2m2026-04-21T09:04:32.910086Z[0m [32m INFO[0m [followup] Task log trimmed: removed 3 old entries (max=2000)
-[2m2026-04-21T09:07:52.908379Z[0m [32m INFO[0m [followup] Task log trimmed: removed 4 old entries (max=2000)
-[2m2026-04-21T09:11:12.910985Z[0m [32m INFO[0m [followup] Task log trimmed: removed 3 old entries (max=2000)
-[2m2026-04-21T09:14:32.908290Z[0m [32m INFO[0m [followup] Task log trimmed: removed 3 old entries (max=2000)
+[2m2026-04-21T12:34:54.062170Z[0m [32m INFO[0m [process_group] Windows Job Object installed — children will be killed on Sirin exit
+[2m2026-04-21T12:34:54.064357Z[0m [32m INFO[0m [main] Loaded .env from "C:\\Users\\Redan\\AppData\\Local\\Sirin\\.env"
+[2m2026-04-21T12:34:54.067240Z[0m [32m INFO[0m [main] AuthZ engine initialized
+[2m2026-04-21T12:34:54.068383Z[0m [32m INFO[0m [main] Live Monitor initialized
+[2m2026-04-21T12:34:54.627466Z[0m [33m WARN[0m [fleet] gemini at 'https://generativelanguage.googleapis.com/v1beta/openai' returned no models — using env-only config
+[2m2026-04-21T12:34:54.627761Z[0m [32m INFO[0m [fleet] Agent fleet configured:
+[2m2026-04-21T12:34:54.627901Z[0m [32m INFO[0m   chat   → models/gemini-2.5-flash (general conversation)
+[2m2026-04-21T12:34:54.628032Z[0m [32m INFO[0m   router → (uses chat model)
+[2m2026-04-21T12:34:54.628160Z[0m [32m INFO[0m   coder  → (uses chat model)
+[2m2026-04-21T12:34:54.628288Z[0m [32m INFO[0m   large  → (uses chat model)
+[2m2026-04-21T12:34:54.628409Z[0m [32m INFO[0m [llm] main  backend=gemini model=models/gemini-2.5-flash
+[2m2026-04-21T12:34:57.978257Z[0m [32m INFO[0m [telegram/助手1] Starting listener
+[2m2026-04-21T12:34:57.979080Z[0m [32m INFO[0m [rpc] Listening on ws://127.0.0.1:7730 + http://127.0.0.1:7730/mcp
+[2m2026-04-21T12:34:57.979469Z[0m [32m INFO[0m [main] Headless mode — RPC/MCP server on :7730, no GUI. Press Ctrl-C to exit.

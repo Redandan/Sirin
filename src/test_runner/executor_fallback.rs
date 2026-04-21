@@ -2,6 +2,41 @@
 //!
 //! When AXTree-based browser control fails repeatedly, try Open Claude's
 //! precise coordinate-based control as a fallback.
+//!
+//! ## Integration Path (Future PR)
+//!
+//! Currently this module provides the fallback infrastructure but is not yet
+//! wired into the main executor loop. To enable fallback:
+//!
+//! 1. In `executor.rs::execute_test_tracked()`, add at line 128:
+//!    ```rust
+//!    let mut fallback_ctx = crate::test_runner::executor_fallback::AxtreeFallbackContext::new();
+//!    ```
+//!
+//! 2. When an `ax_find` call returns "no element at viewport" or similar error,
+//!    record it in `fallback_ctx`:
+//!    ```rust
+//!    if observation.contains("no element") {
+//!        fallback_ctx.record_failure(&observation);
+//!        if fallback_ctx.should_fallback() {
+//!            // Try Open Claude as fallback (requires native host setup)
+//!            match fallback_ctx.try_open_claude_fallback(prompt).await {
+//!                Ok((x, y)) => {
+//!                    // Execute fallback click at (x, y)
+//!                    // Reset fallback_ctx on success
+//!                }
+//!                Err(e) => tracing::warn!("Open Claude fallback failed: {}", e),
+//!            }
+//!        }
+//!    }
+//!    ```
+//!
+//! 3. When any action succeeds, reset the failure counter:
+//!    ```rust
+//!    if action_succeeded {
+//!        fallback_ctx.reset();
+//!    }
+//!    ```
 
 use crate::open_claude_client::{OpenClaudeClient, OpenClaudeConfig};
 
