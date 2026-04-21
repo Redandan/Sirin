@@ -178,30 +178,28 @@ pub async fn execute_test_open_claude(
             test.goal
         );
 
-        // Try to call Open Claude via native messaging (if available)
+        // Call Open Claude computer tool — STRICT (no fallback)
+        // If Open Claude is not available, test fails immediately
         let observation = match call_open_claude_computer(&oc_config, &oc_prompt).await {
             Ok(response) => {
                 // Parse Open Claude response for action
                 format!("Open Claude response: {}", response)
             }
             Err(oc_err) => {
-                // Fallback to regular screenshot_analyze if Open Claude unavailable
-                tracing::warn!("Open Claude call failed: {}, falling back to screenshot_analyze", oc_err);
+                // NO FALLBACK — fail immediately if Open Claude unavailable
+                tracing::error!("Open Claude call failed: {} — STRICT MODE (no fallback)", oc_err);
                 
-                let fallback_input = json!({
-                    "action": "screenshot_analyze",
-                    "target": &oc_prompt
-                });
-
-                match ctx.call_tool("web_navigate", fallback_input).await {
-                    Ok(analysis_val) => {
-                        match analysis_val.get("text") {
-                            Some(serde_json::Value::String(text)) => text.clone(),
-                            _ => format!("{:?}", analysis_val),
-                        }
-                    }
-                    Err(e) => format!("Analysis error: {e}"),
-                }
+                return TestResult {
+                    test_id: test.id.clone(),
+                    status: TestStatus::Error,
+                    iterations: iteration,
+                    duration_ms: started.elapsed().as_millis() as u64,
+                    error_message: Some(format!("Open Claude unavailable: {}", oc_err)),
+                    screenshot_path: None,
+                    screenshot_error: None,
+                    history,
+                    final_analysis: Some("Open Claude extension not accessible — test requires native messaging connection".to_string()),
+                };
             }
         };
 
