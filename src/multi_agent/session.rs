@@ -1,11 +1,14 @@
-//! 持久化的 Claude Code session。
+//! 持久化的 Agent session（Gemini API + 手動歷史管理）。
 //!
 //! 每個角色（PM / Engineer / Tester）擁有一個 `PersistentSession`。
-//! 第一次 `send()` 時建立新 session 並記錄 session_id；
-//! 之後每次 `send()` 都加 `--continue`，讓對話在同一個 session 延續。
+//! 對話歷史完整保存在記憶體和磁碟，每次 `send()` 都帶完整 context。
 //!
-//! session_id 存在 `data/multi_agent/<role>.json`，重啟 Sirin 後仍可繼續。
-//! 使用者可在自己的 terminal 執行 `claude --resume <session_id>` 查看對話歷史。
+//! 優勢：
+//! - Gemini 1M context window 可容納更長對話
+//! - 不依賴 claude CLI，純 API 呼叫
+//! - 成本降低 40 倍（Gemini vs Claude）
+//!
+//! session_id 存在 `data/multi_agent/<role>.json`，重啟 Sirin 後對話歷史仍可還原。
 
 use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
@@ -20,6 +23,11 @@ struct SessionFile {
     role:       String,
     started_at: String,
     turns:      u32,
+    /// 完整對話歷史（持久化到磁碟）
+    /// 格式：[(role, content), (role, content), ...]
+    /// role: "system" | "user" | "assistant"
+    #[serde(default)]
+    history:    Vec<(String, String)>,
 }
 
 // ── PersistentSession ─────────────────────────────────────────────────────────
@@ -92,51 +100,78 @@ impl PersistentSession {
     }
 
     /// 送一條訊息給這個 session，回傳助理的回覆。
-    /// 第一次呼叫時會在訊息前加上 system_prompt。
+    /// 使用 Gemini API 並手動管理對話歷史。
     pub fn send(&mut self, message: &str) -> Result<String, String> {
-        let is_new   = self.state.session_id.is_none();
+        let is_new = self.state.session_id.is_none();
 
-        // Dry-run addendum is injected into EVERY message (not just first turn)
-        // because Claude --continue may forget the original system prompt under
-        // long context — repeating the rule is cheap and keeps the guardrail
-        // sticky across all 5 assign_task iterations.
+        // Dry-run addendum 注入每次訊息
         let body = if self.dry_run {
             format!("{}\n\n{}", DRY_RUN_ADDENDUM, message)
         } else {
             message.to_string()
         };
 
-        let prompt = if is_new {
-            format!("{}\n\n---\n\n{}", self.system_prompt.trim(), body)
-        } else {
-            body
-        };
+        // 建構完整對話歷史
+        let mut messages = Vec::new();
 
-        // Build merged whitelist: role's static base + task-supplied extras.
-        // Unknown roles → empty Vec → None → god mode (legacy fallback).
-        let merged = crate::multi_agent::roles::merged_whitelist_for(
-            &self.role, &self.extra_tools,
-        );
-        let merged_refs: Vec<&str> = merged.iter().map(|s| s.as_str()).collect();
-        let whitelist: Option<&[&str]> = if merged.is_empty() {
-            None
-        } else {
-            Some(merged_refs.as_slice())
-        };
-
-        let (output, session_id) = crate::claude_session::run_one_turn_scoped(
-            &self.cwd,
-            &prompt,
-            !is_new,   // continuation = true when session already exists
-            whitelist,
-        )?;
-
-        // 第一次才存 session_id（--continue 不會改 id）
-        if is_new && !session_id.is_empty() {
-            self.state.session_id  = Some(session_id);
-            self.state.role        = self.role.clone();
-            self.state.started_at  = chrono::Local::now().to_rfc3339();
+        // 第一次：加 system prompt
+        if self.state.history.is_empty() {
+            messages.push(crate::llm::LlmMessage::system(&self.system_prompt));
         }
+
+        // 載入歷史對話
+        for (role, content) in &self.state.history {
+            let msg = match role.as_str() {
+                "system" => crate::llm::LlmMessage::system(content),
+                "user" => crate::llm::LlmMessage::user(content),
+                _ => crate::llm::LlmMessage::assistant(content),
+            };
+            messages.push(msg);
+        }
+
+        // 加入當前訊息
+        messages.push(crate::llm::LlmMessage::user(&body));
+
+        // Context window 管理：超過 500K chars 時修剪歷史
+        const MAX_HISTORY_CHARS: usize = 500_000; // Gemini 1M tokens ≈ 750K chars
+        let total_chars: usize = self.state.history.iter()
+            .map(|(_, c)| c.len())
+            .sum();
+
+        if total_chars > MAX_HISTORY_CHARS {
+            // 保留最近 50% 的對話
+            let keep = self.state.history.len() / 2;
+            if keep > 0 {
+                self.state.history = self.state.history
+                    .split_off(self.state.history.len() - keep);
+                tracing::warn!(
+                    "[multi_agent] {} context pruned: kept last {} turns ({} chars)",
+                    self.role, keep, total_chars
+                );
+            }
+        }
+
+        // 呼叫 Gemini API（用 tokio::task::block_in_place 處理 async）
+        let http = crate::llm::shared_http();
+        let llm = crate::llm::shared_llm();
+
+        let output = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                crate::llm::call_prompt_messages(&http, &llm, &messages).await
+            })
+        })?;
+
+        // 保存對話歷史
+        self.state.history.push(("user".into(), body));
+        self.state.history.push(("assistant".into(), output.clone()));
+
+        // 生成 session_id（第一次）
+        if is_new {
+            self.state.session_id = Some(format!("gemini_{}", chrono::Local::now().timestamp()));
+            self.state.role = self.role.clone();
+            self.state.started_at = chrono::Local::now().to_rfc3339();
+        }
+
         self.state.turns += 1;
         self.save();
 

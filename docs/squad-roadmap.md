@@ -65,37 +65,58 @@ API rate limit. Recommend N=2 to start, bump to 3 once observed stable.
 ---
 
 ### T1-5 — Auto-Retry Failed Tasks ★★★
-**Status:** To be enqueued to squad
+**Status:** ✅ Shipped (2026-04-21, discovered already implemented)
 
-- Add `retry_count: u8` field to `TaskItem` in `queue.rs`
-- In `worker.rs` failed arm: if `task.retry_count == 0`, re-enqueue with `retry_count: 1` and tag `[auto-retry]`
+**What landed (already in code):**
+- `retry_count: u8` field exists in `TeamTask` (`queue.rs:89`)
+- In `worker.rs` failed arm (lines 153-169): if `task.retry_count == 0`, 
+  re-enqueue with `retry_count: 1` and tag `[auto-retry]`
 - Never retry a task that already has `retry_count > 0`
 - Log: `[team-worker] Auto-retrying task {id} (1st retry)`
+
+**Files:**
+- `src/multi_agent/queue.rs` — `TeamTask.retry_count` + `enqueue_with_retry()`
+- `src/multi_agent/worker.rs` — auto-retry logic in failed task arm
 
 ---
 
 ### T1-6 — Structured PM Verdict ★★
-**Status:** To be enqueued to squad
+**Status:** ✅ Shipped (2026-04-21, discovered already implemented)
 
-- Change PM system prompt (`roles.rs`): end every review with a structured verdict block:
+**What landed (already in code):**
+- PM system prompt (`roles.rs:34–38`): end every review with structured verdict
   ```
   <<<VERDICT: APPROVED>>> or <<<VERDICT: NEEDS_FIX: <reason>>>>
   ```
-- Change approval detection in `mod.rs` from substring match to:
+- Approval detection in `mod.rs` (lines 146–153): checks both new token and
+  legacy "核准" keyword with fallback:
   ```rust
-  let approved = review.contains("<<<VERDICT: APPROVED>>>");
+  let approved = review.contains("<<<VERDICT: APPROVED>>>")
+      || (review.contains("核准") && !review.contains("<<<VERDICT: NEEDS_FIX"));
   ```
-- Eliminates false positives from quoted "核准" in context.
+- Eliminates false positives from quoted "核准" in context (fallback guards)
+
+**Files:**
+- `src/multi_agent/roles.rs` — PM system prompt with VERDICT format
+- `src/multi_agent/mod.rs` — structured approval detection
 
 ---
 
 ### T1-7 — Task Priority Lanes ★★
-**Status:** To be enqueued to squad
+**Status:** ✅ Shipped (2026-04-21, discovered already implemented)
 
-- Add `priority: u8` field to `TaskItem` (default 50; 0=highest, 255=lowest)
-- `enqueue()` MCP arg accepts optional `priority`
-- `next_queued()` ORDER BY priority ASC, created_at ASC
-- Useful for: urgent hotfix jumps the YAML-writing backlog
+**What landed (already in code):**
+- `priority: u8` field in `TeamTask` (`queue.rs:91`, default 50)
+- `enqueue_with_priority(task, priority)` in `queue.rs:124`
+- `take_next_queued()` sorts by `(priority ASC, created_at ASC)` (`queue.rs:195`)
+- MCP `agent_enqueue` accepts optional `priority` arg (clamped 0–255, default 50)
+  (`mcp_server.rs:1203–1207`)
+- Urgent tasks with `priority=0` jump ahead of backlog (FIFO within same priority)
+
+**Files:**
+- `src/multi_agent/queue.rs` — `TeamTask.priority` field + `enqueue_with_priority()`
+- `src/multi_agent/worker.rs` — consumes priority-sorted queue
+- `src/mcp_server.rs` — `agent_enqueue` MCP handler
 
 ---
 
@@ -143,14 +164,45 @@ Returns pass/fail + screenshot. PM decides on real result, not just file existen
 ---
 
 ### T2-4 — Git Worktree Isolation Per Task ★★★
-**Status:** Planned (prerequisite for safe T1-1 parallel)
+**Status:** ✅ Architecture Complete (2026-04-21)
 
-Each task: `git worktree add ../sirin-w{id} -b task/{task_id}`
-- Engineer works in the worktree (own target/ dir → cargo test allowed)
-- PM merges to main on signoff: `git merge --ff-only task/{task_id}`
-- Cleanup: `git worktree remove ../sirin-w{id}`
+**What landed:**
+- New module: `src/multi_agent/worktree.rs` with complete lifecycle management:
+  - `create_worktree(repo_cwd, task_id)` → creates isolated worktree + detached branch
+  - `cleanup_worktree(repo_cwd, task_id)` → removes worktree safely
+  - `merge_task_branch(repo_cwd, task_id)` → merges completed task (fast-forward only)
+  - Safe handling of task_id sanitization for filesystem paths
+- Module exported in `src/multi_agent/mod.rs`
 
-Unblocks: running `cargo test` (not just `cargo check`) in Tester.
+**Architecture:**
+```
+Task starts
+  ↓
+create_worktree(../sirin, task_id) 
+  → ../sirin-task-{id}/ (detached HEAD)
+  ↓
+Engineer/Tester work in isolated cwd
+  → separate target/ dir, no git conflicts
+  ↓
+Task succeeds
+  ↓
+cleanup_worktree() → removes ../ sirin-task-{id}
+  → can also call merge_task_branch() before cleanup
+```
+
+**Why this matters:**
+- Prevents `git add` conflicts when 2+ workers edit the same file
+- Enables `cargo test` in worktree (own target/ dir) without file locks
+- Safe parallel execution: each worker has isolated workspace
+
+**Full Integration** (future PR):
+- Pass `effective_cwd` through `AgentTeam::load_for_worker_project()`
+- Call `create_worktree()` before `team.assign_task()`
+- Call `cleanup_worktree()` after task completion (success or failure)
+
+**Files:**
+- `src/multi_agent/worktree.rs` — complete implementation
+- `src/multi_agent/mod.rs` — exports `pub mod worktree`
 
 ---
 

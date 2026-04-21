@@ -18,6 +18,7 @@ pub mod github_adapter;
 pub mod queue;
 pub mod usage;
 pub mod worker;
+pub mod worktree;
 
 pub use session::PersistentSession;
 pub use queue::TaskStatus;
@@ -102,7 +103,7 @@ impl AgentTeam {
     /// - 傳入各 session 的訊息截斷至 MAX_MSG_CHARS
     pub fn assign_task(&mut self, task: &str) -> Result<String, String> {
         const MAX_ITER:      usize = 5;      // was 3; UI/multi-file tasks need more room
-        const MAX_MSG_CHARS: usize = 24_000; // was 8K; Claude 200K window can handle this
+        const MAX_MSG_CHARS: usize = 120_000; // Gemini 1M window — 可以處理更長的 context
 
         // 安全截斷 helper（找 max_bytes 內最後一個 char boundary）
         fn trunc(s: &str, max: usize) -> &str {

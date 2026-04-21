@@ -1,6 +1,19 @@
 /// Pre-Authorization Engine — public API entry point.
 ///
-/// Usage from `mcp_server.rs` (T4):
+/// # Actual implementation (mcp_server.rs § call_browser_exec)
+///
+/// The Monitor GUI integration is fully implemented in `mcp_server.rs`
+/// (lines 1505–1556). When a `Decision::Ask` or `Decision::AskWithLearn`
+/// is returned:
+///
+/// 1. `emit_authz_ask(request_id, client, action, args, url, timeout, learn_flag)`
+///    → posts event to Monitor → appears in authz_modal.rs UI
+/// 2. `register_authz_ask(request_id)` → returns oneshot receiver
+/// 3. `tokio::time::timeout(30s, rx)` → waits for human Allow/Deny
+/// 4. User clicks Allow/Deny in UI → `resolve_authz_ask()` sends decision
+/// 5. Handler resumes action execution or rejects with error
+///
+/// If Monitor is not initialized, authz asks fail with "no monitor GUI" error.
 ///
 /// ```rust,ignore
 /// use crate::authz::{AuthzConfig, Decision, decide, audit};
@@ -17,10 +30,15 @@
 ///         audit::log_deny(&cfg.audit.log_path, &client_id, &action, &args, &url, reason);
 ///         return mcp_error(format!("authz deny: {reason}"), ...);
 ///     }
-///     Decision::Ask(_) | Decision::AskWithLearn => {
-///         // TODO T4: wire to Monitor GUI; for now treat as deny
-///         audit::log_ask(&cfg.audit.log_path, &client_id, &action, &args, &url, "ask→deny(no gui)");
-///         return mcp_error("authz ask — no GUI attached, treated as deny", ...);
+///     Decision::Ask(reason) | Decision::AskWithLearn => {
+///         // Emit to Monitor UI; wait for human decision (30s timeout)
+///         let req_id = format!("ask-{}-{}", &action, uuid());
+///         emit_authz_ask(&req_id, &client_id, &action, &args, &url, 30_000, learn_flag).await;
+///         let rx = monitor_state.register_authz_ask(&req_id);
+///         match tokio::time::timeout(Duration::from_secs(30), rx).await {
+///             Ok(Ok(AuthzDecisionResult::Allow)) => {}, // proceed
+///             _ => return mcp_error("authz ask denied or timed out", ...),
+///         }
 ///     }
 /// }
 /// ```
