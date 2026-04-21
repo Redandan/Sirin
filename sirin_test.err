@@ -1,0 +1,285 @@
+[2m2026-04-21T09:32:33.612128Z[0m [32m INFO[0m [process_group] Windows Job Object installed — children will be killed on Sirin exit
+[2m2026-04-21T09:32:33.614739Z[0m [32m INFO[0m [main] Loaded .env from "C:\\Users\\Redan\\AppData\\Local\\Sirin\\.env"
+[2m2026-04-21T09:32:33.618148Z[0m [32m INFO[0m [main] AuthZ engine initialized
+[2m2026-04-21T09:32:33.621048Z[0m [32m INFO[0m [main] Live Monitor initialized
+[2m2026-04-21T09:32:33.931090Z[0m [32m INFO[0m [fleet] 53 model(s) found on gemini (https://generativelanguage.googleapis.com/v1beta/openai)
+[2m2026-04-21T09:32:33.932386Z[0m [32m INFO[0m [fleet] Agent fleet configured:
+[2m2026-04-21T09:32:33.932787Z[0m [32m INFO[0m   chat   → models/gemini-2.5-flash (general conversation)
+[2m2026-04-21T09:32:33.932964Z[0m [32m INFO[0m   router → (uses chat model)
+[2m2026-04-21T09:32:33.933118Z[0m [32m INFO[0m   coder  → (uses chat model)
+[2m2026-04-21T09:32:33.933280Z[0m [32m INFO[0m   large  → (uses chat model)
+[2m2026-04-21T09:32:33.933455Z[0m [32m INFO[0m   vision → models/gemma-3-1b-it, models/gemma-3-4b-it, models/gemma-3-12b-it, models/gemma-3-27b-it, models/gemma-3n-e4b-it, models/gemma-3n-e2b-it, models/gemma-4-26b-a4b-it, models/gemma-4-31b-it (multimodal — image input capable)
+[2m2026-04-21T09:32:33.933636Z[0m [32m INFO[0m   embed  → models/gemini-embedding-001, models/gemini-embedding-2-preview (vector embeddings)
+[2m2026-04-21T09:32:33.933776Z[0m [32m INFO[0m [llm] main  backend=gemini model=models/gemini-2.5-flash
+[2m2026-04-21T09:32:37.367690Z[0m [32m INFO[0m [telegram/助手1] Starting listener
+[2m2026-04-21T09:32:37.368436Z[0m [32m INFO[0m [rpc] Listening on ws://127.0.0.1:7730 + http://127.0.0.1:7730/mcp
+[2m2026-04-21T09:32:37.368623Z[0m [32m INFO[0m [main] Headless mode — RPC/MCP server on :7730, no GUI. Press Ctrl-C to exit.
+[2m2026-04-21T09:33:42.391703Z[0m [32m INFO[0m [browser] launched Chrome (headless=false)
+[2m2026-04-21T09:33:44.679966Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=5176
+[2m2026-04-21T09:33:47.532951Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=433
+[2m2026-04-21T09:33:52.533908Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=5586
+[2m2026-04-21T09:33:54.707409Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=378
+[2m2026-04-21T09:33:55.530566Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=63
+[2m2026-04-21T09:34:02.864495Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=82
+[2m2026-04-21T09:34:03.082791Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=6147
+[2m2026-04-21T09:34:05.736196Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=620
+[2m2026-04-21T09:34:05.801627Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=1539
+[2m2026-04-21T09:34:08.312118Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=188
+[2m2026-04-21T09:34:14.966745Z[0m [31mERROR[0m Got a timeout while listening for browser events (Chrome #Some(23448))
+[2m2026-04-21T09:34:22.838891Z[0m [33m WARN[0m Couldn't send browser an event: "TargetInfoChanged(TargetInfoChangedEvent { params: TargetInfoChangedEventParams { target_info: TargetInfo { target_id: \"EEB50F396F6E64228ABD7C8160B16361\", Type: \"page\", title: \"redandan.github.io\", url: \"https://redandan.github.io/\", attached: true, opener_id: None, can_access_opener: false, opener_frame_id: None, parent_frame_id: None, browser_context_id: Some(\"E95F7E61D1A362A40F02DC39C7D984A2\"),"
+SendError { .. }
+[2m2026-04-21T09:34:22.841806Z[0m [33m WARN[0m Couldn't send message to transport loop telling it to shut down
+[2m2026-04-21T09:34:42.909981Z[0m [33m WARN[0m [browser] mid-call connection closed — attempting one-shot recovery
+[2m2026-04-21T09:34:45.389230Z[0m [32m INFO[0m [browser] launched Chrome (headless=false)
+[2m2026-04-21T09:34:49.790608Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=5176
+[2m2026-04-21T09:34:49.821780Z[0m [32m INFO[0m [followup] Task log trimmed: removed 11 old entries (max=2000)
+[2m2026-04-21T09:34:51.851530Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=303
+[2m2026-04-21T09:34:56.856286Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=5456
+[2m2026-04-21T09:34:59.518210Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=373
+[2m2026-04-21T09:35:00.400009Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=63
+[2m2026-04-21T09:35:03.740223Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=76
+[2m2026-04-21T09:35:03.993916Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=6006
+[2m2026-04-21T09:35:06.724296Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=520
+[2m2026-04-21T09:35:06.733259Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=1543
+[2m2026-04-21T09:35:11.022858Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=213
+[2m2026-04-21T09:35:16.630966Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=5176
+[2m2026-04-21T09:35:18.932523Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=392
+[2m2026-04-21T09:35:23.936481Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=5545
+[2m2026-04-21T09:35:26.691286Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=469
+[2m2026-04-21T09:35:27.572245Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=63
+[2m2026-04-21T09:35:32.032750Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=182
+[2m2026-04-21T09:35:32.261231Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=6275
+[2m2026-04-21T09:35:34.966343Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=545
+[2m2026-04-21T09:35:34.990746Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=1603
+[2m2026-04-21T09:35:37.764949Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=225
+[2m2026-04-21T09:35:43.666357Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=5176
+[2m2026-04-21T09:35:47.423988Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=369
+[2m2026-04-21T09:35:52.425896Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=5522
+[2m2026-04-21T09:35:54.652808Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=398
+[2m2026-04-21T09:35:55.521295Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=63
+[2m2026-04-21T09:35:59.084145Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=74
+[2m2026-04-21T09:35:59.323322Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=6093
+[2m2026-04-21T09:36:01.845601Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=556
+[2m2026-04-21T09:36:01.936225Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=1553
+[2m2026-04-21T09:36:05.566104Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=241
+[2m2026-04-21T09:36:11.286841Z[0m [31mERROR[0m Got a timeout while listening for browser events (Chrome #Some(4148))
+[2m2026-04-21T09:36:37.409700Z[0m [32m INFO[0m [followup] Task log trimmed: removed 2 old entries (max=2000)
+[2m2026-04-21T09:39:57.394257Z[0m [32m INFO[0m [followup] Task log trimmed: removed 3 old entries (max=2000)
+[2m2026-04-21T09:43:17.396886Z[0m [32m INFO[0m [followup] Task log trimmed: removed 3 old entries (max=2000)
+[2m2026-04-21T09:44:35.962290Z[0m [33m WARN[0m [test_runner] ⚠️  'agora_staking' has 3 required doc(s) — confirm read before interpreting results:
+  • AgoraMarket/.claude/skills/agora-market-e2e/SKILL.md
+  • AgoraMarket/.claude/e2e-reports/TEST_PLAN.md
+  • docs/acceptance/issue_34_pledge.md
+[2m2026-04-21T09:44:36.626246Z[0m [33m WARN[0m Couldn't send browser an event: "TargetInfoChanged(TargetInfoChangedEvent { params: TargetInfoChangedEventParams { target_info: TargetInfo { target_id: \"8CFB2FF93BEC4A5E6D428D77F3931654\", Type: \"page\", title: \"redandan.github.io\", url: \"https://redandan.github.io/\", attached: true, opener_id: None, can_access_opener: false, opener_frame_id: None, parent_frame_id: None, browser_context_id: Some(\"287DB8DABB9F926F6D4A5A4F387C79B8\"),"
+SendError { .. }
+[2m2026-04-21T09:44:36.736131Z[0m [33m WARN[0m Couldn't send message to transport loop telling it to shut down
+[2m2026-04-21T09:44:56.701973Z[0m [33m WARN[0m [browser] mid-call connection closed — attempting one-shot recovery
+[2m2026-04-21T09:44:59.546466Z[0m [32m INFO[0m [browser] launched Chrome (headless=false)
+[2m2026-04-21T09:45:03.568896Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=7194
+[2m2026-04-21T09:45:07.319962Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=453
+[2m2026-04-21T09:45:07.496600Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=7622
+[2m2026-04-21T09:45:09.163880Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=261
+[2m2026-04-21T09:45:11.535866Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=7944
+[2m2026-04-21T09:45:13.094777Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=225
+[2m2026-04-21T09:45:21.096587Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=8200
+[2m2026-04-21T09:45:22.985011Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=300
+[2m2026-04-21T09:45:23.108642Z[0m [32m INFO[0m [browser_ax] Strategy A: 'Enable accessibility' button backend_id=69 off-viewport (-0.5,-0.5) — activating via DOM.focus + activeElement.click()
+[2m2026-04-21T09:45:24.132095Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=8533
+[2m2026-04-21T09:45:26.012508Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=334
+[2m2026-04-21T09:45:26.016016Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=8914
+[2m2026-04-21T09:45:28.564554Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=396
+[2m2026-04-21T09:45:28.693223Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=9457
+[2m2026-04-21T09:45:37.413248Z[0m [32m INFO[0m [followup] Task log trimmed: removed 3 old entries (max=2000)
+[2m2026-04-21T09:45:39.823936Z[0m [31mERROR[0m Got a timeout while listening for browser events (Chrome #Some(9264))
+[2m2026-04-21T09:45:56.135494Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=253
+[2m2026-04-21T09:45:56.138521Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=9761
+[2m2026-04-21T09:45:58.155935Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=377
+[2m2026-04-21T09:45:58.382611Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=10178
+[2m2026-04-21T09:45:59.892678Z[0m [33m WARN[0m Couldn't send browser an event: "TargetInfoChanged(TargetInfoChangedEvent { params: TargetInfoChangedEventParams { target_info: TargetInfo { target_id: \"2EFC0AEBE8D6F5B0652B6C3DB1B861EE\", Type: \"page\", title: \"Agora Market\", url: \"https://redandan.github.io/#/home\", attached: true, opener_id: None, can_access_opener: false, opener_frame_id: None, parent_frame_id: None, browser_context_id: Some(\"8F336A2F319EF583F129E5C967D09515\"),"
+SendError { .. }
+[2m2026-04-21T09:46:00.000663Z[0m [33m WARN[0m Couldn't send message to transport loop telling it to shut down
+[2m2026-04-21T09:46:00.132134Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=182
+[2m2026-04-21T09:46:04.133220Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=10391
+[2m2026-04-21T09:46:06.025677Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=279
+[2m2026-04-21T09:46:06.026308Z[0m [33m WARN[0m [browser] mid-call connection closed — attempting one-shot recovery
+[2m2026-04-21T09:46:08.680597Z[0m [32m INFO[0m [browser] launched Chrome (headless=false)
+[2m2026-04-21T09:46:09.602533Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=10704
+[2m2026-04-21T09:46:11.703308Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=421
+[2m2026-04-21T09:46:12.231904Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=42
+[2m2026-04-21T09:46:16.115175Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=196
+[2m2026-04-21T09:46:16.203475Z[0m [33m WARN[0m [test_runner] ⚠️  'agora_staking' iter 10 — mid-loop black screen. Chrome crashed again; resetting + re-navigating.
+[2m2026-04-21T09:46:16.322769Z[0m [33m WARN[0m Couldn't send message to transport loop telling it to shut down
+[2m2026-04-21T09:46:18.501313Z[0m [32m INFO[0m [browser] launched Chrome (headless=false)
+[2m2026-04-21T09:46:21.596080Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=11418
+[2m2026-04-21T09:46:24.808681Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=384
+[2m2026-04-21T09:46:32.810341Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=11794
+[2m2026-04-21T09:46:35.023954Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=312
+[2m2026-04-21T09:46:35.138497Z[0m [32m INFO[0m [browser_ax] Strategy A: 'Enable accessibility' button backend_id=65 off-viewport (-0.5,-0.5) — activating via DOM.focus + activeElement.click()
+[2m2026-04-21T09:46:36.214027Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=12140
+[2m2026-04-21T09:46:38.258959Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=299
+[2m2026-04-21T09:46:38.475775Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=12589
+[2m2026-04-21T09:46:40.805162Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=331
+[2m2026-04-21T09:46:40.928122Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=12961
+[2m2026-04-21T09:46:42.779134Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=277
+[2m2026-04-21T09:46:46.783935Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=13270
+[2m2026-04-21T09:46:49.017380Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=330
+[2m2026-04-21T09:46:49.964679Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=13634
+[2m2026-04-21T09:46:52.033129Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=461
+[2m2026-04-21T09:46:54.611617Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=42
+[2m2026-04-21T09:47:09.434402Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=954
+[2m2026-04-21T09:47:10.261441Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=15106
+[2m2026-04-21T09:47:12.221551Z[0m [31mERROR[0m Got a timeout while listening for browser events (Chrome #Some(24476))
+[2m2026-04-21T09:47:12.557710Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=491
+[2m2026-04-21T09:47:12.569651Z[0m [33m WARN[0m Couldn't send browser an event: "TargetInfoChanged(TargetInfoChangedEvent { params: TargetInfoChangedEventParams { target_info: TargetInfo { target_id: \"37298F8CDF15A73AFEA483F4F58421C4\", Type: \"page\", title: \"Agora Market\", url: \"https://redandan.github.io/#/wallet/stake-form\", attached: true, opener_id: None, can_access_opener: false, opener_frame_id: None, parent_frame_id: None, browser_context_id: Some(\"2EF9779CDCBE557BA138BF"
+SendError { .. }
+[2m2026-04-21T09:47:12.570798Z[0m [33m WARN[0m Couldn't send message to transport loop telling it to shut down
+[2m2026-04-21T09:47:12.572543Z[0m [33m WARN[0m [browser] mid-call connection closed — attempting one-shot recovery
+[2m2026-04-21T09:47:14.759422Z[0m [32m INFO[0m [browser] launched Chrome (headless=false)
+[2m2026-04-21T09:47:14.770774Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=15631
+[2m2026-04-21T09:47:17.154094Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=364
+[2m2026-04-21T09:47:20.155172Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=15985
+[2m2026-04-21T09:47:22.371815Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=442
+[2m2026-04-21T09:47:23.296066Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=16427
+[2m2026-04-21T09:47:25.300100Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=411
+[2m2026-04-21T09:47:25.584524Z[0m [33m WARN[0m [test_runner] ⚠️  'agora_staking' iter 21 — mid-loop black screen. Chrome crashed again; resetting + re-navigating.
+[2m2026-04-21T09:47:25.704072Z[0m [33m WARN[0m Couldn't send browser an event: "DetachedFromTarget(DetachedFromTargetEvent { params: DetachedFromTargetEventParams { session_id: \"F88195012086FA5C0A67DC8496949FB1\", target_id: Some(\"287E24FBB8CA8A5D6542F6D452AE4E6C\") } })"
+SendError { .. }
+[2m2026-04-21T09:47:28.086773Z[0m [32m INFO[0m [browser] launched Chrome (headless=false)
+[2m2026-04-21T09:47:31.100288Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=17131
+[2m2026-04-21T09:47:33.369784Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=477
+[2m2026-04-21T09:47:41.371347Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=17600
+[2m2026-04-21T09:47:43.561547Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=378
+[2m2026-04-21T09:47:43.706099Z[0m [32m INFO[0m [browser_ax] Strategy A: 'Enable accessibility' button backend_id=65 off-viewport (-0.5,-0.5) — activating via DOM.focus + activeElement.click()
+[2m2026-04-21T09:47:44.752573Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=18012
+[2m2026-04-21T09:47:46.694612Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=299
+[2m2026-04-21T09:47:46.813680Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=18461
+[2m2026-04-21T09:47:49.809785Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=450
+[2m2026-04-21T09:47:50.036320Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=18911
+[2m2026-04-21T09:47:52.122086Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=360
+[2m2026-04-21T09:47:56.123134Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=19303
+[2m2026-04-21T09:47:58.242272Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=353
+[2m2026-04-21T09:47:59.173824Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=19690
+[2m2026-04-21T09:48:01.147962Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=340
+[2m2026-04-21T09:48:02.732597Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=21083
+[2m2026-04-21T09:48:05.330465Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=375
+[2m2026-04-21T09:48:05.449895Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=21492
+[2m2026-04-21T09:48:07.409970Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=271
+[2m2026-04-21T09:48:07.413849Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=21705
+[2m2026-04-21T09:48:09.964526Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=442
+[2m2026-04-21T09:48:12.967146Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=21964
+[2m2026-04-21T09:48:14.952706Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=357
+[2m2026-04-21T09:48:15.878002Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=22321
+[2m2026-04-21T09:48:17.412014Z[0m [32m INFO[0m [followup] Task log trimmed: removed 2 old entries (max=2000)
+[2m2026-04-21T09:48:18.305392Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=514
+[2m2026-04-21T09:48:18.957461Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=57
+[2m2026-04-21T09:48:24.782318Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=271
+[2m2026-04-21T09:48:24.997689Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=23179
+[2m2026-04-21T09:48:27.428761Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=399
+[2m2026-04-21T09:48:27.511229Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=23729
+[2m2026-04-21T09:48:29.276705Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=283
+[2m2026-04-21T09:48:29.811097Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=24062
+[2m2026-04-21T09:48:32.161676Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=426
+[2m2026-04-21T09:48:32.169120Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=24592
+[2m2026-04-21T09:48:34.136611Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=334
+[2m2026-04-21T09:48:34.358061Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=24967
+[2m2026-04-21T09:48:35.665994Z[0m [31mERROR[0m Got a timeout while listening for browser events (Chrome #Some(29212))
+[2m2026-04-21T09:48:36.565311Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=418
+[2m2026-04-21T09:48:39.566698Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=25417
+[2m2026-04-21T09:48:42.124551Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=505
+[2m2026-04-21T09:48:43.040097Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=25920
+[2m2026-04-21T09:48:45.376852Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=536
+[2m2026-04-21T09:48:46.151801Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=45
+[2m2026-04-21T09:48:56.734651Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=978
+[2m2026-04-21T09:48:56.968507Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=27552
+[2m2026-04-21T09:49:07.629522Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=445
+[2m2026-04-21T09:49:07.633412Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=27749
+[2m2026-04-21T09:49:15.289087Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=686
+[2m2026-04-21T09:49:15.327416Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=28761
+[2m2026-04-21T09:49:28.622226Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=843
+[2m2026-04-21T09:49:28.625835Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=28958
+[2m2026-04-21T09:49:34.194682Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=453
+[2m2026-04-21T09:49:34.195492Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=29816
+[2m2026-04-21T09:49:37.801036Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=533
+[2m2026-04-21T09:49:37.804776Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=30911
+[2m2026-04-21T09:49:50.654763Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=1014
+[2m2026-04-21T09:49:50.658493Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=31108
+[2m2026-04-21T09:49:57.228147Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=549
+[2m2026-04-21T09:49:57.321218Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=31995
+[2m2026-04-21T09:50:03.743816Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=707
+[2m2026-04-21T09:50:04.752990Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=32736
+[2m2026-04-21T09:50:13.863041Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=732
+[2m2026-04-21T09:50:14.303816Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=33518
+[2m2026-04-21T09:50:17.086124Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=365
+[2m2026-04-21T09:50:17.096557Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=34033
+[2m2026-04-21T09:50:20.827934Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=694
+[2m2026-04-21T09:50:21.039132Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=34768
+[2m2026-04-21T09:50:23.470311Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=319
+[2m2026-04-21T09:50:26.474609Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=35079
+[2m2026-04-21T09:50:29.178069Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=619
+[2m2026-04-21T09:50:30.098151Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=35730
+[2m2026-04-21T09:50:32.866540Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=626
+[2m2026-04-21T09:50:33.382791Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=45
+[2m2026-04-21T09:50:42.298158Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=934
+[2m2026-04-21T09:50:42.460316Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=37367
+[2m2026-04-21T09:50:50.894305Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=906
+[2m2026-04-21T09:50:50.895014Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=37581
+[2m2026-04-21T09:50:57.981408Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=585
+[2m2026-04-21T09:50:58.084123Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=38481
+[2m2026-04-21T09:51:05.608364Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=745
+[2m2026-04-21T09:51:05.612036Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=38736
+[2m2026-04-21T09:51:09.911310Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=398
+[2m2026-04-21T09:51:10.356587Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=38927
+[2m2026-04-21T09:51:13.168527Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=364
+[2m2026-04-21T09:51:13.298769Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=39332
+[2m2026-04-21T09:51:15.613166Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=448
+[2m2026-04-21T09:51:18.617632Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=39812
+[2m2026-04-21T09:51:21.465109Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=663
+[2m2026-04-21T09:51:22.388283Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=40501
+[2m2026-04-21T09:51:25.511377Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=805
+[2m2026-04-21T09:51:25.992184Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=42356
+[2m2026-04-21T09:51:29.811309Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=749
+[2m2026-04-21T09:51:29.822413Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=43656
+[2m2026-04-21T09:51:35.052283Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=761
+[2m2026-04-21T09:51:35.580570Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=44419
+[2m2026-04-21T09:51:37.421999Z[0m [32m INFO[0m [followup] Task log trimmed: removed 4 old entries (max=2000)
+[2m2026-04-21T09:51:38.535941Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=344
+[2m2026-04-21T09:51:38.543763Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=44913
+[2m2026-04-21T09:51:42.144206Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=669
+[2m2026-04-21T09:51:42.265667Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=45583
+[2m2026-04-21T09:51:45.411098Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=411
+[2m2026-04-21T09:51:48.415215Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=45998
+[2m2026-04-21T09:51:51.790387Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=756
+[2m2026-04-21T09:51:52.714915Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=46754
+[2m2026-04-21T09:51:55.713549Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=688
+[2m2026-04-21T09:51:55.724624Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=47989
+[2m2026-04-21T09:51:59.882573Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=402
+[2m2026-04-21T09:52:00.067910Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=48432
+[2m2026-04-21T09:52:03.364745Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=532
+[2m2026-04-21T09:52:06.368957Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=48996
+[2m2026-04-21T09:52:08.947670Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=536
+[2m2026-04-21T09:52:09.972104Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=49530
+[2m2026-04-21T09:52:12.645327Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=570
+[2m2026-04-21T09:52:13.164241Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=45
+[2m2026-04-21T09:52:22.863899Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=813
+[2m2026-04-21T09:52:22.937664Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=51029
+[2m2026-04-21T09:52:27.542472Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=781
+[2m2026-04-21T09:52:27.982736Z[0m [32m INFO[0m [llm] call  backend=openai-compat model=models/gemini-2.5-flash msgs=1 chars=4516
+[2m2026-04-21T09:52:41.137600Z[0m [32m INFO[0m [llm] resp  backend=openai-compat model=models/gemini-2.5-flash reply_chars=237
+[2m2026-04-21T09:54:37.396942Z[0m [32m INFO[0m [followup] Task log trimmed: removed 3 old entries (max=2000)
+[2m2026-04-21T09:57:57.408831Z[0m [32m INFO[0m [followup] Task log trimmed: removed 3 old entries (max=2000)
+[2m2026-04-21T10:01:17.409230Z[0m [32m INFO[0m [followup] Task log trimmed: removed 3 old entries (max=2000)
+[2m2026-04-21T10:04:37.401544Z[0m [32m INFO[0m [followup] Task log trimmed: removed 4 old entries (max=2000)
+[2m2026-04-21T10:07:57.397096Z[0m [32m INFO[0m [followup] Task log trimmed: removed 3 old entries (max=2000)
+[2m2026-04-21T10:11:17.415166Z[0m [32m INFO[0m [followup] Task log trimmed: removed 3 old entries (max=2000)
+[2m2026-04-21T10:11:54.562773Z[0m [33m WARN[0m Couldn't send browser an event: "TargetInfoChanged(TargetInfoChangedEvent { params: TargetInfoChangedEventParams { target_info: TargetInfo { target_id: \"C4627C2B0975C942F5216294EB5187CC\", Type: \"page\", title: \"Agora Market\", url: \"https://redandan.github.io/#/wallet/stake-form\", attached: false, opener_id: None, can_access_opener: false, opener_frame_id: None, parent_frame_id: None, browser_context_id: Some(\"2106921DF8CA102E992AD"
+SendError { .. }
+[2m2026-04-21T10:11:54.605657Z[0m [33m WARN[0m Couldn't send message to transport loop telling it to shut down
+[2m2026-04-21T10:14:37.423774Z[0m [32m INFO[0m [followup] Task log trimmed: removed 4 old entries (max=2000)
+[2m2026-04-21T10:17:57.414332Z[0m [32m INFO[0m [followup] Task log trimmed: removed 3 old entries (max=2000)
+[2m2026-04-21T10:21:17.426864Z[0m [32m INFO[0m [followup] Task log trimmed: removed 3 old entries (max=2000)
+[2m2026-04-21T10:24:37.410294Z[0m [32m INFO[0m [followup] Task log trimmed: removed 4 old entries (max=2000)
+[2m2026-04-21T10:27:57.408870Z[0m [32m INFO[0m [followup] Task log trimmed: removed 3 old entries (max=2000)
+[2m2026-04-21T10:31:17.403615Z[0m [32m INFO[0m [followup] Task log trimmed: removed 3 old entries (max=2000)
+[2m2026-04-21T10:34:37.421963Z[0m [32m INFO[0m [followup] Task log trimmed: removed 4 old entries (max=2000)
+[2m2026-04-21T10:37:57.414026Z[0m [32m INFO[0m [followup] Task log trimmed: removed 3 old entries (max=2000)
+[2m2026-04-21T10:41:17.397052Z[0m [32m INFO[0m [followup] Task log trimmed: removed 3 old entries (max=2000)

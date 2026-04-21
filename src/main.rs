@@ -28,6 +28,7 @@ mod log_buffer;
 #[allow(dead_code)] mod persona;
 #[allow(dead_code)] mod researcher;
 #[allow(dead_code)] mod mcp_client;
+pub mod open_claude_client;
 mod mcp_server;
 pub mod monitor;
 mod process_group;
