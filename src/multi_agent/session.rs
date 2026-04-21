@@ -159,7 +159,7 @@ impl PersistentSession {
             tokio::runtime::Handle::current().block_on(async {
                 crate::llm::call_prompt_messages(&http, &llm, &messages).await
             })
-        })?;
+        }).map_err(|e| format!("{:?}", e))?;
 
         // 保存對話歷史
         self.state.history.push(("user".into(), body));

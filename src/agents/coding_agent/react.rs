@@ -29,7 +29,8 @@ use super::CodingRequest;
 
 /// Sliding window sizes — keep the prompt compact so the main model doesn't
 /// choke on a 20k-char history on long tasks.
-const HISTORY_WINDOW: usize = 6;
+/// Reduced from 6 to 4 to decrease token consumption while maintaining sufficient context.
+const HISTORY_WINDOW: usize = 4;
 const MAX_PINNED: usize = 4;
 
 const MAX_PATCH_ERRORS: u32 = 2;

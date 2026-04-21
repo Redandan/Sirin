@@ -9,7 +9,7 @@
 //! 3. At task end: `cleanup_worktree(repo_cwd, task_id)` → removes worktree
 //! 4. PM merges (if successful): `merge_task_branch(repo_cwd, task_id)`
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 /// Create an isolated git worktree for a task.
@@ -41,7 +41,7 @@ pub fn create_worktree(repo_cwd: &str, task_id: &str) -> Result<String, String> 
     }
 
     // Create branch + worktree in one command
-    let branch_name = format!("task/{}", task_id);
+    let _branch_name = format!("task/{}", task_id);
     let output = Command::new("git")
         .arg("worktree")
         .arg("add")

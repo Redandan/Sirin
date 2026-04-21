@@ -35,7 +35,10 @@ pub enum TestStatus { Passed, Failed, Timeout, Error }
 // ── Executor ─────────────────────────────────────────────────────────────────
 
 /// Truncate observation text past this many chars in LLM history.
+/// Default: 800 chars for normal tests.
+/// Vision-heavy tests (with frequent screenshots) use more aggressive 500 chars to save tokens.
 const OBS_TRUNCATE_CHARS: usize = 800;
+const OBS_TRUNCATE_CHARS_VISION_HEAVY: usize = 500;
 
 /// Merge a `session_id` field into a browser action's JSON args (no-op if
 /// the caller didn't request a session).  Used to fan a single test out
@@ -536,9 +539,27 @@ fn truncate_with_hint(full: &str, step_idx: usize) -> String {
 
 // ── Prompt building ──────────────────────────────────────────────────────────
 
-/// Full prompt — all history, 500-char observations.  Used by Gemini / main LLM.
+/// Full prompt — all history with adaptive observation truncation.
+/// - Default: 500-char observations for balanced token usage
+/// - Vision-heavy tests: use OBS_TRUNCATE_CHARS_VISION_HEAVY (500 chars) for aggressive savings
+/// Used by Gemini / main LLM backend.
 fn build_prompt(test: &TestGoal, history: &[TestStep], parse_error_hint: Option<&str>) -> String {
-    build_prompt_with_limits(test, history, parse_error_hint, usize::MAX, 500)
+    // Detect if this test requires frequent vision analysis (multiple screenshot_analyze calls)
+    let vision_call_count = history
+        .iter()
+        .filter(|step| {
+            step.observation.contains("__vision") || 
+            (step.action.get("action").is_some_and(|a| a.as_str() == Some("screenshot_analyze")))
+        })
+        .count();
+    let is_vision_heavy = vision_call_count >= 3; // 3+ vision calls → aggressive truncation
+    
+    let obs_limit = if is_vision_heavy {
+        OBS_TRUNCATE_CHARS_VISION_HEAVY
+    } else {
+        500
+    };
+    build_prompt_with_limits(test, history, parse_error_hint, usize::MAX, obs_limit)
 }
 
 /// Compact prompt for `claude_cli` backend.
