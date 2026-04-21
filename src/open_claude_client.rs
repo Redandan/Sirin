@@ -104,45 +104,61 @@ pub struct ComputerToolResult {
 
 impl ComputerToolResult {
     /// Parse Claude's response to extract coordinates and action
-    /// Expected format in response text: "click at (123, 456)" or "type 'hello' at input"
+    /// Expected format: Claude will return natural language like:
+    /// "I should click the 'Confirm Stake' button at coordinates (345, 280)"
+    /// or "Type 'hello' in the input field at (200, 150)"
     pub fn from_claude_response(text: &str) -> Option<Self> {
-        // Simple regex-free parsing for robustness
-        // Look for patterns like "(123, 456)" or "click" or "type"
+        let lower = text.to_lowercase();
         
+        // Determine action
+        let action = if lower.contains("type") || lower.contains("input") {
+            "type"
+        } else if lower.contains("scroll") {
+            "scroll"
+        } else if lower.contains("click") || lower.contains("button") || lower.contains("tap") {
+            "click"
+        } else if lower.contains("screenshot") {
+            "screenshot"
+        } else {
+            "click" // Default to click
+        }.to_string();
+
+        // Extract coordinates from patterns like "(123, 456)" or "123, 456"
         let mut x = None;
         let mut y = None;
-        let mut action = "click".to_string();
-        let mut text_to_type = None;
-
-        // Extract action word
-        if text.contains("type") {
-            action = "type".to_string();
-        } else if text.contains("scroll") {
-            action = "scroll".to_string();
-        } else if text.contains("click") {
-            action = "click".to_string();
-        }
-
-        // Extract coordinates (look for pattern like "(123, 456)")
-        for word in text.split(|c: char| !c.is_numeric() && c != ',' && c != '(' && c != ')' && c != ' ') {
-            if let Ok(num) = word.parse::<u32>() {
-                if x.is_none() {
-                    x = Some(num);
-                } else if y.is_none() {
-                    y = Some(num);
-                    break;
+        
+        // Look for coordinate patterns: (X, Y)
+        if let Some(start) = text.find('(') {
+            if let Some(end) = text[start+1..].find(')') {
+                let coord_str = &text[start+1..start+1+end];
+                let parts: Vec<&str> = coord_str.split(',').collect();
+                if parts.len() == 2 {
+                    if let (Ok(x_val), Ok(y_val)) = (
+                        parts[0].trim().parse::<u32>(),
+                        parts[1].trim().parse::<u32>()
+                    ) {
+                        x = Some(x_val);
+                        y = Some(y_val);
+                    }
                 }
             }
         }
 
         // Extract text for type action (between quotes)
-        if let Some(start) = text.find('\'') {
-            if let Some(end) = text[start+1..].find('\'') {
-                text_to_type = Some(text[start+1..start+1+end].to_string());
+        let mut text_to_type = None;
+        if action == "type" {
+            if let Some(start) = text.find('\'') {
+                if let Some(end) = text[start+1..].find('\'') {
+                    text_to_type = Some(text[start+1..start+1+end].to_string());
+                }
+            } else if let Some(start) = text.find('"') {
+                if let Some(end) = text[start+1..].find('"') {
+                    text_to_type = Some(text[start+1..start+1+end].to_string());
+                }
             }
         }
 
-        // If we have coordinates, return result
+        // Return result if we have coordinates
         if let (Some(x_val), Some(y_val)) = (x, y) {
             return Some(ComputerToolResult {
                 x: x_val,
@@ -218,41 +234,53 @@ impl OpenClaudeClient {
         Ok(result)
     }
 
-    /// Send JSON-RPC request to MCP server and get response
+    /// Send JSON-RPC request via Chrome bridge (stdin/stdout) to Open Claude
+    /// 
+    /// The bridge at localhost:18765 handles Native Messaging protocol translation:
+    /// Sirin (TCP) ←→ Chrome Bridge (stdin/stdout) ←→ Open Claude Extension
     async fn send_request(&self, request: &MpcRequest) -> Result<String, String> {
         let addr = format!("{}:{}", self.config.host, self.config.port);
         
+        // Connect to Chrome bridge
         let mut stream = tokio::time::timeout(
             Duration::from_secs(self.config.timeout_secs),
             TcpStream::connect(&addr),
         )
         .await
-        .map_err(|_| format!("Timeout connecting to Open Claude at {}", addr))?
-        .map_err(|e| format!("Failed to connect to Open Claude: {}", e))?;
+        .map_err(|_| format!("Timeout connecting to Chrome bridge at {}", addr))?
+        .map_err(|e| format!("Chrome bridge unavailable ({}): ensure Open Claude extension is installed and Claude Code session is active", e))?;
 
-        // Send request
+        // Serialize request as JSON (Chrome bridge will add 4-byte length prefix)
         let request_json = serde_json::to_string(request)
             .map_err(|e| format!("Failed to serialize request: {}", e))?;
         
+        // Send request to bridge (raw JSON, no newline — bridge handles framing)
         stream.write_all(request_json.as_bytes())
             .await
-            .map_err(|e| format!("Failed to write to socket: {}", e))?;
+            .map_err(|e| format!("Failed to write to bridge: {}", e))?;
         
-        stream.write_all(b"\n")
+        stream.flush()
             .await
-            .map_err(|e| format!("Failed to write newline: {}", e))?;
+            .map_err(|e| format!("Failed to flush socket: {}", e))?;
 
-        // Read response (with timeout)
-        let mut buffer = vec![0u8; 8192];
+        tracing::info!("[open_claude_client] Sent request to bridge: method={}", request.method);
+
+        // Read response from bridge (raw JSON, no framing since bridge is TCP client-facing)
+        let mut buffer = vec![0u8; 16384];
         let n = tokio::time::timeout(
             Duration::from_secs(self.config.timeout_secs),
             stream.read(&mut buffer),
         )
         .await
-        .map_err(|_| "Timeout reading Open Claude response".to_string())?
-        .map_err(|e| format!("Failed to read from socket: {}", e))?;
+        .map_err(|_| "Timeout waiting for Chrome response (Open Claude tool timed out)".to_string())?
+        .map_err(|e| format!("Failed to read bridge response: {}", e))?;
+
+        if n == 0 {
+            return Err("Bridge closed connection unexpectedly".to_string());
+        }
 
         let response_str = String::from_utf8_lossy(&buffer[..n]).to_string();
+        tracing::debug!("[open_claude_client] Raw response: {}", response_str);
         
         // Parse JSON response
         let _response: MpcResponse = serde_json::from_str(&response_str)
@@ -262,6 +290,7 @@ impl OpenClaudeClient {
         if let Some(result) = _response.result {
             if let Some(content) = result.content.first() {
                 if let Some(text) = &content.text {
+                    tracing::info!("[open_claude_client] Parsed response text: {}", text);
                     return Ok(text.clone());
                 }
             }

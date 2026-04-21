@@ -6,56 +6,7 @@
 use serde_json::json;
 use super::parser::TestGoal;
 use super::executor::{TestResult, TestStatus, TestStep};
-use tokio::io::{AsyncWriteExt, AsyncReadExt};
 use crate::open_claude_client::OpenClaudeConfig;
-
-/// Call Open Claude's computer tool via native messaging host
-async fn call_open_claude_computer(config: &OpenClaudeConfig, prompt: &str) -> Result<String, String> {
-    if !config.enabled {
-        return Err("Open Claude disabled".into());
-    }
-
-    // Try to connect to Open Claude's native messaging host (port 18765)
-    // This assumes the host bridge is running and listening
-    let addr = format!("{}:{}", config.host, config.port);
-    let mut stream = tokio::time::timeout(
-        std::time::Duration::from_secs(config.timeout_secs),
-        tokio::net::TcpStream::connect(&addr),
-    )
-    .await
-    .map_err(|_| format!("Open Claude MCP timeout connecting to {}", addr))?
-    .map_err(|e| format!("Cannot connect to Open Claude at {}: {}", addr, e))?;
-
-    // Send JSON-RPC 2.0 request to call "computer" tool
-    let request = json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/call",
-        "params": {
-            "name": "computer",
-            "arguments": {
-                "action": "screenshot"
-            }
-        }
-    });
-
-    let req_bytes = format!("{}\n", request.to_string());
-    
-    stream.write_all(req_bytes.as_bytes()).await
-        .map_err(|e| format!("Failed to send to Open Claude: {}", e))?;
-
-    // Read response with timeout
-    let mut response = String::new();
-    tokio::time::timeout(
-        std::time::Duration::from_secs(config.timeout_secs),
-        stream.read_to_string(&mut response),
-    )
-    .await
-    .map_err(|_| "Open Claude read timeout".to_string())?
-    .map_err(|e| format!("Failed to read from Open Claude: {}", e))?;
-
-    Ok(response)
-}
 
 /// Execute a test using Open Claude computer tool for browser control.
 ///
@@ -155,7 +106,7 @@ pub async fn execute_test_open_claude(
 
         // Step 1: Take screenshot locally
         let ss_input = json!({ "action": "screenshot" });
-        let screenshot_result = match ctx.call_tool("web_navigate", ss_input).await {
+        let _screenshot_result = match ctx.call_tool("web_navigate", ss_input).await {
             Ok(val) => val,
             Err(e) => {
                 history.push(TestStep {
@@ -178,12 +129,47 @@ pub async fn execute_test_open_claude(
             test.goal
         );
 
-        // Call Open Claude computer tool — STRICT (no fallback)
-        // If Open Claude is not available, test fails immediately
-        let observation = match call_open_claude_computer(&oc_config, &oc_prompt).await {
-            Ok(response) => {
-                // Parse Open Claude response for action
-                format!("Open Claude response: {}", response)
+        // Use the open_claude_client to call computer tool
+        let client = crate::open_claude_client::OpenClaudeClient::new(oc_config.clone());
+        let observation = match client.computer_tool(&oc_prompt).await {
+            Ok(result) => {
+                // Execute the action returned by Claude
+                let action_result = match result.action.as_str() {
+                    "click" => {
+                        let click_input = json!({
+                            "action": "click_point",
+                            "x": result.x,
+                            "y": result.y,
+                        });
+                        match ctx.call_tool("web_navigate", click_input).await {
+                            Ok(_) => format!("Clicked at ({}, {})", result.x, result.y),
+                            Err(e) => format!("Click failed: {}", e),
+                        }
+                    }
+                    "type" => {
+                        let text = result.text.unwrap_or_default();
+                        let type_input = json!({
+                            "action": "type_text",
+                            "text": text,
+                        });
+                        match ctx.call_tool("web_navigate", type_input).await {
+                            Ok(_) => format!("Typed: '{}'", text),
+                            Err(e) => format!("Type failed: {}", e),
+                        }
+                    }
+                    "scroll" => {
+                        let scroll_input = json!({
+                            "action": "scroll",
+                            "direction": "down",
+                        });
+                        match ctx.call_tool("web_navigate", scroll_input).await {
+                            Ok(_) => "Scrolled down".to_string(),
+                            Err(e) => format!("Scroll failed: {}", e),
+                        }
+                    }
+                    _ => format!("Unknown action: {}", result.action),
+                };
+                format!("Claude analysis: {} action={}", action_result, result.action)
             }
             Err(oc_err) => {
                 // NO FALLBACK — fail immediately if Open Claude unavailable
