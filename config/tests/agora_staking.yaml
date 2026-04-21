@@ -4,8 +4,8 @@ url: "https://redandan.github.io/"
 
 # Flutter CanvasKit — UI 全部渲染在 canvas 上（WebGL 需要 GPU）
 browser_headless: false
-max_iterations: 12  # ← 進一步降低到 12 (goal 簡化後，應該收斂更快)
-timeout_secs: 600   # ← 減少超時 (360s → 600s保守估計，通常 3-5 分鐘)
+max_iterations: 8   # ← 進一步降低到 8 (goal 極簡，不應超過 4 步)
+timeout_secs: 300   # ← 降低到 5 分鐘
 retry_on_parse_error: 2  # 降低重試次數
 
 # P0 優化: 簡化為核心質押流程驗證（登入和導航在 fixture 中完成）
@@ -21,23 +21,36 @@ fixture:
     - {action: "clear_state"}
 
 goal: |
-  用戶已登入並在質押頁面。執行以下單一核心操作：
+  【Flutter Canvas Web 應用測試 — 只用 Accessibility Tree】
   
-  【質押 1 USDT】
-  1. 尋找「質押金額」輸入框 (role=textbox, name_regex="質|金|Amount|Stake")
-  2. 點擊該輸入框 (ax_click)
-  3. 清空現有內容並輸入「1」(ax_type text=1)
-  4. 驗證輸入成功：讀取輸入框值 (ax_value)，應為「1」或「1.00」
-  5. 尋找「確認質押」按鈕 (role=button, name_regex="確認|提交|Confirm|Submit" limit=1)
-  6. 點擊按鈕 (ax_click)
-  7. 等待 4 秒 (wait 4000)
-  8. 刷新狀態樹 (enable_a11y)
-  9. 等待樹就緒 (wait_for_ax_ready min_nodes=15)
-  10. 尋找「取消質押」按鈕 (role=button, name_regex="取消|Unstake|Cancel" limit=1)
+  ⚠️ 重要限制：
+  - 不要嘗試用 screenshot_analyze 識別座標（會失敗）
+  - 不要嘗試用 DOM selector 定位元素（Canvas 沒有 DOM）
+  - 只用 ax_find + ax_click + ax_type，100% 依賴輔助功能樹
   
-  【成功標準】
-  - 「取消質押」按鈕找到 = 質押成功 ✅
-  - 若未找到，檢查是否有錯誤提示（role=alert）
+  【驗收標準：質押 1 USDT】
+  
+  Step 1: 定位並填寫金額
+  - ax_find role=textbox name_regex="質" (找金額輸入框)
+  - ax_click + ax_type text=1 (輸入「1」)
+  - 重要: 不要假設視覺位置，只用 AXTree 的精確定位
+  
+  Step 2: 點擊確認按鈕
+  - ax_find role=button name_regex="確" (找確認質押按鈕)
+  - ax_click (點擊)
+  - wait 4000 (等待後端處理)
+  
+  Step 3: 驗證成功
+  - enable_a11y (刷新語義樹)
+  - wait_for_ax_ready min_nodes=15 (等待新狀態)
+  - ax_find role=button name_regex="取消" (找取消按鈕 = 成功的證據)
+  - 若找到 → ✅ 完成
+  - 若未找到 → ❌ 質押未成功，停止並報告
+  
+  【最關鍵的點】
+  - AXTree 的 role 和 name 是唯一的真實信息
+  - 如果 ax_find 返回「找不到」，說明質押失敗或頁面狀態不對
+  - 不要試圖通過視覺來「糾正」— 只信任 AXTree
 
 success_criteria:
   - "質押金額輸入框成功接收「1」作為輸入"
