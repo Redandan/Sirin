@@ -14,6 +14,7 @@
 pub mod parser;
 pub mod executor;
 pub mod executor_fallback;
+pub mod executor_open_claude;
 pub mod triage;
 pub mod store;
 pub mod runs;
@@ -27,6 +28,7 @@ pub mod action_verify;
 pub use parser::{TestGoal, Fixture};
 pub use executor::{TestResult, TestStatus};
 pub use executor_fallback::AxtreeFallbackContext;
+pub use executor_open_claude::execute_test_open_claude;
 #[allow(unused_imports)]
 pub use executor::TestStep;
 #[allow(unused_imports)]
