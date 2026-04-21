@@ -122,6 +122,11 @@ pub async fn execute_test_tracked(
     run_id: Option<&str>,
     session_id: Option<&str>,
 ) -> TestResult {
+    // Route to Open Claude executor for Canvas-heavy tests
+    if test.id.contains("agora_staking") || test.id.contains("flutter") || test.id.contains("canvas") {
+        return super::executor_open_claude::execute_test_open_claude(ctx, test, run_id).await;
+    }
+
     use crate::test_runner::runs;
 
     let started = std::time::Instant::now();
