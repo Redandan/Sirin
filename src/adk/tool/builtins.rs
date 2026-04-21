@@ -602,7 +602,8 @@ pub(super) fn build_full_registry() -> ToolRegistry {
             let log = String::from_utf8_lossy(&out.stdout).to_string();
             Ok(json!({ "log": log }))
         })
-        .register_fn("web_navigate", |input| async move {
+        .register_ctx_fn("web_navigate", |ctx, input| {
+            async move {
             // ── Actions ──────────────────────────────────────────────
             // Navigation:  goto, screenshot, title, url, close
             // DOM:         click, type, read, eval, wait, exists, count, attr, value
@@ -618,6 +619,7 @@ pub(super) fn build_full_registry() -> ToolRegistry {
             let text = optional_string_field(&input, "text").unwrap_or_default();
 
             let action_label = action.clone(); // preserved for timeout diagnostics (action moves into closure)
+            let test_run_id = ctx.metadata.get("test_run_id").cloned(); // Extract test_run_id before spawn_blocking
             let blocking_fut = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
                 use crate::browser;
                 match action.as_str() {
@@ -848,7 +850,42 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                     "ax_tree" => {
                         let include_ignored = input.get("include_ignored").and_then(Value::as_bool).unwrap_or(false);
                         let nodes = crate::browser_ax::get_full_tree(include_ignored)?;
-                        Ok(json!({ "count": nodes.len(), "nodes": nodes }))
+                        
+                        // P1.2 optimization: Use A11y tree auto-diffing to reduce tokens
+                        if let Some(rid) = &test_run_id {
+                            // Serialize nodes to tree format for diffing
+                            let tree_value: Value = serde_json::to_value(&nodes)
+                                .unwrap_or(json!({}));
+                            
+                            // Determine if this is the first call
+                            let mut is_first = false;
+                            crate::test_runner::runs::mutate_ax_diff_context(rid, |diff_ctx| {
+                                is_first = diff_ctx.set_baseline_if_first(tree_value.clone());
+                            });
+                            
+                            // If not first call, compute and return diff
+                            if !is_first {
+                                if let Some(diff_ctx) = crate::test_runner::runs::get_ax_diff_context(rid) {
+                                    let diff_result = diff_ctx.compute_diff(&tree_value);
+                                    return Ok(json!({
+                                        "count": nodes.len(),
+                                        "nodes": nodes,
+                                        "diff_mode": true,
+                                        "diff_summary": diff_result,
+                                    }));
+                                }
+                            }
+                            
+                            // First call or no diff context: return full tree
+                            Ok(json!({
+                                "count": nodes.len(),
+                                "nodes": nodes,
+                                "first_ax_tree_call": is_first,
+                            }))
+                        } else {
+                            // No test_run_id in context: return full tree
+                            Ok(json!({ "count": nodes.len(), "nodes": nodes }))
+                        }
                     }
                     "ax_find" => {
                         let role = optional_string_field(&input, "role");
@@ -1019,18 +1056,69 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                 let url = tokio::task::spawn_blocking(|| {
                     crate::browser::get_current_url().unwrap_or_default()
                 }).await.unwrap_or_default();
-                let llm = crate::llm::shared_llm();
-                let client = crate::llm::shared_http();
-                let analysis = crate::llm::analyze_screenshot(&client, &llm, prompt).await
-                    .map_err(|e| format!("vision analysis failed: {e}"))?;
+                
+                // P1.1 optimization: Check screenshot cache before calling vision LLM
+                let run_id = ctx.metadata.get("test_run_id");
+                let mut analysis = None;
+                let mut cache_hit = false;
+                
+                if let Some(rid) = run_id {
+                    // Get PNG bytes again to compute hash for cache lookup
+                    if let Ok(png) = tokio::task::spawn_blocking(crate::browser::screenshot).await {
+                        if let Ok(png_bytes) = png {
+                            // Compute SHA256 hash of PNG
+                            use sha2::{Sha256, Digest};
+                            let mut hasher = Sha256::new();
+                            hasher.update(&png_bytes);
+                            let hash_hex = format!("{:x}", hasher.finalize());
+                            
+                            // Check cache
+                            if let Some(cached) = crate::test_runner::runs::get_screenshot_cache(rid, &hash_hex) {
+                                analysis = Some(cached);
+                                cache_hit = true;
+                                tracing::debug!("[vision] cache HIT for {} bytes", png_bytes.len());
+                            }
+                        }
+                    }
+                }
+                
+                // If cache miss, call vision LLM
+                if analysis.is_none() {
+                    let llm = crate::llm::shared_llm();
+                    let client = crate::llm::shared_http();
+                    match crate::llm::analyze_screenshot(&client, &llm, prompt).await {
+                        Ok(result) => {
+                            analysis = Some(result.clone());
+                            // Store in cache for future use
+                            if let Some(rid) = run_id {
+                                if let Ok(png) = tokio::task::spawn_blocking(crate::browser::screenshot).await {
+                                    if let Ok(png_bytes) = png {
+                                        use sha2::{Sha256, Digest};
+                                        let mut hasher = Sha256::new();
+                                        hasher.update(&png_bytes);
+                                        let hash_hex = format!("{:x}", hasher.finalize());
+                                        crate::test_runner::runs::set_screenshot_cache(rid, hash_hex, result);
+                                    }
+                                }
+                            }
+                            tracing::debug!("[vision] cache MISS, called LLM");
+                        }
+                        Err(e) => {
+                            return Err(format!("vision analysis failed: {e}"));
+                        }
+                    }
+                }
+                
                 return Ok(json!({
-                    "analysis": analysis,
+                    "analysis": analysis.unwrap_or_default(),
                     "size_bytes": size_bytes,
                     "url": url,
+                    "cache_hit": cache_hit,
                 }));
             }
 
             Ok(result)
+            }.boxed()
         })
         .register_ctx_fn("expand_observation", |ctx, input| {
             async move {

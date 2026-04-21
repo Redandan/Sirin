@@ -1,0 +1,17 @@
+[2m2026-04-21T09:18:03.872138Z[0m [32m INFO[0m [process_group] Windows Job Object installed — children will be killed on Sirin exit
+[2m2026-04-21T09:18:03.874554Z[0m [32m INFO[0m [main] Loaded .env from "C:\\Users\\Redan\\AppData\\Local\\Sirin\\.env"
+[2m2026-04-21T09:18:03.877801Z[0m [32m INFO[0m [main] AuthZ engine initialized
+[2m2026-04-21T09:18:03.881053Z[0m [32m INFO[0m [main] Live Monitor initialized
+[2m2026-04-21T09:18:04.148522Z[0m [32m INFO[0m [fleet] 53 model(s) found on gemini (https://generativelanguage.googleapis.com/v1beta/openai)
+[2m2026-04-21T09:18:04.149812Z[0m [32m INFO[0m [fleet] Agent fleet configured:
+[2m2026-04-21T09:18:04.150996Z[0m [32m INFO[0m   chat   → models/gemini-2.5-flash (general conversation)
+[2m2026-04-21T09:18:04.151417Z[0m [32m INFO[0m   router → (uses chat model)
+[2m2026-04-21T09:18:04.151590Z[0m [32m INFO[0m   coder  → (uses chat model)
+[2m2026-04-21T09:18:04.151764Z[0m [32m INFO[0m   large  → (uses chat model)
+[2m2026-04-21T09:18:04.151937Z[0m [32m INFO[0m   vision → models/gemma-3-1b-it, models/gemma-3-4b-it, models/gemma-3-12b-it, models/gemma-3-27b-it, models/gemma-3n-e4b-it, models/gemma-3n-e2b-it, models/gemma-4-26b-a4b-it, models/gemma-4-31b-it (multimodal — image input capable)
+[2m2026-04-21T09:18:04.152088Z[0m [32m INFO[0m   embed  → models/gemini-embedding-001, models/gemini-embedding-2-preview (vector embeddings)
+[2m2026-04-21T09:18:04.152217Z[0m [32m INFO[0m [llm] main  backend=gemini model=models/gemini-2.5-flash
+[2m2026-04-21T09:18:07.932059Z[0m [32m INFO[0m [telegram/助手1] Starting listener
+[2m2026-04-21T09:18:07.933477Z[0m [32m INFO[0m [main] Headless mode — RPC/MCP server on :7730, no GUI. Press Ctrl-C to exit.
+[2m2026-04-21T09:18:08.936184Z[0m [33m WARN[0m [rpc] Port 7730 unavailable — trying 7731 next
+[2m2026-04-21T09:18:08.937044Z[0m [33m WARN[0m [rpc] Primary port 7730 unavailable — bound fallback port 7731 (ws://127.0.0.1:7731 + http://127.0.0.1:7731/mcp). External MCP clients will need to know about the new port.

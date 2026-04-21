@@ -18,6 +18,8 @@ pub mod store;
 pub mod runs;
 pub mod i18n;
 pub mod notify;
+pub mod screenshot_cache;
+pub mod ax_diff_context;
 
 pub use parser::{TestGoal, Fixture};
 pub use executor::{TestResult, TestStatus};

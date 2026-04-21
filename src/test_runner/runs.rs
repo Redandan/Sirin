@@ -16,7 +16,7 @@ use super::parser::TestGoal;
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum RunPhase {
     Queued,
     Running { step: u32, current_action: String },
@@ -24,7 +24,7 @@ pub enum RunPhase {
     Error(String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RunState {
     pub run_id: String,
     pub test_id: String,
@@ -43,6 +43,17 @@ pub struct RunState {
     /// run; may be `None` for the brief window between `new_run` and
     /// the first `set_goal` call.
     pub test_goal: Option<TestGoal>,
+    /// Screenshot hash → vision analysis result cache (P1.1 optimization).
+    /// Stored as `HashMap<String, String>` where key=SHA256(png), value=analysis.
+    /// Avoids re-analyzing identical screenshots via the vision LLM.
+    /// Initialized empty; populated during screenshot_analyze actions.
+    #[serde(skip)]
+    pub screenshot_cache: std::collections::HashMap<String, String>,
+    /// A11y tree auto-diff context (P1.2 optimization).
+    /// Stores baseline tree and computes diffs for subsequent ax_tree calls.
+    /// Avoids sending full multi-KB JSON trees for each step.
+    #[serde(skip)]
+    pub ax_diff_context: crate::test_runner::ax_diff_context::AxDiffContext,
 }
 
 // ── Registry singleton ───────────────────────────────────────────────────────
@@ -69,6 +80,8 @@ pub fn new_run(test_id: &str) -> String {
         screenshot_bytes: None,
         screenshot_error: None,
         test_goal: None,
+        screenshot_cache: std::collections::HashMap::new(),
+        ax_diff_context: crate::test_runner::ax_diff_context::AxDiffContext::new(),
     };
     registry().lock().unwrap_or_else(|e| e.into_inner())
         .insert(run_id.clone(), state);
@@ -134,6 +147,42 @@ pub fn get_screenshot(run_id: &str) -> Option<(Option<Vec<u8>>, Option<String>)>
     let reg = registry().lock().unwrap_or_else(|e| e.into_inner());
     let s = reg.get(run_id)?;
     Some((s.screenshot_bytes.clone(), s.screenshot_error.clone()))
+}
+
+/// Check screenshot cache for a vision analysis result.
+/// `png_hash` should be SHA256(png_bytes) as hex string.
+/// Returns cached analysis if found, None if cache miss.
+pub fn get_screenshot_cache(run_id: &str, png_hash: &str) -> Option<String> {
+    let reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+    reg.get(run_id)?.screenshot_cache.get(png_hash).cloned()
+}
+
+/// Store a vision analysis result in the screenshot cache.
+/// `png_hash` should be SHA256(png_bytes) as hex string.
+pub fn set_screenshot_cache(run_id: &str, png_hash: String, analysis: String) {
+    let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(s) = reg.get_mut(run_id) {
+        s.screenshot_cache.insert(png_hash, analysis);
+    }
+}
+
+/// Get the A11y diff context for a test run.
+/// Returns a clone of the context (safe for non-blocking reads).
+pub fn get_ax_diff_context(run_id: &str) -> Option<crate::test_runner::ax_diff_context::AxDiffContext> {
+    let reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+    reg.get(run_id).map(|s| s.ax_diff_context.clone())
+}
+
+/// Mutate the A11y diff context for a test run.
+/// `f` is a closure that receives a mutable reference to the context.
+pub fn mutate_ax_diff_context<F>(run_id: &str, f: F)
+where
+    F: FnOnce(&mut crate::test_runner::ax_diff_context::AxDiffContext),
+{
+    let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(s) = reg.get_mut(run_id) {
+        f(&mut s.ax_diff_context);
+    }
 }
 
 pub fn list_active() -> Vec<String> {

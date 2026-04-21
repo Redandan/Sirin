@@ -42,6 +42,7 @@ globset = "0.4"
 regex = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+sha2 = "0.10"
 
 # Windows Job Object — KILL_ON_JOB_CLOSE so all child processes (claude, node,
 # git, ...) are auto-terminated when sirin.exe exits.  Prevents the orphan
