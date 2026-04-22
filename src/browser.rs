@@ -202,6 +202,19 @@ pub fn ensure_open(headless: bool) -> Result<bool, String> {
     //
     // --ignore-gpu-blocklist was tried: forces CanvasKit with SwiftShader →
     //   all-black screen (CanvasKit fails on SwiftShader).  REMOVED.
+    // Default viewport — large enough that bottom UI (quick-login buttons,
+    // test shortcuts, footers) is in-frame without a per-test set_viewport.
+    // Flutter apps like redandan.github.io/#/login tuck 測試買家 / etc. below
+    // the default 800×600 fold, causing vision LLMs to click the wrong
+    // (visible) OAuth buttons.  Override via `SIRIN_DEFAULT_VIEWPORT=WxH` env.
+    //
+    // `--window-size` influences the initial Chrome window; the subsequent
+    // `Emulation.setDeviceMetricsOverride` (done right after tab creation
+    // below) is what actually determines what the page sees via innerWidth /
+    // innerHeight and what CDP screenshots capture.
+    let (default_w, default_h) = resolve_default_viewport();
+    let window_size_arg = format!("--window-size={default_w},{default_h}");
+
     let stability_args: Vec<&str> = vec![
         "--disable-dev-shm-usage",
         "--disable-background-timer-throttling",
@@ -211,6 +224,7 @@ pub fn ensure_open(headless: bool) -> Result<bool, String> {
         // SwiftShader: software WebGL — prevents GPU driver crashes.
         // Flutter detects software rendering → HTML renderer (our intended mode).
         "--use-angle=swiftshader",
+        &window_size_arg,
     ];
     let persistent_profile = resolve_persistent_profile_dir();
     let mut opts_builder = LaunchOptions::default_builder();
@@ -237,13 +251,46 @@ pub fn ensure_open(headless: bool) -> Result<bool, String> {
     // (esp. after a mode switch).
     std::thread::sleep(std::time::Duration::from_millis(600));
 
+    // Apply the default viewport via CDP Emulation so the page's
+    // window.innerWidth / innerHeight + CDP screenshots use our target
+    // dimensions (not Chrome's default 800×600).  Done here, before any
+    // `goto`, so Flutter's first layout sees the correct viewport.
+    if let Err(e) = tab.call_method(Emulation::SetDeviceMetricsOverride {
+        width: default_w,
+        height: default_h,
+        device_scale_factor: 1.0,
+        mobile: false,
+        scale: None,
+        screen_width: None,
+        screen_height: None,
+        position_x: None,
+        position_y: None,
+        dont_set_visible_size: None,
+        screen_orientation: None,
+        viewport: None,
+        display_feature: None,
+        device_posture: None,
+    }) {
+        tracing::warn!("[browser] failed to apply default viewport {default_w}x{default_h}: {e}");
+    }
+
     let tab_arc = tab.clone();
-    *guard = Some(BrowserInner { browser, tabs: vec![tab], active: 0, headless, sessions: HashMap::new(), viewport: None });
+    *guard = Some(BrowserInner {
+        browser,
+        tabs: vec![tab],
+        active: 0,
+        headless,
+        sessions: HashMap::new(),
+        // Seed the cached viewport so re-apply-after-goto picks up the default.
+        viewport: Some((default_w, default_h, 1.0, false)),
+    });
     // Clear per-tab a11y state so the new session's tab index 0 starts fresh.
     crate::browser_ax::reset_a11y_enabled();
     // Spawn keepalive so the CDP transport loop stays alive on quiet pages.
     spawn_cdp_heartbeat(tab_arc);
-    tracing::info!("[browser] launched Chrome (headless={headless})");
+    tracing::info!(
+        "[browser] launched Chrome (headless={headless}, viewport={default_w}x{default_h})"
+    );
     Ok(true)
 }
 
@@ -260,6 +307,54 @@ pub fn close() {
     HEARTBEAT_STOP.store(true, Ordering::Relaxed);
     let mut guard = global().lock().unwrap_or_else(|e| e.into_inner());
     *guard = None;
+}
+
+/// Resolve the default Chrome viewport from `SIRIN_DEFAULT_VIEWPORT` env.
+///
+/// Format: `WxH` (e.g. `1920x1200`).  Falls back to **1440×1600** — large
+/// enough to render the full login / dashboard of typical Flutter apps
+/// (redandan.github.io's test-account shortcuts live around y=800-1100).
+///
+/// Dimensions are clamped to `[640..=3840]` × `[480..=4320]` so that a typo
+/// can't launch Chrome with an absurd size.
+fn resolve_default_viewport() -> (u32, u32) {
+    const DEFAULT_W: u32 = 1440;
+    const DEFAULT_H: u32 = 1600;
+    const MIN_W: u32 = 640;
+    const MAX_W: u32 = 3840;
+    const MIN_H: u32 = 480;
+    const MAX_H: u32 = 4320;
+
+    let raw = match std::env::var("SIRIN_DEFAULT_VIEWPORT") {
+        Ok(v) => v,
+        Err(_) => return (DEFAULT_W, DEFAULT_H),
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return (DEFAULT_W, DEFAULT_H);
+    }
+    let parts: Vec<&str> = trimmed.split(|c: char| c == 'x' || c == 'X' || c == ',').collect();
+    if parts.len() != 2 {
+        tracing::warn!(
+            "[browser] SIRIN_DEFAULT_VIEWPORT='{raw}' not in WxH form; using {DEFAULT_W}x{DEFAULT_H}"
+        );
+        return (DEFAULT_W, DEFAULT_H);
+    }
+    let (w, h) = match (
+        parts[0].trim().parse::<u32>(),
+        parts[1].trim().parse::<u32>(),
+    ) {
+        (Ok(w), Ok(h)) => (w, h),
+        _ => {
+            tracing::warn!(
+                "[browser] SIRIN_DEFAULT_VIEWPORT='{raw}' has non-numeric parts; using {DEFAULT_W}x{DEFAULT_H}"
+            );
+            return (DEFAULT_W, DEFAULT_H);
+        }
+    };
+    let w = w.clamp(MIN_W, MAX_W);
+    let h = h.clamp(MIN_H, MAX_H);
+    (w, h)
 }
 
 /// Resolve an optional persistent Chrome `--user-data-dir` from the
@@ -1677,6 +1772,50 @@ mod tests {
     use super::*;
 
     // ── Pure unit tests (no Chrome needed) ────────────────────────────────────
+
+    #[test]
+    fn default_viewport_falls_back_when_env_unset() {
+        std::env::remove_var("SIRIN_DEFAULT_VIEWPORT");
+        assert_eq!(resolve_default_viewport(), (1440, 1600));
+    }
+
+    #[test]
+    fn default_viewport_parses_wxh_form() {
+        std::env::set_var("SIRIN_DEFAULT_VIEWPORT", "1920x1200");
+        assert_eq!(resolve_default_viewport(), (1920, 1200));
+
+        std::env::set_var("SIRIN_DEFAULT_VIEWPORT", "1280X720");
+        assert_eq!(resolve_default_viewport(), (1280, 720));
+
+        std::env::set_var("SIRIN_DEFAULT_VIEWPORT", "800,600");
+        assert_eq!(resolve_default_viewport(), (800, 600));
+
+        std::env::remove_var("SIRIN_DEFAULT_VIEWPORT");
+    }
+
+    #[test]
+    fn default_viewport_clamps_absurd_values() {
+        std::env::set_var("SIRIN_DEFAULT_VIEWPORT", "100x100");
+        let (w, h) = resolve_default_viewport();
+        assert!(w >= 640 && h >= 480);
+
+        std::env::set_var("SIRIN_DEFAULT_VIEWPORT", "99999x99999");
+        let (w, h) = resolve_default_viewport();
+        assert!(w <= 3840 && h <= 4320);
+
+        std::env::remove_var("SIRIN_DEFAULT_VIEWPORT");
+    }
+
+    #[test]
+    fn default_viewport_rejects_garbage() {
+        std::env::set_var("SIRIN_DEFAULT_VIEWPORT", "nonsense");
+        assert_eq!(resolve_default_viewport(), (1440, 1600));
+
+        std::env::set_var("SIRIN_DEFAULT_VIEWPORT", "1440");
+        assert_eq!(resolve_default_viewport(), (1440, 1600));
+
+        std::env::remove_var("SIRIN_DEFAULT_VIEWPORT");
+    }
 
     #[test]
     fn heartbeat_interval_safely_under_cdp_timeout() {

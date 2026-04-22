@@ -3,7 +3,7 @@ name: "AgoraMarket 登入流程 — vision perception (Flutter Canvas)"
 url: "https://redandan.github.io/#/login"
 
 browser_headless: false   # Flutter CanvasKit needs a real GPU context
-max_iterations: 15
+max_iterations: 12
 timeout_secs: 180
 retry_on_parse_error: 5
 
@@ -17,35 +17,32 @@ fixture:
   cleanup:
     - {action: "clear_state"}
 
-# sirin-test skill v1.6.0 rule 12: Flutter viewport MUST be large enough to
-# contain the target UI.  Default Chrome viewport cuts off the bottom of this
-# page where 測試買家 lives — the LLM was clicking Google OAuth simply
-# because that was all it could see.
-#
-# Since FixtureStep can't carry width/height (skill rule 1), step 0 of the
-# goal mandates set_viewport as the first action.
+# Default Chrome viewport is now 1440×1600 at engine level (browser.rs),
+# so the full login page — including the bottom test-account grid — is
+# in-frame on turn 1.  No set_viewport workaround needed.
 goal: |
-  STEP 0 (MANDATORY FIRST ACTION):
-    {"action": "set_viewport", "width": 1440, "height": 1600}
+  Sign in as the Test Buyer.
 
-  STEP 1: After the viewport is set, look at the screenshot.  Locate the
-  button labeled exactly "測試買家" (Test Buyer).  It is in the BOTTOM
-  grid of 4 quick-login buttons (測試買家 / 測試賣家 / 測試送貨員 /
-  測試管理員), BELOW the Google / Telegram / 連接錢包 row.
+  Look at the screenshot.  There is a grid of four buttons at the BOTTOM
+  of the login form:
+    [測試買家]  [測試賣家]
+    [測試送貨員] [測試管理員]
 
-  STEP 2: Click that button:
-    {"action": "click_point", "x": <center_x>, "y": <center_y>}
-  Use the center pixel coordinates you read off the screenshot.
+  Click the "測試買家" button (top-left of that grid).  It auto-fills a
+  test account via JavaScript and submits, so the URL hash will leave
+  #/login within ~2 seconds.
 
-  STEP 3: Set "done": true ONCE the URL hash is no longer #/login.
+  Emit: {"action": "click_point", "x": <center_x>, "y": <center_y>}
+  Coordinates come from the screenshot.  Set done=true once URL hash is
+  no longer #/login.
 
-  ⚠️ DO NOT click these — they are NOT the target:
+  ⚠️ The correct button says exactly "測試買家".  Do NOT click any of:
     - "使用 Google 帳戶登入"
     - "使用 Telegram 登入"
     - "連接錢包"
-    - "測試賣家" / "測試送貨員" / "測試管理員" (these are siblings but not the target)
+    - "測試賣家" / "測試送貨員" / "測試管理員" (siblings, wrong role)
 
-  STRICT JSON output.  No markdown fences.  No prose outside `thought`.
+  STRICT JSON output.  No markdown fences.
 
 success_criteria:
   - "URL hash leaves #/login (navigates to home / market / dashboard)"
