@@ -122,11 +122,6 @@ pub async fn execute_test_tracked(
     run_id: Option<&str>,
     session_id: Option<&str>,
 ) -> TestResult {
-    // Route to Open Claude executor for Canvas-heavy tests
-    if test.id.contains("agora_staking") || test.id.contains("flutter") || test.id.contains("canvas") {
-        return super::executor_open_claude::execute_test_open_claude(ctx, test, run_id).await;
-    }
-
     use crate::test_runner::runs;
 
     let started = std::time::Instant::now();
@@ -277,6 +272,12 @@ pub async fn execute_test_tracked(
 
             let hint_for_llm = parse_error_hint.take(); // reset — only used for the next turn
 
+            // Perception capture — zero-overhead for PerceptionMode::Text (short-
+            // circuits inside perceive).  Done once per iteration and reused across
+            // the 3 LLM retry attempts below so we don't re-screenshot on transient
+            // backend errors.
+            let perception = crate::perception::perceive(ctx, test.perception).await;
+
             // LLM call with retry for transient network errors (e.g. "error decoding
             // response body" from Gemini when Chrome crashes cause concurrent request
             // interference).  We retry up to 3× with a short back-off before giving up.
@@ -287,7 +288,7 @@ pub async fn execute_test_tracked(
                     if attempt > 0 {
                         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                     }
-                    match call_test_llm(ctx, test, &history, hint_for_llm.as_deref()).await {
+                    match call_test_llm(ctx, test, &history, hint_for_llm.as_deref(), &perception).await {
                         Ok(s) => { raw_opt = Some(s); break; }
                         Err(e) => {
                             tracing::warn!(
@@ -567,6 +568,112 @@ fn build_prompt(test: &TestGoal, history: &[TestStep], parse_error_hint: Option<
     build_prompt_with_limits(test, history, parse_error_hint, usize::MAX, obs_limit)
 }
 
+/// Vision-mode prompt: the screenshot is the primary observation, so we
+/// keep the text portion lean — last 3 history steps, 200-char observations,
+/// no AX-tree dump, no sprawling action catalogue.  Tells the LLM it is
+/// looking at the current viewport and should prefer pixel-based actions.
+fn build_prompt_vision(
+    test: &TestGoal,
+    history: &[TestStep],
+    parse_error_hint: Option<&str>,
+    perception: &crate::perception::PagePerception,
+) -> String {
+    let skipped = history.len().saturating_sub(3);
+    let visible = &history[skipped..];
+
+    let history_str = if visible.is_empty() && skipped == 0 {
+        "(none yet)".to_string()
+    } else {
+        let prefix = if skipped > 0 {
+            format!(
+                "[{skipped} earlier step(s) omitted — showing last {} for context]\n---\n",
+                visible.len()
+            )
+        } else {
+            String::new()
+        };
+        let steps: String = visible
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let obs = truncate(&s.observation, 200);
+                let step_n = skipped + i + 1;
+                format!(
+                    "[Step {step_n}]\nThought: {}\nAction: {}\nObservation: {obs}\n",
+                    s.thought, s.action
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("---\n");
+        format!("{prefix}{steps}")
+    };
+
+    let hint_block = parse_error_hint
+        .map(|h| format!("\n## ⚠️ Reprompt notice\n{h}\n"))
+        .unwrap_or_default();
+
+    let locale = crate::test_runner::i18n::Locale::from_yaml(&test.locale);
+    let criteria = if test.success_criteria.is_empty() {
+        locale.default_criteria().to_string()
+    } else {
+        test.success_criteria
+            .iter()
+            .map(|c| format!("- {c}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    format!(
+        r##"You are a browser-testing agent driving a live Chrome window.  The attached image is a PNG screenshot of the **current viewport** — treat it as the primary observation.
+
+## Goal
+{goal}
+
+## Page context
+{summary}
+
+## Success criteria
+{criteria}
+
+## Preferred actions (canvas-safe; call via tool "web_navigate", field "action")
+- click_point    — x, y: viewport pixel coords (from the screenshot).  Use this as the default for Flutter / canvas apps.
+- type           — target: CSS selector (if any), text: text to type.  On canvas pages without selectors, prefer click_point on the input first, then `type` with target omitted.
+- key            — target: key name (Enter / Tab / Escape)
+- scroll         — x, y: pixel deltas (default 0, 300)
+- goto           — target: URL
+- wait           — target: CSS selector OR ms number
+- screenshot     — re-capture the viewport (next turn's image will reflect the new state)
+- eval           — target: JS expression (use sparingly — only when coordinates won't do)
+
+## Accessibility tree (use only when you need EXACT text — e.g. number assertions)
+- enable_a11y, ax_find, ax_value, ax_click, ax_type
+
+## History
+{history}
+{hint}
+## Instructions
+Look at the attached screenshot.  Decide the single next action.  Prefer
+click_point with coordinates you read off the image — do NOT invent a CSS
+selector when you have pixels.  When the goal is clearly achieved (or
+definitively failed), set "done": true.
+
+Respond with STRICTLY valid JSON, no markdown fences, no prose:
+{{
+  "thought": "<reasoning in {lang} — cite what you see in the screenshot>",
+  "action_input": {{ "action": "click_point", "x": 640, "y": 420 }},
+  "done": false,
+  "final_answer": "<only when done=true: summary of outcome in {lang}>"
+}}
+"##,
+        goal = test.goal.trim(),
+        summary = perception.summary,
+        criteria = criteria,
+        history = history_str,
+        hint = hint_block,
+        lang = locale.reasoning_language(),
+    )
+}
+
 /// Compact prompt for `claude_cli` backend.
 ///
 /// Keeps only the last 3 history steps and truncates observations to 200 chars,
@@ -752,7 +859,34 @@ async fn call_test_llm(
     test: &TestGoal,
     history: &[TestStep],
     parse_error_hint: Option<&str>,
+    perception: &crate::perception::PagePerception,
 ) -> Result<String, String> {
+    // Vision path: attach screenshot as primary observation.  Still requires
+    // the resolved mode to be Vision AND the capture to have succeeded; if
+    // the screenshot failed (None), we gracefully fall back to text prompt.
+    if matches!(
+        perception.resolved_mode,
+        crate::perception::PerceptionMode::Vision
+    ) {
+        if let Some(b64) = perception.screenshot_b64.as_deref() {
+            let prompt = build_prompt_vision(test, history, parse_error_hint, perception);
+            return crate::llm::call_vision(
+                ctx.http.as_ref(),
+                ctx.llm.as_ref(),
+                &prompt,
+                b64,
+                "image/png",
+            )
+            .await
+            .map_err(|e| e.to_string());
+        }
+        tracing::warn!(
+            "[test_runner] perception=vision requested for '{}' but screenshot unavailable; \
+             falling back to text prompt",
+            test.id
+        );
+    }
+
     let backend = resolve_llm_backend(test);
     match backend.as_str() {
         "claude_cli" | "claude" => {

@@ -28,8 +28,9 @@ mod log_buffer;
 #[allow(dead_code)] mod persona;
 #[allow(dead_code)] mod researcher;
 #[allow(dead_code)] mod mcp_client;
-pub mod open_claude_client;
-pub mod chrome_bridge;
+#[allow(dead_code)] mod integrations;
+#[allow(dead_code)] mod assistant;
+#[allow(dead_code)] mod perception;
 mod mcp_server;
 pub mod monitor;
 mod process_group;
@@ -263,8 +264,6 @@ fn main() {
 
         rt.spawn(followup::run_worker(tracker.clone()));
         rt.spawn(rpc_server::start_rpc_server());
-        rt.spawn(chrome_bridge::start_bridge());
-
         // Background LLM reachability probe — feeds diagnose.llm.reachable.
         // Cheap (one HTTP GET every 30s); ensures stale "model configured but
         // Ollama is down" cases get reported truthfully via the MCP tool.

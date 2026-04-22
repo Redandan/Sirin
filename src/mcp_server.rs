@@ -1617,6 +1617,29 @@ async fn call_browser_exec(args: Value, user_agent: &str) -> Result<Value, Strin
         }
     }
 
+    if action == "ocr_find_text" {
+        if target.is_empty() {
+            let e = "'ocr_find_text' requires 'target' = text to find".to_string();
+            crate::monitor::emit_action_error(&action_id, &e).await;
+            return Err(e);
+        }
+        let max_results = timeout.unwrap_or(5) as usize;
+        let result = blocking("ocr_find_text", move || {
+            crate::perception::ocr::find_text_on_current_page(&target, max_results)
+        }).await;
+        match result {
+            Ok(val) => {
+                let dur = t0.elapsed().as_millis() as u64;
+                crate::monitor::emit_action_done(&action_id, val.clone(), dur).await;
+                return Ok(val);
+            }
+            Err(e) => {
+                crate::monitor::emit_action_error(&action_id, &e).await;
+                return Err(format!("local OCR failed: {e}"));
+            }
+        }
+    }
+
     // Dispatch directly to crate::browser to avoid requiring an AgentContext
     // for simple imperative calls.  Mirrors the web_navigate action set.
     let result = blocking("browser_exec_sync", move || -> Result<Value, String> {

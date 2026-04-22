@@ -1,0 +1,46 @@
+id: agora_login_vision
+name: "AgoraMarket 登入流程 — vision perception (Flutter Canvas)"
+url: "https://redandan.github.io/#/login"
+
+browser_headless: false   # Flutter CanvasKit needs a real GPU context
+max_iterations: 10
+timeout_secs: 180
+retry_on_parse_error: 2
+
+# Vision perception: screenshot becomes the primary observation every turn.
+# The LLM reads pixel coordinates off the image and issues click_point /
+# type / key actions.  Avoids the AX-tree collapse issues that plague this
+# Flutter app on the existing agora_staking test.
+perception: vision
+
+fixture:
+  setup:
+    - {action: "clear_state"}
+    - {action: "goto", target: "https://redandan.github.io/#/login"}
+    - {action: "wait", target: "4000"}
+  cleanup:
+    - {action: "clear_state"}
+
+goal: |
+  The attached screenshot shows a Flutter login page.  Click the "測試買家"
+  (Test Buyer) quick-login button to sign in as the built-in test account.
+
+  Workflow:
+    1. Look at the screenshot.  Identify the "測試買家" button (usually a
+       prominent button near the bottom of the login form).
+    2. Emit {"action": "click_point", "x": <px>, "y": <px>} with the
+       coordinates you read off the image.
+    3. Wait ~2 seconds for navigation, then re-screenshot (next turn
+       perception takes care of this automatically).
+    4. If the URL hash changes away from #/login and the screenshot shows a
+       different page (home / dashboard), the login succeeded — set done.
+    5. If the button is off-screen, scroll down then retry from step 1.
+
+  DO NOT guess CSS selectors — this is a Flutter Canvas app, there are no
+  DOM elements to select.  Use coordinates from the screenshot.
+
+success_criteria:
+  - "URL hash leaves #/login (navigates to home / market / dashboard)"
+  - "Screenshot no longer shows the login form"
+
+tags: [agora, login, flutter, canvas, vision, regression]

@@ -108,13 +108,31 @@ src/browser_ax.rs            CDP Accessibility tree (literal text — for K14
                              semantics on collapse (Tab×2 removed — Issue #20);
                              wait_for_ax_ready (min-node count poll);
                              find_scrolling_by_role_and_name (scroll-to-find)
+src/perception/              Pre-LLM "how we see the page" layer (added v0.4.3)
+  mod.rs                     PerceptionMode (Text/Vision/Auto) + perceive()
+  canvas_detect.rs           1-JS-eval probe: URL + title + canvas flag
+                             (window.flutter || flt-glass-pane || big <canvas>)
+  capture.rs                 screenshot_b64() — base64 PNG for vision LLM
+  ocr.rs                     Local Windows OCR via PowerShell (browser_exec
+                             action=ocr_find_text); cheap alternative to
+                             vision LLM when tokens are tight
+src/integrations/            Third-party integrations, not core testing
+  open_claude/               Chrome extension + native-messaging bridge — for
+                             future Assistant mode (driving the user's own
+                             Chrome window for Google Maps scraping / FB farm
+                             tasks).  NOT used by the test runner.
+src/assistant/               Scaffold for Assistant mode (empty — populate
+                             with task modules as they are added)
 src/test_runner/             AI-driven browser testing
   mod.rs                     Public API (run_test / spawn_run_async /
                              spawn_adhoc_run / run_all)
   parser.rs                  YAML TestGoal (locale, retry, url_query,
-                             browser_headless, criteria)
+                             browser_headless, criteria, perception)
   executor.rs                ReAct loop driving web_navigate; LLM prompt
-                             advertises web_navigate/ax_*/robustness actions
+                             advertises web_navigate/ax_*/robustness actions.
+                             Perception-aware: text mode = legacy AX-tree
+                             observations; vision mode attaches screenshot
+                             to every LLM turn via crate::llm::call_vision.
   triage.rs                  Failure classification + auto-fix + verification loop
   store.rs                   SQLite test_runs + auto_fix_history (with verification)
   runs.rs                    In-memory async run registry

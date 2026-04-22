@@ -87,6 +87,15 @@ pub struct TestGoal {
     /// Paths are relative to the repo root (or absolute).
     #[serde(default)]
     pub docs_refs: Vec<String>,
+    /// How the ReAct loop should observe the page before each LLM turn.
+    /// - `text`   — legacy: no screenshot, truncated text observations only
+    /// - `vision` — always screenshot + vision LLM call
+    /// - `auto`   — screenshot only when Flutter / canvas is detected at runtime
+    ///
+    /// Default `text` → zero behavioural change for existing tests.  Opt-in
+    /// explicitly on Flutter / canvas pages where the AX tree is unreliable.
+    #[serde(default)]
+    pub perception: crate::perception::PerceptionMode,
 }
 
 impl TestGoal {

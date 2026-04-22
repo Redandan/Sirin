@@ -1,7 +1,7 @@
 ---
 name: sirin-dev
 description: Use this skill when developing on the Sirin project itself (not when using Sirin to test other apps) — adding a new browser action, MCP endpoint, agent skill, test_runner feature, or fixing a bug in the Rust code.  Trigger phrases include "add a Sirin action", "fix Sirin's X", "extend Sirin", "modify Sirin", "Sirin internals", "how does Sirin X work", or any task that involves editing files under `~/IdeaProjects/Sirin/src/`.  This skill is for AI sessions picking up Sirin development cold — covers architecture, common workflows, conventions, and the gotchas that have already cost us time.
-version: 1.3.0
+version: 1.4.0
 ---
 
 # Sirin Development Skill
@@ -91,20 +91,41 @@ src/
 │                           Build: `cargo build --release`
 ├── claude_session.rs       Spawn `claude` CLI cross-repo bug fixing
 ├── config_check.rs         Diagnostics + AI fix proposal (dual-confirm)
+├── perception/             Pre-LLM observation layer (added v0.4.3)
+│   ├── mod.rs              PerceptionMode (Text/Vision/Auto), PagePerception,
+│   │                       perceive(ctx, mode).  Text mode short-circuits —
+│   │                       zero overhead for legacy tests.
+│   ├── canvas_detect.rs    One JS eval: URL+title+canvas flag
+│   │                       (window.flutter || flt-glass-pane || >=50% canvas)
+│   ├── capture.rs          screenshot_b64() — base64 PNG for vision LLM
+│   └── ocr.rs              Windows-local OCR (browser_exec ocr_find_text)
+│                           as cheap no-token locator alternative
+├── integrations/           Third-party integrations (NOT core test runner)
+│   └── open_claude/        Chrome extension + native messaging bridge.
+│                           Reserved for Assistant mode; test_runner must
+│                           not depend on this.
+├── assistant/              Assistant mode scaffold (empty stub) — populate
+│                           when adding Google Maps / FB farm style tasks
 ├── test_runner/            AI test runner (browser, not unit tests)
 │   ├── parser.rs           YAML TestGoal (locale, retry, url_query,
 │   │                       browser_headless, llm_backend, success_criteria,
-│   │                       tags). `llm_backend: claude_cli` switches a single
-│   │                       test to the claude subprocess (00c0bc2) — but see
-│   │                       "claude_cli ReAct hang" gotcha; default is Gemini.
+│   │                       tags, **perception**). `llm_backend: claude_cli`
+│   │                       switches a single test to the claude subprocess
+│   │                       (00c0bc2) — but see "claude_cli ReAct hang" gotcha;
+│   │                       default is Gemini.  `perception: vision|auto` opts
+│   │                       into screenshot-as-primary-observation mode.
 │   ├── executor.rs         ReAct loop driving web_navigate;
 │   │                       ALSO contains the LLM prompt — when adding
 │   │                       a new web_navigate action, advertise it
-│   │                       in the prompt's "Available actions" list.
+│   │                       in the prompt's "Available actions" list
+│   │                       (both `build_prompt` and `build_prompt_vision`).
 │   │                       `resolve_llm_backend()` + `call_test_llm()`
 │   │                       dispatch per-test backend; `call_claude_cli()`
 │   │                       wraps `claude_session::run_sync` in
 │   │                       `tokio::task::spawn_blocking`.
+│   │                       **Perception dispatch**: if perception.resolved_mode
+│   │                       == Vision and screenshot present → call_vision;
+│   │                       otherwise falls through to legacy text path.
 │   ├── triage.rs           Failure → ui_bug/api_bug/flaky/env/obsolete
 │   │                       → spawn claude_session + verification re-run
 │   ├── store.rs            SQLite test_runs + auto_fix_history
@@ -470,6 +491,47 @@ Category string: `"rendering_failure"` (serde snake_case).
 `Page.frameNavigated` which Chrome **does not** emit for fragment
 changes.  `browser::navigate` auto-detects same-origin same-path
 hash-only changes and uses `location.hash =` instead.  Already done.
+
+### Perception layer — opt-in vision for Flutter Canvas (v0.4.3)
+`TestGoal.perception` YAML field (`text` default / `vision` / `auto`)
+controls how the ReAct loop observes the page before each LLM turn:
+
+- `text` — legacy path. **Zero overhead** (perceive() short-circuits).
+  Don't remove this branch casually; all existing YAML tests rely on it.
+- `vision` — `perception::capture::screenshot_b64()` + `llm::call_vision`
+  with `build_prompt_vision` (lean action list, 3-step history, 200-char
+  observations).  Image is primary observation.
+- `auto` — JS-eval probe (`canvas_detect::probe_page`) detects
+  `window.flutter` / `flt-glass-pane` / `>=50% viewport canvas` and
+  upgrades to vision only when true.  Recommended default for new
+  Flutter tests.
+
+**When to opt into vision:** only when AX tree is unavailable (no
+`enable_a11y` fixture, or Flutter semantics refuses to bootstrap).  On
+healthy pages, text mode + AX tree is faster and doesn't use more tokens
+overall — measured 34 s / 8 calls (text) vs 126 s / 12 calls (vision)
+on `redandan.github.io/#/login` 2026-04-22.
+
+**Gotcha:** vision mode still requires a vision-capable LLM backend.
+If the configured model is text-only, `call_test_llm` falls back to
+the text prompt (with a `tracing::warn!`).
+
+### Flutter hash-route change tears down CDP connection
+Observed 2026-04-22 on `redandan.github.io/#/login` → `#/home`: after
+a successful click, Flutter navigates hash, emits
+`Target.targetInfoChanged`, and `headless_chrome`'s transport loop
+receives `SendError { .. }` → `[browser] mid-call connection closed —
+attempting one-shot recovery`.  Chrome gets relaunched and login state
+is wiped.
+
+**Why:** `headless_chrome` has a 30-second "no event" timeout on the
+WebSocket.  Flutter's hash-route doesn't fire `Page.frameNavigated`, and
+the Target event races the reconnect logic.
+
+**No fix yet.**  If you're debugging a Flutter test that "almost works"
+then resets to `about:blank`, this is likely the cause — not perception,
+not the LLM prompt.  Candidate fixes: periodic `Runtime.evaluate('1')`
+heartbeat during expected route changes, or switching to `chromiumoxide`.
 
 ### Mode-switch race after Chrome relaunch
 First `navigate` after a freshly-launched Chrome can fail with

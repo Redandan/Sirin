@@ -13,8 +13,6 @@
 
 pub mod parser;
 pub mod executor;
-pub mod executor_fallback;
-pub mod executor_open_claude;
 pub mod triage;
 pub mod store;
 pub mod runs;
@@ -27,8 +25,6 @@ pub mod action_verify;
 
 pub use parser::{TestGoal, Fixture};
 pub use executor::{TestResult, TestStatus};
-pub use executor_fallback::AxtreeFallbackContext;
-pub use executor_open_claude::execute_test_open_claude;
 #[allow(unused_imports)]
 pub use executor::TestStep;
 #[allow(unused_imports)]
@@ -214,6 +210,7 @@ pub fn spawn_adhoc_run(req: AdhocRunRequest) -> Result<String, String> {
         tags: vec!["adhoc".into()],
         fixture: req.fixture,
         docs_refs: vec![],  // ad-hoc runs have no pre-defined required reading
+        perception: Default::default(),
     };
 
     let run_id = runs::new_run(&test_id);
@@ -592,6 +589,7 @@ pub fn persist_adhoc_run(p: PersistAdhocParams) -> Result<PersistAdhocResult, St
         tags: tags.clone(),
         fixture: goal.fixture.clone(),
         docs_refs: goal.docs_refs.clone(),  // propagate required-reading from source run
+        perception: goal.perception,
     };
 
     // Serialize and write.  serde_yaml uses 2-space indent and never
@@ -650,6 +648,7 @@ mod persist_tests {
             tags: vec!["adhoc".into()],
             fixture: None,
             docs_refs: vec![],
+            perception: Default::default(),
         };
         let run_id = runs::new_run(test_id);
         runs::set_goal(&run_id, goal.clone());
@@ -732,6 +731,7 @@ mod persist_tests {
             tags: vec![],
             fixture: None,
             docs_refs: vec![],
+            perception: Default::default(),
         });
         runs::set_phase(&run_id, runs::RunPhase::Running {
             step: 2,
@@ -812,6 +812,7 @@ mod persist_tests {
             tags: vec!["adhoc".into()],
             fixture: None,
             docs_refs: vec![],
+            perception: Default::default(),
         };
         // Insert directly into SQLite — simulates the row that
         // record_run wrote at the original run completion.
