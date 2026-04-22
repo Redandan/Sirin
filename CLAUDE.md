@@ -195,6 +195,13 @@ Headless mode (added v0.4.0) skips `eframe::run_native()` only — RPC/MCP
 server, browser singleton, telegram listeners, and test_runner all start
 normally. Process parks the main thread until SIGINT/SIGTERM.
 
+## Env vars that affect the browser
+
+| Var | Values | Purpose |
+|---|---|---|
+| `SIRIN_BROWSER_HEADLESS` | `true`/`false`/`0`/`1` | Process-wide Chrome headless default.  Per-test `browser_headless` YAML field overrides. |
+| `SIRIN_PERSISTENT_PROFILE` | unset / `1` / absolute path | `1` → Chrome `--user-data-dir=<app_data_dir>/chrome-profile`.  A path → use that dir.  Unset = fresh profile per launch (default).  When on, cookies / localStorage / IndexedDB survive a `with_tab` recovery — essential for Flutter hash-route tests where a CDP transport race can force a Chrome relaunch mid-test. |
+
 ## Where user data lives (installed vs dev)
 
 | Mode | Binary | Config | Data | .env |

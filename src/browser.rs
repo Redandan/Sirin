@@ -212,9 +212,19 @@ pub fn ensure_open(headless: bool) -> Result<bool, String> {
         // Flutter detects software rendering → HTML renderer (our intended mode).
         "--use-angle=swiftshader",
     ];
-    let opts = LaunchOptions::default_builder()
+    let persistent_profile = resolve_persistent_profile_dir();
+    let mut opts_builder = LaunchOptions::default_builder();
+    opts_builder
         .headless(headless)
-        .args(stability_args.iter().map(|s| std::ffi::OsStr::new(s)).collect())
+        .args(stability_args.iter().map(|s| std::ffi::OsStr::new(s)).collect());
+    if let Some(dir) = persistent_profile.as_ref() {
+        opts_builder.user_data_dir(Some(dir.clone()));
+        tracing::info!(
+            "[browser] using persistent profile at {} — login state will survive Chrome recovery",
+            dir.display()
+        );
+    }
+    let opts = opts_builder
         .build()
         .map_err(|e| format!("LaunchOptions: {e}"))?;
     let browser = Browser::new(opts).map_err(|e| format!("Browser::new: {e}"))?;
@@ -252,26 +262,88 @@ pub fn close() {
     *guard = None;
 }
 
-/// Spawns a background thread that calls `Runtime.evaluate("1", false)` every
-/// 25 seconds, generating CDP round-trips that prevent headless_chrome's
-/// transport loop from timing out on quiet pages (e.g. idle Flutter app).
+/// Resolve an optional persistent Chrome `--user-data-dir` from the
+/// `SIRIN_PERSISTENT_PROFILE` env var.
 ///
-/// headless_chrome's transport loop exits after 30 s with no CDP events.
-/// This keepalive fires every 25 s to stay safely inside that window.
+/// Accepted values:
+///   - unset or empty → `None` (default — fresh profile per launch, legacy behaviour)
+///   - `1` / `true` / `yes` → `<app_data_dir>/chrome-profile` (convenience default)
+///   - anything else → treated as an absolute path to the profile directory
+///
+/// **Why opt-in:** persisting the profile means cookies / localStorage /
+/// IndexedDB survive across Chrome relaunches — which is essential when
+/// `with_tab` recovers from a transport-loop crash mid-test.  But it also
+/// breaks strict test isolation for any test that doesn't explicitly
+/// `clear_state` in its fixture.  Default stays off so existing tests
+/// behave identically; enable per-session via the env var when a flow
+/// needs login state to survive a Flutter hash-route race.
+fn resolve_persistent_profile_dir() -> Option<std::path::PathBuf> {
+    let raw = std::env::var("SIRIN_PERSISTENT_PROFILE").ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    match trimmed.to_ascii_lowercase().as_str() {
+        "0" | "false" | "no" | "off" => None,
+        "1" | "true" | "yes" | "on" => {
+            let dir = crate::platform::app_data_dir().join("chrome-profile");
+            let _ = std::fs::create_dir_all(&dir);
+            Some(dir)
+        }
+        _ => {
+            let dir = std::path::PathBuf::from(trimmed);
+            let _ = std::fs::create_dir_all(&dir);
+            Some(dir)
+        }
+    }
+}
+
+/// Interval between CDP keepalive pulses.  headless_chrome's transport loop
+/// exits after ~30 s of silence; firing every 10 s gives us three chances
+/// per window, so a single dropped pulse (transient jitter) won't kill the
+/// connection.
+///
+/// 25 s was tried and left only one pulse per window — too brittle when an
+/// LLM turn (5-15 s) lands next to a long action.
+const HEARTBEAT_INTERVAL_SECS: u64 = 10;
+
+/// Spawns a background thread that calls `Target.getTargetInfo` every
+/// `HEARTBEAT_INTERVAL_SECS` seconds, generating CDP round-trips that
+/// prevent headless_chrome's transport loop from timing out on quiet pages
+/// (e.g. idle Flutter app waiting for user interaction).
+///
+/// **What this fixes:** 30 s of CDP silence on Flutter/Canvas pages —
+/// common when the ReAct loop is waiting for the LLM and no network /
+/// Page events fire in between.
+///
+/// **What this does NOT fix:** mid-call races where Chrome fires
+/// `Target.targetInfoChanged` after a hash-route navigation and
+/// headless_chrome's internal mpsc channel to a subscriber is already
+/// closed (`SendError`).  That unwinds the transport in milliseconds —
+/// no heartbeat interval can catch it.  See `with_tab` one-shot recovery
+/// + `SIRIN_PERSISTENT_PROFILE` for session-survival across such races.
+///
+/// The heartbeat uses `get_target_info` (returns tab metadata, ~50 bytes)
+/// rather than `Runtime.evaluate` to avoid JS execution overhead on pages
+/// that may be mid-transition.  Exits on the first failure — recovery
+/// re-spawns a fresh heartbeat when `ensure_open` relaunches Chrome.
 fn spawn_cdp_heartbeat(tab: Arc<Tab>) {
     HEARTBEAT_STOP.store(false, Ordering::Relaxed);
     std::thread::spawn(move || {
         loop {
-            // Sleep in small increments so we notice the stop signal quickly
-            for _ in 0..25 {
+            for _ in 0..HEARTBEAT_INTERVAL_SECS {
                 std::thread::sleep(std::time::Duration::from_secs(1));
                 if HEARTBEAT_STOP.load(Ordering::Relaxed) {
+                    tracing::debug!("[browser] heartbeat stopped");
                     return;
                 }
             }
-            // Send a trivial CDP request to keep the event loop alive
-            if tab.evaluate("undefined", false).is_err() {
-                return; // Chrome/tab is dead — exit silently
+            match tab.get_target_info() {
+                Ok(_) => tracing::debug!("[browser] heartbeat ok"),
+                Err(e) => {
+                    tracing::debug!("[browser] heartbeat exiting on error: {e}");
+                    return; // Chrome/tab is dead — recovery will spawn a new one
+                }
             }
         }
     });
@@ -1605,6 +1677,56 @@ mod tests {
     use super::*;
 
     // ── Pure unit tests (no Chrome needed) ────────────────────────────────────
+
+    #[test]
+    fn heartbeat_interval_safely_under_cdp_timeout() {
+        // headless_chrome's transport loop dies after ~30 s of CDP silence.
+        // If we ever bump HEARTBEAT_INTERVAL_SECS too close to 30, one
+        // dropped pulse kills the connection.  Keep a healthy margin.
+        assert!(
+            HEARTBEAT_INTERVAL_SECS <= 20,
+            "heartbeat interval {HEARTBEAT_INTERVAL_SECS}s is too close to \
+             the 30s CDP transport timeout — a single missed pulse would die"
+        );
+        assert!(HEARTBEAT_INTERVAL_SECS >= 5, "heartbeat too chatty");
+    }
+
+    #[test]
+    fn persistent_profile_env_off_returns_none() {
+        // Use unsafe env-manipulation carefully — test runs sequentially
+        // because we touch a process-wide env var.
+        std::env::remove_var("SIRIN_PERSISTENT_PROFILE");
+        assert!(resolve_persistent_profile_dir().is_none());
+
+        std::env::set_var("SIRIN_PERSISTENT_PROFILE", "");
+        assert!(resolve_persistent_profile_dir().is_none());
+
+        std::env::set_var("SIRIN_PERSISTENT_PROFILE", "0");
+        assert!(resolve_persistent_profile_dir().is_none());
+
+        std::env::set_var("SIRIN_PERSISTENT_PROFILE", "false");
+        assert!(resolve_persistent_profile_dir().is_none());
+
+        std::env::remove_var("SIRIN_PERSISTENT_PROFILE");
+    }
+
+    #[test]
+    fn persistent_profile_env_truthy_uses_default_dir() {
+        std::env::set_var("SIRIN_PERSISTENT_PROFILE", "1");
+        let dir = resolve_persistent_profile_dir().expect("truthy → Some(path)");
+        assert!(dir.ends_with("chrome-profile"));
+        std::env::remove_var("SIRIN_PERSISTENT_PROFILE");
+    }
+
+    #[test]
+    fn persistent_profile_env_custom_path_passes_through() {
+        let tmp = std::env::temp_dir().join("sirin-test-profile-dir");
+        std::env::set_var("SIRIN_PERSISTENT_PROFILE", &tmp);
+        let dir = resolve_persistent_profile_dir().expect("path → Some(path)");
+        assert_eq!(dir, tmp);
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::env::remove_var("SIRIN_PERSISTENT_PROFILE");
+    }
 
     #[test]
     fn hash_only_change_detects_fragment_switch() {
