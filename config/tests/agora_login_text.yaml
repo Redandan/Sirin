@@ -5,10 +5,19 @@ url: "https://redandan.github.io/#/login"
 browser_headless: false
 max_iterations: 10
 timeout_secs: 180
-retry_on_parse_error: 2
+retry_on_parse_error: 3
 
 # No perception field → defaults to 'text' (legacy AX-tree observation path).
-# Same goal, same URL as agora_login_vision — A/B comparable.
+# Same URL as agora_login_vision — A/B comparable.
+#
+# NOTE 2026-04-22: the earlier "34 s pass" on this test was likely a false
+# positive — the ax_tree on this page only exposes ~7 semantic nodes (root +
+# Enable accessibility + email textbox + 提交 button) regardless of
+# enable_a11y / wait_for_ax_ready.  The test buttons 測試買家 etc. are
+# rendered on canvas but NOT in the AX tree.  The test "passed" by clicking
+# some visible button that happened to change the URL hash, not by actually
+# locating 測試買家.  Consider marking this test as `flaky` or rewriting to
+# assert URL shape on a specific post-login page.
 
 fixture:
   setup:
@@ -19,18 +28,25 @@ fixture:
   cleanup:
     - {action: "clear_state"}
 
+# sirin-test skill v1.6.0 rule 12 still applies — viewport must be large
+# enough, and FixtureStep can't carry width/height.  Even though text mode
+# can't see the button visually, a bigger viewport helps ax_find find
+# laid-out elements on some Flutter builds.
 goal: |
-  This is a Flutter CanvasKit login page.  Sign in by clicking the "測試買家"
-  (Test Buyer) quick-login button.
+  STEP 0 (MANDATORY FIRST ACTION):
+    {"action": "set_viewport", "width": 1440, "height": 1600}
 
-  Workflow:
-    1. Call enable_a11y (re-bootstrap semantics if a route changed).
-    2. Call ax_find with role="button", name_regex="測試買家" to locate the button.
-    3. Call ax_click on the returned backend_id.
-    4. Wait 2s and re-enable_a11y.
-    5. If the URL hash leaves #/login the login succeeded — set done.
-    6. If ax_find returns "no match", try a fresh ax_tree to see available
-       buttons, then retry.
+  STEP 1: Call enable_a11y to rebuild Flutter semantics after viewport change.
+
+  STEP 2: Call ax_find with role="button", name_regex="測試買家" to locate
+  the button.  If ax_find returns no match, issue ax_tree to inspect all
+  available buttons, then retry with the closest match.
+
+  STEP 3: Call ax_click on the backend_id from STEP 2.
+
+  STEP 4: Wait 2s, then re-enable_a11y.
+
+  STEP 5: Set done=true once the URL hash leaves #/login.
 
 success_criteria:
   - "URL hash leaves #/login (navigates to home / market / dashboard)"

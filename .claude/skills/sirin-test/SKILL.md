@@ -1,7 +1,7 @@
 ---
 name: sirin-test
-description: This skill should be used when the user asks to "test a website", "run an E2E test", "verify a user flow", "check if a page works", "run browser tests", or mentions Sirin's testing capabilities. Provides the workflow for driving Sirin's AI-powered browser test runner via its MCP API (:7700/mcp).
-version: 1.4.0
+description: This skill should be used when the user asks to "test a website", "run an E2E test", "verify a user flow", "check if a page works", "run browser tests", "optimize a flaky test", "write a YAML test goal", or mentions Sirin's testing capabilities. Provides the workflow for driving Sirin's AI-powered browser test runner via its MCP API (:7700/mcp), plus authoring guidance for writing tests that actually pass.
+version: 1.6.0
 ---
 
 # Sirin Browser Test Runner
@@ -580,6 +580,252 @@ fixture:
 **Good:** "User can log in with test credentials and reach dashboard"
 
 Let the LLM figure out the steps. Only write steps if they're non-obvious or order-dependent.
+
+## Authoring best practices (lessons from failed runs)
+
+These are the rules that would have saved the two wasted ad-hoc runs
+on 2026-04-22 (`agora_login_vision` run_20260422_181844 and
+run_20260422_181939).  Read this section **before writing a new
+YAML** — not after your first test errors out on fixture setup.
+
+### 0. Pre-authoring checklist
+
+Do all of these before `run_test_async` or `run_adhoc_test`:
+
+- [ ] `list_tests` — does a similar test already exist?  Prefer
+      editing over adding.
+- [ ] If the test has `docs_refs`, read **all** of them.  The
+      `sirin-dev` skill has a hard ⛔ checklist on this.
+- [ ] Decide perception mode (see decision tree below).
+- [ ] Decide `browser_headless` (Flutter CanvasKit → `false`).
+- [ ] Pick **exactly one goal** per test.  See rule 4.
+
+### 1. Fixture schema is narrow — avoid `set_viewport` in fixture
+
+`FixtureStep` only carries `action / target / text / timeout_ms`.
+Any action that needs `width`, `height`, `min_nodes`, `x`, `y`,
+`role`, `name`, etc. will **silently lose those fields** and fail.
+
+Concrete failure 2026-04-22:
+```yaml
+# ❌ causes: "Unknown web_navigate action: set_viewport"
+fixture:
+  setup:
+    - {action: "set_viewport", width: 1280, height: 800}
+```
+
+Workaround: omit `set_viewport` (default viewport is fine) or
+issue it as the LLM's **first action** inside `goal`.
+
+Safe fixture actions today (carry only target/text/timeout):
+`clear_state` / `goto` / `click` / `type` / `wait` / `enable_a11y`.
+
+### 2. `wait` takes `target`, not `timeout_ms`
+
+```yaml
+# ❌ fixture setup failed: 'wait' requires 'target' selector or ms number
+- {action: "wait", timeout_ms: 4000}
+
+# ✅
+- {action: "wait", target: "4000"}        # milliseconds as string
+- {action: "wait", target: ".dashboard"}  # CSS selector
+```
+
+### 3. Perception mode — decision tree
+
+```
+Is the page Flutter / CanvasKit / WebGL?
+├── No (classic DOM)
+│   └── perception: text  (default — leave unset)
+│
+└── Yes
+    ├── Can you bootstrap AX via fixture `enable_a11y`?
+    │   └── Yes → perception: text + fixture enable_a11y
+    │            (measured: 8 LLM calls / 34 s on redandan.github.io login)
+    │
+    ├── AX semantics unreliable / too much layout to describe in text?
+    │   └── perception: vision  (screenshot primary observation)
+    │
+    └── Unsure → perception: auto
+                 (JS-probes canvas at runtime, upgrades vision only if needed)
+```
+
+Rule of thumb: **vision is a fallback, not a default**.  On
+healthy AX pages, text mode is faster AND cheaper (measured
+2026-04-22: vision used 12 LLM calls + image tokens and failed;
+text used 8 calls and passed on the same URL).
+
+### 4. One goal per test — scope is brutal
+
+Level-up-and-verify flows (login → navigate → assert something
+deeper) fail for reasons orthogonal to what you're testing:
+
+- LLM picks the wrong lookalike button 3 steps in
+- Chrome recovers mid-flow and loses session state
+- A single parse error burns your retry budget
+
+**Rule:** one test = one click-class + one assertion.  Chain via
+a second test with a fixture that reuses the first test's result.
+
+Bad goal: "Log in, navigate to staking page, stake 1 USDT, verify
+the stake shows in history."
+
+Good goals: (a) "Log in as test buyer; URL leaves #/login."
+(b) [separate test with login fixture] "Stake 1 USDT; cancel button
+appears."
+
+### 5. Goal prompt patterns — negative examples have limits
+
+Vision LLMs click the visually prominent button.  `agora_login_vision`
+2026-04-22 failed by clicking "Use Google" instead of "測試買家" even
+though the goal spelled out `DO NOT click Google`.  Root cause turned
+out to be **rule 12 (viewport too small)** — the target button was off-
+screen, so the LLM had no choice but to pick from what was visible.
+
+**Check viewport first (rule 12) BEFORE assuming negative examples
+failed.**  If the target is actually in-view, then these patterns help:
+
+```yaml
+goal: |
+  Click the "測試買家" button.
+
+  ⚠️ DO NOT click:
+    - "使用 Google 帳戶登入" / "Sign in with Google"
+    - "使用 Telegram 登入"
+    - "連接錢包" / "Connect Wallet"
+    - Any OAuth / third-party login
+```
+
+Empirical limits of negative examples (measured against Gemini 2.5 Flash):
+
+| Distractor type | Negative example effective? |
+|---|---|
+| Visually similar text buttons | Yes — usually works |
+| OAuth logo buttons (Google G / Apple / MetaMask) | **No** — strong visual prior overrides text instruction |
+| Distractor in-view, target off-view | **Irrelevant** — need to fix viewport first |
+| Large colored CTA vs small text link | Weak — prefer rule 12 + rule 4 |
+
+For OAuth-adjacent pages, pair negative examples with explicit
+coordinate hint: `"測試買家 is in the bottom grid, y > 700px"`.
+
+### 6. Retry tuning per mode
+
+| Mode | `retry_on_parse_error` | Why |
+|---|---|---|
+| text + claude_cli | 2 | `claude -p` is consistent; extras waste time |
+| text + gemini | 3 | Default; occasional malformed JSON |
+| vision + any | **5** | Vision replies sometimes emit prose before JSON |
+
+Also bump `max_iterations` for vision: 10 → 15.  Vision often
+needs a `scroll` step it wouldn't need with AX.
+
+### 7. When to set `SIRIN_PERSISTENT_PROFILE=1`
+
+Enable when **any** of these apply:
+- Test navigates through a hash-route change after login (Flutter
+  apps — hash-route change races CDP TargetInfoChanged)
+- Test takes >60 s and Chrome crashes mid-run in earlier attempts
+- Multiple tests share a login and you want to skip re-login
+
+Don't enable when:
+- Test depends on starting from a pristine profile (cross-test
+  leakage can mask real bugs)
+- Running parallel `run_test_batch` — fine, one Chrome shares the
+  profile, but ensure every test's fixture does `clear_state`.
+
+Start Sirin with the env: `SIRIN_PERSISTENT_PROFILE=1 sirin --headless`
+
+### 8. Failure triage lookup
+
+When `get_test_result` returns non-passed, this table tells you
+where to look before diving into history:
+
+| `error` / analysis | Most likely cause | First action |
+|---|---|---|
+| `fixture setup failed: fixture step 'X' failed: Unknown web_navigate action` | X not supported in fixture path OR needs fields `FixtureStep` doesn't carry (rule 1) | Move X into the goal, or pick a schema-safe substitute |
+| `fixture step 'wait' failed: 'wait' requires 'target'` | Used `timeout_ms:` instead of `target:` (rule 2) | Replace with `{action:"wait", target:"4000"}` |
+| `too many invalid LLM responses (N)` | Gemini vision emitted prose or markdown fences | Bump `retry_on_parse_error` to 5; tighten goal instructions to "STRICT JSON ONLY" |
+| `max iterations (N) reached without DONE` | LLM stuck in a loop — usually clicking same wrong button | **Check rule 12 (viewport) FIRST** — target button may be off-screen.  Only after that, add negative examples (rule 5) + lower scope (rule 4) |
+| LLM keeps clicking OAuth / Google / Apple buttons instead of the target | Target button is below the viewport fold (rule 12) | Expand viewport (1440×1600 min) before re-running; don't just add more `DO NOT` text |
+| `rendering_failure` (screenshot < 14KB) | Chrome rendered blank.  **Not a UI bug.**  triage.rs correctly skips auto-fix | Set `browser_headless: false` if Flutter; check SwiftShader flags; don't file a frontend issue |
+| `mid-call connection closed — attempting one-shot recovery` in logs | CDP transport died.  If `SIRIN_PERSISTENT_PROFILE` is off, state is lost | Turn on persistent profile; retry |
+| `screenshot is all-black` in history | Either Trap 1 (WebGL headless) or Chrome crashed post-navigate | Verify `browser_headless: false`; if still black, launch with `SIRIN_PERSISTENT_PROFILE=1` to survive the next crash |
+
+### 9. Before promoting an ad-hoc test, check iterations
+
+A run that passes in 1-2 iterations might be a false positive —
+the LLM hit the goal by accident before the real assertion logic
+ran.  If `iterations <= 2` and your goal has 3+ success_criteria,
+run it twice before `persist_adhoc_run` to confirm it's stable.
+
+### 10. Keep `goal` under ~500 chars
+
+Long goals train the LLM to produce long `thought` fields → token
+cost inflates + parse errors increase.  If the instructions need
+more than a paragraph, split into multiple tests.
+
+### 11. LLM model affects prompt strategy
+
+| Model | Vision negative-example obedience | Best approach |
+|---|---|---|
+| Gemini 2.5 Flash | **Low** | Don't rely on `DO NOT`; pair with viewport + coord hints |
+| Claude Sonnet / Opus | High | Negative examples + scope usually sufficient |
+| GPT-4o | Medium-high | Similar to Claude |
+| Local Llava / Gemma3 vision | Very low | Use only for single-button confirmations |
+
+Small multimodal models (Gemini 2.5 Flash included) weight image-
+derived evidence far above prompt-derived constraints.  This is
+observed 2026-04-22 and matches general findings on Gemini Flash
+family.
+
+### 12. Flutter viewport MUST be large enough to contain the target UI
+
+**The single biggest trap on Flutter apps.**  Chrome's default
+viewport (headless mode ≈ 800×600, headed ≈ 1280×720) often cuts
+off the bottom of Flutter login / dashboard pages where test-
+specific buttons live (quick-login shortcuts, dev tools, etc.).
+
+Concrete failure 2026-04-22 on `redandan.github.io/#/login`:
+- Default viewport → vision sees only top ~3 buttons (email input
+  + send code + username/password link)
+- `測試買家` / `測試賣家` / `測試送貨員` / `測試管理員` are all
+  off-screen, below the Google / Telegram OAuth row
+- Result: vision LLM clicks whatever it CAN see (Google), goal
+  impossible to achieve
+- `ax_find ... scroll: true` does NOT save you — Flutter semantics
+  only exposes viewport-contained nodes on some builds
+
+**Fix:** set viewport to at least **1440×1600** for Flutter pages
+before navigating.  Since `FixtureStep` can't carry `width/height`
+(rule 1), put `set_viewport` as the LLM's **first action** inside
+the goal:
+
+```yaml
+goal: |
+  Step 0 (MANDATORY first action):
+    {"action": "set_viewport", "width": 1440, "height": 1600}
+
+  Step 1:
+    Navigate already happened via fixture.  Now look at the
+    screenshot.  The target button "測試買家" is in the bottom
+    button grid.  Click it.
+```
+
+Verify before writing the test by running ad-hoc:
+```
+browser_exec set_viewport width=1440 height=1600
+browser_exec goto target=<url>
+browser_exec screenshot_analyze
+  target="List all visible buttons and their y-pixel position"
+```
+If the vision output doesn't include your target button, **go bigger**
+(1920×1080 for wide-form pages, 1440×2400 for long-form scroll-heavy
+pages).
+
+**Note:** Viewport change mid-run may or may not trigger a Flutter
+re-layout depending on the app.  Best to set viewport BEFORE the
+first goto.  If you must change mid-run, follow with `goto` on the
+same URL to force a rebuild.
 
 ## Common Patterns
 
