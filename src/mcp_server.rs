@@ -1928,6 +1928,11 @@ async fn call_browser_exec(args: Value, user_agent: &str) -> Result<Value, Strin
                 browser::flutter_type(&text_owned)?;
                 Ok(json!({ "status": "typed", "text": text_owned }))
             }
+            "flutter_enter" => {
+                // Send Enter key to flt-text-editing — submits chat message or form
+                let result = browser::flutter_enter()?;
+                Ok(json!({ "status": "ok", "result": result }))
+            }
             "shadow_type_flutter" => {
                 let role = args.get("role").and_then(Value::as_str).map(String::from);
                 let name = args.get("name_regex").or_else(|| args.get("name"))

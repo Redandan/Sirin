@@ -1224,6 +1224,22 @@ pub fn flutter_type(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Send the Enter key to the currently active Flutter text field (`flt-text-editing`).
+/// Use this after `flutter_type` to submit a chat message or form without needing
+/// to find and click the (possibly icon-only, unlabeled) send button.
+pub fn flutter_enter() -> Result<String, String> {
+    let result = evaluate_js(
+        r#"(function() {
+            var inp = document.querySelector('.flt-text-editing');
+            if (!inp) { return JSON.stringify({sent: false, error: 'flt-text-editing not found'}); }
+            inp.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
+            inp.dispatchEvent(new KeyboardEvent('keyup',   {key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:false}));
+            return JSON.stringify({sent: true, value: inp.value});
+        })()"#
+    )?;
+    Ok(result)
+}
+
 /// Move the mouse to (x, y) without clicking — triggers hover effects.
 pub fn hover_point(x: f64, y: f64) -> Result<(), String> {
     with_tab(|tab| {

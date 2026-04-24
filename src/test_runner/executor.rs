@@ -780,6 +780,9 @@ These query Flutter's `flt-semantics-host` directly via JS, avoiding AX tree col
 - flutter_type          — text only; types via CDP keydown events (REQUIRED for Flutter textboxes).
                           Call shadow_click + wait 350ms first to focus the field, THEN flutter_type.
                           ⚠️ Input.InsertText does NOT work for Flutter — always use flutter_type.
+- flutter_enter         — no params; sends Enter key to the active flt-text-editing input.
+                          Use immediately after flutter_type to submit a chat message or form.
+                          ⚠️ More reliable than shadow_click on icon-only unlabeled send buttons.
 - shadow_type_flutter   — all-in-one: shadow_click → wait 350ms → flutter_type; preferred for textboxes.
                           params: role, name_regex (or name), text
 

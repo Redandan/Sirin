@@ -908,6 +908,11 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                         browser::flutter_type(&text_owned)?;
                         Ok(json!({ "status": "typed", "text": text_owned }))
                     }
+                    "flutter_enter" => {
+                        // Send Enter key to the active flt-text-editing input — submits chat/form
+                        let result = browser::flutter_enter()?;
+                        Ok(json!({ "status": "ok", "result": result }))
+                    }
                     "shadow_type_flutter" => {
                         // All-in-one: find + click + wait 350ms + flutter_type
                         let role = optional_string_field(&input, "role");

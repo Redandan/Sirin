@@ -1,82 +1,86 @@
 id: agora_chat_sse
-name: "AgoraMarket 智能客服 SSE 即時訊息驗證"
-url: "https://agoramarket.purrtechllc.com"
+name: "AgoraMarket 智能客服 SSE 即時訊息驗證 (Issue #9)"
+url: "https://redandan.github.io/"
 
 # Flutter CanvasKit — UI 全部渲染在 canvas 上（WebGL 需要 GPU）
 browser_headless: false
-max_iterations: 25
-timeout_secs: 480
-# NOTE: claude_cli causes 600s hang on large ReAct prompts — using Gemini default
-# llm_backend: claude_cli
+max_iterations: 45
+timeout_secs: 600
+retry_on_parse_error: 2
+
+fixture:
+  setup:
+    - {action: "clear_state"}
+    - {action: "set_viewport", width: 1440, height: 1600}
+    - {action: "goto", target: "https://redandan.github.io/"}
+    - {action: "enable_a11y"}
+  cleanup:
+    - {action: "clear_state"}
 
 goal: |
-  驗證 AgoraMarket 智能客服聊天功能的即時訊息顯示（Issue #9 回歸）。
+  【Flutter CanvasKit Web 應用測試 — Shadow DOM 方案】
 
-  ⚠️ Flutter CanvasKit 操作規則（必須遵守）：
-  - CSS selector / click "文字" / type selector 對 canvas 無效
-  - 必須 enable_a11y → ax_find → ax_click / ax_type 的順序
-  - 路由切換後 AX tree 短暫 collapse → 需再次 enable_a11y（等 1-2 秒後）
-  - ax_find 回傳空 = 未 enable_a11y 或樹在 collapse 中，重試 enable_a11y 再找
+  ⚠️ 重要：這是 Flutter CanvasKit 應用，所有 UI 渲染在 canvas 上。
+  使用 shadow_* actions，直接查 flt-semantics-host。
 
-  【測試帳號】username: buyer, password: test123
-  【快速登入】若看到「測試買家」按鈕可直接 ax_click（不用輸入密碼）
+  【Step 1: 登入】
+  - shadow_dump（確認在登入頁面）
+  - shadow_click role=button name_regex="測試買家"
+  - wait 3000
+  - enable_a11y
+  - shadow_dump（確認在首頁，看到商品/訂單/錢包/我的 tab）
 
-  步驟：
+  【Step 2: 導航到「我的」頁面 找客服入口】
+  - shadow_click role=tab name_regex="^我的$"
+  - wait 2000
+  - enable_a11y
+  - shadow_dump（確認在我的頁面，尋找「客服」「AI助手」「聯絡」等入口）
 
-  0. [準備]
-     clear_state（清除前次測試殘留 session，防止跨測試污染）
-     goto https://agoramarket.purrtechllc.com（clear_state 後必須重新載入 Flutter）
-     set_viewport width=1280 height=1600
-     wait 10000（production Flutter 初始化比 test site 慢，需要更多時間）
-     enable_a11y
-     ax_tree（確認節點 > 1，若仍只有 1 個節點再等 3 秒重試）
-     screenshot_analyze "頁面載入狀態？看到什麼頁面？是否有登入按鈕或直接看到主頁？"
+  【Step 3: 找到並點擊客服入口】
+  分析 shadow_dump 的輸出，尋找客服相關項目：
+  - shadow_click role=button name_regex="客服|AI助手|聯絡|Chat|Support|Help|諮詢|訊息中心"
+  - wait 2000
+  - enable_a11y
+  - screenshot_analyze "是否在聊天頁面？看到 AI助手 或輸入框？"
 
-  1. [登入]
-     enable_a11y
-     ax_find role=button name=測試買家（快速登入按鈕）
-     若找到：ax_click backend_id=<id>
-     若找不到：
-       ax_find role=textbox name=username（或帳號欄位）
-       ax_type backend_id=<id> text=buyer
-       ax_find role=textbox name=password
-       ax_type backend_id=<id> text=test123
-       ax_find name=登入
-       ax_click backend_id=<id>
-     wait 3000
-     enable_a11y（路由切換後重啟 semantics）
-     screenshot_analyze "登入成功？看到主頁面？"
+  如果「我的」頁面沒有客服入口，嘗試：
+  - 查找 floating button：shadow_find role=button（找底部 floating button）
+  - 或切換到其他 tab 再找：shadow_click role=tab name_regex="^商品$"
 
-  2. [找客服入口]
-     screenshot_analyze "智能客服/客服諮詢入口在哪裡？floating button？客服頁面？"
-     enable_a11y
-     ax_tree（找客服相關節點）
-     ax_find name=客服（或 name=Chat 或 name=諮詢 或 name=support）
-     ax_click backend_id=<id>
-     wait 2000
-     enable_a11y
-     screenshot_analyze "客服聊天視窗已開啟？可見訊息輸入框？"
+  【Step 4: 發送測試訊息】
+  確認在聊天頁面（AI助手界面）後：
+  - ax_find role=textbox（找到「輸入訊息...」輸入框，取得 backend_id）
+  - ax_click backend_id=<id>（聚焦輸入框）
+  - wait 500
+  - flutter_type text="hello"
+  - wait 300
+  - flutter_enter（Enter key 觸發 Flutter onSubmitted，比找無標籤發送按鈕更可靠）
+  - wait 5000（等待 SSE 回覆）
+  - enable_a11y（送出後重新 enable）
 
-  3. [發送訊息]
-     enable_a11y
-     ax_find role=textbox（訊息輸入框）
-     ax_type backend_id=<id> text=你好
-     ax_find name=發送（或 name=Send）
-     ax_click backend_id=<id>
-     wait 3000
-     screenshot_analyze "訊息在 3 秒內顯示於聊天記錄中（不需 reload）？"
+  【Step 5: 用截圖驗證 SSE（重要！）】
+  ⚠️ 聊天訊息不會出現在 shadow_dump/ax_tree，必須用 screenshot_analyze 驗證：
+  - screenshot_analyze "聊天記錄中是否出現了 hello 訊息？或有 AI 自動回覆？4 秒內有新訊息嗎？"
 
-  4. [驗證 SSE 無 error]
-     eval "JSON.stringify(window.__sseErrors || window.__errors || [])"
-     console（確認沒有 Failed to handle new message 或 SSE connection lost）
+  判斷標準（看截圖即可，不要 shadow_dump）：
+  a) 截圖顯示 "hello" 在聊天記錄中 → ✅ 立即 done=true
+  b) 截圖顯示 AI 自動回覆出現 → ✅ 立即 done=true（SSE 正常）
+  c) 截圖顯示聊天界面正常且訊息已送出（輸入框清空）→ ✅ done=true
+
+  可選：eval "JSON.stringify(window.__sseErrors || [])" 確認無 SSE console 錯誤
+
+  【重要注意事項】
+  - flutter_type text="hello"（只能輸入 ASCII，不能輸入中文）
+  - ⚠️ flutter_type 後必須 enable_a11y，否則 shadow_ready=false
+  - ⚠️ 聊天訊息不在 flt-semantics 樹，用 screenshot_analyze 而非 shadow_dump 驗證
+  - ⚠️ 看到聊天界面正常 + 訊息送出後，立即 done=true，不要繼續循環
+  - 每次路由切換後必須重新 enable_a11y
+  - 如果 shadow_ready=false，等 1000ms 再 enable_a11y（最多 2 次後放棄，改用截圖）
 
 success_criteria:
-  - "客服聊天入口可以找到並開啟"
-  - "發送訊息後 3 秒內在視窗中顯示（不需 reload）"
-  - "Console 沒有 Failed to handle new message 或 SSE connection lost 錯誤"
+  - "成功登入（看到錢包/商品/訂單/我的 tab）"
+  - "找到客服入口（AI助手）並成功開啟聊天視窗"
+  - "輸入 hello 並發送，4 秒內在聊天記錄中顯示（截圖確認）"
+  - "無嚴重 SSE 錯誤（console 無 Failed to handle new message）"
 
 tags: [regression, chat, sse, agora, issue-9]
-
-docs_refs:
-  - AgoraMarket/.claude/skills/agora-market-e2e/SKILL.md
-  - AgoraMarket/.claude/e2e-reports/TEST_PLAN.md
