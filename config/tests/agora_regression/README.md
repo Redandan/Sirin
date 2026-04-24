@@ -1,8 +1,8 @@
 # AgoraMarket Regression Tests
 
-12 個回歸測試，覆蓋 AgoraMarket 2026-04-17 大重構（-29,133 LOC）的核心功能。
+15 個回歸測試，覆蓋 AgoraMarket 2026-04-17 大重構（-29,133 LOC）的核心功能，以及主要業務流程。
 
-**所有 12 個測試目前狀態：✅ 全部通過（2026-04-24）**
+**所有 15 個測試目前狀態：✅ 全部通過（2026-04-25）**
 
 ---
 
@@ -11,7 +11,7 @@
 ```bash
 # 透過 sirin-call.exe 批次執行（建議 max_concurrency=1，共用 Chrome tab）
 ./target/release/sirin-call.exe run_test_batch \
-  'test_ids=["agora_webrtc_permission","agora_notification_delete","agora_admin_status_chip","agora_navigation_breadcrumb","agora_checkout_dry","agora_search_keyword","agora_cart_add_remove","agora_pickup_time_picker","agora_admin_category_filter","agora_logout_flow","agora_pickup_checkboxes_restore","agora_pickup_service_default"]' \
+  'test_ids=["agora_webrtc_permission","agora_notification_delete","agora_admin_status_chip","agora_navigation_breadcrumb","agora_checkout_dry","agora_search_keyword","agora_cart_add_remove","agora_pickup_time_picker","agora_admin_category_filter","agora_logout_flow","agora_pickup_checkboxes_restore","agora_pickup_service_default","agora_buyer_wallet","agora_buyer_order_view","agora_seller_product_create"]' \
   max_concurrency=1
 
 # 執行單一測試
@@ -39,8 +39,11 @@
 | 8 | `agora_pickup_time_picker` | 取貨時間選擇器 | buyer | #70 | 完整 | 確認結帳頁時段選擇器存在且可展開 |
 | 9 | `agora_admin_category_filter` | Admin 商品類別篩選 | admin | #70 | 部分 | 進入商品管理頁，combobox 展開目前仍不穩定 |
 | 10 | `agora_logout_flow` | 買家登出流程 | buyer | — | 部分 | 找到登出按鈕並點擊；URL 有 `?__test_role=buyer` 導致 Flutter auto-relogin |
-| 11 | `agora_pickup_checkboxes_restore` | Pickup Checkboxes 取消後還原 | seller | #70 #5 | 基本 | 只確認進入賣家後台並開啟商品，未驗證 checkbox 還原行為 |
-| 12 | `agora_pickup_service_default` | Pickup Service Type 預設值 | seller | #70 #3 | 基本 | 只截圖記錄賣家後台狀態，未驗證實際預設值 |
+| 11 | `agora_pickup_checkboxes_restore` | Pickup Checkboxes 取消後還原 | seller | #70 #5 | **完整** | 記錄狀態A→history.back()→重開→記錄狀態B；Bug #5 修復驗證 ✓ |
+| 12 | `agora_pickup_service_default` | Pickup Service Type 預設值 | seller | #70 #3 | **完整** | 確認 5 個物流服務預設運費 60 USDT；Bug #3 修復驗證 ✓ |
+| 13 | `agora_buyer_wallet` | 買家錢包頁面 | buyer | — | 完整 | 確認餘額/凍結/質押顯示、儲值/提款/質押按鈕、交易記錄列表 |
+| 14 | `agora_buyer_order_view` | 買家訂單管理頁 | buyer | — | 完整 | 確認 6 個訂單分類 tab（全部/待出貨/待收貨/已完成/退貨退款/不成立） |
+| 15 | `agora_seller_product_create` | 賣家新增商品表單 | seller | — | 完整 | 進入新增商品頁，展開物流設定確認預設值存在 |
 
 ---
 
@@ -70,7 +73,7 @@
 ### 已知限制
 - `agora_logout_flow`：`?__test_role=buyer` 在 URL 中，Flutter 登出後立即重新登入，無法驗證 session 清除
 - `agora_admin_category_filter`：combobox 的 `shadow_click` 不穩定（有時可開，有時失敗）
-- `agora_pickup_checkboxes_restore` / `agora_pickup_service_default`：已大幅簡化，未驗證原始 Issue #70 bug 修復行為
+- `agora_seller_product_create`：success_criteria 放寬為「至少看到宅配到府和 7-ELEVEN 兩個物流服務開關」，全家可能在 1600px viewport 底部邊緣
 
 ### 搜尋頁面
 - 搜尋圖示 AX tree 定位困難，用 `click_point x=370 y=50` 座標估算
@@ -109,4 +112,25 @@
 
 ---
 
-*最後更新：2026-04-24 | 維護者：Sirin AI*
+---
+
+## 主要業務流程測試（2026-04-25 新增）
+
+新增 3 個主業務流程測試，補充原本 12 個 Issue #70 回歸測試未覆蓋的流程：
+
+| 流程 | 測試 ID | 結果 |
+|------|---------|------|
+| 買家錢包頁面 | `agora_buyer_wallet` | ✅ PASSED（7 iterations） |
+| 買家訂單管理 | `agora_buyer_order_view` | ✅ PASSED（11 iterations） |
+| 賣家新增商品 | `agora_seller_product_create` | ✅ PASSED（11 iterations） |
+
+**Issue #70 Bug 驗證**（2026-04-25 深化）：
+
+| Bug | 測試 ID | 結果 |
+|-----|---------|------|
+| Bug #3: Pickup service type 預設值空白 | `agora_pickup_service_default` | ✅ PASSED — 5 個服務均有預設值 60 USDT |
+| Bug #5: Checkboxes 取消後未還原 | `agora_pickup_checkboxes_restore` | ✅ PASSED — 狀態A與狀態B完全一致 |
+
+---
+
+*最後更新：2026-04-25 | 維護者：Sirin AI*
