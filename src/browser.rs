@@ -78,6 +78,21 @@ static TEST_DESIRED_HEADLESS: AtomicBool = AtomicBool::new(true);
 /// Set to `true` by `close()` before dropping the browser session.
 static HEARTBEAT_STOP: AtomicBool = AtomicBool::new(false);
 
+/// Per-thread tab index override.  Set by `session_switch()` so that each
+/// concurrent test thread always targets its own tab, bypassing the shared
+/// `inner.active` global pointer and eliminating the TOCTOU race:
+///
+///   Thread A: session_switch → inner.active = 2 → lock released
+///   Thread B: session_switch → inner.active = 1 → lock released   ← clobbers A
+///   Thread A: with_tab → reads inner.active = 1 → WRONG tab!
+///
+/// With the thread-local, each thread reads its own index regardless of what
+/// other threads have written to `inner.active`.
+thread_local! {
+    static THREAD_ACTIVE_TAB: std::cell::Cell<Option<usize>> =
+        std::cell::Cell::new(None);
+}
+
 /// Called by the test executor at test start to register the desired
 /// headless mode.  Recovery paths read this to re-launch Chrome correctly
 /// even if the process-level default is `headless=true`.
@@ -1865,6 +1880,7 @@ pub fn session_switch(session_id: &str) -> Result<usize, String> {
     if let Some(&idx) = inner.sessions.get(session_id) {
         if idx < inner.tabs.len() {
             inner.active = idx;
+            THREAD_ACTIVE_TAB.with(|c| c.set(Some(idx)));
             return Ok(idx);
         }
         // Stale index — tab was closed, recreate below
@@ -1877,6 +1893,7 @@ pub fn session_switch(session_id: &str) -> Result<usize, String> {
     let idx = inner.tabs.len() - 1;
     inner.active = idx;
     inner.sessions.insert(session_id.to_string(), idx);
+    THREAD_ACTIVE_TAB.with(|c| c.set(Some(idx)));
     tracing::debug!("[browser] created session '{session_id}' → tab {idx}");
     Ok(idx)
 }
@@ -1939,10 +1956,19 @@ where
     //   • other threads can still acquire the lock to clear a dead session;
     //   • the Tab object stays alive (Arc refcount ≥ 1) so the CDP call
     //     proceeds safely on the cloned reference.
+    //
+    // Thread-local tab index: `session_switch` writes THREAD_ACTIVE_TAB so
+    // each concurrent test thread always reads its own tab, not the shared
+    // `inner.active` pointer that any other thread may have clobbered.
     let tab: Arc<Tab> = {
         let guard = global().lock().unwrap_or_else(|e| e.into_inner());
         match guard.as_ref() {
-            Some(inner) => Arc::clone(inner.tab()),
+            Some(inner) => {
+                let idx = THREAD_ACTIVE_TAB.with(|c| c.get())
+                    .unwrap_or(inner.active)
+                    .min(inner.tabs.len().saturating_sub(1));
+                Arc::clone(&inner.tabs[idx])
+            }
             None => return Err("browser session lost".into()),
         }
     }; // mutex released here — NOT held during the CDP call
@@ -1960,11 +1986,18 @@ where
             // re-launch headless and cause a black screen for the rest of the test.
             let recovery_headless = TEST_DESIRED_HEADLESS.load(Ordering::Relaxed);
             ensure_open(recovery_headless)?;
-            // Retry exactly once with a fresh tab from the new session
+            // Retry exactly once with a fresh tab from the new session.
+            // After recovery the browser has only one tab (index 0) — clamp
+            // the thread-local to what actually exists so we don't panic.
             let tab: Arc<Tab> = {
                 let guard = global().lock().unwrap_or_else(|e| e.into_inner());
                 match guard.as_ref() {
-                    Some(inner) => Arc::clone(inner.tab()),
+                    Some(inner) => {
+                        let idx = THREAD_ACTIVE_TAB.with(|c| c.get())
+                            .unwrap_or(inner.active)
+                            .min(inner.tabs.len().saturating_sub(1));
+                        Arc::clone(&inner.tabs[idx])
+                    }
                     None => return Err("browser session lost after recovery".into()),
                 }
             };
