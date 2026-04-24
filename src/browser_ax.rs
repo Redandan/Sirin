@@ -527,20 +527,47 @@ pub fn read_node_text(backend_id: u32) -> Result<String, String> {
 /// tap is silently dropped (`ax_click` returned success, but the route never
 /// changed — Issue #22-3).
 ///
-/// Injecting the events from JavaScript via `Element.dispatchEvent` covers
-/// both event families in one call, works on Flutter Canvas + shadow DOM, and
-/// remains a strict superset of the old behaviour for plain HTML / React
-/// (extra pointer events are simply ignored if the page doesn't listen).
+/// Click an element by its CDP backend node id.
+///
+/// ## Why two strategies, CDP first
+///
+/// Flutter CanvasKit registers gesture listeners at **`window` level**
+/// (`window.addEventListener('pointerdown', ...)` in Dart's web embedder).
+/// The old approach dispatched JS `new PointerEvent(…)` on a specific
+/// `document.elementFromPoint` target.  When the target is a `flt-semantics`
+/// div (Flutter's a11y overlay), the event does NOT bubble up to `window`
+/// because Flutter stops propagation at the shadow-host boundary — so the
+/// button press was invisible to Flutter's gesture recognizer.
+///
+/// CDP `Input.DispatchMouseEvent` goes through Chrome's **native input
+/// pipeline**: Chrome injects the event into the renderer's event loop as if a
+/// real mouse button was pressed at those coordinates.  The renderer dispatches
+/// it from `window` → body → element with normal bubbling, reaching Flutter's
+/// `window` listener.
+///
+/// Strategy order:
+/// 1. **CDP click** via `tab.click_point()` — Flutter-compatible, preferred.
+/// 2. **JS fallback** — kept for plain-HTML / React pages where CDP
+///    `DispatchMouseEvent` on a coordinate sometimes misses the element due to
+///    z-index overlays; JS `dispatchEvent(target)` is more precise.
 pub fn click_backend(backend_id: u32) -> Result<(), String> {
     let (cx, cy) = center_of_backend(backend_id)?;
 
-    // Inject 5-event sequence at (cx, cy).  `document.elementFromPoint` resolves
-    // the actual hit target — for Flutter that's the `flt-semantics` element at
-    // those coords, for plain HTML it's the underlying button/anchor/etc.
-    //
+    // ── Strategy 1: CDP Input.DispatchMouseEvent (Flutter-compatible) ──────
+    let cdp_ok = with_tab(|tab| {
+        let point = headless_chrome::browser::tab::point::Point { x: cx, y: cy };
+        tab.click_point(point).map(|_| ()).map_err(|e| format!("cdp_click: {e}"))
+    });
+
+    if let Err(ref e) = cdp_ok {
+        tracing::debug!("[ax_click] CDP click failed ({e}), falling back to JS dispatch");
+    }
+
+    // ── Strategy 2: JS PointerEvent/MouseEvent fallback ─────────────────────
+    // Also runs when CDP click succeeds to give Flutter the SemanticsAction.tap
+    // that some builds only trigger from the semantics overlay.
     // Note on `format!` + braces in raw strings: outer `{{` / `}}` escape to
-    // literal braces in the JS source — see CLAUDE.md "format strings in raw
-    // docs" gotcha.
+    // literal braces in the JS source — see CLAUDE.md "format strings in raw docs".
     let js = format!(
         r#"(() => {{
             const x = {cx}, y = {cy};
@@ -555,17 +582,21 @@ pub fn click_backend(backend_id: u32) -> Result<(), String> {
         }})()"#,
     );
 
-    let result = crate::browser::evaluate_js(&js)
+    let js_result = crate::browser::evaluate_js(&js)
         .map_err(|e| format!("ax_click(backend_id={backend_id}, x={cx}, y={cy}): {e}"))?;
 
-    // Surface the "no element at point" case as a hard error so callers don't
-    // silently miss buttons that scrolled out of view between getBoxModel and
-    // the dispatch.
-    if result.contains("\"ok\":false") {
-        return Err(format!(
-            "ax_click(backend_id={backend_id}): no element at viewport ({cx},{cy}); element may be off-screen or covered"
-        ));
+    // If CDP click returned an error AND JS says no element at point, surface as error.
+    if js_result.contains("\"ok\":false") {
+        // CDP path is the reliable one for Flutter; if js has no element just warn.
+        if cdp_ok.is_err() {
+            return Err(format!(
+                "ax_click(backend_id={backend_id}): no element at viewport ({cx},{cy}); \
+                 both CDP and JS failed"
+            ));
+        }
+        tracing::debug!("[ax_click] JS found no element at ({cx},{cy}); CDP path succeeded");
     }
+
     Ok(())
 }
 
