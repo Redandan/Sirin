@@ -3,24 +3,42 @@ name: "AgoraMarket Pickup Service Type 預設值驗證 (Issue #70 #3)"
 url: "https://redandan.github.io/?__test_role=seller"
 
 browser_headless: false
-max_iterations: 4
-timeout_secs: 90
+max_iterations: 18
+timeout_secs: 220
+
+locale: zh-TW
 
 goal: |
-  目標：驗證商品新增頁 pickup service type 欄位有正確預設值（Issue #70 Critical Bug #3）。
+  目標：驗證商品物流設定欄位有正確的預設值（Issue #70 Critical Bug #3）。
+  修復前的 bug：pickup_address_setting_page.dart 的 service type 欄位預設為空。
 
-  起始狀態：以賣家身份登入，已在賣家首頁（URL auto-login via __test_role=seller）。
+  起始狀態：以賣家身份登入，已在賣家儀表板首頁（URL auto-login via __test_role=seller）。
 
-  ⚠️ Flutter CanvasKit app：所有 UI 判斷用 screenshot_analyze。
+  ⚠️ 賣家首頁是儀表板（賣場設定/批量導入商品），不是商品列表。
+    必須先點底部「商品」tab 才能進入商品管理列表。
+  ⚠️ 賣家商品管理列表：每個商品卡片有「編輯」按鈕，點「編輯」進入編輯頁。
+  ⚠️ 商品編輯頁的「物流設定」按鈕可用 shadow_click 找到並點擊（不需先捲動）。
+  ⚠️ 點「物流設定」後，宅配到府/7-ELEVEN/全家 的開關和運費欄位會顯示在頁面下半部。
+  ⚠️ Flutter app：所有 UI 判斷用 screenshot_analyze。
+  ⚠️ 不論任何步驟失敗，都必須繼續執行到步驟 10 才能輸出 done=true。嚴禁提早終止。
 
-  ⚠️ 賣家後台 AX role=button，商品卡 name 含 USDT。
-
-  步驟（2步驟即完成）：
-  1. screenshot_analyze "在賣家後台看到什麼？有商品列表嗎？有新增商品按鈕嗎？記錄頁面內容。"
-  2. done=true（記錄所見內容即可）
+  步驟（線性，步驟 10 無條件 done=true，不得提早）：
+  1. wait 3000（等賣家儀表板完整載入）
+  2. shadow_click role=tab name_regex="^商品$"（點底部商品 tab，進入商品管理列表）
+  3. wait 2500
+  4. shadow_click role=button name_regex="^編輯$"（點第一個商品的編輯按鈕）
+  5. wait 4000（等商品編輯頁完整載入）
+  6. shadow_click role=button name_regex="^物流設定$"（點「物流設定」展開物流服務區塊）
+  7. wait 1500
+  8. screenshot_analyze "物流設定展開後的截圖。列出所有可見的物流服務選項（宅配到府/7-ELEVEN/全家）、每個的開關狀態（開/關）及運費金額。有沒有「服務類型」(service type) 下拉選單或任何空白的欄位？（Bug #3 驗證：運費欄位、服務類型欄位是否有預設值？）"
+  9. scroll y=100（小幅捲動查看萊爾富/OK超商）
+  10. screenshot_analyze "萊爾富和OK超商的開關狀態與運費。整體來說，5個物流服務的所有欄位（開關狀態、運費金額）是否都有值？有沒有任何空白欄位？這是 Bug #3 的驗證：service type 必須有預設值（非空白）。"
+  11. done=true
 
 success_criteria:
-  - "成功進入賣家後台並能看到商品管理入口"
-  - "找到新增商品按鈕（或記錄找不到）"
+  - "成功透過商品 tab + 編輯按鈕進入商品編輯頁"
+  - "成功展開物流設定區塊並看到物流服務選項"
+  - "記錄所有物流服務選項的開關狀態和運費值"
+  - "確認各物流選項的欄位是否有預設值（非空白）— Bug #3 修復驗證"
 
-tags: [regression, product, pickup, agora, critical, issue-70]
+tags: [regression, product, pickup, service-type, agora, critical, issue-70]

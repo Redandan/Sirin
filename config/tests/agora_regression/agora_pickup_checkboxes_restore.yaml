@@ -1,34 +1,56 @@
 id: agora_pickup_checkboxes_restore
-name: "AgoraMarket Pickup Checkboxes 還原驗證 (Issue #70 #5)"
+name: "AgoraMarket Pickup Checkboxes 取消後還原驗證 (Issue #70 #5)"
 url: "https://redandan.github.io/?__test_role=seller"
 
 browser_headless: false
-max_iterations: 15
-timeout_secs: 180
+max_iterations: 35
+timeout_secs: 420
+
+locale: zh-TW
 
 goal: |
-  目標：驗證商品編輯 pickup checkboxes 取消後還原（Issue #70 Critical Bug #5）。
-  修復前：取消編輯後重新開啟，checkboxes 仍顯示未儲存的修改值。
+  目標：驗證商品編輯物流設定（delivery service switches）取消後能正確還原（Issue #70 Critical Bug #5）。
+  修復前的 bug：取消編輯後重新開啟商品，switches 仍顯示未儲存的修改值。
 
-  起始狀態：以賣家身份登入，已在賣家首頁（URL auto-login via __test_role=seller）。
+  起始狀態：以賣家身份登入，已在賣家儀表板首頁（URL auto-login via __test_role=seller）。
 
-  ⚠️ Flutter app：所有 UI 判斷用 screenshot_analyze 或 shadow_dump。
-  ⚠️ 商品卡 AX 樹：role=button，name 含多行文字與 USDT 價格。
-  ⚠️ 即使某個步驟找不到元素也繼續往下，不要重試同一步驟。
+  ⚠️ 賣家首頁是儀表板（賣場設定/批量導入商品），不是商品列表。
+    必須先點底部「商品」tab 才能進入商品管理列表。
+  ⚠️ 賣家商品管理列表：每個商品卡片有「編輯」按鈕，點「編輯」進入編輯頁。
+  ⚠️ 商品編輯頁的「物流設定」按鈕可用 shadow_click 找到並點擊（不需先捲動）。
+  ⚠️ 點「物流設定」後，宅配到府/7-ELEVEN/全家 的開關會出現在頁面下半部，不需捲動即可看到。
+    若要看到萊爾富/OK超商，向下捲動一小段（scroll y=100）即可。
+  ⚠️ 返回上一頁用 eval target='window.history.back()'（AppBar 返回鍵無 AX name）。
+  ⚠️ history.back() 後會回到儀表板，需再次點「商品」tab 再點「編輯」。
+  ⚠️ Flutter app：所有 UI 判斷用 screenshot_analyze。
+  ⚠️ 不論任何步驟失敗，都必須繼續執行到步驟 18 才能輸出 done=true。嚴禁提早終止。
 
-  步驟（線性，步驟 8 無條件 done=true）：
-  1. screenshot_analyze "確認在賣家後台，看到什麼頁面？有商品列表嗎？"
-  2. wait 3000（等商品列表完整載入）
-  3. shadow_dump（列出目前所有 role=button 元素）
-  4. shadow_click role=button name_regex="USDT"（嘗試點第一個商品卡，找不到也繼續）
-  5. wait 2000
-  6. screenshot_analyze "現在在哪個頁面？商品詳情頁還是仍在列表？"
-  7. 向下捲動 500px（scroll y=500）
-  8. screenshot_analyze "捲動後看到 pickup 出貨相關欄位了嗎？有 checkbox 嗎？"
-  9. done=true
+  步驟（線性，步驟 18 無條件 done=true，不得提早）：
+  1. wait 3000（等賣家儀表板完整載入）
+  2. shadow_click role=tab name_regex="^商品$"（點底部商品 tab，進入商品管理列表）
+  3. wait 2500
+  4. shadow_click role=button name_regex="^編輯$"（點第一個商品的編輯按鈕）
+  5. wait 4000（等商品編輯頁完整載入）
+  6. shadow_click role=button name_regex="^物流設定$"（點「物流設定」展開物流服務區塊）
+  7. wait 1500
+  8. screenshot_analyze "記錄「狀態A」第一部分：宅配到府、7-ELEVEN、全家便利商店 這3個物流服務的開關各是開（ON）還是關（OFF）？運費是多少？"
+  9. scroll y=100（小幅向下捲動查看後兩項）
+  10. screenshot_analyze "記錄「狀態A」第二部分：萊爾富、OK超商 的開關狀態（開/關）？完整狀態A：宅配/7-ELEVEN/全家/萊爾富/OK 5個開關的開關狀態與運費。"
+  11. eval target='window.history.back()'（模擬取消，退出商品編輯頁）
+  12. wait 3000（等待導航完成，history.back 後回到儀表板）
+  13. shadow_click role=tab name_regex="^商品$"（再次點底部商品 tab）
+  14. wait 2500
+  15. shadow_click role=button name_regex="^編輯$"（重新點第一個商品的編輯按鈕）
+  16. wait 4000（等商品編輯頁完整載入）
+  17. shadow_click role=button name_regex="^物流設定$"（再次點「物流設定」展開）
+  18. wait 1500
+  19. screenshot_analyze "記錄「狀態B」：宅配到府/7-ELEVEN/全家 3個物流服務開關狀態，與步驟8的「狀態A」比較。"
+  20. done=true
 
 success_criteria:
-  - "成功進入賣家後台（__test_role=seller 登入正常，頁面有內容）"
-  - "嘗試開啟商品並記錄結果（有商品→進入詳情；無商品→記錄空列表）"
+  - "成功透過商品 tab + 編輯按鈕進入商品編輯頁（兩次）"
+  - "成功展開物流設定區塊並看到物流服務開關"
+  - "記錄到取消前的物流服務開關狀態（狀態A）"
+  - "記錄到重新開啟後的物流服務開關狀態（狀態B）並與狀態A比較（Bug #5 修復驗證）"
 
 tags: [regression, product, pickup, checkboxes, agora, critical, issue-70]
