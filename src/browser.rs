@@ -1768,6 +1768,42 @@ pub fn clear_browser_state() -> Result<(), String> {
     Ok(())
 }
 
+// ── Raw CDP helper for Storage.clearDataForOrigin ─────────────────────────────
+// headless_chrome 1.0.x does not expose the Storage domain, so we use the
+// same raw-method pattern as browser_ax::RawGetFullAxTree.
+#[derive(Debug, serde::Serialize)]
+struct RawClearDataForOrigin {
+    origin: String,
+    #[serde(rename = "storageTypes")]
+    storage_types: String,
+}
+impl headless_chrome::protocol::cdp::types::Method for RawClearDataForOrigin {
+    const NAME: &'static str = "Storage.clearDataForOrigin";
+    type ReturnObject = serde_json::Value;
+}
+
+/// Wipe **all** storage (localStorage, sessionStorage, IndexedDB, cookies,
+/// cache storage, service workers) for a given origin via CDP.
+///
+/// Does **not** require the browser to have navigated to that origin —
+/// Chrome executes it against its profile database directly.  This is the
+/// correct pre-navigate alternative to `clear_browser_state`, which runs JS
+/// on the already-loaded page and therefore can't clear auth tokens that the
+/// app has already read into memory.
+///
+/// Call this from the executor **before** `goto` so that Flutter sees empty
+/// storage from frame zero and shows the login page instead of auto-logging in.
+pub fn clear_origin_data(origin: &str) -> Result<(), String> {
+    with_tab(|tab| {
+        tab.call_method(RawClearDataForOrigin {
+            origin: origin.to_string(),
+            storage_types: "all".to_string(),
+        })
+        .map_err(|e| format!("Storage.clearDataForOrigin({origin}): {e}"))?;
+        Ok(())
+    })
+}
+
 /// Get a localStorage value.
 pub fn local_storage_get(key: &str) -> Result<String, String> {
     evaluate_js(&format!("localStorage.getItem({}) || ''", serde_json::to_string(key).unwrap()))

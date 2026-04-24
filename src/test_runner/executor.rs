@@ -83,6 +83,18 @@ fn inject_session(args: &mut Value, session_id: Option<&str>) {
     }
 }
 
+/// Extract the scheme+host origin from a URL.
+/// e.g. `https://redandan.github.io/#/login` → `https://redandan.github.io`
+fn extract_origin(url: &str) -> String {
+    if let Some(after_scheme) = url.find("://").map(|p| &url[p + 3..]) {
+        let host_end = after_scheme.find(['/', '?', '#']).unwrap_or(after_scheme.len());
+        let scheme   = &url[..url.find("://").unwrap()];
+        format!("{scheme}://{}", &after_scheme[..host_end])
+    } else {
+        url.to_string()
+    }
+}
+
 /// Run a single fixture step via the `web_navigate` tool.
 async fn run_fixture_step(
     ctx: &crate::adk::context::AgentContext,
@@ -169,6 +181,34 @@ pub async fn execute_test_tracked(
 
     // 1) Navigate to the test URL (with url_query params merged in).
     let nav_url = test.full_url();
+
+    // 1-pre) For fixture tests, wipe origin storage BEFORE the first goto so
+    //        Flutter sees an empty profile from frame zero.
+    //
+    //        Why here and not after load: clear_browser_state() runs JS on the
+    //        already-loaded page, but Flutter has already read localStorage into
+    //        memory by then — clearing storage does not un-authenticate the live
+    //        app.  CDP Storage.clearDataForOrigin operates on Chrome's profile
+    //        database and takes effect before the next navigation.
+    //
+    //        The tab is created here (session_switch) so CDP has a target to
+    //        send the command to; it does NOT need to be on that origin yet.
+    if test.fixture.is_some() {
+        let origin = extract_origin(&nav_url);
+        let sid_pre = session_id.map(|s| s.to_string());
+        let clear_result = tokio::task::spawn_blocking(move || {
+            if let Some(s) = sid_pre.as_deref() {
+                let _ = crate::browser::session_switch(s);
+            }
+            crate::browser::clear_origin_data(&origin)
+        }).await;
+        match clear_result {
+            Ok(Ok(())) => tracing::debug!("[test_runner] '{}' — pre-navigate origin clear OK", test.id),
+            Ok(Err(e)) => tracing::warn!("[test_runner] '{}' — pre-navigate origin clear failed (non-fatal): {e}", test.id),
+            Err(e)     => tracing::warn!("[test_runner] '{}' — pre-navigate clear spawn error: {e}", test.id),
+        }
+    }
+
     let mut nav_input = json!({ "action": "goto", "target": &nav_url });
     inject_session(&mut nav_input, session_id);
     if let Err(e) = ctx.call_tool("web_navigate", nav_input).await {
@@ -199,10 +239,16 @@ pub async fn execute_test_tracked(
     // take a screenshot and check if the page is all-black.
     // The wait gives Flutter enough time to render its first frame.
     // install_capture (above) keeps the CDP connection alive during this wait.
+    //
+    // For fixture tests we SKIP the built-in 8 s wait: the fixture's own
+    // first step is `wait 8000` which covers Flutter boot.  Doing both wastes
+    // 8 s per test (≈ 96 s on a 12-test suite) with no benefit.
     {
-        let mut wait_input = json!({"action": "wait", "timeout_ms": 8000});
-        inject_session(&mut wait_input, session_id);
-        let _ = ctx.call_tool("web_navigate", wait_input).await;
+        if test.fixture.is_none() {
+            let mut wait_input = json!({"action": "wait", "timeout_ms": 8000});
+            inject_session(&mut wait_input, session_id);
+            let _ = ctx.call_tool("web_navigate", wait_input).await;
+        }
 
         let mut ss_input = json!({"action": "screenshot"});
         inject_session(&mut ss_input, session_id);
@@ -231,33 +277,6 @@ pub async fn execute_test_tracked(
                         format!("navigate retry after black-screen reset failed: {e}")).await;
                 }
             }
-        }
-    }
-
-    // 2b) Clear browser storage before fixture so each test starts from a
-    //     clean auth state.  Without this, test N's login token (stored in
-    //     localStorage by the Flutter app) leaks into test N+1's tab via the
-    //     shared Chrome profile → the app auto-navigates to the main screen
-    //     before the fixture shadow_click can find the login button.
-    //     After clearing we MUST re-navigate: the page DOM is still showing
-    //     the logged-in state; a fresh goto forces the Flutter app to reboot
-    //     without finding a session token.
-    if test.fixture.is_some() {
-        let sid = session_id.map(|s| s.to_string());
-        let _ = tokio::task::spawn_blocking(move || {
-            if let Some(s) = sid.as_deref() {
-                let _ = crate::browser::session_switch(s);
-            }
-            crate::browser::clear_browser_state()
-        }).await;
-        // Re-navigate so the Flutter app reboots without finding a session.
-        let mut renav = json!({ "action": "goto", "target": &nav_url });
-        inject_session(&mut renav, session_id);
-        if let Err(e) = ctx.call_tool("web_navigate", renav).await {
-            tracing::warn!(
-                "[test_runner] '{}' — re-navigate after clear_state failed: {e} (continuing)",
-                test.id
-            );
         }
     }
 
