@@ -3,9 +3,19 @@ name: "AgoraMarket Checkout DRY 驗證 (Issue #70 #45)"
 url: "https://redandan.github.io"
 
 browser_headless: false
-max_iterations: 18
+max_iterations: 30
 timeout_secs: 300
 
+setup:
+  - action: wait
+    target: "5000"
+  - action: enable_a11y
+  - action: shadow_click
+    role: button
+    name_regex: "測試買家"
+  - action: wait
+    target: "3000"
+  - action: enable_a11y
 goal: |
   驗證 AgoraMarket cart_checkout 與 checkout 合併為共用 widgets 的 DRY 重構後
   （Issue #70 #45），兩條結帳流程仍可正常運作且 UI 元件顯示一致。

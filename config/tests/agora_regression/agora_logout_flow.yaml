@@ -3,11 +3,21 @@ name: "登出流程測試"
 url: "https://redandan.github.io"
 
 browser_headless: false
-max_iterations: 15
+max_iterations: 25
 timeout_secs: 180
 
 locale: zh-TW
 
+setup:
+  - action: wait
+    target: "5000"
+  - action: enable_a11y
+  - action: shadow_click
+    role: button
+    name_regex: "測試買家"
+  - action: wait
+    target: "3000"
+  - action: enable_a11y
 goal: |
   測試 AgoraMarket 登出流程，確認 session 正確清除。
 

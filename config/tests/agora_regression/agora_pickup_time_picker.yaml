@@ -3,9 +3,19 @@ name: "取貨時間選擇器測試"
 url: "https://redandan.github.io"
 
 browser_headless: false
-max_iterations: 12
+max_iterations: 20
 timeout_secs: 180
 
+setup:
+  - action: wait
+    target: "5000"
+  - action: enable_a11y
+  - action: shadow_click
+    role: button
+    name_regex: "測試買家"
+  - action: wait
+    target: "3000"
+  - action: enable_a11y
 goal: |
   測試訂單下單流程的取貨時間選擇器。
 
