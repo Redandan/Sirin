@@ -482,6 +482,27 @@ messages, token counts):
 call to a named Chrome tab.  First use of a new `session_id` opens a fresh
 tab.  Omitting `session_id` uses the default tab (index 0).
 
+**Flutter CanvasKit / Shadow DOM actions** (for WebGL canvas apps — all UI
+rendered in `<canvas>`, standard DOM selectors don't work):
+
+| Action | Required args | Returns |
+|--------|---------------|---------|
+| `enable_a11y` | — | `{status}` — triggers Flutter to build `flt-semantics-host` overlay; call before any shadow_* |
+| `shadow_dump` | — | `{count, elements:[{role,label}]}` — list all accessible elements in `flt-semantics-host` |
+| `shadow_find` | `role` and/or `name_regex` | `{found, x, y, label}` — find element in shadow DOM |
+| `shadow_click` | `role` and/or `name_regex` | `{status, label}` — click via JS PointerEvent (NOT CDP Input, which causes about:blank) |
+| `shadow_type` | `role`, `name_regex`, `text` | `{status}` — shadow_click + CDP InsertText (non-Flutter DOM) |
+| `shadow_type_flutter` | `role`, `name_regex`, `text` | `{status}` — shadow_click + flutter_type; preferred for Flutter textboxes |
+| `flutter_type` | `text` | `{status, text}` — fires CDP keydown per char; **ASCII only** (CJK chars have no keycode, silently fail) |
+| `flutter_enter` | — | `{status, result}` — dispatches Enter keydown to `flt-text-editing`; use after flutter_type to submit chat/form |
+
+**Flutter CanvasKit pattern:**
+```
+enable_a11y → shadow_dump (inspect) → shadow_click (buttons/tabs)
+→ ax_find role=textbox (get backend_id) → ax_click → flutter_type → flutter_enter
+After route change: wait ≥1000ms → enable_a11y → shadow_dump
+```
+
 ---
 
 ## Pre-Authorization (AuthZ)

@@ -71,6 +71,20 @@ Drive Sirin's AI-powered browser testing from external Claude Code sessions. Unl
 - `ax_type` (params: `backend_id`, `text`) — focus + insertText
 - `ax_type_verified` (same params) — types then reads back, returns `{typed, actual, matched}` so you know if Flutter dropped chars or the input formatted the value
 
+**Flutter CanvasKit / Shadow DOM** (WebGL canvas apps — AgoraMarket `redandan.github.io` etc.
+Standard DOM click/type don't work. UI is in `<canvas>` inside `flt-glass-pane`):
+- `enable_a11y` — triggers `flt-semantics-host` overlay; call after every route change (wait ≥1000ms first)
+- `shadow_dump` — list all elements; use first on each page to discover available actions
+- `shadow_find` (params: `role`, `name_regex`) — find element by role and/or label regex
+- `shadow_click` (params: `role`, `name_regex`) — click via JS PointerEvent (CDP causes about:blank on Flutter nav)
+- `shadow_type_flutter` (params: `role`, `name_regex`, `text`) — click + type combo for textboxes
+- `flutter_type` (param: `text`) — keydown per char; **ASCII only** — CJK chars (你好) silently fail, use "hello"
+- `flutter_enter` — Enter key to `flt-text-editing`; use after `flutter_type` to submit; beats finding icon-only buttons
+
+Pattern: `enable_a11y → shadow_dump → shadow_click → ax_find textbox → ax_click → flutter_type → flutter_enter`
+After route change: `wait 1000ms → enable_a11y → shadow_dump`
+For chat/SSE verification: use `screenshot_analyze` — Flutter chat bubbles are NOT in `flt-semantics` tree.
+
 **Robustness** (test isolation, race-free assertions, popups):
 - `clear_state` — wipe cookies + localStorage + sessionStorage + IndexedDB + caches between tests so K13 can't leak auth into K14
 - `wait_request` (params: `target` URL substring, `timeout` ms default 10000) — block until a fetch/XHR matching the substring is captured; auto-installs network capture; eliminates click-then-read races; returns the entry **including `req_body`**
