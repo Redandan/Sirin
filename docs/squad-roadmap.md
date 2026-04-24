@@ -1,6 +1,6 @@
 # Multi-Agent Squad Upgrade Roadmap
 
-> Last updated: 2026-04-19 | Owner: Sirin AI (squad manager)
+> Last updated: 2026-04-25 | Owner: Sirin AI (squad manager)
 
 ## Current Architecture (Baseline)
 
@@ -152,18 +152,35 @@ CREATE TABLE squad_knowledge (
 ---
 
 ### T2-2 — Tester Runs YAML Tests via MCP ★★★★
-**Status:** Planned
+**Status:** ✅ Shipped (2026-04-25, commit `4b38de3`)
 
-Closes the "wrote test, never tried it" gap.
+Closes the "wrote test, never tried it" gap. Engineer 寫完 YAML，Sirin 自動跑驗證。
 
-After Engineer writes a `config/tests/*.yaml`, Tester calls Sirin's own MCP:
+**實作方式（Rust side，非 Claude Tester session）：**
+- `AgentTeam::yaml_test_cycle(sirin_cwd, test_id)` — 新方法
+  - 遞迴搜尋 `{sirin_cwd}/config/tests/**/{test_id}.yaml`
+  - 透過 `spawn_adhoc_run(req)` 直接執行（不需 sync 到 LocalAppData）
+  - 每 5 秒輪詢 `runs::RunPhase`，5 分鐘超時
+  - 通過 → Tester + PM 各回報一行（PM 帶 `[📝 學到:]`）
+  - 失敗 → Engineer 收到修復指引 + YAML 設計原則 → 再試一次
+- `ProjectContext.yaml_test_id: Option<String>` 欄位（向後相容）
+- `worker.rs` 在 `assign_task` 成功後，若 `yaml_test_id` 有值，呼叫 `yaml_test_cycle`
+- MCP `agent_enqueue` 接受新的 `yaml_test_id` 參數
+
+**用法：**
+```bash
+./target/release/sirin-call.exe agent_enqueue \
+  task="幫 AgoraMarket 寫一個結帳流程 YAML test（存到 agora_checkout_deep.yaml）" \
+  yaml_test_id=agora_checkout_deep
+# → Engineer 寫完後 Sirin 自動跑 agora_checkout_deep.yaml 驗證
 ```
-POST :7700/mcp  run_adhoc_test  { goal: "...", url: "..." }
-```
-Returns pass/fail + screenshot. PM decides on real result, not just file existence.
 
-**Requires:** Sirin running on a fixed port (e.g. :7700) while squad runs.
-**Risk:** squad session running inside Sirin might cause recursion. Run squad on :7706 or use a test port.
+**Files touched:**
+- `src/multi_agent/queue.rs` — `ProjectContext.yaml_test_id`
+- `src/multi_agent/mod.rs` — `AgentTeam::yaml_test_cycle()`
+- `src/multi_agent/worker.rs` — 呼叫 yaml_test_cycle
+- `src/multi_agent/github_adapter.rs` — 加 `yaml_test_id: None`（struct 完整性）
+- `src/mcp_server.rs` — `agent_enqueue` schema + handler
 
 ---
 
