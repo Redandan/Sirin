@@ -15,6 +15,7 @@
 mod roles;
 mod session;
 pub mod github_adapter;
+pub mod knowledge;
 pub mod queue;
 pub mod usage;
 pub mod worker;
@@ -112,9 +113,11 @@ impl AgentTeam {
             &s[..b]
         }
 
-        // 1. PM 分析任務、拆解指令
+        // 1. PM 分析任務、拆解指令（注入歷史知識）
+        let lessons = knowledge::relevant_lessons(task, 5);
+        let knowledge_prefix = knowledge::format_knowledge_prefix(&lessons);
         let plan = self.pm.send(
-            &format!("新任務：{task}\n\n請拆解成具體步驟，給出明確指令讓工程師執行。")
+            &format!("{knowledge_prefix}新任務：{task}\n\n請拆解成具體步驟，給出明確指令讓工程師執行。")
         )?;
         let plan_short = trunc(&plan, MAX_MSG_CHARS);
 

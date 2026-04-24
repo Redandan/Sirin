@@ -115,6 +115,10 @@ fn run_loop(default_cwd: String, worker_id: usize) {
                             "[team-worker:w{worker_id}] Task {} done ✓", task.id);
                         queue::update_status(&task.id, TaskStatus::Done, Some(review.clone()));
 
+                        // Extract and persist any lessons the PM logged in the review
+                        let lessons = super::knowledge::parse_lessons(&review);
+                        super::knowledge::store_lessons(&task.id, &lessons);
+
                         // 驗證編譯（cargo check）— only for Sirin team; cross-repo
                         // projects don't necessarily have Rust / cargo.
                         if project_key.is_empty() || project_key.eq_ignore_ascii_case("sirin") {

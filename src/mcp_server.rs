@@ -613,6 +613,18 @@ fn handle_tools_list() -> Result<Value, String> {
                 "inputSchema": { "type": "object", "properties": {} }
             },
             {
+                "name": "squad_knowledge",
+                "description": "查看 Squad PM 積累的學習記錄（squad_knowledge.db）。\
+列出 PM 在任務 review 中記錄的 [📝 學到:] 條目，這些知識會自動注入到下一個相關任務的規劃階段。\
+可用於確認 PM 是否正確學到教訓、或除錯「為何 PM 一直犯同樣的錯」。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "limit": { "type": "integer", "description": "最多回傳幾條（預設 20，最大 100）" }
+                    }
+                }
+            },
+            {
                 "name": "dev_team_enqueue_issue",
                 "description": "從 GitHub issue 直接餵任務給 Sirin Dev Team。\
 讀取 issue 標題+內文+labels，包成 task 後放進佇列；任務完成後 system 會自動把 PM 的最終 review 貼回 issue 留言（除非 dry_run=true）。\
@@ -744,6 +756,7 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         "agent_queue_status"   => return call_agent_queue_status().map(wrap_json),
         "agent_start_worker"   => return call_agent_start_worker(arguments).map(wrap_json),
         "agent_clear_completed"=> return call_agent_clear_completed().map(wrap_json),
+        "squad_knowledge"      => return call_squad_knowledge(arguments).map(wrap_json),
         "dev_team_enqueue_issue"  => return call_dev_team_enqueue_issue(arguments).map(wrap_json),
         "dev_team_list_previews"  => return call_dev_team_list_previews(arguments).map(wrap_json),
         "dev_team_replay_preview" => return call_dev_team_replay_preview(arguments).map(wrap_json),
@@ -1270,6 +1283,21 @@ fn call_agent_clear_completed() -> Result<Value, String> {
     Ok(serde_json::json!({
         "removed": before - after,
         "remaining": after,
+    }))
+}
+
+fn call_squad_knowledge(arguments: Value) -> Result<Value, String> {
+    let limit = arguments["limit"].as_u64().unwrap_or(20).min(100) as usize;
+    let lessons = crate::multi_agent::knowledge::all_lessons(limit);
+    let total   = crate::multi_agent::knowledge::lesson_count();
+    Ok(serde_json::json!({
+        "total": total,
+        "showing": lessons.len(),
+        "lessons": lessons.iter().map(|(key, value, learned_at)| serde_json::json!({
+            "key":        key,
+            "lesson":     value,
+            "learned_at": learned_at,
+        })).collect::<Vec<_>>(),
     }))
 }
 

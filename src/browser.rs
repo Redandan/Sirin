@@ -78,16 +78,16 @@ static TEST_DESIRED_HEADLESS: AtomicBool = AtomicBool::new(true);
 /// Set to `true` by `close()` before dropping the browser session.
 static HEARTBEAT_STOP: AtomicBool = AtomicBool::new(false);
 
-/// Per-thread tab index override.  Set by `session_switch()` so that each
-/// concurrent test thread always targets its own tab, bypassing the shared
-/// `inner.active` global pointer and eliminating the TOCTOU race:
-///
-///   Thread A: session_switch → inner.active = 2 → lock released
-///   Thread B: session_switch → inner.active = 1 → lock released   ← clobbers A
-///   Thread A: with_tab → reads inner.active = 1 → WRONG tab!
-///
-/// With the thread-local, each thread reads its own index regardless of what
-/// other threads have written to `inner.active`.
+// Per-thread tab index override.  Set by `session_switch()` so that each
+// concurrent test thread always targets its own tab, bypassing the shared
+// `inner.active` global pointer and eliminating the TOCTOU race:
+//
+//   Thread A: session_switch → inner.active = 2 → lock released
+//   Thread B: session_switch → inner.active = 1 → lock released   ← clobbers A
+//   Thread A: with_tab → reads inner.active = 1 → WRONG tab!
+//
+// With the thread-local, each thread reads its own index regardless of what
+// other threads have written to `inner.active`.
 thread_local! {
     static THREAD_ACTIVE_TAB: std::cell::Cell<Option<usize>> =
         std::cell::Cell::new(None);

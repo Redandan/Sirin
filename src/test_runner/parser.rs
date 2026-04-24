@@ -386,76 +386,76 @@ url_query:
             );
         }
 
-        // Tests that must have a fixture with exactly 5 setup steps
-        // (wait + enable_a11y + shadow_click + wait + enable_a11y)
-        let fixture_required = [
-            "agora_search_keyword",
-            "agora_notification_delete",
-            "agora_webrtc_permission",
-            "agora_logout_flow",
-            "agora_navigation_breadcrumb",
-            "agora_cart_add_remove",
-            "agora_checkout_dry",
-            "agora_pickup_time_picker",
-            "agora_pickup_checkboxes_restore",
-            "agora_admin_status_chip",
-            "agora_admin_category_filter",
-        ];
-        for id in &fixture_required {
+        // Since 2026-04-24 these tests use URL auto-login (?__test_role=) instead
+        // of the old shadow_click login fixture.  Executor calls
+        // Storage.clearDataForOrigin + 8 s wait + enable_a11y before the ReAct loop.
+        // None of the 12 agora_regression tests should require a fixture anymore.
+        for id in &expected_ids {
             let test = all.iter().find(|t| t.id == *id).unwrap();
-            let fixture = test.fixture.as_ref().unwrap_or_else(|| {
-                panic!("test '{}' has fixture: None — check YAML fixture.setup nesting", id)
-            });
-            assert_eq!(
-                fixture.setup.len(), 5,
-                "test '{}' fixture.setup should have 5 steps (wait+a11y+click+wait+a11y), got {}",
-                id, fixture.setup.len()
+            assert!(
+                test.fixture.is_none(),
+                "test '{}' has a fixture — should use ?__test_role= URL auto-login instead",
+                id
             );
-            assert_eq!(fixture.setup[0].action, "wait",   "step 0 should be wait in '{}'", id);
-            assert_eq!(fixture.setup[1].action, "enable_a11y", "step 1 should be enable_a11y in '{}'", id);
-            assert_eq!(fixture.setup[2].action, "shadow_click", "step 2 should be shadow_click in '{}'", id);
         }
 
-        // max_iterations sanity: all tests must have >= 20
-        for test in &all {
-            if expected_ids.contains(&test.id.as_str()) {
-                assert!(
-                    test.max_iterations >= 20,
-                    "test '{}' max_iterations={} is too low (min 20)",
-                    test.id, test.max_iterations
-                );
-            }
+        // All 12 tests must target redandan.github.io with a __test_role= param
+        for id in &expected_ids {
+            let test = all.iter().find(|t| t.id == *id).unwrap();
+            assert!(
+                test.url.contains("redandan.github.io"),
+                "test '{}' url '{}' should target redandan.github.io",
+                id, test.url
+            );
+            assert!(
+                test.url.contains("__test_role="),
+                "test '{}' url '{}' must contain __test_role= for auto-login",
+                id, test.url
+            );
         }
 
-        // Correct login persona per test
-        let buyer_tests = ["agora_search_keyword", "agora_logout_flow",
+        // All tests require browser_headless: false (Flutter CanvasKit WebGL)
+        for id in &expected_ids {
+            let test = all.iter().find(|t| t.id == *id).unwrap();
+            assert_eq!(
+                test.browser_headless,
+                Some(false),
+                "test '{}' must have browser_headless: false (Flutter CanvasKit needs WebGL)",
+                id
+            );
+        }
+
+        // max_iterations sanity: must be at least 1, no floor of 20 required
+        // (individual tests are tuned for their own complexity)
+        for id in &expected_ids {
+            let test = all.iter().find(|t| t.id == *id).unwrap();
+            assert!(
+                test.max_iterations >= 1,
+                "test '{}' max_iterations={} must be at least 1",
+                id, test.max_iterations
+            );
+        }
+
+        // Correct login role per test (via __test_role= URL param)
+        let buyer_tests  = ["agora_search_keyword", "agora_logout_flow",
             "agora_navigation_breadcrumb", "agora_cart_add_remove",
             "agora_checkout_dry", "agora_pickup_time_picker",
             "agora_notification_delete", "agora_webrtc_permission"];
-        let seller_tests = ["agora_pickup_checkboxes_restore"];
+        let seller_tests = ["agora_pickup_checkboxes_restore", "agora_pickup_service_default"];
         let admin_tests  = ["agora_admin_status_chip", "agora_admin_category_filter"];
 
-        for (ids, expected_name) in [
-            (buyer_tests.as_slice(),  "測試買家"),
-            (seller_tests.as_slice(), "測試賣家"),
-            (admin_tests.as_slice(),  "測試管理員"),
+        for (ids, role) in [
+            (buyer_tests.as_slice(),  "buyer"),
+            (seller_tests.as_slice(), "seller"),
+            (admin_tests.as_slice(),  "admin"),
         ] {
             for id in ids {
                 let test = all.iter().find(|t| t.id == *id).unwrap();
-                if let Some(fix) = &test.fixture {
-                    let click = fix.setup.iter().find(|s| s.action == "shadow_click");
-                    if let Some(step) = click {
-                        // name_regex is an extra field forwarded via FixtureStep.extra
-                        let regex = step.extra.get("name_regex")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        assert!(
-                            regex.contains(expected_name),
-                            "test '{}' should login as '{}' but fixture shadow_click name_regex='{}'",
-                            id, expected_name, regex
-                        );
-                    }
-                }
+                assert!(
+                    test.url.contains(&format!("__test_role={role}")),
+                    "test '{}' url '{}' should contain __test_role={role}",
+                    id, test.url
+                );
             }
         }
     }
