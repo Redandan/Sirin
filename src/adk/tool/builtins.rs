@@ -845,8 +845,87 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                     // ── Accessibility tree (literal text, fast, Flutter-OK) ─
                     "enable_a11y" => {
                         crate::browser_ax::enable_flutter_semantics()?;
-                        Ok(json!({ "status": "semantics enabled" }))
+                        // Poll until flt-semantics-host is non-empty (Flutter fills it async).
+                        // Max 15 × 200ms = 3 s; if still empty after that, return what we have.
+                        let mut shadow_ready = false;
+                        for _ in 0..15 {
+                            let count = browser::evaluate_js(
+                                "document.querySelector('flt-semantics-host')?.childElementCount||0"
+                            ).unwrap_or_default();
+                            if count.trim() != "0" {
+                                shadow_ready = true;
+                                break;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(200));
+                        }
+                        let ax_count = {
+                            match crate::browser_ax::get_full_tree(false) {
+                                Ok(nodes) => nodes.len(),
+                                Err(_) => 0,
+                            }
+                        };
+                        Ok(json!({ "status": "semantics enabled", "ax_node_count": ax_count, "shadow_ready": shadow_ready }))
                     }
+                    "wait_for_ax_ready" => {
+                        let min_nodes = input.get("min_nodes").and_then(Value::as_u64).unwrap_or(20) as usize;
+                        let timeout_ms = input.get("timeout_ms").or_else(|| input.get("timeout")).and_then(Value::as_u64).unwrap_or(10000);
+                        let (elapsed, count) = crate::browser_ax::wait_for_ax_ready(min_nodes, timeout_ms)?;
+                        Ok(json!({ "elapsed_ms": elapsed, "node_count": count }))
+                    }
+
+                    // ── Flutter Shadow DOM (bypasses CDP AX protocol) ─────────
+                    "shadow_find" => {
+                        let role = optional_string_field(&input, "role");
+                        let name = optional_string_field(&input, "name_regex")
+                            .or_else(|| optional_string_field(&input, "name"));
+                        let (x, y, label) = browser::shadow_find(role.as_deref(), name.as_deref())?;
+                        Ok(json!({ "found": true, "x": x, "y": y, "label": label }))
+                    }
+                    "shadow_click" => {
+                        let role = optional_string_field(&input, "role");
+                        let name = optional_string_field(&input, "name_regex")
+                            .or_else(|| optional_string_field(&input, "name"));
+                        let label = browser::shadow_click(role.as_deref(), name.as_deref())?;
+                        Ok(json!({ "status": "clicked", "label": label }))
+                    }
+                    "shadow_type" => {
+                        let role = optional_string_field(&input, "role");
+                        let name = optional_string_field(&input, "name_regex")
+                            .or_else(|| optional_string_field(&input, "name"));
+                        let text_val = input.get("text").and_then(Value::as_str)
+                            .ok_or("'shadow_type' requires 'text'")?;
+                        browser::shadow_type(role.as_deref(), name.as_deref(), text_val)?;
+                        Ok(json!({ "status": "typed", "text": text_val }))
+                    }
+                    // Flutter-native typing: shadow_click → wait 300ms → flutter_type
+                    // Use this instead of shadow_type for Flutter textboxes (which need
+                    // keydown events, not Input.InsertText).
+                    "flutter_type" => {
+                        // Accept both string "50" and number 50
+                        let text_owned = input.get("text")
+                            .map(|v| if let Some(s) = v.as_str() { s.to_string() } else { v.to_string().trim_matches('"').to_string() })
+                            .ok_or("'flutter_type' requires 'text'")?;
+                        browser::flutter_type(&text_owned)?;
+                        Ok(json!({ "status": "typed", "text": text_owned }))
+                    }
+                    "shadow_type_flutter" => {
+                        // All-in-one: find + click + wait 350ms + flutter_type
+                        let role = optional_string_field(&input, "role");
+                        let name = optional_string_field(&input, "name_regex")
+                            .or_else(|| optional_string_field(&input, "name"));
+                        let text_owned = input.get("text")
+                            .map(|v| if let Some(s) = v.as_str() { s.to_string() } else { v.to_string().trim_matches('"').to_string() })
+                            .ok_or("'shadow_type_flutter' requires 'text'")?;
+                        let label = browser::shadow_click(role.as_deref(), name.as_deref())?;
+                        std::thread::sleep(std::time::Duration::from_millis(350));
+                        browser::flutter_type(&text_owned)?;
+                        Ok(json!({ "status": "typed", "label": label, "text": text_owned }))
+                    }
+                    "shadow_dump" => {
+                        let items = browser::shadow_dump()?;
+                        Ok(json!({ "count": items.len(), "elements": items }))
+                    }
+
                     "ax_tree" => {
                         let include_ignored = input.get("include_ignored").and_then(Value::as_bool).unwrap_or(false);
                         let nodes = crate::browser_ax::get_full_tree(include_ignored)?;
@@ -988,6 +1067,15 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                     "clear_state" => {
                         browser::clear_browser_state()?;
                         Ok(json!({ "status": "cleared" }))
+                    }
+
+                    "set_viewport" => {
+                        let w = input.get("width").and_then(Value::as_u64).unwrap_or(1440) as u32;
+                        let h = input.get("height").and_then(Value::as_u64).unwrap_or(1600) as u32;
+                        let scale = input.get("scale").and_then(Value::as_f64).unwrap_or(1.0);
+                        let mobile = input.get("mobile").and_then(Value::as_bool).unwrap_or(false);
+                        browser::set_viewport(w, h, scale, mobile)?;
+                        Ok(json!({ "status": "viewport_set", "width": w, "height": h }))
                     }
 
                     // ── Multi-tab / popup ────────────────────────

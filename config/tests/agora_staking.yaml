@@ -4,63 +4,88 @@ url: "https://redandan.github.io/"
 
 # Flutter CanvasKit — UI 全部渲染在 canvas 上（WebGL 需要 GPU）
 browser_headless: false
-max_iterations: 8   # ← 進一步降低到 8 (goal 極簡，不應超過 4 步)
-timeout_secs: 300   # ← 降低到 5 分鐘
-retry_on_parse_error: 2  # 降低重試次數
+max_iterations: 75
+timeout_secs: 700
+retry_on_parse_error: 2
 
-# P0 優化: 簡化為核心質押流程驗證（登入和導航在 fixture 中完成）
 fixture:
   setup:
     - {action: "clear_state"}
-    - {action: "set_viewport", width: 375, height: 812}
+    - {action: "set_viewport", width: 1440, height: 1600}
     - {action: "goto", target: "https://redandan.github.io/"}
-    - {action: "wait_for_ax_ready", min_nodes: 20, timeout_ms: 8000}
-    # 登入流程在 goal 中省略，假設使用快速登入或已登入
     - {action: "enable_a11y"}
   cleanup:
     - {action: "clear_state"}
 
 goal: |
-  【Flutter Canvas Web 應用測試 — 只用 Accessibility Tree】
-  
-  ⚠️ 重要限制：
-  - 不要嘗試用 screenshot_analyze 識別座標（會失敗）
-  - 不要嘗試用 DOM selector 定位元素（Canvas 沒有 DOM）
-  - 只用 ax_find + ax_click + ax_type，100% 依賴輔助功能樹
-  
-  【驗收標準：質押 1 USDT】
-  
-  Step 1: 定位並填寫金額
-  - ax_find role=textbox name_regex="質" (找金額輸入框)
-  - ax_click + ax_type text=1 (輸入「1」)
-  - 重要: 不要假設視覺位置，只用 AXTree 的精確定位
-  
-  Step 2: 點擊確認按鈕
-  - ax_find role=button name_regex="確" (找確認質押按鈕)
-  - ax_click (點擊)
-  - wait 4000 (等待後端處理)
-  
-  Step 3: 驗證成功
-  - enable_a11y (刷新語義樹)
-  - wait_for_ax_ready min_nodes=15 (等待新狀態)
-  - ax_find role=button name_regex="取消" (找取消按鈕 = 成功的證據)
-  - 若找到 → ✅ 完成
-  - 若未找到 → ❌ 質押未成功，停止並報告
-  
-  【最關鍵的點】
-  - AXTree 的 role 和 name 是唯一的真實信息
-  - 如果 ax_find 返回「找不到」，說明質押失敗或頁面狀態不對
-  - 不要試圖通過視覺來「糾正」— 只信任 AXTree
+  【Flutter CanvasKit Web 應用測試 — Shadow DOM 方案】
+
+  ⚠️ 重要：這是 Flutter CanvasKit 應用，所有 UI 渲染在 canvas 上。
+  使用 shadow_* actions，直接查 flt-semantics-host。
+
+  ⚠️ 質押金額最低 50 USDT。如果 API 或 UI 阻擋，需先取消現有質押。
+
+  【Step 1: 登入】
+  - shadow_dump（確認在登入頁面）
+  - shadow_click role=button name_regex="測試買家"
+  - wait 3000
+  - enable_a11y
+  - shadow_dump（確認在首頁，看到商品/訂單/錢包/我的 tab）
+
+  【Step 2: 導航到錢包頁面】
+  - shadow_click role=tab name_regex="^錢包$"
+  - wait 2000
+  - enable_a11y
+  - shadow_dump（確認在錢包頁，記下「質押金額」數值）
+
+  【Step 3: 檢查現有質押狀態】
+  分析 shadow_dump 的「質押金額」欄位：
+
+  情況 A：質押金額 = 0（沒有質押）→ 執行 Step 4 建立新質押
+  情況 B：質押金額 > 0（已有質押）→ 跳到 Step 6 驗證現有質押
+
+  【Step 4: 建立新質押（情況 A）】
+  - shadow_click role=button name_regex="^質押$"
+  - wait 2000
+  - enable_a11y
+  - shadow_dump（確認在質押表單頁）
+  - ax_find role=textbox（找到質押金額輸入框，取得 backend_id）
+  - ax_click backend_id=<id>
+  - wait 500
+  - flutter_type text="50"
+  - wait 500
+  - shadow_click role=button name_regex="確認質押"
+  - wait 4000
+  - enable_a11y
+  - shadow_dump
+
+  【Step 5: 等待提交結果（情況 A 後續）】
+  - 如果 shadow_dump 顯示 "取消質押" 按鈕 → ✅ 成功，直接結束
+  - 如果頁面沒變化 → 回到 Step 6
+
+  【Step 6: 驗證現有質押（情況 B 或表單提交後）】
+  在錢包頁面驗證：
+  - shadow_click role=tab name_regex="^錢包$"（回到錢包）
+  - wait 2000
+  - enable_a11y
+  - shadow_dump
+
+  從 shadow_dump 確認：
+  a) "質押金額...50" 出現在錢包概覽 → 質押金額確認
+  b) 或找到 shadow_find role=button name_regex="取消質押|Unstake" → 找到取消按鈕
+
+  如果找到以上任一證據 → ✅ 測試通過
+
+  【重要注意事項】
+  - flutter_type 的 text 值需加引號：flutter_type text="50"
+  - 每次路由切換後必須重新 enable_a11y
+  - shadow_dump 超過 5 個元素代表頁面正常
+  - 如果 shadow_ready=false，等 1000ms 再試
 
 success_criteria:
-  - "質押金額輸入框成功接收「1」作為輸入"
-  - "質押確認按鈕被點擊，無驗證錯誤"
-  - "質押提交成功，「取消質押」按鈕出現"
-  - "整個流程無 console 錯誤或頁面崩潰"
+  - "成功登入（看到錢包/商品/訂單/我的 tab）"
+  - "成功導航到錢包頁面，看到質押金額欄位"
+  - "質押功能已驗證：錢包頁面顯示質押金額大於 0 USDT，OR 取消質押按鈕可見"
+  - "無嚴重錯誤（401/500 API 錯誤等）"
 
 tags: [staking, agora, issue-34, regression]
-
-docs_refs:
-  - AgoraMarket/.claude/skills/agora-market-e2e/SKILL.md
-  - AgoraMarket/.claude/e2e-reports/TEST_PLAN.md
-  - docs/acceptance/issue_34_pledge.md

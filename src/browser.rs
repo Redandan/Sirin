@@ -1003,6 +1003,227 @@ pub fn click_point(x: f64, y: f64) -> Result<(), String> {
     })
 }
 
+// ── Flutter Shadow DOM helpers ────────────────────────────────────────────────
+// Flutter Web (CanvasKit) creates an accessibility overlay inside
+// `flt-glass-pane`'s **open** shadow root.  We query it directly via JS,
+// bypassing the CDP AX protocol entirely (no strict-enum crash, no stale
+// backendNodeId).  `enable_a11y` must still be called first to trigger Flutter
+// to build the semantics overlay.
+
+/// Find an element inside Flutter's `flt-semantics-host` shadow DOM.
+/// Returns `(center_x, center_y, label)` or an error.
+///
+/// Retries up to 5× (600 ms apart) if `flt-semantics-host` is still empty —
+/// Flutter populates it asynchronously after `enable_a11y` / placeholder click.
+pub fn shadow_find(role: Option<&str>, name_regex: Option<&str>) -> Result<(f64, f64, String), String> {
+    for attempt in 0u8..5 {
+        match shadow_find_once(role, name_regex) {
+            Err(ref e) if e.contains("is empty") => {
+                if attempt < 4 {
+                    tracing::debug!("[shadow_find] host empty, retry {}/4 in 600ms", attempt + 1);
+                    std::thread::sleep(std::time::Duration::from_millis(600));
+                    continue;
+                }
+                return shadow_find_once(role, name_regex); // surface the real error
+            }
+            other => return other,
+        }
+    }
+    shadow_find_once(role, name_regex)
+}
+
+fn shadow_find_once(role: Option<&str>, name_regex: Option<&str>) -> Result<(f64, f64, String), String> {
+    if role.is_none() && name_regex.is_none() {
+        return Err("shadow_find: need at least one of 'role' or 'name_regex'".into());
+    }
+    let role_val  = role.unwrap_or("").replace('\'', "\\'");
+    let name_val  = name_regex.unwrap_or("").replace('\'', "\\'");
+
+    let js = format!(r#"(() => {{
+  // flt-semantics-host is a direct child of flutter-view, NOT inside flt-glass-pane shadow root.
+  // Structure: body > flutter-view > flt-semantics-host > flt-semantics[role=...]
+  const host = document.querySelector('flt-semantics-host');
+  if (!host) {{
+    const hasView = !!document.querySelector('flutter-view');
+    return JSON.stringify({{ found: false, reason: 'flt-semantics-host not found (flutter-view present: ' + hasView + ')' }});
+  }}
+  if (host.childElementCount === 0) {{
+    return JSON.stringify({{ found: false, reason: 'flt-semantics-host is empty (call enable_a11y first or wait for Flutter to build semantics)' }});
+  }}
+  const roleFilter   = '{role_val}';
+  const namePattern  = '{name_val}';
+  const re = namePattern ? new RegExp(namePattern, 'iu') : null;
+  const sel = roleFilter ? '[role="' + roleFilter + '"]' : '[role]';
+  const candidates = Array.from(host.querySelectorAll(sel));
+  for (const el of candidates) {{
+    if (re) {{
+      // Flutter sets textContent on flt-semantics but aria-label is often null.
+      // Check both: aria-label first, then textContent (trimmed).
+      const lbl = el.getAttribute('aria-label') || el.textContent.trim() || '';
+      if (!re.test(lbl)) continue;
+    }}
+    const r = el.getBoundingClientRect();
+    if (r.width < 1 && r.height < 1) continue;
+    // Prefer aria-label if present, fall back to textContent
+    const label = el.getAttribute('aria-label') || el.textContent.trim() || '';
+    return JSON.stringify({{
+      found: true,
+      x: r.left + r.width / 2,
+      y: r.top  + r.height / 2,
+      width: r.width, height: r.height,
+      label: label,
+      role:  el.getAttribute('role') || '',
+    }});
+  }}
+  const avail = Array.from(host.querySelectorAll('[role]'))
+    .map(e => (e.getAttribute('role')||'') + ':' + (e.getAttribute('aria-label') || e.textContent.trim() || ''))
+    .slice(0, 30);
+  return JSON.stringify({{ found: false, reason: 'no matching element', available: avail }});
+}})()
+"#, role_val = role_val, name_val = name_val);
+
+    let raw = evaluate_js(&js)?;
+    let v: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| format!("shadow_find: JSON parse: {e} — raw={raw}"))?;
+
+    if v.get("found").and_then(|f| f.as_bool()) != Some(true) {
+        let reason = v["reason"].as_str().unwrap_or("unknown");
+        let avail  = v.get("available")
+            .map(|a| format!(", available: {a}"))
+            .unwrap_or_default();
+        return Err(format!("shadow_find: {reason}{avail}"));
+    }
+
+    let x     = v["x"].as_f64().ok_or("shadow_find: missing x")?;
+    let y     = v["y"].as_f64().ok_or("shadow_find: missing y")?;
+    let label = v["label"].as_str().unwrap_or("").to_string();
+    Ok((x, y, label))
+}
+
+/// List all elements in Flutter's shadow DOM (debugging / inspection).
+/// Returns a vec of `role:aria-label` strings.
+pub fn shadow_dump() -> Result<Vec<String>, String> {
+    let js = r#"(() => {
+  const host = document.querySelector('flt-semantics-host');
+  if (!host) return JSON.stringify(['ERROR:flt-semantics-host not found']);
+  if (host.childElementCount === 0) return JSON.stringify(['EMPTY:call enable_a11y first']);
+  return JSON.stringify(
+    Array.from(host.querySelectorAll('[role]'))
+      .map(e => (e.getAttribute('role')||'?') + ':' + (e.getAttribute('aria-label') || e.textContent.trim() || ''))
+  );
+})()
+"#;
+    let raw = evaluate_js(js)?;
+    let v: Vec<String> = serde_json::from_str(&raw)
+        .unwrap_or_else(|_| vec![format!("parse_error:{raw}")]);
+    Ok(v)
+}
+
+/// Click an element found via Flutter's shadow DOM.
+///
+/// Uses JS `PointerEvent` dispatch directly on the `flt-semantics` element.
+/// This is REQUIRED for Flutter CanvasKit: CDP `Input.dispatchMouseEvent`
+/// (used by `click_point`) causes Chrome to navigate to `about:blank` on
+/// certain Flutter route-change buttons (e.g. 質押 → /wallet/stake-form).
+/// JS-dispatched pointer events are processed by Flutter's gesture recognizer
+/// without side-effects.
+///
+/// Returns the aria-label / textContent of the clicked element.
+pub fn shadow_click(role: Option<&str>, name_regex: Option<&str>) -> Result<String, String> {
+    let role_val = role.unwrap_or("").replace('\'', "\\'");
+    let name_val = name_regex.unwrap_or("").replace('\'', "\\'");
+
+    let js = format!(r#"(() => {{
+  const host = document.querySelector('flt-semantics-host');
+  if (!host) return JSON.stringify({{ found: false, reason: 'no flt-semantics-host' }});
+  if (host.childElementCount === 0) return JSON.stringify({{ found: false, reason: 'host empty' }});
+  const roleFilter  = '{role_val}';
+  const namePattern = '{name_val}';
+  const re = namePattern ? new RegExp(namePattern, 'iu') : null;
+  const sel = roleFilter ? '[role="' + roleFilter + '"]' : '[role]';
+  const candidates = Array.from(host.querySelectorAll(sel));
+  for (const el of candidates) {{
+    if (re) {{
+      const lbl = el.getAttribute('aria-label') || el.textContent.trim() || '';
+      if (!re.test(lbl)) continue;
+    }}
+    const r = el.getBoundingClientRect();
+    if (r.width < 1 && r.height < 1) continue;
+    const cx = r.left + r.width / 2;
+    const cy = r.top  + r.height / 2;
+    const label = el.getAttribute('aria-label') || el.textContent.trim() || '';
+    // Dispatch pointer events directly on the element.
+    // CDP Input.dispatchMouseEvent causes about:blank on Flutter route-change
+    // buttons; JS PointerEvent dispatch is handled correctly by Flutter.
+    el.dispatchEvent(new PointerEvent('pointerdown', {{bubbles:true, cancelable:true, clientX:cx, clientY:cy, pointerId:1}}));
+    el.dispatchEvent(new PointerEvent('pointerup',   {{bubbles:true, cancelable:true, clientX:cx, clientY:cy, pointerId:1}}));
+    el.dispatchEvent(new PointerEvent('click',       {{bubbles:true, cancelable:true, clientX:cx, clientY:cy}}));
+    return JSON.stringify({{ found: true, label: label, x: cx, y: cy }});
+  }}
+  const avail = Array.from(host.querySelectorAll('[role]'))
+    .map(e => (e.getAttribute('role')||'') + ':' + (e.getAttribute('aria-label') || e.textContent.trim() || ''))
+    .slice(0, 30);
+  return JSON.stringify({{ found: false, reason: 'no matching element', available: avail }});
+}})()
+"#, role_val = role_val, name_val = name_val);
+
+    let raw = evaluate_js(&js)?;
+    let v: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| format!("shadow_click: JSON parse: {e} — raw={raw}"))?;
+
+    if v.get("found").and_then(|f| f.as_bool()) != Some(true) {
+        let reason = v["reason"].as_str().unwrap_or("unknown");
+        let avail  = v.get("available")
+            .map(|a| format!(", available: {a}"))
+            .unwrap_or_default();
+        return Err(format!("shadow_click: {reason}{avail}"));
+    }
+
+    Ok(v["label"].as_str().unwrap_or("").to_string())
+}
+
+/// Focus + type into a Flutter shadow DOM element.
+/// Uses JS pointer dispatch (same as shadow_click) to focus, then `Input.InsertText`.
+pub fn shadow_type(role: Option<&str>, name_regex: Option<&str>, text: &str) -> Result<(), String> {
+    // Use shadow_click (JS dispatch) to focus — click_point causes about:blank on Flutter
+    shadow_click(role, name_regex)?;
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    with_tab(|tab| {
+        tab.call_method(Input::InsertText { text: text.to_string() })
+            .map_err(|e| format!("shadow_type InsertText: {e}"))
+    })?;
+    Ok(())
+}
+
+/// Type text into a Flutter text field by dispatching individual key presses.
+///
+/// Flutter Web's text editing engine listens for `keydown` / `keyup` events on
+/// the `flt-text-editing-host` input — NOT for `Input.InsertText`.  This function
+/// uses `tab.press_key()` (which sends proper CDP DispatchKeyEvent) so Flutter
+/// receives and processes each character.
+///
+/// Call `ax_click(backend_id)` or `shadow_click` first to focus the target field
+/// and let Flutter create its `flt-text-editing` input; wait ~300 ms before calling
+/// this function.
+pub fn flutter_type(text: &str) -> Result<(), String> {
+    // Clear existing content via JS — Ctrl+A + Delete does NOT work reliably in
+    // Flutter Web because CDP Ctrl+A is processed as a literal 'a' character press.
+    // JS direct assignment to .value doesn't update Flutter's cursor state, but it
+    // empties the DOM value so our subsequent keydowns start from a clean state.
+    let _ = evaluate_js(
+        "(() => { const inp = document.querySelector('.flt-text-editing'); if (inp) inp.value = ''; })()"
+    );
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    // Type each character individually so Flutter's keydown handler fires.
+    for ch in text.chars() {
+        let key_str = ch.to_string();
+        press_key(&key_str)
+            .map_err(|e| format!("flutter_type '{key_str}': {e}"))?;
+        std::thread::sleep(std::time::Duration::from_millis(30));
+    }
+    Ok(())
+}
+
 /// Move the mouse to (x, y) without clicking — triggers hover effects.
 pub fn hover_point(x: f64, y: f64) -> Result<(), String> {
     with_tab(|tab| {

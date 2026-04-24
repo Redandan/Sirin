@@ -1751,29 +1751,35 @@ async fn call_browser_exec(args: Value, user_agent: &str) -> Result<Value, Strin
             }
             // ── Accessibility tree (literal text — for exact assertions) ──
             "enable_a11y" => {
-                // Use get_full_tree() which bootstraps Flutter semantics only when
-                // needed (tree ≤2 nodes) and uses the safe Strategy A/B priority.
-                // Do NOT call enable_flutter_semantics() directly — after login /
-                // hash-route navigation the Tab fallback (removed Strategy C)
-                // causes side-effect navigation and resets the tab URL to
-                // about:blank.
-                //
-                // Safety net (Issue #21): if Flutter idle-collapsed its tree and the
-                // re-bootstrap somehow resets the URL, detect and restore it.
+                // Always call enable_flutter_semantics() to trigger the placeholder click
+                // that builds flt-semantics-host DOM elements (used by shadow_find/shadow_dump).
+                // Safety net: detect about:blank URL reset and restore.
                 let saved_url = crate::browser::current_url().ok();
-                let tree = crate::browser_ax::get_full_tree(false)?;
+                let _ = crate::browser_ax::enable_flutter_semantics();
+                // Poll until flt-semantics-host is non-empty (Flutter fills it async).
+                let mut shadow_ready = false;
+                for _ in 0..15 {
+                    let count = browser::evaluate_js(
+                        "document.querySelector('flt-semantics-host')?.childElementCount||0"
+                    ).unwrap_or_default();
+                    if count.trim() != "0" {
+                        shadow_ready = true;
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
                 if let Some(ref url) = saved_url {
                     let cur = crate::browser::current_url().unwrap_or_default();
                     if cur.contains("about:blank") && !url.contains("about:blank") && !url.is_empty() {
                         tracing::warn!(
-                            "[browser_ax] enable_a11y: URL reset detected (about:blank) — \
-                             restoring {url:?}"
+                            "[browser_ax] enable_a11y: URL reset detected (about:blank) — restoring {url:?}"
                         );
                         let _ = crate::browser::navigate(url);
                         std::thread::sleep(std::time::Duration::from_millis(500));
                     }
                 }
-                Ok(json!({ "status": "semantics enabled", "ax_node_count": tree.len() }))
+                let tree = crate::browser_ax::get_full_tree(false).unwrap_or_default();
+                Ok(json!({ "status": "semantics enabled", "ax_node_count": tree.len(), "shadow_ready": shadow_ready }))
             }
             "ax_tree" => {
                 let nodes = crate::browser_ax::get_full_tree(include_ignored)?;
@@ -1881,6 +1887,62 @@ async fn call_browser_exec(args: Value, user_agent: &str) -> Result<Value, Strin
             "clear_state" => {
                 browser::clear_browser_state()?;
                 Ok(json!({ "status": "cleared" }))
+            }
+            "set_viewport" => {
+                let w = args.get("width").and_then(Value::as_u64).unwrap_or(1440) as u32;
+                let h = args.get("height").and_then(Value::as_u64).unwrap_or(1600) as u32;
+                let scale = args.get("scale").and_then(Value::as_f64).unwrap_or(1.0);
+                let mobile = args.get("mobile").and_then(Value::as_bool).unwrap_or(false);
+                browser::set_viewport(w, h, scale, mobile)?;
+                Ok(json!({ "status": "viewport_set", "width": w, "height": h }))
+            }
+            // ── Flutter Shadow DOM ──────────────────────────────────────────
+            "shadow_find" => {
+                let role = args.get("role").and_then(Value::as_str).map(String::from);
+                let name = args.get("name_regex").or_else(|| args.get("name"))
+                    .and_then(Value::as_str).map(String::from);
+                let (x, y, label) = browser::shadow_find(role.as_deref(), name.as_deref())?;
+                Ok(json!({ "found": true, "x": x, "y": y, "label": label }))
+            }
+            "shadow_click" => {
+                let role = args.get("role").and_then(Value::as_str).map(String::from);
+                let name = args.get("name_regex").or_else(|| args.get("name"))
+                    .and_then(Value::as_str).map(String::from);
+                let label = browser::shadow_click(role.as_deref(), name.as_deref())?;
+                Ok(json!({ "status": "clicked", "label": label }))
+            }
+            "shadow_type" => {
+                let role = args.get("role").and_then(Value::as_str).map(String::from);
+                let name = args.get("name_regex").or_else(|| args.get("name"))
+                    .and_then(Value::as_str).map(String::from);
+                let text_val = args.get("text").and_then(Value::as_str)
+                    .ok_or("'shadow_type' requires 'text'")?;
+                browser::shadow_type(role.as_deref(), name.as_deref(), text_val)?;
+                Ok(json!({ "status": "typed", "text": text_val }))
+            }
+            "flutter_type" => {
+                // Accept both string "50" and number 50 (sirin-call key=value parses ints as JSON numbers)
+                let text_owned = args.get("text")
+                    .map(|v| if let Some(s) = v.as_str() { s.to_string() } else { v.to_string().trim_matches('"').to_string() })
+                    .ok_or("'flutter_type' requires 'text'")?;
+                browser::flutter_type(&text_owned)?;
+                Ok(json!({ "status": "typed", "text": text_owned }))
+            }
+            "shadow_type_flutter" => {
+                let role = args.get("role").and_then(Value::as_str).map(String::from);
+                let name = args.get("name_regex").or_else(|| args.get("name"))
+                    .and_then(Value::as_str).map(String::from);
+                let text_owned = args.get("text")
+                    .map(|v| if let Some(s) = v.as_str() { s.to_string() } else { v.to_string().trim_matches('"').to_string() })
+                    .ok_or("'shadow_type_flutter' requires 'text'")?;
+                let label = browser::shadow_click(role.as_deref(), name.as_deref())?;
+                std::thread::sleep(std::time::Duration::from_millis(350));
+                browser::flutter_type(&text_owned)?;
+                Ok(json!({ "status": "typed", "label": label, "text": text_owned }))
+            }
+            "shadow_dump" => {
+                let items = browser::shadow_dump()?;
+                Ok(json!({ "count": items.len(), "elements": items }))
             }
             // ── Multi-tab / popup ───────────────────────────────────
             "wait_new_tab" => {

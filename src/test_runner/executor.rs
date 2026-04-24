@@ -757,7 +757,7 @@ fn build_prompt_with_limits(
 
 ## Accessibility tree actions (literal text, no vision approximation)
 For Flutter/CanvasKit canvas apps AND exact-string assertions:
-- enable_a11y       — ⚠️ MUST call first on Flutter/CanvasKit apps; without it ax_find/ax_tree
+- enable_a11y       — ⚠️ MUST call first on Flutter/CanvasKit apps; without it ax_find/shadow_find
                        return empty because the semantics bridge is inactive. Call again after
                        any route change (tree collapses temporarily after navigation).
 - ax_tree           — list all a11y nodes (role + literal name + value + backend_id)
@@ -771,9 +771,26 @@ For Flutter/CanvasKit canvas apps AND exact-string assertions:
 - ax_type           — backend_id, text → focus + insertText
 - ax_type_verified  — same as ax_type + read-back; returns {{typed, actual, matched}}
 
-Flutter/CanvasKit interaction pattern (ALWAYS follow this order):
-  1. enable_a11y  2. ax_find  3. ax_click / ax_type
-  After route change: wait ≥ 1000ms then enable_a11y again before next ax_find.
+## Flutter Shadow DOM actions (⭐ PREFERRED for Flutter/CanvasKit — bypasses CDP AX protocol)
+These query Flutter's `flt-semantics-host` directly via JS, avoiding AX tree collapse issues:
+- shadow_dump           — list ALL elements in Flutter shadow DOM (role:label pairs); use first to debug
+- shadow_find           — role and/or name_regex → {{found, x, y, label}}; params: role, name_regex (or name)
+- shadow_click          — same params as shadow_find; clicks at element center via CDP Input events
+- shadow_type           — role + name_regex + text; clicks to focus then inserts text via CDP InsertText
+- flutter_type          — text only; types via CDP keydown events (REQUIRED for Flutter textboxes).
+                          Call shadow_click + wait 350ms first to focus the field, THEN flutter_type.
+                          ⚠️ Input.InsertText does NOT work for Flutter — always use flutter_type.
+- shadow_type_flutter   — all-in-one: shadow_click → wait 350ms → flutter_type; preferred for textboxes.
+                          params: role, name_regex (or name), text
+
+Flutter/CanvasKit interaction pattern (PREFERRED order using shadow DOM):
+  1. enable_a11y                — trigger Flutter to build semantics overlay
+  2. shadow_dump                — inspect what's available (first call on each page)
+  3. shadow_click               — for buttons and tabs
+  4. shadow_type_flutter        — for text input fields (NOT shadow_type which uses InsertText)
+  After route change: wait ≥ 1000ms → enable_a11y → shadow_dump → interact.
+
+Fallback to ax_find/ax_click if shadow_find returns "no shadow root".
 
 When you need EXACT text comparison (numbers, IDs), prefer ax_* over
 screenshot_analyze (which approximates).
