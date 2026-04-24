@@ -1,6 +1,6 @@
 # Design: Pre-Authorization Engine
 
-**Status:** Proposed (design only, no implementation yet)
+**Status:** Implemented — see `docs/MCP_API.md § Pre-Authorization` for the live reference
 **Target tier:** Tier 1 (safety / blast-radius)
 **Depends on:** none
 **Enables:** `DESIGN_MONITOR.md` (authz_ask prompts surface in GUI)

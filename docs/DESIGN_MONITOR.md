@@ -1,6 +1,6 @@
 # Design: Live GUI Monitor
 
-**Status:** Proposed (design only, no implementation yet)
+**Status:** Implemented — see `docs/MCP_API.md § Live Monitor` for the live reference
 **Target tier:** Tier 1 (observability / debuggability)
 **Depends on:** `DESIGN_AUTHZ.md`(AuthZ ask prompts 在此 UI 浮現,但可獨立先上)
 **Enables:** trace viewer replay mode(歷史 ndjson replay 重用同個 UI)
