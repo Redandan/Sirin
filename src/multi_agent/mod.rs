@@ -206,6 +206,144 @@ impl AgentTeam {
         Ok(test_result)
     }
 
+    /// T2-2: 在 Engineer 完成任務後，自動驗證指定 YAML test 是否通過。
+    ///
+    /// # 流程
+    /// 1. 從 `sirin_cwd/config/tests/` 遞迴搜尋 `{test_id}.yaml`
+    /// 2. 以 `spawn_adhoc_run` 直接執行（不需 sync 到 LocalAppData）
+    /// 3. 輪詢直到 terminal state（5 min 超時）
+    /// 4. 通過 → 回傳成功摘要；失敗 → Engineer 修 YAML → 再試一次
+    ///
+    /// `sirin_cwd` 是 Sirin repo 根目錄（例如 `C:/repos/Sirin`）。
+    /// `test_id` 是 YAML 的 `id` 欄位（不含 `.yaml`）。
+    pub fn yaml_test_cycle(&mut self, sirin_cwd: &str, test_id: &str) -> Result<String, String> {
+        use std::time::{Duration, Instant};
+        use crate::test_runner::{AdhocRunRequest, TestStatus};
+        use crate::test_runner::runs::RunPhase;
+
+        const MAX_ATTEMPTS:       usize    = 2;
+        const POLL_INTERVAL:      Duration = Duration::from_secs(5);
+        const TEST_TIMEOUT_SECS:  u64      = 300;
+
+        // 遞迴搜尋 {sirin_cwd}/config/tests/**/{test_id}.yaml
+        fn find_yaml(dir: &std::path::Path, test_id: &str) -> Option<std::path::PathBuf> {
+            let direct = dir.join(format!("{test_id}.yaml"));
+            if direct.exists() { return Some(direct); }
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for e in entries.flatten() {
+                    let p = e.path();
+                    if p.is_dir() {
+                        if let Some(f) = find_yaml(&p, test_id) { return Some(f); }
+                    }
+                }
+            }
+            None
+        }
+
+        let yaml_dir = std::path::PathBuf::from(sirin_cwd).join("config").join("tests");
+
+        for attempt in 0..MAX_ATTEMPTS {
+            // 1. 載入 YAML（每次 attempt 都重載，讓 Engineer 修完後能看到新版本）
+            let yaml_path = match find_yaml(&yaml_dir, test_id) {
+                Some(p) => p,
+                None => return Err(format!(
+                    "yaml_test_cycle: `{test_id}.yaml` 不在 {yaml_dir:?} 或子目錄"
+                )),
+            };
+            let goal = crate::test_runner::parser::load_file(&yaml_path)
+                .map_err(|e| format!("yaml_test_cycle: load YAML 失敗: {e}"))?;
+
+            // 2. 執行 adhoc run（不需先 sync 到 LocalAppData）
+            let req = AdhocRunRequest {
+                url:              goal.url.clone(),
+                goal:             goal.goal.clone(),
+                success_criteria: goal.success_criteria.clone(),
+                locale:           Some(goal.locale.clone()),
+                max_iterations:   Some(goal.max_iterations),
+                timeout_secs:     Some(goal.timeout_secs),
+                browser_headless: goal.browser_headless,
+                llm_backend:      goal.llm_backend.clone(),
+                ..Default::default()
+            };
+            let run_id = crate::test_runner::spawn_adhoc_run(req)
+                .map_err(|e| format!("yaml_test_cycle: spawn 失敗: {e}"))?;
+
+            tracing::info!(target: "sirin",
+                "[yaml-test] attempt {}/{}: test_id={test_id} run_id={run_id}",
+                attempt + 1, MAX_ATTEMPTS);
+
+            // 3. 輪詢直到 terminal
+            let deadline = Instant::now() + Duration::from_secs(TEST_TIMEOUT_SECS);
+            let result = loop {
+                std::thread::sleep(POLL_INTERVAL);
+                let state = match crate::test_runner::runs::get(&run_id) {
+                    Some(s) => s,
+                    None => return Err(format!("yaml_test_cycle: run {run_id} 消失於 registry")),
+                };
+                match state.phase {
+                    RunPhase::Complete(r) => break r,
+                    RunPhase::Error(e)    => return Err(format!("yaml_test_cycle: run errored: {e}")),
+                    _ if Instant::now() >= deadline => {
+                        return Err(format!(
+                            "yaml_test_cycle: `{test_id}` 超時（{TEST_TIMEOUT_SECS}s）"
+                        ));
+                    }
+                    _ => continue,
+                }
+            };
+
+            // 4. 判斷結果
+            let passed = matches!(result.status, TestStatus::Passed);
+            if passed {
+                let summary = format!(
+                    "[Tester ✅] YAML test `{test_id}` 通過（{} iterations, {:.1}s）",
+                    result.iterations,
+                    result.duration_ms as f64 / 1000.0
+                );
+                let _ = self.tester.send(&format!(
+                    "YAML 驗證結果：{summary}。測試通過，任務完成。"
+                ));
+                let _ = self.pm.send(&format!(
+                    "YAML 自動驗證結果：{summary}\n\
+                     [📝 學到: YAML test `{test_id}` 在 {} iterations 內通過，目前 YAML 設計正確]",
+                    result.iterations
+                ));
+                return Ok(summary);
+            }
+
+            // 5. 失敗 → Engineer 修 YAML（若還有下一輪）
+            if attempt + 1 < MAX_ATTEMPTS {
+                let failure_info = result.error_message.as_deref()
+                    .or(result.final_analysis.as_deref())
+                    .unwrap_or("（無具體錯誤訊息）");
+
+                tracing::warn!(target: "sirin",
+                    "[yaml-test] attempt {}/{} FAILED: {failure_info}",
+                    attempt + 1, MAX_ATTEMPTS);
+
+                let engineer_msg = format!(
+                    "YAML test `{test_id}` 第 {}/{} 次驗證失敗（{} iterations）。\n\
+                     失敗訊息：{failure_info}\n\n\
+                     請修復 `config/tests/**/{test_id}.yaml`，注意以下原則：\n\
+                     - 步驟必須線性，不寫 if/else 分支\n\
+                     - `done=true` 放在固定最後一步（無條件）\n\
+                     - goal text 不寫 JSON，scroll 用中文描述（例：向下捲動 500px（scroll y=500））\n\
+                     - `max_iterations` = 步驟數 × 2\n\
+                     - Flutter AppBar 返回：用 `eval target='window.history.back()'`\n\
+                     修完後直接回報改了什麼（無需等候，系統會自動重新驗證）。",
+                    attempt + 1, MAX_ATTEMPTS, result.iterations
+                );
+                let _ = self.engineer.send(&engineer_msg);
+                // 短暫等候 Engineer 有機會修改（工程師 session 非同步）
+                std::thread::sleep(Duration::from_secs(30));
+            }
+        }
+
+        Err(format!(
+            "yaml_test_cycle: `{test_id}` 在 {MAX_ATTEMPTS} 次嘗試後仍未通過"
+        ))
+    }
+
     /// 取得三個 session 的摘要資訊（給 MCP / UI 顯示）。
     pub fn status(&self) -> TeamStatus {
         TeamStatus {

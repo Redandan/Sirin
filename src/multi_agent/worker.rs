@@ -109,6 +109,10 @@ fn run_loop(default_cwd: String, worker_id: usize) {
                 let issue_url = task.project.as_ref()
                     .and_then(|p| p.issue_url.clone());
 
+                // T2-2: capture yaml_test_id before assign_task consumes task borrow.
+                let yaml_test_id: Option<String> = task.project.as_ref()
+                    .and_then(|p| p.yaml_test_id.clone());
+
                 match team.assign_task(&task.description) {
                     Ok(review) => {
                         tracing::info!(target: "sirin",
@@ -118,6 +122,20 @@ fn run_loop(default_cwd: String, worker_id: usize) {
                         // Extract and persist any lessons the PM logged in the review
                         let lessons = super::knowledge::parse_lessons(&review);
                         super::knowledge::store_lessons(&task.id, &lessons);
+
+                        // T2-2: YAML test auto-verification (if requested).
+                        // Only run when Sirin has a browser available (test_runner
+                        // drives Chrome). Skip on non-Sirin projects for now.
+                        if let Some(ref ytid) = yaml_test_id {
+                            tracing::info!(target: "sirin",
+                                "[team-worker:w{worker_id}] T2-2 yaml_test_cycle: test_id={ytid}");
+                            match team.yaml_test_cycle(&default_cwd, ytid) {
+                                Ok(summary) => tracing::info!(target: "sirin",
+                                    "[team-worker:w{worker_id}] yaml_test_cycle ✓ {summary}"),
+                                Err(e) => tracing::warn!(target: "sirin",
+                                    "[team-worker:w{worker_id}] yaml_test_cycle ✗ {e}"),
+                            }
+                        }
 
                         // 驗證編譯（cargo check）— only for Sirin team; cross-repo
                         // projects don't necessarily have Rust / cargo.

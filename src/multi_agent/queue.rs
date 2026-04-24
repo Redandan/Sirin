@@ -75,6 +75,17 @@ pub struct ProjectContext {
     /// it touches the outside world.
     #[serde(default)]
     pub dry_run:     bool,
+    /// T2-2: Optional YAML test id to auto-verify after Engineer completes the task.
+    ///
+    /// When set, the worker calls `AgentTeam::yaml_test_cycle(sirin_cwd, test_id)`
+    /// after `assign_task` succeeds. Sirin loads the YAML from the repo's
+    /// `config/tests/` tree, runs it via `spawn_adhoc_run`, and if it fails,
+    /// prompts Engineer to fix the YAML before marking the task done.
+    ///
+    /// Typical use: tasks that produce a new YAML regression test —
+    ///   `agent_enqueue task="…write YAML test…" yaml_test_id="agora_checkout_deep"`.
+    #[serde(default)]
+    pub yaml_test_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -349,6 +360,39 @@ mod tests {
         assert_eq!(tasks[0].status, TaskStatus::Done);
         assert_eq!(tasks[0].result.as_deref(), Some("ok"));
         assert!(tasks[0].finished_at.is_some());
+    }
+
+    #[test]
+    fn project_context_yaml_test_id_roundtrip() {
+        // yaml_test_id=None → serializes without the field, deserializes back to None.
+        let ctx_none = ProjectContext {
+            repo:         "sirin".into(),
+            extra_tools:  vec![],
+            issue_url:    None,
+            dry_run:      false,
+            yaml_test_id: None,
+        };
+        let json_none = serde_json::to_string(&ctx_none).unwrap();
+        assert!(!json_none.contains("yaml_test_id") || json_none.contains("null"),
+            "yaml_test_id=None should not appear or appear as null");
+        let back: ProjectContext = serde_json::from_str(&json_none).unwrap();
+        assert_eq!(back.yaml_test_id, None);
+
+        // yaml_test_id=Some → serializes and deserializes the value.
+        let ctx_some = ProjectContext {
+            yaml_test_id: Some("agora_checkout_deep".into()),
+            ..ctx_none.clone()
+        };
+        let json_some = serde_json::to_string(&ctx_some).unwrap();
+        assert!(json_some.contains("agora_checkout_deep"),
+            "yaml_test_id value must appear in JSON");
+        let back2: ProjectContext = serde_json::from_str(&json_some).unwrap();
+        assert_eq!(back2.yaml_test_id.as_deref(), Some("agora_checkout_deep"));
+
+        // Legacy JSON without yaml_test_id field → deserializes to None (backward compat).
+        let legacy = r#"{"repo":"sirin","extra_tools":[],"issue_url":null,"dry_run":false}"#;
+        let back3: ProjectContext = serde_json::from_str(legacy).unwrap();
+        assert_eq!(back3.yaml_test_id, None, "legacy JSON without field must default to None");
     }
 
     /// 把三個 GUI 優化任務推進佇列。

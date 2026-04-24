@@ -126,10 +126,11 @@ fn enqueue_from_issue_full(
     );
 
     let ctx = ProjectContext {
-        repo:        project_key.to_string(),
-        extra_tools: vec!["Bash".to_string()],   // for gh + cargo/flutter/mvn
-        issue_url:   Some(url),
+        repo:         project_key.to_string(),
+        extra_tools:  vec!["Bash".to_string()],   // for gh + cargo/flutter/mvn
+        issue_url:    Some(url),
         dry_run,
+        yaml_test_id: None,  // GitHub issue tasks don't auto-trigger YAML tests
     };
 
     Ok(queue::enqueue_with_project(&description, priority, ctx))

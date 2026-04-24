@@ -580,13 +580,17 @@ fn handle_tools_list() -> Result<Value, String> {
             {
                 "name": "agent_enqueue",
                 "description": "把一個任務加入 AI 小隊的任務佇列。Worker 執行緒會自動依序執行（PM→Engineer→PM review）。\
-回傳任務 ID，可用 agent_queue_status 查詢進度。",
+回傳任務 ID，可用 agent_queue_status 查詢進度。\n\n\
+T2-2：傳入 yaml_test_id 後，Engineer 完成任務時 Sirin 會自動執行該 YAML test 驗證，\
+失敗則讓 Engineer 修 YAML 再試一次。",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "task":     { "type": "string", "description": "任務描述（越具體越好）" },
-                        "cwd":      { "type": "string", "description": "工作目錄（repo 路徑）。省略時用 sirin repo" },
-                        "priority": { "type": "integer", "minimum": 0, "maximum": 255, "description": "任務優先級：0=緊急，50=正常（預設），255=最低" }
+                        "task":         { "type": "string", "description": "任務描述（越具體越好）" },
+                        "cwd":          { "type": "string", "description": "工作目錄（repo 路徑）。省略時用 sirin repo" },
+                        "priority":     { "type": "integer", "minimum": 0, "maximum": 255, "description": "任務優先級：0=緊急，50=正常（預設），255=最低" },
+                        "yaml_test_id": { "type": "string", "description": "（T2-2）Engineer 完成後，Sirin 自動跑這個 YAML test 驗證。\
+傳 test_id（不含 .yaml）；系統從 Sirin repo 的 config/tests/ 遞迴搜尋，失敗則讓 Engineer 修 YAML 再試。" }
                     },
                     "required": ["task"]
                 }
@@ -1217,13 +1221,41 @@ fn call_agent_enqueue(args: Value) -> Result<Value, String> {
         .and_then(|v| v.as_u64())
         .map(|n| n.min(255) as u8)
         .unwrap_or(50);
-    let id = crate::multi_agent::queue::enqueue_with_priority(task, priority);
-    tracing::info!(target: "sirin", "[mcp] agent_enqueue: task_id={id} priority={priority} task={:.60}", task);
+
+    // T2-2: optional yaml_test_id triggers YAML verification after Engineer completes.
+    let yaml_test_id: Option<String> = args.get("yaml_test_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(String::from);
+
+    let id = if let Some(ytid) = yaml_test_id.as_deref() {
+        let ctx = crate::multi_agent::queue::ProjectContext {
+            yaml_test_id: Some(ytid.to_string()),
+            ..Default::default()
+        };
+        crate::multi_agent::queue::enqueue_with_project(task, priority, ctx)
+    } else {
+        crate::multi_agent::queue::enqueue_with_priority(task, priority)
+    };
+
+    tracing::info!(target: "sirin",
+        "[mcp] agent_enqueue: task_id={id} priority={priority} yaml_test_id={:?} task={:.60}",
+        yaml_test_id, task);
+
+    let msg = if yaml_test_id.is_some() {
+        format!("任務已加入佇列（T2-2：完成後自動驗證 YAML test '{}'）。\
+                 用 agent_start_worker 確保 Worker 正在執行，用 agent_queue_status 查詢進度。",
+            yaml_test_id.as_deref().unwrap_or(""))
+    } else {
+        "任務已加入佇列。用 agent_start_worker 確保 Worker 正在執行，\
+         用 agent_queue_status 查詢進度。".to_string()
+    };
+
     Ok(serde_json::json!({
-        "task_id": id,
-        "status":  "queued",
-        "message": "任務已加入佇列。用 agent_start_worker 確保 Worker 正在執行，\
-                    用 agent_queue_status 查詢進度。"
+        "task_id":      id,
+        "status":       "queued",
+        "yaml_test_id": yaml_test_id,
+        "message":      msg,
     }))
 }
 
