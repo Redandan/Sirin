@@ -80,13 +80,32 @@
 
 ## 修復歷程（2026-04-24 一日內）
 
+### 第一輪（早期調試）
+
 | 問題 | 根本原因 | 修復 |
 |------|---------|------|
-| LLM 輸出格式崩潰 | goal text 含 `{"direction":"down","amount":N}` JSON | 改為純中文描述 `向下捲動 Npx` |
+| LLM 輸出格式崩潰 | goal text 含 `{"direction":"down","amount":N}` JSON | 改為純中文描述 `向下捲動 Npx（scroll y=N）` |
 | 商品卡找不到 | `name_regex=".+"` 不跨行（Flutter button name 多行） | 改為 `name_regex="USDT"` |
 | Admin 找不到商品管理頁 | `?__test_role=admin` 落地在 `/admin/statistics` | goal 加入導航步驟 |
 | 登出後 auto-relogin | URL 含 `?__test_role=buyer`，Flutter 重新讀取 | success_criteria 明確接受此行為 |
 | 賣家商品無獨立 Edit 按鈕 | 點商品卡直接進入編輯 | 從 `name_regex="編輯"` 改為 `name_regex="USDT"` |
+
+### 第二輪（2026-04-24 下午，全批次回歸後 4 個失敗）
+
+| 測試 | 失敗原因 | 修復 |
+|------|---------|------|
+| `agora_logout_flow` | step 3 用 `scroll {"direction":"down","amount":600}` → LLM 輸出錯誤 JSON schema，scroll 無效；步驟邏輯 step 9 提前 done=true | 改純文字；scroll 量增至 800px；步驟重排 |
+| `agora_navigation_breadcrumb` | `click_point x=28 y=28` 被 Flutter 攔截無效；if/else 分支導致 LLM 循環 | 改 `eval window.history.back()`；線性化步驟 |
+| `agora_pickup_time_picker` | if/else 分支 + 沒有固定終止步驟，40 iter 耗盡仍無 `done=true` | 移除所有分支；`done=true` 在固定最後步驟 |
+| `agora_pickup_checkboxes_restore` | 同上：15 iter 耗盡無 `done=true`；wait 不足導致商品列表未載入 | 線性化；加 `wait 3000` 等載入；`done=true` 固定在最後 |
+
+### 設計原則（從失敗中學到）
+
+1. **goal text 不寫 JSON**：`scroll {"direction":"down"}` 混淆 LLM 輸出格式 → 改純文字 `向下捲動 Npx（scroll y=N）`
+2. **線性步驟，不寫 if/else**：分支讓 LLM 循環不終止 → 每個 step 無條件執行
+3. **`done=true` 在固定最後一步**：不依靠 LLM 判斷何時終止 → step N 永遠輸出 `done=true`
+4. **Flutter back button 用 `eval window.history.back()`**：AppBar 返回鍵無 AX name，shadow_click 找不到
+5. **max_iterations = 步驟數 × 2**：不要設 40 以防萬一 → 太高讓 LLM 以為可以無限重試
 
 ---
 

@@ -730,6 +730,57 @@ if test.fixture.is_some() || nav_url.contains("__test_role=") {
 Without this, tests using `?__test_role=` URLs run with the PREVIOUS test's
 session — a subtle contamination bug that makes test results non-repeatable.
 
+### Flutter AppBar back button has no accessible name
+
+Flutter Material AppBar's back arrow button emits **no accessible name** in the
+AX/semantics tree.  `shadow_click role=button name_regex="Back|返回|navigate back"`
+will silently fail to find the element — confirmed on AgoraMarket 2026-04-24.
+
+**Workaround**: use the browser history API instead:
+```yaml
+eval target='window.history.back()'
+wait 2000
+screenshot_analyze "是否回到上一頁？"
+```
+
+`eval` dispatches a real JS call; Flutter's hash-route router picks it up and
+navigates back correctly.  Tested on `agora_navigation_breadcrumb` (2026-04-24).
+
+### YAML goal design: linear steps beat conditional branches
+
+**Symptom**: test exhausts `max_iterations` without ever outputting `done=true`.
+The LLM keeps retrying or trying new approaches instead of terminating.
+
+**Root cause**: YAML goals with `if/else` branches confuse the LLM.  It sees
+partial progress on a branch and keeps exploring instead of recognising the
+exit condition.
+
+**Rules**:
+1. Write steps as a flat numbered list — no nested `if`/`else`
+2. Put `done=true` at the last step, **unconditionally** (e.g. step 9)
+3. Let `success_criteria` decide pass/fail — not the LLM's `done=true` decision
+4. Keep `max_iterations` ≤ 2× the number of steps (not ≤ 40 "just in case")
+5. Add `⚠️ 即使某個步驟找不到元素也繼續往下，不要重試` at the goal header
+
+**Bad (loops forever)**:
+```yaml
+goal: |
+  4. shadow_click role=button name_regex="Buy"
+     若找不到 → screenshot_analyze → done=true
+  5. wait 3000 → done=true
+  # LLM never hits done=true because it keeps retrying step 4
+```
+
+**Good (always terminates)**:
+```yaml
+goal: |
+  ⚠️ 即使某個步驟找不到元素也繼續往下，不要重試同一步驟。
+  4. shadow_click role=button name_regex="Buy"（找不到也繼續）
+  5. wait 3000
+  6. screenshot_analyze "目前頁面狀態？"
+  7. done=true   ← 無條件，永遠執行到這裡
+```
+
 ### YAML sync: repo → %LOCALAPPDATA%\Sirin\config\tests
 
 Release binary reads YAML from `%LOCALAPPDATA%\Sirin\config\tests\`,
@@ -802,7 +853,7 @@ cargo test --bin sirin browser_lifecycle -- --ignored --nocapture
 Before declaring "done" on any change:
 
 1. `cargo check` → 0 errors, 0 warnings
-2. `cargo test --bin sirin` → all pass (currently 345)
+2. `cargo test --bin sirin` → all pass (currently 468)
 3. Updated docs (`SKILL.md` + `MCP_API.md` if user-facing)
 4. Conventional commit message
 5. Push to `main` (no PR workflow currently)

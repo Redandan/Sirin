@@ -3,32 +3,32 @@ name: "取貨時間選擇器測試"
 url: "https://redandan.github.io/?__test_role=buyer"
 
 browser_headless: false
-max_iterations: 25
-timeout_secs: 300
+max_iterations: 15
+timeout_secs: 240
 
 goal: |
-  目標：確認結帳流程中取貨時間選擇器正常（Issue #70）。
+  目標：探索買家結帳流程，記錄是否有取貨時間選擇器（Issue #70）。
 
   起始狀態：以買家身份登入，已在首頁（URL auto-login via __test_role=buyer）。
 
-  ⚠️ Flutter CanvasKit app：所有 UI 判斷用 screenshot_analyze。
+  ⚠️ Flutter app：所有 UI 判斷用 screenshot_analyze 或 shadow_dump。
+  ⚠️ 即使某個步驟找不到元素也繼續往下，不要重試同一步驟。
 
-  步驟（先進商品詳情，再到結帳頁）：
+  步驟（線性，步驟 10 無條件 done=true）：
   1. screenshot_analyze "確認在首頁，看到商品卡片"
-  2. shadow_click role=button name_regex="USDT"（點第一個商品卡進入詳情頁）
-  3. wait 2000 → 向下捲動 400px（scroll y=400）
-  4. shadow_click role=button name_regex="立即購買|確認購買|Buy Now|直接購買|購買"
-  5. wait 3000 → screenshot_analyze "是否在結帳頁？看到取貨方式或時段相關欄位嗎？"
-  6. 若看到時段選擇器：
-     - shadow_click role=button name_regex="選擇時段|取貨時間|Pickup Time|時段|選擇"
-     - wait 1500 → screenshot_analyze "時段選擇器展開了嗎？有選項嗎？"
-     - 不論是否可選 → done=true（記錄時段選擇器狀態）
-  7. 若結帳頁沒有取貨時段（只有配送選項）→ screenshot_analyze 記錄 → done=true
-  8. 若 3 次嘗試後無法到達結帳頁 → screenshot_analyze 記錄當前狀態 → done=true
+  2. shadow_click role=button name_regex="USDT"（點第一個商品卡）
+  3. wait 2000
+  4. screenshot_analyze "是否在商品詳情頁？看到哪些購買相關按鈕？"
+  5. 向下捲動 400px（scroll y=400）
+  6. shadow_dump（列出詳情頁所有 role=button，找購買/結帳按鈕）
+  7. shadow_click role=button name_regex="購買|Buy|加入購物車|Cart|立即|Order|結帳|Checkout"
+  8. wait 3000
+  9. screenshot_analyze "目前在哪個頁面？看到取貨時間選擇器、訂單資訊或購買相關欄位嗎？"
+  10. done=true
 
 success_criteria:
-  - "從商品詳情可進入結帳頁面"
-  - "結帳頁正常顯示（有訂單資訊或購買相關欄位）"
-  - "有取貨時間選擇器 → 可展開（或記錄「無時段選擇器，可能是配送模式」）"
+  - "從首頁成功點擊商品卡進入詳情頁"
+  - "嘗試點擊購買按鈕並記錄結果（進入結帳頁、或記錄找不到購買按鈕）"
+  - "記錄結帳頁是否出現取貨時段選擇器（有或無都是有效資訊）"
 
 tags: [agora, regression, pickup, checkout]

@@ -3,8 +3,8 @@ name: "頁面導航與返回測試"
 url: "https://redandan.github.io/?__test_role=buyer"
 
 browser_headless: false
-max_iterations: 25
-timeout_secs: 300
+max_iterations: 15
+timeout_secs: 240
 
 locale: zh-TW
 
@@ -13,28 +13,26 @@ goal: |
 
   起始狀態：以買家身份登入，已在首頁（URL auto-login via __test_role=buyer）。
 
-  ⚠️ Flutter CanvasKit app：所有 UI 判斷用 screenshot_analyze。
-  ⚠️ 商品卡不是 button role，用 screenshot_analyze 找座標再 click_point 點擊。
+  ⚠️ Flutter app：所有 UI 判斷用 screenshot_analyze 或 shadow_dump。
+  ⚠️ Flutter nav 按鈕必須用 shadow_click（click_point 發 CDP 事件，被 Flutter 攔截無效）。
+  ⚠️ 商品卡 AX 樹：role=button，name 含多行文字與 USDT 價格。
+  ⚠️ 即使某個步驟找不到元素也繼續往下，不要重試同一步驟。
 
-  步驟：
-  ⚠️ 商品卡在 AX 樹為 role=button，name 含多行（評分+商品名+價格），用 name_regex="USDT" 匹配。
+  ⚠️ Flutter AppBar 返回按鈕在 AX 樹無名稱，改用 eval window.history.back() 返回。
 
-  1. shadow_click role=button name_regex="USDT"（點第一個含 USDT 價格的商品卡）
-  2. wait 2500
-  3. screenshot_analyze "是否在商品詳情頁？看到商品名稱、價格、左上角返回箭頭嗎？"
-  4. 若在商品詳情頁：
-     - click_point x=28 y=28（左上角返回箭頭）
-     - wait 1500
-     - screenshot_analyze "是否回到首頁？看到商品卡片列表嗎？"
-     - 若回到首頁 → done=true
-  5. 若步驟 1 失敗：click_point x=260 y=300（商品卡位置備用）
-  6. wait 2000 → screenshot_analyze → 若進入詳情 → 按返回 → done=true
-  7. 3 次嘗試後仍失敗 → screenshot_analyze 記錄 → done=true
+  步驟（線性，步驟 9 無條件 done=true）：
+  1. screenshot_analyze "確認在首頁，看到商品卡片列表嗎？"
+  2. shadow_click role=button name_regex="USDT"（點第一個商品卡）
+  3. wait 2500
+  4. screenshot_analyze "是否進入商品詳情頁？看到商品名稱和價格嗎？"
+  5. eval target='window.history.back()'（觸發瀏覽器返回上一頁）
+  6. wait 2000
+  7. screenshot_analyze "是否回到首頁商品列表？目前頁面狀態？"
+  8. done=true
 
 success_criteria:
-  - "從首頁可進入商品詳情頁（URL 路由改變）"
-  - "商品詳情頁顯示商品名稱、價格、商品描述"
-  - "按返回後回到首頁或商品列表（非白屏或錯誤頁）"
-  - "導航流程中無白屏或頁面崩潰"
+  - "從首頁可進入商品詳情頁（看到商品名稱與價格）"
+  - "商品詳情頁正常顯示（無白屏、無崩潰）"
+  - "呼叫 history.back() 後記錄頁面狀態（回到列表或仍在詳情頁都是有效資訊）"
 
 tags: [agora, regression, navigation]

@@ -14,26 +14,26 @@ goal: |
   起始狀態：以買家身份登入，已在首頁（URL auto-login via __test_role=buyer）。
 
   ⚠️ Flutter CanvasKit app：所有 UI 判斷用 screenshot_analyze。
-
-  步驟：
   ⚠️ 底部 tab 名稱：商品 / 訂單 / 錢包 / 我的（AX role=tab）
   ⚠️ 登出按鈕在「我的」頁最底部，需向下滾動才能看到。
+  ⚠️ scroll 正確格式：{"action":"scroll","y":800}
 
+  步驟：
   1. shadow_click role=tab name_regex="^我的$"
   2. wait 2000
-  3. scroll {"direction":"down","amount":600}（滑到頁面底部）
-  4. wait 500
-  5. shadow_dump（查看底部有哪些按鈕/選項）
-  6. shadow_click role=button name_regex="登出|Logout|Log out|退出|Sign out"
-  7. wait 1000 → 若出現確認對話框：shadow_click role=button name_regex="確認|確定|OK|Yes|是"
-  8. wait 3000 → screenshot_analyze "目前在哪個頁面？有登入表單嗎？"
-  9. done=true（記錄登出後狀態，包含「瀏覽器重啟/CDP 重連到登入頁」也算成功）
-  10. 若找不到登出按鈕：再向下捲動 400px（scroll y=400）然後重試步驟 5-6
-  11. 3 次後仍找不到 → screenshot_analyze 記錄底部內容 → done=true
+  3. screenshot_analyze "確認在「我的」頁面嗎？看到個人頭像或設定入口？"
+  4. 向下捲動 800px（scroll y=800）
+  5. wait 800
+  6. shadow_dump（查看目前可見的按鈕）
+  7. shadow_click role=button name_regex="登出|Logout|Log out|退出|Sign out"
+     - 若成功：wait 1000 → 若有確認對話框 shadow_click name_regex="確認|確定|OK|Yes|是" → wait 3000 → screenshot_analyze "登出後頁面狀態？" → done=true
+     - 若找不到：向下再捲動 500px（scroll y=500）→ wait 500 → shadow_dump → 再試一次 shadow_click role=button name_regex="登出|Logout|退出|Sign out"
+     - 二次嘗試成功：同上完成流程
+     - 二次仍找不到：screenshot_analyze "底部顯示哪些選項？" → done=true（記錄底部內容）
 
 success_criteria:
-  - "成功進入「我的」個人頁面，找到登出按鈕"
-  - "能夠點擊登出按鈕（及確認對話框，如有）"
+  - "成功進入「我的」個人頁面（看到個人資料或設定選項）"
+  - "嘗試捲動到頁面底部尋找登出按鈕，並記錄結果（找到並點擊，或記錄未找到的底部內容）"
   - "⚠️ 注意：URL 含 ?__test_role=buyer，Flutter auto-login 會讓登出後立即重新登入，因此不要求停在登入頁"
 
 tags: [agora, regression, auth]

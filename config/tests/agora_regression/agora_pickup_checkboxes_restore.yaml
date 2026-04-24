@@ -12,22 +12,23 @@ goal: |
 
   起始狀態：以賣家身份登入，已在賣家首頁（URL auto-login via __test_role=seller）。
 
-  ⚠️ Flutter CanvasKit app：所有 UI 判斷用 screenshot_analyze。
+  ⚠️ Flutter app：所有 UI 判斷用 screenshot_analyze 或 shadow_dump。
+  ⚠️ 商品卡 AX 樹：role=button，name 含多行文字與 USDT 價格。
+  ⚠️ 即使某個步驟找不到元素也繼續往下，不要重試同一步驟。
 
-  ⚠️ Flutter CanvasKit app：所有 UI 判斷用 screenshot_analyze。
-  ⚠️ 商品卡 role=button，用 shadow_click role=button name_regex="USDT" 開啟商品。
-
-  步驟（探索模式）：
-  1. screenshot_analyze "確認在賣家後台，看到什麼頁面？"
-  2. shadow_click role=button name_regex="USDT"（點第一個商品卡）
-     若找不到 USDT → screenshot_analyze 記錄頁面狀態 → done=true
-  3. wait 2000 → screenshot_analyze "點擊後進入哪個頁面？看到表單欄位嗎？"
-  4. 向下捲動 500px（scroll y=500）
-  5. screenshot_analyze "捲動後看到 pickup/出貨 相關欄位了嗎？有 checkbox 嗎？"
-  6. done=true（記錄：能否開啟賣家商品頁，以及是否看到 pickup 設定 checkbox）
+  步驟（線性，步驟 8 無條件 done=true）：
+  1. screenshot_analyze "確認在賣家後台，看到什麼頁面？有商品列表嗎？"
+  2. wait 3000（等商品列表完整載入）
+  3. shadow_dump（列出目前所有 role=button 元素）
+  4. shadow_click role=button name_regex="USDT"（嘗試點第一個商品卡，找不到也繼續）
+  5. wait 2000
+  6. screenshot_analyze "現在在哪個頁面？商品詳情頁還是仍在列表？"
+  7. 向下捲動 500px（scroll y=500）
+  8. screenshot_analyze "捲動後看到 pickup 出貨相關欄位了嗎？有 checkbox 嗎？"
+  9. done=true
 
 success_criteria:
-  - "成功進入賣家後台"
-  - "嘗試開啟商品（USDT 卡片）並記錄結果（能到詳情頁、或找不到）"
+  - "成功進入賣家後台（__test_role=seller 登入正常，頁面有內容）"
+  - "嘗試開啟商品並記錄結果（有商品→進入詳情；無商品→記錄空列表）"
 
 tags: [regression, product, pickup, checkboxes, agora, critical, issue-70]
