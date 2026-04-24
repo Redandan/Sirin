@@ -426,6 +426,34 @@ browser_ax::wait_for_ax_ready(20, 5000)?;  // block ≤5s until ≥20 nodes
 ```
 or via MCP: `{"action":"wait_for_ax_ready","min_nodes":20,"timeout_ms":5000}`
 
+### flutter_type is ASCII-only — CJK silently fails
+
+`flutter_type` calls `press_key()` per `char`, but `press_key` sends
+`Input.dispatchKeyEvent` which requires a standard keycode.  CJK chars
+like `你`, `好` have no keycode → the key event is dropped silently, the
+Flutter textbox stays empty.
+
+**Workaround**: use ASCII for test messages in YAML goals (e.g.
+`flutter_type text="hello"` instead of `flutter_type text="你好"`).
+
+### shadow_click uses JS PointerEvent, NOT CDP Input.dispatchMouseEvent
+
+`browser::shadow_click()` was rewritten to dispatch `PointerEvent` via JS
+directly on the `flt-semantics` element.  The old CDP `Input.dispatchMouseEvent`
+caused `about:blank` when clicking Flutter navigation buttons (flt-semantics
+overlay intercepts and re-routes the CDP event as a top-level navigation).
+
+**Never use `click_point` for Flutter nav buttons** — use `shadow_click`.
+
+### flutter_enter: the reliable way to submit Flutter chat/forms
+
+`browser::flutter_enter()` dispatches Enter `keydown`/`keyup` on
+`document.querySelector('.flt-text-editing')`.  Use after `flutter_type`
+to submit a message.  Icon-only send buttons (no aria-label) cannot be
+found by `shadow_click name_regex=...` — this is the workaround.
+
+Registered in builtins.rs + mcp_server.rs + executor.rs prompt (d87c3c0).
+
 ### Flutter CanvasKit + headless = blank
 WebGL doesn't paint in Chrome headless mode.  Set `browser_headless:
 false` per-test, or `SIRIN_BROWSER_HEADLESS=false` env globally.

@@ -1888,14 +1888,6 @@ async fn call_browser_exec(args: Value, user_agent: &str) -> Result<Value, Strin
                 browser::clear_browser_state()?;
                 Ok(json!({ "status": "cleared" }))
             }
-            "set_viewport" => {
-                let w = args.get("width").and_then(Value::as_u64).unwrap_or(1440) as u32;
-                let h = args.get("height").and_then(Value::as_u64).unwrap_or(1600) as u32;
-                let scale = args.get("scale").and_then(Value::as_f64).unwrap_or(1.0);
-                let mobile = args.get("mobile").and_then(Value::as_bool).unwrap_or(false);
-                browser::set_viewport(w, h, scale, mobile)?;
-                Ok(json!({ "status": "viewport_set", "width": w, "height": h }))
-            }
             // ── Flutter Shadow DOM ──────────────────────────────────────────
             "shadow_find" => {
                 let role = args.get("role").and_then(Value::as_str).map(String::from);

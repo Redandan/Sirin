@@ -775,11 +775,14 @@ For Flutter/CanvasKit canvas apps AND exact-string assertions:
 These query Flutter's `flt-semantics-host` directly via JS, avoiding AX tree collapse issues:
 - shadow_dump           — list ALL elements in Flutter shadow DOM (role:label pairs); use first to debug
 - shadow_find           — role and/or name_regex → {{found, x, y, label}}; params: role, name_regex (or name)
-- shadow_click          — same params as shadow_find; clicks at element center via CDP Input events
+- shadow_click          — same params as shadow_find; clicks via JS PointerEvent dispatch
+                          (NOT CDP Input.dispatchMouseEvent — that causes about:blank on Flutter nav buttons)
 - shadow_type           — role + name_regex + text; clicks to focus then inserts text via CDP InsertText
-- flutter_type          — text only; types via CDP keydown events (REQUIRED for Flutter textboxes).
+- flutter_type          — ASCII text only; fires CDP keydown per character (REQUIRED for Flutter textboxes).
                           Call shadow_click + wait 350ms first to focus the field, THEN flutter_type.
                           ⚠️ Input.InsertText does NOT work for Flutter — always use flutter_type.
+                          ⚠️ ASCII only — CJK/Unicode chars (你好等) have no keycode and will fail.
+                          Use shadow_type for non-ASCII text (but note InsertText may not update Flutter state).
 - flutter_enter         — no params; sends Enter key to the active flt-text-editing input.
                           Use immediately after flutter_type to submit a chat message or form.
                           ⚠️ More reliable than shadow_click on icon-only unlabeled send buttons.
