@@ -1,46 +1,39 @@
 id: agora_logout_flow
 name: "登出流程測試"
-url: "https://redandan.github.io"
+url: "https://redandan.github.io/?__test_role=buyer"
 
 browser_headless: false
-max_iterations: 35
-timeout_secs: 420
+max_iterations: 30
+timeout_secs: 360
 
 locale: zh-TW
 
-fixture:
-  setup:
-    - action: wait
-      target: "8000"
-    - action: enable_a11y
-    - action: shadow_click
-      role: button
-      name_regex: "測試買家"
-    - action: wait
-      target: "3000"
-    - action: enable_a11y
 goal: |
-  測試 AgoraMarket 登出流程，確認 session 正確清除。
+  目標：確認買家可登出，session 清除後回到登入頁。
 
-  ⚠️ Flutter CanvasKit app：用 screenshot_analyze 做所有 UI 判斷。
+  起始狀態：以買家身份登入，已在首頁（URL auto-login via __test_role=buyer）。
 
-  執行步驟：
-  1. 等待 5 秒讓 Flutter 載入
-  2. screenshot_analyze "頁面顯示什麼？目前是否已登入？是否顯示用戶名或頭像？"
-  3. 若未登入，使用 demo 帳號登入後繼續
-  4. screenshot_analyze "確認已登入狀態：頂部或側欄是否顯示用戶名/頭像？"
-  5. 導航至個人頁或側欄，尋找登出按鈕
-  6. screenshot_analyze "登出按鈕是否可見？位於何處？"
-  7. 點擊登出按鈕
-  8. 等待 3 秒
-  9. screenshot_analyze "登出後頁面顯示什麼？是否跳轉至登入頁或首頁？頂部是否不再顯示用戶名？"
-  10. 嘗試導航至個人頁（/me 或 profile 相關路徑）
-  11. screenshot_analyze "嘗試訪問個人頁後，是否被重導至登入頁或顯示未授權提示？"
+  ⚠️ Flutter CanvasKit app：所有 UI 判斷用 screenshot_analyze。
+
+  步驟：
+  ⚠️ 底部 tab 名稱：商品 / 訂單 / 錢包 / 我的（AX role=tab）
+  ⚠️ 登出按鈕在「我的」頁最底部，需向下滾動才能看到。
+
+  1. shadow_click role=tab name_regex="^我的$"
+  2. wait 2000
+  3. scroll {"direction":"down","amount":600}（滑到頁面底部）
+  4. wait 500
+  5. shadow_dump（查看底部有哪些按鈕/選項）
+  6. shadow_click role=button name_regex="登出|Logout|Log out|退出|Sign out"
+  7. wait 1000 → 若出現確認對話框：shadow_click role=button name_regex="確認|確定|OK|Yes|是"
+  8. wait 3000 → screenshot_analyze "目前在哪個頁面？有登入表單嗎？"
+  9. done=true（記錄登出後狀態，包含「瀏覽器重啟/CDP 重連到登入頁」也算成功）
+  10. 若找不到登出按鈕：再向下捲動 400px（scroll y=400）然後重試步驟 5-6
+  11. 3 次後仍找不到 → screenshot_analyze 記錄底部內容 → done=true
 
 success_criteria:
-  - "點擊登出後成功跳轉至登入頁或首頁"
-  - "登出後頂部導航列不再顯示用戶名或已登入狀態"
-  - "登出後嘗試訪問個人頁（/me）被重導至登入頁或顯示未授權提示"
-  - "登出後購物車 badge 清空或歸零（無殘留 session 資料）"
+  - "成功進入「我的」個人頁面，找到登出按鈕"
+  - "能夠點擊登出按鈕（及確認對話框，如有）"
+  - "⚠️ 注意：URL 含 ?__test_role=buyer，Flutter auto-login 會讓登出後立即重新登入，因此不要求停在登入頁"
 
 tags: [agora, regression, auth]

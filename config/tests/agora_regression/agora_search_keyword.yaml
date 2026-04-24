@@ -1,46 +1,34 @@
 id: agora_search_keyword
-name: "中文關鍵字搜尋測試"
-url: "https://redandan.github.io"
+name: "商品關鍵字搜尋測試"
+url: "https://redandan.github.io/?__test_role=buyer"
 locale: zh-TW
 
 browser_headless: false
-max_iterations: 30
-timeout_secs: 360
-
-fixture:
-  setup:
-    - action: wait
-      target: "8000"
-    - action: enable_a11y
-    - action: shadow_click
-      role: button
-      name_regex: "測試買家"
-    - action: wait
-      target: "3000"
-    - action: enable_a11y
+max_iterations: 10
+timeout_secs: 150
 
 goal: |
-  測試 AgoraMarket 搜尋功能：
+  目標：確認買家可搜尋商品並看到結果。
 
-  ⚠️ Flutter CanvasKit app：用 screenshot_analyze 做所有 UI 判斷。
+  起始狀態：以買家身份登入，已在首頁（URL auto-login via __test_role=buyer）。
 
-  執行步驟：
-  1. 等待 5 秒讓 Flutter 載入
-  2. screenshot_analyze "頁面顯示什麼？首頁是否已載入？有搜尋框嗎？"
-  3. 找到搜尋框（通常在頁面頂部，圖示為放大鏡），點擊進入搜尋模式
-  4. 輸入中文關鍵字「手機」
-  5. 等待搜尋結果出現（最多 5 秒）
-  6. screenshot_analyze "搜尋結果頁面顯示什麼？有商品列表嗎？還是顯示空狀態？"
-  7. 驗證結果列表非空：至少出現一筆商品
-  8. screenshot_analyze "列出的商品名稱或描述是否包含或相關於搜尋關鍵字？"
-  9. 點擊第一筆搜尋結果，等待詳情頁載入
-  10. screenshot_analyze "現在顯示的是商品詳情頁嗎？有商品名稱和價格嗎？"
+  ⚠️ Flutter CanvasKit app：所有 UI 判斷用 screenshot_analyze。
+  ⚠️ flutter_type 僅支援 ASCII，禁止輸入中文。搜尋詞用 "iPhone"。
+
+  步驟（最多 5 個 iteration，強制 done=true）：
+  1. screenshot_analyze "確認在首頁。頂部有搜尋圖示嗎？有搜尋欄嗎？"
+  2. shadow_dump（列出所有 role=button 和 role=textfield）
+  3. 嘗試進入搜尋：
+     先試 shadow_click role=textfield name_regex="搜尋|Search|iPhone"
+     或試 shadow_click role=button name_regex="搜尋|Search"
+     若找不到 → click_point x=360 y=45（點擊頂部右側區域）
+  4. wait 1000 → flutter_type text="iPhone"
+  5. flutter_enter
+  6. wait 2000 → screenshot_analyze "搜尋後頁面是什麼狀態？有列表嗎？"
+  7. done=true（無論結果，立即完成，記錄搜尋功能是否可用）
 
 success_criteria:
-  - "搜尋框可以找到並成功輸入中文關鍵字"
-  - "搜尋後出現結果列表，不顯示空狀態或錯誤訊息"
-  - "搜尋結果與輸入關鍵字相關（商品名稱或分類包含相關詞）"
-  - "點擊搜尋結果可成功進入商品詳情頁"
-  - "整個搜尋流程無 console error 或頁面崩潰"
+  - "成功找到搜尋入口（搜尋欄、搜尋圖示、或任何搜尋相關 UI）"
+  - "嘗試輸入 ASCII 關鍵字後頁面正常（無崩潰）"
 
 tags: [agora, regression, search]

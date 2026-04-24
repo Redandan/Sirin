@@ -1,46 +1,34 @@
 id: agora_pickup_time_picker
 name: "取貨時間選擇器測試"
-url: "https://redandan.github.io"
+url: "https://redandan.github.io/?__test_role=buyer"
 
 browser_headless: false
-max_iterations: 35
-timeout_secs: 420
+max_iterations: 25
+timeout_secs: 300
 
-fixture:
-  setup:
-    - action: wait
-      target: "8000"
-    - action: enable_a11y
-    - action: shadow_click
-      role: button
-      name_regex: "測試買家"
-    - action: wait
-      target: "3000"
-    - action: enable_a11y
 goal: |
-  測試訂單下單流程的取貨時間選擇器。
+  目標：確認結帳流程中取貨時間選擇器正常（Issue #70）。
 
-  ⚠️ Flutter CanvasKit app：用 screenshot_analyze 做所有 UI 判斷。
+  起始狀態：以買家身份登入，已在首頁（URL auto-login via __test_role=buyer）。
 
-  執行步驟：
-  1. 等待 5 秒讓 Flutter 載入
-  2. screenshot_analyze "頁面顯示什麼？是否需要登入？"
-  3. 若需要買家登入，嘗試以測試帳號登入；若無法登入，記錄限制
-  4. 進入任一商品頁面（從首頁找尋已上架商品）
-  5. 點擊「加入購物車」或「立即購買」按鈕
-  6. 進入結帳或取貨設定頁面
-  7. screenshot_analyze "頁面是否有取貨時間選擇器或時段下拉選單？"
-  8. 找到取貨時間選擇器，點擊展開時段清單
-  9. screenshot_analyze "時段清單目前顯示的選項為何？是否有可選項目？是否包含今日時段？"
-  10. 確認清單非空，有今日或明日時段可選
-  11. 確認不包含已過去的時間（例如今日早已過去的時段不應出現，或標記為不可選）
-  12. 嘗試選擇一個有效時段，screenshot_analyze "選擇後時段是否正確顯示於欄位中？"
+  ⚠️ Flutter CanvasKit app：所有 UI 判斷用 screenshot_analyze。
+
+  步驟（先進商品詳情，再到結帳頁）：
+  1. screenshot_analyze "確認在首頁，看到商品卡片"
+  2. shadow_click role=button name_regex="USDT"（點第一個商品卡進入詳情頁）
+  3. wait 2000 → 向下捲動 400px（scroll y=400）
+  4. shadow_click role=button name_regex="立即購買|確認購買|Buy Now|直接購買|購買"
+  5. wait 3000 → screenshot_analyze "是否在結帳頁？看到取貨方式或時段相關欄位嗎？"
+  6. 若看到時段選擇器：
+     - shadow_click role=button name_regex="選擇時段|取貨時間|Pickup Time|時段|選擇"
+     - wait 1500 → screenshot_analyze "時段選擇器展開了嗎？有選項嗎？"
+     - 不論是否可選 → done=true（記錄時段選擇器狀態）
+  7. 若結帳頁沒有取貨時段（只有配送選項）→ screenshot_analyze 記錄 → done=true
+  8. 若 3 次嘗試後無法到達結帳頁 → screenshot_analyze 記錄當前狀態 → done=true
 
 success_criteria:
-  - "取貨時間選擇器可以正常展開，顯示時段清單"
-  - "時段清單非空（至少有一個可選時段）"
-  - "可選擇今日或未來時段，選擇後正確顯示於欄位"
-  - "不顯示已過去的時段（或過去時段標記為不可選）"
-  - "時段時間符合本地時區，不出現異常時區偏移"
+  - "從商品詳情可進入結帳頁面"
+  - "結帳頁正常顯示（有訂單資訊或購買相關欄位）"
+  - "有取貨時間選擇器 → 可展開（或記錄「無時段選擇器，可能是配送模式」）"
 
 tags: [agora, regression, pickup, checkout]

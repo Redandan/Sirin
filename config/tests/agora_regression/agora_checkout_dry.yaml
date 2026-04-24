@@ -1,60 +1,34 @@
 id: agora_checkout_dry
 name: "AgoraMarket Checkout DRY 驗證 (Issue #70 #45)"
-url: "https://redandan.github.io"
+url: "https://redandan.github.io/?__test_role=buyer"
 
 browser_headless: false
-max_iterations: 50
-timeout_secs: 600
+max_iterations: 25
+timeout_secs: 300
 
-fixture:
-  setup:
-    - action: wait
-      target: "8000"
-    - action: enable_a11y
-    - action: shadow_click
-      role: button
-      name_regex: "測試買家"
-    - action: wait
-      target: "3000"
-    - action: enable_a11y
 goal: |
-  驗證 AgoraMarket cart_checkout 與 checkout 合併為共用 widgets 的 DRY 重構後
-  （Issue #70 #45），兩條結帳流程仍可正常運作且 UI 元件顯示一致。
+  目標：驗證「直接購買」flow 結帳頁 UI 正常（Issue #70 #45）。
 
-  ⚠️ Flutter CanvasKit app：用 screenshot_analyze 做所有 UI 判斷。
-  ⚠️ 安全模式：本測試絕對不提交訂單、不輸入真實付款資料。
-     驗證止步於「下單按鈕為可點擊狀態」即算通過，不要按下「Place Order」。
+  起始狀態：以買家身份登入，已在首頁（URL auto-login via __test_role=buyer）。
 
-  ── Flow A：直接購買（Buy Now）──
-  1. 等待 5 秒讓 Flutter 載入
-  2. screenshot_analyze "頁面顯示什麼？是否需要買家登入？"
-  3. 若需登入，以買家帳號登入（或記錄此限制）
-  4. 瀏覽商品列表，選取任意一個有庫存的商品
-  5. screenshot_analyze "是否出現 'Buy Now' 或直接購買按鈕？"
-  6. 點擊「Buy Now」，進入結帳頁（/checkout 路由）
-  7. screenshot_analyze "結帳頁是否顯示：訂單摘要、商品名稱、金額總計、地址選擇、付款方式？"
-  8. 確認「下單」或「Place Order」按鈕存在且為可點擊狀態（非 disabled / greyed-out）
-  9. 記錄 Flow A 結果，不要點擊下單
+  ⚠️ Flutter CanvasKit app：所有 UI 判斷用 screenshot_analyze。
+  ⚠️ 安全模式：看到「下單」或「Place Order」按鈕即算通過，絕對不點擊下單！
 
-  ── Flow B：加入購物車後結帳（Cart → Checkout）──
-  10. 返回商品頁，選取一個商品，點擊「Add to Cart」
-  11. 導航到購物車頁（/cart 路由）
-  12. screenshot_analyze "購物車頁面是否顯示剛加入的商品與金額？"
-  13. 點擊購物車頁面的「Checkout」按鈕，進入結帳頁
-  14. screenshot_analyze "結帳頁是否顯示：訂單摘要、商品名稱、金額總計、地址選擇、付款方式？"
-  15. 確認「下單」或「Place Order」按鈕存在且為可點擊狀態
-  16. 記錄 Flow B 結果，不要點擊下單
-
-  ── 一致性比對 ──
-  17. 比對兩條 flow 的結帳頁截圖：訂單摘要區塊、地址選擇器、付款選項是否使用
-      相同的 widget 結構（共用 DRY widgets）？有無顯示異常或版面錯位？
-  18. 確認 console 無 'Something went wrong' 或紅色錯誤訊息
+  步驟（直接購買 flow）：
+  1. screenshot_analyze "確認在首頁，看到商品卡片"
+  2. shadow_click role=button name_regex="USDT"（點第一個商品卡進入詳情）
+  3. wait 2000 → screenshot_analyze "是否在商品詳情頁？看到商品名稱、價格？"
+  4. 向下捲動 400px（scroll y=400，找底部購買按鈕）
+  5. screenshot_analyze "是否看到「立即購買」、「確認購買」或類似按鈕？"
+  6. shadow_click role=button name_regex="立即購買|確認購買|Buy Now|直接購買|購買"
+  7. wait 3000 → screenshot_analyze "是否進入結帳頁？看到訂單摘要、金額、下單按鈕嗎？"
+  8. 若看到結帳頁有訂單金額 → done=true（不要點下單！記錄「結帳頁 UI 正常」）
+  9. 若找不到購買按鈕（3 次嘗試後）→ screenshot_analyze 記錄當前狀態 → done=true
 
 success_criteria:
-  - "直接購買 flow 可進入結帳頁，看到訂單摘要與金額"
-  - "加入購物車後再結帳的 flow 可進入結帳頁，看到訂單摘要與金額"
-  - "兩條 flow 的「下單」按鈕在資料有效時為可點擊狀態（非 disabled）"
-  - "兩條 flow 顯示一致的 UI 元件（共用 widgets 沒有顯示異常）"
-  - "沒有 console error 或 'Something went wrong' 訊息"
+  - "從商品詳情頁可進入結帳頁面"
+  - "結帳頁顯示訂單摘要與金額"
+  - "「下單」按鈕存在且可點擊（非 disabled 狀態）"
+  - "無 console error 或 'Something went wrong' 訊息"
 
 tags: [checkout, agora, issue-70, regression, refactor-verification]

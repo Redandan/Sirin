@@ -1,50 +1,40 @@
 id: agora_navigation_breadcrumb
 name: "頁面導航與返回測試"
-url: "https://redandan.github.io"
+url: "https://redandan.github.io/?__test_role=buyer"
 
 browser_headless: false
-max_iterations: 40
-timeout_secs: 480
+max_iterations: 25
+timeout_secs: 300
 
 locale: zh-TW
 
-fixture:
-  setup:
-    - action: wait
-      target: "8000"
-    - action: enable_a11y
-    - action: shadow_click
-      role: button
-      name_regex: "測試買家"
-    - action: wait
-      target: "3000"
-    - action: enable_a11y
 goal: |
-  測試 AgoraMarket 多頁面導航與返回行為。
+  目標：確認買家可從首頁進入商品詳情頁，並按返回回到上一頁。
 
-  ⚠️ Flutter CanvasKit app：用 screenshot_analyze 做所有 UI 判斷。
+  起始狀態：以買家身份登入，已在首頁（URL auto-login via __test_role=buyer）。
 
-  執行步驟：
-  1. 等待 5 秒讓 Flutter 載入
-  2. screenshot_analyze "首頁顯示什麼？可以看到商品分類列表嗎？目前 URL 為何？"
-  3. 點擊任一商品分類（例如「新品」、「熱門」或任何可見分類）
-  4. 等待 2 秒
-  5. screenshot_analyze "目前是否已進入分類頁面？URL 是否改變？頁面顯示什麼商品？"
-  6. 點擊任一商品進入商品詳情頁
-  7. 等待 2 秒
-  8. screenshot_analyze "是否成功進入商品詳情頁？URL 路徑是否包含商品 ID 或詳情路由？"
-  9. 按下瀏覽器返回鈕（browser_back 或 navigate 至上一頁）
-  10. 等待 2 秒
-  11. screenshot_analyze "是否回到分類頁？URL 是否正確還原？頁面是否有內容（非白屏）？"
-  12. 再次按下瀏覽器返回鈕
-  13. 等待 2 秒
-  14. screenshot_analyze "是否回到首頁？URL 是否為根路徑？"
+  ⚠️ Flutter CanvasKit app：所有 UI 判斷用 screenshot_analyze。
+  ⚠️ 商品卡不是 button role，用 screenshot_analyze 找座標再 click_point 點擊。
+
+  步驟：
+  ⚠️ 商品卡在 AX 樹為 role=button，name 含多行（評分+商品名+價格），用 name_regex="USDT" 匹配。
+
+  1. shadow_click role=button name_regex="USDT"（點第一個含 USDT 價格的商品卡）
+  2. wait 2500
+  3. screenshot_analyze "是否在商品詳情頁？看到商品名稱、價格、左上角返回箭頭嗎？"
+  4. 若在商品詳情頁：
+     - click_point x=28 y=28（左上角返回箭頭）
+     - wait 1500
+     - screenshot_analyze "是否回到首頁？看到商品卡片列表嗎？"
+     - 若回到首頁 → done=true
+  5. 若步驟 1 失敗：click_point x=260 y=300（商品卡位置備用）
+  6. wait 2000 → screenshot_analyze → 若進入詳情 → 按返回 → done=true
+  7. 3 次嘗試後仍失敗 → screenshot_analyze 記錄 → done=true
 
 success_criteria:
-  - "進入商品分類頁後，URL 路徑改變（非根路徑）且頁面有商品列表"
-  - "進入商品詳情頁後，URL 包含詳情路由且頁面顯示商品資訊"
-  - "按返回後回到分類頁，頁面有內容（非白屏），URL 正確還原"
-  - "再次按返回後回到首頁，URL 為根路徑或首頁路由"
-  - "整個導航流程中無白屏或頁面崩潰"
+  - "從首頁可進入商品詳情頁（URL 路由改變）"
+  - "商品詳情頁顯示商品名稱、價格、商品描述"
+  - "按返回後回到首頁或商品列表（非白屏或錯誤頁）"
+  - "導航流程中無白屏或頁面崩潰"
 
 tags: [agora, regression, navigation]

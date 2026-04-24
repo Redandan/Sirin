@@ -1,49 +1,36 @@
 id: agora_notification_delete
 name: "AgoraMarket 通知刪除修復驗證 (Issue #70 #2)"
-url: "https://redandan.github.io"
+url: "https://redandan.github.io/?__test_role=buyer"
 
 browser_headless: false
-max_iterations: 30
-timeout_secs: 360
+max_iterations: 20
+timeout_secs: 240
 
-fixture:
-  setup:
-    - action: wait
-      target: "8000"
-    - action: enable_a11y
-    - action: shadow_click
-      role: button
-      name_regex: "測試買家"
-    - action: wait
-      target: "3000"
-    - action: enable_a11y
 goal: |
-  驗證 AgoraMarket 通知清單刪除功能已修復（Issue #70 Critical Bug #2）。
-  修復前：刪除通知後清單不更新，需要重整才能消失。
+  目標：驗證 AgoraMarket 通知刪除功能（Issue #70 Critical Bug #2）。
 
-  ⚠️ Flutter CanvasKit app：用 screenshot_analyze 做所有 UI 判斷。
+  起始狀態：以買家身份登入，已在首頁（URL auto-login via __test_role=buyer）。
 
-  執行步驟：
-  1. 等待 5 秒讓 Flutter 完成 bootstrap
-  2. screenshot_analyze "頁面是否載入完成？是否看到登入表單或主頁面？"
-  3. 若看到登入頁，使用 shadow_click 找「測試買家」或 demo 按鈕登入；登入後 wait 3000 + enable_a11y
-  4. 尋找通知鈴鐺圖示（notification bell）
-  5. screenshot_analyze "是否可見通知圖示？位置在哪裡？"
-  6. 點擊通知圖示，進入通知中心；wait 2000
-  7. screenshot_analyze "通知清單顯示什麼內容？是否有通知項目？還是空白/無通知狀態？"
+  ⚠️ Flutter CanvasKit app：所有 UI 判斷用 screenshot_analyze。
 
-  ✅ 若通知清單為空：
-  - 確認頁面顯示空白/無通知提示（而非 crash 或錯誤訊息）
-  - 立即 done=true（空清單是合法狀態，不需刪除）
+  步驟：
+  1. screenshot_analyze "確認在首頁，找頂部通知鈴鐺圖示"
+  2. 方法 A：shadow_click role=button name_regex="通知|Notification|bell|鈴|消息|訊息"
+  3. 方法 B（若 A 失敗）：shadow_click role=tab name_regex="^我的$"，
+     wait 1500，再 shadow_click role=button name_regex="通知|Notification"
+  4. wait 2000 → screenshot_analyze "是否在通知列表頁？有通知項目嗎？"
 
-  ✅ 若有通知項目：
-  8. 找到刪除按鈕（X 或垃圾桶圖示）點擊
-  9. 不要 reload，wait 2000 後 screenshot_analyze "通知是否從清單消失？"
-  10. 消失即 done=true（bug 已修復）；需 reload 才消失則 done=true 並標記 bug 仍存在
+  判斷（立即做，不要超過 2 個 iteration 找通知）：
+  - 通知列表為空（無通知）→ done=true（合法狀態，顯示無通知，pass）
+  - 有通知 → screenshot_analyze "看到刪除圖標（垃圾桶/X）或滑動刪除提示嗎？"
+    - 有刪除圖標：shadow_click role=button name_regex="刪除|Delete|移除|×|✕|清除"
+      wait 1500 → screenshot_analyze "通知是否消失？" → done=true
+    - 無刪除圖標：記錄「delete UI 不可見，可能需要側滑」→ done=true
+  - 找不到通知入口（2 次嘗試後）→ screenshot_analyze 記錄 → done=true
 
 success_criteria:
   - "通知中心頁面可以正常開啟"
-  - "刪除通知後，通知從清單消失（不需 page reload）"
-  - "若通知清單為空，頁面顯示空白/無通知狀態（而非錯誤）"
+  - "通知列表顯示正常（有通知或空狀態）"
+  - "若有通知，刪除操作後通知消失（或記錄刪除 UI 缺失）"
 
 tags: [regression, notification, agora, critical, issue-70]

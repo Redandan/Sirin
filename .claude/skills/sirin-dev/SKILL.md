@@ -1,7 +1,7 @@
 ---
 name: sirin-dev
 description: Use this skill when developing on the Sirin project itself (not when using Sirin to test other apps) — adding a new browser action, MCP endpoint, agent skill, test_runner feature, or fixing a bug in the Rust code.  Trigger phrases include "add a Sirin action", "fix Sirin's X", "extend Sirin", "modify Sirin", "Sirin internals", "how does Sirin X work", or any task that involves editing files under `~/IdeaProjects/Sirin/src/`.  This skill is for AI sessions picking up Sirin development cold — covers architecture, common workflows, conventions, and the gotchas that have already cost us time.
-version: 1.4.0
+version: 1.5.0
 ---
 
 # Sirin Development Skill
@@ -669,6 +669,74 @@ This was how Issue #34 (staking N/A) was verified on prod 1.0.991+992 on
 returned 7 nodes including the expected "提交" button — proof the page
 renders even though the AI loop couldn't see it. Save the AI loop for
 multi-step exploratory flows; use direct MCP for single-shot verification.
+
+### AgoraMarket Flutter AX tree patterns (2026-04-24)
+
+**商品卡** — the product card widget:
+```
+role=button, name = "<multi-line string>\n<price> USDT"
+```
+- ✅ `shadow_click role=button name_regex="USDT"` — matches any product card
+- ❌ `shadow_click role=button name_regex=".+"` — fails, `.+` doesn't match `\n` in names
+
+**底部導航 Tab**:
+```
+role=tab, name = "商品" | "訂單" | "錢包" | "我的"
+```
+- ✅ `shadow_click role=tab name_regex="^我的$"` — exact match required
+
+**登出按鈕位置**: 在「我的」頁最底部，需先 `scroll y=600` 才可見
+
+### JSON syntax in YAML goal text causes LLM parse failures
+
+**Problem**: Writing `scroll {"direction":"down","amount":500}` in a YAML goal
+teaches the LLM to use that exact format in its JSON response — which doesn't
+match the executor's expected schema `{"action":"scroll","y":500}`.
+The LLM then produces non-parseable JSON and the test fails with
+`too many invalid LLM responses (N)`.
+
+**Fix**: Always use plain-text descriptions in goal text:
+```yaml
+# ❌ Breaks LLM JSON output format
+4. scroll {"direction":"down","amount":500}
+
+# ✅ Correct — describes intent without JSON fragment
+4. 向下捲動 500px（scroll y=500）
+```
+
+The correct scroll action schema (for LLM reference):
+```json
+{"action": "scroll", "y": 500}
+```
+
+### ?__test_role= URL auto-login (AgoraMarket)
+
+AgoraMarket `login_page.dart` reads `Uri.base.queryParameters['__test_role']`
+and calls `_handleDemoLogin(username)` automatically on test domains.
+
+Sirin executor **must** do `Storage.clearDataForOrigin` BEFORE navigation to
+wipe any stale Flutter session from the profile DB — `localStorage.clear()` is
+insufficient because Flutter has already read the session into memory.
+
+In `executor.rs`, the trigger condition:
+```rust
+if test.fixture.is_some() || nav_url.contains("__test_role=") {
+    clear_origin_storage(&nav_url);
+    wait(8000);      // Flutter needs ~6-8s to complete auto-login
+    enable_a11y();
+}
+```
+
+Without this, tests using `?__test_role=` URLs run with the PREVIOUS test's
+session — a subtle contamination bug that makes test results non-repeatable.
+
+### YAML sync: repo → %LOCALAPPDATA%\Sirin\config\tests
+
+Release binary reads YAML from `%LOCALAPPDATA%\Sirin\config\tests\`,
+NOT from `./config/tests/` in the repo. After editing any YAML:
+```bash
+cp config/tests/agora_regression/*.yaml "$LOCALAPPDATA/Sirin/config/tests/agora_regression/"
+```
 
 ## Useful test commands
 
