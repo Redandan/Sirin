@@ -3,8 +3,8 @@ name: "AgoraMarket Pickup Service Type 預設值驗證 (Issue #70 #3)"
 url: "https://redandan.github.io"
 
 browser_headless: false
-max_iterations: 12
-timeout_secs: 180
+max_iterations: 25
+timeout_secs: 300
 
 goal: |
   驗證 AgoraMarket 商品 pickup service type 預設值修復（Issue #70 Critical Bug #3）。

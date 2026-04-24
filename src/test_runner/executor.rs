@@ -97,6 +97,10 @@ async fn run_fixture_step(
     if let Some(ms) = step.timeout_ms {
         args["timeout"] = json!(ms);
     }
+    // Forward any extra browser_exec params (e.g. role, name_regex for shadow_click).
+    for (k, v) in &step.extra {
+        args[k] = v.clone();
+    }
     inject_session(&mut args, session_id);
     ctx.call_tool("web_navigate", args).await
         .map(|_| ())

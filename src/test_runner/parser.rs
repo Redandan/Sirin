@@ -19,6 +19,12 @@ pub struct FixtureStep {
     /// Timeout in ms (for `wait`, `wait_new_tab`, etc).
     #[serde(default)]
     pub timeout_ms: Option<u64>,
+    /// Extra browser_exec parameters not covered by the fields above.
+    /// Examples: `role`, `name_regex` for `shadow_click`;
+    /// `width`/`height` for `set_viewport`; `selector` for element actions.
+    /// These are forwarded verbatim in the JSON args passed to web_navigate.
+    #[serde(flatten)]
+    pub extra: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 /// Setup and cleanup steps for a test goal.
@@ -150,25 +156,31 @@ fn tests_dir() -> PathBuf {
     crate::platform::config_dir().join("tests")
 }
 
-/// Load all YAML tests from `config/tests/`.
+/// Load all YAML tests from `config/tests/` and any subdirectories.
 pub fn load_all() -> Vec<TestGoal> {
     let dir = tests_dir();
     if !dir.exists() { return Vec::new(); }
     let mut out = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p.extension().and_then(|e| e.to_str()) != Some("yaml")
-               && p.extension().and_then(|e| e.to_str()) != Some("yml") {
-                continue;
-            }
-            match load_file(&p) {
-                Ok(g) => out.push(g),
-                Err(e) => tracing::warn!("Failed to load test {p:?}: {e}"),
-            }
+    load_dir_recursive(&dir, &mut out);
+    out
+}
+
+/// Recursively walk `dir`, loading every `.yaml` / `.yml` file found.
+fn load_dir_recursive(dir: &std::path::Path, out: &mut Vec<TestGoal>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            load_dir_recursive(&p, out);
+            continue;
+        }
+        let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if ext != "yaml" && ext != "yml" { continue; }
+        match load_file(&p) {
+            Ok(g) => out.push(g),
+            Err(e) => tracing::warn!("Failed to load test {p:?}: {e}"),
         }
     }
-    out
 }
 
 /// Load a single test file.
@@ -341,5 +353,110 @@ url_query:
         assert!(url.contains("foo=OVERRIDE"), "override should win: {url}");
         assert!(url.contains("bar=2"), "existing non-conflicting param kept: {url}");
         assert!(url.contains("flutter-web-renderer=html"));
+    }
+
+    /// Integration test: load all real YAML files from config/tests/agora_regression/
+    /// and assert structural correctness.  Catches YAML field-name mistakes before
+    /// a 30-minute batch run reveals the problem.
+    #[test]
+    fn agora_regression_yamls_all_parseable_and_valid() {
+        let all = load_all();
+
+        // Must include all 12 agora_regression test IDs
+        let expected_ids = [
+            "agora_admin_category_filter",
+            "agora_admin_status_chip",
+            "agora_cart_add_remove",
+            "agora_checkout_dry",
+            "agora_logout_flow",
+            "agora_navigation_breadcrumb",
+            "agora_notification_delete",
+            "agora_pickup_checkboxes_restore",
+            "agora_pickup_service_default",
+            "agora_pickup_time_picker",
+            "agora_search_keyword",
+            "agora_webrtc_permission",
+        ];
+        let loaded_ids: Vec<&str> = all.iter().map(|t| t.id.as_str()).collect();
+        for id in &expected_ids {
+            assert!(
+                loaded_ids.contains(id),
+                "test '{}' not found in load_all() — YAML probably failed to parse",
+                id
+            );
+        }
+
+        // Tests that must have a fixture with exactly 5 setup steps
+        // (wait + enable_a11y + shadow_click + wait + enable_a11y)
+        let fixture_required = [
+            "agora_search_keyword",
+            "agora_notification_delete",
+            "agora_webrtc_permission",
+            "agora_logout_flow",
+            "agora_navigation_breadcrumb",
+            "agora_cart_add_remove",
+            "agora_checkout_dry",
+            "agora_pickup_time_picker",
+            "agora_pickup_checkboxes_restore",
+            "agora_admin_status_chip",
+            "agora_admin_category_filter",
+        ];
+        for id in &fixture_required {
+            let test = all.iter().find(|t| t.id == *id).unwrap();
+            let fixture = test.fixture.as_ref().unwrap_or_else(|| {
+                panic!("test '{}' has fixture: None — check YAML fixture.setup nesting", id)
+            });
+            assert_eq!(
+                fixture.setup.len(), 5,
+                "test '{}' fixture.setup should have 5 steps (wait+a11y+click+wait+a11y), got {}",
+                id, fixture.setup.len()
+            );
+            assert_eq!(fixture.setup[0].action, "wait",   "step 0 should be wait in '{}'", id);
+            assert_eq!(fixture.setup[1].action, "enable_a11y", "step 1 should be enable_a11y in '{}'", id);
+            assert_eq!(fixture.setup[2].action, "shadow_click", "step 2 should be shadow_click in '{}'", id);
+        }
+
+        // max_iterations sanity: all tests must have >= 20
+        for test in &all {
+            if expected_ids.contains(&test.id.as_str()) {
+                assert!(
+                    test.max_iterations >= 20,
+                    "test '{}' max_iterations={} is too low (min 20)",
+                    test.id, test.max_iterations
+                );
+            }
+        }
+
+        // Correct login persona per test
+        let buyer_tests = ["agora_search_keyword", "agora_logout_flow",
+            "agora_navigation_breadcrumb", "agora_cart_add_remove",
+            "agora_checkout_dry", "agora_pickup_time_picker",
+            "agora_notification_delete", "agora_webrtc_permission"];
+        let seller_tests = ["agora_pickup_checkboxes_restore"];
+        let admin_tests  = ["agora_admin_status_chip", "agora_admin_category_filter"];
+
+        for (ids, expected_name) in [
+            (buyer_tests.as_slice(),  "測試買家"),
+            (seller_tests.as_slice(), "測試賣家"),
+            (admin_tests.as_slice(),  "測試管理員"),
+        ] {
+            for id in ids {
+                let test = all.iter().find(|t| t.id == *id).unwrap();
+                if let Some(fix) = &test.fixture {
+                    let click = fix.setup.iter().find(|s| s.action == "shadow_click");
+                    if let Some(step) = click {
+                        // name_regex is an extra field forwarded via FixtureStep.extra
+                        let regex = step.extra.get("name_regex")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        assert!(
+                            regex.contains(expected_name),
+                            "test '{}' should login as '{}' but fixture shadow_click name_regex='{}'",
+                            id, expected_name, regex
+                        );
+                    }
+                }
+            }
+        }
     }
 }

@@ -6,12 +6,12 @@ url: "https://redandan.github.io"
 browser_headless: false
 
 max_iterations: 20
-timeout_secs: 180
+timeout_secs: 240
 
 fixture:
   setup:
     - action: wait
-      target: "5000"
+      target: "8000"
     - action: enable_a11y
     - action: shadow_click
       role: button

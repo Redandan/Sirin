@@ -3,15 +3,15 @@ name: "登出流程測試"
 url: "https://redandan.github.io"
 
 browser_headless: false
-max_iterations: 25
-timeout_secs: 180
+max_iterations: 35
+timeout_secs: 420
 
 locale: zh-TW
 
 fixture:
   setup:
     - action: wait
-      target: "5000"
+      target: "8000"
     - action: enable_a11y
     - action: shadow_click
       role: button

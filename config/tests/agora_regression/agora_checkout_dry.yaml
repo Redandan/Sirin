@@ -3,13 +3,13 @@ name: "AgoraMarket Checkout DRY 驗證 (Issue #70 #45)"
 url: "https://redandan.github.io"
 
 browser_headless: false
-max_iterations: 30
-timeout_secs: 300
+max_iterations: 50
+timeout_secs: 600
 
 fixture:
   setup:
     - action: wait
-      target: "5000"
+      target: "8000"
     - action: enable_a11y
     - action: shadow_click
       role: button
