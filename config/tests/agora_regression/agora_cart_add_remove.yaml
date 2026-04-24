@@ -1,6 +1,6 @@
 id: agora_cart_add_remove
 name: "購物車加入移除測試"
-url: "https://agoramarket.purrtechllc.com"
+url: "https://redandan.github.io"
 
 browser_headless: false
 max_iterations: 15

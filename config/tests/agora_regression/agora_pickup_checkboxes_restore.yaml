@@ -1,6 +1,6 @@
 id: agora_pickup_checkboxes_restore
 name: "AgoraMarket Pickup Checkboxes 還原驗證 (Issue #70 #5)"
-url: "https://agoramarket.purrtechllc.com"
+url: "https://redandan.github.io"
 
 browser_headless: false
 max_iterations: 15

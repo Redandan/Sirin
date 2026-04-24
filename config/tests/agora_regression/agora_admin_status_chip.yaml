@@ -1,6 +1,6 @@
 id: agora_admin_status_chip
 name: "AgoraMarket Admin 商品狀態 Chip 色碼驗證 (Issue #70 #22)"
-url: "https://agoramarket.purrtechllc.com"
+url: "https://redandan.github.io"
 
 browser_headless: false
 max_iterations: 12

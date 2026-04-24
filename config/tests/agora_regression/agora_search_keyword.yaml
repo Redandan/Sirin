@@ -1,6 +1,6 @@
 id: agora_search_keyword
 name: "中文關鍵字搜尋測試"
-url: "https://agoramarket.purrtechllc.com"
+url: "https://redandan.github.io"
 locale: zh-TW
 
 browser_headless: false

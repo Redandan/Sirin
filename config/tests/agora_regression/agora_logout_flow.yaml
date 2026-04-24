@@ -1,6 +1,6 @@
 id: agora_logout_flow
 name: "登出流程測試"
-url: "https://agoramarket.purrtechllc.com"
+url: "https://redandan.github.io"
 
 browser_headless: false
 max_iterations: 15
