@@ -159,6 +159,20 @@ src/mcp_server.rs            MCP HTTP server (:7700/mcp) — 18 tools exposed
                              (run_test_batch added v0.4.0 — parallel YAML
                              test fan-out via tokio Semaphore + per-test
                              session_id; max 8 concurrent tabs)
+src/multi_agent/             PM/Engineer/Tester squad — persistent sessions via
+                             `claude --continue`; SQLite task queue (JSONL);
+                             multi-worker pool (spawn_n); GitHub issue loop-closure;
+                             dry-run mode; per-project session isolation
+  mod.rs                     AgentTeam: assign_task() + test_cycle()
+  worker.rs                  Background worker loop; reset_stale_running
+  queue.rs                   Atomic take_next_queued + JSONL persistence
+  roles.rs                   PM / Engineer / Tester system prompts
+  knowledge.rs               Squad Knowledge Base (T2-1): parse_lessons,
+                             store_lessons, relevant_lessons — SQLite at
+                             <app_data_dir>/memory/squad_knowledge.db;
+                             dedup by 80-char key; keyword-overlap scoring
+  github_adapter.rs          Post review comments to GitHub issues via gh CLI
+  worktree.rs                Git worktree isolation scaffold (T2-4, not yet wired)
 src/telegram/                MTProto listener — mod + filter + handler +
                              reply + commands + config + language + llm
 src/teams/                   Chrome CDP (Teams MutationObserver)

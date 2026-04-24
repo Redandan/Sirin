@@ -121,6 +121,28 @@ Kick off a research task.
 
 ---
 
+### Multi-Agent Squad (1 tool)
+
+#### `squad_knowledge`
+List lessons the PM has accumulated across task runs (persisted in SQLite).
+Useful for inspecting what the squad has learned, or auditing before a new project.
+```json
+{"name":"squad_knowledge","arguments":{"limit":20}}
+```
+**Returns:**
+```json
+{
+  "total": 42,
+  "showing": 20,
+  "lessons": [
+    {"key": "flutter_headless...", "lesson": "Flutter CanvasKit requires browser_headless: false", "learned_at": "2026-04-24T10:00:00+08:00"}
+  ]
+}
+```
+`limit` defaults to 20. Ordered newest first.
+
+---
+
 ### Test Runner (13 tools)
 
 #### `list_tests`

@@ -123,7 +123,7 @@ API rate limit. Recommend N=2 to start, bump to 3 once observed stable.
 ## Tier 2 — Capability Expansion (2–3 days each)
 
 ### T2-1 — Squad Knowledge Base (SQLite `squad_knowledge`) ★★★★
-**Status:** Planned
+**Status:** ✅ Shipped (2026-04-24, commit `0a3c998`)
 
 Cross-task persistent memory for the PM. Learned patterns survive across restarts.
 
@@ -131,7 +131,7 @@ Cross-task persistent memory for the PM. Learned patterns survive across restart
 ```sql
 CREATE TABLE squad_knowledge (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    key         TEXT NOT NULL UNIQUE,  -- e.g. "flutter_headless_always_false"
+    key         TEXT NOT NULL UNIQUE,  -- first 80 chars of lesson text (dedup key)
     value       TEXT NOT NULL,          -- the lesson
     learned_at  TEXT NOT NULL,
     source_task TEXT                    -- task_id that taught this
@@ -143,7 +143,11 @@ CREATE TABLE squad_knowledge (
 2. Worker parses these lines after each `assign_task` success and writes to `squad_knowledge`
 3. Before planning a new task, PM gets injected: "過去學到的相關知識：\n{top_5_lessons}"
 
-**Top-5 selection:** simple LIKE match on task description keywords.
+**Top-5 selection:** keyword overlap scoring in Rust (no dynamic SQL); fallback to most-recent.
+
+**MCP tool:** `squad_knowledge` — list stored lessons (see `docs/MCP_API.md`).
+
+**Module:** `src/multi_agent/knowledge.rs`
 
 ---
 
