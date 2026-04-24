@@ -234,7 +234,34 @@ pub async fn execute_test_tracked(
         }
     }
 
-    // 2b) Run fixture setup steps (failure aborts the test before the ReAct loop).
+    // 2b) Clear browser storage before fixture so each test starts from a
+    //     clean auth state.  Without this, test N's login token (stored in
+    //     localStorage by the Flutter app) leaks into test N+1's tab via the
+    //     shared Chrome profile → the app auto-navigates to the main screen
+    //     before the fixture shadow_click can find the login button.
+    //     After clearing we MUST re-navigate: the page DOM is still showing
+    //     the logged-in state; a fresh goto forces the Flutter app to reboot
+    //     without finding a session token.
+    if test.fixture.is_some() {
+        let sid = session_id.map(|s| s.to_string());
+        let _ = tokio::task::spawn_blocking(move || {
+            if let Some(s) = sid.as_deref() {
+                let _ = crate::browser::session_switch(s);
+            }
+            crate::browser::clear_browser_state()
+        }).await;
+        // Re-navigate so the Flutter app reboots without finding a session.
+        let mut renav = json!({ "action": "goto", "target": &nav_url });
+        inject_session(&mut renav, session_id);
+        if let Err(e) = ctx.call_tool("web_navigate", renav).await {
+            tracing::warn!(
+                "[test_runner] '{}' — re-navigate after clear_state failed: {e} (continuing)",
+                test.id
+            );
+        }
+    }
+
+    // 2c) Run fixture setup steps (failure aborts the test before the ReAct loop).
     if let Some(fixture) = &test.fixture {
         for step in &fixture.setup {
             if let Err(e) = run_fixture_step(ctx, step, session_id).await {
@@ -921,7 +948,24 @@ async fn call_test_llm(
             call_claude_cli(prompt).await
         }
         _ => {
-            let prompt = build_prompt(test, history, parse_error_hint);
+            // Auto-switch to a compact rolling-window prompt after 8 steps.
+            // Gemini Flash 2.0 (and similar models) start producing invalid JSON
+            // at ~15K tokens (≈ iteration 13+ with full observations).
+            // Compact mode cuts the prompt to last 5 steps × 300-char obs,
+            // keeping the goal + criteria intact.  More generous than the
+            // claude_cli path (3 steps, 200 chars) since bandwidth isn't the
+            // issue here — it's JSON drift from a very long context window.
+            let prompt = if history.len() >= 8 {
+                tracing::debug!(
+                    "[test_runner] {} iter {}: switching to compact prompt (history={})",
+                    test.id,
+                    history.len(),
+                    history.len(),
+                );
+                build_prompt_with_limits(test, history, parse_error_hint, 5, 300)
+            } else {
+                build_prompt(test, history, parse_error_hint)
+            };
             crate::llm::call_coding_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), prompt)
                 .await
                 .map_err(|e| e.to_string())

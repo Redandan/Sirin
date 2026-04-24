@@ -148,7 +148,7 @@ impl TestGoal {
 /// OAuth, multi-page wizards) should still set `max_iterations: 30` in YAML.
 fn default_max_iter() -> u32 { 20 }
 fn default_timeout() -> u64 { 120 }
-fn default_parse_retries() -> u32 { 3 }
+fn default_parse_retries() -> u32 { 5 }
 fn default_locale() -> String { "zh-TW".into() }
 
 /// Directory containing YAML test definitions.
