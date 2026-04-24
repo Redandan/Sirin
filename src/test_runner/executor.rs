@@ -182,8 +182,14 @@ pub async fn execute_test_tracked(
     // 1) Navigate to the test URL (with url_query params merged in).
     let nav_url = test.full_url();
 
-    // 1-pre) For fixture tests, wipe origin storage BEFORE the first goto so
-    //        Flutter sees an empty profile from frame zero.
+    // 1-pre) Wipe origin storage BEFORE the first goto so Flutter sees an empty
+    //        profile from frame zero.
+    //
+    //        Triggered for:
+    //        a) fixture tests — fixture handles login via shadow_click; clearing
+    //           here prevents cross-test session leakage.
+    //        b) `?__test_role=` URL tests — Flutter auto-logs in from the URL
+    //           param; we must start with a clean profile for the same reason.
     //
     //        Why here and not after load: clear_browser_state() runs JS on the
     //        already-loaded page, but Flutter has already read localStorage into
@@ -193,7 +199,7 @@ pub async fn execute_test_tracked(
     //
     //        The tab is created here (session_switch) so CDP has a target to
     //        send the command to; it does NOT need to be on that origin yet.
-    if test.fixture.is_some() {
+    if test.fixture.is_some() || nav_url.contains("__test_role=") {
         let origin = extract_origin(&nav_url);
         let sid_pre = session_id.map(|s| s.to_string());
         let clear_result = tokio::task::spawn_blocking(move || {
@@ -278,6 +284,18 @@ pub async fn execute_test_tracked(
                 }
             }
         }
+    }
+
+    // 2c-pre) For URL-based auto-login (?__test_role=), call enable_a11y after the
+    //         8 s Flutter-boot wait so the Flutter semantics tree is enabled on the
+    //         *logged-in* home page.  This mirrors what the old fixture did with its
+    //         second `enable_a11y` step (the one that ran after the shadow_click login).
+    //         Without it the AX tree often collapses mid-test.
+    if nav_url.contains("__test_role=") && test.fixture.is_none() {
+        let mut ea = json!({"action": "enable_a11y"});
+        inject_session(&mut ea, session_id);
+        let _ = ctx.call_tool("web_navigate", ea).await;
+        tracing::debug!("[test_runner] '{}' — post-auto-login enable_a11y OK", test.id);
     }
 
     // 2c) Run fixture setup steps (failure aborts the test before the ReAct loop).

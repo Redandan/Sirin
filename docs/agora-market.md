@@ -232,28 +232,156 @@ tags: [auth, ax, flutter, agora]
 
 ---
 
+## 6. URL Auto-Login (`?__test_role=`)
+
+AgoraMarket's `login_page.dart` reads `Uri.base.queryParameters['__test_role']`
+on page load and calls `_handleDemoLogin(username)` automatically — **only on
+test domains** (`PlatformDetectionUtils.isTestDomain()`).
+
+| Query value | Logs in as |
+|-------------|-----------|
+| `?__test_role=buyer` | buyer (test account) |
+| `?__test_role=seller` | seller (test account) |
+| `?__test_role=admin` | testadmin (admin account) |
+| `?__test_role=delivery` | delivery (test account) |
+
+**Use this in YAML:**
+
+```yaml
+url: "https://redandan.github.io/?__test_role=buyer"
+```
+
+**Critical Sirin requirement:** Sirin's executor calls `Storage.clearDataForOrigin`
+(CDP) **before** navigation when the URL contains `__test_role=`, to wipe any
+stale session from a previous test run.  `localStorage.clear()` is insufficient
+— Flutter reads the session into memory before JS runs.
+
+**Known limitation:** After logout, Flutter auto-logs in again because the URL
+fragment still contains `?__test_role=buyer`.  Logout flow tests should set
+success criteria that accept "page returns to home" rather than "stays on login page".
+
+**Admin default page:** `?__test_role=admin` lands on `/admin/statistics`, **not**
+the product management page.  Goal text must navigate there explicitly.
+
+---
+
+## 7. Shadow DOM Actions (`shadow_*` + `flutter_*`)
+
+Flutter CanvasKit renders the interactive overlay through `flt-semantics` Shadow
+DOM elements.  Use these actions (not `ax_*`) for most Flutter interaction:
+
+| Action | Description |
+|--------|-------------|
+| `shadow_click role=<role> name_regex=<regex>` | Click a Flutter semantic element by role + name pattern |
+| `shadow_dump` | List all `flt-semantics` elements with role + name — use for exploration |
+| `flutter_type text=<ascii>` | Type ASCII text into the focused Flutter text field |
+| `flutter_enter` | Press Enter in a Flutter text field (triggers `onSubmitted`) |
+
+**`shadow_click` uses JS PointerEvent**, not CDP `Input.dispatchMouseEvent`.
+The CDP version caused Flutter navigation to jump to `about:blank`.
+
+**`flutter_type` is ASCII-only.**  CJK characters silently fail (no keycode).
+Always use ASCII in test goals:
+```yaml
+# ❌ fails silently
+flutter_type text="你好"
+# ✅ works
+flutter_type text="hello"
+```
+
+---
+
+## 8. Flutter AX Patterns — Discovered on AgoraMarket
+
+These patterns were confirmed via live testing.  Use them in YAML goals:
+
+### Buyer / Home screen
+
+**Product cards** (商品卡):
+```
+role=button, name = "<multi-line string>\n<price> USDT"
+```
+```yaml
+# Click the first product card:
+shadow_click role=button name_regex="USDT"
+
+# ❌ This fails — .+ doesn't cross newlines in Flutter button names:
+shadow_click role=button name_regex=".+"
+```
+
+**Bottom navigation tabs:**
+```
+role=tab, name = "商品" | "訂單" | "錢包" | "我的"
+```
+```yaml
+shadow_click role=tab name_regex="^我的$"
+shadow_click role=tab name_regex="^訂單$"
+```
+
+**Logout button:** Located at the **bottom** of the 「我的」page.
+Must scroll down ~600px before `shadow_click` can find it.
+
+### Seller dashboard
+
+Product cards also use `role=button` with USDT in the name.  Clicking a product
+card opens the product detail/edit form directly (no separate "Edit" button in list view).
+
+### Admin dashboard
+
+Default landing page is `/admin/statistics` (statistics page).
+Navigate to product management explicitly — look for `role=button name_regex="商品|Products"`.
+
+---
+
+## 9. JSON Syntax Anti-Pattern in YAML Goals
+
+**Never write raw JSON objects in goal text.** The LLM reads the goal text when
+deciding what action to output, and JSON-like fragments in the goal confuse its
+output format — causing `too many invalid LLM responses` failures.
+
+```yaml
+# ❌ Breaks LLM JSON response — uses "direction/amount" which is wrong format anyway:
+5. scroll {"direction":"down","amount":500}
+
+# ✅ Correct — describe intent in plain text:
+5. 向下捲動 500px（scroll y=500）
+```
+
+The correct scroll action schema (for reference):
+```json
+{"action": "scroll", "y": 500}
+```
+
+---
+
 ## Quick Reference
 
 ```
 # Always start with this when testing Agora Market:
 browser_headless: false
+url: "https://redandan.github.io/?__test_role=buyer"  # auto-login
+
+# Click product card (buyer or seller):
+shadow_click role=button name_regex="USDT"
+
+# Navigate bottom tabs:
+shadow_click role=tab name_regex="^我的$"
+shadow_click role=tab name_regex="^訂單$"
+
+# Type and submit in Flutter input:
+flutter_type text="hello"   # ASCII only!
+flutter_enter               # triggers onSubmitted
+
+# Explore page structure:
+shadow_dump                 # lists all flt-semantics elements
 
 # Wait for Flutter semantics after navigate:
 {"action": "wait_for_ax_ready", "min_nodes": 20, "timeout_ms": 8000}
 
-# Discover widget tree:
+# Discover widget tree (ax_* path):
 {"action": "ax_tree"}
 
-# Find a button by text:
-{"action": "ax_find", "role": "button", "name": "登入"}
-
-# Click it:
-{"action": "ax_click", "backend_id": <id from ax_find>}
-
-# Read a value:
-{"action": "ax_value", "backend_id": <id>}
-
-# Navigate to a hash route (Sirin handles the hash-only path automatically):
+# Navigate to a hash route:
 {"action": "goto", "target": "https://redandan.github.io/#/wallet"}
 ```
 
