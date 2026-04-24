@@ -6,16 +6,17 @@ browser_headless: false
 max_iterations: 25
 timeout_secs: 180
 
-setup:
-  - action: wait
-    target: "5000"
-  - action: enable_a11y
-  - action: shadow_click
-    role: button
-    name_regex: "測試買家"
-  - action: wait
-    target: "3000"
-  - action: enable_a11y
+fixture:
+  setup:
+    - action: wait
+      target: "5000"
+    - action: enable_a11y
+    - action: shadow_click
+      role: button
+      name_regex: "測試買家"
+    - action: wait
+      target: "3000"
+    - action: enable_a11y
 goal: |
   驗證 AgoraMarket 商品編輯 pickup checkboxes 還原修復（Issue #70 Critical Bug #5）。
   修復前：product_form.dart 的 pickup options checkboxes 在取消編輯後不還原，

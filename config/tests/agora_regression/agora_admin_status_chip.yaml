@@ -3,10 +3,22 @@ name: "AgoraMarket Admin 商品狀態 Chip 色碼驗證 (Issue #70 #22)"
 url: "https://redandan.github.io"
 
 browser_headless: false
-max_iterations: 12
-timeout_secs: 180
+max_iterations: 20
+timeout_secs: 240
 
 locale: zh-TW
+
+fixture:
+  setup:
+    - action: wait
+      target: "5000"
+    - action: enable_a11y
+    - action: shadow_click
+      role: button
+      name_regex: "測試管理員"
+    - action: wait
+      target: "3000"
+    - action: enable_a11y
 
 goal: |
   驗證 AgoraMarket admin 商品狀態 chip 在 Issue #70 #22（StatusConfig.getStatusConfig() 重構）後色碼渲染正確。

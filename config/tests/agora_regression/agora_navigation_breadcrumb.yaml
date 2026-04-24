@@ -8,16 +8,17 @@ timeout_secs: 180
 
 locale: zh-TW
 
-setup:
-  - action: wait
-    target: "5000"
-  - action: enable_a11y
-  - action: shadow_click
-    role: button
-    name_regex: "測試買家"
-  - action: wait
-    target: "3000"
-  - action: enable_a11y
+fixture:
+  setup:
+    - action: wait
+      target: "5000"
+    - action: enable_a11y
+    - action: shadow_click
+      role: button
+      name_regex: "測試買家"
+    - action: wait
+      target: "3000"
+    - action: enable_a11y
 goal: |
   測試 AgoraMarket 多頁面導航與返回行為。
 

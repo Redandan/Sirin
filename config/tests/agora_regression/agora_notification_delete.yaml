@@ -6,16 +6,17 @@ browser_headless: false
 max_iterations: 20
 timeout_secs: 180
 
-setup:
-  - action: wait
-    target: "5000"
-  - action: enable_a11y
-  - action: shadow_click
-    role: button
-    name_regex: "測試買家"
-  - action: wait
-    target: "3000"
-  - action: enable_a11y
+fixture:
+  setup:
+    - action: wait
+      target: "5000"
+    - action: enable_a11y
+    - action: shadow_click
+      role: button
+      name_regex: "測試買家"
+    - action: wait
+      target: "3000"
+    - action: enable_a11y
 goal: |
   驗證 AgoraMarket 通知清單刪除功能已修復（Issue #70 Critical Bug #2）。
   修復前：刪除通知後清單不更新，需要重整才能消失。

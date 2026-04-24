@@ -8,16 +8,17 @@ browser_headless: false
 max_iterations: 20
 timeout_secs: 180
 
-setup:
-  - action: wait
-    target: "5000"
-  - action: enable_a11y
-  - action: shadow_click
-    role: button
-    name_regex: "測試買家"
-  - action: wait
-    target: "3000"
-  - action: enable_a11y
+fixture:
+  setup:
+    - action: wait
+      target: "5000"
+    - action: enable_a11y
+    - action: shadow_click
+      role: button
+      name_regex: "測試買家"
+    - action: wait
+      target: "3000"
+    - action: enable_a11y
 goal: |
   驗證 AgoraMarket WebRTC 麥克風/攝影機 permission 問題已修復（Issue #70 Critical Bug #1）。
 

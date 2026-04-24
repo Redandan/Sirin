@@ -3,8 +3,20 @@ name: "AgoraMarket Admin 商品匯入 Category Filter 驗證 (Issue #70 #4)"
 url: "https://redandan.github.io"
 
 browser_headless: false
-max_iterations: 12
-timeout_secs: 180
+max_iterations: 20
+timeout_secs: 240
+
+fixture:
+  setup:
+    - action: wait
+      target: "5000"
+    - action: enable_a11y
+    - action: shadow_click
+      role: button
+      name_regex: "測試管理員"
+    - action: wait
+      target: "3000"
+    - action: enable_a11y
 
 goal: |
   驗證 AgoraMarket admin 商品匯入頁的 category filter 修復（Issue #70 Critical Bug #4）。
