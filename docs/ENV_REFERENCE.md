@@ -23,6 +23,19 @@ Set in `.env` or system environment.
 | `LARGE_MODEL` | *(falls back to main)* | Large model for deep reasoning |
 | `GEMINI_CONCURRENCY` | `3` | Max in-flight concurrent Gemini API calls (process-wide semaphore in `src/llm/backends.rs::gemini_semaphore`).  Lower this to 2 if batch test runs still see empty responses; raising above 5 risks 429 / empty-content storms on Gemini's free tier.  Free tier may also return HTTP 200 + empty `choices[0].message.content` instead of 429 when over budget — Sirin auto-retries those 2× with 2 s / 4 s backoff (Gemini-only; `GEMINI_EMPTY_MAX_RETRIES` const, not env-tunable). |
 
+## Knowledge Base (Sirin × KB integration)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `KB_ENABLED` | `0` | Master switch for KB integration.  Set `1`/`true`/`yes`/`on` to enable.  When off, all `kb_client` helpers short-circuit (no MCP traffic).  Off by default so dev setups without the agora-trading MCP service running don't see error spam. |
+| `KB_MCP_URL` | `http://localhost:3001/mcp` | MCP endpoint for the KB.  Should point at the agora-trading service exposing `kbGet` / `kbSearch` / `kbWrite` / `kbMarkStale` / `kbHealth`. |
+| `KB_PROJECT` | `sirin` | Default project slug for KB writes from runtime (convergence guard raw notes, etc).  Reads pass project explicitly. |
+
+**Auto-features when enabled:**
+- `TestGoal.docs_refs` entries are auto-resolved at run start: filesystem paths read with `std::fs`; kebab-case keys (no `/` `\` and no extension) fetched via `kbGet`.  Content is spliced into the LLM prompt under "Required reading".
+- Convergence guard / error-ratio guard fires write a `layer=raw` note via `kbWrite` capturing the test_id, action signature, and observation snippet — searchable as `stuck-{test_id_slug}-{action_sig_slug}`.
+- The post-commit hook (`scripts/check_kb_freshness.sh`, install via `scripts/install_kb_freshness_hook.sh`) marks KB entries stale when the commit changes their `fileRefs`.
+
 ## Telegram
 
 | Variable | Default | Description |

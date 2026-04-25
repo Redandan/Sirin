@@ -1,9 +1,178 @@
 //! ReAct-style test executor — LLM drives browser actions to achieve a goal.
 
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::parser::TestGoal;
+
+// ── docs_refs cache ──────────────────────────────────────────────────────────
+//
+// Resolved docs_refs content is cached per-test-id so the prompt builders can
+// splice it in synchronously even though resolution (filesystem + KB MCP) is
+// async.  `pre_resolve_docs_for` populates the cache once at run start;
+// `cached_docs` reads it from the four `build_prompt*` variants below.
+//
+// Bounded growth: bounded by number of distinct test_ids per process lifetime,
+// which is small (<200).  No eviction needed.
+
+fn docs_cache() -> &'static Mutex<HashMap<String, String>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cached_docs(test_id: &str) -> Option<String> {
+    docs_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(test_id)
+        .cloned()
+}
+
+/// Resolve every entry in `test.docs_refs` into a single Markdown block ready
+/// to splice into the LLM prompt.  Each entry is treated as either:
+/// - **Filesystem path** (contains `/`/`\` or has a 1-5 char alpha extension) →
+///   read with `std::fs::read_to_string`, truncated to ~2000 chars
+/// - **KB topicKey** (kebab-case, no path) → fetch via [`crate::kb_client::get`]
+///
+/// Stores the result in [`docs_cache`] keyed by `test.id`; subsequent
+/// `cached_docs(test.id)` calls inside the prompt builders return it
+/// synchronously.  Safe to call multiple times — overwrites previous cache.
+///
+/// Failures are silently demoted to `[unavailable: <reason>]` lines so a
+/// missing file or KB outage never aborts a test run.
+pub(crate) async fn pre_resolve_docs_for(test: &TestGoal) {
+    if test.docs_refs.is_empty() {
+        return;
+    }
+    let mut sections: Vec<String> = Vec::with_capacity(test.docs_refs.len());
+    for r in &test.docs_refs {
+        let entry = r.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        let (label, body) = if crate::kb_client::looks_like_topic_key(entry) {
+            let project = crate::kb_client::default_project();
+            match crate::kb_client::get(&project, entry).await {
+                Ok(Some(text)) => (
+                    format!("KB:{project}/{entry}"),
+                    truncate(&text, 2000),
+                ),
+                Ok(None) => (
+                    format!("KB:{project}/{entry}"),
+                    "[unavailable: KB disabled or entry not found]".into(),
+                ),
+                Err(e) => (
+                    format!("KB:{project}/{entry}"),
+                    format!("[unavailable: {e}]"),
+                ),
+            }
+        } else {
+            // Treat as filesystem path; resolve relative to repo root via cwd.
+            let path = std::path::Path::new(entry);
+            match std::fs::read_to_string(path) {
+                Ok(text) => (entry.to_string(), truncate(&text, 2000)),
+                Err(e) => (entry.to_string(), format!("[unavailable: {e}]")),
+            }
+        };
+        sections.push(format!("### {label}\n{body}"));
+    }
+    let block = sections.join("\n\n");
+    docs_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(test.id.clone(), block);
+}
+
+/// Format the cached docs block for embedding in a prompt.  Returns empty
+/// string when no docs were resolved (so the prompt template stays clean).
+fn docs_prompt_block(test_id: &str) -> String {
+    match cached_docs(test_id) {
+        Some(s) if !s.is_empty() => format!(
+            "\n## Required reading (from docs_refs — read BEFORE acting)\n{s}\n"
+        ),
+        _ => String::new(),
+    }
+}
+
+/// Sanitise an arbitrary string into a topicKey-safe slug.
+///
+/// Strips non-alphanumeric (keeps `-` `_`), lower-cases, dedups consecutive
+/// separators, and trims to `max_len`.  Used to turn action signatures like
+/// `shadow_click:tab:^商品$` into deterministic kb topic keys.
+fn slugify_for_topic(s: &str, max_len: usize) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut prev_sep = false;
+    for ch in s.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+            prev_sep = false;
+        } else if matches!(ch, '-' | '_') {
+            if !prev_sep {
+                out.push('-');
+                prev_sep = true;
+            }
+        } else if !prev_sep {
+            out.push('-');
+            prev_sep = true;
+        }
+    }
+    let trimmed = out.trim_matches('-');
+    trimmed.chars().take(max_len).collect()
+}
+
+/// Best-effort: write a KB raw note when a convergence/error-ratio guard
+/// fires, capturing the test_id + action signature + observation snippet so
+/// future debug sessions can `kbSearch` for "stuck-loop" patterns instead of
+/// rediscovering them by hand.
+///
+/// Spawned as a fire-and-forget task — the test abort flow MUST NOT wait on
+/// the KB MCP round-trip.  Failures (KB disabled, MCP down, etc.) are
+/// silently swallowed by `kb_client::write_raw`.
+fn record_guard_fire_to_kb(
+    test_id: String,
+    iteration: u32,
+    guard_kind: &'static str,
+    signature: String,
+    observation_snippet: String,
+) {
+    let title = format!("Stuck loop: {test_id} ({guard_kind})");
+    let topic_key = format!(
+        "stuck-{}-{}",
+        slugify_for_topic(&test_id, 40),
+        slugify_for_topic(&signature, 40),
+    );
+    let content = format!(
+        "## What happened\n\
+         Test `{test_id}` aborted at iteration {iteration} via the **{guard_kind}** guard.\n\n\
+         ## Action signature that repeated\n\
+         `{signature}`\n\n\
+         ## Last observation snippet\n\
+         ```\n{}\n```\n\n\
+         ## Why this matters\n\
+         Repeated occurrences of this stuck pattern indicate either:\n\
+         - The target element is genuinely missing on the current page state\n\
+         - The YAML step is wrong about the role/name regex\n\
+         - The Flutter semantics tree didn't bootstrap before the action fired\n\
+         Search KB for `stuck-{}` to see related patterns across runs.",
+        truncate(&observation_snippet, 500),
+        slugify_for_topic(&test_id, 40),
+    );
+    let file_refs = format!("config/tests/{test_id}.yaml");
+    let tags = format!("stuck-loop,{guard_kind},guard,test-flake");
+    tokio::spawn(async move {
+        let _ = crate::kb_client::write_raw(
+            &topic_key,
+            &title,
+            &content,
+            "testing",
+            &tags,
+            &file_refs,
+        ).await;
+    });
+}
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
@@ -150,12 +319,16 @@ pub async fn execute_test_tracked(
         runs::set_phase(rid, runs::RunPhase::Running { step: 0, current_action: "goto".into() });
     }
 
-    // 0-pre) Warn if the test declares required reading that the caller must
-    // have done before this run.  Surfaced here so it appears in Sirin logs
-    // even for runs started without going through the MCP layer.
+    // 0-pre) Resolve docs_refs into a Markdown block the prompt builders can
+    // splice in.  Each entry is read from disk (filesystem path) or fetched
+    // from the central KB (topicKey).  Cached per test_id for the duration
+    // of the run so the four prompt variants get it for free.  Failures are
+    // demoted to "[unavailable: …]" — never aborts the test.
+    pre_resolve_docs_for(test).await;
+
     if !test.docs_refs.is_empty() {
         tracing::warn!(
-            "[test_runner] ⚠️  '{}' has {} required doc(s) — confirm read before interpreting results:\n{}",
+            "[test_runner] ⚠️  '{}' has {} required doc(s) — auto-injected into prompt:\n{}",
             test.id,
             test.docs_refs.len(),
             test.docs_refs.iter().map(|d| format!("  • {d}")).collect::<Vec<_>>().join("\n")
@@ -558,6 +731,14 @@ pub async fn execute_test_tracked(
                          action `{}` repeated {}× in last {} non-noise steps; aborting early",
                         test.id, iteration, sig, same_count, recent_action_sigs.len()
                     );
+                    // Best-effort KB raw note (fire-and-forget; never blocks).
+                    record_guard_fire_to_kb(
+                        test.id.clone(),
+                        iteration,
+                        "convergence",
+                        sig.clone(),
+                        full_obs.clone(),
+                    );
                     history.push(TestStep {
                         thought: step.thought,
                         action: action_input,
@@ -594,6 +775,14 @@ pub async fn execute_test_tracked(
                         "[test_runner] '{}' iter {}: error-ratio guard tripped — \
                          {}/{} of last actions failed; aborting early",
                         test.id, iteration, err_count, recent_obs_was_error.len()
+                    );
+                    // Best-effort KB raw note (fire-and-forget; never blocks).
+                    record_guard_fire_to_kb(
+                        test.id.clone(),
+                        iteration,
+                        "error-ratio",
+                        sig.clone(),
+                        full_obs.clone(),
                     );
                     history.push(TestStep {
                         thought: step.thought,
@@ -805,6 +994,8 @@ fn build_prompt_vision(
             .join("\n")
     };
 
+    let docs_block = docs_prompt_block(&test.id);
+
     format!(
         r##"You are a browser-testing agent driving a live Chrome window.  The attached image is a PNG screenshot of the **current viewport** — treat it as the primary observation.
 
@@ -813,7 +1004,7 @@ fn build_prompt_vision(
 
 ## Page context
 {summary}
-
+{docs_block}
 ## Success criteria
 {criteria}
 
@@ -849,6 +1040,7 @@ Respond with STRICTLY valid JSON, no markdown fences, no prose:
 "##,
         goal = test.goal.trim(),
         summary = perception.summary,
+        docs_block = docs_block,
         criteria = criteria,
         history = history_str,
         hint = hint_block,
@@ -908,6 +1100,8 @@ fn build_prompt_with_limits(
         test.success_criteria.iter().map(|c| format!("- {c}")).collect::<Vec<_>>().join("\n")
     };
 
+    let docs_block = docs_prompt_block(&test.id);
+
     format!(r##"You are a browser-testing agent.  Your job is to achieve the test goal by driving the browser.
 
 ## Goal
@@ -915,7 +1109,7 @@ fn build_prompt_with_limits(
 
 ## Test URL (already opened)
 {url}
-
+{docs_block}
 ## Success criteria
 {criteria}
 
@@ -1021,6 +1215,7 @@ Respond with STRICTLY valid JSON, no markdown fences, no prose:
 "##,
         goal = test.goal.trim(),
         url = test.url,
+        docs_block = docs_block,
         criteria = criteria,
         history = history_str,
         hint = hint_block,
@@ -1551,6 +1746,42 @@ mod tests {
         let raw = "I'm thinking about what to do next, but cannot decide.";
         let s = parse_step(raw);
         assert!(s.parse_error.is_some());
+    }
+
+    // ── slugify_for_topic ───────────────────────────────────────────────────
+
+    #[test]
+    fn slugify_replaces_non_alnum_with_hyphens_and_dedups() {
+        assert_eq!(slugify_for_topic("shadow_click:tab:^商品$", 40), "shadow-click-tab");
+        // CJK is not ASCII-alphanumeric so it's stripped — that's by design;
+        // topicKeys must be ASCII-safe for KB MCP.
+        assert_eq!(slugify_for_topic("foo / bar // baz", 40), "foo-bar-baz");
+    }
+
+    #[test]
+    fn slugify_preserves_existing_hyphens_and_underscores() {
+        assert_eq!(slugify_for_topic("agora_pickup_checkboxes_restore", 40),
+                   "agora-pickup-checkboxes-restore");
+        assert_eq!(slugify_for_topic("test-id-with-dashes", 40),
+                   "test-id-with-dashes");
+    }
+
+    #[test]
+    fn slugify_lowercases_uppercase() {
+        assert_eq!(slugify_for_topic("Agora_Market_Smoke", 40),
+                   "agora-market-smoke");
+    }
+
+    #[test]
+    fn slugify_truncates_to_max_len() {
+        let long = "a".repeat(200);
+        assert!(slugify_for_topic(&long, 40).len() <= 40);
+    }
+
+    #[test]
+    fn slugify_strips_leading_and_trailing_separators() {
+        assert_eq!(slugify_for_topic("---foo---", 40), "foo");
+        assert_eq!(slugify_for_topic("///bar///", 40), "bar");
     }
 
     /// Plaintext fallback honours `done: true` even without a JSON wrapper.
