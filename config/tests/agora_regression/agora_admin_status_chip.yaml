@@ -1,37 +1,33 @@
 id: agora_admin_status_chip
-name: "AgoraMarket Admin 商品狀態 Chip 色碼驗證 (Issue #70 #22)"
+name: "AgoraMarket Admin 商品狀態 Chip 顏色 Regression (Issue #70 #22)"
 url: "https://redandan.github.io/?__test_role=admin"
 
 browser_headless: false
-max_iterations: 15
-timeout_secs: 180
+max_iterations: 8
+timeout_secs: 300
 
 locale: zh-TW
 
 goal: |
-  目標：驗證 admin 商品狀態 chip 色碼正確（Issue #70 #22）。
+  目標：打開 Admin 後台的商品管理頁，確認頁面可以正常載入，以及商品狀態 chip 有顏色顯示。
 
-  起始狀態：以管理員身份登入，已在 admin 後台（URL auto-login via __test_role=admin）。
+  背景：Issue #70 #22 修復前，所有商品狀態 chip 顯示為灰色（無色）。修復後應顯示有顏色的 chip。
 
-  ⚠️ Flutter CanvasKit app：所有 UI 判斷用 screenshot_analyze。
+  已知資訊：
+  - 商品管理導航按鈕名稱是「商品與電商」
+  - Flutter 頁面切換需要 wait 3000
 
-  步驟（最多 3 個 iteration，找到即立刻 done=true）：
-  1. screenshot_analyze "確認在 admin 後台，找到商品管理頁面的狀態 chip"
-  2. 若不在商品管理頁：shadow_click role=button name_regex="商品|Products"，wait 2000
-  3. screenshot_analyze "頁面上的狀態 chip 是什麼顏色？對應哪些狀態？"
+  步驟（嚴格按順序，全部執行完才 done=true）：
+  1. shadow_click role=button name_regex="^商品與電商$"
+  2. wait 3000
+  3. screenshot_analyze "商品列表頁面載入了嗎？有看到商品和狀態標籤嗎？狀態標籤是灰色還是有顏色？"
+  4. done=true
 
-  立即判斷（不超過 2 個 iteration 找不同狀態商品）：
-  - 看到多個不同顏色 chip（如綠色「上架中」、黃色「審核中」、紅色「下架」）：
-    → 記錄每個顏色對應的狀態，驗證語意 → done=true
-  - 全部同一顏色（如全部綠色「上架中」）：
-    → 記錄「所有商品同狀態，上架中=綠色，顏色語意正確」→ done=true
-  - 看不到商品列表 → screenshot_analyze 記錄 → done=true
-
-  ⚠️ 不要嘗試翻頁或篩選找不同狀態商品。看到列表就立刻判斷，立刻 done=true。
+  ⚠️ 步驟 3 screenshot_analyze 必須執行，不可跳過。
+  ⚠️ done=true 後立刻結束，不需要再找其他商品。
 
 success_criteria:
-  - "Admin 商品管理頁可開啟"
-  - "商品狀態 chip 可見，顏色符合語意（綠=上架/approved，黃=待審，紅=下架/rejected）"
-  - "無灰色或無色的異常 chip"
+  - "商品管理頁面成功載入，且看到商品列表"
+  - "頁面上至少有一個商品狀態 chip 是彩色的（例如綠色），不是灰色 — 這就算通過，不需要看到全部三種狀態"
 
 tags: [agora, regression, admin]

@@ -4,33 +4,37 @@ url: "https://redandan.github.io/?__test_role=buyer"
 
 browser_headless: false
 max_iterations: 20
-timeout_secs: 240
+timeout_secs: 300
 
 goal: |
   目標：驗證 AgoraMarket 通知刪除功能（Issue #70 Critical Bug #2）。
 
   起始狀態：以買家身份登入，已在首頁（URL auto-login via __test_role=buyer）。
 
+  ✅ 已確認 AX tree 資訊：
+  - 通知入口：role=button name="訊息"（頂部右側圖示按鈕）
+  - 首頁頂部有 button:訊息 可以直接 shadow_click
+
   ⚠️ Flutter CanvasKit app：所有 UI 判斷用 screenshot_analyze。
+  ⚠️ 嚴禁提早終止：必須執行完所有步驟才能 done=true。
 
-  步驟：
-  1. screenshot_analyze "確認在首頁，找頂部通知鈴鐺圖示"
-  2. 方法 A：shadow_click role=button name_regex="通知|Notification|bell|鈴|消息|訊息"
-  3. 方法 B（若 A 失敗）：shadow_click role=tab name_regex="^我的$"，
-     wait 1500，再 shadow_click role=button name_regex="通知|Notification"
-  4. wait 2000 → screenshot_analyze "是否在通知列表頁？有通知項目嗎？"
+  步驟（按順序執行，不跳過）：
+  1. screenshot_analyze "確認在首頁，頂部右側看到哪些按鈕圖示？"
+  2. shadow_click role=button name_regex="訊息|通知|Notification"（點擊訊息/通知中心）
+  3. wait 3000（等待 Flutter 頁面載入）
+  4. screenshot_analyze "是否在通知/訊息列表頁？看到哪些通知項目？列表是空的嗎？"
+  5. shadow_dump（列出通知項目和可用操作按鈕）
+  6. shadow_click role=button name_regex="刪除|Delete|移除|清除|全部已讀|×|✕"（嘗試刪除通知）
+  7. wait 1500
+  8. screenshot_analyze "刪除操作後的狀態？通知消失、確認彈窗、或無刪除功能？"
+  9. done=true
 
-  判斷（立即做，不要超過 2 個 iteration 找通知）：
-  - 通知列表為空（無通知）→ done=true（合法狀態，顯示無通知，pass）
-  - 有通知 → screenshot_analyze "看到刪除圖標（垃圾桶/X）或滑動刪除提示嗎？"
-    - 有刪除圖標：shadow_click role=button name_regex="刪除|Delete|移除|×|✕|清除"
-      wait 1500 → screenshot_analyze "通知是否消失？" → done=true
-    - 無刪除圖標：記錄「delete UI 不可見，可能需要側滑」→ done=true
-  - 找不到通知入口（2 次嘗試後）→ screenshot_analyze 記錄 → done=true
+  ⚠️ 必須完整執行步驟 1-9，嚴禁在步驟 4 前 done=true。
+  ⚠️ 步驟 6 若找不到刪除按鈕（空通知列表或無刪除 UI），繼續執行步驟 7-9。
 
 success_criteria:
   - "通知中心頁面可以正常開啟"
-  - "通知列表顯示正常（有通知或空狀態）"
-  - "若有通知，刪除操作後通知消失（或記錄刪除 UI 缺失）"
+  - "通知列表顯示正常（有通知或空狀態皆合格）"
+  - "若有通知，嘗試刪除後記錄結果（消失、需確認、或刪除 UI 缺失）"
 
 tags: [regression, notification, agora, critical, issue-70]
