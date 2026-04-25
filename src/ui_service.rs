@@ -233,6 +233,21 @@ pub struct GhIssueView {
     pub url:    String,
 }
 
+/// One test run row for the Test Dashboard panel.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TestRunView {
+    /// YAML test id (or "adhoc_…" for ad-hoc runs).
+    pub test_id:     String,
+    /// "passed" | "failed" | "timeout" | "error" | "running" | "queued"
+    pub status:      String,
+    /// RFC-3339 timestamp of when the run started.
+    pub started_at:  String,
+    /// Wall-clock duration in milliseconds (None for still-active runs).
+    pub duration_ms: Option<u64>,
+    /// Short AI analysis or current action (truncated by UI).
+    pub analysis:    Option<String>,
+}
+
 // ── Service traits ───────────────────────────────────────────────────────────
 //
 // Split by domain so UI consumers (and future alternative implementations) can
@@ -413,13 +428,21 @@ pub trait BrowserService: Send + Sync + 'static {
     fn browser_tab_count(&self) -> usize;
 }
 
+/// Test runner data for the Test Dashboard panel — recent history + active runs.
+pub trait TestRunnerService: Send + Sync + 'static {
+    /// Most-recent completed runs from SQLite (newest first).
+    fn recent_test_runs(&self, limit: usize) -> Vec<TestRunView>;
+    /// Currently running or queued runs from the in-memory registry.
+    fn active_test_runs(&self) -> Vec<TestRunView>;
+}
+
 /// Aggregate trait the UI consumes as `Arc<dyn AppService>`.
 ///
-/// Any type that implements all seven sub-traits automatically gets
+/// Any type that implements all eight sub-traits automatically gets
 /// `AppService` via the blanket impl below — no separate impl block required.
 pub trait AppService:
     AgentService + PendingReplyService + WorkflowService + IntegrationService
-    + SystemService + BrowserService + MultiAgentService
+    + SystemService + BrowserService + MultiAgentService + TestRunnerService
 {
 }
 
@@ -431,6 +454,7 @@ impl<T> AppService for T where
         + SystemService
         + BrowserService
         + MultiAgentService
+        + TestRunnerService
         + ?Sized
 {
 }

@@ -414,13 +414,16 @@ url_query:
             );
         }
 
-        // All tests require browser_headless: false (Flutter CanvasKit WebGL)
+        // headless mode — must NOT explicitly set browser_headless: true.
+        // Since v0.4.3 the process-wide default (SIRIN_BROWSER_HEADLESS=false in .env)
+        // covers all Flutter CanvasKit tests; per-YAML field is now optional (None = use default).
         for id in &expected_ids {
             let test = all.iter().find(|t| t.id == *id).unwrap();
-            assert_eq!(
+            assert_ne!(
                 test.browser_headless,
-                Some(false),
-                "test '{}' must have browser_headless: false (Flutter CanvasKit needs WebGL)",
+                Some(true),
+                "test '{}' must not set browser_headless: true (Flutter CanvasKit needs WebGL, \
+                 use .env SIRIN_BROWSER_HEADLESS=false for process-wide default)",
                 id
             );
         }

@@ -200,5 +200,43 @@ impl MultiAgentService for RealService {
     }
 }
 
+impl TestRunnerService for RealService {
+    fn recent_test_runs(&self, limit: usize) -> Vec<TestRunView> {
+        crate::test_runner::store::recent_runs_all(limit)
+            .into_iter()
+            .map(|r| TestRunView {
+                test_id:     r.test_id,
+                status:      r.status,
+                started_at:  r.started_at,
+                duration_ms: r.duration_ms.map(|d| d as u64),
+                analysis:    r.ai_analysis,
+            })
+            .collect()
+    }
+
+    fn active_test_runs(&self) -> Vec<TestRunView> {
+        use crate::test_runner::runs::{list_active, get, RunPhase};
+        list_active()
+            .into_iter()
+            .filter_map(|run_id| get(&run_id))
+            .map(|s| {
+                let (status, analysis) = match &s.phase {
+                    RunPhase::Queued => ("queued".to_string(), None),
+                    RunPhase::Running { current_action, .. } =>
+                        ("running".to_string(), Some(current_action.clone())),
+                    _ => ("unknown".to_string(), None),
+                };
+                TestRunView {
+                    test_id:     s.test_id.clone(),
+                    status,
+                    started_at:  s.started_at.clone(),
+                    duration_ms: None,
+                    analysis,
+                }
+            })
+            .collect()
+    }
+}
+
 // `impl AppService for RealService` is satisfied automatically by the blanket
 // impl in `ui_service` — no explicit block needed.

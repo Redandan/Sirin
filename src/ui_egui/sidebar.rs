@@ -183,7 +183,7 @@ impl SidebarState {
         match view {
             View::Workspace(_) => self.agents_open = true,
             View::Settings | View::Log => self.system_open = true,
-            View::Browser | View::Monitor | View::Team => self.tools_open = true,
+            View::Browser | View::Monitor | View::Team | View::TestRuns => self.tools_open = true,
         }
     }
 }
@@ -507,6 +507,7 @@ fn show_expanded(
         nav_item(ui, "Browser", View::Browser, view);
         nav_item(ui, "Monitor", View::Monitor, view);
         nav_item(ui, "開發小隊", View::Team, view);
+        nav_item(ui, "測試儀表板", View::TestRuns, view);
     }
 
     ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
