@@ -1227,11 +1227,24 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                     }
                 }
                 
-                // If cache miss, call vision LLM
+                // If cache miss, call vision LLM.
+                //
+                // Append a terseness directive to mitigate Gemini Vision's
+                // mid-response truncation (observed in batch 4/5 pickup tests
+                // where multi-paragraph analyses were cut off mid-sentence,
+                // making them un-actionable).  Verbose prompts → near-MAX_TOKENS
+                // responses → silent truncation.  Bullet points + word cap give
+                // headroom and faster downstream parsing.
+                let prompt_with_directive = format!(
+                    "{prompt}\n\n\
+                     【回答格式】用 bullet points 條列，每點 ≤ 30 字。\
+                     優先給結論性事實（顏色/狀態/數值/開關），略過畫面描述。\
+                     全文 ≤ 200 字。"
+                );
                 if analysis.is_none() {
                     let llm = crate::llm::shared_llm();
                     let client = crate::llm::shared_http();
-                    match crate::llm::analyze_screenshot(&client, &llm, &prompt).await {
+                    match crate::llm::analyze_screenshot(&client, &llm, &prompt_with_directive).await {
                         Ok(result) => {
                             analysis = Some(result.clone());
                             // Store in cache for future use

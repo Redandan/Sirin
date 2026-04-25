@@ -1061,25 +1061,39 @@ pub fn click_point(x: f64, y: f64) -> Result<(), String> {
 /// Retries up to 5× (600 ms apart) if `flt-semantics-host` is still empty —
 /// Flutter populates it asynchronously after `enable_a11y` / placeholder click.
 pub fn shadow_find(role: Option<&str>, name_regex: Option<&str>) -> Result<(f64, f64, String), String> {
+    // Recovery ladder for the "flt-semantics-host is empty" case (i.e. Flutter
+    // hasn't built its a11y bridge yet — common right after a route change):
+    //
+    //   attempt 0: try immediately (cold call)
+    //   attempt 1: if first call hit "is empty", actively trigger
+    //              `enable_flutter_semantics()` + 800ms wait, then retry
+    //   attempt 2-4: short 400ms poll between retries (bootstrap already done)
+    //
+    // Worst-case wait (host stays empty): 800 + 400×3 = 2.0 s.
+    // Common case (Flutter just needs a nudge): 800 ms.
+    // Pre-119efdc waited 5×600ms = 3 s BEFORE bootstrapping → 3.8 s worst case.
+    //
+    // Empirically the active bootstrap is harmless on already-populated hosts
+    // (Strategy A's enable_flutter_semantics just clicks a placeholder).
+    let mut bootstrapped = false;
     for attempt in 0u8..5 {
         match shadow_find_once(role, name_regex) {
             Err(ref e) if e.contains("is empty") => {
-                if attempt < 4 {
-                    tracing::debug!("[shadow_find] host empty, retry {}/4 in 600ms", attempt + 1);
-                    std::thread::sleep(std::time::Duration::from_millis(600));
+                if attempt == 0 && !bootstrapped {
+                    tracing::debug!(
+                        "[shadow_find] host empty on cold call — actively bootstrapping Flutter semantics"
+                    );
+                    let _ = crate::browser_ax::enable_flutter_semantics();
+                    std::thread::sleep(std::time::Duration::from_millis(800));
+                    bootstrapped = true;
                     continue;
                 }
-                // After ~3s of retries the host is still empty.  This usually
-                // means Flutter's a11y bridge hasn't been activated yet (the
-                // SPA navigated to a route that rebuilt the widget tree).
-                // Mirror what get_full_tree() does for ax_* actions: trigger
-                // the semantics bootstrap, wait briefly, then retry once more.
-                tracing::debug!(
-                    "[shadow_find] host still empty after 3s — calling enable_flutter_semantics() bootstrap"
-                );
-                let _ = crate::browser_ax::enable_flutter_semantics();
-                std::thread::sleep(std::time::Duration::from_millis(800));
-                return shadow_find_once(role, name_regex); // surface real error if still empty
+                if attempt < 4 {
+                    tracing::debug!("[shadow_find] host still empty, poll {}/4 in 400ms", attempt + 1);
+                    std::thread::sleep(std::time::Duration::from_millis(400));
+                    continue;
+                }
+                return shadow_find_once(role, name_regex); // surface real error
             }
             other => return other,
         }
