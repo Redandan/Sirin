@@ -21,7 +21,7 @@ Set in `.env` or system environment.
 | `ROUTER_LLM_PROVIDER` | *(falls back to main)* | Separate provider for Router (keep local) |
 | `CODING_MODEL` | *(falls back to main)* | Dedicated coding model |
 | `LARGE_MODEL` | *(falls back to main)* | Large model for deep reasoning |
-| `GEMINI_CONCURRENCY` | `3` | Max in-flight concurrent Gemini API calls (process-wide semaphore in `src/llm/backends.rs::gemini_semaphore`).  Lower this to 2 if batch test runs still see empty responses; raising above 5 risks 429 / empty-content storms on Gemini's free tier. |
+| `GEMINI_CONCURRENCY` | `3` | Max in-flight concurrent Gemini API calls (process-wide semaphore in `src/llm/backends.rs::gemini_semaphore`).  Lower this to 2 if batch test runs still see empty responses; raising above 5 risks 429 / empty-content storms on Gemini's free tier.  Free tier may also return HTTP 200 + empty `choices[0].message.content` instead of 429 when over budget — Sirin auto-retries those 2× with 2 s / 4 s backoff (Gemini-only; `GEMINI_EMPTY_MAX_RETRIES` const, not env-tunable). |
 
 ## Telegram
 

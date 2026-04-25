@@ -157,7 +157,9 @@ src/
 │                           (8 sub-traits: AgentService, PendingReplyService,
 │                           WorkflowService, IntegrationService, SystemService,
 │                           MultiAgentService, BrowserService,
-│                           TestRunnerService [3908b2d]).
+│                           TestRunnerService [3908b2d, 79eaf19] — 4 methods:
+│                           recent_test_runs, active_test_runs,
+│                           list_test_ids, launch_test_run).
 │                           Don't import backend modules directly from ui_egui.
 ├── ui_service_impl/        RealService impl of AppService (7 submodules,
 │                           TestRunnerService implemented inline in mod.rs)

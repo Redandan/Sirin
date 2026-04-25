@@ -281,6 +281,10 @@ Claude 擴充有做類似功能(record workflow),可參考其 UX。
 | **browser_headless 集中化** | cb49ea5 | 移除 22 個 Agora YAML 的 `browser_headless: false` — 改由 `.env SIRIN_BROWSER_HEADLESS=false` 一處設定，per-test override 仍保留但實務不用 |
 | **dev-relaunch.sh YAML auto-sync** | 9b880ac | 加 step `[2b]`：cargo build 後自動 rsync `config/tests/*.yaml` → `%LOCALAPPDATA%\Sirin\config\tests\`，避免改 YAML 後 installed-mode 讀不到 |
 | **Gemini concurrency limiter + empty-retry** | bd9cafb | `src/llm/backends.rs` 加 process-wide Semaphore (`GEMINI_CONCURRENCY=3`)；HTTP 200 + 空 content 自動 retry 2 次 (2s/4s)。解 batch 跑 8 個 test 同時打 Gemini 偶爾失敗的根因（Free tier 並發回空，不回 429） |
+| **parse_step robustness (Gemini plaintext drift)** | b97df97 | `src/test_runner/executor.rs::parse_step` — root-action recovery（root 有 `action` 但無 `thought`/`action_input` wrapper 時當 action_input）+ plaintext fallback（brace-depth 從 `thought: ...\naction_input: {...}` extract）+ parse_error_hint 加完整 schema 範例。解 "too many invalid LLM responses (5)" 失敗模式 |
+| **shadow_find Flutter auto-bootstrap** | 119efdc | `src/browser.rs::shadow_find` — 5×600ms host-empty retry 後自動呼 `enable_flutter_semantics()` + 800ms wait + 一次 retry。對齊 `get_full_tree()` (ax_* path) 既有 fallback。Test author 不需手動加 enable_a11y preamble |
+| **Test Dashboard launcher + filter + sparkline** | 79eaf19 | `src/ui_egui/test_dashboard.rs` — Run launcher（YAML 下拉 + ▶ Run）、filter（All/Passed/Failed tabs + text 搜尋）、12-cell pass-rate sparkline 在 header。`TestRunnerService` trait 增 2 method：`list_test_ids` + `launch_test_run` |
+| **v0.4.4 release** | 6795897 | tag + GH release CI 自動建 Windows installer + ZIP，包含 go_back / dashboard / Gemini limiter / parser fix / shadow_find auto-bootstrap |
 
 ### 仍為 P3 / 未做
 
