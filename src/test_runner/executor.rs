@@ -321,12 +321,21 @@ pub async fn execute_test_tracked(
     let deadline = started + std::time::Duration::from_secs(test.timeout_secs.max(10));
     // Convergence guard: track recent action signatures so we can break out of
     // genuine LLM stuck-loops (same action repeated despite same observation).
-    // Sized for the typical loop (last 8 iterations); detection threshold is
-    // 4 occurrences within that window.
+    // - Window LOOP_WINDOW captures the last N *non-noise* actions only — `wait`
+    //   and a11y bootstrap calls are excluded so they don't dilute the signal
+    //   when the LLM does "fail → wait → fail → wait" sequences (run_..._11
+    //   service test hit exactly this).
+    // - LOOP_THRESHOLD = repeat count that trips the guard.
     let mut recent_action_sigs: std::collections::VecDeque<String> =
         std::collections::VecDeque::with_capacity(8);
     const LOOP_WINDOW: usize = 8;
     const LOOP_THRESHOLD: usize = 4;
+    // Error-rate guard: track whether the last LOOP_WINDOW observations were
+    // errors.  If ERROR_RATIO_NUM/ERROR_RATIO_DEN of recent observations are
+    // errors, abort — the LLM is varying actions but nothing is working.
+    let mut recent_obs_was_error: std::collections::VecDeque<bool> =
+        std::collections::VecDeque::with_capacity(8);
+    const ERROR_RATIO_NUM: usize = 6;  // 6 of last 8 = 75%
 
     // Collect the loop result into a variable so cleanup always runs afterward.
     let run_result: TestResult = 'react: {
@@ -530,35 +539,75 @@ pub async fn execute_test_tracked(
             }
             let obs_for_llm = truncate_with_hint(&full_obs, history.len());
 
-            // Convergence guard: build a signature from the action name +
-            // primary target value.  If the same signature shows up
-            // LOOP_THRESHOLD times in the rolling LOOP_WINDOW, the LLM is
-            // stuck retrying the same thing despite identical feedback —
-            // bail out instead of burning the remaining iteration budget.
+            // Convergence guard (signature path): build a compact signature
+            // from the action input.  Skip "noise" actions (wait, sleep, a11y
+            // bootstrap) so the rolling window captures meaningful intent.
+            // If the same signature shows up LOOP_THRESHOLD times in the
+            // rolling LOOP_WINDOW, the LLM is stuck retrying the same thing
+            // despite identical feedback.
             let sig = action_signature(&action_input);
-            recent_action_sigs.push_back(sig.clone());
-            if recent_action_sigs.len() > LOOP_WINDOW {
-                recent_action_sigs.pop_front();
+            if !is_noise_action(&action_input) {
+                recent_action_sigs.push_back(sig.clone());
+                if recent_action_sigs.len() > LOOP_WINDOW {
+                    recent_action_sigs.pop_front();
+                }
+                let same_count = recent_action_sigs.iter().filter(|s| **s == sig).count();
+                if same_count >= LOOP_THRESHOLD {
+                    tracing::warn!(
+                        "[test_runner] '{}' iter {}: convergence guard tripped — \
+                         action `{}` repeated {}× in last {} non-noise steps; aborting early",
+                        test.id, iteration, sig, same_count, recent_action_sigs.len()
+                    );
+                    history.push(TestStep {
+                        thought: step.thought,
+                        action: action_input,
+                        observation: obs_for_llm,
+                    });
+                    break 'react finalize_early(
+                        ctx, run_id, test, &history,
+                        format!(
+                            "convergence guard: action `{}` repeated {}× in {} non-noise steps — LLM stuck",
+                            sig, same_count, recent_action_sigs.len()
+                        ),
+                    ).await;
+                }
             }
-            let same_count = recent_action_sigs.iter().filter(|s| **s == sig).count();
-            if same_count >= LOOP_THRESHOLD {
-                tracing::warn!(
-                    "[test_runner] '{}' iter {}: convergence guard tripped — \
-                     action `{}` repeated {}× in last {} steps; aborting early",
-                    test.id, iteration, sig, same_count, recent_action_sigs.len()
-                );
-                history.push(TestStep {
-                    thought: step.thought,
-                    action: action_input,
-                    observation: obs_for_llm,
-                });
-                break 'react finalize_early(
-                    ctx, run_id, test, &history,
-                    format!(
-                        "convergence guard: action `{}` repeated {}× in {} steps — LLM stuck",
-                        sig, same_count, recent_action_sigs.len()
-                    ),
-                ).await;
+
+            // Convergence guard (error-ratio path): track whether the last
+            // LOOP_WINDOW observations were errors.  ≥ ERROR_RATIO_NUM/8
+            // failures in window → abort.  Catches the "vary the action but
+            // nothing works" pattern that signature-counting misses (e.g.
+            // service test iter 13/14/17 — different shadow_click targets,
+            // all returning "no matching element").  Excludes noise actions
+            // so the ratio reflects substantive failure rate.
+            if !is_noise_action(&action_input) {
+                let was_error = is_error_observation(&full_obs);
+                recent_obs_was_error.push_back(was_error);
+                if recent_obs_was_error.len() > LOOP_WINDOW {
+                    recent_obs_was_error.pop_front();
+                }
+                let err_count = recent_obs_was_error.iter().filter(|x| **x).count();
+                if recent_obs_was_error.len() >= LOOP_WINDOW
+                    && err_count >= ERROR_RATIO_NUM
+                {
+                    tracing::warn!(
+                        "[test_runner] '{}' iter {}: error-ratio guard tripped — \
+                         {}/{} of last actions failed; aborting early",
+                        test.id, iteration, err_count, recent_obs_was_error.len()
+                    );
+                    history.push(TestStep {
+                        thought: step.thought,
+                        action: action_input,
+                        observation: obs_for_llm,
+                    });
+                    break 'react finalize_early(
+                        ctx, run_id, test, &history,
+                        format!(
+                            "error-ratio guard: {}/{} of last non-noise actions returned errors — page state likely broken",
+                            err_count, recent_obs_was_error.len()
+                        ),
+                    ).await;
+                }
             }
 
             history.push(TestStep {
@@ -1155,6 +1204,50 @@ fn parse_step(raw: &str) -> ParsedStep {
     }
 }
 
+/// True for "noise" actions that shouldn't fill the convergence-guard window.
+///
+/// These are passive / setup actions a test author legitimately uses many
+/// times in a row: `wait`, `sleep`, `enable_a11y` (Flutter bootstrap),
+/// `screenshot` (read-only).  Letting them dilute the window would mask
+/// stuck-loops where the LLM does "fail → wait → fail → wait" forever
+/// (run_..._11 service test exhibited exactly this — guard didn't trip
+/// because waits between failures kept signature counts under threshold).
+fn is_noise_action(action_input: &Value) -> bool {
+    let a = action_input
+        .get("action")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    matches!(
+        a.as_str(),
+        "wait" | "sleep" | "enable_a11y" | "screenshot" | "page_state" | "url" | "title"
+    )
+}
+
+/// True when an observation indicates an action error.
+///
+/// We check both the textual prefix (the executor wraps action errors as
+/// `ERROR: <msg>`) and a couple of common Result-shape JSON wrappers in case
+/// downstream wrappers ever serialize them differently.
+fn is_error_observation(obs: &str) -> bool {
+    let trimmed = obs.trim_start();
+    if trimmed.starts_with("ERROR") || trimmed.starts_with("Err(") {
+        return true;
+    }
+    // JSON shape: {"error":"..."} or {"status":"failed"} variants.
+    if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
+        if v.get("error").is_some() {
+            return true;
+        }
+        if let Some(s) = v.get("status").and_then(Value::as_str) {
+            if matches!(s, "failed" | "error" | "timeout") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Build a compact signature from an `action_input` JSON for the convergence
 /// guard: `<action>:<target_or_role>:<name_regex_or_text_truncated>`.
 ///
@@ -1515,5 +1608,59 @@ mod tests {
         let click = json!({"action":"click","target":"#submit"});
         let goto  = json!({"action":"goto","target":"#submit"});
         assert_ne!(action_signature(&click), action_signature(&goto));
+    }
+
+    // ── is_noise_action / is_error_observation ──────────────────────────────
+
+    #[test]
+    fn noise_actions_recognized() {
+        for a in ["wait", "sleep", "enable_a11y", "screenshot", "page_state", "url", "title"] {
+            assert!(
+                is_noise_action(&json!({"action": a})),
+                "expected {a} to be noise"
+            );
+        }
+    }
+
+    #[test]
+    fn substantive_actions_are_not_noise() {
+        for a in [
+            "click", "shadow_click", "ax_click", "type", "ax_type", "goto",
+            "screenshot_analyze", "go_back",
+        ] {
+            assert!(
+                !is_noise_action(&json!({"action": a})),
+                "expected {a} to be substantive"
+            );
+        }
+    }
+
+    #[test]
+    fn noise_action_check_is_case_insensitive() {
+        assert!(is_noise_action(&json!({"action":"WAIT"})));
+        assert!(is_noise_action(&json!({"action":"Enable_A11Y"})));
+    }
+
+    #[test]
+    fn error_observation_detects_error_prefix() {
+        assert!(is_error_observation("ERROR: shadow_click: host empty"));
+        assert!(is_error_observation("  ERROR: foo")); // leading whitespace
+        assert!(is_error_observation("Err(some failure)"));
+    }
+
+    #[test]
+    fn error_observation_detects_json_error_field() {
+        assert!(is_error_observation(r#"{"error":"thing failed"}"#));
+        assert!(is_error_observation(r#"{"status":"failed"}"#));
+        assert!(is_error_observation(r#"{"status":"timeout","ms":1000}"#));
+    }
+
+    #[test]
+    fn error_observation_returns_false_for_success() {
+        assert!(!is_error_observation(r#"{"status":"clicked"}"#));
+        assert!(!is_error_observation(r#"{"ms":3000,"status":"slept"}"#));
+        assert!(!is_error_observation(r#"{"ax_node_count":39}"#));
+        assert!(!is_error_observation(""));
+        assert!(!is_error_observation("Some unrelated text"));
     }
 }
