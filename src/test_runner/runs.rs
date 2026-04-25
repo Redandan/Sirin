@@ -124,12 +124,32 @@ pub fn get_goal(run_id: &str) -> Option<TestGoal> {
 /// The notification is a no-op when `SIRIN_NOTIFY_BOT_TOKEN` / `SIRIN_NOTIFY_CHAT_ID`
 /// are not set — callers never need to handle this.
 pub fn set_phase(run_id: &str, phase: RunPhase) {
-    // Trigger failure notification before storing (fire-and-forget).
+    // Trigger failure notification + KB write-back before storing (fire-and-forget).
     if let RunPhase::Complete(ref r) = phase {
         use super::executor::TestStatus;
         if r.status != TestStatus::Passed {
             let reason = r.error_message.as_deref().unwrap_or("test failed");
             super::notify::notify_failure(&r.test_id, reason, r.duration_ms);
+
+            // Write failure pattern to KB so future sessions can search by test_id.
+            // Uses the existing tokio runtime — no-op if KB_ENABLED is not set.
+            let test_id   = r.test_id.clone();
+            let error_msg = r.error_message.clone().unwrap_or_default();
+            let step_count = r.iterations;
+            let duration   = r.duration_ms;
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    let topic_key = format!("sirin-failure-{test_id}");
+                    let title     = format!("[FAIL] {test_id}");
+                    let content   = format!(
+                        "step: {step_count}\nerror: {error_msg}\nduration_ms: {duration}"
+                    );
+                    let _ = crate::kb_client::write_raw_to_project(
+                        "sirin", &topic_key, &title, &content,
+                        "testing", "test-failure", "",
+                    ).await;
+                });
+            }
         }
     }
     let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
