@@ -118,7 +118,20 @@ pub fn get_goal(run_id: &str) -> Option<TestGoal> {
 }
 
 /// Update phase (called by executor as it progresses).
+///
+/// When transitioning to `Complete` with a non-passing status, fires a
+/// fire-and-forget Telegram notification via [`super::notify::notify_failure`].
+/// The notification is a no-op when `SIRIN_NOTIFY_BOT_TOKEN` / `SIRIN_NOTIFY_CHAT_ID`
+/// are not set — callers never need to handle this.
 pub fn set_phase(run_id: &str, phase: RunPhase) {
+    // Trigger failure notification before storing (fire-and-forget).
+    if let RunPhase::Complete(ref r) = phase {
+        use super::executor::TestStatus;
+        if r.status != TestStatus::Passed {
+            let reason = r.error_message.as_deref().unwrap_or("test failed");
+            super::notify::notify_failure(&r.test_id, reason, r.duration_ms);
+        }
+    }
     let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(s) = reg.get_mut(run_id) {
         s.phase = phase;
