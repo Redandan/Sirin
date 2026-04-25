@@ -5,6 +5,49 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.4.4] — 2026-04-25
+
+### Added
+- **browser**: `go_back` action — Chrome history back via `window.history.back()`
+  with navigation settle wait.  Closes #28.  Exposed through `web_navigate`
+  (internal agents) and `browser_exec` (external MCP).
+- **ui**: Test Dashboard panel (`測試儀表板`) — live `Active runs` (in-memory
+  registry, 3s refresh, pulse animation) + `History` (last 30 from SQLite
+  store).  Each row shows status badge (PASS/FAIL/TIME/ERR/RUN/WAIT) +
+  test_id + AI analysis snippet.  New `View::TestRuns` + `TestRunnerService`
+  sub-trait (8th sub-trait of `AppService`).
+- **llm**: `GEMINI_CONCURRENCY` env var (default 3) — process-wide
+  `tokio::sync::Semaphore` caps concurrent Gemini API requests to prevent
+  the silent "200 + empty content" responses Gemini's free tier returns
+  when batch tests fan out 8 parallel `screenshot_analyze` calls.
+- **scripts**: `dev-relaunch.sh` step `[2b]` — auto-rsync
+  `config/tests/*.yaml` → `%LOCALAPPDATA%\Sirin\config\tests\` after build,
+  so YAML edits take effect without manual copy.
+
+### Fixed
+- **test_runner**: `parse_step` now recovers from Gemini's plaintext
+  "label: {json}" drift after a parse retry — three-pronged fix: root-action
+  recovery (treats root as action_input when wrapper missing), brace-depth
+  plaintext fallback parser, and stricter parse_error_hint with explicit
+  schema example.  Resolves "too many invalid LLM responses (5)" failures
+  on `agora_pickup_checkboxes_restore` and similar tests where Gemini
+  drifted into plain-text format and never recovered.
+- **test_runner**: Fire `notify_failure` only from `runs::set_phase()` —
+  removed duplicate call in `store::record_run` that caused two Telegram
+  notifications per failed run.
+- **llm**: HTTP 200 + empty `choices[0].message.content` from Gemini now
+  retries 2× with 2 s / 4 s backoff (Gemini-only; local backends unaffected).
+- **tests**: All 22 Agora YAMLs no longer hardcode `browser_headless: false`
+  — centralized via `.env SIRIN_BROWSER_HEADLESS=false` (per-test YAML
+  override still supported but discouraged).
+
+### Internal
+- 8 sub-traits in `AppService` (added `TestRunnerService`).
+- 11 modules in `src/ui_egui/` (added `test_dashboard.rs`, `team_panel.rs`).
+- 479 unit tests passing (was 469 in v0.4.3).
+
+---
+
 ## [0.4.3] — 2026-04-19
 
 ### Added
