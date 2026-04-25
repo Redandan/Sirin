@@ -319,6 +319,14 @@ pub async fn execute_test_tracked(
     // 3) ReAct loop
     let max_iter = test.max_iterations.max(1);
     let deadline = started + std::time::Duration::from_secs(test.timeout_secs.max(10));
+    // Convergence guard: track recent action signatures so we can break out of
+    // genuine LLM stuck-loops (same action repeated despite same observation).
+    // Sized for the typical loop (last 8 iterations); detection threshold is
+    // 4 occurrences within that window.
+    let mut recent_action_sigs: std::collections::VecDeque<String> =
+        std::collections::VecDeque::with_capacity(8);
+    const LOOP_WINDOW: usize = 8;
+    const LOOP_THRESHOLD: usize = 4;
 
     // Collect the loop result into a variable so cleanup always runs afterward.
     let run_result: TestResult = 'react: {
@@ -338,7 +346,24 @@ pub async fn execute_test_tracked(
                 };
             }
 
-            let hint_for_llm = parse_error_hint.take(); // reset — only used for the next turn
+            // Reset parse-error hint each turn — but if we're past 70% of the
+            // budget without a done=true, layer in a done-nudge so the LLM
+            // doesn't burn the remaining budget on superfluous verification
+            // turns.  Empirically this saves the "completed work but never
+            // emitted done=true" pathology (run_20260425_215841_159_0 hit
+            // max_iter at step 24 right after a successful screenshot_analyze).
+            let hint_for_llm = match parse_error_hint.take() {
+                Some(h) => Some(h),
+                None if iteration > 0 && iteration * 10 >= max_iter * 7 => Some(format!(
+                    "⚠️ You've used {iter}/{max} iterations.  If every \
+                     success_criterion is satisfied by the observations above, \
+                     output `{{\"thought\":\"...\",\"done\":true,\"final_answer\":\"<summary>\"}}` \
+                     NOW.  Don't burn iterations on extra verification screenshots — \
+                     trust what you've already seen.",
+                    iter = iteration, max = max_iter
+                )),
+                None => None,
+            };
 
             // Perception capture — zero-overhead for PerceptionMode::Text (short-
             // circuits inside perceive).  Done once per iteration and reused across
@@ -504,6 +529,37 @@ pub async fn execute_test_tracked(
                 runs::push_observation(rid, full_obs.clone());
             }
             let obs_for_llm = truncate_with_hint(&full_obs, history.len());
+
+            // Convergence guard: build a signature from the action name +
+            // primary target value.  If the same signature shows up
+            // LOOP_THRESHOLD times in the rolling LOOP_WINDOW, the LLM is
+            // stuck retrying the same thing despite identical feedback —
+            // bail out instead of burning the remaining iteration budget.
+            let sig = action_signature(&action_input);
+            recent_action_sigs.push_back(sig.clone());
+            if recent_action_sigs.len() > LOOP_WINDOW {
+                recent_action_sigs.pop_front();
+            }
+            let same_count = recent_action_sigs.iter().filter(|s| **s == sig).count();
+            if same_count >= LOOP_THRESHOLD {
+                tracing::warn!(
+                    "[test_runner] '{}' iter {}: convergence guard tripped — \
+                     action `{}` repeated {}× in last {} steps; aborting early",
+                    test.id, iteration, sig, same_count, recent_action_sigs.len()
+                );
+                history.push(TestStep {
+                    thought: step.thought,
+                    action: action_input,
+                    observation: obs_for_llm,
+                });
+                break 'react finalize_early(
+                    ctx, run_id, test, &history,
+                    format!(
+                        "convergence guard: action `{}` repeated {}× in {} steps — LLM stuck",
+                        sig, same_count, recent_action_sigs.len()
+                    ),
+                ).await;
+            }
 
             history.push(TestStep {
                 thought: step.thought,
@@ -1099,6 +1155,43 @@ fn parse_step(raw: &str) -> ParsedStep {
     }
 }
 
+/// Build a compact signature from an `action_input` JSON for the convergence
+/// guard: `<action>:<target_or_role>:<name_regex_or_text_truncated>`.
+///
+/// Two iterations sharing the same signature mean the LLM picked the same
+/// action with the same primary inputs.  Used by the ReAct loop to detect
+/// LLM stuck-loops (see `LOOP_THRESHOLD` in `run_test_inner`).
+fn action_signature(action_input: &Value) -> String {
+    let action = action_input
+        .get("action")
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+    // Pick the most discriminating secondary key per action family.
+    let secondary = action_input
+        .get("target")
+        .or_else(|| action_input.get("role"))
+        .or_else(|| action_input.get("backend_id"))
+        .and_then(|v| match v {
+            Value::String(s) => Some(s.clone()),
+            other            => Some(other.to_string()),
+        })
+        .unwrap_or_default();
+    let tertiary = action_input
+        .get("name_regex")
+        .or_else(|| action_input.get("text"))
+        .and_then(Value::as_str)
+        .map(|s| {
+            // Trim long fields so signatures stay compact + comparable.
+            if s.chars().count() > 24 {
+                s.chars().take(24).collect::<String>() + "…"
+            } else {
+                s.to_string()
+            }
+        })
+        .unwrap_or_default();
+    format!("{action}:{secondary}:{tertiary}")
+}
+
 /// True when the raw LLM output indicates `done = true` outside any JSON
 /// object — used by the root-action recovery path because strip_fences may
 /// have stripped a trailing `done: true` plain-text line.
@@ -1374,5 +1467,53 @@ mod tests {
         let s = parse_step(raw);
         assert!(s.parse_error.is_none());
         assert!(s.done);
+    }
+
+    // ── Convergence-guard signature tests ───────────────────────────────────
+
+    #[test]
+    fn signature_uses_action_and_target() {
+        let a = json!({"action":"goto","target":"https://x.com"});
+        let b = json!({"action":"goto","target":"https://x.com"});
+        let c = json!({"action":"goto","target":"https://y.com"});
+        assert_eq!(action_signature(&a), action_signature(&b));
+        assert_ne!(action_signature(&a), action_signature(&c));
+    }
+
+    #[test]
+    fn signature_includes_role_for_shadow_actions() {
+        let a = json!({"action":"shadow_click","role":"tab","name_regex":"^商品$"});
+        let b = json!({"action":"shadow_click","role":"tab","name_regex":"^訂單$"});
+        let c = json!({"action":"shadow_click","role":"tab","name_regex":"^商品$"});
+        assert_ne!(
+            action_signature(&a),
+            action_signature(&b),
+            "different name_regex should yield different signature"
+        );
+        assert_eq!(action_signature(&a), action_signature(&c));
+    }
+
+    #[test]
+    fn signature_includes_backend_id_when_no_target_or_role() {
+        let a = json!({"action":"ax_click","backend_id":42});
+        let b = json!({"action":"ax_click","backend_id":99});
+        assert_ne!(action_signature(&a), action_signature(&b));
+    }
+
+    #[test]
+    fn signature_truncates_long_text_to_keep_compact() {
+        let long = "a".repeat(200);
+        let a = json!({"action":"flutter_type","text": long});
+        let sig = action_signature(&a);
+        // Truncated to 24 chars + ellipsis — keeps signatures bounded.
+        assert!(sig.len() < 60, "signature too long: {sig} ({})", sig.len());
+        assert!(sig.contains("…"), "expected truncation ellipsis, got {sig}");
+    }
+
+    #[test]
+    fn signature_distinguishes_action_families() {
+        let click = json!({"action":"click","target":"#submit"});
+        let goto  = json!({"action":"goto","target":"#submit"});
+        assert_ne!(action_signature(&click), action_signature(&goto));
     }
 }
