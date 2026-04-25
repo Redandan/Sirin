@@ -253,6 +253,20 @@ async fn discover_tools(
 /// This is invoked by the ToolRegistry handler when an agent uses an
 /// `mcp_{server}_{tool}` tool.
 pub async fn call_tool(server_url: &str, tool_name: &str, arguments: Value) -> Result<Value, String> {
+    call_tool_with_bearer(server_url, tool_name, arguments, None).await
+}
+
+/// Like [`call_tool`] but optionally attaches a `Bearer <token>` Authorization
+/// header.  Used by the KB client (`kb_client`) to reach hosted KB MCP
+/// endpoints that gate access (e.g. agora-trading at
+/// `https://agoramarketapi.purrtechllc.com/api/mcp`).  Pass `None` to skip
+/// auth — same behaviour as `call_tool`.
+pub async fn call_tool_with_bearer(
+    server_url: &str,
+    tool_name: &str,
+    arguments: Value,
+    bearer: Option<&str>,
+) -> Result<Value, String> {
     let st = state();
     let guard = st.read().await;
     let http = guard.http.clone();
@@ -268,8 +282,11 @@ pub async fn call_tool(server_url: &str, tool_name: &str, arguments: Value) -> R
         }
     });
 
-    let resp = http
-        .post(server_url)
+    let mut req = http.post(server_url);
+    if let Some(token) = bearer {
+        req = req.bearer_auth(token);
+    }
+    let resp = req
         .json(&body)
         .timeout(std::time::Duration::from_secs(120))
         .send()

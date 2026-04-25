@@ -50,18 +50,28 @@ if [[ -z "$CHANGED_FILES" ]]; then
 fi
 
 # JSON-RPC helper: POST a tools/call to the MCP endpoint, return raw JSON.
+# Adds `Authorization: Bearer $KB_MCP_BEARER` when set (hosted KBs gate access).
 mcp_call() {
     local tool="$1"
     local args="$2"
+    local auth_args=()
+    if [[ -n "${KB_MCP_BEARER:-}" ]]; then
+        auth_args=(-H "Authorization: Bearer ${KB_MCP_BEARER}")
+    fi
     curl -sS --max-time 30 -X POST "$URL" \
         -H "Content-Type: application/json" \
+        "${auth_args[@]}" \
         -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"$tool\",\"arguments\":$args}}" \
         2>/dev/null
 }
 
 # Probe MCP server availability — bail silently if it's not up (dev machine
-# without the agora-trading service running shouldn't see error spam).
-if ! curl -sS --max-time 3 -o /dev/null "$URL" 2>/dev/null; then
+# without the KB MCP service reachable shouldn't see error spam).
+probe_args=()
+if [[ -n "${KB_MCP_BEARER:-}" ]]; then
+    probe_args=(-H "Authorization: Bearer ${KB_MCP_BEARER}")
+fi
+if ! curl -sS --max-time 5 -o /dev/null "${probe_args[@]}" "$URL" 2>/dev/null; then
     [[ "$DRY" == "1" ]] && echo "[kb-freshness] MCP at $URL unreachable — skipping"
     exit 0
 fi

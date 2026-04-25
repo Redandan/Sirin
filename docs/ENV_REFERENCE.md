@@ -27,14 +27,25 @@ Set in `.env` or system environment.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `KB_ENABLED` | `0` | Master switch for KB integration.  Set `1`/`true`/`yes`/`on` to enable.  When off, all `kb_client` helpers short-circuit (no MCP traffic).  Off by default so dev setups without the agora-trading MCP service running don't see error spam. |
-| `KB_MCP_URL` | `http://localhost:3001/mcp` | MCP endpoint for the KB.  Should point at the agora-trading service exposing `kbGet` / `kbSearch` / `kbWrite` / `kbMarkStale` / `kbHealth`. |
+| `KB_ENABLED` | `0` | Master switch for KB integration.  Set `1`/`true`/`yes`/`on` to enable.  When off, all `kb_client` helpers short-circuit (no MCP traffic).  Off by default so dev setups without the agora-trading MCP service reachable don't see error spam. |
+| `KB_MCP_URL` | `http://localhost:3001/mcp` | MCP endpoint for the KB.  For the **hosted agora-trading service** (the one Claude Code already uses) set to `https://agoramarketapi.purrtechllc.com/api/mcp`. |
+| `KB_MCP_BEARER` | *(none)* | Optional `Bearer <token>` for the KB endpoint.  Hosted KBs gate access.  Read the existing token from `~/.claude.json` → `mcpServers.agora-trading.headers.Authorization` and strip the `Bearer ` prefix. |
 | `KB_PROJECT` | `sirin` | Default project slug for KB writes from runtime (convergence guard raw notes, etc).  Reads pass project explicitly. |
+
+**Quick setup against the hosted KB:**
+```bash
+# .env
+KB_ENABLED=1
+KB_MCP_URL=https://agoramarketapi.purrtechllc.com/api/mcp
+KB_MCP_BEARER=<paste-token-from-~/.claude.json>
+```
 
 **Auto-features when enabled:**
 - `TestGoal.docs_refs` entries are auto-resolved at run start: filesystem paths read with `std::fs`; kebab-case keys (no `/` `\` and no extension) fetched via `kbGet`.  Content is spliced into the LLM prompt under "Required reading".
+- `TestGoal.kb_refs` entries are always treated as KB topicKeys (no path heuristic) — explicit form for KB-only references.
 - Convergence guard / error-ratio guard fires write a `layer=raw` note via `kbWrite` capturing the test_id, action signature, and observation snippet — searchable as `stuck-{test_id_slug}-{action_sig_slug}`.
-- The post-commit hook (`scripts/check_kb_freshness.sh`, install via `scripts/install_kb_freshness_hook.sh`) marks KB entries stale when the commit changes their `fileRefs`.
+- `claude_session::run_sync` triage spawns prepend up to 3 `kbSearch` hits from the project inferred via `project_from_cwd` (agora-backend / flutter / sirin).
+- The post-commit hook (`scripts/check_kb_freshness.sh`, install via `scripts/install_kb_freshness_hook.sh`) marks KB entries stale when the commit changes their `fileRefs`.  Honours `KB_MCP_BEARER` for hosted endpoints.
 
 ## Telegram
 

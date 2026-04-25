@@ -31,8 +31,25 @@ pub fn enabled() -> bool {
 }
 
 /// MCP endpoint URL, env-overridable.
+///
+/// Default `http://localhost:3001/mcp` covers the local-dev case where a
+/// user runs the KB MCP server on their machine.  For the hosted agora-
+/// trading service, set `KB_MCP_URL=https://agoramarketapi.purrtechllc.com/api/mcp`
+/// + `KB_MCP_BEARER=<token>` (see `~/.claude.json` for the existing token
+/// configured for Claude Code).
 pub fn url() -> String {
     std::env::var("KB_MCP_URL").unwrap_or_else(|_| "http://localhost:3001/mcp".into())
+}
+
+/// Optional Bearer token for the KB MCP endpoint.  `None` when unset.
+///
+/// Hosted KB endpoints (e.g. agora-trading) require auth — supply the same
+/// token Claude Code's MCP config carries (`~/.claude.json` →
+/// `mcpServers.agora-trading.headers.Authorization`).
+pub fn bearer() -> Option<String> {
+    std::env::var("KB_MCP_BEARER")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
 }
 
 /// Default project slug for write_raw, env-overridable.
@@ -69,7 +86,9 @@ pub async fn get(project: &str, topic_key: &str) -> Result<Option<String>, Strin
         return Ok(None);
     }
     let args = json!({ "topicKey": topic_key, "project": project });
-    let res = match crate::mcp_client::call_tool(&url(), "kbGet", args).await {
+    let res = match crate::mcp_client::call_tool_with_bearer(
+        &url(), "kbGet", args, bearer().as_deref()
+    ).await {
         Ok(r) => r,
         Err(e) => {
             tracing::debug!("[kb_client] kbGet({project}/{topic_key}) failed: {e}");
@@ -101,7 +120,9 @@ pub async fn search(
         "status":  "",
         "limit":   limit as i64,
     });
-    let res = match crate::mcp_client::call_tool(&url(), "kbSearch", args).await {
+    let res = match crate::mcp_client::call_tool_with_bearer(
+        &url(), "kbSearch", args, bearer().as_deref()
+    ).await {
         Ok(r) => r,
         Err(e) => {
             tracing::debug!("[kb_client] kbSearch({project}, {query:?}) failed: {e}");
@@ -154,7 +175,9 @@ pub async fn write_raw_to_project(
         "source":     "sirin",
         "project":    project,
     });
-    if let Err(e) = crate::mcp_client::call_tool(&url(), "kbWrite", args).await {
+    if let Err(e) = crate::mcp_client::call_tool_with_bearer(
+        &url(), "kbWrite", args, bearer().as_deref()
+    ).await {
         tracing::warn!("[kb_client] kbWrite({project}/{topic_key}) failed: {e}");
         return Err(e);
     }
