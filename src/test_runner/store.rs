@@ -136,19 +136,10 @@ pub fn record_run(r: NewRun<'_>) -> Result<i64, String> {
         ],
     ).map_err(|e| format!("insert run: {e}"))?;
     let row_id = conn.last_insert_rowid();
-
-    // Fire-and-forget Telegram notification on failure only.
-    if r.status == "failed" {
-        let reason = r.ai_analysis
-            .or(r.failure_category)
-            .unwrap_or("unknown reason");
-        super::notify::notify_failure(
-            r.test_id,
-            reason,
-            r.duration_ms.unwrap_or(0) as u64,
-        );
-    }
-
+    // Note: Telegram failure notification is fired by runs::set_phase()
+    // (in-memory registry) when the run transitions to Complete — that
+    // covers all non-passed statuses (failed / timeout / error) without
+    // double-firing.  Do NOT add a second notify call here.
     Ok(row_id)
 }
 
