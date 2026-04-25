@@ -50,6 +50,7 @@ Set in `.env` or system environment.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SIRIN_BROWSER_HEADLESS` | `true` | Chrome mode. Set `false` / `0` / `no` to run visible — **required for Flutter CanvasKit / WebGL apps** which won't paint headless. **As of cb49ea5 all 22 Agora YAML tests have removed their per-test `browser_headless` field — set this once in `.env` instead.** Per-test YAML `browser_headless` still overrides at the `TestGoal` level if explicitly set. |
+| `BATCH_START_STAGGER_MS` | `2000` | Delay (ms) between consecutive `run_test_batch` test starts.  Each test waits `idx * stagger_ms` before acquiring the concurrency semaphore.  Mitigates Chrome-process state races when multiple batch tests share localStorage / cookies / `?__test_role=` SPA flags (observed batch 7: service test PASS solo but failed concurrently with checkboxes due to localStorage write race).  Set `0` to disable for tests on independent domains. |
 | `SIRIN_RPC_PORT` | `7700` | Port for the WebSocket + MCP HTTP server. Change when port 7700 is stuck in TCP TIME_WAIT from a recently-killed Sirin, or when running multiple instances. |
 | `SIRIN_REPO_BACKEND` | `~/IdeaProjects/AgoraMarketAPI` | Repo path for auto-fix spawning (backend bugs) |
 | `SIRIN_REPO_FRONTEND` | `~/IdeaProjects/AgoraMarketFlutter` | Repo path for auto-fix (frontend bugs) |

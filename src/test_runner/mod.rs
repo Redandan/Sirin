@@ -304,6 +304,23 @@ pub fn spawn_batch_run(
     let cap = max_concurrency.max(1);
     let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(cap));
 
+    // Batch start stagger: when multiple tests target the same SPA they share
+    // Chrome process state (localStorage, cookies, `?__test_role=...` flags).
+    // If they ALL start within the same ~100ms, the second test's URL
+    // navigation can race the first's auth-bootstrap localStorage write —
+    // observed batch 7 with both pickup tests (service had passed solo and in
+    // batch 6, failed concurrently after a rebuild).
+    //
+    // Cheap mitigation: stagger semaphore acquisition by `idx * stagger_ms`
+    // so each test waits its turn.  Total wall time impact is bounded by
+    // (last_idx * stagger_ms) — a 2s stagger across 3 tests adds only 4s
+    // to a 60-180s batch.  Tunable via BATCH_START_STAGGER_MS env (set 0
+    // to disable for tests on independent domains).
+    let stagger_ms: u64 = std::env::var("BATCH_START_STAGGER_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2000);
+
     for (idx, (test_id, run_id)) in test_ids.iter().zip(run_ids.iter()).enumerate() {
         let sem_clone = sem.clone();
         let test_id_clone = test_id.clone();
@@ -321,6 +338,12 @@ pub fn spawn_batch_run(
                 }
             };
             rt.block_on(async {
+                // Per-index stagger to avoid Chrome-state races at startup.
+                if idx > 0 && stagger_ms > 0 {
+                    tokio::time::sleep(
+                        std::time::Duration::from_millis(stagger_ms * idx as u64),
+                    ).await;
+                }
                 // Wait for a slot — Semaphore::acquire is fair (FIFO).
                 let _permit = match sem_clone.acquire().await {
                     Ok(p) => p,
