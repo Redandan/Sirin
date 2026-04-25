@@ -54,10 +54,9 @@ Task pipeline: PM plan → Engineer execute → PM review (max iter) → test_cy
   `update_status(Running)`)
 - `src/mcp_server.rs` — `agent_start_worker` schema + handler accepts `n`
 
-**Caveat (T2-4 will fix):** all workers share the same `cwd` (the Sirin
-repo). Edits to different files are usually fine, but two workers editing
-the same file will git-stage-conflict. T2-4 (worktree isolation) is the
-real fix.
+**✅ T2-4 shipped (2026-04-25):** per-task git worktrees now isolate each
+worker into `../sirin-task-{id}/`. Workers no longer share the same working
+directory — git-stage conflicts eliminated.
 
 **Risk live now:** multiple claude CLI processes competing for Anthropic
 API rate limit. Recommend N=2 to start, bump to 3 once observed stable.
@@ -185,45 +184,35 @@ Closes the "wrote test, never tried it" gap. Engineer 寫完 YAML，Sirin 自動
 ---
 
 ### T2-4 — Git Worktree Isolation Per Task ★★★
-**Status:** ✅ Architecture Complete (2026-04-21)
+**Status:** ✅ Shipped (2026-04-25)
 
 **What landed:**
-- New module: `src/multi_agent/worktree.rs` with complete lifecycle management:
-  - `create_worktree(repo_cwd, task_id)` → creates isolated worktree + detached branch
-  - `cleanup_worktree(repo_cwd, task_id)` → removes worktree safely
-  - `merge_task_branch(repo_cwd, task_id)` → merges completed task (fast-forward only)
-  - Safe handling of task_id sanitization for filesystem paths
-- Module exported in `src/multi_agent/mod.rs`
+- `src/multi_agent/worktree.rs` — complete lifecycle (create/cleanup/merge)
+- `src/multi_agent/worker.rs` — `run_loop` wired: create_worktree before assign_task,
+  cleanup_worktree after completion, team.engineer.cwd + team.tester.cwd updated
 
-**Architecture:**
+**Behaviour:**
 ```
 Task starts
   ↓
-create_worktree(../sirin, task_id) 
+create_worktree(project_cwd, task_id)
   → ../sirin-task-{id}/ (detached HEAD)
+  → team.engineer.cwd = team.tester.cwd = worktree_path
   ↓
-Engineer/Tester work in isolated cwd
-  → separate target/ dir, no git conflicts
+assign_task() / test_cycle() run with isolated cwd
   ↓
-Task succeeds
+Task ends (success or failure)
   ↓
-cleanup_worktree() → removes ../ sirin-task-{id}
-  → can also call merge_task_branch() before cleanup
+cleanup_worktree() → removes ../sirin-task-{id}
+  → engineer.cwd / tester.cwd restored to project_cwd
 ```
 
-**Why this matters:**
-- Prevents `git add` conflicts when 2+ workers edit the same file
-- Enables `cargo test` in worktree (own target/ dir) without file locks
-- Safe parallel execution: each worker has isolated workspace
-
-**Full Integration** (future PR):
-- Pass `effective_cwd` through `AgentTeam::load_for_worker_project()`
-- Call `create_worktree()` before `team.assign_task()`
-- Call `cleanup_worktree()` after task completion (success or failure)
+**Fallback:** worktree creation failure is non-fatal — worker falls back to
+project_cwd with a warn log, task continues normally.
 
 **Files:**
 - `src/multi_agent/worktree.rs` — complete implementation
-- `src/multi_agent/mod.rs` — exports `pub mod worktree`
+- `src/multi_agent/worker.rs` — create/cleanup calls in run_loop (commit e510c7f)
 
 ---
 

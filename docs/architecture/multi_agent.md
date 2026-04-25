@@ -217,9 +217,10 @@ compatibility with sessions created before T1-1.
 
 ### Shared working directory
 
-All workers operate in the **same `cwd`** (the Sirin repository).  Tasks touching
-different files work concurrently without conflict.  Tasks touching the same file may
-cause git-stage races.  Full isolation requires git worktrees (planned: T2-4).
+Each task gets its **own isolated git worktree** at `../sirin-task-{id}/` (T2-4, shipped 2026-04-25).
+`worker.rs` calls `create_worktree()` before `assign_task()` and `cleanup_worktree()` after — 
+`team.engineer.cwd` and `team.tester.cwd` are updated to the worktree path.
+Git-stage conflicts between concurrent workers are eliminated.
 
 ---
 
@@ -287,11 +288,10 @@ enqueued after 10 normal tasks is picked before any of them.
 
 ## 9. Known Limits / Future Work
 
-### Shared `cwd` — no worktree isolation (T2-4)
+### ~~Shared `cwd` — no worktree isolation~~ (T2-4 shipped 2026-04-25)
 
-All workers share the same git working tree.  Concurrent tasks touching the same file
-cause git staging conflicts.  Fix: `EnterWorktree` per worker (T2-4 on roadmap).
-See [../squad-roadmap.md](../squad-roadmap.md).
+✅ Each task now runs in its own `../sirin-task-{id}/` worktree.  Git-stage conflicts
+between concurrent workers are eliminated.  See `src/multi_agent/worktree.rs`.
 
 ### No dashboard UI
 
