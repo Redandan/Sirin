@@ -7,6 +7,12 @@ timeout_secs: 420
 
 locale: zh-TW
 
+# Hard-won pickup-flow lessons auto-injected when KB_ENABLED=1.  Covers
+# Flutter 商品/編輯/物流設定 navigation, animation timing, five 物流
+# service names, infra traps already worked-around by Sirin runtime.
+kb_refs:
+  - agora-pickup-flow
+
 goal: |
   目標：驗證商品編輯物流設定（delivery service switches）取消後能正確還原（Issue #70 Bug #5）。
   修復前的 bug：取消編輯後重新開啟商品，switches 仍顯示未儲存的修改值。

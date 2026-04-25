@@ -57,51 +57,69 @@ pub(crate) async fn pre_resolve_docs_for(test: &TestGoal) {
     let project = crate::kb_client::default_project();
     let mut sections: Vec<String> = Vec::with_capacity(test.docs_refs.len() + test.kb_refs.len());
 
-    // 1) docs_refs (mixed: path or KB topicKey)
+    // 1) docs_refs (mixed: path or KB topicKey).  Filesystem misses are
+    // still rendered as "[unavailable]" so authors see the typo; KB misses
+    // when KB is disabled are silently SKIPPED so disabled-KB doesn't spam
+    // the prompt with unhelpful "[unavailable: KB disabled]" lines.
     for r in &test.docs_refs {
         let entry = r.trim();
         if entry.is_empty() {
             continue;
         }
-        let (label, body) = if crate::kb_client::looks_like_topic_key(entry) {
+        if crate::kb_client::looks_like_topic_key(entry) {
             match crate::kb_client::get(&project, entry).await {
-                Ok(Some(text)) => (
-                    format!("KB:{project}/{entry}"),
-                    truncate(&text, 2000),
-                ),
-                Ok(None) => (
-                    format!("KB:{project}/{entry}"),
-                    "[unavailable: KB disabled or entry not found]".into(),
-                ),
-                Err(e) => (
-                    format!("KB:{project}/{entry}"),
-                    format!("[unavailable: {e}]"),
-                ),
+                Ok(Some(text)) => sections.push(format!(
+                    "### KB:{project}/{entry}\n{}", truncate(&text, 2000)
+                )),
+                Ok(None) => {
+                    // KB disabled or entry not found — skip silently.
+                    if crate::kb_client::enabled() {
+                        tracing::debug!(
+                            "[test_runner] docs_refs '{entry}' resolved to no KB entry — skipping"
+                        );
+                    }
+                }
+                Err(e) => sections.push(format!(
+                    "### KB:{project}/{entry}\n[unavailable: {e}]"
+                )),
             }
         } else {
-            // Treat as filesystem path; resolve relative to repo root via cwd.
+            // Filesystem path — render unavailable inline so authors see typos.
             let path = std::path::Path::new(entry);
             match std::fs::read_to_string(path) {
-                Ok(text) => (entry.to_string(), truncate(&text, 2000)),
-                Err(e) => (entry.to_string(), format!("[unavailable: {e}]")),
+                Ok(text) => sections.push(format!(
+                    "### {entry}\n{}", truncate(&text, 2000)
+                )),
+                Err(e) => sections.push(format!(
+                    "### {entry}\n[unavailable: {e}]"
+                )),
             }
         };
-        sections.push(format!("### {label}\n{body}"));
     }
 
-    // 2) kb_refs (KB-only — every entry treated as topicKey, no heuristic)
+    // 2) kb_refs (KB-only).  Silent skip on disabled-KB / missing entry —
+    // the explicit field signals "I want KB content" so absence shouldn't
+    // waste prompt tokens on placeholders.
     for r in &test.kb_refs {
         let entry = r.trim();
         if entry.is_empty() {
             continue;
         }
-        let label = format!("KB:{project}/{entry}");
-        let body = match crate::kb_client::get(&project, entry).await {
-            Ok(Some(text)) => truncate(&text, 2000),
-            Ok(None) => "[unavailable: KB disabled or entry not found]".into(),
-            Err(e) => format!("[unavailable: {e}]"),
-        };
-        sections.push(format!("### {label}\n{body}"));
+        match crate::kb_client::get(&project, entry).await {
+            Ok(Some(text)) => sections.push(format!(
+                "### KB:{project}/{entry}\n{}", truncate(&text, 2000)
+            )),
+            Ok(None) => {
+                if crate::kb_client::enabled() {
+                    tracing::debug!(
+                        "[test_runner] kb_refs '{entry}' missing in KB — skipping"
+                    );
+                }
+            }
+            Err(e) => sections.push(format!(
+                "### KB:{project}/{entry}\n[unavailable: {e}]"
+            )),
+        }
     }
 
     let block = sections.join("\n\n");
