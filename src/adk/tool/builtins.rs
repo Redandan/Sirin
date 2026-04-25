@@ -664,6 +664,12 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                         if target.is_empty() { return Err("'eval' requires 'target' JS expression".into()); }
                         Ok(json!({ "result": browser::evaluate_js(&target)? }))
                     }
+                    "go_back" => {
+                        let wait_ms = input.get("wait").and_then(|v| v.as_u64()).unwrap_or(0);
+                        browser::go_back(wait_ms)?;
+                        let url = browser::current_url().unwrap_or_default();
+                        Ok(json!({ "status": "went_back", "url": url }))
+                    }
                     "wait" => {
                         if target.is_empty() { return Err("'wait' requires 'target' selector or ms number".into()); }
                         // Plain number → millisecond sleep (e.g. {"action":"wait","target":"2000"}).

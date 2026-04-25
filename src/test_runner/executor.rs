@@ -870,6 +870,10 @@ When you need EXACT text comparison (numbers, IDs), prefer ax_* over
 screenshot_analyze (which approximates).
 
 ## Robustness actions (test isolation + race-free)
+- go_back        — browser history back 1 step + waits for Flutter AX tree to settle (≥10 nodes, 8 s)
+                   optional param: wait (extra ms after AX ready, e.g. {{"action":"go_back","wait":2000}})
+                   ⭐ USE THIS to exit Flutter pushed routes (e.g. product-edit → product-list)
+                   instead of goto (full reload) or shadow_click bottom-nav (unreachable in pushed route)
 - clear_state    — wipe cookies / localStorage / sessionStorage / IndexedDB / caches
                    (call between tests to prevent cross-test leakage)
 - wait_new_tab   — block until a new tab opens; param: timeout (ms, default 10000)

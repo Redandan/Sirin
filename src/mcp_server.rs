@@ -1752,6 +1752,12 @@ async fn call_browser_exec(args: Value, user_agent: &str) -> Result<Value, Strin
                 if target.is_empty() { return Err("'eval' requires 'target' JS expression".into()); }
                 Ok(json!({ "result": browser::evaluate_js(&target)? }))
             }
+            "go_back" => {
+                let wait_ms = args.get("wait").and_then(Value::as_u64).unwrap_or(0);
+                browser::go_back(wait_ms)?;
+                let url = browser::current_url().unwrap_or_default();
+                Ok(json!({ "status": "went_back", "url": url }))
+            }
             "wait" => {
                 if target.is_empty() { return Err("'wait' requires 'target' selector".into()); }
                 browser::wait_for_ms(&target, timeout.unwrap_or(5000))?;

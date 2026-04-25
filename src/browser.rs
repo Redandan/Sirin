@@ -546,6 +546,36 @@ fn is_transient_nav_error(err: &str) -> bool {
     err.contains("The event waited for never came")
 }
 
+/// Navigate browser history back one step (equivalent to pressing the browser back button).
+///
+/// Flutter SPA pushed-route transitions are **hash-route changes**, not full page navigations,
+/// so CDP `Page.navigateToHistoryEntry` (which headless_chrome doesn't expose) is not needed.
+/// `history.back()` is sufficient and more compatible.
+///
+/// After calling JS `history.back()`, this waits for the Flutter AX tree to settle
+/// (≥10 nodes within 8 s) so the next `shadow_click` / `shadow_dump` sees a live page —
+/// the same strategy used by `shadow_click` itself via `wait_for_ax_ready`.
+///
+/// `wait_ms`: optional extra settle delay (ms) appended **after** AX-ready, useful when
+/// Flutter plays a pop-route exit animation that finishes after semantics rebuild.
+pub fn go_back(wait_ms: u64) -> Result<(), String> {
+    // JS history.back() for SPA hash-route back navigation.
+    evaluate_js("history.back()")?;
+
+    // Flutter doesn't fire Page.frameNavigated for hash-route transitions.
+    // Poll the AX tree until it recovers (≥10 nodes = page has rebuilt semantics).
+    // Ignore the error — if AX tree never grows it's a test issue, not a browser crash.
+    let _ = crate::browser_ax::wait_for_ax_ready(10, 8000);
+
+    // Re-apply cached viewport override (same as navigate() does on full nav).
+    reapply_viewport();
+
+    if wait_ms > 0 {
+        std::thread::sleep(std::time::Duration::from_millis(wait_ms));
+    }
+    Ok(())
+}
+
 /// Returns true when `new_url` is the same as `current_url` except for the
 /// fragment (hash) portion.  Same origin, same path, same query, different hash.
 fn is_hash_only_change(current: &str, new_url: &str) -> bool {
