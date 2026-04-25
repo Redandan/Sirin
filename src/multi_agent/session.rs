@@ -111,6 +111,17 @@ impl PersistentSession {
             message.to_string()
         };
 
+        // Inject working directory so the LLM knows where to run commands.
+        // Updated per-task when T2-4 creates a worktree (team.engineer.cwd changes).
+        // All three roles (PM/Engineer/Tester) reference cwd in their system prompts,
+        // so all benefit from this.  Historical entries in saved conversation show
+        // which directory each past task ran in — useful temporal context.
+        let body = if !self.cwd.is_empty() {
+            format!("[工作目錄: {}]\n\n{}", self.cwd, body)
+        } else {
+            body
+        };
+
         // 建構完整對話歷史
         let mut messages = Vec::new();
 

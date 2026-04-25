@@ -3,30 +3,39 @@ name: "商品詳情頁購買按鈕驗證"
 url: "https://redandan.github.io/?__test_role=buyer"
 
 browser_headless: false
-max_iterations: 12
-timeout_secs: 180
+max_iterations: 16
+timeout_secs: 240
 
 locale: zh-TW
 
 goal: |
-  目標：確認商品詳情頁有購買相關按鈕，記錄 AgoraMarket 的購買流程入口。
+  目標：確認商品詳情頁有購買相關按鈕，並嘗試點擊確認系統回應。
 
   起始狀態：以買家身份登入，已在首頁（URL auto-login via __test_role=buyer）。
 
   ⚠️ Flutter CanvasKit app：所有 UI 判斷用 screenshot_analyze。
   ⚠️ 商品卡 role=button，name 含 USDT 價格；底部 tab：role=tab name="商品/訂單/錢包/我的"。
   ⚠️ AgoraMarket 可能是直接購買（無購物車），記錄實際有哪些購買按鈕即可。
+  ⚠️ 嚴禁提早終止：必須執行完所有步驟才能 done=true。
 
-  步驟：
+  步驟（按順序執行，不跳過）：
   1. shadow_click role=button name_regex="USDT"（點第一個商品卡進入詳情）
-  2. wait 2500 → screenshot_analyze "是否在商品詳情頁？看到哪些按鈕？"
-  3. 向下捲動 300px（scroll y=300）
-  4. shadow_dump（查看詳情頁所有按鈕名稱）
-  5. screenshot_analyze "有「加入購物車」按鈕嗎？還是只有「立即購買」？記錄所有購買相關按鈕"
-  6. done=true（記錄商品詳情頁的購買入口：cart/直接購買/其他）
+  2. wait 2500
+  3. screenshot_analyze "是否在商品詳情頁？看到哪些按鈕？"
+  4. scroll y=300
+  5. shadow_dump（查看詳情頁所有按鈕名稱）
+  6. screenshot_analyze "有「加入購物車」按鈕嗎？還是只有「立即購買」？記錄所有購買相關按鈕"
+  7. shadow_click role=button name_regex="立即購買|加入購物車|Buy Now|Add to Cart|購買"
+  8. wait 2000
+  9. screenshot_analyze "點擊購買後的頁面狀態？是否進入結帳頁、彈出規格選擇框、或顯示錯誤？"
+  10. done=true
+
+  ⚠️ 必須完整執行步驟 1-10，嚴禁在步驟 6 前 done=true。
+  ⚠️ 若 shadow_click 找不到購買按鈕，繼續執行步驟 8-10（記錄找不到的情況）。
 
 success_criteria:
   - "成功進入商品詳情頁"
   - "看到至少一個購買相關按鈕（加入購物車、立即購買、或其他）"
+  - "成功點擊購買按鈕並記錄系統回應（結帳頁、規格選擇彈窗、或錯誤訊息）"
 
 tags: [agora, regression, cart]

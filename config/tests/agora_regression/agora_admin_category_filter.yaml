@@ -3,28 +3,36 @@ name: "AgoraMarket Admin 商品分類篩選驗證 (Issue #70 #4)"
 url: "https://redandan.github.io/?__test_role=admin"
 
 browser_headless: false
-max_iterations: 8
+max_iterations: 15
 timeout_secs: 240
 
 goal: |
   驗證 admin 商品管理頁的分類篩選功能（Issue #70 Bug #4）。
 
-  起始狀態：以管理員身份登入，已在 admin 後台（預設可能在統計頁 /admin/statistics）。
+  起始狀態：以管理員身份登入，已在 admin 後台（Flutter CanvasKit 介面）。
 
-  步驟：
-  1. screenshot_analyze "確認目前在哪個 admin 頁面？"
-  2. 若不在商品管理頁 → 找並點擊商品管理導航項目：
-     shadow_click role=button name_regex="商品|Products|商品管理"
-     或 shadow_click role=link name_regex="商品|Products"
-  3. wait 1500 → screenshot_analyze "是否在商品管理頁？有商品列表和篩選區嗎？"
-  4. 若有篩選 dropdown → shadow_click role=combobox
-  5. wait 1000 → screenshot_analyze "dropdown 展開了嗎？"
-  6. done=true（記錄商品管理頁是否可到達、是否有分類篩選）
+  ✅ 已確認 AX tree 資訊（請嚴格遵守）：
+  - 導航按鈕名稱：「商品與電商」（不是「商品管理」，不是「商品」）
+  - 分類篩選按鈕：role=button name="請選擇產品分類"（不是 combobox）
+  - Flutter 頁面過渡需要 3 秒以上才完成
 
-  ⚠️ 最多 6 個 iteration，立刻 done=true。
+  ⚠️ Flutter CanvasKit app：所有 UI 判斷用 screenshot_analyze。
+  ⚠️ 嚴禁提早終止：必須執行完所有步驟才能 done=true。
+
+  步驟（按順序執行，不跳過）：
+  1. screenshot_analyze "確認在 admin 後台，看到哪個頁面？"
+  2. shadow_click role=button name_regex="^商品與電商$"
+  3. wait 3000（等待 Flutter 頁面過渡動畫完成，不可縮短）
+  4. screenshot_analyze "是否在商品管理頁？看到商品列表了嗎？"
+  5. shadow_click role=button name_regex="請選擇產品分類"（點擊分類篩選按鈕）
+  6. wait 1500
+  7. screenshot_analyze "分類篩選 dropdown 是否展開？顯示哪些分類選項？"
+  8. done=true
+
+  ⚠️ 必須完整執行步驟 1-8，嚴禁在步驟 4 前 done=true。
 
 success_criteria:
-  - "Admin 商品管理頁可開啟"
-  - "找到分類篩選下拉選單並能點擊（或記錄無下拉選單 bug）"
+  - "Admin 商品管理頁可開啟（看到商品列表）"
+  - "找到並點擊「請選擇產品分類」篩選按鈕（記錄 dropdown 展開或失敗）"
 
 tags: [regression, admin, category-filter, agora, critical, issue-70]

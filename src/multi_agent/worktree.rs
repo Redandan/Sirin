@@ -40,12 +40,21 @@ pub fn create_worktree(repo_cwd: &str, task_id: &str) -> Result<String, String> 
         let _ = std::fs::remove_dir_all(&worktree_path);
     }
 
-    // Create branch + worktree in one command
-    let _branch_name = format!("task/{}", task_id);
+    // Create branch + worktree in one command.
+    // Use -b to create a real branch so merge_task_branch() can find it later.
+    let branch_name = format!("task/{}", task_id);
+
+    // Remove stale branch from a previous failed run (ignore errors)
+    let _ = Command::new("git")
+        .args(["branch", "-D", &branch_name])
+        .current_dir(repo_cwd)
+        .output();
+
     let output = Command::new("git")
         .arg("worktree")
         .arg("add")
-        .arg("--detach")  // Don't track a remote; start from current HEAD
+        .arg("-b")
+        .arg(&branch_name)
         .arg(worktree_path.to_string_lossy().as_ref())
         .current_dir(repo_cwd)
         .output()
@@ -94,8 +103,15 @@ pub fn cleanup_worktree(repo_cwd: &str, task_id: &str) -> Result<(), String> {
         let _ = std::fs::remove_dir_all(&worktree_path);
     }
 
+    // Also delete the task branch so it doesn't accumulate across many tasks
+    let branch_name = format!("task/{}", task_id);
+    let _ = Command::new("git")
+        .args(["branch", "-D", &branch_name])
+        .current_dir(repo_cwd)
+        .output();
+
     tracing::info!(target: "sirin",
-        "[worktree] Cleaned up worktree for task {task_id}");
+        "[worktree] Cleaned up worktree + branch for task {task_id}");
 
     Ok(())
 }

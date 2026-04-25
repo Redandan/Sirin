@@ -5,37 +5,36 @@ url: "https://redandan.github.io/?__test_role=buyer"
 # Flutter CanvasKit: headless Chrome 不 paint，必須開啟實體視窗
 browser_headless: false
 
-max_iterations: 10
-timeout_secs: 180
+max_iterations: 15
+timeout_secs: 240
 
 goal: |
   目標：驗證 AgoraMarket WebRTC 麥克風/攝影機 permission 問題已修復（Issue #70 Critical Bug #1）。
+  進入商品詳情頁找「聯繫賣家」或「客服」按鈕，確認通話/聊天功能可正常開啟，不崩潰。
 
   起始狀態：以買家身份登入，已在首頁（URL auto-login via __test_role=buyer）。
 
   ⚠️ Flutter CanvasKit app：所有 UI 判斷用 screenshot_analyze。
-  ⚠️ 完成條件寬鬆：頁面正常顯示即可，不一定要觸發 WebRTC permission。
+  ⚠️ 嚴禁提早終止：必須執行完所有步驟才能 done=true。
 
-  步驟：
-  1. screenshot_analyze "確認在首頁，看到商品和底部 tab"
-  2. shadow_click role=tab name_regex="^我的$"
-  3. wait 2000 → screenshot_analyze "是否在我的頁面？看到什麼功能入口？"
-  4. 尋找視訊/通話相關入口：
-     shadow_click role=button name_regex="通話|視訊|Video|Call|WebRTC|客服"
-  5. wait 2000 → screenshot_analyze "是否出現 permission request 彈窗？或進入通話頁面？"
+  步驟（按順序執行，不跳過）：
+  1. screenshot_analyze "確認在首頁，看到商品列表和底部 tab"
+  2. shadow_click role=button name_regex="USDT"（進入第一個商品詳情頁）
+  3. wait 2500
+  4. screenshot_analyze "是否在商品詳情頁？找聯繫賣家/客服/通話相關按鈕"
+  5. shadow_dump（查看詳情頁所有按鈕，找通話/聊天入口）
+  6. shadow_click role=button name_regex="聯繫賣家|客服|通話|視訊|Chat|Call|WebRTC|聊聊"
+  7. wait 3000
+  8. screenshot_analyze "是否進入聊天/通話頁面？出現 permission 請求彈窗？還是錯誤訊息？記錄所有結果"
+  9. done=true
 
-  立即判斷（強制規則）：
-  - 步驟 1 看到首頁（有商品） → 這已經確認 Issue #70 #1 頁面正常載入 → 立即 done=true
-  - permission dialog 出現 → done=true（WebRTC permission 正常）
-  - 頁面正常但無 permission dialog → done=true
-  - 找不到通話入口 → screenshot_analyze 記錄 → done=true
-  - 頁面出現錯誤訊息 → 記錄錯誤內容 → done=true
-
-  ⚠️ 第 1 個 iteration 執行 screenshot_analyze 後，無論看到什麼，立即 done=true。
+  ⚠️ 必須完整執行步驟 1-9，嚴禁在步驟 1 後立即 done=true。
+  ⚠️ 若步驟 6 找不到聯繫賣家按鈕，繼續執行步驟 7-9（記錄無此功能）。
 
 success_criteria:
   - "頁面正常載入，有實際內容（非全黑或白屏）"
-  - "通話相關功能入口可見，或 WebRTC permission dialog 正常出現"
+  - "成功進入商品詳情頁，找到並嘗試點擊通話/聊天入口"
+  - "記錄系統回應：進入聊天室、permission dialog 出現、功能不存在、或錯誤訊息"
   - "沒有顯示 camera/microphone 永久 denied 或授權永遠失敗的錯誤"
 
 tags: [regression, webrtc, agora, critical, issue-70]
