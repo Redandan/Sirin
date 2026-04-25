@@ -1112,10 +1112,26 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                         if target.is_empty() {
                             return Err("'screenshot_analyze' requires 'target' = analysis prompt".into());
                         }
-                        // Capture screenshot (blocking)
+                        // Capture screenshot ONCE on this blocking thread.
+                        // Pre-fix: this branch returned only `png_len` and the
+                        // outer async block then captured the screenshot
+                        // THREE more times (cache lookup, LLM call, cache
+                        // store) for a total of 4 captures per analyze call.
+                        // Each `browser::screenshot()` is a synchronous CDP
+                        // round-trip (~0.5–1 s), so a vision call burned
+                        // 1.5–3 s of pure overhead before the LLM saw a byte.
+                        // Now: capture once, base64-encode here, pass the b64
+                        // through the JSON channel so downstream uses it for
+                        // hash + LLM + cache store without re-capturing.
                         let png = browser::screenshot()?;
-                        // Return the png + prompt for async vision call below
-                        Ok(json!({ "__vision": true, "prompt": target, "png_len": png.len() }))
+                        let png_len = png.len();
+                        let b64 = crate::llm::base64_encode_bytes(&png);
+                        Ok(json!({
+                            "__vision": true,
+                            "prompt": target,
+                            "png_len": png_len,
+                            "png_b64": b64,
+                        }))
                     }
 
                     other => Err(format!("Unknown web_navigate action: {other}")),
@@ -1215,35 +1231,49 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                      全文 ≤ 200 字。"
                 );
 
-                // Cache key composes BOTH the PNG hash and a prompt hash.
+                // Pull the screenshot the blocking_fut already captured.
+                // Pre-fix this branch did THREE additional `browser::screenshot`
+                // round-trips (cache lookup, LLM call, cache store) plus the
+                // initial capture — 4 captures × ~0.5–1 s each = up to 4 s of
+                // pure overhead per analyze call.  Now we capture once on the
+                // blocking thread and reuse the b64 here.
+                let png_b64_inline = result
+                    .get("png_b64")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                // Cache key composes the PNG identity + prompt hash.  We hash
+                // the b64 string directly (it's a bijective transform of the
+                // PNG bytes, so b64 → SHA256 is just as stable an identity
+                // and avoids decoding the b64 just to hash).
+                //
                 // Pre-fix bug (run_20260425_235541_176_2): key was PNG-only,
                 // so a second screenshot_analyze on the same screenshot but
                 // with a DIFFERENT question (e.g. "scroll then check 萊爾富
-                // and OK 超商") returned the FIRST question's stale answer,
-                // which the verifier then correctly flagged as un-actionable.
-                let cache_key_for = |png_bytes: &[u8]| -> String {
+                // and OK 超商") returned the FIRST question's stale answer.
+                let cache_key = if !png_b64_inline.is_empty() {
                     use sha2::{Sha256, Digest};
                     let mut h = Sha256::new();
-                    h.update(png_bytes);
+                    h.update(png_b64_inline.as_bytes());
                     let png_hex = format!("{:x}", h.finalize());
                     let mut h = Sha256::new();
                     h.update(prompt_with_directive.as_bytes());
                     let prompt_hex_full = format!("{:x}", h.finalize());
-                    // 16-hex-char prompt suffix is plenty for collision avoidance
-                    // within a single test run while keeping the key readable.
                     format!("{png_hex}:{}", &prompt_hex_full[..16])
+                } else {
+                    String::new()
                 };
 
                 // Cache lookup
                 let mut analysis = None;
                 let mut cache_hit = false;
                 if let Some(run_id_str) = run_id {
-                    if let Ok(Ok(png_bytes)) = tokio::task::spawn_blocking(crate::browser::screenshot).await {
-                        let key = cache_key_for(&png_bytes);
-                        if let Some(cached) = crate::test_runner::runs::get_screenshot_cache(run_id_str, &key) {
+                    if !cache_key.is_empty() {
+                        if let Some(cached) = crate::test_runner::runs::get_screenshot_cache(run_id_str, &cache_key) {
                             analysis = Some(cached);
                             cache_hit = true;
-                            tracing::debug!("[vision] cache HIT for {} bytes", png_bytes.len());
+                            tracing::debug!("[vision] cache HIT");
                         }
                     }
                 }
@@ -1251,14 +1281,30 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                 if analysis.is_none() {
                     let llm = crate::llm::shared_llm();
                     let client = crate::llm::shared_http();
-                    match crate::llm::analyze_screenshot(&client, &llm, &prompt_with_directive).await {
-                        Ok(result) => {
-                            analysis = Some(result.clone());
-                            // Store in cache under the composite key
+                    // Use call_vision directly with the already-captured b64
+                    // so we don't trigger analyze_screenshot's internal
+                    // browser::screenshot() (the 4th capture pre-fix).
+                    let vision_res = if !png_b64_inline.is_empty() {
+                        crate::llm::call_vision(
+                            &client, &llm, &prompt_with_directive,
+                            &png_b64_inline, "image/png",
+                        ).await
+                    } else {
+                        // Fallback: blocking_fut didn't pass png_b64 (e.g.
+                        // older code path); legacy analyze_screenshot path
+                        // still works but does its own capture.
+                        crate::llm::analyze_screenshot(&client, &llm, &prompt_with_directive).await
+                    };
+                    match vision_res {
+                        Ok(res) => {
+                            analysis = Some(res.clone());
+                            // Store in cache under the composite key — reuse
+                            // the key we already computed above (no re-capture).
                             if let Some(run_id_str) = run_id {
-                                if let Ok(Ok(png_bytes)) = tokio::task::spawn_blocking(crate::browser::screenshot).await {
-                                    let key = cache_key_for(&png_bytes);
-                                    crate::test_runner::runs::set_screenshot_cache(run_id_str, key, result);
+                                if !cache_key.is_empty() {
+                                    crate::test_runner::runs::set_screenshot_cache(
+                                        run_id_str, cache_key.clone(), res,
+                                    );
                                 }
                             }
                             tracing::debug!("[vision] cache MISS, called LLM");

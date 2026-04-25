@@ -81,6 +81,15 @@ fn db() -> &'static Mutex<rusqlite::Connection> {
         let _ = conn.execute("ALTER TABLE test_runs ADD COLUMN run_id TEXT", []);
         let _ = conn.execute("ALTER TABLE test_runs ADD COLUMN iterations INTEGER", []);
         let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_tr_runid ON test_runs(run_id)", []);
+        // Single-column index on `started_at` for `recent_runs_all` —
+        // Test Dashboard polls `ORDER BY started_at DESC LIMIT 30` every 3s.
+        // The existing compound `idx_tr_test (test_id, started_at)` doesn't
+        // help when `test_id` is absent from the WHERE clause; SQLite was
+        // doing a full scan + sort on every dashboard refresh.
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tr_started ON test_runs(started_at DESC)",
+            [],
+        );
 
         Mutex::new(conn)
     })

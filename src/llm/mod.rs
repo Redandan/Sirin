@@ -749,7 +749,7 @@ pub async fn analyze_screenshot(
     call_vision(client, llm, prompt, &b64, "image/png").await
 }
 
-fn base64_encode_bytes(input: &[u8]) -> String {
+pub(crate) fn base64_encode_bytes(input: &[u8]) -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
