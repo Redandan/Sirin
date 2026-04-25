@@ -143,7 +143,7 @@ Useful for inspecting what the squad has learned, or auditing before a new proje
 
 ---
 
-### Test Runner (13 tools)
+### Test Runner (14 tools)
 
 #### `list_tests`
 Enumerate test YAMLs in `config/tests/`.
@@ -435,8 +435,9 @@ Supported `action` values:
 | Action | Required args | Returns |
 |--------|---------------|---------|
 | `goto` | `target` (URL) | `{status, url}` |
+| `go_back` | — | `{status, url}` — Chrome history back (closes #28); equivalent to `window.history.back()` then waits for navigation settle |
 | `screenshot` | — | `{mime, bytes_base64, size_bytes, url}` |
-| **`screenshot_analyze`** | `target` (analysis prompt) | `{analysis, prompt}` — Gemini Vision reads the current page |
+| **`screenshot_analyze`** | `target` (analysis prompt) | `{analysis, prompt}` — Gemini Vision reads the current page.  Concurrent calls in batch mode are throttled by `GEMINI_CONCURRENCY` (default 3, see `ENV_REFERENCE.md`); empty Gemini responses auto-retry 2× with 2s/4s backoff |
 | `click` | `target` (selector) | `{status, selector}` |
 | `type` | `target` (selector), `text` | `{status, selector, length}` |
 | `read` | `target` (selector) | `{selector, text}` |

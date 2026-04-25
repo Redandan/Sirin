@@ -72,11 +72,15 @@ Central Panel:  ScrollArea 包裹, 內邊距 12pt
 ## Project layout
 
 ```
-src/ui_egui/                 egui UI (8 modules + theme — incl. browser panel)
-src/ui_service.rs            AppService trait — UI↔backend boundary (6 sub-traits
-                             incl. BrowserService)
-src/ui_service_impl/         RealService (6 domain submodules: agents, pending,
-                             workflow, integrations, system, browser)
+src/ui_egui/                 egui UI (9 modules + theme — incl. browser panel,
+                             test_dashboard added 3908b2d, team_panel)
+src/ui_service.rs            AppService trait — UI↔backend boundary (8 sub-traits:
+                             AgentService, PendingReplyService, WorkflowService,
+                             IntegrationService, SystemService, MultiAgentService,
+                             BrowserService, TestRunnerService [3908b2d])
+src/ui_service_impl/         RealService (7 domain submodules: agents, pending,
+                             workflow, integrations, system, browser, team —
+                             TestRunnerService is implemented inline in mod.rs)
 src/agents/                  Planner → Router → Chat / Coding / Research
   coding_agent/              mod (orchestration) + react (ReAct loop) +
                              verify (auto-fix+rollback) + finalize (epilogue) +
@@ -209,12 +213,13 @@ Headless mode (added v0.4.0) skips `eframe::run_native()` only — RPC/MCP
 server, browser singleton, telegram listeners, and test_runner all start
 normally. Process parks the main thread until SIGINT/SIGTERM.
 
-## Env vars that affect the browser
+## Env vars that affect the browser / LLM
 
 | Var | Values | Purpose |
 |---|---|---|
-| `SIRIN_BROWSER_HEADLESS` | `true`/`false`/`0`/`1` | Process-wide Chrome headless default.  Per-test `browser_headless` YAML field overrides. |
+| `SIRIN_BROWSER_HEADLESS` | `true`/`false`/`0`/`1` | Process-wide Chrome headless default.  As of cb49ea5 all 22 Agora YAML tests removed their per-test `browser_headless` field — set this once in `.env` instead.  Per-test YAML field still overrides if explicitly set. |
 | `SIRIN_PERSISTENT_PROFILE` | unset / `1` / absolute path | `1` → Chrome `--user-data-dir=<app_data_dir>/chrome-profile`.  A path → use that dir.  Unset = fresh profile per launch (default).  When on, cookies / localStorage / IndexedDB survive a `with_tab` recovery — essential for Flutter hash-route tests where a CDP transport race can force a Chrome relaunch mid-test. |
+| `GEMINI_CONCURRENCY` | positive integer (default `3`) | Caps the number of in-flight Gemini API calls process-wide via `tokio::sync::Semaphore` in `src/llm/backends.rs::gemini_semaphore`.  Added bd9cafb to fix batch test flakiness — Gemini's free tier silently returns 200 + empty content (not 429) when several requests arrive in the same second.  Lower to 2 if batch runs still see empty responses; raising above 5 risks 429 storms. |
 
 ## Where user data lives (installed vs dev)
 

@@ -21,6 +21,7 @@ Set in `.env` or system environment.
 | `ROUTER_LLM_PROVIDER` | *(falls back to main)* | Separate provider for Router (keep local) |
 | `CODING_MODEL` | *(falls back to main)* | Dedicated coding model |
 | `LARGE_MODEL` | *(falls back to main)* | Large model for deep reasoning |
+| `GEMINI_CONCURRENCY` | `3` | Max in-flight concurrent Gemini API calls (process-wide semaphore in `src/llm/backends.rs::gemini_semaphore`).  Lower this to 2 if batch test runs still see empty responses; raising above 5 risks 429 / empty-content storms on Gemini's free tier. |
 
 ## Telegram
 
@@ -48,7 +49,7 @@ Set in `.env` or system environment.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SIRIN_BROWSER_HEADLESS` | `true` | Chrome mode. Set `false` / `0` / `no` to run visible — **required for Flutter CanvasKit / WebGL apps** which won't paint headless. Per-test YAML `browser_headless` overrides this. |
+| `SIRIN_BROWSER_HEADLESS` | `true` | Chrome mode. Set `false` / `0` / `no` to run visible — **required for Flutter CanvasKit / WebGL apps** which won't paint headless. **As of cb49ea5 all 22 Agora YAML tests have removed their per-test `browser_headless` field — set this once in `.env` instead.** Per-test YAML `browser_headless` still overrides at the `TestGoal` level if explicitly set. |
 | `SIRIN_RPC_PORT` | `7700` | Port for the WebSocket + MCP HTTP server. Change when port 7700 is stuck in TCP TIME_WAIT from a recently-killed Sirin, or when running multiple instances. |
 | `SIRIN_REPO_BACKEND` | `~/IdeaProjects/AgoraMarketAPI` | Repo path for auto-fix spawning (backend bugs) |
 | `SIRIN_REPO_FRONTEND` | `~/IdeaProjects/AgoraMarketFlutter` | Repo path for auto-fix (frontend bugs) |

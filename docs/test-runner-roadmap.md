@@ -275,16 +275,22 @@ Claude 擴充有做類似功能(record workflow),可參考其 UX。
 | `url_query` TestGoal 欄位 | 3800b25 | Flutter renderer flag |
 | `config/tests/agora_market_smoke.yaml` | 56aed9b | Vision-based Flutter 測試驗證 |
 | 狀態機 demo test | 8a29d73 | living documentation |
+| **Telegram 失敗通知 hook** | b8ac3b8 + 17e1c22 | `runs::set_phase()` 在 Complete 非 passed 狀態 fire-and-forget notify_failure；store::record_run 的重複通知 bug 一併修掉 |
+| **UI Test Dashboard** | 3908b2d | 新 `View::TestRuns` egui 面板 + `TestRunnerService` sub-trait + sidebar "測試儀表板" 按鈕。Active runs 走 in-memory registry，History 走 SQLite store(30) |
+| **`go_back` browser action** | 206c661 | 補上瀏覽器歷史返回（closes #28）— 解 Flutter SPA hash route 切換後回上一頁需求 |
+| **browser_headless 集中化** | cb49ea5 | 移除 22 個 Agora YAML 的 `browser_headless: false` — 改由 `.env SIRIN_BROWSER_HEADLESS=false` 一處設定，per-test override 仍保留但實務不用 |
+| **dev-relaunch.sh YAML auto-sync** | 9b880ac | 加 step `[2b]`：cargo build 後自動 rsync `config/tests/*.yaml` → `%LOCALAPPDATA%\Sirin\config\tests\`，避免改 YAML 後 installed-mode 讀不到 |
+| **Gemini concurrency limiter + empty-retry** | bd9cafb | `src/llm/backends.rs` 加 process-wide Semaphore (`GEMINI_CONCURRENCY=3`)；HTTP 200 + 空 content 自動 retry 2 次 (2s/4s)。解 batch 跑 8 個 test 同時打 Gemini 偶爾失敗的根因（Free tier 並發回空，不回 429） |
 
 ### 仍為 P3 / 未做
 
-- 3.1 multi-browser pool：平行測試
+- 3.1 multi-browser pool：平行測試（部分由 `run_test_batch` 解決，使用 chrome tabs + Semaphore，但仍非完整 browser pool）
 - 3.2 backend-agnostic browser trait：YAGNI
 - 3.3 recording mode：growth feature
 
 ### 新發現的 TODO（從實測中）
 
-1. **headless daemon mode** — `sirin --headless` 跳過 eframe，CI/server 必備
-2. **`persist_adhoc_run(run_id, test_id)` MCP** — 把成功的 ad-hoc 存成 YAML
-3. **UI test dashboard** — egui 頁面顯示 runs/fixes/active
-4. **通知 hooks** — 失敗時 Telegram / webhook
+1. ~~**headless daemon mode**~~ — `sirin --headless` 已 ship (v0.4.0)
+2. ~~**`persist_adhoc_run(run_id, test_id)` MCP**~~ — 已 ship
+3. ~~**UI test dashboard**~~ — 已 ship 3908b2d
+4. ~~**通知 hooks**~~ — Telegram failure notify 已 ship b8ac3b8 + 17e1c22

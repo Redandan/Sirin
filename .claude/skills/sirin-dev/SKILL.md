@@ -151,11 +151,16 @@ src/
 ├── llm/                    Multi-backend LLM (Ollama/LMStudio/Gemini/
 │                           Claude) + vision multimodal
 ├── ui_egui/                egui UI — sidebar, settings, browser panel,
-│                           workflow, meeting; reads ONLY through AppService
+│                           workflow, meeting, test_dashboard (3908b2d),
+│                           team_panel; reads ONLY through AppService
 ├── ui_service.rs           AppService trait — UI ↔ backend boundary
-│                           (6 sub-traits). Don't import backend modules
-│                           directly from ui_egui.
-├── ui_service_impl/        RealService impl of AppService
+│                           (8 sub-traits: AgentService, PendingReplyService,
+│                           WorkflowService, IntegrationService, SystemService,
+│                           MultiAgentService, BrowserService,
+│                           TestRunnerService [3908b2d]).
+│                           Don't import backend modules directly from ui_egui.
+├── ui_service_impl/        RealService impl of AppService (7 submodules,
+│                           TestRunnerService implemented inline in mod.rs)
 └── persona/                Behavior engine + ROI thresholds + cached
                             persona (use Persona::cached() in hot paths,
                             never Persona::load())
@@ -207,8 +212,10 @@ SIRIN_BROWSER_HEADLESS=false ./scripts/dev-relaunch.sh  # for Flutter
 ./scripts/dev-relaunch.sh --build-only           # just build, no launch
 ```
 
-It chains: **kill old sirin → cargo build → print binary mtime + latest
-commit → fall-through to +1 port if zombie → exec**.
+It chains: **kill old sirin → cargo build → [2b] auto-rsync
+`config/tests/*.yaml` → `%LOCALAPPDATA%\Sirin\config\tests\` (added 9b880ac
+so installed-mode reads pick up YAML edits without manual copy) → print
+binary mtime + latest commit → fall-through to +1 port if zombie → exec**.
 
 Why it matters: bypassing this chain causes the "stale .exe" bug —
 running yesterday's binary against today's source.  This bit us when
