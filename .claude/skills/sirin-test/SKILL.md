@@ -253,8 +253,8 @@ messages, token counts, transaction hashes — vision LLMs lose precision
 ("about $7377" vs the real "$7376.80"). Use the `ax_*` actions instead:
 
 ```
-1. browser_exec({action: "goto", target: "https://app.com/wallet",
-                 browser_headless: false})  # Flutter needs visible Chrome
+1. browser_exec({action: "goto", target: "https://app.com/wallet"})
+   # Flutter needs visible Chrome — set SIRIN_BROWSER_HEADLESS=false in .env once
 
 2. browser_exec({action: "enable_a11y"})    # required once for Flutter
                                               # Canvas apps to expose
@@ -843,31 +843,46 @@ same URL to force a rebuild.
 
 ## Common Patterns
 
-### Flutter Web apps (CanvasKit) — **REQUIRED: browser_headless: false + vision**
+### Flutter Web apps (CanvasKit) — **REQUIRED: SIRIN_BROWSER_HEADLESS=false + vision**
 
 Flutter apps built with CanvasKit (the default for production) have
 **two separate traps**:
 
 **Trap 1 — WebGL in headless = blank canvas.**
-CanvasKit uses WebGL. Chrome's headless mode doesn't paint WebGL
-content reliably → `get_screenshot` returns an all-black PNG regardless
+CanvasKit uses WebGL. Chrome's headless mode (no display server) doesn't
+paint WebGL reliably → `get_screenshot` returns an all-black PNG regardless
 of what the page should show. This ALSO defeats vision LLM — it can
 only say "page is black".
 
-**→ FIX: `browser_headless: false` in the test YAML.**
+**→ FIX: set globally via `.env` (centralized as of cb49ea5):**
+
+```env
+# %LOCALAPPDATA%\Sirin\.env
+SIRIN_BROWSER_HEADLESS=false
+```
+
+YAML files **no longer need** `browser_headless: false` — the env var
+handles it process-wide.  All 22 Agora YAMLs were stripped of the
+per-test field in cb49ea5.  Per-test override still parses if you really
+need a one-off, but don't add it to new tests.
 
 ```yaml
 id: flutter_smoke
 url: "https://your-flutter-app.example.com/"
-browser_headless: false   # ← REQUIRED for Flutter Canvas apps
+# (no browser_headless field — handled by .env)
 goal: |
   ...
 ```
 
-Or globally via `SIRIN_BROWSER_HEADLESS=false` env before launching Sirin.
-
 Chrome will open a visible window. Flutter's WebGL then paints
 normally. Screenshots are real content.
+
+> **Virtual display POC (2026-04-25)**: Chrome `headless=true` on a
+> virtual display (Xvfb on Linux, normal Desktop session on Windows)
+> renders Flutter CanvasKit pixel-perfect identical to non-headless.
+> If you need headless + Flutter (CI / server box), pair
+> `SIRIN_BROWSER_HEADLESS=true` with a display server.  See broadcast
+> `~/.claude/broadcasts/2026-04-25-sirin-dashboard-and-loop-closeout.md`.
 
 **Trap 2 — DOM is empty** (even with visible Chrome).
 CanvasKit paints to `<canvas>`, not HTML elements. `read`, `exists`,

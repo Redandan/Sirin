@@ -7,28 +7,44 @@ here so new AI sessions don't rediscover them.
 
 ---
 
-## 1. Why `browser_headless: false` Is Required
+## 1. Why Headless=false Is Required (Centralized Setting)
 
-Flutter Web's CanvasKit renderer uses WebGL to paint.  Chrome's headless mode
-does **not** expose a real GPU/WebGL context, so the app canvas stays blank —
-every screenshot is a black rectangle.
+Flutter Web's CanvasKit renderer uses WebGL to paint.  Chrome's true
+headless mode (no display server, no GPU) does **not** expose a real WebGL
+context, so the app canvas stays blank — every screenshot is a black
+rectangle.  `screenshot_analyze` will silently fail and the LLM will
+always report "blank page".
 
-Attempting to use `screenshot_analyze` or vision-based assertions without this
-flag will silently fail: the LLM will always report "blank page" and the test
-will either time-out or produce a false negative.
+**As of cb49ea5 (2026-04-25) this is set ONCE in `.env`, not per-YAML:**
 
-**Always set this field in any test YAML targeting Agora Market:**
-
-```yaml
-browser_headless: false   # ← required for CanvasKit / WebGL paint
+```env
+# %LOCALAPPDATA%\Sirin\.env
+SIRIN_BROWSER_HEADLESS=false
 ```
 
-The field is parsed by `src/test_runner/parser.rs` and passed to Sirin's
-browser singleton before the first `navigate` call.  Without it Chrome starts
-in headless mode (the default) and the canvas never paints.
+All 22 Agora YAML files have had their per-test `browser_headless: false`
+field removed — the env var handles it process-wide.  This:
+- Eliminates accidental drift (one YAML missing the flag = mystery failure)
+- Makes virtual-display POCs swappable without YAML edits
+- Keeps the tests cleaner (config focused on test logic, not infra)
 
-> Reference: `src/test_runner/parser.rs` — `browser_headless` field  
-> Reference: `config/tests/agora_market_smoke.yaml` — working example
+Per-YAML override still parses (TestGoal field exists), but **don't add it
+to new tests** — set it globally instead.  Verify with:
+
+```bash
+grep -l "browser_headless" config/tests/*.yaml | wc -l   # should be 0
+```
+
+> Virtual display POC (2026-04-25): Chrome `headless=true` on a virtual
+> display (Xvfb / Windows Desktop session) **renders Flutter CanvasKit
+> pixel-perfect identical** to non-headless mode.  Set
+> `SIRIN_BROWSER_HEADLESS=true` plus a display server if you want headless
+> + Flutter together (CI, server boxes).  See broadcast
+> `~/.claude/broadcasts/2026-04-25-sirin-dashboard-and-loop-closeout.md`.
+
+> Reference: `src/test_runner/parser.rs` — `browser_headless` field still
+> works as override but defaults to `None`  
+> Reference: `docs/ENV_REFERENCE.md` — `SIRIN_BROWSER_HEADLESS` row
 
 ---
 
@@ -188,16 +204,18 @@ This blocks until ≥20 nodes are present or 5 seconds elapse.
 
 ## 5. Working YAML Example
 
-Below is a complete test goal that exercises hash-route navigation,
-`browser_headless: false`, and the ax_* pattern.  The existing smoke test
+Below is a complete test goal that exercises hash-route navigation
+and the ax_* pattern.  The existing smoke test
 (`config/tests/agora_market_smoke.yaml`) uses vision only; this example
 uses the accessibility tree for exact assertions.
+
+(Note: `browser_headless: false` is **not** in this YAML — it's set globally
+via `.env SIRIN_BROWSER_HEADLESS=false` since cb49ea5.  See §1.)
 
 ```yaml
 id: agora_login_ax
 name: "Agora Market — ax_* login flow test"
 url: "https://redandan.github.io/#/login"
-browser_headless: false          # CanvasKit WebGL paint requires visible Chrome
 
 goal: |
   Verify the Agora Market login page is functional using the accessibility tree.

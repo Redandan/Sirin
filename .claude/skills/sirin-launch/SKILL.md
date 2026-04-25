@@ -101,10 +101,18 @@ ports 7700-7703 before building; opt out with
 the killer). Rust-side bind retry in `src/rpc_server.rs` remains as
 the safety net.
 
-**Flutter / WebGL targets:** set `SIRIN_BROWSER_HEADLESS=false` before
-launch so Chrome opens visibly. CanvasKit/WebGL content won't paint in
-headless mode (test screenshots come out all-black). Per-test YAML
-override: `browser_headless: false` in the goal file.
+**Flutter / WebGL targets:** set `SIRIN_BROWSER_HEADLESS=false` once in
+`%LOCALAPPDATA%\Sirin\.env` (or pass it as env on launch).  CanvasKit/WebGL
+content won't paint in pure headless mode (no display server) — test
+screenshots come out all-black.  As of cb49ea5 the per-test YAML field
+`browser_headless` has been removed from all 22 Agora tests in favour of
+this central setting; per-test override still parses if you really need
+a one-off.
+
+> Virtual display tip: Chrome `headless=true` on a virtual display (Xvfb
+> on Linux, normal Desktop session on Windows) DOES paint Flutter
+> CanvasKit pixel-perfect.  POC documented in
+> `~/.claude/broadcasts/2026-04-25-sirin-dashboard-and-loop-closeout.md`.
 
 **Important:** Sirin opens an egui window. On systems without a display,
 the launch will fail silently. Warn the user if no display is available —
