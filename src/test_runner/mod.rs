@@ -301,6 +301,20 @@ pub fn spawn_batch_run(
         run_ids.push(runs::new_run(tid));
     }
 
+    // Pre-warm Chrome before fanning out test threads.  The Chrome singleton
+    // launches lazily on the first browser action; if test idx=0 is the one
+    // that triggers cold-launch its first navigation often races the partly-
+    // booted browser and the SPA's auto-login JS doesn't fire reliably (the
+    // cause of repeated checkboxes failures in batch 7-9 — first test landed
+    // on demo login page despite `?__test_role=seller` URL).  A synchronous
+    // about:blank goto here forces Chrome to be fully launched + responsive
+    // before ANY test starts navigating.  Failures are non-fatal — log and
+    // continue (worst case = same lazy-launch behaviour as before).
+    match crate::browser::navigate("about:blank") {
+        Ok(_)  => tracing::debug!("[batch] Chrome pre-warm complete"),
+        Err(e) => tracing::warn!("[batch] Chrome pre-warm failed (continuing): {e}"),
+    }
+
     let cap = max_concurrency.max(1);
     let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(cap));
 
@@ -313,13 +327,18 @@ pub fn spawn_batch_run(
     //
     // Cheap mitigation: stagger semaphore acquisition by `idx * stagger_ms`
     // so each test waits its turn.  Total wall time impact is bounded by
-    // (last_idx * stagger_ms) — a 2s stagger across 3 tests adds only 4s
-    // to a 60-180s batch.  Tunable via BATCH_START_STAGGER_MS env (set 0
-    // to disable for tests on independent domains).
+    // (last_idx * stagger_ms) — a 5s stagger across 3 tests adds only 10s
+    // to a 60-180s batch.
+    //
+    // Default raised 2s → 5s after batch 7-9 showed 2s wasn't enough on
+    // cold-start Chrome (Flutter SPA boot + auto-login takes ~3-5s before
+    // the next test can safely navigate to the same auth-required URL).
+    // Tunable via `BATCH_START_STAGGER_MS` (set 0 for cross-domain batches
+    // where tests don't share state).
     let stagger_ms: u64 = std::env::var("BATCH_START_STAGGER_MS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(2000);
+        .unwrap_or(5000);
 
     for (idx, (test_id, run_id)) in test_ids.iter().zip(run_ids.iter()).enumerate() {
         let sem_clone = sem.clone();
