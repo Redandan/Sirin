@@ -60,6 +60,32 @@ fi
 echo "[2/4] cargo build --release..."
 cargo build --release
 
+# ── 2b. Sync test YAMLs from repo → LOCALAPPDATA (reads AppData at runtime) ─
+# Binary reads %LOCALAPPDATA%\Sirin\config\tests\ — not the repo's config/.
+# After any YAML edit, we must sync or the binary uses a stale version.
+if command -v powershell >/dev/null 2>&1; then
+    WIN_APPDATA=$(powershell -NoProfile -Command '$env:LOCALAPPDATA' 2>/dev/null | tr -d '\r\n')
+    if [[ -n "$WIN_APPDATA" ]]; then
+        DEST="$WIN_APPDATA/Sirin/config/tests"
+        # Convert Windows path to bash path for cp
+        DEST_BASH=$(echo "$DEST" | sed 's|\\|/|g' | sed 's|^\([A-Za-z]\):|/\L\1|')
+        if [[ -d "$DEST_BASH" ]]; then
+            echo "[2b/4] Syncing config/tests → $DEST ..."
+            find config/tests -name "*.yaml" | while read -r f; do
+                rel="${f#config/tests/}"
+                dir_part=$(dirname "$rel")
+                mkdir -p "$DEST_BASH/$dir_part"
+                cp -f "$f" "$DEST_BASH/$rel"
+            done
+            echo "[2b/4] Sync done."
+        else
+            echo "[2b/4] WARN: $DEST not found, skipping YAML sync."
+        fi
+    fi
+else
+    echo "[2b/4] WARN: powershell not available, skipping YAML sync."
+fi
+
 # ── 3. Sanity: binary mtime vs latest commit ────────────────────────────────
 echo "[3/4] Binary check:"
 if [[ -f target/release/sirin.exe ]]; then
