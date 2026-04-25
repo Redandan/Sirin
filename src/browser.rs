@@ -1157,16 +1157,94 @@ fn shadow_find_once(role: Option<&str>, name_regex: Option<&str>) -> Result<(f64
 
     if v.get("found").and_then(|f| f.as_bool()) != Some(true) {
         let reason = v["reason"].as_str().unwrap_or("unknown");
-        let avail  = v.get("available")
-            .map(|a| format!(", available: {a}"))
+        let avail_arr = v.get("available").and_then(|a| a.as_array());
+
+        // Fuzzy-suggest similar roles: when the requested name is matchable
+        // under a DIFFERENT role, the LLM was likely picking the wrong one.
+        // Empirically (run_..._0 batch 6) the LLM spent 4 iterations retrying
+        // `shadow_click role=tab name=^商品$` without ever trying role=button —
+        // pointing it at the right role one-shot saves the convergence-guard
+        // abort and reaches the actual goal.
+        let suggestion = avail_arr
+            .map(|arr| suggest_role_from_available(name_regex, role, arr))
             .unwrap_or_default();
-        return Err(format!("shadow_find: {reason}{avail}"));
+
+        let avail_str = avail_arr
+            .map(|a| format!(", available: {}", serde_json::Value::Array(a.clone())))
+            .unwrap_or_default();
+        return Err(format!("shadow_find: {reason}{suggestion}{avail_str}"));
     }
 
     let x     = v["x"].as_f64().ok_or("shadow_find: missing x")?;
     let y     = v["y"].as_f64().ok_or("shadow_find: missing y")?;
     let label = v["label"].as_str().unwrap_or("").to_string();
     Ok((x, y, label))
+}
+
+/// Scan `available` (role:label list) for entries whose label matches the
+/// requested `name_regex`, grouping by role.  Returns a hint string like
+/// ` — try role=button (matches: "商品") or role=group` so the LLM can
+/// switch role on its very next turn instead of grinding the convergence
+/// guard.
+///
+/// Returns an empty string when no fuzzy match exists or when the requested
+/// role itself is the only matching role (no useful suggestion to make).
+fn suggest_role_from_available(
+    name_regex: Option<&str>,
+    requested_role: Option<&str>,
+    available: &[serde_json::Value],
+) -> String {
+    let pattern = match name_regex {
+        Some(p) if !p.is_empty() => p,
+        _ => return String::new(),
+    };
+    // Strip regex anchors / common metas for fuzzy-substring comparison.
+    let needle = pattern
+        .trim_start_matches('^')
+        .trim_end_matches('$')
+        .to_lowercase();
+    if needle.is_empty() || needle.len() > 80 {
+        return String::new();
+    }
+    let mut matches_by_role: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for item in available {
+        let s = match item.as_str() {
+            Some(s) => s,
+            None => continue,
+        };
+        // Items are "role:label" — split on first ':'.
+        let (role, label) = match s.split_once(':') {
+            Some(t) => t,
+            None => continue,
+        };
+        if role.is_empty() || label.is_empty() {
+            continue;
+        }
+        if label.to_lowercase().contains(&needle) {
+            matches_by_role
+                .entry(role.to_string())
+                .or_default()
+                .push(label.chars().take(20).collect());
+        }
+    }
+    // Drop the requested role (LLM already tried it).
+    if let Some(r) = requested_role {
+        matches_by_role.remove(r);
+    }
+    if matches_by_role.is_empty() {
+        return String::new();
+    }
+    let mut parts: Vec<String> = matches_by_role
+        .into_iter()
+        .take(3) // cap suggestions so the error stays readable
+        .map(|(role, labels)| {
+            let sample = labels.into_iter().next().unwrap_or_default();
+            format!("role={role} (e.g. \"{sample}\")")
+        })
+        .collect();
+    parts.sort();
+    format!(" — did you mean {}?", parts.join(" or "))
 }
 
 /// List all elements in Flutter's shadow DOM (debugging / inspection).
@@ -2537,5 +2615,97 @@ mod tests {
 
         close();
         println!("✓ browser_tier3_tabs_cookies: all steps passed");
+    }
+
+    // ── shadow_find fuzzy role suggestion (pure unit, no Chrome) ─────────────
+
+    fn vstr(s: &str) -> serde_json::Value {
+        serde_json::Value::String(s.to_string())
+    }
+
+    /// The canonical scenario from run_..._0 batch 6: LLM asked role=tab
+    /// name=^商品$ but the page only has button:商品 — suggestion should
+    /// point at role=button so the LLM can switch on its next turn.
+    #[test]
+    fn suggest_role_points_at_correct_role_when_label_matches_under_other_role() {
+        let avail = vec![
+            vstr("button:商品"),
+            vstr("button:首頁"),
+            vstr("group:導覽"),
+            vstr("tab:全部"),
+            vstr("tab:上架"),
+        ];
+        let s = suggest_role_from_available(Some("^商品$"), Some("tab"), &avail);
+        assert!(s.contains("role=button"), "got: {s}");
+        assert!(s.contains("商品"), "got: {s}");
+    }
+
+    /// When matches exist under several roles we should suggest each (capped
+    /// at 3) — sorted so output is deterministic across runs.
+    #[test]
+    fn suggest_role_lists_multiple_alternatives_capped_at_3() {
+        let avail = vec![
+            vstr("button:商品列表"),
+            vstr("link:商品分類"),
+            vstr("group:商品庫存"),
+            vstr("heading:商品首頁"),
+            vstr("region:商品區"),
+        ];
+        let s = suggest_role_from_available(Some("商品"), Some("tab"), &avail);
+        // Cap = 3
+        let role_count = s.matches("role=").count();
+        assert!(role_count <= 3, "got {role_count} role suggestions in: {s}");
+        assert!(role_count >= 1, "expected at least one suggestion: {s}");
+    }
+
+    /// When no available element labels match the requested name, return
+    /// empty string — don't add noise to the error message.
+    #[test]
+    fn suggest_role_empty_when_no_label_matches() {
+        let avail = vec![vstr("button:訂單"), vstr("tab:全部")];
+        assert_eq!(
+            suggest_role_from_available(Some("^商品$"), Some("tab"), &avail),
+            ""
+        );
+    }
+
+    /// If the LLM asks role=tab and the only matches are also role=tab, we
+    /// have nothing useful to suggest (the LLM already tried this role).
+    #[test]
+    fn suggest_role_skips_requested_role_in_suggestions() {
+        let avail = vec![vstr("tab:商品上架"), vstr("tab:商品下架")];
+        let s = suggest_role_from_available(Some("商品"), Some("tab"), &avail);
+        assert_eq!(s, "", "got: {s}");
+    }
+
+    /// Empty / missing name_regex means we don't have a needle to match
+    /// against — return empty rather than guess.
+    #[test]
+    fn suggest_role_empty_when_name_pattern_is_empty() {
+        let avail = vec![vstr("button:商品")];
+        assert_eq!(suggest_role_from_available(None, Some("tab"), &avail), "");
+        assert_eq!(suggest_role_from_available(Some(""), Some("tab"), &avail), "");
+    }
+
+    /// Anchors `^` and `$` are stripped so the substring fuzzy compare works
+    /// against e.g. "商品列表" when the LLM asked `^商品$`.
+    #[test]
+    fn suggest_role_strips_regex_anchors_for_fuzzy_match() {
+        let avail = vec![vstr("button:商品列表")];
+        let s = suggest_role_from_available(Some("^商品$"), Some("tab"), &avail);
+        assert!(s.contains("role=button"), "got: {s}");
+    }
+
+    /// The label in the suggestion is truncated to 20 chars so very long
+    /// labels (e.g. paginated card titles) don't blow up the error string.
+    #[test]
+    fn suggest_role_truncates_long_labels() {
+        let long = format!("group:{}", "a".repeat(200));
+        let avail = vec![vstr(&long)];
+        let s = suggest_role_from_available(Some("aaa"), Some("tab"), &avail);
+        // Label snippet should not exceed ~25 chars (20 + quotes + role).
+        assert!(s.contains("role=group"), "got: {s}");
+        let snippet = s.split('"').nth(1).unwrap_or("");
+        assert!(snippet.len() <= 20, "label snippet too long ({}): {s}", snippet.len());
     }
 }
