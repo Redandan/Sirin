@@ -5,9 +5,67 @@
 //! Streaming implementations handle both Ollama's one-JSON-per-newline format
 //! and OpenAI's SSE `data: {…}\n\n` framing.  429 rate-limit responses are
 //! retried up to 3 times with exponential back-off.
+//!
+//! ## Gemini concurrency limiting
+//!
+//! Gemini's free tier (and even most paid tiers) are aggressive about parallel
+//! requests — the `gemini-2.5-flash` family caps at ~15 RPM and will silently
+//! return empty `choices[0].message.content` (not 429) when several requests
+//! arrive within the same second.  This breaks the test runner's batch mode
+//! (default 8 parallel YAML tests, each issuing many `screenshot_analyze`
+//! calls).
+//!
+//! The fix:
+//! 1. A process-wide `tokio::sync::Semaphore` ([`gemini_semaphore`]) caps the
+//!    number of in-flight Gemini calls at `GEMINI_CONCURRENCY` (default 3).
+//!    Permits are held only for the duration of one HTTP round-trip; backoff
+//!    sleep happens with the permit released so other waiters can proceed.
+//! 2. Empty responses (HTTP 200 with no text) are treated as transient and
+//!    retried with exponential backoff (2 s → 4 s, max 2 retries).  This is
+//!    additive to the existing 429 retry loop.
+//! 3. Both behaviours apply only when [`is_gemini_url`] matches the configured
+//!    base URL — local Ollama / LM Studio paths are unaffected.
+
+use std::sync::{Arc, OnceLock};
 
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
+
+// ── Gemini concurrency / empty-response retry helpers ────────────────────────
+
+/// Returns `true` when `base_url` points at Google's Gemini API (any of the
+/// `generativelanguage.googleapis.com` / `ai.google.dev` host families).
+///
+/// Used to scope rate-limiter and empty-retry behaviour to Gemini only — local
+/// backends (Ollama, LM Studio) and other OpenAI-compatible providers keep
+/// their original (unthrottled) call path.
+fn is_gemini_url(base_url: &str) -> bool {
+    let lower = base_url.to_ascii_lowercase();
+    lower.contains("generativelanguage.googleapis.com")
+        || lower.contains("ai.google.dev")
+}
+
+/// Process-wide semaphore that caps the number of concurrent Gemini requests.
+///
+/// Initialised on first use from the `GEMINI_CONCURRENCY` env var (default 3,
+/// must be >0).  The cap is intentionally conservative — Gemini's free tier
+/// allows ~15 RPM and parallel calls beyond ~3-5 reliably trigger empty
+/// responses or 429s.
+fn gemini_semaphore() -> &'static Arc<tokio::sync::Semaphore> {
+    static SEM: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
+    SEM.get_or_init(|| {
+        let n = std::env::var("GEMINI_CONCURRENCY")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(3);
+        crate::sirin_log!("[llm] gemini concurrency limit = {} (set GEMINI_CONCURRENCY to override)", n);
+        Arc::new(tokio::sync::Semaphore::new(n))
+    })
+}
+
+/// Max number of empty-response retries before giving up.
+const GEMINI_EMPTY_MAX_RETRIES: u32 = 2;
 
 // ── HTTP request / response types (private to this module) ───────────────────
 
@@ -173,8 +231,19 @@ pub(super) async fn call_openai(
 }
 
 /// Send a pre-built messages array to an OpenAI-compatible endpoint.
-/// Retries up to 3 times on HTTP 429 (Too Many Requests) with exponential back-off
-/// (30 s → 60 s → 120 s), honouring the `Retry-After` response header when present.
+///
+/// Retry behaviour:
+/// - **429 Too Many Requests** — up to 3 retries with exponential back-off
+///   (30 s → 60 s → 120 s), honouring the `Retry-After` response header when
+///   present.  Applies to all OpenAI-compatible backends.
+/// - **Empty response** (HTTP 200 with no `choices[0].message.content`) — up
+///   to [`GEMINI_EMPTY_MAX_RETRIES`] retries with short back-off (2 s → 4 s).
+///   Gemini-only — other backends return the empty string as-is.
+///
+/// Concurrency:
+/// - Gemini calls additionally acquire a permit from [`gemini_semaphore`]
+///   before each HTTP round-trip.  The permit is held only for the duration
+///   of the request — backoff sleep happens with the permit released.
 pub(super) async fn call_openai_messages(
     client: &reqwest::Client,
     base_url: &str,
@@ -183,11 +252,13 @@ pub(super) async fn call_openai_messages(
     messages: Vec<OpenAiMessage>,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let total_chars: usize = messages.iter().map(|m| m.text_content().len()).sum();
+    let gemini = is_gemini_url(base_url);
     crate::sirin_log!(
-        "[llm] call  backend=openai-compat model={} msgs={} chars={}",
+        "[llm] call  backend=openai-compat model={} msgs={} chars={} gemini={}",
         model,
         messages.len(),
-        total_chars
+        total_chars,
+        gemini
     );
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let body = OpenAiRequest {
@@ -196,15 +267,32 @@ pub(super) async fn call_openai_messages(
         stream: false,
     };
 
-    let mut attempt = 0u32;
+    let mut rate_limit_attempt = 0u32;
+    let mut empty_attempt = 0u32;
     loop {
+        // Acquire a permit for Gemini, dropped at end of this iteration so
+        // backoff sleeps don't hold up other waiters.  Local backends skip.
+        let _gemini_permit = if gemini {
+            Some(
+                gemini_semaphore()
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .map_err(|e| format!("gemini semaphore closed: {e}"))?,
+            )
+        } else {
+            None
+        };
+
         let mut req = client.post(&url).json(&body);
         if let Some(key) = api_key {
             req = req.bearer_auth(key);
         }
         let resp = req.send().await?;
+
+        // 429 path — release permit before sleep, retry.
         if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            if attempt >= 3 {
+            if rate_limit_attempt >= 3 {
                 crate::sirin_log!("[llm] 429 max retries exceeded model={}", model);
                 return Err(resp.error_for_status().unwrap_err().into());
             }
@@ -213,23 +301,44 @@ pub(super) async fn call_openai_messages(
                 .get("retry-after")
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(30u64 << attempt); // 30 → 60 → 120
+                .unwrap_or(30u64 << rate_limit_attempt); // 30 → 60 → 120
             crate::sirin_log!(
                 "[llm] 429 rate-limited — waiting {}s (attempt {}/3) model={}",
                 wait_secs,
-                attempt + 1,
+                rate_limit_attempt + 1,
                 model
             );
+            drop(_gemini_permit);
             tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
-            attempt += 1;
+            rate_limit_attempt += 1;
             continue;
         }
+
         let parsed: OpenAiResponse = resp.error_for_status()?.json().await?;
         let reply = parsed
             .choices
             .first()
             .map(|c| c.message.text_content().trim().to_string())
             .unwrap_or_default();
+
+        // Empty-response retry — only applies to Gemini, where this is a
+        // known concurrent-request failure mode (returns 200 + empty content
+        // instead of 429 when the per-second budget is exceeded).
+        if reply.is_empty() && gemini && empty_attempt < GEMINI_EMPTY_MAX_RETRIES {
+            let wait_secs = 2u64 << empty_attempt; // 2 → 4
+            crate::sirin_log!(
+                "[llm] empty response from Gemini — retrying in {}s (attempt {}/{}) model={}",
+                wait_secs,
+                empty_attempt + 1,
+                GEMINI_EMPTY_MAX_RETRIES,
+                model
+            );
+            drop(_gemini_permit);
+            tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
+            empty_attempt += 1;
+            continue;
+        }
+
         crate::sirin_log!(
             "[llm] resp  backend=openai-compat model={} reply_chars={}",
             model,
@@ -308,16 +417,33 @@ pub(super) async fn stream_openai<F>(
 where
     F: Fn(String) + Send,
 {
+    let gemini = is_gemini_url(base_url);
     crate::sirin_log!(
-        "[llm] stream backend=openai-compat model={} chars={}",
+        "[llm] stream backend=openai-compat model={} chars={} gemini={}",
         model,
-        prompt.len()
+        prompt.len(),
+        gemini
     );
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let body = OpenAiStreamRequest {
         model,
         messages: vec![OpenAiMessage::text("user", prompt)],
         stream: true,
+    };
+
+    // Streaming path: hold the Gemini permit for the duration of the stream
+    // (not just the initial POST) — releasing mid-stream would let another
+    // call start before the server is done writing tokens to us.
+    let _gemini_permit = if gemini {
+        Some(
+            gemini_semaphore()
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(|e| format!("gemini semaphore closed: {e}"))?,
+        )
+    } else {
+        None
     };
 
     let mut attempt = 0u32;
@@ -385,4 +511,74 @@ where
     }
 
     Ok(full.trim().to_string())
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_gemini_url_matches_official_endpoints() {
+        assert!(is_gemini_url(
+            "https://generativelanguage.googleapis.com/v1beta/openai"
+        ));
+        assert!(is_gemini_url(
+            "https://generativelanguage.googleapis.com/v1beta/openai/"
+        ));
+        assert!(is_gemini_url("https://ai.google.dev/api"));
+        // Case-insensitive — env vars / configs sometimes mix case.
+        assert!(is_gemini_url(
+            "HTTPS://GENERATIVELANGUAGE.GOOGLEAPIS.COM/v1beta/openai"
+        ));
+    }
+
+    #[test]
+    fn is_gemini_url_rejects_other_backends() {
+        assert!(!is_gemini_url("http://localhost:11434"));
+        assert!(!is_gemini_url("http://localhost:1234/v1"));
+        assert!(!is_gemini_url("https://api.anthropic.com/v1"));
+        assert!(!is_gemini_url("https://api.openai.com/v1"));
+    }
+
+    #[test]
+    fn gemini_semaphore_initialises_with_default_concurrency() {
+        // First access should not panic; cap is set lazily from env or default 3.
+        let sem = gemini_semaphore();
+        // Default should be > 0 so we can acquire at least one permit.
+        let permits_now = sem.available_permits();
+        assert!(
+            permits_now > 0,
+            "gemini semaphore should have at least 1 permit available, got {permits_now}"
+        );
+    }
+
+    #[tokio::test]
+    async fn gemini_semaphore_caps_concurrent_acquires() {
+        // Force-init the semaphore (env-driven cap, default 3).
+        let sem = gemini_semaphore().clone();
+        let cap = sem.available_permits();
+
+        // Acquire `cap` permits — all should succeed without blocking.
+        let mut held = Vec::with_capacity(cap);
+        for _ in 0..cap {
+            held.push(sem.clone().acquire_owned().await.expect("permit"));
+        }
+        assert_eq!(sem.available_permits(), 0, "all permits should be in flight");
+
+        // try_acquire_owned should now fail (no slots left) instead of blocking.
+        assert!(
+            sem.clone().try_acquire_owned().is_err(),
+            "extra acquire should fail when at capacity"
+        );
+
+        // Release one and verify a slot frees up.
+        held.pop();
+        assert_eq!(sem.available_permits(), 1, "1 permit should be back");
+
+        // Drop remaining and verify full restoration.
+        drop(held);
+        assert_eq!(sem.available_permits(), cap, "all permits should be returned");
+    }
 }
