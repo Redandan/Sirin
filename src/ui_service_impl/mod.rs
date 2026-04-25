@@ -236,6 +236,24 @@ impl TestRunnerService for RealService {
             })
             .collect()
     }
+
+    fn list_test_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = crate::test_runner::list_tests()
+            .into_iter()
+            .map(|g| g.id)
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
+    fn launch_test_run(&self, test_id: &str) -> Result<String, String> {
+        // Fire-and-forget — spawn_run_async returns the run_id immediately;
+        // the actual ReAct loop runs in a detached thread.  Auto-fix off by
+        // default for dashboard-launched runs (user can re-trigger via MCP if
+        // they want auto-fix).
+        crate::test_runner::spawn_run_async(test_id.to_string(), false)
+    }
 }
 
 // `impl AppService for RealService` is satisfied automatically by the blanket

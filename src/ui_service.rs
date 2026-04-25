@@ -434,6 +434,13 @@ pub trait TestRunnerService: Send + Sync + 'static {
     fn recent_test_runs(&self, limit: usize) -> Vec<TestRunView>;
     /// Currently running or queued runs from the in-memory registry.
     fn active_test_runs(&self) -> Vec<TestRunView>;
+    /// Enumerate all configured test_ids (from `config/tests/**/*.yaml`).
+    /// Returned alphabetically, no sub-directory prefix — UI dropdown source.
+    fn list_test_ids(&self) -> Vec<String>;
+    /// Fire a YAML test asynchronously and return its run_id immediately.
+    /// Equivalent to MCP `run_test_async` tool but in-process.  Errors when
+    /// the test_id isn't found in `config/tests/`.
+    fn launch_test_run(&self, test_id: &str) -> Result<String, String>;
 }
 
 /// Aggregate trait the UI consumes as `Arc<dyn AppService>`.
