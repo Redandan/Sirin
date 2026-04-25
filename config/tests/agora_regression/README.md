@@ -1,8 +1,8 @@
 # AgoraMarket Regression Tests
 
-15 個回歸測試，覆蓋 AgoraMarket 2026-04-17 大重構（-29,133 LOC）的核心功能，以及主要業務流程。
+17 個回歸測試，覆蓋 AgoraMarket 2026-04-17 大重構（-29,133 LOC）的核心功能，以及主要業務流程。
 
-**所有 15 個測試目前狀態：✅ 全部通過（2026-04-25）**
+**所有 17 個測試目前狀態：✅ 全部通過（2026-04-25）**
 
 ---
 
@@ -11,7 +11,7 @@
 ```bash
 # 透過 sirin-call.exe 批次執行（建議 max_concurrency=1，共用 Chrome tab）
 ./target/release/sirin-call.exe run_test_batch \
-  'test_ids=["agora_webrtc_permission","agora_notification_delete","agora_admin_status_chip","agora_navigation_breadcrumb","agora_checkout_dry","agora_search_keyword","agora_cart_add_remove","agora_pickup_time_picker","agora_admin_category_filter","agora_logout_flow","agora_pickup_checkboxes_restore","agora_pickup_service_default","agora_buyer_wallet","agora_buyer_order_view","agora_seller_product_create"]' \
+  'test_ids=["agora_webrtc_permission","agora_notification_delete","agora_admin_status_chip","agora_navigation_breadcrumb","agora_checkout_dry","agora_search_keyword","agora_cart_add_remove","agora_pickup_time_picker","agora_admin_category_filter","agora_logout_flow","agora_pickup_checkboxes_restore","agora_pickup_service_default","agora_buyer_wallet","agora_buyer_order_view","agora_seller_product_create","agora_seller_wallet","agora_seller_order_view"]' \
   max_concurrency=1
 
 # 執行單一測試
@@ -44,6 +44,8 @@
 | 13 | `agora_buyer_wallet` | 買家錢包頁面 | buyer | — | 完整 | 確認餘額/凍結/質押顯示、儲值/提款/質押按鈕、交易記錄列表 |
 | 14 | `agora_buyer_order_view` | 買家訂單管理頁 | buyer | — | 完整 | 確認 6 個訂單分類 tab（全部/待出貨/待收貨/已完成/退貨退款/不成立） |
 | 15 | `agora_seller_product_create` | 賣家新增商品表單 | seller | — | 完整 | 進入新增商品頁，展開物流設定確認預設值存在 |
+| 16 | `agora_seller_wallet` | 賣家錢包頁面 | seller | — | 完整 | 從儀表板點賣家錢包入口，確認餘額與充值/提現按鈕 |
+| 17 | `agora_seller_order_view` | 賣家訂單管理頁 | seller | — | 部分 | 確認訂單分類 tab（待處理/處理中/已完成）；API 偶有錯誤為已知問題 |
 
 ---
 
@@ -74,6 +76,7 @@
 - `agora_logout_flow`：`?__test_role=buyer` 在 URL 中，Flutter 登出後立即重新登入，無法驗證 session 清除
 - `agora_admin_category_filter`：combobox 的 `shadow_click` 不穩定（有時可開，有時失敗）
 - `agora_seller_product_create`：success_criteria 放寬為「至少看到宅配到府和 7-ELEVEN 兩個物流服務開關」，全家可能在 1600px viewport 底部邊緣
+- `agora_seller_order_view`：賣家訂單列表 API 偶有「載入失敗」（backend issue），測試接受此狀態（關注 UI 結構，非資料正確性）
 
 ### 搜尋頁面
 - 搜尋圖示 AX tree 定位困難，用 `click_point x=370 y=50` 座標估算

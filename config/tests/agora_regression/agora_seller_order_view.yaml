@@ -1,0 +1,36 @@
+id: agora_seller_order_view
+name: "AgoraMarket 賣家訂單管理頁驗證"
+url: "https://redandan.github.io/?__test_role=seller"
+
+browser_headless: false
+max_iterations: 16
+timeout_secs: 200
+
+locale: zh-TW
+
+goal: |
+  目標：確認賣家訂單管理頁的 tab 分類和訂單列表正常顯示。
+
+  起始狀態：以賣家身份登入（?__test_role=seller auto-login），已在賣家儀表板首頁。
+
+  ⚠️ 賣家首頁是儀表板（賣場設定/批量導入商品），不是訂單列表。
+    必須先點底部「訂單」tab 才能進入賣家訂單管理頁。
+  ⚠️ Flutter app：所有 UI 判斷用 screenshot_analyze。
+  ⚠️ 不論任何步驟失敗，都必須繼續執行到步驟 8 才能輸出 done=true。嚴禁提早終止。
+
+  步驟（線性，步驟 8 無條件 done=true，不得提早）：
+  1. wait 3000（等賣家儀表板完整載入）
+  2. shadow_click role=tab name_regex="^訂單$"（點底部訂單 tab）
+  3. wait 2500（等訂單頁面載入）
+  4. screenshot_analyze "賣家訂單頁面截圖。記錄：(1)頂部有哪些訂單分類 tab（待處理/處理中/已完成等）？(2)訂單列表顯示什麼（有訂單？空列表？）？(3)頁面最上方的統計數字是什麼？"
+  5. shadow_click role=tab name_regex="^待處理$"（點待處理分類 tab）
+  6. wait 1500
+  7. screenshot_analyze "待處理訂單截圖。有幾筆待處理訂單？若空列表，記錄顯示的提示文字。"
+  8. done=true
+
+success_criteria:
+  - "成功點擊底部訂單 tab 並進入賣家訂單管理頁"
+  - "看到訂單分類 tab（至少有待處理分類）"
+  - "頁面有回應（有訂單、空列表、或 API 錯誤提示都算通過；重點是頁面載入而非資料正確）"
+
+tags: [regression, orders, seller, agora]

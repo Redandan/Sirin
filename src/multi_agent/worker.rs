@@ -105,6 +105,19 @@ fn run_loop(default_cwd: String, worker_id: usize) {
                     .map(|p| p.dry_run).unwrap_or(false);
                 team.set_dry_run(dry_run);
 
+                // T2-4: Create isolated git worktree for this task.
+                // Prevents git-stage conflicts when multiple workers modify the same files.
+                // Falls back to project_cwd on failure (non-fatal — worker keeps going).
+                let worktree_path = super::worktree::create_worktree(&project_cwd, &task.id)
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(target: "sirin",
+                            "[team-worker:w{worker_id}] T2-4 worktree create failed \
+                             for task {} (using project_cwd): {e}", task.id);
+                        project_cwd.clone()
+                    });
+                team.engineer.cwd = worktree_path.clone();
+                team.tester.cwd   = worktree_path.clone();
+
                 // Capture issue_url before assign_task — task may be moved/cloned.
                 let issue_url = task.project.as_ref()
                     .and_then(|p| p.issue_url.clone());
@@ -191,6 +204,22 @@ fn run_loop(default_cwd: String, worker_id: usize) {
                         }
                     }
                 }
+
+                // T2-4: Clean up the isolated worktree after task completion.
+                // Non-fatal: a cleanup failure is logged but does not stop the worker.
+                // The next create_worktree() call for the same task_id will remove any
+                // leftover directory automatically (see worktree::create_worktree).
+                if worktree_path != project_cwd {
+                    if let Err(e) = super::worktree::cleanup_worktree(&project_cwd, &task.id) {
+                        tracing::warn!(target: "sirin",
+                            "[team-worker:w{worker_id}] T2-4 worktree cleanup failed \
+                             for task {}: {e}", task.id);
+                    }
+                }
+
+                // Restore team cwd to project_cwd so the next task gets a clean slate.
+                team.engineer.cwd = project_cwd.clone();
+                team.tester.cwd   = project_cwd.clone();
 
                 // Always clear extra_tools / dry_run after the task — the next
                 // task may run on the same team but must not inherit per-task

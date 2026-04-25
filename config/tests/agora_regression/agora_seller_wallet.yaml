@@ -1,0 +1,35 @@
+id: agora_seller_wallet
+name: "AgoraMarket 賣家錢包頁面驗證"
+url: "https://redandan.github.io/?__test_role=seller"
+
+browser_headless: false
+max_iterations: 16
+timeout_secs: 200
+
+locale: zh-TW
+
+goal: |
+  目標：確認賣家可從儀表板進入錢包頁面，並看到餘額與操作按鈕。
+
+  起始狀態：以賣家身份登入（?__test_role=seller auto-login），已在賣家儀表板首頁。
+
+  ⚠️ 賣家首頁（儀表板）有「賣家錢包」按鈕，用 shadow_click 點擊即可進入錢包頁面。
+  ⚠️ 不需要點底部 tab，直接從儀表板的「賣家錢包」按鈕進入。
+  ⚠️ Flutter app：所有 UI 判斷用 screenshot_analyze。
+  ⚠️ 不論任何步驟失敗，都必須繼續執行到步驟 7 才能輸出 done=true。嚴禁提早終止。
+
+  步驟（線性，步驟 7 無條件 done=true，不得提早）：
+  1. wait 3000（等賣家儀表板完整載入）
+  2. shadow_click role=button name_regex="^賣家錢包$"（點儀表板上的賣家錢包入口）
+  3. wait 3000（等錢包頁面載入）
+  4. screenshot_analyze "賣家錢包頁面截圖。記錄：(1)總資產/可用餘額是多少？(2)有哪些操作按鈕（充值/提現/質押等）？(3)有凍結金額或質押金額顯示嗎？"
+  5. scroll y=100（向下查看是否有交易記錄）
+  6. screenshot_analyze "截圖。有交易記錄列表嗎？若有，列出最近 1-3 筆。若無，記錄空列表的提示文字。"
+  7. done=true
+
+success_criteria:
+  - "成功從賣家儀表板點擊賣家錢包並進入錢包頁面"
+  - "看到錢包餘額數字（可用餘額或總資產）"
+  - "看到充值或提現操作按鈕"
+
+tags: [regression, wallet, seller, agora]
