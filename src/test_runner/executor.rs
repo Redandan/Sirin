@@ -393,10 +393,19 @@ pub async fn execute_test_tracked(
                         format!("too many invalid LLM responses ({max_parse_errors})"),
                     ).await;
                 }
-                // Reprompt — save hint for next iteration
+                // Reprompt — save hint for next iteration.  The schema example
+                // is critical: empirically Gemini drifts into "thought: ...\n
+                // action_input: {...}\ndone: false" plain-text format after a
+                // single parse error and never recovers without an explicit
+                // template (root cause of run_20260425_210107_508_0 failing
+                // 5/5 retries with the same pattern).
                 parse_error_hint = Some(format!(
                     "⚠️ Previous response could not be parsed as JSON ({err}). \
-                     Please output STRICTLY valid JSON, no markdown fences, no prose before/after."
+                     Output STRICTLY one JSON object, no markdown fences, no prose before/after. \
+                     The exact required shape is:\n\
+                     {{\"thought\": \"<reasoning>\", \"action_input\": {{\"action\": \"<name>\", ...args}}, \"done\": false}}\n\
+                     Do NOT write `thought: ...` or `action_input: ...` as plain text labels — \
+                     they MUST be JSON keys inside one outer {{...}} object."
                 ));
                 if let Some(rid) = run_id {
                     runs::push_observation(rid, format!("PARSE_RETRY ({parse_error_count}/{max_parse_errors}): {err}\nRaw: {raw}"));
@@ -1042,9 +1051,29 @@ fn parse_step(raw: &str) -> ParsedStep {
     match serde_json::from_str::<Value>(&cleaned) {
         Ok(v) => {
             let thought = v.get("thought").and_then(Value::as_str).unwrap_or_default().to_string();
-            let action_input = v.get("action_input").cloned().unwrap_or(json!({}));
-            let done = v.get("done").and_then(Value::as_bool).unwrap_or(false);
+            let mut action_input = v.get("action_input").cloned().unwrap_or(json!({}));
+            let mut done = v.get("done").and_then(Value::as_bool).unwrap_or(false);
             let final_answer = v.get("final_answer").and_then(Value::as_str).map(String::from).filter(|s| !s.is_empty());
+
+            // Recovery: when the LLM omits the {thought, action_input, done} wrapper
+            // and writes the action JSON directly (or strip_fences extracted only the
+            // inner action_input due to "thought: ...\naction_input: {...}\n" plain-
+            // text format from Gemini), the parsed root will have an `action` field
+            // but no `thought` / `action_input`.  Treat the root as action_input.
+            //
+            // This is the dominant Gemini failure mode observed on
+            // run_20260425_210107_508_0 (5/5 PARSE_RETRY iterations all hit it).
+            let root_has_action = v.get("action").and_then(Value::as_str).is_some();
+            let root_missing_wrapper =
+                v.get("thought").is_none() && v.get("action_input").is_none();
+            if root_has_action && root_missing_wrapper {
+                action_input = v.clone();
+                // strip_fences may have discarded a trailing `done: true` line
+                // that was outside the JSON object.  Recover it from raw.
+                if !done && raw_indicates_done(raw) {
+                    done = true;
+                }
+            }
 
             // Require action_input to include an "action" field unless done
             if !done && action_input.get("action").and_then(Value::as_str).is_none() {
@@ -1055,11 +1084,89 @@ fn parse_step(raw: &str) -> ParsedStep {
             }
             ParsedStep { thought, action_input, done, final_answer, parse_error: None }
         }
-        Err(e) => ParsedStep {
-            parse_error: Some(format!("JSON parse: {e}")),
-            ..Default::default()
-        },
+        Err(e) => {
+            // Last-ditch: try the plain-text "thought: ...\naction_input: {...}\ndone: ..."
+            // shape that Gemini sometimes produces on retries.  We pull out the
+            // first `{...}` block as action_input and any boolean `done: true/false`.
+            if let Some(parsed) = parse_plaintext_step(raw) {
+                return parsed;
+            }
+            ParsedStep {
+                parse_error: Some(format!("JSON parse: {e}")),
+                ..Default::default()
+            }
+        }
     }
+}
+
+/// True when the raw LLM output indicates `done = true` outside any JSON
+/// object — used by the root-action recovery path because strip_fences may
+/// have stripped a trailing `done: true` plain-text line.
+fn raw_indicates_done(raw: &str) -> bool {
+    let lower = raw.to_ascii_lowercase();
+    // "done: true" / "done : true" plain-text label
+    if lower.contains("done: true") || lower.contains("done : true") {
+        return true;
+    }
+    // JSON-shape "done":true / "done": true  (in case the JSON was preceded
+    // by stray prose that broke top-level parsing)
+    lower.contains("\"done\":true") || lower.contains("\"done\": true")
+}
+
+/// Recovery parser for the plain-text "label: value" shape Gemini sometimes
+/// drifts into after a parse retry — e.g.:
+///
+/// ```text
+/// thought: 我已經完成步驟 1...
+/// action_input: {"action":"wait","target":1500}
+/// done: false
+/// ```
+///
+/// Returns `Some(ParsedStep)` only when an `action_input: {…}` block was
+/// extractable AND its inner JSON has an `action` field.  Otherwise returns
+/// `None` so the caller emits the original parse error.
+fn parse_plaintext_step(raw: &str) -> Option<ParsedStep> {
+    let t = raw.trim();
+    // Locate "action_input:" or "action:" label (case-insensitive on the prefix).
+    let label_idx = t
+        .to_lowercase()
+        .find("action_input")
+        .or_else(|| t.to_lowercase().find("action:"))?;
+    let after_label = &t[label_idx..];
+    // Find the first '{' after the label.
+    let brace_start = after_label.find('{')?;
+    // Find the matching closing brace by simple depth counting (skip strings).
+    let bytes = after_label.as_bytes();
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escape = false;
+    let mut end_off: Option<usize> = None;
+    for (i, &b) in bytes.iter().enumerate().skip(brace_start) {
+        if escape { escape = false; continue; }
+        match b {
+            b'\\' if in_string => escape = true,
+            b'"' => in_string = !in_string,
+            b'{' if !in_string => depth += 1,
+            b'}' if !in_string => {
+                depth -= 1;
+                if depth == 0 { end_off = Some(i); break; }
+            }
+            _ => {}
+        }
+    }
+    let end = end_off?;
+    let json_blob = &after_label[brace_start..=end];
+    let action_input: Value = serde_json::from_str(json_blob).ok()?;
+    if action_input.get("action").and_then(Value::as_str).is_none() {
+        return None;
+    }
+    Some(ParsedStep {
+        thought: String::new(),
+        action_input,
+        done: raw_indicates_done(raw),
+        final_answer: None,
+        parse_error: None,
+    })
 }
 
 fn strip_fences(raw: &str) -> String {
@@ -1195,6 +1302,75 @@ mod tests {
     #[test]
     fn parse_strips_markdown_fences() {
         let raw = "```json\n{\"thought\":\"ok\",\"done\":true}\n```";
+        let s = parse_step(raw);
+        assert!(s.parse_error.is_none());
+        assert!(s.done);
+    }
+
+    /// Recovery: LLM omits the {thought, action_input, done} wrapper and writes
+    /// the action JSON directly at the root.  Previously this raised
+    /// "action_input missing 'action' field" — now the root is treated as
+    /// action_input.
+    #[test]
+    fn parse_recovers_root_action() {
+        let raw = r#"{"action":"wait","target":1500}"#;
+        let s = parse_step(raw);
+        assert!(s.parse_error.is_none(), "got parse_error: {:?}", s.parse_error);
+        assert_eq!(s.action_input["action"], "wait");
+        assert_eq!(s.action_input["target"], 1500);
+        assert!(!s.done);
+    }
+
+    /// Recovery: strip_fences extracted only the inner action_input JSON from
+    /// a "thought: ...\naction_input: {...}\ndone: false" plaintext envelope —
+    /// the parsed root therefore has `action` but no `thought`/`action_input`.
+    /// This is the dominant Gemini failure mode (run_20260425_210107_508_0).
+    #[test]
+    fn parse_recovers_inner_action_extracted_by_strip_fences() {
+        let raw = "thought: explain step\naction_input: {\"action\":\"click\",\"target\":\"#submit\"}\ndone: false";
+        let s = parse_step(raw);
+        assert!(s.parse_error.is_none(), "got parse_error: {:?}", s.parse_error);
+        assert_eq!(s.action_input["action"], "click");
+    }
+
+    /// Plaintext fallback: when the entire raw response is unparseable as JSON
+    /// (e.g. multiple top-level keys without quotes), parse_plaintext_step
+    /// extracts the action_input block via brace-depth counting.
+    #[test]
+    fn parse_plaintext_fallback_extracts_action_input() {
+        let raw = "thought: 我已經完成步驟 1，現在執行步驟 2\n\
+                   action_input: {\"action\":\"shadow_click\",\"role\":\"tab\",\"name_regex\":\"^商品$\"}\n\
+                   done: false";
+        let s = parse_step(raw);
+        assert!(s.parse_error.is_none(), "got parse_error: {:?}", s.parse_error);
+        assert_eq!(s.action_input["action"], "shadow_click");
+        assert_eq!(s.action_input["name_regex"], "^商品$");
+        assert!(!s.done);
+    }
+
+    /// Plaintext fallback respects nested braces — the matching `}` must be at
+    /// the right depth (not the first one encountered inside a string).
+    #[test]
+    fn parse_plaintext_fallback_handles_nested_braces() {
+        let raw = "action_input: {\"action\":\"x\",\"meta\":{\"foo\":\"bar\"}}";
+        let s = parse_step(raw);
+        assert!(s.parse_error.is_none());
+        assert_eq!(s.action_input["meta"]["foo"], "bar");
+    }
+
+    /// Plaintext fallback returns parse_error when neither shape matches —
+    /// e.g. just prose with no extractable JSON.
+    #[test]
+    fn parse_plaintext_fallback_returns_error_when_no_action() {
+        let raw = "I'm thinking about what to do next, but cannot decide.";
+        let s = parse_step(raw);
+        assert!(s.parse_error.is_some());
+    }
+
+    /// Plaintext fallback honours `done: true` even without a JSON wrapper.
+    #[test]
+    fn parse_plaintext_fallback_detects_done_true() {
+        let raw = "action_input: {\"action\":\"goto\",\"target\":\"https://x.com\"}\ndone: true";
         let s = parse_step(raw);
         assert!(s.parse_error.is_none());
         assert!(s.done);
