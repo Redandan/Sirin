@@ -1203,60 +1203,62 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                     crate::browser::get_current_url().unwrap_or_default()
                 }).await.unwrap_or_default();
                 
-                // P1.1 optimization: Check screenshot cache before calling vision LLM
-                let mut analysis = None;
-                let mut cache_hit = false;
-                
-                if let Some(run_id_str) = run_id {
-                    // Get PNG bytes to compute hash for cache lookup
-                    if let Ok(png) = tokio::task::spawn_blocking(crate::browser::screenshot).await {
-                        if let Ok(png_bytes) = png {
-                            // Compute SHA256 hash of PNG
-                            use sha2::{Sha256, Digest};
-                            let mut hasher = Sha256::new();
-                            hasher.update(&png_bytes);
-                            let hash_hex = format!("{:x}", hasher.finalize());
-                            
-                            // Check cache
-                            if let Some(cached) = crate::test_runner::runs::get_screenshot_cache(run_id_str, &hash_hex) {
-                                analysis = Some(cached);
-                                cache_hit = true;
-                                tracing::debug!("[vision] cache HIT for {} bytes", png_bytes.len());
-                            }
-                        }
-                    }
-                }
-                
-                // If cache miss, call vision LLM.
-                //
-                // Append a terseness directive to mitigate Gemini Vision's
-                // mid-response truncation (observed in batch 4/5 pickup tests
-                // where multi-paragraph analyses were cut off mid-sentence,
-                // making them un-actionable).  Verbose prompts → near-MAX_TOKENS
-                // responses → silent truncation.  Bullet points + word cap give
-                // headroom and faster downstream parsing.
+                // Build the FINAL prompt (with terseness directive) up-front so
+                // the cache key can hash it.  Directive added to mitigate
+                // Gemini Vision mid-response truncation (batch 4/5 pickup
+                // tests had multi-paragraph analyses cut off mid-sentence —
+                // bullet points + word cap give headroom).
                 let prompt_with_directive = format!(
                     "{prompt}\n\n\
                      【回答格式】用 bullet points 條列，每點 ≤ 30 字。\
                      優先給結論性事實（顏色/狀態/數值/開關），略過畫面描述。\
                      全文 ≤ 200 字。"
                 );
+
+                // Cache key composes BOTH the PNG hash and a prompt hash.
+                // Pre-fix bug (run_20260425_235541_176_2): key was PNG-only,
+                // so a second screenshot_analyze on the same screenshot but
+                // with a DIFFERENT question (e.g. "scroll then check 萊爾富
+                // and OK 超商") returned the FIRST question's stale answer,
+                // which the verifier then correctly flagged as un-actionable.
+                let cache_key_for = |png_bytes: &[u8]| -> String {
+                    use sha2::{Sha256, Digest};
+                    let mut h = Sha256::new();
+                    h.update(png_bytes);
+                    let png_hex = format!("{:x}", h.finalize());
+                    let mut h = Sha256::new();
+                    h.update(prompt_with_directive.as_bytes());
+                    let prompt_hex_full = format!("{:x}", h.finalize());
+                    // 16-hex-char prompt suffix is plenty for collision avoidance
+                    // within a single test run while keeping the key readable.
+                    format!("{png_hex}:{}", &prompt_hex_full[..16])
+                };
+
+                // Cache lookup
+                let mut analysis = None;
+                let mut cache_hit = false;
+                if let Some(run_id_str) = run_id {
+                    if let Ok(Ok(png_bytes)) = tokio::task::spawn_blocking(crate::browser::screenshot).await {
+                        let key = cache_key_for(&png_bytes);
+                        if let Some(cached) = crate::test_runner::runs::get_screenshot_cache(run_id_str, &key) {
+                            analysis = Some(cached);
+                            cache_hit = true;
+                            tracing::debug!("[vision] cache HIT for {} bytes", png_bytes.len());
+                        }
+                    }
+                }
+
                 if analysis.is_none() {
                     let llm = crate::llm::shared_llm();
                     let client = crate::llm::shared_http();
                     match crate::llm::analyze_screenshot(&client, &llm, &prompt_with_directive).await {
                         Ok(result) => {
                             analysis = Some(result.clone());
-                            // Store in cache for future use
+                            // Store in cache under the composite key
                             if let Some(run_id_str) = run_id {
-                                if let Ok(png) = tokio::task::spawn_blocking(crate::browser::screenshot).await {
-                                    if let Ok(png_bytes) = png {
-                                        use sha2::{Sha256, Digest};
-                                        let mut hasher = Sha256::new();
-                                        hasher.update(&png_bytes);
-                                        let hash_hex = format!("{:x}", hasher.finalize());
-                                        crate::test_runner::runs::set_screenshot_cache(run_id_str, hash_hex, result);
-                                    }
+                                if let Ok(Ok(png_bytes)) = tokio::task::spawn_blocking(crate::browser::screenshot).await {
+                                    let key = cache_key_for(&png_bytes);
+                                    crate::test_runner::runs::set_screenshot_cache(run_id_str, key, result);
                                 }
                             }
                             tracing::debug!("[vision] cache MISS, called LLM");

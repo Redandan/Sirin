@@ -352,4 +352,51 @@ mod tests {
         assert_eq!(bytes, None);
         assert_eq!(err.as_deref(), Some("headless blank"));
     }
+
+    /// Cache stores by whatever string the caller passes as `png_hash` —
+    /// builtins.rs uses a composite `<png>:<prompt>` key so different
+    /// questions on the same screenshot don't collide.  This test mirrors
+    /// that pattern and verifies independent get/set.
+    #[test]
+    fn screenshot_cache_separates_composite_keys() {
+        let id = new_run("t");
+        let png = "abcd1234"; // arbitrary png hash
+        let key_q1 = format!("{png}:promptHash1______");
+        let key_q2 = format!("{png}:promptHash2______");
+
+        set_screenshot_cache(&id, key_q1.clone(), "answer for Q1".into());
+        set_screenshot_cache(&id, key_q2.clone(), "answer for Q2".into());
+
+        // Different question on same PNG must NOT return Q1's answer.
+        assert_eq!(
+            get_screenshot_cache(&id, &key_q2).as_deref(),
+            Some("answer for Q2"),
+        );
+        assert_eq!(
+            get_screenshot_cache(&id, &key_q1).as_deref(),
+            Some("answer for Q1"),
+        );
+        // Unrelated key — miss.
+        let key_other = format!("{png}:promptHash3______");
+        assert!(get_screenshot_cache(&id, &key_other).is_none());
+    }
+
+    /// Same composite key returns the previously-cached answer (the cache
+    /// IS supposed to dedupe identical question-on-same-PNG calls).
+    #[test]
+    fn screenshot_cache_same_key_is_cache_hit() {
+        let id = new_run("t");
+        let key = "deadbeef:promptHashAaa";
+        set_screenshot_cache(&id, key.into(), "first call".into());
+        assert_eq!(
+            get_screenshot_cache(&id, key).as_deref(),
+            Some("first call")
+        );
+    }
+
+    /// Cache lookup on an unknown run_id returns None rather than panicking.
+    #[test]
+    fn screenshot_cache_missing_run_id_returns_none() {
+        assert!(get_screenshot_cache("nonexistent_run", "any_key").is_none());
+    }
 }
