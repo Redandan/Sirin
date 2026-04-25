@@ -31,11 +31,18 @@ fn cached_docs(test_id: &str) -> Option<String> {
         .cloned()
 }
 
-/// Resolve every entry in `test.docs_refs` into a single Markdown block ready
-/// to splice into the LLM prompt.  Each entry is treated as either:
-/// - **Filesystem path** (contains `/`/`\` or has a 1-5 char alpha extension) →
+/// Resolve `test.docs_refs` + `test.kb_refs` into a single Markdown block
+/// ready to splice into the LLM prompt.
+///
+/// `docs_refs` (mixed): each entry is auto-classified —
+/// - **Filesystem path** (contains `/`/`\` or has 1-5 char alpha extension) →
 ///   read with `std::fs::read_to_string`, truncated to ~2000 chars
-/// - **KB topicKey** (kebab-case, no path) → fetch via [`crate::kb_client::get`]
+/// - **KB topicKey** (kebab-case, no path/extension) → fetch via
+///   [`crate::kb_client::get`]
+///
+/// `kb_refs` (KB-only): every entry is fetched as a topicKey unconditionally,
+/// no path heuristic.  Use this when intent is explicitly KB-only and you
+/// want to bypass the docs_refs path-vs-key auto-detection edge cases.
 ///
 /// Stores the result in [`docs_cache`] keyed by `test.id`; subsequent
 /// `cached_docs(test.id)` calls inside the prompt builders return it
@@ -44,17 +51,19 @@ fn cached_docs(test_id: &str) -> Option<String> {
 /// Failures are silently demoted to `[unavailable: <reason>]` lines so a
 /// missing file or KB outage never aborts a test run.
 pub(crate) async fn pre_resolve_docs_for(test: &TestGoal) {
-    if test.docs_refs.is_empty() {
+    if test.docs_refs.is_empty() && test.kb_refs.is_empty() {
         return;
     }
-    let mut sections: Vec<String> = Vec::with_capacity(test.docs_refs.len());
+    let project = crate::kb_client::default_project();
+    let mut sections: Vec<String> = Vec::with_capacity(test.docs_refs.len() + test.kb_refs.len());
+
+    // 1) docs_refs (mixed: path or KB topicKey)
     for r in &test.docs_refs {
         let entry = r.trim();
         if entry.is_empty() {
             continue;
         }
         let (label, body) = if crate::kb_client::looks_like_topic_key(entry) {
-            let project = crate::kb_client::default_project();
             match crate::kb_client::get(&project, entry).await {
                 Ok(Some(text)) => (
                     format!("KB:{project}/{entry}"),
@@ -79,6 +88,22 @@ pub(crate) async fn pre_resolve_docs_for(test: &TestGoal) {
         };
         sections.push(format!("### {label}\n{body}"));
     }
+
+    // 2) kb_refs (KB-only — every entry treated as topicKey, no heuristic)
+    for r in &test.kb_refs {
+        let entry = r.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        let label = format!("KB:{project}/{entry}");
+        let body = match crate::kb_client::get(&project, entry).await {
+            Ok(Some(text)) => truncate(&text, 2000),
+            Ok(None) => "[unavailable: KB disabled or entry not found]".into(),
+            Err(e) => format!("[unavailable: {e}]"),
+        };
+        sections.push(format!("### {label}\n{body}"));
+    }
+
     let block = sections.join("\n\n");
     docs_cache()
         .lock()

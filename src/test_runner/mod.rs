@@ -101,7 +101,7 @@ async fn run_test_with_run_id(
         (None, None, false)
     } else {
         let outcome = triage::triage(ctx, &test, &result).await;
-        let triggered = auto_fix && triage::trigger_auto_fix(&test, &result, &outcome, run_id);
+        let triggered = auto_fix && triage::trigger_auto_fix(&test, &result, &outcome, run_id).await;
         (
             Some(outcome.category.as_str().to_string()),
             Some(outcome.reason.clone()),
@@ -210,6 +210,7 @@ pub fn spawn_adhoc_run(req: AdhocRunRequest) -> Result<String, String> {
         tags: vec!["adhoc".into()],
         fixture: req.fixture,
         docs_refs: vec![],  // ad-hoc runs have no pre-defined required reading
+        kb_refs:   vec![],  // ad-hoc runs don't reference KB topic keys
         perception: Default::default(),
     };
 
@@ -631,6 +632,7 @@ pub fn persist_adhoc_run(p: PersistAdhocParams) -> Result<PersistAdhocResult, St
         tags: tags.clone(),
         fixture: goal.fixture.clone(),
         docs_refs: goal.docs_refs.clone(),  // propagate required-reading from source run
+        kb_refs:   goal.kb_refs.clone(),    // propagate KB topic-key refs too
         perception: goal.perception,
     };
 
@@ -690,6 +692,7 @@ mod persist_tests {
             tags: vec!["adhoc".into()],
             fixture: None,
             docs_refs: vec![],
+            kb_refs: vec![],
             perception: Default::default(),
         };
         let run_id = runs::new_run(test_id);
@@ -773,6 +776,7 @@ mod persist_tests {
             tags: vec![],
             fixture: None,
             docs_refs: vec![],
+            kb_refs: vec![],
             perception: Default::default(),
         });
         runs::set_phase(&run_id, runs::RunPhase::Running {
@@ -854,6 +858,7 @@ mod persist_tests {
             tags: vec!["adhoc".into()],
             fixture: None,
             docs_refs: vec![],
+            kb_refs: vec![],
             perception: Default::default(),
         };
         // Insert directly into SQLite — simulates the row that

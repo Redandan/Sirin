@@ -168,7 +168,7 @@ Output strictly valid JSON (no markdown fence):
 ///
 /// **Outcome tracking**: the spawned thread calls `complete_fix(fix_id, ...)`
 /// when claude_session returns, so future callers can query `recent_fixes()`.
-pub fn trigger_auto_fix(test: &TestGoal, result: &TestResult, outcome: &TriageOutcome, run_id: Option<&str>) -> bool {
+pub async fn trigger_auto_fix(test: &TestGoal, result: &TestResult, outcome: &TriageOutcome, run_id: Option<&str>) -> bool {
     let Some(repo) = outcome.category.fix_repo() else { return false; };
     let Some(cwd) = crate::claude_session::repo_path(repo) else {
         tracing::warn!("auto_fix: repo alias '{repo}' not found");
@@ -235,6 +235,12 @@ pub fn trigger_auto_fix(test: &TestGoal, result: &TestResult, outcome: &TriageOu
             return false;
         }
     };
+
+    // Enrich the bug prompt with relevant KB hits BEFORE spawning the
+    // (blocking) claude session.  No-op when KB_ENABLED is unset; otherwise
+    // prepends up to 3 kbSearch results from the project inferred from cwd
+    // so the spawned `claude -p` doesn't rediscover repo conventions.
+    let bug_prompt = crate::claude_session::enrich_prompt_with_kb(bug_prompt, &cwd).await;
 
     std::thread::spawn(move || {
         tracing::info!("[test_runner] auto_fix[{fix_id}]: spawning claude_session in {cwd}");

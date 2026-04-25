@@ -90,9 +90,27 @@ pub struct TestGoal {
     /// response as a `docs_refs` field + warning so callers cannot miss them.
     /// Typical entries: test-account docs, acceptance-criteria files, E2E skill.
     ///
-    /// Paths are relative to the repo root (or absolute).
+    /// Paths are relative to the repo root (or absolute).  `docs_refs` accepts
+    /// MIXED entries — bare kebab-case identifiers (e.g. `sirin-test-authoring`)
+    /// are auto-treated as KB topicKeys.  For *unambiguous* KB-only references
+    /// use [`Self::kb_refs`] instead.
     #[serde(default)]
     pub docs_refs: Vec<String>,
+    /// Knowledge base topicKeys (no path heuristic) auto-fetched from the
+    /// agora-trading KB at run start and spliced into the LLM prompt under
+    /// "Required reading".  Use this when you want explicit KB-only
+    /// references — `docs_refs` works for the mixed case but a separate field
+    /// makes intent clearer and avoids the path-vs-key heuristic edge cases.
+    ///
+    /// Format: kebab-case slugs matching KB `topicKey`, e.g.
+    /// `["sirin-test-authoring", "sirin-browser-automation"]`.
+    ///
+    /// Resolved via [`crate::kb_client::get`] using project from `KB_PROJECT`
+    /// env (default `sirin`).  Failures degrade to "[unavailable: …]" in the
+    /// prompt — never aborts a run.  Resolution short-circuits when
+    /// `KB_ENABLED` is unset.
+    #[serde(default)]
+    pub kb_refs: Vec<String>,
     /// How the ReAct loop should observe the page before each LLM turn.
     /// - `text`   — legacy: no screenshot, truncated text observations only
     /// - `vision` — always screenshot + vision LLM call
@@ -336,6 +354,42 @@ docs_refs:
         let yaml = "id: x\nname: y\nurl: https://example.com\ngoal: g\n";
         let g: TestGoal = serde_yaml::from_str(yaml).unwrap();
         assert!(g.docs_refs.is_empty());
+        assert!(g.kb_refs.is_empty());
+    }
+
+    #[test]
+    fn parse_yaml_with_kb_refs() {
+        let yaml = r#"
+id: agora_pickup
+name: "Pickup test"
+url: "https://example.com"
+goal: "verify pickup flow"
+kb_refs:
+  - sirin-test-authoring
+  - sirin-browser-automation
+  - agora-pickup-flow
+"#;
+        let g: TestGoal = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(g.kb_refs.len(), 3);
+        assert_eq!(g.kb_refs[0], "sirin-test-authoring");
+        assert!(g.docs_refs.is_empty());
+    }
+
+    #[test]
+    fn parse_yaml_with_both_docs_refs_and_kb_refs() {
+        let yaml = r#"
+id: combined
+name: "Combined refs"
+url: "https://example.com"
+goal: "test mixed references"
+docs_refs:
+  - docs/acceptance/issue_42.md
+kb_refs:
+  - sirin-test-authoring
+"#;
+        let g: TestGoal = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(g.docs_refs.len(), 1);
+        assert_eq!(g.kb_refs.len(), 1);
     }
 
     #[test]

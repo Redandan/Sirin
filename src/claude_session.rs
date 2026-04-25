@@ -25,6 +25,71 @@ use std::time::{Duration, Instant};
 
 use crate::platform::NoWindow;
 
+// ── KB-context helpers ───────────────────────────────────────────────────────
+//
+// When the test_runner triages a failure and decides to spawn a `claude -p`
+// session in a foreign repo (e.g. AgoraMarketAPI for backend bugs), the
+// spawned session has no Sirin context.  It rediscovers repo conventions on
+// every spawn — token waste plus inconsistent fixes.  These helpers let the
+// caller cheaply prepend a few relevant KB hits *for the right project*
+// before invoking `run_sync` / `run_async`, opt-in via `KB_ENABLED=1`.
+//
+// Project mapping is heuristic (cwd → project slug), tunable later via env
+// if we ever need >3 known repos.
+
+/// Map a working-directory path to the KB project slug it should query.
+///
+/// Heuristic by case-insensitive substring on the cwd:
+/// - `agoramarketapi`             → `agora-backend`
+/// - `agoramarketflutter`         → `flutter`
+/// - cwd ends in / contains `sirin` → `sirin`
+/// - anything else                → `KB_PROJECT` env or `sirin`
+///
+/// Pure / sync — no I/O.  Always returns a non-empty slug.
+pub fn project_from_cwd(cwd: &str) -> String {
+    let lower = cwd.to_ascii_lowercase();
+    if lower.contains("agoramarketapi") || lower.contains("agora-market-api") {
+        return "agora-backend".to_string();
+    }
+    if lower.contains("agoramarketflutter") || lower.contains("agora-market-flutter") {
+        return "flutter".to_string();
+    }
+    let normalized = lower.replace('\\', "/");
+    if normalized.split('/').any(|seg| seg == "sirin") {
+        return "sirin".to_string();
+    }
+    crate::kb_client::default_project()
+}
+
+/// Augment a Claude-spawn prompt with up to 3 relevant KB hits.
+///
+/// Does nothing (returns input unchanged) when:
+/// - `KB_ENABLED` is unset/false
+/// - kbSearch returns no hits or errors out
+///
+/// Used by `test_runner::triage` so the spawned `claude -p` session sees
+/// the same `kbSearch` results an interactive Claude session would
+/// auto-pull, dramatically cutting "what is the OrderService split?" type
+/// re-discovery loops.
+pub async fn enrich_prompt_with_kb(prompt: String, cwd: &str) -> String {
+    if !crate::kb_client::enabled() {
+        return prompt;
+    }
+    let project = project_from_cwd(cwd);
+    // Use first 200 chars of the prompt as the search query — the bug
+    // description / first paragraph carries the discriminating keywords.
+    let needle: String = prompt.chars().take(200).collect();
+    match crate::kb_client::search(&project, &needle, 3).await {
+        Ok(Some(hits)) if !hits.trim().is_empty() => {
+            format!(
+                "## Relevant Knowledge Base entries (kbSearch project={project})\n\n\
+                 {hits}\n\n---\n\n{prompt}"
+            )
+        }
+        _ => prompt,
+    }
+}
+
 /// Result of a spawned Claude session.
 #[derive(Debug, Clone)]
 pub struct SessionResult {
@@ -724,6 +789,70 @@ mod tests {
         let prompt = build_bug_prompt("something broke", None, None, None, None);
         assert!(prompt.contains("something broke"));
         assert!(prompt.contains("Please investigate"));
+    }
+
+    // ── project_from_cwd ────────────────────────────────────────────────────
+
+    #[test]
+    fn project_from_cwd_recognises_agora_backend() {
+        assert_eq!(project_from_cwd("C:/Users/x/IdeaProjects/AgoraMarketAPI"),
+                   "agora-backend");
+        assert_eq!(project_from_cwd("/home/x/agoramarketapi"),
+                   "agora-backend");
+        // Hyphenated form also matches
+        assert_eq!(project_from_cwd("/var/repos/agora-market-api"),
+                   "agora-backend");
+    }
+
+    #[test]
+    fn project_from_cwd_recognises_flutter() {
+        assert_eq!(project_from_cwd("C:/Users/x/IdeaProjects/AgoraMarketFlutter"),
+                   "flutter");
+        assert_eq!(project_from_cwd("/home/x/agoramarketflutter"),
+                   "flutter");
+    }
+
+    #[test]
+    fn project_from_cwd_recognises_sirin() {
+        assert_eq!(project_from_cwd("C:/Users/x/IdeaProjects/Sirin"), "sirin");
+        assert_eq!(project_from_cwd("/home/x/sirin"), "sirin");
+        assert_eq!(project_from_cwd("/home/x/sirin/src"), "sirin");
+        assert_eq!(project_from_cwd("C:\\Users\\x\\Sirin\\target"), "sirin");
+    }
+
+    /// `sirin` must match as a path segment, not a substring — and
+    /// unmatched paths fall back to `KB_PROJECT` env (or "sirin" default).
+    /// Combined into one test to avoid env-var races between parallel tests.
+    #[test]
+    fn project_from_cwd_segment_match_and_fallback() {
+        // Set KB_PROJECT to a unique sentinel so we can detect fall-through
+        // even when this test races with others that touch the env.
+        std::env::set_var("KB_PROJECT", "fallback-sentinel-9f3a");
+
+        // "asirinapp" must NOT classify as "sirin" — the matcher needs a
+        // proper path segment, not a substring.
+        assert_eq!(
+            project_from_cwd("/home/x/asirinapp"),
+            "fallback-sentinel-9f3a",
+            "asirinapp should fall through to default, not classify as sirin"
+        );
+
+        // Random unmatched path also falls through to env default.
+        assert_eq!(
+            project_from_cwd("/random/unmatched/path"),
+            "fallback-sentinel-9f3a"
+        );
+
+        std::env::remove_var("KB_PROJECT");
+    }
+
+    /// enrich_prompt_with_kb returns input unchanged when KB is disabled.
+    #[tokio::test]
+    async fn enrich_prompt_noop_when_kb_disabled() {
+        std::env::remove_var("KB_ENABLED");
+        let original = "this prompt should be untouched".to_string();
+        let result = enrich_prompt_with_kb(original.clone(), "/some/cwd").await;
+        assert_eq!(result, original);
     }
 
     #[test]
