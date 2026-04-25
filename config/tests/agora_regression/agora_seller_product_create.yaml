@@ -2,7 +2,6 @@ id: agora_seller_product_create
 name: "AgoraMarket 賣家新增商品表單驗證"
 url: "https://redandan.github.io/?__test_role=seller"
 
-browser_headless: false
 max_iterations: 20
 timeout_secs: 250
 

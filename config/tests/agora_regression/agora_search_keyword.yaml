@@ -3,7 +3,6 @@ name: "商品關鍵字搜尋測試"
 url: "https://redandan.github.io/?__test_role=buyer"
 locale: zh-TW
 
-browser_headless: false
 max_iterations: 10
 timeout_secs: 150
 

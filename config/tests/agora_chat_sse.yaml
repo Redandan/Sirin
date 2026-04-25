@@ -3,7 +3,6 @@ name: "AgoraMarket 智能客服 SSE 即時訊息驗證 (Issue #9)"
 url: "https://redandan.github.io/"
 
 # Flutter CanvasKit — UI 全部渲染在 canvas 上（WebGL 需要 GPU）
-browser_headless: false
 max_iterations: 45
 timeout_secs: 600
 retry_on_parse_error: 2

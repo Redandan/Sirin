@@ -2,7 +2,6 @@ id: agora_pickup_checkboxes_restore
 name: "AgoraMarket 商品編輯取消後物流設定還原驗證 (Issue #70 #5)"
 url: "https://redandan.github.io/?__test_role=seller"
 
-browser_headless: false
 max_iterations: 25
 timeout_secs: 420
 

@@ -2,7 +2,6 @@ id: agora_login_vision
 name: "AgoraMarket 登入流程 — vision perception (Flutter Canvas)"
 url: "https://redandan.github.io/#/login"
 
-browser_headless: false   # Flutter CanvasKit needs a real GPU context
 max_iterations: 12
 timeout_secs: 180
 retry_on_parse_error: 5

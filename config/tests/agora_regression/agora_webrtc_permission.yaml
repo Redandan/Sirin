@@ -3,7 +3,6 @@ name: "AgoraMarket WebRTC Permission 修復驗證 (Issue #70 #1)"
 url: "https://redandan.github.io/?__test_role=buyer"
 
 # Flutter CanvasKit: headless Chrome 不 paint，必須開啟實體視窗
-browser_headless: false
 
 max_iterations: 15
 timeout_secs: 240

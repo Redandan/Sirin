@@ -2,7 +2,6 @@ id: agora_logout_flow
 name: "登出流程測試"
 url: "https://redandan.github.io/?__test_role=buyer"
 
-browser_headless: false
 max_iterations: 20
 timeout_secs: 360
 

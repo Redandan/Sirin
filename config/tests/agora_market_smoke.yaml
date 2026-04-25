@@ -16,7 +16,6 @@ goal: |
   3. 根據 vision 判讀回報通過/失敗
 
 # Flutter CanvasKit MUST run with visible browser to actually paint
-browser_headless: false
 
 max_iterations: 8
 timeout_secs: 180

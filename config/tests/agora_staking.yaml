@@ -3,7 +3,6 @@ name: "AgoraMarket Staking 質押功能驗證 (Issue #34)"
 url: "https://redandan.github.io/"
 
 # Flutter CanvasKit — UI 全部渲染在 canvas 上（WebGL 需要 GPU）
-browser_headless: false
 max_iterations: 75
 timeout_secs: 700
 retry_on_parse_error: 2

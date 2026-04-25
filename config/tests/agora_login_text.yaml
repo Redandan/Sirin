@@ -2,7 +2,6 @@ id: agora_login_text
 name: "AgoraMarket 登入流程 — text perception (AX baseline)"
 url: "https://redandan.github.io/#/login"
 
-browser_headless: false
 max_iterations: 10
 timeout_secs: 180
 retry_on_parse_error: 3

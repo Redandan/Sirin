@@ -2,7 +2,6 @@ id: agora_admin_category_filter
 name: "AgoraMarket Admin 商品分類篩選驗證 (Issue #70 #4)"
 url: "https://redandan.github.io/?__test_role=admin"
 
-browser_headless: false
 max_iterations: 15
 timeout_secs: 240
 

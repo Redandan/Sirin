@@ -2,7 +2,6 @@ id: agora_pickup_time_picker
 name: "取貨時間選擇器測試"
 url: "https://redandan.github.io/?__test_role=buyer"
 
-browser_headless: false
 max_iterations: 15
 timeout_secs: 240
 

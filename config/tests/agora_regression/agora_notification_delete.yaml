@@ -2,7 +2,6 @@ id: agora_notification_delete
 name: "AgoraMarket 通知刪除修復驗證 (Issue #70 #2)"
 url: "https://redandan.github.io/?__test_role=buyer"
 
-browser_headless: false
 max_iterations: 20
 timeout_secs: 300
 
