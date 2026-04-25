@@ -1069,7 +1069,17 @@ pub fn shadow_find(role: Option<&str>, name_regex: Option<&str>) -> Result<(f64,
                     std::thread::sleep(std::time::Duration::from_millis(600));
                     continue;
                 }
-                return shadow_find_once(role, name_regex); // surface the real error
+                // After ~3s of retries the host is still empty.  This usually
+                // means Flutter's a11y bridge hasn't been activated yet (the
+                // SPA navigated to a route that rebuilt the widget tree).
+                // Mirror what get_full_tree() does for ax_* actions: trigger
+                // the semantics bootstrap, wait briefly, then retry once more.
+                tracing::debug!(
+                    "[shadow_find] host still empty after 3s — calling enable_flutter_semantics() bootstrap"
+                );
+                let _ = crate::browser_ax::enable_flutter_semantics();
+                std::thread::sleep(std::time::Duration::from_millis(800));
+                return shadow_find_once(role, name_regex); // surface real error if still empty
             }
             other => return other,
         }
