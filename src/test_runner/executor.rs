@@ -437,6 +437,21 @@ pub async fn execute_test_tracked(
         );
     }
 
+    // 0-priv) Privacy mask (Issue #80): default ON — fail-secure.  Restored to
+    // the previous global value when this run finishes (so a `mask_sensitive:
+    // false` test does not leak its preference into the next test).
+    let want_mask = test.mask_sensitive.unwrap_or(true);
+    let prev_mask = crate::browser::set_privacy_mask(want_mask);
+    /// RAII guard that restores the global privacy-mask flag on drop, even if
+    /// the test panics or returns early.
+    struct MaskGuard(bool);
+    impl Drop for MaskGuard {
+        fn drop(&mut self) {
+            crate::browser::set_privacy_mask(self.0);
+        }
+    }
+    let _mask_guard = MaskGuard(prev_mask);
+
     // 0) Ensure browser launched in the right headless mode.
     // Flutter CanvasKit/WebGL needs headless=false to actually paint.
     let want_headless = test.browser_headless.unwrap_or_else(crate::browser::default_headless);

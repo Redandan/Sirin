@@ -235,6 +235,7 @@ pub fn spawn_adhoc_run(req: AdhocRunRequest) -> Result<String, String> {
         docs_refs: vec![],  // ad-hoc runs have no pre-defined required reading
         kb_refs:   vec![],  // ad-hoc runs don't reference KB topic keys
         perception: Default::default(),
+        mask_sensitive: None,  // None → executor defaults to fail-secure on
     };
 
     let run_id = runs::new_run(&test_id);
@@ -699,6 +700,7 @@ pub fn persist_adhoc_run(p: PersistAdhocParams) -> Result<PersistAdhocResult, St
         docs_refs: goal.docs_refs.clone(),  // propagate required-reading from source run
         kb_refs:   goal.kb_refs.clone(),    // propagate KB topic-key refs too
         perception: goal.perception,
+        mask_sensitive: goal.mask_sensitive,
     };
 
     // Serialize and write.  serde_yaml uses 2-space indent and never
@@ -759,6 +761,7 @@ mod persist_tests {
             docs_refs: vec![],
             kb_refs: vec![],
             perception: Default::default(),
+            mask_sensitive: None,
         };
         let run_id = runs::new_run(test_id);
         runs::set_goal(&run_id, goal.clone());
@@ -843,6 +846,7 @@ mod persist_tests {
             docs_refs: vec![],
             kb_refs: vec![],
             perception: Default::default(),
+            mask_sensitive: None,
         });
         runs::set_phase(&run_id, runs::RunPhase::Running {
             step: 2,
@@ -925,6 +929,7 @@ mod persist_tests {
             docs_refs: vec![],
             kb_refs: vec![],
             perception: Default::default(),
+            mask_sensitive: None,
         };
         // Insert directly into SQLite — simulates the row that
         // record_run wrote at the original run completion.

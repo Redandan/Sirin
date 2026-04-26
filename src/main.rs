@@ -173,6 +173,10 @@ fn main() {
 
     ensure_first_run_dirs();
 
+    // ── Privacy mask default (Issue #80) ─────────────────────────────────────
+    // Read SIRIN_PRIVACY_MASK once .env is loaded.  Default = on (fail-secure).
+    browser::init_privacy_mask_from_env();
+
     // ── AuthZ engine init ────────────────────────────────────────────────────
     authz::init(Some(std::path::Path::new(".")));
     tracing::info!(target: "sirin", "[main] AuthZ engine initialized");
