@@ -342,6 +342,11 @@ pub fn spawn_batch_run(
     let cap = max_concurrency.max(1);
     let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(cap));
 
+    // Channel for per-test (test_id, passed, reason) → digest coordinator.
+    // See `notify::notify_batch_complete` (Issue #38).  Bounded to test count.
+    let (digest_tx, digest_rx) = std::sync::mpsc::channel::<(String, bool, Option<String>)>();
+    let total_tests = test_ids.len();
+
     // Batch start stagger: when multiple tests target the same SPA they share
     // Chrome process state (localStorage, cookies, `?__test_role=...` flags).
     // If they ALL start within the same ~100ms, the second test's URL
@@ -369,14 +374,20 @@ pub fn spawn_batch_run(
         let test_id_clone = test_id.clone();
         let run_id_clone = run_id.clone();
         let session_id = format!("{batch_id}_{idx:02}");
+        let digest_tx_clone = digest_tx.clone();
 
         std::thread::spawn(move || {
+            // Helper: ensure exactly one digest line is emitted per spawned
+            // thread, even on early-return error paths (Issue #38).
+            let emit = |passed: bool, reason: Option<String>| {
+                let _ = digest_tx_clone.send((test_id_clone.clone(), passed, reason));
+            };
             let rt = match tokio::runtime::Runtime::new() {
                 Ok(r) => r,
                 Err(e) => {
-                    runs::set_phase(&run_id_clone, runs::RunPhase::Error(
-                        format!("failed to create runtime: {e}")
-                    ));
+                    let err = format!("failed to create runtime: {e}");
+                    runs::set_phase(&run_id_clone, runs::RunPhase::Error(err.clone()));
+                    emit(false, Some(err));
                     return;
                 }
             };
@@ -391,9 +402,9 @@ pub fn spawn_batch_run(
                 let _permit = match sem_clone.acquire().await {
                     Ok(p) => p,
                     Err(e) => {
-                        runs::set_phase(&run_id_clone, runs::RunPhase::Error(
-                            format!("semaphore closed: {e}")
-                        ));
+                        let err = format!("semaphore closed: {e}");
+                        runs::set_phase(&run_id_clone, runs::RunPhase::Error(err.clone()));
+                        emit(false, Some(err));
                         return;
                     }
                 };
@@ -401,9 +412,9 @@ pub fn spawn_batch_run(
                 let test = match parser::find(&test_id_clone) {
                     Some(t) => t,
                     None => {
-                        runs::set_phase(&run_id_clone, runs::RunPhase::Error(
-                            format!("test '{test_id_clone}' not found")
-                        ));
+                        let err = format!("test '{test_id_clone}' not found");
+                        runs::set_phase(&run_id_clone, runs::RunPhase::Error(err.clone()));
+                        emit(false, Some(err));
                         return;
                     }
                 };
@@ -440,7 +451,15 @@ pub fn spawn_batch_run(
                     iterations: Some(result.iterations),
                 });
 
+                let passed = matches!(result.status, TestStatus::Passed);
+                let reason = if passed {
+                    None
+                } else {
+                    Some(result.error_message.clone()
+                        .unwrap_or_else(|| status_str.to_string()))
+                };
                 runs::set_phase(&run_id_clone, runs::RunPhase::Complete(result));
+                emit(passed, reason);
 
                 // Best-effort close the dedicated tab.  Browser actions hold
                 // the session in `OnceLock<Mutex>` — release it so the next
@@ -452,6 +471,29 @@ pub fn spawn_batch_run(
             });
         });
     }
+    // Drop our retained sender so the coordinator's `recv()` returns Err
+    // once all worker threads have dropped their clones.
+    drop(digest_tx);
+
+    // Coordinator: collect one line per test, then fire a single TG digest
+    // (Issue #38).  Runs in its own OS thread so the caller returns
+    // immediately with the run_ids.
+    std::thread::spawn(move || {
+        let mut collected: Vec<(String, bool, Option<String>)> =
+            Vec::with_capacity(total_tests);
+        while let Ok(line) = digest_rx.recv() {
+            collected.push(line);
+            if collected.len() >= total_tests { break; }
+        }
+        let lines: Vec<notify::BatchResultLine<'_>> = collected.iter().map(|(tid, passed, reason)| {
+            notify::BatchResultLine {
+                test_id: tid.as_str(),
+                passed: *passed,
+                reason: reason.as_deref(),
+            }
+        }).collect();
+        notify::notify_batch_complete(&lines);
+    });
 
     Ok(run_ids)
 }
