@@ -438,6 +438,16 @@ fn handle_tools_list() -> Result<Value, String> {
                 }
             },
             {
+                "name": "test_analytics",
+                "description": "聚合測試健康指標：pass rate (近 10 / 30 runs)、flaky 標記、avg iterations、avg duration、最常見 failure_category。不指定 test_id 時返回全部測試（依 pass_rate_7d 升序，最差優先）+ summary 區塊。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "test_id": { "type": "string", "description": "選填：只看特定測試" }
+                    }
+                }
+            },
+            {
                 "name": "list_fixes",
                 "description": "查詢 auto-fix 歷史（claude_session spawn 記錄）。能看到哪些 test 觸發過自動修復、結果如何。",
                 "inputSchema": {
@@ -744,6 +754,7 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         "get_screenshot"       => return call_get_screenshot(arguments).map(wrap_json),
         "get_full_observation" => return call_get_full_observation(arguments).map(wrap_json),
         "list_recent_runs"     => return call_list_recent_runs(arguments).map(wrap_json),
+        "test_analytics"       => return call_test_analytics(arguments).map(wrap_json),
         "list_fixes"           => return call_list_fixes(arguments).map(wrap_json),
         "config_diagnostics"   => return call_config_diagnostics().map(wrap_json),
         "diagnose"             => return Ok(wrap_json(crate::diagnose::snapshot())),
@@ -1057,6 +1068,37 @@ fn call_list_recent_runs(args: Value) -> Result<Value, String> {
         "screenshot_path":  r.screenshot_path,
     })).collect();
     Ok(json!({ "count": items.len(), "runs": items }))
+}
+
+fn call_test_analytics(args: Value) -> Result<Value, String> {
+    let test_id = args.get("test_id").and_then(Value::as_str);
+    let stats = match test_id {
+        Some(tid) => vec![crate::test_runner::store::test_stats(tid)],
+        None      => crate::test_runner::store::all_test_stats(),
+    };
+    let total_tests = stats.len();
+    let flaky_count = stats.iter().filter(|s| s.is_flaky).count();
+    let avg_pass_rate = if total_tests == 0 { 0.0 } else {
+        stats.iter().map(|s| s.pass_rate_7d).sum::<f64>() / total_tests as f64
+    };
+    let items: Vec<Value> = stats.iter().map(|s| json!({
+        "test_id":              s.test_id,
+        "total_runs":           s.total_runs,
+        "pass_rate_7d":         s.pass_rate_7d,
+        "pass_rate_30d":        s.pass_rate_30d,
+        "is_flaky":             s.is_flaky,
+        "avg_iterations":       s.avg_iterations,
+        "avg_duration_ms":      s.avg_duration_ms,
+        "top_failure_category": s.top_failure_category,
+    })).collect();
+    Ok(json!({
+        "tests":   items,
+        "summary": {
+            "total_tests":   total_tests,
+            "flaky_count":   flaky_count,
+            "avg_pass_rate": avg_pass_rate,
+        }
+    }))
 }
 
 fn call_list_fixes(args: Value) -> Result<Value, String> {

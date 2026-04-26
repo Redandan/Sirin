@@ -251,6 +251,102 @@ pub fn is_flaky(test_id: &str) -> bool {
     passed > 0 && failed > 0 && (passed as f64 / runs.len() as f64) < 0.70
 }
 
+// ── Analytics aggregates (Issue #35) ─────────────────────────────────────────
+
+/// Aggregate health metrics for a single test.  Values default to safe
+/// neutrals when there is no run history.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TestStats {
+    pub test_id: String,
+    pub total_runs: usize,
+    /// Pass ratio over the last 10 runs (0.0–1.0).
+    pub pass_rate_7d: f64,
+    /// Pass ratio over the last 30 runs (0.0–1.0).
+    pub pass_rate_30d: f64,
+    pub is_flaky: bool,
+    /// Mean iterations consumed across the last 30 runs (0.0 if unknown).
+    pub avg_iterations: f64,
+    /// Mean duration_ms across the last 30 runs (0 if unknown).
+    pub avg_duration_ms: i64,
+    /// Most common failure_category across the last 30 runs, if any.
+    pub top_failure_category: Option<String>,
+}
+
+/// Compute aggregate health metrics for `test_id` from `test_runs`.
+pub fn test_stats(test_id: &str) -> TestStats {
+    let last30 = recent_runs(test_id, 30);
+    let total_runs = last30.len();
+
+    let pass_rate_7d = success_rate(test_id, 10);
+    let pass_rate_30d = success_rate(test_id, 30);
+    let flaky = is_flaky(test_id);
+
+    // avg iterations + duration: pull from SQLite with one aggregate query
+    // (the RunRecord row type omits these columns).
+    let (avg_iters, avg_dur): (f64, i64) = {
+        let conn = db().lock().unwrap_or_else(|e| e.into_inner());
+        conn.query_row(
+            "SELECT COALESCE(AVG(iterations), 0.0), COALESCE(CAST(AVG(duration_ms) AS INTEGER), 0) \
+             FROM (SELECT iterations, duration_ms FROM test_runs \
+                   WHERE test_id = ?1 ORDER BY started_at DESC LIMIT 30)",
+            rusqlite::params![test_id],
+            |row| Ok((row.get(0).unwrap_or(0.0), row.get(1).unwrap_or(0))),
+        ).unwrap_or((0.0, 0))
+    };
+
+    // Top failure category: tally non-null categories across last 30 runs.
+    let mut cat_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for r in &last30 {
+        if let Some(c) = &r.failure_category {
+            *cat_counts.entry(c.clone()).or_insert(0) += 1;
+        }
+    }
+    let top_failure_category = cat_counts.into_iter().max_by_key(|(_, n)| *n).map(|(c, _)| c);
+
+    TestStats {
+        test_id: test_id.to_string(),
+        total_runs,
+        pass_rate_7d,
+        pass_rate_30d,
+        is_flaky: flaky,
+        avg_iterations: avg_iters,
+        avg_duration_ms: avg_dur,
+        top_failure_category,
+    }
+}
+
+/// Aggregate health metrics for every test that has at least one row in
+/// `test_runs`.  Sorted by `pass_rate_7d` ascending (worst first) so callers
+/// can take(N) for "needs attention" lists.
+pub fn all_test_stats() -> Vec<TestStats> {
+    let conn = db().lock().unwrap_or_else(|e| e.into_inner());
+    let mut stmt = match conn.prepare("SELECT DISTINCT test_id FROM test_runs") {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let ids: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map(|it| it.filter_map(Result::ok).collect())
+        .unwrap_or_default();
+    drop(stmt);
+    drop(conn);
+
+    let mut stats: Vec<TestStats> = ids.iter().map(|id| test_stats(id)).collect();
+    stats.sort_by(|a, b| a.pass_rate_7d.partial_cmp(&b.pass_rate_7d).unwrap_or(std::cmp::Ordering::Equal));
+    stats
+}
+
+/// Count of `passed` rows for `test_id` across the entire history.
+/// Used by selector-extraction hooks (Issue #33) and analytics tools.
+pub fn pass_count(test_id: &str) -> usize {
+    let conn = db().lock().unwrap_or_else(|e| e.into_inner());
+    conn.query_row(
+        "SELECT COUNT(*) FROM test_runs WHERE test_id = ?1 AND status = 'passed'",
+        rusqlite::params![test_id],
+        |row| row.get::<_, i64>(0),
+    ).map(|n| n as usize).unwrap_or(0)
+}
+
 pub fn store_knowledge(test_id: &str, key: &str, value: &str) -> Result<(), String> {
     let now = chrono::Local::now().to_rfc3339();
     let conn = db().lock().unwrap_or_else(|e| e.into_inner());
@@ -643,6 +739,44 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(5));
         // 60 min window: should find it
         assert!(has_pending_fix(&tid, 60));
+    }
+
+    #[test]
+    fn test_stats_aggregates() {
+        let tid = format!("test_stats_{}", chrono::Local::now().timestamp_nanos_opt().unwrap_or(0));
+        // 3 passes, 2 fails, mixed → flaky candidate at 60% pass rate
+        insert_many(&tid, &["passed", "failed", "passed", "failed", "passed"]);
+        let stats = test_stats(&tid);
+        assert_eq!(stats.test_id, tid);
+        assert_eq!(stats.total_runs, 5);
+        assert!((stats.pass_rate_7d - 0.6).abs() < 0.01);
+        assert!(stats.is_flaky, "60% pass with mixed outcomes is flaky");
+        // duration_ms == 100 in insert_many → avg ~= 100
+        assert!(stats.avg_duration_ms >= 90 && stats.avg_duration_ms <= 110);
+        assert!(stats.top_failure_category.is_none(),
+            "no failure_category recorded → None");
+    }
+
+    #[test]
+    fn pass_count_counts_only_passed() {
+        let tid = format!("test_pc_{}", chrono::Local::now().timestamp_nanos_opt().unwrap_or(0));
+        insert_many(&tid, &["passed", "failed", "passed", "passed"]);
+        assert_eq!(pass_count(&tid), 3);
+    }
+
+    #[test]
+    fn all_test_stats_sorted_worst_first() {
+        let suffix = chrono::Local::now().timestamp_nanos_opt().unwrap_or(0);
+        let tid_good = format!("zz_good_{suffix}");
+        let tid_bad  = format!("zz_bad_{suffix}");
+        insert_many(&tid_good, &["passed", "passed", "passed"]);
+        insert_many(&tid_bad,  &["failed", "failed", "passed"]);
+        let stats = all_test_stats();
+        let pos_good = stats.iter().position(|s| s.test_id == tid_good);
+        let pos_bad  = stats.iter().position(|s| s.test_id == tid_bad);
+        if let (Some(g), Some(b)) = (pos_good, pos_bad) {
+            assert!(b < g, "worst (bad) must come before best (good): bad={b} good={g}");
+        }
     }
 
     #[test]
