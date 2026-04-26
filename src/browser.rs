@@ -74,6 +74,19 @@ static SESSION: OnceLock<Arc<Mutex<Option<BrowserInner>>>> = OnceLock::new();
 /// (instead of falling back to `default_headless()` which is always `true`).
 static TEST_DESIRED_HEADLESS: AtomicBool = AtomicBool::new(true);
 
+/// Whether to inject a privacy CSS mask immediately before screenshot capture.
+/// Defaults to `true` (fail-secure): password / credit-card / OTP fields are
+/// blurred + colour-stripped so the captured PNG cannot leak plaintext into
+/// `test_failures/`, vision LLM uploads, or GitHub bug reports.
+///
+/// Disable by:
+/// - YAML test goal: `mask_sensitive: false` (test runner flips this for the
+///   duration of that test, then restores the previous value).
+/// - Env: `SIRIN_PRIVACY_MASK=0` (read once at process start).
+///
+/// See Issue #80 for the threat model.
+static PRIVACY_MASK_ENABLED: AtomicBool = AtomicBool::new(true);
+
 /// Signal that stops the CDP keepalive heartbeat thread.
 /// Set to `true` by `close()` before dropping the browser session.
 static HEARTBEAT_STOP: AtomicBool = AtomicBool::new(false);
@@ -98,6 +111,30 @@ thread_local! {
 /// even if the process-level default is `headless=true`.
 pub fn set_test_headless_mode(headless: bool) {
     TEST_DESIRED_HEADLESS.store(headless, Ordering::Relaxed);
+}
+
+/// Initialise the global privacy-mask toggle from `SIRIN_PRIVACY_MASK`.
+/// Called once near process start.  `1`/`true`/`yes` → on (default),
+/// `0`/`false`/`no` → off.  Any other value also leaves it on (fail-secure).
+pub fn init_privacy_mask_from_env() {
+    let on = match std::env::var("SIRIN_PRIVACY_MASK").ok().as_deref() {
+        Some("0") | Some("false") | Some("FALSE") | Some("no") | Some("NO") => false,
+        _ => true,
+    };
+    PRIVACY_MASK_ENABLED.store(on, Ordering::Relaxed);
+}
+
+/// Set the privacy-mask toggle for the currently-running test.  Returns the
+/// previous value so the caller can restore it after the test finishes.
+///
+/// See [`PRIVACY_MASK_ENABLED`] for the rationale.
+pub fn set_privacy_mask(enabled: bool) -> bool {
+    PRIVACY_MASK_ENABLED.swap(enabled, Ordering::Relaxed)
+}
+
+/// Whether the privacy mask should be injected before the next screenshot.
+pub fn privacy_mask_enabled() -> bool {
+    PRIVACY_MASK_ENABLED.load(Ordering::Relaxed)
 }
 
 fn global() -> &'static Arc<Mutex<Option<BrowserInner>>> {
@@ -591,10 +628,115 @@ fn split_hash(url: &str) -> (&str, &str) {
     }
 }
 
+// ── Privacy mask (Issue #80) ─────────────────────────────────────────────────
+//
+// Goal: prevent password / credit-card / OTP plaintext from leaking into
+// failure screenshots stored in `test_failures/`, uploaded to vision LLMs,
+// or pasted into GitHub bug reports.  We inject CSS that blurs and
+// colour-strips matching inputs immediately before capture, then remove it
+// so subsequent test steps see the page unchanged.
+//
+// JS runs synchronously inside the page (Runtime.evaluate) so the style is
+// applied before the next CDP frame.  Both inject and remove are best-effort
+// — failures are logged but never abort the screenshot.
+
+const PRIVACY_MASK_STYLE_ID: &str = "__sirin_privacy_mask__";
+
+/// CSS rule list that defines which fields the mask covers.  Centralised so
+/// tests can assert against it.
+const PRIVACY_MASK_CSS: &str = r#"
+input[type="password"],
+input[autocomplete*="cc-"],
+input[autocomplete*="one-time-code"],
+input[autocomplete*="otp"],
+input[name*="password" i],
+input[name*="passwd" i],
+input[name*="ssn" i],
+input[name*="credit" i],
+input[name*="card-number" i],
+input[name*="cardnumber" i],
+input[name*="cvv" i],
+input[name*="cvc" i],
+input[aria-label*="password" i],
+input[aria-label*="\5BC6\78BC"],
+input[aria-label*="credit" i],
+input[aria-label*="ssn" i],
+[data-sensitive],
+[data-sirin-mask="true"] {
+  filter: blur(8px) !important;
+  background: #1A1A1A !important;
+  color: transparent !important;
+  caret-color: transparent !important;
+  text-shadow: none !important;
+  -webkit-text-security: disc !important;
+}
+"#;
+
+fn build_inject_js() -> String {
+    // Single-shot inject: idempotent — if a previous screenshot left the style
+    // behind for any reason, replace it.  Returns 1 on success.
+    let css = PRIVACY_MASK_CSS.replace('`', r"\`");
+    format!(
+        r#"(function() {{
+  try {{
+    var id = "{id}";
+    var prev = document.getElementById(id);
+    if (prev) prev.remove();
+    var s = document.createElement("style");
+    s.id = id;
+    s.textContent = `{css}`;
+    (document.head || document.documentElement).appendChild(s);
+    return 1;
+  }} catch (e) {{ return 0; }}
+}})()"#,
+        id = PRIVACY_MASK_STYLE_ID,
+        css = css,
+    )
+}
+
+fn build_remove_js() -> String {
+    format!(
+        r#"(function() {{
+  try {{
+    var el = document.getElementById("{id}");
+    if (el) el.remove();
+    return 1;
+  }} catch (e) {{ return 0; }}
+}})()"#,
+        id = PRIVACY_MASK_STYLE_ID,
+    )
+}
+
+/// Inject the privacy-mask `<style>` element if the global toggle is on.
+/// Errors are logged at debug level and never propagate — masking is a
+/// defence-in-depth, not a hard precondition.
+fn inject_privacy_mask(tab: &Tab) {
+    if !privacy_mask_enabled() {
+        return;
+    }
+    if let Err(e) = tab.evaluate(&build_inject_js(), false) {
+        tracing::debug!("[privacy_mask] inject failed (non-fatal): {e}");
+    }
+}
+
+/// Remove the privacy-mask `<style>` element so subsequent test steps see
+/// the page unchanged.  Best-effort.
+fn remove_privacy_mask(tab: &Tab) {
+    if !privacy_mask_enabled() {
+        return;
+    }
+    if let Err(e) = tab.evaluate(&build_remove_js(), false) {
+        tracing::debug!("[privacy_mask] remove failed (non-fatal): {e}");
+    }
+}
+
 pub fn screenshot() -> Result<Vec<u8>, String> {
     with_tab(|tab| {
-        tab.capture_screenshot(CaptureScreenshotFormatOption::Png, None, None, true)
-            .map_err(|e| format!("screenshot: {e}"))
+        inject_privacy_mask(tab);
+        let res = tab.capture_screenshot(CaptureScreenshotFormatOption::Png, None, None, true)
+            .map_err(|e| format!("screenshot: {e}"));
+        remove_privacy_mask(tab);
+        res
     })
 }
 
@@ -609,13 +751,16 @@ pub fn get_current_url() -> Result<String, String> {
 pub fn screenshot_jpeg(quality: u8) -> Result<Vec<u8>, String> {
     with_tab(|tab| {
         let q = quality.clamp(1, 100) as u32;
-        tab.capture_screenshot(
+        inject_privacy_mask(tab);
+        let res = tab.capture_screenshot(
             CaptureScreenshotFormatOption::Jpeg,
             Some(q),
             None,
             true,
         )
-        .map_err(|e| format!("screenshot_jpeg: {e}"))
+        .map_err(|e| format!("screenshot_jpeg: {e}"));
+        remove_privacy_mask(tab);
+        res
     })
 }
 
@@ -1500,7 +1645,8 @@ pub fn screenshot_element(selector: &str) -> Result<Vec<u8>, String> {
         let model = el.get_box_model()
             .map_err(|e| format!("get_box_model '{selector}': {e}"))?;
         let vp = model.content_viewport();
-        tab.capture_screenshot(
+        inject_privacy_mask(tab);
+        let res = tab.capture_screenshot(
             CaptureScreenshotFormatOption::Png,
             None,
             Some(Page::Viewport {
@@ -1511,7 +1657,9 @@ pub fn screenshot_element(selector: &str) -> Result<Vec<u8>, String> {
                 scale: vp.scale,
             }),
             true,
-        ).map_err(|e| format!("screenshot_element '{selector}': {e}"))
+        ).map_err(|e| format!("screenshot_element '{selector}': {e}"));
+        remove_privacy_mask(tab);
+        res
     })
 }
 
@@ -2493,6 +2641,85 @@ mod tests {
         if let Some(v) = orig {
             std::env::set_var("SIRIN_BROWSER_HEADLESS", v);
         }
+    }
+
+    #[test]
+    fn privacy_mask_default_on_and_toggle_round_trips() {
+        // Default = on (fail-secure) — explicitly set so we don't depend on
+        // sibling-test side effects.
+        let _ = set_privacy_mask(true);
+        assert!(privacy_mask_enabled(), "default must be on for fail-secure");
+
+        let prev = set_privacy_mask(false);
+        assert!(prev, "set_privacy_mask returns previous value");
+        assert!(!privacy_mask_enabled());
+
+        let prev = set_privacy_mask(true);
+        assert!(!prev);
+        assert!(privacy_mask_enabled());
+    }
+
+    #[test]
+    fn privacy_mask_env_off_disables_default() {
+        let orig = std::env::var("SIRIN_PRIVACY_MASK").ok();
+
+        // Anything but explicit off → on (fail-secure)
+        std::env::set_var("SIRIN_PRIVACY_MASK", "1");
+        init_privacy_mask_from_env();
+        assert!(privacy_mask_enabled());
+
+        std::env::remove_var("SIRIN_PRIVACY_MASK");
+        init_privacy_mask_from_env();
+        assert!(privacy_mask_enabled(), "unset must default to on");
+
+        std::env::set_var("SIRIN_PRIVACY_MASK", "garbage");
+        init_privacy_mask_from_env();
+        assert!(privacy_mask_enabled(), "unrecognised must default to on");
+
+        // Explicit off variants
+        for off in ["0", "false", "FALSE", "no", "NO"] {
+            std::env::set_var("SIRIN_PRIVACY_MASK", off);
+            init_privacy_mask_from_env();
+            assert!(!privacy_mask_enabled(), "{off} must disable mask");
+        }
+
+        // Restore
+        match orig {
+            Some(v) => std::env::set_var("SIRIN_PRIVACY_MASK", v),
+            None    => std::env::remove_var("SIRIN_PRIVACY_MASK"),
+        }
+        // Leave global in fail-secure state for subsequent tests
+        let _ = set_privacy_mask(true);
+    }
+
+    #[test]
+    fn privacy_mask_css_covers_known_sensitive_selectors() {
+        // Sanity-check that the CSS we will inject actually targets the
+        // selectors enumerated in Issue #80.  Catches accidental deletions.
+        for sel in [
+            r#"input[type="password"]"#,
+            r#"input[autocomplete*="cc-"]"#,
+            r#"input[autocomplete*="one-time-code"]"#,
+            r#"input[name*="password" i]"#,
+            r#"input[name*="ssn" i]"#,
+            r#"input[name*="cardnumber" i]"#,
+            r#"input[aria-label*="password" i]"#,
+            r#"[data-sensitive]"#,
+        ] {
+            assert!(
+                PRIVACY_MASK_CSS.contains(sel),
+                "PRIVACY_MASK_CSS missing selector: {sel}"
+            );
+        }
+        // Mask must visually destroy the value, not just blur (blur alone
+        // can be reversed by sharpening filters in vision LLMs).
+        assert!(PRIVACY_MASK_CSS.contains("filter: blur(8px)"));
+        assert!(PRIVACY_MASK_CSS.contains("color: transparent"));
+        assert!(PRIVACY_MASK_CSS.contains("background:"));
+
+        // The injection script must reference the same style id we remove.
+        assert!(build_inject_js().contains(PRIVACY_MASK_STYLE_ID));
+        assert!(build_remove_js().contains(PRIVACY_MASK_STYLE_ID));
     }
 
     #[test]

@@ -120,6 +120,18 @@ pub struct TestGoal {
     /// explicitly on Flutter / canvas pages where the AX tree is unreliable.
     #[serde(default)]
     pub perception: crate::perception::PerceptionMode,
+    /// Whether to inject a CSS privacy mask before every screenshot taken
+    /// during this test (password / credit-card / OTP / SSN inputs are
+    /// blurred + colour-stripped so plaintext cannot leak into
+    /// `test_failures/`, vision LLM uploads, or GitHub bug reports).
+    ///
+    /// Default `true` (fail-secure — Issue #80).  Set to `false` only when
+    /// you are deliberately verifying that an input renders a secret value
+    /// (e.g. testing the masking itself), or when the mask interferes with
+    /// the assertion (rare).  The process-wide default is also overridable
+    /// via `SIRIN_PRIVACY_MASK=0` env var.
+    #[serde(default)]
+    pub mask_sensitive: Option<bool>,
 }
 
 impl TestGoal {
