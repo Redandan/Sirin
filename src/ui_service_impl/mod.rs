@@ -202,14 +202,43 @@ impl MultiAgentService for RealService {
 
 impl TestRunnerService for RealService {
     fn recent_test_runs(&self, limit: usize) -> Vec<TestRunView> {
-        crate::test_runner::store::recent_runs_all(limit)
-            .into_iter()
+        let rows = crate::test_runner::store::recent_runs_all(limit);
+
+        // Compute per-test_id pass rate over the visible window so the UI
+        // can flag flaky tests inline (Issue #31).  Only counts terminal
+        // statuses — running/queued rows are excluded from the denominator.
+        use std::collections::HashMap;
+        let mut totals: HashMap<String, (u32, u32)> = HashMap::new(); // (passed, total)
+        for r in &rows {
+            match r.status.as_str() {
+                "passed" => {
+                    let e = totals.entry(r.test_id.clone()).or_insert((0, 0));
+                    e.0 += 1; e.1 += 1;
+                }
+                "failed" | "error" | "timeout" => {
+                    let e = totals.entry(r.test_id.clone()).or_insert((0, 0));
+                    e.1 += 1;
+                }
+                _ => {}
+            }
+        }
+        // Need at least 2 terminal runs to call something flaky vs. a one-off.
+        let pass_rate_for = |id: &str| -> Option<f32> {
+            let (p, t) = totals.get(id).copied()?;
+            if t < 2 { return None; }
+            Some(p as f32 / t as f32)
+        };
+
+        rows.into_iter()
             .map(|r| TestRunView {
-                test_id:     r.test_id,
-                status:      r.status,
-                started_at:  r.started_at,
-                duration_ms: r.duration_ms.map(|d| d as u64),
-                analysis:    r.ai_analysis,
+                pass_rate:        pass_rate_for(&r.test_id),
+                test_id:          r.test_id,
+                status:           r.status,
+                started_at:       r.started_at,
+                duration_ms:      r.duration_ms.map(|d| d as u64),
+                analysis:         r.ai_analysis,
+                step:             None,
+                failure_category: r.failure_category,
             })
             .collect()
     }
@@ -220,18 +249,21 @@ impl TestRunnerService for RealService {
             .into_iter()
             .filter_map(|run_id| get(&run_id))
             .map(|s| {
-                let (status, analysis) = match &s.phase {
-                    RunPhase::Queued => ("queued".to_string(), None),
-                    RunPhase::Running { current_action, .. } =>
-                        ("running".to_string(), Some(current_action.clone())),
-                    _ => ("unknown".to_string(), None),
+                let (status, analysis, step) = match &s.phase {
+                    RunPhase::Queued => ("queued".to_string(), None, None),
+                    RunPhase::Running { current_action, step } =>
+                        ("running".to_string(), Some(current_action.clone()), Some(*step)),
+                    _ => ("unknown".to_string(), None, None),
                 };
                 TestRunView {
-                    test_id:     s.test_id.clone(),
+                    test_id:          s.test_id.clone(),
                     status,
-                    started_at:  s.started_at.clone(),
-                    duration_ms: None,
+                    started_at:       s.started_at.clone(),
+                    duration_ms:      None,
                     analysis,
+                    step,
+                    failure_category: None,
+                    pass_rate:        None,
                 }
             })
             .collect()

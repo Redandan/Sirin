@@ -380,6 +380,42 @@ fn show_run_row(ui: &mut egui::Ui, run: &TestRunView) {
                     theme::TEXT,
                     RichText::new(&run.test_id).size(theme::FONT_BODY),
                 );
+
+                // Live step counter for active runs (Issue #31).
+                if let Some(step) = run.step {
+                    ui.colored_label(
+                        theme::INFO,
+                        RichText::new(format!("step {step}"))
+                            .size(theme::FONT_CAPTION)
+                            .monospace(),
+                    );
+                }
+
+                // Triage category badge for failed history rows.
+                if let Some(cat) = &run.failure_category {
+                    if !cat.is_empty() {
+                        ui.colored_label(
+                            theme::DANGER,
+                            RichText::new(format!("[{cat}]"))
+                                .size(theme::FONT_CAPTION)
+                                .monospace(),
+                        );
+                    }
+                }
+
+                // Flaky tag — pass rate < 70% over the visible window.
+                if let Some(pr) = run.pass_rate {
+                    if pr < 0.70 {
+                        ui.colored_label(
+                            theme::YELLOW,
+                            RichText::new(format!("flaky {:.0}%", pr * 100.0))
+                                .size(theme::FONT_CAPTION)
+                                .monospace(),
+                        )
+                        .on_hover_text("pass rate < 70% over recent runs");
+                    }
+                }
+
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if let Some(ms) = run.duration_ms {
                         let s = ms / 1000;
