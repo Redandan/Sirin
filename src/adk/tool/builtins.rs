@@ -728,8 +728,17 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                     "click_point" => {
                         let x = input.get("x").and_then(|v| v.as_f64()).ok_or("'click_point' requires 'x'")?;
                         let y = input.get("y").and_then(|v| v.as_f64()).ok_or("'click_point' requires 'y'")?;
-                        browser::click_point(x, y)?;
-                        Ok(json!({ "status": "clicked", "x": x, "y": y }))
+                        // Issue #79: vision LLMs read coords off a screenshot whose
+                        // physical pixel size differs from the CSS viewport on HiDPI
+                        // monitors.  `coord_source="screenshot"` triggers
+                        // devicePixelRatio rescaling; anything else (or absent) is
+                        // treated as raw CSS pixels for backward compatibility.
+                        let source = input.get("coord_source").and_then(|v| v.as_str()).unwrap_or("css");
+                        match source {
+                            "screenshot" => browser::click_point_screenshot(x, y)?,
+                            _ => browser::click_point(x, y)?,
+                        }
+                        Ok(json!({ "status": "clicked", "x": x, "y": y, "coord_source": source }))
                     }
                     "hover" => {
                         if target.is_empty() { return Err("'hover' requires 'target' selector".into()); }
@@ -739,8 +748,12 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                     "hover_point" => {
                         let x = input.get("x").and_then(|v| v.as_f64()).ok_or("'hover_point' requires 'x'")?;
                         let y = input.get("y").and_then(|v| v.as_f64()).ok_or("'hover_point' requires 'y'")?;
-                        browser::hover_point(x, y)?;
-                        Ok(json!({ "status": "hovered", "x": x, "y": y }))
+                        let source = input.get("coord_source").and_then(|v| v.as_str()).unwrap_or("css");
+                        match source {
+                            "screenshot" => browser::hover_point_screenshot(x, y)?,
+                            _ => browser::hover_point(x, y)?,
+                        }
+                        Ok(json!({ "status": "hovered", "x": x, "y": y, "coord_source": source }))
                     }
 
                     // ── Tabs ─────────────────────────────────────────
