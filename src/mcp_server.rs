@@ -353,6 +353,17 @@ fn handle_tools_list() -> Result<Value, String> {
                 }
             },
             {
+                "name": "get_run_trace",
+                "description": "依 run_id 取得每個 step 的 trace 元資料：LLM model/latency、KB injects、parse errors、timestamp。debug 失敗用。\n\n- `steps`: 陣列，每筆有 ts/llm_model/llm_latency_ms/parse_errors/kb_hits/action（簡化）\n- `summary`: total_steps、kb_hits（去重）、avg_latency_ms",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "run_id": { "type": "string", "description": "已完成的 run_id（從 SQLite test_runs 表讀取）" }
+                    },
+                    "required": ["run_id"]
+                }
+            },
+            {
                 "name": "run_adhoc_test",
                 "description": "即席啟動測試 — 不需預先建立 YAML。外部 AI 收到用戶要求『測 <URL> 的 <流程>』時用這個。立即返回 run_id，用 get_test_result 輪詢。",
                 "inputSchema": {
@@ -743,6 +754,7 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         "get_test_result"      => return call_get_test_result(arguments).map(wrap_json),
         "get_screenshot"       => return call_get_screenshot(arguments).map(wrap_json),
         "get_full_observation" => return call_get_full_observation(arguments).map(wrap_json),
+        "get_run_trace"        => return call_get_run_trace(arguments).map(wrap_json),
         "list_recent_runs"     => return call_list_recent_runs(arguments).map(wrap_json),
         "list_fixes"           => return call_list_fixes(arguments).map(wrap_json),
         "config_diagnostics"   => return call_config_diagnostics().map(wrap_json),
@@ -2201,6 +2213,54 @@ fn call_get_full_observation(args: Value) -> Result<Value, String> {
         })),
         None => Err(format!("observation for run_id '{run_id}' step {step} not found")),
     }
+}
+
+/// Issue #39: per-run trace log.  Reads the persisted `history_json` blob
+/// for `run_id` and projects each step into a trace event with the new
+/// metadata fields (llm_model, llm_latency_ms, kb_hits, parse_errors, ts).
+fn call_get_run_trace(args: Value) -> Result<Value, String> {
+    let run_id = args["run_id"].as_str().ok_or("Missing run_id")?;
+    let (test_id, started_at, status, history_json) =
+        crate::test_runner::store::find_history_by_run_id(run_id)
+            .ok_or_else(|| format!("run_id '{run_id}' not found in test_runs"))?;
+    let raw = history_json.unwrap_or_else(|| "[]".into());
+    let history: Vec<crate::test_runner::executor::TestStep> =
+        serde_json::from_str(&raw).map_err(|e| format!("history_json parse: {e}"))?;
+
+    let mut total_latency: u64 = 0;
+    let mut latency_samples: u64 = 0;
+    let mut all_kb_hits: std::collections::BTreeSet<String> = Default::default();
+    let steps: Vec<Value> = history.iter().enumerate().map(|(i, s)| {
+        if let Some(ms) = s.llm_latency_ms { total_latency += ms; latency_samples += 1; }
+        for k in &s.kb_hits { all_kb_hits.insert(k.clone()); }
+        let action_short = s.action.get("action").cloned()
+            .unwrap_or_else(|| s.action.clone());
+        json!({
+            "step": i,
+            "ts": s.ts,
+            "llm_model": s.llm_model,
+            "llm_latency_ms": s.llm_latency_ms,
+            "llm_tokens": s.llm_tokens,
+            "kb_hits": s.kb_hits,
+            "parse_errors": s.parse_errors,
+            "action": action_short,
+            "obs_chars": s.observation.chars().count(),
+        })
+    }).collect();
+
+    let avg = if latency_samples > 0 { total_latency / latency_samples } else { 0 };
+    Ok(json!({
+        "run_id": run_id,
+        "test_id": test_id,
+        "started_at": started_at,
+        "status": status,
+        "summary": {
+            "total_steps": history.len(),
+            "kb_hits": all_kb_hits.into_iter().collect::<Vec<_>>(),
+            "avg_latency_ms": avg,
+        },
+        "steps": steps,
+    }))
 }
 
 #[cfg(test)]

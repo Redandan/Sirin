@@ -31,6 +31,35 @@ fn cached_docs(test_id: &str) -> Option<String> {
         .cloned()
 }
 
+// ── KB-hits cache (Issue #39 trace) ──────────────────────────────────────────
+//
+// Records the KB topicKeys that successfully resolved for each test_id during
+// `pre_resolve_docs_for`.  Lets each TestStep carry a `kb_hits` snapshot so
+// `get_run_trace` can show "this run injected lessons X, Y, Z" without
+// re-parsing the prompt.
+
+fn kb_hits_cache() -> &'static Mutex<HashMap<String, Vec<String>>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Vec<String>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn record_kb_hit(test_id: &str, key: &str) {
+    let mut g = kb_hits_cache().lock().unwrap_or_else(|e| e.into_inner());
+    let entry = g.entry(test_id.to_string()).or_default();
+    if !entry.iter().any(|k| k == key) {
+        entry.push(key.to_string());
+    }
+}
+
+fn cached_kb_hits(test_id: &str) -> Vec<String> {
+    kb_hits_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(test_id)
+        .cloned()
+        .unwrap_or_default()
+}
+
 /// Resolve `test.docs_refs` + `test.kb_refs` into a single Markdown block
 /// ready to splice into the LLM prompt.
 ///
@@ -68,9 +97,12 @@ pub(crate) async fn pre_resolve_docs_for(test: &TestGoal) {
         }
         if crate::kb_client::looks_like_topic_key(entry) {
             match crate::kb_client::get(&project, entry).await {
-                Ok(Some(text)) => sections.push(format!(
-                    "### KB:{project}/{entry}\n{}", truncate(&text, 2000)
-                )),
+                Ok(Some(text)) => {
+                    record_kb_hit(&test.id, entry);
+                    sections.push(format!(
+                        "### KB:{project}/{entry}\n{}", truncate(&text, 2000)
+                    ));
+                }
                 Ok(None) => {
                     // KB disabled or entry not found — skip silently.
                     if crate::kb_client::enabled() {
@@ -106,9 +138,12 @@ pub(crate) async fn pre_resolve_docs_for(test: &TestGoal) {
             continue;
         }
         match crate::kb_client::get(&project, entry).await {
-            Ok(Some(text)) => sections.push(format!(
-                "### KB:{project}/{entry}\n{}", truncate(&text, 2000)
-            )),
+            Ok(Some(text)) => {
+                record_kb_hit(&test.id, entry);
+                sections.push(format!(
+                    "### KB:{project}/{entry}\n{}", truncate(&text, 2000)
+                ));
+            }
             Ok(None) => {
                 if crate::kb_client::enabled() {
                     tracing::debug!(
@@ -219,11 +254,35 @@ fn record_guard_fire_to_kb(
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TestStep {
     pub thought: String,
     pub action: Value,        // {"action":"click","target":"#btn"}
     pub observation: String,  // truncated tool result or ERROR:...
+    // ── Per-step trace metadata (Issue #39) ──────────────────────────────────
+    // All fields are Option / default-empty so old `history_json` blobs in
+    // SQLite deserialize cleanly when these columns are absent.
+    /// Resolved LLM model that produced this step (e.g. `gemini-2.0-flash`,
+    /// `claude_cli`).  None for steps recorded before recent_iterations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_model: Option<String>,
+    /// Wall-clock duration of the LLM call that emitted this step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_latency_ms: Option<u64>,
+    /// Token count if the backend returned usage metadata (currently none do
+    /// — placeholder so the schema is forward-compatible).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_tokens: Option<u32>,
+    /// KB topicKeys that were injected into the prompt for this run (all
+    /// steps share the same set — duplicated for trace simplicity).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kb_hits: Vec<String>,
+    /// Number of JSON parse retries that preceded this step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parse_errors: Option<u32>,
+    /// ISO 8601 timestamp when the step was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ts: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -599,15 +658,15 @@ pub async fn execute_test_tracked(
             // LLM call with retry for transient network errors (e.g. "error decoding
             // response body" from Gemini when Chrome crashes cause concurrent request
             // interference).  We retry up to 3× with a short back-off before giving up.
-            let raw = {
+            let (raw, llm_meta) = {
                 let mut last_err = String::new();
-                let mut raw_opt: Option<String> = None;
+                let mut raw_opt: Option<(String, LlmCallMeta)> = None;
                 for attempt in 0u32..3 {
                     if attempt > 0 {
                         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                     }
                     match call_test_llm(ctx, test, &history, hint_for_llm.as_deref(), &perception).await {
-                        Ok(s) => { raw_opt = Some(s); break; }
+                        Ok(pair) => { raw_opt = Some(pair); break; }
                         Err(e) => {
                             tracing::warn!(
                                 "[test_runner] '{}' iter {} LLM error (attempt {}/3): {e}",
@@ -618,23 +677,40 @@ pub async fn execute_test_tracked(
                     }
                 }
                 match raw_opt {
-                    Some(s) => s,
+                    Some(pair) => pair,
                     None => break 'react finalize_early(
                         ctx, run_id, test, &history,
                         format!("LLM error after 3 attempts: {last_err}")
                     ).await,
                 }
             };
+            // Trace stamp helper — captures the LLM metadata for THIS turn so
+            // every history.push below can attach it without re-plumbing args.
+            // Takes `parse_errors` by value to avoid borrowing the local
+            // `parse_error_count` (mutated below in the parse-error branch).
+            let llm_model = llm_meta.model.clone();
+            let llm_latency_ms = llm_meta.latency_ms;
+            let kb_hits_now = cached_kb_hits(&test.id);
+            let trace_stamp = |step: &mut TestStep, parse_errors: u32| {
+                step.llm_model = Some(llm_model.clone());
+                step.llm_latency_ms = Some(llm_latency_ms);
+                step.parse_errors = Some(parse_errors);
+                step.kb_hits = kb_hits_now.clone();
+                step.ts = Some(chrono::Local::now().to_rfc3339());
+            };
 
             let step = parse_step(&raw);
             if let Some(err) = &step.parse_error {
                 parse_error_count += 1;
                 if parse_error_count >= max_parse_errors {
-                    history.push(TestStep {
+                    let mut s = TestStep {
                         thought: step.thought.clone(),
                         action: json!({"error": "invalid_json"}),
                         observation: format!("ERROR: {err}"),
-                    });
+                        ..Default::default()
+                    };
+                    trace_stamp(&mut s, parse_error_count);
+                    history.push(s);
                     if let Some(rid) = run_id {
                         runs::push_observation(rid, format!("ERROR (parse): {err}\nRaw: {raw}"));
                     }
@@ -739,11 +815,14 @@ pub async fn execute_test_tracked(
                         if let Some(rid) = run_id {
                             runs::push_observation(rid, recovery_obs.clone());
                         }
-                        history.push(TestStep {
+                        let mut s = TestStep {
                             thought: step.thought,
                             action: action_input,
                             observation: recovery_obs,
-                        });
+                            ..Default::default()
+                        };
+                        trace_stamp(&mut s, parse_error_count);
+                        history.push(s);
                         continue;  // next iteration — LLM will see recovery message
                     }
                 }
@@ -782,11 +861,14 @@ pub async fn execute_test_tracked(
                         sig.clone(),
                         full_obs.clone(),
                     );
-                    history.push(TestStep {
+                    let mut s = TestStep {
                         thought: step.thought,
                         action: action_input,
                         observation: obs_for_llm,
-                    });
+                        ..Default::default()
+                    };
+                    trace_stamp(&mut s, parse_error_count);
+                    history.push(s);
                     break 'react finalize_early(
                         ctx, run_id, test, &history,
                         format!(
@@ -827,11 +909,14 @@ pub async fn execute_test_tracked(
                         sig.clone(),
                         full_obs.clone(),
                     );
-                    history.push(TestStep {
+                    let mut s = TestStep {
                         thought: step.thought,
                         action: action_input,
                         observation: obs_for_llm,
-                    });
+                        ..Default::default()
+                    };
+                    trace_stamp(&mut s, parse_error_count);
+                    history.push(s);
                     break 'react finalize_early(
                         ctx, run_id, test, &history,
                         format!(
@@ -842,11 +927,14 @@ pub async fn execute_test_tracked(
                 }
             }
 
-            history.push(TestStep {
+            let mut s = TestStep {
                 thought: step.thought,
                 action: action_input,
                 observation: obs_for_llm,
-            });
+                ..Default::default()
+            };
+            trace_stamp(&mut s, parse_error_count);
+            history.push(s);
         }
 
         // Loop exhausted
@@ -1301,13 +1389,21 @@ fn resolve_llm_backend(test: &TestGoal) -> String {
 /// - `claude_cli` / `claude` → compact prompt (last 3 steps, 200-char obs) to
 ///   stay well under the ~10 KB threshold that causes `claude -p` to hang.
 /// - anything else → full prompt via Sirin's main LLM config.
+/// Trace metadata returned alongside the raw LLM response so the ReAct loop
+/// can stamp it onto the resulting [`TestStep`].
+pub(crate) struct LlmCallMeta {
+    pub model: String,
+    pub latency_ms: u64,
+}
+
 async fn call_test_llm(
     ctx: &crate::adk::context::AgentContext,
     test: &TestGoal,
     history: &[TestStep],
     parse_error_hint: Option<&str>,
     perception: &crate::perception::PagePerception,
-) -> Result<String, String> {
+) -> Result<(String, LlmCallMeta), String> {
+    let started = std::time::Instant::now();
     // Vision path: attach screenshot as primary observation.  Still requires
     // the resolved mode to be Vision AND the capture to have succeeded; if
     // the screenshot failed (None), we gracefully fall back to text prompt.
@@ -1317,7 +1413,8 @@ async fn call_test_llm(
     ) {
         if let Some(b64) = perception.screenshot_b64.as_deref() {
             let prompt = build_prompt_vision(test, history, parse_error_hint, perception);
-            return crate::llm::call_vision(
+            let model = format!("vision:{}", ctx.llm.model);
+            let res = crate::llm::call_vision(
                 ctx.http.as_ref(),
                 ctx.llm.as_ref(),
                 &prompt,
@@ -1326,6 +1423,10 @@ async fn call_test_llm(
             )
             .await
             .map_err(|e| e.to_string());
+            return res.map(|s| (s, LlmCallMeta {
+                model,
+                latency_ms: started.elapsed().as_millis() as u64,
+            }));
         }
         tracing::warn!(
             "[test_runner] perception=vision requested for '{}' but screenshot unavailable; \
@@ -1338,7 +1439,10 @@ async fn call_test_llm(
     match backend.as_str() {
         "claude_cli" | "claude" => {
             let prompt = build_prompt_compact(test, history, parse_error_hint);
-            call_claude_cli(prompt).await
+            call_claude_cli(prompt).await.map(|s| (s, LlmCallMeta {
+                model: "claude_cli".into(),
+                latency_ms: started.elapsed().as_millis() as u64,
+            }))
         }
         _ => {
             // Auto-switch to a compact rolling-window prompt after 8 steps.
@@ -1359,9 +1463,14 @@ async fn call_test_llm(
             } else {
                 build_prompt(test, history, parse_error_hint)
             };
+            let model = ctx.llm.effective_coding_model().to_string();
             crate::llm::call_coding_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), prompt)
                 .await
                 .map_err(|e| e.to_string())
+                .map(|s| (s, LlmCallMeta {
+                    model,
+                    latency_ms: started.elapsed().as_millis() as u64,
+                }))
         }
     }
 }

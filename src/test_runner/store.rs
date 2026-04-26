@@ -205,6 +205,31 @@ pub fn recent_runs_all(limit: usize) -> Vec<RunRecord> {
     }
 }
 
+/// Look up a stored run's `history_json` blob by in-memory `run_id`
+/// (e.g. `run_20260418_153015_872_0`).  Used by the `get_run_trace`
+/// MCP tool to render per-step trace details from durable storage,
+/// even after the in-memory run registry has pruned the run.
+///
+/// Returns `(test_id, started_at, status, history_json)` or `None`
+/// when no row matches.
+pub fn find_history_by_run_id(
+    run_id: &str,
+) -> Option<(String, String, String, Option<String>)> {
+    let conn = db().lock().unwrap_or_else(|e| e.into_inner());
+    conn.query_row(
+        "SELECT test_id, started_at, status, history_json FROM test_runs \
+         WHERE run_id = ?1 ORDER BY id DESC LIMIT 1",
+        rusqlite::params![run_id],
+        |row| {
+            let test_id: String = row.get(0)?;
+            let started_at: String = row.get(1)?;
+            let status: String = row.get(2)?;
+            let history_json: Option<String> = row.get(3)?;
+            Ok((test_id, started_at, status, history_json))
+        },
+    ).ok()
+}
+
 pub fn recent_runs(test_id: &str, limit: usize) -> Vec<RunRecord> {
     let conn = db().lock().unwrap_or_else(|e| e.into_inner());
     let mut stmt = match conn.prepare(
