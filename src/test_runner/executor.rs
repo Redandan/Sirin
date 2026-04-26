@@ -1343,12 +1343,19 @@ fn build_prompt_with_limits(
 ## Available browser actions (call via tool "web_navigate", field "action")
 - goto           — target: URL
 - screenshot     — capture page PNG
-- click          — target: CSS selector OR plain text label (e.g. "使用用戶名密碼登入"); plain text triggers XPath text search
-- type           — target: CSS selector, text: input text
-- read           — target: CSS selector → returns innerText
+- dom_snapshot   — ⭐ CiC-style stable element refs for standard HTML pages (Issue #74).
+                   Returns {{url, count, truncated, elements:[{{ref:"e3",role,name,tag,bbox}}, …]}}.
+                   Pass `ref_id: "e3"` to click/type/read/exists/hover instead of `target` —
+                   the ref survives re-renders better than a brittle CSS selector.
+                   Optional `max` param caps element count (default 200, sets `truncated:true`).
+                   ⚠️ ref_ids reset after `goto` — re-snapshot after navigation.
+                   ⚠️ Flutter / canvas pages: prefer shadow_*/ax_* (this targets standard HTML).
+- click          — target: CSS selector OR plain text label (XPath text search); OR pass `ref_id` from dom_snapshot
+- type           — target: CSS selector (or `ref_id`), text: input text
+- read           — target: CSS selector (or `ref_id`) → returns innerText
 - eval           — target: JS expression → returns result
 - wait           — target: CSS selector (waits for element) OR plain ms number (sleeps, e.g. "2000")
-- exists         — target: CSS selector → true/false
+- exists         — target: CSS selector (or `ref_id`) → true/false
 - attr           — target: selector, text: attribute name
 - scroll         — x, y: pixels (default 0, 300)
 - scroll_to      — target: selector

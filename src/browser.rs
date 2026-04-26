@@ -1157,6 +1157,182 @@ pub fn get_content() -> Result<String, String> {
     with_tab(|tab| tab.get_content().map_err(|e| format!("get_content: {e}")))
 }
 
+// ── DOM snapshot + ref_id (Issue #74) ────────────────────────────────────────
+//
+// CiC-style stable element references: snapshot the page into a flat list of
+// interactable elements, give each a short ref_id (e1, e2, …), stamp the id
+// onto the element as `data-sirin-ref="eN"` so subsequent actions can locate
+// it via a selector that survives re-renders better than a brittle CSS path.
+//
+// The map is also kept on `window.__sirinRefMap` (WeakRef) so the LLM can
+// re-snapshot mid-test and stale refs auto-evict instead of pointing at the
+// wrong element.  ref_ids RESET on navigation (Chrome wipes window state),
+// which is intentional — the caller should re-snapshot after `goto`.
+
+/// Default cap on snapshot element count.  Pages with >200 interactables
+/// burn LLM context for marginal value; truncate + flag `truncated:true`.
+pub const DOM_SNAPSHOT_DEFAULT_MAX: usize = 200;
+
+/// JS payload that walks the visible DOM, assigns ref_ids, stamps
+/// `data-sirin-ref` and returns a JSON string `{url,elements,truncated}`.
+fn dom_snapshot_js(max: usize) -> String {
+    format!(
+        r#"(function(){{
+  var MAX = {max};
+  window.__sirinRefMap = window.__sirinRefMap || {{}};
+  window.__sirinRefCounter = window.__sirinRefCounter || 0;
+  function getRole(el){{
+    var role = el.getAttribute && el.getAttribute('role');
+    if(role) return role;
+    var tag = el.tagName.toLowerCase();
+    var type = (el.getAttribute && el.getAttribute('type')) || '';
+    var map = {{a:'link', button:'button', select:'combobox',
+                textarea:'textbox', h1:'heading', h2:'heading',
+                h3:'heading', h4:'heading', h5:'heading', h6:'heading'}};
+    if(tag==='input'){{
+      if(type==='checkbox') return 'checkbox';
+      if(type==='radio') return 'radio';
+      if(type==='submit'||type==='button') return 'button';
+      return 'textbox';
+    }}
+    return map[tag] || 'generic';
+  }}
+  function getName(el){{
+    var n = (el.getAttribute && (el.getAttribute('aria-label')
+                              || el.getAttribute('placeholder')
+                              || el.getAttribute('title')
+                              || el.getAttribute('alt'))) || '';
+    if(!n && el.children && el.children.length===0){{
+      n = (el.textContent || '').trim();
+    }}
+    return (n || '').trim().slice(0, 100);
+  }}
+  function isVisible(el){{
+    if(!el || !el.getBoundingClientRect) return false;
+    var s = window.getComputedStyle(el);
+    if(s.display==='none' || s.visibility==='hidden') return false;
+    return el.offsetWidth > 0 && el.offsetHeight > 0;
+  }}
+  function isInteresting(el){{
+    var tag = el.tagName.toLowerCase();
+    if(['script','style','meta','link','noscript','head'].indexOf(tag) >= 0) return false;
+    if(['a','button','input','select','textarea'].indexOf(tag) >= 0) return true;
+    if(el.getAttribute){{
+      if(el.getAttribute('onclick') !== null) return true;
+      if(el.getAttribute('tabindex') !== null) return true;
+      if(el.getAttribute('contenteditable') === 'true'
+        || el.getAttribute('contenteditable') === '') return true;
+      var role = el.getAttribute('role');
+      if(role && ['button','link','tab','checkbox','radio','combobox','menuitem','option']
+                  .indexOf(role) >= 0) return true;
+    }}
+    return false;
+  }}
+  function getOrCreateRef(el){{
+    var existing = el.getAttribute && el.getAttribute('data-sirin-ref');
+    if(existing){{
+      var ref = window.__sirinRefMap[existing];
+      if(ref && ref.deref && ref.deref() === el) return existing;
+    }}
+    var id = 'e' + (++window.__sirinRefCounter);
+    try {{ window.__sirinRefMap[id] = new WeakRef(el); }}
+    catch(e) {{ window.__sirinRefMap[id] = {{deref:function(){{return el;}}}}; }}
+    if(el.setAttribute) el.setAttribute('data-sirin-ref', id);
+    return id;
+  }}
+  // GC sweep: drop refs whose target is gone.
+  for(var k in window.__sirinRefMap){{
+    var w = window.__sirinRefMap[k];
+    if(w && w.deref && !w.deref()) delete window.__sirinRefMap[k];
+  }}
+  var out = [];
+  var truncated = false;
+  var all = document.querySelectorAll('*');
+  for(var i=0;i<all.length;i++){{
+    var el = all[i];
+    if(!isInteresting(el)) continue;
+    if(!isVisible(el)) continue;
+    if(out.length >= MAX){{ truncated = true; break; }}
+    var rect = el.getBoundingClientRect();
+    var ref = getOrCreateRef(el);
+    out.push({{
+      ref: ref,
+      role: getRole(el),
+      name: getName(el),
+      tag: el.tagName.toLowerCase(),
+      bbox: [Math.round(rect.x), Math.round(rect.y),
+             Math.round(rect.width), Math.round(rect.height)],
+      href: (el.getAttribute && el.getAttribute('href')) || null,
+      type: (el.getAttribute && el.getAttribute('type')) || null
+    }});
+  }}
+  return JSON.stringify({{
+    url: window.location.href,
+    count: out.length,
+    truncated: truncated,
+    elements: out
+  }});
+}})()"#
+    )
+}
+
+/// Walk the page DOM and return a JSON snapshot of interactable elements.
+/// Caps at `max` (default `DOM_SNAPSHOT_DEFAULT_MAX`); when exceeded the
+/// returned object includes `truncated: true`.
+pub fn dom_snapshot(max: usize) -> Result<serde_json::Value, String> {
+    let cap = if max == 0 { DOM_SNAPSHOT_DEFAULT_MAX } else { max };
+    let raw = evaluate_js(&dom_snapshot_js(cap))?;
+    serde_json::from_str::<serde_json::Value>(&raw).map_err(|e| {
+        let preview: String = raw.chars().take(200).collect();
+        format!("dom_snapshot: parse JS result: {e} (raw: {preview})")
+    })
+}
+
+/// Resolve a ref_id (from `dom_snapshot`) to a CSS selector usable by
+/// `click` / `type` / `get_text` / `element_exists` / `hover`.
+/// Errors if the ref is unknown or the element has been removed.
+pub fn resolve_ref(ref_id: &str) -> Result<String, String> {
+    if !is_valid_ref_id(ref_id) {
+        return Err(format!("invalid ref_id format: {ref_id:?} (expected eN)"));
+    }
+    let probe = format!(
+        r#"(function(){{
+            var m = window.__sirinRefMap || {{}};
+            var w = m['{ref_id}'];
+            var el = w && w.deref && w.deref();
+            if(!el) return 'GONE';
+            if(!document.body.contains(el)) return 'DETACHED';
+            if(el.getAttribute('data-sirin-ref') !== '{ref_id}'){{
+              el.setAttribute('data-sirin-ref', '{ref_id}');
+            }}
+            return 'OK';
+        }})()"#
+    );
+    let status = evaluate_js(&probe)?;
+    let trimmed = status.trim().trim_matches('"');
+    if trimmed != "OK" {
+        return Err(format!(
+            "ref_id '{ref_id}' {trimmed} — page may have re-rendered or navigated; \
+             call dom_snapshot again"
+        ));
+    }
+    Ok(ref_selector(ref_id))
+}
+
+/// Pure helper: validate a ref_id against the `eN` schema (e1, e42, …).
+pub fn is_valid_ref_id(ref_id: &str) -> bool {
+    let bytes = ref_id.as_bytes();
+    if bytes.len() < 2 { return false; }
+    if bytes[0] != b'e' { return false; }
+    bytes[1..].iter().all(|b| b.is_ascii_digit())
+}
+
+/// Pure helper: build the CSS selector that matches an element stamped by
+/// `dom_snapshot`.
+pub fn ref_selector(ref_id: &str) -> String {
+    format!(r#"[data-sirin-ref="{ref_id}"]"#)
+}
+
 // ── Wait ─────────────────────────────────────────────────────────────────────
 
 /// Wait for a CSS selector to appear in the DOM (default timeout from Tab).
@@ -2649,6 +2825,55 @@ mod tests {
     // ── Pure unit tests (no Chrome needed) ────────────────────────────────────
 
     // ── Issue #79: HiDPI screenshot↔CSS pixel conversion ──────────────────────
+
+    // ── Issue #74: dom_snapshot + ref_id helpers ─────────────────────────────
+
+    #[test]
+    fn ref_id_validates_eN_schema() {
+        assert!(is_valid_ref_id("e1"));
+        assert!(is_valid_ref_id("e42"));
+        assert!(is_valid_ref_id("e9999"));
+        // Invalid forms
+        assert!(!is_valid_ref_id(""));
+        assert!(!is_valid_ref_id("e"));
+        assert!(!is_valid_ref_id("ref_1"));        // CiC-style not accepted
+        assert!(!is_valid_ref_id("E1"));           // case-sensitive
+        assert!(!is_valid_ref_id("e1a"));          // trailing non-digit
+        assert!(!is_valid_ref_id("1e"));
+        assert!(!is_valid_ref_id("e-1"));
+        // Selector-injection attempts must NOT validate.
+        assert!(!is_valid_ref_id(r#"e1"]"#));
+        assert!(!is_valid_ref_id("e1; drop"));
+    }
+
+    #[test]
+    fn ref_selector_quotes_attribute_consistently() {
+        assert_eq!(ref_selector("e1"), r#"[data-sirin-ref="e1"]"#);
+        assert_eq!(ref_selector("e42"), r#"[data-sirin-ref="e42"]"#);
+        // Selector must be a valid CSS attr-equals, idempotent,
+        // and round-trippable through is_valid_ref_id for the inner id.
+        let sel = ref_selector("e7");
+        assert!(sel.starts_with("[data-sirin-ref="));
+        assert!(sel.ends_with("\"]"));
+    }
+
+    #[test]
+    fn dom_snapshot_js_embeds_max_and_returns_callable_iife() {
+        // Pure unit test of the JS payload generator — no Chrome.
+        let js = dom_snapshot_js(50);
+        assert!(js.starts_with("(function(){"));
+        assert!(js.trim_end().ends_with("})()"));
+        assert!(js.contains("var MAX = 50"), "MAX must be embedded literally");
+        assert!(js.contains("__sirinRefMap"));
+        assert!(js.contains("data-sirin-ref"));
+        // No leftover Rust-format placeholders.
+        assert!(!js.contains("{max}"), "format placeholder leaked into JS");
+        assert!(!js.contains("{{") || js.contains("{{a:'link'"), "literal braces only inside object literals");
+
+        // Default cap.
+        let big = dom_snapshot_js(DOM_SNAPSHOT_DEFAULT_MAX);
+        assert!(big.contains(&format!("var MAX = {}", DOM_SNAPSHOT_DEFAULT_MAX)));
+    }
 
     #[test]
     fn viewport_ctx_dpr_2x_screenshot_to_css_halves_coords() {

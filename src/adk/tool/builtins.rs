@@ -48,6 +48,21 @@ fn required_string_field(input: &Value, key: &str) -> Result<String, String> {
     optional_string_field(input, key).ok_or_else(|| format!("Missing '{key}' string"))
 }
 
+/// Issue #74: resolve `target` (CSS selector) OR `ref_id` (CiC-style stable id
+/// from `dom_snapshot`) into a single CSS selector usable by the legacy
+/// click/type/read/exists/hover paths.  `ref_id` wins when both are present.
+fn resolve_target(input: &Value, fallback_target: &str, action: &str) -> Result<String, String> {
+    if let Some(ref_id) = optional_string_field(input, "ref_id") {
+        return crate::browser::resolve_ref(&ref_id);
+    }
+    if !fallback_target.is_empty() {
+        return Ok(fallback_target.to_string());
+    }
+    Err(format!(
+        "'{action}' requires 'target' (CSS selector) or 'ref_id' (from dom_snapshot)"
+    ))
+}
+
 /// Register all discovered external MCP tools into a registry.
 fn register_mcp_tools(registry: ToolRegistry) -> ToolRegistry {
     let tools = crate::mcp_client::get_discovered_tools();
@@ -660,19 +675,22 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                     "close" => { browser::close(); Ok(json!({ "status": "closed" })) }
 
                     // ── DOM interaction ──────────────────────────────
+                    // Issue #74: each accepts EITHER `target` (selector) OR
+                    // `ref_id` (from dom_snapshot).  resolve_target() handles
+                    // both forms — ref_id wins when both are present.
                     "click" => {
-                        if target.is_empty() { return Err("'click' requires 'target' selector".into()); }
-                        browser::click(&target)?;
-                        Ok(json!({ "status": "clicked", "selector": target }))
+                        let sel = resolve_target(&input, &target, "click")?;
+                        browser::click(&sel)?;
+                        Ok(json!({ "status": "clicked", "selector": sel }))
                     }
                     "type" => {
-                        if target.is_empty() { return Err("'type' requires 'target' selector".into()); }
-                        browser::type_text(&target, &text)?;
-                        Ok(json!({ "status": "typed", "selector": target, "length": text.len() }))
+                        let sel = resolve_target(&input, &target, "type")?;
+                        browser::type_text(&sel, &text)?;
+                        Ok(json!({ "status": "typed", "selector": sel, "length": text.len() }))
                     }
                     "read" => {
-                        if target.is_empty() { return Err("'read' requires 'target' selector".into()); }
-                        Ok(json!({ "selector": target, "text": browser::get_text(&target)? }))
+                        let sel = resolve_target(&input, &target, "read")?;
+                        Ok(json!({ "selector": sel, "text": browser::get_text(&sel)? }))
                     }
                     "eval" => {
                         if target.is_empty() { return Err("'eval' requires 'target' JS expression".into()); }
@@ -697,8 +715,26 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                         }
                     }
                     "exists" => {
-                        if target.is_empty() { return Err("'exists' requires 'target' selector".into()); }
-                        Ok(json!({ "selector": target, "exists": browser::element_exists(&target)? }))
+                        // Issue #74: ref_id form returns false (rather than err)
+                        // when the ref is gone — matches the spirit of "does
+                        // this still exist?" instead of bubbling an error up.
+                        if let Some(ref_id) = optional_string_field(&input, "ref_id") {
+                            match browser::resolve_ref(&ref_id) {
+                                Ok(sel) => Ok(json!({
+                                    "ref_id": ref_id,
+                                    "selector": sel,
+                                    "exists": browser::element_exists(&sel)?
+                                })),
+                                Err(_) => Ok(json!({
+                                    "ref_id": ref_id,
+                                    "exists": false
+                                })),
+                            }
+                        } else if !target.is_empty() {
+                            Ok(json!({ "selector": target.clone(), "exists": browser::element_exists(&target)? }))
+                        } else {
+                            Err("'exists' requires 'target' selector or 'ref_id'".into())
+                        }
                     }
                     "count" => {
                         if target.is_empty() { return Err("'count' requires 'target' selector".into()); }
@@ -712,6 +748,21 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                     "value" => {
                         if target.is_empty() { return Err("'value' requires 'target' selector".into()); }
                         Ok(json!({ "selector": target, "value": browser::get_value(&target)? }))
+                    }
+
+                    // ── DOM snapshot (Issue #74) — CiC-style stable refs ─
+                    // `dom_snapshot` walks the visible DOM, assigns each
+                    // interactable element a short ref_id (e1, e2, …), and
+                    // returns {url, count, truncated, elements:[…]}.  Subsequent
+                    // click/type/read/exists/hover accept `ref_id` instead of
+                    // `target` to stay correct across re-renders.
+                    "dom_snapshot" => {
+                        let max = input.get("max")
+                            .and_then(Value::as_u64)
+                            .map(|v| v as usize)
+                            .unwrap_or(browser::DOM_SNAPSHOT_DEFAULT_MAX);
+                        let snap = browser::dom_snapshot(max)?;
+                        Ok(snap)
                     }
 
                     // ── Keyboard / input ─────────────────────────────
@@ -755,9 +806,10 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                         Ok(json!({ "status": "clicked", "x": x, "y": y, "coord_source": source }))
                     }
                     "hover" => {
-                        if target.is_empty() { return Err("'hover' requires 'target' selector".into()); }
-                        browser::hover(&target)?;
-                        Ok(json!({ "status": "hovered", "selector": target }))
+                        // Issue #74: accept ref_id from dom_snapshot.
+                        let sel = resolve_target(&input, &target, "hover")?;
+                        browser::hover(&sel)?;
+                        Ok(json!({ "status": "hovered", "selector": sel }))
                     }
                     "hover_point" => {
                         let x = input.get("x").and_then(|v| v.as_f64()).ok_or("'hover_point' requires 'x'")?;
