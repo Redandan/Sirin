@@ -730,11 +730,212 @@ fn remove_privacy_mask(tab: &Tab) {
     }
 }
 
+// ── Action indicator + HIDE_FOR_TOOL_USE (Issue #75) ────────────────────────
+//
+// When `ACTION_INDICATOR_ENABLED` is on, the test executor injects a small
+// in-page DOM overlay (right-bottom badge + faint border) so the user can SEE
+// that Sirin is driving the page.  The badge text updates as the LLM picks
+// each next action.
+//
+// Two orthogonal hide paths run before every screenshot / AX-tree read:
+//
+//   1. The indicator itself — Sirin's own UI must never appear in failure
+//      screenshots or pollute the AX-tree observation we feed back to the LLM.
+//   2. `HIDE_FOR_TOOL_USE`: any element a *test author* tags with
+//      `data-sirin-hide` (or the CiC-compatible alias `data-claude-hide`) gets
+//      `visibility:hidden` while the agent observes.  Useful for blanking out
+//      a banner or ad while the agent is asserting page correctness, and as a
+//      lightweight prompt-injection mitigation for content the page itself
+//      wants the agent to ignore.
+//
+// IMPORTANT — this is **UX, not a security boundary**.  The agent can still
+// read the source DOM via `eval` to bypass it.  The contract is "don't show
+// this to the LLM in its default observation channels (AX tree / screenshot)".
+//
+// Ordering vs privacy mask (Issue #80): both inject distinct `<style>` nodes
+// keyed by different IDs and both remove themselves after capture, so they
+// compose cleanly — no inject/remove interlock required.
+
+const ACTION_INDICATOR_BORDER_ID: &str = "__sirin_indicator_border__";
+const ACTION_INDICATOR_BADGE_ID:  &str = "__sirin_indicator_badge__";
+const ACTION_INDICATOR_STYLE_ID:  &str = "__sirin_indicator_style__";
+const HIDE_FOR_TOOL_USE_STYLE_ID: &str = "__sirin_hide_for_tool_use__";
+
+/// CSS that hides any element annotated with `data-sirin-hide` or
+/// `data-claude-hide` while a tool is observing the page.  Also hides
+/// the action indicator itself so it never lands in screenshots.
+const HIDE_FOR_TOOL_USE_CSS: &str = r#"
+[data-sirin-hide], [data-claude-hide],
+#__sirin_indicator_border__,
+#__sirin_indicator_badge__ {
+  visibility: hidden !important;
+}
+"#;
+
+/// Process-wide enable for the action indicator.  Off by default so headless
+/// CI runs and any caller that hasn't opted in keeps a clean DOM.  Flipped on
+/// by the test executor for runs with `show_action_indicator: true`.
+static ACTION_INDICATOR_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Toggle the in-page action indicator.  Returns the previous value so the
+/// caller can restore it after a test finishes (mirrors `set_privacy_mask`).
+pub fn set_action_indicator(enabled: bool) -> bool {
+    ACTION_INDICATOR_ENABLED.swap(enabled, Ordering::Relaxed)
+}
+
+/// Whether the action indicator is currently enabled.
+pub fn action_indicator_enabled() -> bool {
+    ACTION_INDICATOR_ENABLED.load(Ordering::Relaxed)
+}
+
+/// Build the JS that injects (or refreshes) the in-page indicator.  Called
+/// at test start and re-called on each action to update the badge text.
+fn build_indicator_inject_js(action: &str) -> String {
+    // Escape backticks + backslashes so the action text can never break out
+    // of the template literal.  Truncate to keep the badge readable.
+    let truncated: String = action.chars().take(60).collect();
+    let safe = truncated.replace('\\', r"\\").replace('`', r"\`");
+    format!(
+        r#"(function() {{
+  try {{
+    var BORDER_ID = "{border}";
+    var BADGE_ID  = "{badge}";
+    var STYLE_ID  = "{style}";
+    var label = `Sirin: ${{`{safe}`}}`;
+    if (!document.getElementById(STYLE_ID)) {{
+      var s = document.createElement("style");
+      s.id = STYLE_ID;
+      s.textContent = "@keyframes __sirin_pulse{{0%,100%{{box-shadow:0 0 12px #00FFA3,inset 0 0 12px rgba(0,255,163,.1)}}50%{{box-shadow:0 0 24px #00FFA3,inset 0 0 20px rgba(0,255,163,.2)}}}}";
+      (document.head || document.documentElement).appendChild(s);
+    }}
+    var border = document.getElementById(BORDER_ID);
+    if (!border) {{
+      border = document.createElement("div");
+      border.id = BORDER_ID;
+      border.setAttribute("aria-hidden", "true");
+      border.style.cssText = "position:fixed;inset:0;pointer-events:none;border:2px solid #00FFA3;border-radius:2px;z-index:2147483646;box-shadow:0 0 12px #00FFA3,inset 0 0 12px rgba(0,255,163,.1);animation:__sirin_pulse 2s ease-in-out infinite;";
+      document.body.appendChild(border);
+    }}
+    var badge = document.getElementById(BADGE_ID);
+    if (!badge) {{
+      badge = document.createElement("div");
+      badge.id = BADGE_ID;
+      badge.setAttribute("aria-hidden", "true");
+      badge.style.cssText = "position:fixed;bottom:16px;right:16px;z-index:2147483647;padding:6px 12px;background:#1A1A1A;color:#00FFA3;border:1px solid #333;border-radius:4px;font-family:monospace;font-size:12px;pointer-events:none;max-width:60vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+      document.body.appendChild(badge);
+    }}
+    badge.textContent = label;
+    return 1;
+  }} catch (e) {{ return 0; }}
+}})()"#,
+        border = ACTION_INDICATOR_BORDER_ID,
+        badge  = ACTION_INDICATOR_BADGE_ID,
+        style  = ACTION_INDICATOR_STYLE_ID,
+        safe   = safe,
+    )
+}
+
+/// Build the JS that removes the indicator + style.  Idempotent.
+fn build_indicator_remove_js() -> String {
+    format!(
+        r#"(function() {{
+  try {{
+    ["{border}", "{badge}", "{style}"].forEach(function(id) {{
+      var el = document.getElementById(id);
+      if (el) el.remove();
+    }});
+    return 1;
+  }} catch (e) {{ return 0; }}
+}})()"#,
+        border = ACTION_INDICATOR_BORDER_ID,
+        badge  = ACTION_INDICATOR_BADGE_ID,
+        style  = ACTION_INDICATOR_STYLE_ID,
+    )
+}
+
+/// Inject (or refresh) the action indicator with the given action label.
+/// No-op if [`action_indicator_enabled`] is `false`.  Failures are demoted
+/// to debug log — never propagate.
+pub fn show_action_indicator(action: &str) {
+    if !action_indicator_enabled() {
+        return;
+    }
+    let js = build_indicator_inject_js(action);
+    let _ = with_tab(|tab| {
+        if let Err(e) = tab.evaluate(&js, false) {
+            tracing::debug!("[indicator] inject failed (non-fatal): {e}");
+        }
+        Ok(())
+    });
+}
+
+/// Remove the action indicator immediately.  Use at end-of-test cleanup.
+/// Best-effort.
+pub fn hide_action_indicator() {
+    let js = build_indicator_remove_js();
+    let _ = with_tab(|tab| {
+        if let Err(e) = tab.evaluate(&js, false) {
+            tracing::debug!("[indicator] remove failed (non-fatal): {e}");
+        }
+        Ok(())
+    });
+}
+
+fn build_hide_for_tool_use_inject_js() -> String {
+    let css = HIDE_FOR_TOOL_USE_CSS.replace('`', r"\`");
+    format!(
+        r#"(function() {{
+  try {{
+    var id = "{id}";
+    var prev = document.getElementById(id);
+    if (prev) prev.remove();
+    var s = document.createElement("style");
+    s.id = id;
+    s.textContent = `{css}`;
+    (document.head || document.documentElement).appendChild(s);
+    return 1;
+  }} catch (e) {{ return 0; }}
+}})()"#,
+        id  = HIDE_FOR_TOOL_USE_STYLE_ID,
+        css = css,
+    )
+}
+
+fn build_hide_for_tool_use_remove_js() -> String {
+    format!(
+        r#"(function() {{
+  try {{
+    var el = document.getElementById("{id}");
+    if (el) el.remove();
+    return 1;
+  }} catch (e) {{ return 0; }}
+}})()"#,
+        id = HIDE_FOR_TOOL_USE_STYLE_ID,
+    )
+}
+
+/// Inject HIDE_FOR_TOOL_USE CSS — hides Sirin's own indicator AND any
+/// element tagged `data-sirin-hide` / `data-claude-hide`.  Always runs
+/// before screenshot; cheap (single style insert).
+fn inject_hide_for_tool_use(tab: &Tab) {
+    if let Err(e) = tab.evaluate(&build_hide_for_tool_use_inject_js(), false) {
+        tracing::debug!("[hide_for_tool_use] inject failed (non-fatal): {e}");
+    }
+}
+
+fn remove_hide_for_tool_use(tab: &Tab) {
+    if let Err(e) = tab.evaluate(&build_hide_for_tool_use_remove_js(), false) {
+        tracing::debug!("[hide_for_tool_use] remove failed (non-fatal): {e}");
+    }
+}
+
 pub fn screenshot() -> Result<Vec<u8>, String> {
     with_tab(|tab| {
         inject_privacy_mask(tab);
+        inject_hide_for_tool_use(tab);
         let res = tab.capture_screenshot(CaptureScreenshotFormatOption::Png, None, None, true)
             .map_err(|e| format!("screenshot: {e}"));
+        remove_hide_for_tool_use(tab);
         remove_privacy_mask(tab);
         res
     })
@@ -752,6 +953,7 @@ pub fn screenshot_jpeg(quality: u8) -> Result<Vec<u8>, String> {
     with_tab(|tab| {
         let q = quality.clamp(1, 100) as u32;
         inject_privacy_mask(tab);
+        inject_hide_for_tool_use(tab);
         let res = tab.capture_screenshot(
             CaptureScreenshotFormatOption::Jpeg,
             Some(q),
@@ -759,6 +961,7 @@ pub fn screenshot_jpeg(quality: u8) -> Result<Vec<u8>, String> {
             true,
         )
         .map_err(|e| format!("screenshot_jpeg: {e}"));
+        remove_hide_for_tool_use(tab);
         remove_privacy_mask(tab);
         res
     })
@@ -1646,6 +1849,7 @@ pub fn screenshot_element(selector: &str) -> Result<Vec<u8>, String> {
             .map_err(|e| format!("get_box_model '{selector}': {e}"))?;
         let vp = model.content_viewport();
         inject_privacy_mask(tab);
+        inject_hide_for_tool_use(tab);
         let res = tab.capture_screenshot(
             CaptureScreenshotFormatOption::Png,
             None,
@@ -1658,6 +1862,7 @@ pub fn screenshot_element(selector: &str) -> Result<Vec<u8>, String> {
             }),
             true,
         ).map_err(|e| format!("screenshot_element '{selector}': {e}"));
+        remove_hide_for_tool_use(tab);
         remove_privacy_mask(tab);
         res
     })
@@ -2690,6 +2895,54 @@ mod tests {
         }
         // Leave global in fail-secure state for subsequent tests
         let _ = set_privacy_mask(true);
+    }
+
+    #[test]
+    fn action_indicator_toggle_round_trips() {
+        // Default = off (CI safety).
+        let _ = set_action_indicator(false);
+        assert!(!action_indicator_enabled(), "default must be off");
+
+        let prev = set_action_indicator(true);
+        assert!(!prev, "set_action_indicator returns previous value");
+        assert!(action_indicator_enabled());
+
+        let prev = set_action_indicator(false);
+        assert!(prev);
+        assert!(!action_indicator_enabled());
+    }
+
+    #[test]
+    fn action_indicator_inject_js_escapes_action_label() {
+        // Backticks and backslashes in action labels must not break out of
+        // the JS template literal.  We simply check the produced JS contains
+        // the escaped form rather than the raw form.
+        let js = build_indicator_inject_js("click `evil` \\path");
+        assert!(js.contains(r"\`evil\`"), "backticks must be escaped: {js}");
+        assert!(js.contains(r"\\path"), "backslashes must be escaped: {js}");
+        // Stable IDs present so AX/screenshot filter can match them
+        assert!(js.contains(ACTION_INDICATOR_BORDER_ID));
+        assert!(js.contains(ACTION_INDICATOR_BADGE_ID));
+    }
+
+    #[test]
+    fn hide_for_tool_use_css_hides_indicator_and_data_attrs() {
+        // Sanity-check that the hide CSS actually targets:
+        //   1. The indicator border + badge (Sirin's own UI).
+        //   2. Both `data-sirin-hide` and the CiC-compatible `data-claude-hide`.
+        for needle in [
+            "data-sirin-hide",
+            "data-claude-hide",
+            ACTION_INDICATOR_BORDER_ID,
+            ACTION_INDICATOR_BADGE_ID,
+            "visibility: hidden",
+        ] {
+            assert!(
+                HIDE_FOR_TOOL_USE_CSS.contains(needle),
+                "hide CSS missing '{needle}': {}",
+                HIDE_FOR_TOOL_USE_CSS
+            );
+        }
     }
 
     #[test]

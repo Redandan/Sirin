@@ -149,6 +149,20 @@ pub struct TestGoal {
     /// is too expensive (slow Flutter pages).
     #[serde(default = "default_record_timeline_gif")]
     pub record_timeline_gif: bool,
+    /// Inject an in-page action indicator (right-bottom badge + faint border)
+    /// during this run so the user can SEE that Sirin is driving the page
+    /// (Issue #75 —对标 CiC's agent-visual-indicator).  The badge text
+    /// updates to the current ReAct action label on every iteration; the
+    /// indicator is hidden automatically before each screenshot / AX-tree
+    /// observation so it never pollutes failure captures or the LLM's view
+    /// of the page.
+    ///
+    /// Default `false` — headless CI and parallel batch runs need a clean
+    /// DOM.  Opt in only for interactive demos / supervised runs where the
+    /// extra DOM nodes are wanted.  Note: the indicator is **UX, not a
+    /// security boundary** — page JS can read its existence trivially.
+    #[serde(default)]
+    pub show_action_indicator: bool,
 }
 
 fn default_record_timeline_gif() -> bool { true }

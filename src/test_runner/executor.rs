@@ -457,6 +457,24 @@ pub async fn execute_test_tracked(
     }
     let _mask_guard = MaskGuard(prev_mask);
 
+    // 0-ind) Action indicator (Issue #75) — opt-in.  Toggle the global flag
+    // and install a RAII guard that restores the previous value AND removes
+    // the in-page DOM nodes on drop (so the next test starts clean even if
+    // it doesn't opt in).
+    let prev_indicator = crate::browser::set_action_indicator(test.show_action_indicator);
+    /// RAII guard for the action indicator: restores the previous global
+    /// flag and tears down the DOM badge/border on drop.
+    struct IndicatorGuard(bool);
+    impl Drop for IndicatorGuard {
+        fn drop(&mut self) {
+            crate::browser::set_action_indicator(self.0);
+            // Best-effort DOM cleanup — runs even on panic / early return.
+            // Failures are debug-logged inside `hide_action_indicator`.
+            crate::browser::hide_action_indicator();
+        }
+    }
+    let _indicator_guard = IndicatorGuard(prev_indicator);
+
     // 0) Ensure browser launched in the right headless mode.
     // Flutter CanvasKit/WebGL needs headless=false to actually paint.
     let want_headless = test.browser_headless.unwrap_or_else(crate::browser::default_headless);
@@ -591,6 +609,15 @@ pub async fn execute_test_tracked(
         inject_session(&mut ea, session_id);
         let _ = ctx.call_tool("web_navigate", ea).await;
         tracing::debug!("[test_runner] '{}' — post-auto-login enable_a11y OK", test.id);
+    }
+
+    // Issue #75: inject the action indicator now that the page is ready
+    // (no-op if `show_action_indicator` is false).  We do this AFTER
+    // navigate so it lands on the test target page, not the previous one.
+    if test.show_action_indicator {
+        let _ = tokio::task::spawn_blocking(|| {
+            crate::browser::show_action_indicator("starting");
+        }).await;
     }
 
     // 2c) Run fixture setup steps (failure aborts the test before the ReAct loop).
@@ -788,6 +815,15 @@ pub async fn execute_test_tracked(
                     step: (iteration + 1),
                     current_action: action_label.clone(),
                 });
+            }
+            // Issue #75: refresh the in-page action indicator with the
+            // current action.  No-op when `show_action_indicator` is false.
+            // Done in spawn_blocking — `with_tab` inside takes a Mutex.
+            {
+                let label = format!("{} ({}/{})", action_label, iteration + 1, max_iter);
+                let _ = tokio::task::spawn_blocking(move || {
+                    crate::browser::show_action_indicator(&label);
+                }).await;
             }
             // Dispatch to the appropriate tool.  `expand_observation` is a
             // meta-tool (reads run registry, no browser action).  Everything else
