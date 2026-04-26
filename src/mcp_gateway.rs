@@ -1,4 +1,4 @@
-//! `GET /` &mdash; HTML gateway page for the MCP endpoint.
+//! `GET /gateway` &mdash; HTML gateway page for the MCP endpoint.
 //!
 //! Purpose: give Claude in Chrome (Beta) a same-origin page it can `navigate`
 //! to and then drive with `javascript_tool` (or plain `read_page` + form
@@ -18,7 +18,7 @@ use axum::response::Html;
 /// in the inline JS which calls `POST /mcp tools/list` at load time.
 const GATEWAY_HTML: &str = include_str!("mcp_gateway.html");
 
-/// Axum handler for `GET /`.  Returns the embedded HTML with
+/// Axum handler for `GET /gateway`.  Returns the embedded HTML with
 /// `Content-Type: text/html; charset=utf-8` (set by `Html<_>`'s
 /// `IntoResponse` impl).
 pub async fn gateway_handler() -> Html<&'static str> {

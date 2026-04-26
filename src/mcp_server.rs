@@ -144,11 +144,14 @@ pub fn mcp_router() -> Router {
     // Browsers send a CORS preflight (OPTIONS) before any cross-origin POST
     // from a `chrome-extension://[id]` page; without this layer the preflight
     // 404s and the extension never gets to send the real request.
-    // `GET /` serves an HTML gateway page so Claude in Chrome (Beta) &mdash;
+    // `GET /gateway` serves an HTML gateway page so Claude in Chrome (Beta) &mdash;
     // whose only network primitive is `navigate` + `javascript_tool` &mdash;
     // can drive the MCP endpoint same-origin (no CORS).  See Issue #90.
+    // Path is `/gateway` (not `/`) because `rpc_server::start_rpc_server`
+    // already mounts `GET /` as the ext_server WebSocket upgrade route, and
+    // axum `merge` panics on overlapping method handlers.
     Router::new()
-        .route("/", get(crate::mcp_gateway::gateway_handler))
+        .route("/gateway", get(crate::mcp_gateway::gateway_handler))
         .route("/mcp", post(mcp_handler))
         .layer(cors_layer())
         .layer(TimeoutLayer::with_status_code(
