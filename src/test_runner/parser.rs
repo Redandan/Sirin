@@ -132,6 +132,15 @@ pub struct TestGoal {
     /// via `SIRIN_PRIVACY_MASK=0` env var.
     #[serde(default)]
     pub mask_sensitive: Option<bool>,
+    /// Per-test glob patterns appended to the process-wide URL blocklist
+    /// (see [`crate::authz::check_blocked_url`] / Issue #81).
+    ///
+    /// Use this to declare "this test must NEVER navigate to X" — e.g.
+    /// `*/payment/confirm` to prevent a dry-run test from completing a
+    /// real purchase.  Matching is glob-based (same syntax as
+    /// `deny[].url_pattern`).
+    #[serde(default)]
+    pub blocked_url_patterns: Vec<String>,
 }
 
 impl TestGoal {

@@ -1086,6 +1086,9 @@ fn call_run_adhoc_test(args: Value) -> Result<Value, String> {
     let fixture: Option<crate::test_runner::parser::Fixture> = args.get("fixture")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
 
+    // Issue #81: optional per-run URL blocklist.
+    let blocked_url_patterns: Option<Vec<String>> = args.get("blocked_url_patterns")
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
     let run_id = crate::test_runner::spawn_adhoc_run(crate::test_runner::AdhocRunRequest {
         url: url.clone(),
         goal,
@@ -1096,6 +1099,7 @@ fn call_run_adhoc_test(args: Value) -> Result<Value, String> {
         browser_headless: headless,
         llm_backend,
         fixture,
+        blocked_url_patterns,
     })?;
     Ok(json!({
         "run_id": run_id,

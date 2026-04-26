@@ -299,6 +299,7 @@ mod engine_test {
             clients: HashMap::new(),
             learn: LearnConfig::default(),
             audit: AuditConfig::default(),
+            blocked_url_patterns: Vec::new(),
         }
     }
 
@@ -375,6 +376,7 @@ mod engine_test {
             clients: HashMap::new(),
             learn: LearnConfig::default(),
             audit: AuditConfig::default(),
+            blocked_url_patterns: Vec::new(),
         };
         let d = decide("test@1.0", "goto", &json!({ "target": "https://example.com/" }), &None, &cfg);
         assert_eq!(d, Decision::Allow("permissive mode".to_string()));
@@ -415,6 +417,7 @@ mod engine_test {
             clients: HashMap::new(),
             learn: LearnConfig::default(),
             audit: AuditConfig::default(),
+            blocked_url_patterns: Vec::new(),
         };
         // "url" is in default readonly_allow but not in this custom cfg
         // Use a truly non-mutating action that is not in readonly list
@@ -435,6 +438,7 @@ mod engine_test {
             clients: HashMap::new(),
             learn: LearnConfig::default(),
             audit: AuditConfig::default(),
+            blocked_url_patterns: Vec::new(),
         };
         let d = decide("test@1.0", "goto", &json!({ "target": "https://example.com/" }), &None, &cfg);
         assert!(matches!(d, Decision::Ask(_)), "got {d:?}");
@@ -451,6 +455,7 @@ mod engine_test {
             clients: HashMap::new(),
             learn: LearnConfig::default(),
             audit: AuditConfig::default(),
+            blocked_url_patterns: Vec::new(),
         };
         // is_mutating("ax_tree") == false → strict mode allows
         let d = decide("test@1.0", "ax_tree", &json!({}), &None, &cfg);
@@ -514,6 +519,7 @@ mod engine_test {
             clients: HashMap::new(),
             learn: LearnConfig::default(),
             audit: AuditConfig::default(),
+            blocked_url_patterns: Vec::new(),
         };
         let d = decide(
             "test@1.0",
@@ -537,6 +543,7 @@ mod engine_test {
             clients: HashMap::new(),
             learn: LearnConfig { enabled: true, ..LearnConfig::default() },
             audit: AuditConfig::default(),
+            blocked_url_patterns: Vec::new(),
         };
         let d = decide("test@1.0", "goto", &json!({ "target": "https://new.example.com/" }), &None, &cfg);
         assert_eq!(d, Decision::AskWithLearn);
@@ -605,6 +612,7 @@ mod engine_test {
             clients,
             learn: LearnConfig::default(),
             audit: AuditConfig::default(),
+            blocked_url_patterns: Vec::new(),
         };
         let d = decide("claude-code@0.3.2", "goto", &json!({ "target": "https://anywhere.com/" }), &None, &cfg);
         assert_eq!(d, Decision::Allow("permissive mode".to_string()));
