@@ -417,6 +417,11 @@ pub async fn execute_test_tracked(
     let mut parse_error_count = 0u32;
     let max_parse_errors = test.retry_on_parse_error.max(1);
 
+    // Issue #78: per-iteration screenshot ring buffer; encoded into a
+    // timeline.gif iff the test fails AND `record_timeline_gif` is on.
+    let mut timeline = crate::test_runner::gif_recorder::TimelineBuffer::new();
+    let record_timeline = test.record_timeline_gif;
+
     if let Some(rid) = run_id {
         runs::set_phase(rid, runs::RunPhase::Running { step: 0, current_action: "goto".into() });
     }
@@ -944,12 +949,34 @@ pub async fn execute_test_tracked(
 
             let mut s = TestStep {
                 thought: step.thought,
-                action: action_input,
+                action: action_input.clone(),
                 observation: obs_for_llm,
                 ..Default::default()
             };
             trace_stamp(&mut s, parse_error_count);
             history.push(s);
+
+            // Issue #78: capture a timeline frame after each successful step.
+            // Reuses crate::browser::screenshot which auto-applies the privacy
+            // mask (Issue #80) — never bypass.  Errors are logged & ignored;
+            // a half-recorded GIF is still valuable.
+            if record_timeline {
+                let target = action_input
+                    .get("target")
+                    .or_else(|| action_input.get("ref_id"))
+                    .or_else(|| action_input.get("text"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if let Ok(Ok(bytes)) = tokio::task::spawn_blocking(crate::browser::screenshot).await {
+                    timeline.push(crate::test_runner::gif_recorder::TimelineFrame {
+                        step: iteration + 1,
+                        action: action_label.clone(),
+                        target,
+                        png_bytes: bytes,
+                    });
+                }
+            }
         }
 
         // Loop exhausted
@@ -972,6 +999,24 @@ pub async fn execute_test_tracked(
         for step in &fixture.cleanup {
             if let Err(e) = run_fixture_step(ctx, step, session_id).await {
                 tracing::warn!("[fixture] cleanup step '{}' failed: {e}", step.action);
+            }
+        }
+    }
+
+    // Issue #78: on failure, encode the buffered frames into timeline.gif.
+    // Soft-fail — never blocks triage.  Single-frame screenshot path stays.
+    if record_timeline
+        && !matches!(run_result.status, TestStatus::Passed)
+        && !timeline.is_empty()
+    {
+        if let Some(rid) = run_id {
+            let path = crate::test_runner::gif_recorder::timeline_gif_path(rid);
+            match timeline.encode_to_gif(&path) {
+                Ok(_) => tracing::info!(
+                    "[test_runner] timeline GIF saved: {} ({} frames)",
+                    path.display(), timeline.len()
+                ),
+                Err(e) => tracing::warn!("[test_runner] timeline GIF encode failed: {e}"),
             }
         }
     }

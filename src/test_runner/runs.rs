@@ -506,11 +506,13 @@ mod tests {
                 thought: "go".into(),
                 action: json!({"action":"goto","url":"https://x.test/"}),
                 observation: "ok".into(),
+                ..Default::default()
             },
             TestStep {
                 thought: "click".into(),
                 action: json!({"action":"click_text","text":"Continue"}),
                 observation: "ok".into(),
+                ..Default::default()
             },
         ];
         let out = summarise_success_actions(&history);
@@ -525,6 +527,7 @@ mod tests {
             thought: String::new(),
             action: json!({"action":"click","selector":long}),
             observation: String::new(),
+            ..Default::default()
         }];
         let out = summarise_success_actions(&history);
         // 120 chars + ellipsis
@@ -538,6 +541,7 @@ mod tests {
             thought: String::new(),
             action: json!({"action":"step","name":format!("n{i}")}),
             observation: String::new(),
+            ..Default::default()
         };
         let history: Vec<TestStep> = (0..20).map(mk).collect();
         let out = summarise_success_actions(&history);
@@ -559,6 +563,7 @@ mod tests {
             thought: String::new(),
             action: json!({"action":"wait_for_idle"}),
             observation: String::new(),
+            ..Default::default()
         }];
         let out = summarise_success_actions(&history);
         assert!(out.contains("step1: wait_for_idle"), "got: {out}");
