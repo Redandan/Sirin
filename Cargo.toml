@@ -67,6 +67,11 @@ long_description = "Multi-agent desktop AI platform with Telegram, Teams integra
 icon = ["assets/icon.icns", "assets/icon.png"]
 osx_minimum_system_version = "12.0"
 
+[dev-dependencies]
+# Already in the dep graph via axum's `ws` feature — declared here so the
+# `ext_bridge_poc` integration test (Issue #52) can drive a WebSocket client.
+tokio-tungstenite = "0.28"
+
 [build-dependencies]
 
 # dev-fast: for local dev loops and E2E test iterations.
