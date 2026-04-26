@@ -158,9 +158,13 @@ mod url_blocker_test {
     }
 
     #[test]
-    fn double_star_matches_path_with_separators() {
+    fn star_spans_path_segments_per_literal_separator_false() {
+        // Per build_glob's `literal_separator(false)` (see module docstring):
+        // `*` matches any characters including `/`, so a single `*` spans
+        // multiple path segments.  This is intentional — over-blocking is
+        // the safer default for an authz blocklist.
         let b = UrlBlocker::from_patterns(["https://github.com/*/settings/billing"]);
         assert!(b.is_blocked("https://github.com/myorg/settings/billing"));
-        assert!(!b.is_blocked("https://github.com/myorg/repo/settings/billing"));
+        assert!(b.is_blocked("https://github.com/myorg/repo/settings/billing"));
     }
 }
