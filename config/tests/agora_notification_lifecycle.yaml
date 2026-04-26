@@ -1,0 +1,110 @@
+id: agora_notification_lifecycle
+name: "AgoraMarket 通知生命週期 — 接收/已讀/刪除 (Issue #47, #70 #2/#67-68)"
+url: "https://redandan.github.io/?__test_role=buyer"
+locale: zh-TW
+
+# Flutter CanvasKit — UI 全部渲染在 canvas 上
+max_iterations: 50
+timeout_secs: 600
+retry_on_parse_error: 2
+
+fixture:
+  setup:
+    - {action: "clear_state"}
+    - {action: "set_viewport", width: 1440, height: 1600}
+    - {action: "goto", target: "https://redandan.github.io/?__test_role=buyer"}
+    - {action: "enable_a11y"}
+  cleanup:
+    - {action: "clear_state"}
+
+goal: |
+  目標：完整驗證 AgoraMarket 通知中心生命週期（Issue #47）。
+  涵蓋 #70 silent bug #2（通知刪不掉）+ #67-68（已讀狀態 / 列表刷新）。
+
+  起始狀態：以買家身份登入，已在首頁（URL auto-login via __test_role=buyer）。
+
+  ⚠️ Flutter CanvasKit app — 所有 UI 判斷用 screenshot_analyze（聊天/通知列表
+     不會出現在 shadow_dump / ax_tree 中）。
+  ⚠️ 路由切換後必須 enable_a11y，否則 shadow_ready=false。
+  ⚠️ 嚴禁提早終止 — 必須完成「接收 → 已讀 → 刪除 → reload 驗證」四段才能 done=true。
+
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  【Step 1: 確認首頁 + 進入通知中心】
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  1. screenshot_analyze "確認在首頁，頂部右側看到哪些按鈕？是否有訊息/通知圖示？"
+  2. shadow_click role=button name_regex="訊息|通知|Notification|Message"
+  3. wait 3000
+  4. enable_a11y
+  5. screenshot_analyze "是否進入通知列表頁？看到通知項目或空狀態？"
+
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  【Step 2: 觸發/接收新通知（SSE）】
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  6. eval "JSON.stringify(window.__sseErrors || [])"（先抓 baseline）
+  7. screenshot_analyze "通知列表中目前有幾個項目？最新一條是什麼內容？"
+  8. shadow_dump（記錄目前通知項目 ax 節點，方便對比刪除前後）
+
+  注意：若列表為空，仍要繼續執行 step 9-15 — 觀察是否有「無通知」空狀態提示，
+  並把 step 9-12 改為「嘗試對任何可點擊通知項目操作」。
+  若 SSE 在 8 秒內推送新訊息，列表應自動刷新（驗證 #67-68 列表刷新）。
+  9. wait 8000（保留時間給 SSE 推送）
+  10. screenshot_analyze "8 秒等待後通知列表是否有新增項目？是否出現未讀紅點？"
+
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  【Step 3: 標記已讀】
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  11. shadow_click role=button name_regex="全部已讀|標記已讀|已讀|Mark.*read"
+      若無「全部已讀」按鈕，改點第一條通知項目（點擊通常會自動標記已讀）：
+      shadow_click role=listitem name_regex=".+"  或第一個 button 通知項目
+  12. wait 2000
+  13. enable_a11y
+  14. screenshot_analyze "已讀操作後紅點/未讀標記是否消失？通知項目視覺是否變淺？"
+
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  【Step 4: 刪除通知 — 核心驗證 #70 #2】
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  15. shadow_dump（記錄刪除前的通知數量）
+  16. shadow_click role=button name_regex="刪除|Delete|移除|清除|×|✕|🗑"
+      若刪除按鈕在 swipe/長按手勢後才出現，先嘗試：
+      - shadow_click role=listitem（點選第一條通知）
+      - wait 1000
+      - 再找刪除按鈕
+  17. wait 1500
+  18. screenshot_analyze "出現刪除確認彈窗嗎？若有，找『確認/刪除/Yes/OK』按鈕"
+  19. shadow_click role=button name_regex="確認|刪除|Yes|OK|確定"（若有確認彈窗）
+  20. wait 2000
+  21. enable_a11y
+  22. screenshot_analyze "刪除後通知是否從列表消失？列表項目數量減少？"
+
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  【Step 5: Reload 驗證刪除持久化（#70 #2 關鍵）】
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  silent bug #2 的特徵：刪除後本地隱藏，reload 復現 → 必須驗證 server 端真的刪了。
+  23. eval "location.reload()"
+  24. wait 5000
+  25. enable_a11y
+  26. shadow_click role=button name_regex="訊息|通知|Notification"
+  27. wait 3000
+  28. enable_a11y
+  29. screenshot_analyze "reload 後重新進入通知中心 — 剛刪除的通知是否仍然消失？
+                          列表項目數量是否與刪除後一致（驗證 server 端確實刪除）？"
+  30. eval "JSON.stringify(window.__sseErrors || [])"（最終確認無 SSE 錯誤）
+  31. done=true
+
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  【判定原則】
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  - 通知中心可開啟 + 列表正常渲染（有項目或合理空狀態）→ Step 1-2 PASS
+  - 已讀操作有視覺回饋（紅點消失/視覺變淡/已讀按鈕禁用）→ Step 3 PASS
+  - 刪除後列表項目減少且 reload 不復現 → Step 4-5 PASS（核心驗收）
+  - 若列表始終為空、無從驗證刪除 → 標記為 INCONCLUSIVE 但不算失敗
+  - 全程 console 無 "Failed to handle new message" 等 SSE 錯誤
+
+success_criteria:
+  - "通知中心可正常開啟，列表渲染正常（有通知或空狀態）"
+  - "標記已讀後有可見視覺回饋（紅點消失或視覺變淡）"
+  - "刪除通知後該項目從列表消失"
+  - "reload 後重新進入通知中心，已刪通知不復現（驗證 server 端刪除，#70 #2）"
+  - "SSE 接收與列表刷新無嚴重 console 錯誤（#67-68）"
+
+tags: [regression, notification, sse, agora, critical, issue-47, issue-70]
