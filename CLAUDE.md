@@ -69,6 +69,20 @@ Central Panel:  ScrollArea 包裹, 內邊距 12pt
 - **Deadlock signal:** if a cargo output file stays at 0 bytes for >30s, the
   process is waiting for the lock — kill it and retry.
 
+## Multi-agent spawn rules
+
+KB: [`sirin/trap-parallel-agent-worktree-contention`](https://github.com/Redandan/Sirin/issues/76)
+
+- ✅ 同一 session 內 spawn 多個 Agent 並行 → OK，但**只能跨 repo**
+- ❌ 同 repo 多 agent 並行 → working tree 會互踩（`isolation: "worktree"` 不是真隔離，會 checkout 切走別的 agent 的未 commit 改動），必須**嚴格序列**
+- ✅ `general-purpose` 可遞迴 spawn 子 agent 做 nested 平行
+- ⚠️ Edit/Write/Glob 在 worktree 內路徑解析會跑到主 repo — 用絕對路徑
+
+## Issue creation rules
+
+- ❌ 不要用 `gh issue create &`（並行）— issue ID 順序不可控
+- ✅ 永遠序列 `gh issue create` 後立刻 `gh issue view N --json title` 驗證對應
+
 ## Project layout
 
 ```
