@@ -23,8 +23,9 @@ goal: |
   - 賣家首頁是儀表板，不是商品列表。必須點底部「商品」tab 才能進入商品管理列表。
   - 商品管理列表：每個商品卡片有「編輯」按鈕。
   - 商品編輯頁有「物流設定」按鈕，點擊展開宅配到府/7-ELEVEN/全家等服務開關。
-  - 退出編輯頁用 go_back action（history.back() + 等 AX tree 就緒）。
-  - go_back 後會回到賣家儀表板，需再次點「商品」tab 才能看到商品列表。
+  - 退出編輯頁用 eval window.history.back() + wait_for_ax_ready
+    （go_back 在 hash route 下偶爾跳 about:blank，改用 JS history.back() 較穩）。
+  - 退出後會回到賣家儀表板，需再次點「商品」tab 才能看到商品列表。
 
   ⚠️ 本測試分兩輪，缺一不可：
      第一輪（步驟 1-8）：進入商品編輯 → 展開物流設定 → screenshot_analyze 記錄狀態A
@@ -41,7 +42,10 @@ goal: |
   6. shadow_click role=button name_regex="^物流設定$"
   7. wait 1500
   8. screenshot_analyze "【第一輪/狀態A】記錄：宅配到府、7-ELEVEN、全家 的開關是開還是關？"
-  9. go_back wait=2500
+  9. eval target='window.history.back()'
+     （hash route 下用 JS history.back() 退出編輯，避免 go_back 跳 about:blank）
+     接著 wait_for_ax_ready timeout=6000；若仍非預期，fallback navigate_to
+     "https://redandan.github.io/?__test_role=seller#/seller/products" 重新進入。
   10. shadow_click role=tab name_regex="^商品$"
   11. wait 2500
   12. shadow_click role=button name_regex="^編輯$"
@@ -52,7 +56,8 @@ goal: |
   17. done=true
 
   ⚠️ 步驟 8 的 screenshot_analyze 是第一輪結束點，嚴禁步驟 8 前 done=true。
-  ⚠️ 步驟 9 用 go_back（非 goto），go_back 自動等 AX tree 就緒後才返回。
+  ⚠️ 步驟 9 用 eval window.history.back() + wait_for_ax_ready；
+     僅當頁面跳到 about:blank 或 AX tree 為空時，才 navigate_to 強制重進入。
   ⚠️ 步驟 16 的 screenshot_analyze 是第二輪結束點，嚴禁步驟 16 前 done=true。
 
 success_criteria:

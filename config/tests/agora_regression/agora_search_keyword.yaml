@@ -3,8 +3,8 @@ name: "商品關鍵字搜尋測試"
 url: "https://redandan.github.io/?__test_role=buyer"
 locale: zh-TW
 
-max_iterations: 10
-timeout_secs: 150
+max_iterations: 12
+timeout_secs: 180
 
 goal: |
   目標：確認買家可搜尋商品並看到結果。
@@ -14,17 +14,21 @@ goal: |
   ⚠️ Flutter CanvasKit app：所有 UI 判斷用 screenshot_analyze。
   ⚠️ flutter_type 僅支援 ASCII，禁止輸入中文。搜尋詞用 "iPhone"。
 
-  步驟（最多 5 個 iteration，強制 done=true）：
-  1. screenshot_analyze "確認在首頁。頂部有搜尋圖示嗎？有搜尋欄嗎？"
-  2. shadow_dump（列出所有 role=button 和 role=textfield）
-  3. 嘗試進入搜尋：
-     先試 shadow_click role=textfield name_regex="搜尋|Search|iPhone"
-     或試 shadow_click role=button name_regex="搜尋|Search"
-     若找不到 → click_point x=360 y=45（點擊頂部右側區域）
-  4. wait 1000 → flutter_type text="iPhone"
-  5. flutter_enter
-  6. wait 2000 → screenshot_analyze "搜尋後頁面是什麼狀態？有列表嗎？"
-  7. done=true（無論結果，立即完成，記錄搜尋功能是否可用）
+  搜尋入口三段 fallback（依序嘗試，第一個成功就跳到輸入步驟）：
+  A. shadow_click role=textfield name_regex="搜尋|Search|搜索|Keyword|關鍵字"
+  B. shadow_click role=button name_regex="搜尋|Search|搜索|magnifying|放大鏡|🔍"
+  C. eval target='window.location.hash="#/search"'（hash route 直連搜尋頁）
+  D. click_point x=360 y=45（最後 fallback：點頂部右側區域）
+
+  步驟（最多 7 個 iteration，強制 done=true）：
+  1. wait_for_ax_ready timeout=6000
+  2. screenshot_analyze "確認在首頁。頂部有搜尋圖示嗎？有搜尋欄嗎？"
+  3. shadow_dump（列出所有 role=button 和 role=textfield）
+  4. 依 A→B→C→D 順序嘗試搜尋入口（前面成功就停，跳到 5）
+  5. wait 1500 → flutter_type text="iPhone"
+  6. flutter_enter
+  7. wait 2500 → screenshot_analyze "搜尋後頁面是什麼狀態？有列表嗎？"
+  8. done=true（無論結果，立即完成，記錄搜尋功能是否可用）
 
 success_criteria:
   - "成功找到搜尋入口（搜尋欄、搜尋圖示、或任何搜尋相關 UI）"
