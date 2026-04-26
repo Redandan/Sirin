@@ -45,6 +45,7 @@
 pub mod audit;
 pub mod config;
 pub mod engine;
+pub mod url_blocker;
 
 // Re-export the most-used public surface.
 // These will be used by mcp_server.rs in T4; suppress unused-import lint until then.
@@ -52,6 +53,8 @@ pub mod engine;
 pub use config::{AuthzConfig, Mode, Rule};
 #[allow(unused_imports)]
 pub use engine::{decide, Decision};
+#[allow(unused_imports)]
+pub use url_blocker::UrlBlocker;
 
 use std::sync::Mutex;
 
@@ -85,7 +88,51 @@ pub fn global_config() -> AuthzConfig {
 ///
 /// Typically called once at startup from `main()` with the current working dir.
 pub fn init(repo_root: Option<&std::path::Path>) {
-    let cfg = config::load(repo_root);
+    let mut cfg = config::load(repo_root);
+    // Env var override / merge: SIRIN_BLOCKED_URL_PATTERNS=p1,p2,p3
+    if let Ok(raw) = std::env::var("SIRIN_BLOCKED_URL_PATTERNS") {
+        for p in raw.split(',') {
+            let p = p.trim();
+            if !p.is_empty() && !cfg.blocked_url_patterns.contains(&p.to_string()) {
+                cfg.blocked_url_patterns.push(p.to_string());
+            }
+        }
+    }
     let mut guard = GLOBAL_CONFIG.lock().unwrap_or_else(|e| e.into_inner());
     *guard = Some(cfg);
+}
+
+// ─── URL blocker (Issue #81) ─────────────────────────────────────────────────
+
+/// Check `url` against the process-wide blocklist + any extra per-call
+/// patterns (e.g. from a YAML test goal's `blocked_url_patterns`).
+///
+/// Returns `Some(matched_pattern)` if blocked, `None` if allowed.
+///
+/// This is the cheap-path entry used by the `web_navigate` tool's `goto`
+/// branch — it spends zero CDP calls and short-circuits before the
+/// browser ever sees the URL.
+pub fn check_blocked_url<'a, I, S>(url: &str, extra_patterns: I) -> Option<String>
+where
+    I: IntoIterator<Item = &'a S>,
+    S: AsRef<str> + 'a,
+{
+    let cfg = global_config();
+    // Process-wide list first.
+    let blocker = UrlBlocker::from_patterns(cfg.blocked_url_patterns.iter());
+    if let Some(p) = blocker.check(url) {
+        return Some(p.to_string());
+    }
+    // Per-call extra patterns (e.g. test-goal scoped).
+    let extra: Vec<String> = extra_patterns
+        .into_iter()
+        .map(|s| s.as_ref().to_string())
+        .collect();
+    if !extra.is_empty() {
+        let blocker_extra = UrlBlocker::from_patterns(extra.iter());
+        if let Some(p) = blocker_extra.check(url) {
+            return Some(p.to_string());
+        }
+    }
+    None
 }

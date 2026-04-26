@@ -620,12 +620,26 @@ pub(super) fn build_full_registry() -> ToolRegistry {
 
             let action_label = action.clone(); // preserved for timeout diagnostics (action moves into closure)
             let test_run_id = ctx.metadata.get("test_run_id").cloned(); // Extract test_run_id before spawn_blocking
+            // Issue #81: per-call extra blocked URL patterns (test-goal scoped).
+            // Wire-format: JSON array of strings stored in ctx.metadata under
+            // key "blocked_url_patterns" (set by `test_runner::executor`).
+            let extra_blocked: Vec<String> = ctx.metadata
+                .get("blocked_url_patterns")
+                .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+                .unwrap_or_default();
             let blocking_fut = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
                 use crate::browser;
                 match action.as_str() {
                     // ── Navigation ───────────────────────────────────
                     "goto" => {
                         if target.is_empty() { return Err("'goto' requires a 'target' URL".into()); }
+                        // Issue #81: pre-navigation URL blocklist (CiC-style guard).
+                        // Cheap path: zero CDP, zero LLM tokens, before browser sees URL.
+                        if let Some(matched) = crate::authz::check_blocked_url(&target, extra_blocked.iter()) {
+                            return Err(format!(
+                                "BlockedByPolicy: URL {target:?} matched blocked pattern {matched:?}"
+                            ));
+                        }
                         browser::navigate(&target)?;
                         let png = browser::screenshot()?;
                         crate::events::publish(crate::events::AgentEvent::BrowserScreenshotReady {

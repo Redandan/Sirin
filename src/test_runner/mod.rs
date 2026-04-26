@@ -47,6 +47,9 @@ pub struct AdhocRunRequest {
     /// Common value: `Some("claude_cli")` to use `claude -p` subprocess
     /// instead of the configured Gemini/HTTP backend.
     pub llm_backend: Option<String>,
+    /// Issue #81 — per-run URL blocklist (in addition to the process-wide
+    /// `SIRIN_BLOCKED_URL_PATTERNS` / `authz.yaml` list).
+    pub blocked_url_patterns: Option<Vec<String>>,
 }
 
 /// Run a single test by id, record the result, and optionally auto-fix.
@@ -89,11 +92,18 @@ async fn run_test_with_run_id(
     let started = chrono::Local::now().to_rfc3339();
     // Inject run_id into context metadata so web_navigate tool actions (e.g.
     // expand_observation) can find the current run.
-    let ctx_with_run = if let Some(rid) = run_id {
+    let mut ctx_with_run = if let Some(rid) = run_id {
         ctx.clone().with_metadata("test_run_id", rid)
     } else {
         ctx.clone()
     };
+    // Issue #81: forward per-test URL blocklist into tool ctx metadata so
+    // the web_navigate `goto` branch can short-circuit before navigation.
+    if !test.blocked_url_patterns.is_empty() {
+        if let Ok(json) = serde_json::to_string(&test.blocked_url_patterns) {
+            ctx_with_run = ctx_with_run.with_metadata("blocked_url_patterns", &json);
+        }
+    }
     let result = executor::execute_test_tracked(&ctx_with_run, &test, run_id, None).await;
 
     // Triage non-passed results
@@ -236,6 +246,7 @@ pub fn spawn_adhoc_run(req: AdhocRunRequest) -> Result<String, String> {
         kb_refs:   vec![],  // ad-hoc runs don't reference KB topic keys
         perception: Default::default(),
         mask_sensitive: None,  // None → executor defaults to fail-secure on
+        blocked_url_patterns: req.blocked_url_patterns.clone().unwrap_or_default(),
     };
 
     let run_id = runs::new_run(&test_id);
@@ -257,8 +268,14 @@ pub fn spawn_adhoc_run(req: AdhocRunRequest) -> Result<String, String> {
         };
         rt.block_on(async {
             let tools = crate::adk::tool::default_tool_registry();
-            let ctx = crate::adk::context::AgentContext::new("mcp_adhoc", tools)
+            let mut ctx = crate::adk::context::AgentContext::new("mcp_adhoc", tools)
                 .with_metadata("test_run_id", &run_id_clone);
+            // Issue #81: per-test URL blocklist (see execute_test_with_run).
+            if !test_clone.blocked_url_patterns.is_empty() {
+                if let Ok(j) = serde_json::to_string(&test_clone.blocked_url_patterns) {
+                    ctx = ctx.with_metadata("blocked_url_patterns", &j);
+                }
+            }
 
             let started = chrono::Local::now().to_rfc3339();
             let result = executor::execute_test_tracked(&ctx, &test_clone, Some(&run_id_clone), None).await;
@@ -421,8 +438,14 @@ pub fn spawn_batch_run(
                 };
 
                 let tools = crate::adk::tool::default_tool_registry();
-                let ctx = crate::adk::context::AgentContext::new("mcp_batch", tools)
+                let mut ctx = crate::adk::context::AgentContext::new("mcp_batch", tools)
                     .with_metadata("test_run_id", &run_id_clone);
+                // Issue #81: per-test URL blocklist.
+                if !test.blocked_url_patterns.is_empty() {
+                    if let Ok(j) = serde_json::to_string(&test.blocked_url_patterns) {
+                        ctx = ctx.with_metadata("blocked_url_patterns", &j);
+                    }
+                }
 
                 let started = chrono::Local::now().to_rfc3339();
                 let result = executor::execute_test_tracked(
@@ -701,6 +724,7 @@ pub fn persist_adhoc_run(p: PersistAdhocParams) -> Result<PersistAdhocResult, St
         kb_refs:   goal.kb_refs.clone(),    // propagate KB topic-key refs too
         perception: goal.perception,
         mask_sensitive: goal.mask_sensitive,
+        blocked_url_patterns: goal.blocked_url_patterns.clone(),
     };
 
     // Serialize and write.  serde_yaml uses 2-space indent and never
@@ -762,6 +786,7 @@ mod persist_tests {
             kb_refs: vec![],
             perception: Default::default(),
             mask_sensitive: None,
+            blocked_url_patterns: Vec::new(),
         };
         let run_id = runs::new_run(test_id);
         runs::set_goal(&run_id, goal.clone());
@@ -847,6 +872,7 @@ mod persist_tests {
             kb_refs: vec![],
             perception: Default::default(),
             mask_sensitive: None,
+            blocked_url_patterns: Vec::new(),
         });
         runs::set_phase(&run_id, runs::RunPhase::Running {
             step: 2,
@@ -930,6 +956,7 @@ mod persist_tests {
             kb_refs: vec![],
             perception: Default::default(),
             mask_sensitive: None,
+            blocked_url_patterns: Vec::new(),
         };
         // Insert directly into SQLite — simulates the row that
         // record_run wrote at the original run completion.

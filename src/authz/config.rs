@@ -187,6 +187,17 @@ pub struct AuthzConfig {
 
     #[serde(default)]
     pub audit: AuditConfig,
+
+    /// Pre-navigation URL blocklist (Issue #81 — mirrors CiC `blockedUrlPatterns`).
+    ///
+    /// These globs are evaluated *before* an LLM-driven `goto` reaches the
+    /// browser, so denied requests cost zero round-trips and zero render
+    /// tokens.  In contrast, `deny[]` rules are evaluated only when a tool
+    /// invocation actually arrives at the authz `decide()` boundary.
+    ///
+    /// Pattern syntax: same as `deny[].url_pattern` (globset, `**` wildcards).
+    #[serde(default)]
+    pub blocked_url_patterns: Vec<String>,
 }
 
 fn default_readonly_allow() -> Vec<String> {
@@ -263,6 +274,7 @@ pub fn defaults() -> AuthzConfig {
         ask: vec![],
         learn: LearnConfig::default(),
         audit: AuditConfig::default(),
+        blocked_url_patterns: Vec::new(),
     }
 }
 
@@ -346,6 +358,14 @@ pub fn merge_into(base: &mut AuthzConfig, src: AuthzConfig) {
     // learn / audit: src overrides
     base.learn = src.learn;
     base.audit = src.audit;
+
+    // blocked_url_patterns: union (no dedup needed — globset accepts dupes
+    // and the matcher short-circuits on first hit).
+    for p in src.blocked_url_patterns {
+        if !base.blocked_url_patterns.contains(&p) {
+            base.blocked_url_patterns.push(p);
+        }
+    }
 }
 
 fn dirs_home() -> Option<std::path::PathBuf> {
