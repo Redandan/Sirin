@@ -59,17 +59,13 @@ pub fn active_port() -> Option<u16> {
 
 /// Bind the WebSocket + MCP server and serve forever. Spawn this as a Tokio task.
 ///
-/// ## Port selection
-/// Tries `SIRIN_RPC_PORT` (default 7700) first.  On bind failure, walks up
-/// to [`MAX_PORT_FALLBACK`] sequential ports (e.g. 7700 → 7701 → 7702 → 7703)
-/// before giving up.  Each individual port is retried twice with a 1-second
-/// backoff to handle TCP TIME_WAIT churn.
-///
-/// Why fallback instead of just retrying: when 7700 is held by a stuck
-/// previous Sirin instance the user can't kill, retrying the same port for
-/// 6 seconds then dying is unhelpful — fallback ports let us self-heal.
-/// The chosen port is recorded in [`active_port`] so external clients can
-/// discover it via `diagnose.identity.rpc_port`.
+/// ## Port selection (Issue #29)
+/// Always binds `SIRIN_RPC_PORT` (default 7700) — never falls back to a
+/// different port.  If the configured port is held by a stale `sirin.exe`
+/// zombie, we taskkill the offender and retry.  If it's held by anything
+/// else, we panic with a clear error — silent fallback historically caused
+/// `.claude.json` (which hardcodes `127.0.0.1:7700/mcp`) to drift out of
+/// sync with the real port, breaking every `mcp__sirin__*` call.
 pub async fn start_rpc_server() {
     let app = crate::ext_server::add_ext_routes(
         Router::new()
@@ -77,33 +73,25 @@ pub async fn start_rpc_server() {
             .merge(crate::mcp_server::mcp_router()),
     );
 
-    let primary = configured_port();
-    let (listener, bound_port) = match try_bind_with_fallback(primary).await {
-        Some(pair) => pair,
-        None => {
+    let port = configured_port();
+    let listener = match bind_with_zombie_kill(port).await {
+        Ok(l) => l,
+        Err(e) => {
             tracing::error!(
                 target: "sirin",
-                "[rpc] Gave up after exhausting ports {primary}..={last}. \
-                 Set SIRIN_RPC_PORT=<alt_port> in .env, or run \
-                 `Get-Process sirin | Stop-Process -Force` to clear stale binds.",
-                last = primary.saturating_add(MAX_PORT_FALLBACK as u16)
+                "[rpc] Cannot bind 127.0.0.1:{port}: {e}. \
+                 Set SIRIN_RPC_PORT=<alt_port> in .env, or free the port manually."
             );
             return;
         }
     };
 
-    ACTIVE_PORT.store(bound_port, Ordering::Relaxed);
+    ACTIVE_PORT.store(port, Ordering::Relaxed);
     RUNNING.store(true, Ordering::Relaxed);
-    if bound_port == primary {
-        tracing::info!(target: "sirin", "[rpc] Listening on ws://127.0.0.1:{bound_port} + http://127.0.0.1:{bound_port}/mcp");
-    } else {
-        tracing::warn!(
-            target: "sirin",
-            "[rpc] Primary port {primary} unavailable — bound fallback port {bound_port} \
-             (ws://127.0.0.1:{bound_port} + http://127.0.0.1:{bound_port}/mcp). \
-             External MCP clients will need to know about the new port."
-        );
-    }
+    tracing::info!(
+        target: "sirin",
+        "[rpc] Listening on ws://127.0.0.1:{port} + http://127.0.0.1:{port}/mcp"
+    );
 
     if let Err(e) = axum::serve(listener, app).await {
         tracing::error!(target: "sirin", "[rpc] Server error: {e}");
@@ -112,54 +100,127 @@ pub async fn start_rpc_server() {
     }
 }
 
-/// Maximum number of sequential alternate ports to try after the primary fails.
-/// 3 fallbacks (e.g. 7700 → 7701/7702/7703) covers the common multi-zombie case
-/// without colliding with arbitrary other services higher up in the range.
-const MAX_PORT_FALLBACK: u32 = 3;
+/// Bind `port` on 127.0.0.1, with one zombie-recovery attempt on failure.
+///
+/// On Windows: if bind fails, look up the PID holding the port via `netstat`,
+/// confirm it's a `sirin.exe` (so we never collateral-kill other software),
+/// `taskkill /f` it, sleep 500ms, and retry once.  Any other holder → return
+/// the original bind error so the caller can surface a clear panic-style log.
+///
+/// On non-Windows: just retries once after a short sleep (handles TCP
+/// TIME_WAIT churn) without attempting to identify or kill the holder.
+async fn bind_with_zombie_kill(port: u16) -> Result<tokio::net::TcpListener, String> {
+    let addr = format!("127.0.0.1:{port}");
+    let first_err = match tokio::net::TcpListener::bind(&addr).await {
+        Ok(l) => return Ok(l),
+        Err(e) => e,
+    };
 
-/// Attempt to bind `primary`, then `primary+1`, …, up to `MAX_PORT_FALLBACK`
-/// alternate ports.  Each port is tried twice with a 1-second backoff in case
-/// the previous Sirin's socket is in TCP TIME_WAIT.  Returns `None` if all
-/// candidates fail.
-async fn try_bind_with_fallback(primary: u16) -> Option<(tokio::net::TcpListener, u16)> {
-    for offset in 0..=MAX_PORT_FALLBACK {
-        // u16 saturating add — if primary is e.g. u16::MAX, we just stop trying.
-        let port = match primary.checked_add(offset as u16) {
-            Some(p) => p,
-            None => break,
-        };
-        let addr = format!("127.0.0.1:{port}");
-        if let Some(listener) = loop_bind(&addr, 2).await {
-            return Some((listener, port));
-        }
-        if offset < MAX_PORT_FALLBACK {
-            tracing::warn!(
-                target: "sirin",
-                "[rpc] Port {port} unavailable — trying {next} next",
-                next = port.saturating_add(1)
-            );
-        }
+    tracing::warn!(
+        target: "sirin",
+        "[rpc] Bind {addr} failed ({first_err}); attempting zombie recovery"
+    );
+
+    if let Err(e) = kill_zombie_on_port(port) {
+        return Err(format!("bind failed ({first_err}); zombie recovery: {e}"));
     }
-    None
+
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    tokio::net::TcpListener::bind(&addr)
+        .await
+        .map_err(|e| format!("bind still failing after zombie kill: {e} (initial: {first_err})"))
 }
 
-async fn loop_bind(addr: &str, max_attempts: u32) -> Option<tokio::net::TcpListener> {
-    for attempt in 1..=max_attempts {
-        match tokio::net::TcpListener::bind(addr).await {
-            Ok(l) => return Some(l),
-            Err(e) => {
-                if attempt == max_attempts {
-                    // Suppress final-attempt log here — the caller (try_bind_with_fallback)
-                    // logs whether to advance to the next port or give up entirely.
-                    tracing::debug!(target: "sirin", "[rpc] Bind {addr} failed (attempt {attempt}/{max_attempts}): {e}");
-                    return None;
-                }
-                tracing::debug!(target: "sirin", "[rpc] Bind {addr} retry (attempt {attempt}/{max_attempts}): {e}");
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            }
-        }
+/// Find the PID listening on `127.0.0.1:port` and, if it's a stale `sirin.exe`,
+/// `taskkill /f` it.  Returns `Err` if the holder is something else (so we
+/// don't silently kill unrelated processes) or if no holder is found.
+#[cfg(target_os = "windows")]
+fn kill_zombie_on_port(port: u16) -> Result<(), String> {
+    use std::process::Command;
+
+    // 1. netstat -ano → parse out PID for the LISTENING line on our port.
+    let netstat = Command::new("netstat")
+        .args(["-ano", "-p", "TCP"])
+        .output()
+        .map_err(|e| format!("netstat spawn failed: {e}"))?;
+    if !netstat.status.success() {
+        return Err(format!(
+            "netstat exited {}: {}",
+            netstat.status,
+            String::from_utf8_lossy(&netstat.stderr)
+        ));
     }
-    None
+    let stdout = String::from_utf8_lossy(&netstat.stdout);
+    let needle = format!(":{port}");
+    let pid = stdout
+        .lines()
+        .filter(|l| l.contains("LISTENING"))
+        .filter(|l| l.contains(&needle))
+        // Local addr is column 2 (after "TCP"); ensure :port is on the local side
+        // (i.e. before "LISTENING") and not just somewhere in the line.
+        .find_map(|l| {
+            let parts: Vec<&str> = l.split_whitespace().collect();
+            // Expected: ["TCP", "127.0.0.1:7700", "0.0.0.0:0", "LISTENING", "<pid>"]
+            if parts.len() >= 5 && parts[1].ends_with(&needle) {
+                parts.last().and_then(|s| s.parse::<u32>().ok())
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| format!("no LISTENING entry for :{port} in netstat output"))?;
+
+    // 2. tasklist /fi "pid eq <pid>" /fo csv /nh → check it's sirin.exe.
+    let tasklist = Command::new("tasklist")
+        .args(["/fi", &format!("pid eq {pid}"), "/fo", "csv", "/nh"])
+        .output()
+        .map_err(|e| format!("tasklist spawn failed: {e}"))?;
+    if !tasklist.status.success() {
+        return Err(format!(
+            "tasklist exited {}: {}",
+            tasklist.status,
+            String::from_utf8_lossy(&tasklist.stderr)
+        ));
+    }
+    let row = String::from_utf8_lossy(&tasklist.stdout);
+    // CSV row looks like: "sirin.exe","12345","Console","1","42,000 K"
+    let proc_name = row
+        .trim()
+        .split(',')
+        .next()
+        .map(|s| s.trim_matches('"').to_lowercase())
+        .unwrap_or_default();
+    if proc_name != "sirin.exe" {
+        return Err(format!(
+            "port {port} held by PID {pid} ({proc_name}), not sirin.exe — \
+             refusing to kill foreign process"
+        ));
+    }
+
+    // 3. taskkill /pid <pid> /f.
+    tracing::warn!(
+        target: "sirin",
+        "[rpc] Killing zombie sirin.exe PID {pid} holding port {port}"
+    );
+    let killed = Command::new("taskkill")
+        .args(["/pid", &pid.to_string(), "/f"])
+        .output()
+        .map_err(|e| format!("taskkill spawn failed: {e}"))?;
+    if !killed.status.success() {
+        return Err(format!(
+            "taskkill exited {}: {}",
+            killed.status,
+            String::from_utf8_lossy(&killed.stderr)
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn kill_zombie_on_port(_port: u16) -> Result<(), String> {
+    // Non-Windows path: no taskkill / netstat-CSV plumbing.  The 500ms retry
+    // in the caller still lets us recover from TCP TIME_WAIT churn — it just
+    // can't blast a stuck process.
+    Ok(())
 }
 
 // ── WebSocket upgrade ─────────────────────────────────────────────────────────
@@ -295,26 +356,42 @@ mod tests {
         else { std::env::remove_var("SIRIN_RPC_PORT"); }
     }
 
-    /// Verifies the fallback walks up to a free port when the primary is held.
-    /// We hold an unrelated socket on `primary`, then ask `try_bind_with_fallback`
-    /// to bind starting at that primary — it should advance to `primary+1` (or
-    /// further) and return that bound port.
+    /// `bind_with_zombie_kill` succeeds on a free port without touching
+    /// anything else.  This is the happy path — no zombie present.
     #[tokio::test]
-    async fn try_bind_with_fallback_advances_when_primary_held() {
-        // Pick an ephemeral high port the OS gives us, then deliberately
-        // attempt to bind starting from there with the listener still alive.
+    async fn bind_with_zombie_kill_binds_when_port_free() {
+        // Get an ephemeral free port, then immediately drop it so it's free
+        // (modulo TIME_WAIT, which the retry inside the function tolerates).
+        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+
+        let listener = bind_with_zombie_kill(port)
+            .await
+            .expect("bind on free port should succeed");
+        assert_eq!(listener.local_addr().unwrap().port(), port);
+    }
+
+    /// When a foreign (non-sirin) process is holding the port, we must NOT
+    /// kill it — instead `bind_with_zombie_kill` returns Err so the caller
+    /// can surface a clear log instead of silently falling back to a
+    /// different port (Issue #29).  The test itself plays the role of the
+    /// "foreign" holder.
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    async fn bind_with_zombie_kill_refuses_to_kill_foreign_holder() {
+        // Bind a port and keep the listener alive across the bind attempt.
+        // Because cargo-test runs as the test binary (not sirin.exe),
+        // `kill_zombie_on_port` should refuse and the outer call should Err.
         let blocker = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let primary = blocker.local_addr().unwrap().port();
+        let port = blocker.local_addr().unwrap().port();
 
-        let result = try_bind_with_fallback(primary).await;
-        let (listener, bound) = result.expect("fallback should succeed");
-        assert_ne!(bound, primary,
-            "expected fallback to advance past held primary {primary}, got {bound}");
-        assert!(bound > primary && bound <= primary.saturating_add(MAX_PORT_FALLBACK as u16),
-            "bound port {bound} outside fallback window {primary}..={}",
-            primary.saturating_add(MAX_PORT_FALLBACK as u16));
+        let result = bind_with_zombie_kill(port).await;
+        assert!(
+            result.is_err(),
+            "expected Err when port held by non-sirin process, got Ok"
+        );
 
-        drop(listener);
         drop(blocker);
     }
 }
