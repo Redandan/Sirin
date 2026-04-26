@@ -201,6 +201,12 @@ pub fn get_full_tree(include_ignored: bool) -> Result<Vec<AxNode>, String> {
     let nodes = raw.get("nodes").and_then(|v| v.as_array())
         .ok_or_else(|| format!("getFullAXTree: missing nodes array; got {raw}"))?;
 
+    // HIDE_FOR_TOOL_USE (Issue #75): drop nodes whose DOM element bears
+    // `data-sirin-hide` / `data-claude-hide`, plus Sirin's own action
+    // indicator badge/border.  Fail-open — an empty set on JS error means
+    // we observe the page exactly as we did before this filter existed.
+    let hidden = collect_hidden_backend_ids().unwrap_or_default();
+
     let mut out = Vec::with_capacity(nodes.len());
     for n in nodes {
         let role = json_ax_value(n, "role");
@@ -212,6 +218,11 @@ pub fn get_full_tree(include_ignored: bool) -> Result<Vec<AxNode>, String> {
             }
         }
         let backend_id = n.get("backendDOMNodeId").and_then(|v| v.as_u64()).map(|n| n as u32);
+        if let Some(bid) = backend_id {
+            if hidden.contains(&bid) {
+                continue;
+            }
+        }
         let child_ids = n.get("childIds").and_then(|v| v.as_array())
             .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
             .unwrap_or_default();
@@ -227,6 +238,61 @@ pub fn get_full_tree(include_ignored: bool) -> Result<Vec<AxNode>, String> {
         });
     }
     Ok(out)
+}
+
+/// Collect backend node IDs of every DOM element marked with
+/// `data-sirin-hide` / `data-claude-hide`, plus Sirin's own action-indicator
+/// elements.  Used to filter the AX tree so the LLM never observes them.
+///
+/// Implementation: a single `Runtime.evaluate` walks the DOM and returns
+/// an array.  We then call `DOM.requestNode` per matched element to map
+/// each node to a backend id.  Errors degrade silently — the AX-tree path
+/// must never break because of an observation-filter glitch.
+fn collect_hidden_backend_ids() -> Result<HashSet<u32>, String> {
+    // Use `DOM.getDocument` + `DOM.querySelectorAll(selector)` per hide
+    // selector — returns node IDs directly which we map to backend IDs via
+    // `DOM.describeNode`.  All calls are best-effort; the caller handles
+    // any propagated error by treating the hidden set as empty.
+    with_tab(|tab| -> Result<HashSet<u32>, String> {
+        let mut out = HashSet::new();
+        // Get the document root nodeId.
+        let doc = tab
+            .call_method(DOM::GetDocument { depth: Some(0), pierce: Some(false) })
+            .map_err(|e| format!("DOM.getDocument: {e}"))?;
+        let root_id = doc.root.node_id;
+
+        // For each hide selector, ask Chrome to return matching node IDs
+        // and resolve them to backend IDs in a single batch.
+        let selectors = [
+            "[data-sirin-hide]",
+            "[data-claude-hide]",
+            "#__sirin_indicator_border__",
+            "#__sirin_indicator_badge__",
+        ];
+        for sel in selectors {
+            let res = tab.call_method(DOM::QuerySelectorAll {
+                node_id: root_id,
+                selector: sel.to_string(),
+            });
+            let ids = match res {
+                Ok(r) => r.node_ids,
+                Err(_) => continue,  // selector miss (e.g. no element) — fine
+            };
+            for nid in ids {
+                if let Ok(desc) = tab.call_method(DOM::DescribeNode {
+                    node_id: Some(nid),
+                    backend_node_id: None,
+                    object_id: None,
+                    depth: Some(0),
+                    pierce: Some(false),
+                }) {
+                    let bid = desc.node.backend_node_id as u32;
+                    out.insert(bid);
+                }
+            }
+        }
+        Ok(out)
+    })
 }
 
 fn fetch_tree_raw() -> Result<serde_json::Value, String> {
