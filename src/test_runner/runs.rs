@@ -123,6 +123,14 @@ pub fn get_goal(run_id: &str) -> Option<TestGoal> {
 /// fire-and-forget Telegram notification via [`super::notify::notify_failure`].
 /// The notification is a no-op when `SIRIN_NOTIFY_BOT_TOKEN` / `SIRIN_NOTIFY_CHAT_ID`
 /// are not set — callers never need to handle this.
+///
+/// Also fires a fire-and-forget KB write-back:
+/// - **Failed/Timeout/Error** → `sirin-failure-{test_id}` capturing error context.
+/// - **Passed** → `sirin-pass-{test_id}` capturing the successful action sequence
+///   (selectors / flow patterns) so other tests can mine confirmed-working
+///   navigation paths.  Idempotent topicKey lets KB's auto-versioning collapse
+///   repeated CI passes — promote-to-confirmed is handled downstream by the
+///   existing version>=3 logic (Issue #159).
 pub fn set_phase(run_id: &str, phase: RunPhase) {
     // Trigger failure notification + KB write-back before storing (fire-and-forget).
     if let RunPhase::Complete(ref r) = phase {
@@ -150,12 +158,78 @@ pub fn set_phase(run_id: &str, phase: RunPhase) {
                     ).await;
                 });
             }
+        } else {
+            // Issue #33: capture successful selector/flow patterns on PASS.
+            // Same fire-and-forget shape as the failure path; KB upserts on
+            // identical topicKey so repeated CI passes auto-version rather
+            // than spamming new entries.
+            let test_id    = r.test_id.clone();
+            let step_count = r.iterations;
+            let duration   = r.duration_ms;
+            let summary    = summarise_success_actions(&r.history);
+            let analysis   = r.final_analysis.clone().unwrap_or_default();
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    let topic_key = format!("sirin-pass-{test_id}");
+                    let title     = format!("[PASS] {test_id}");
+                    let content   = format!(
+                        "step: {step_count}\nduration_ms: {duration}\n\
+                         actions:\n{summary}\n\
+                         analysis: {analysis}"
+                    );
+                    let _ = crate::kb_client::write_raw_to_project(
+                        "sirin", &topic_key, &title, &content,
+                        "testing", "test-pass,selector-pattern", "",
+                    ).await;
+                });
+            }
         }
     }
     let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(s) = reg.get_mut(run_id) {
         s.phase = phase;
     }
+}
+
+/// Render the action sequence of a passing run as a compact bullet list so
+/// future searches over `kbSearch("...selector...")` can recover the working
+/// click target / form field path without dragging in noisy LLM thoughts.
+///
+/// Skips steps whose action JSON has no `action` key (defensive — shouldn't
+/// happen) and truncates each `target` to 120 chars to keep payloads small.
+/// At most 12 actions are emitted; a "…N more" tail line indicates trimming.
+fn summarise_success_actions(history: &[super::executor::TestStep]) -> String {
+    const MAX_LINES: usize = 12;
+    const TARGET_TRUNC: usize = 120;
+    let mut out = String::new();
+    let total = history.len();
+    for (i, step) in history.iter().take(MAX_LINES).enumerate() {
+        let action = step.action.get("action").and_then(|v| v.as_str()).unwrap_or("?");
+        // Pull the most useful descriptor — try common arg keys in order.
+        let target = ["target", "selector", "url", "name", "role", "text"]
+            .iter()
+            .find_map(|k| step.action.get(*k).and_then(|v| v.as_str()))
+            .unwrap_or("");
+        let target_short = if target.chars().count() > TARGET_TRUNC {
+            let mut s: String = target.chars().take(TARGET_TRUNC).collect();
+            s.push('…');
+            s
+        } else {
+            target.to_string()
+        };
+        if target_short.is_empty() {
+            out.push_str(&format!("- step{}: {}\n", i + 1, action));
+        } else {
+            out.push_str(&format!("- step{}: {} → {}\n", i + 1, action, target_short));
+        }
+    }
+    if total > MAX_LINES {
+        out.push_str(&format!("- …{} more\n", total - MAX_LINES));
+    }
+    if out.is_empty() {
+        out.push_str("(no recorded actions)\n");
+    }
+    out
 }
 
 /// Push a full observation.  Step index is implicit (Vec length).
@@ -418,5 +492,76 @@ mod tests {
     #[test]
     fn screenshot_cache_missing_run_id_returns_none() {
         assert!(get_screenshot_cache("nonexistent_run", "any_key").is_none());
+    }
+
+    // ── Issue #33: success-pattern KB summarisation ──────────────────────
+
+    use super::super::executor::TestStep;
+    use serde_json::json;
+
+    #[test]
+    fn summarise_success_renders_action_target() {
+        let history = vec![
+            TestStep {
+                thought: "go".into(),
+                action: json!({"action":"goto","url":"https://x.test/"}),
+                observation: "ok".into(),
+            },
+            TestStep {
+                thought: "click".into(),
+                action: json!({"action":"click_text","text":"Continue"}),
+                observation: "ok".into(),
+            },
+        ];
+        let out = summarise_success_actions(&history);
+        assert!(out.contains("step1: goto → https://x.test/"), "got: {out}");
+        assert!(out.contains("step2: click_text → Continue"),  "got: {out}");
+    }
+
+    #[test]
+    fn summarise_success_truncates_long_target() {
+        let long = "a".repeat(500);
+        let history = vec![TestStep {
+            thought: String::new(),
+            action: json!({"action":"click","selector":long}),
+            observation: String::new(),
+        }];
+        let out = summarise_success_actions(&history);
+        // 120 chars + ellipsis
+        assert!(out.contains('…'), "expected ellipsis, got: {out}");
+        assert!(out.len() < 200, "expected truncation, got len={}", out.len());
+    }
+
+    #[test]
+    fn summarise_success_caps_at_max_lines_and_emits_tail() {
+        let mk = |i: usize| TestStep {
+            thought: String::new(),
+            action: json!({"action":"step","name":format!("n{i}")}),
+            observation: String::new(),
+        };
+        let history: Vec<TestStep> = (0..20).map(mk).collect();
+        let out = summarise_success_actions(&history);
+        // 12 lines + 1 tail = 13 lines
+        let lines = out.lines().count();
+        assert_eq!(lines, 13, "got: {out}");
+        assert!(out.contains("…8 more"), "got: {out}");
+    }
+
+    #[test]
+    fn summarise_success_handles_empty_history() {
+        let out = summarise_success_actions(&[]);
+        assert!(out.contains("no recorded actions"), "got: {out}");
+    }
+
+    #[test]
+    fn summarise_success_falls_back_when_no_target_keys() {
+        let history = vec![TestStep {
+            thought: String::new(),
+            action: json!({"action":"wait_for_idle"}),
+            observation: String::new(),
+        }];
+        let out = summarise_success_actions(&history);
+        assert!(out.contains("step1: wait_for_idle"), "got: {out}");
+        assert!(!out.contains(" → "), "should not render arrow w/o target: {out}");
     }
 }
