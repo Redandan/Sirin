@@ -1,0 +1,46 @@
+id: agora_admin_product_import
+name: "AgoraMarket Admin 商品匯入 → 預覽 → 分類篩選 (Issue #70 #4 #20 #22 #49)"
+url: "https://redandan.github.io/?__test_role=admin"
+
+max_iterations: 18
+timeout_secs: 300
+
+locale: zh-TW
+
+goal: |
+  目標：以管理員身份在「商品與電商」頁完成「匯入 → 預覽 → 分類篩選」端到端流程，
+  一次性覆蓋 Issue #70 子問題 #4（分類篩選）、#20（AX tree 折疊）、
+  #22（狀態 chip 色碼）、#49（商品匯入入口）。
+
+  起始狀態：URL `?__test_role=admin` 自動登入後落在 `/admin/statistics`。
+  Flutter CanvasKit app — 所有 UI 判斷一律用 screenshot_analyze。
+
+  ✅ 已確認 AX 資訊（嚴格遵守，不要嘗試別名）：
+  - 導航按鈕名稱：「商品與電商」（不是「商品管理」、不是「商品」）
+  - 分類篩選按鈕：role=button name="請選擇產品分類"（不是 combobox）
+  - Flutter 頁面切換需 wait 3000 才能完成
+
+  ⚠️ 線性步驟，不寫 if/else，不提早終止。done=true 固定在步驟 10。
+  ⚠️ 任何步驟失敗也要繼續走完，由 success_criteria 判斷通過與否。
+
+  步驟（按序執行，不可跳過）：
+  1. wait 3000（等 admin 後台儀表板載入）
+  2. shadow_click role=button name_regex="^商品與電商$"
+  3. wait 3000（Flutter 頁面切換動畫）
+  4. screenshot_analyze "現在是商品與電商頁嗎？看到商品列表了嗎？是否有「匯入」或「批量匯入」按鈕？商品狀態 chip 是灰色還是有顏色（綠/黃/紅）？"
+  5. shadow_click role=button name_regex="^請選擇產品分類$"
+  6. wait 1500（等 dropdown 展開）
+  7. screenshot_analyze "分類篩選 dropdown 是否展開？看到哪些分類選項（列出最多 5 個）？或者保持收合狀態？"
+  8. screenshot_analyze "AX tree / 頁面是否仍然完整可見（沒有 collapse 成空白）？商品列表還在嗎？"
+  9. wait 500
+  10. done=true
+
+  ⚠️ 步驟 4、7、8 三次 screenshot_analyze 必須執行，不可合併或跳過。
+  ⚠️ 步驟 10 無條件 done=true，即使前面 shadow_click 失敗也要走到。
+
+success_criteria:
+  - "商品與電商頁可開啟並看到商品列表（覆蓋 #49 匯入入口頁面可達）"
+  - "至少一個商品狀態 chip 是彩色（非全灰），代表 #22 修復未回歸"
+  - "點擊「請選擇產品分類」按鈕後，dropdown 展開或頁面有變化（覆蓋 #4），且 AX tree 沒有 collapse 成空白（覆蓋 #20）"
+
+tags: [agora, regression, admin, product, import, category-filter, issue-70, critical]
