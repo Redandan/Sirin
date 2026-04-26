@@ -1,0 +1,102 @@
+id: agora_webrtc_voice_call
+name: "AgoraMarket WebRTC 語音通話完整流程 (Issue #70 #1, #18, #55, #69-70)"
+url: "https://redandan.github.io/?__test_role=buyer"
+locale: zh-TW
+
+# Flutter CanvasKit + WebRTC：headless Chrome 不 paint，且 mic/camera permission
+# 在 headless 下無法授權；必須開啟實體 Chrome 視窗。
+browser_headless: false
+
+max_iterations: 25
+timeout_secs: 360
+retry_on_parse_error: 2
+
+# Permission 模擬作法：
+#   AgoraMarket prod 已配置 chrome 啟動參數
+#   --use-fake-ui-for-media-stream（自動同意 mic/camera 請求）
+#   --use-fake-device-for-media-stream（注入虛擬麥克風 + 鏡頭）
+#   兩者由 src/browser.rs 的 default chrome args 提供，這裡無需重設。
+#   如果 prod 之後改成 prompt 流程，必須在 fixture.setup 裡補上
+#   {action: "grant_permissions", target: "https://redandan.github.io",
+#    permissions: ["audioCapture","videoCapture"]}。
+
+fixture:
+  setup:
+    - {action: "clear_state"}
+    - {action: "set_viewport", width: 1440, height: 1600}
+    - {action: "goto", target: "https://redandan.github.io/?__test_role=buyer"}
+    - {action: "wait", target: "5000"}
+    - {action: "enable_a11y"}
+  cleanup:
+    - {action: "clear_state"}
+
+goal: |
+  【目標】驗證 AgoraMarket WebRTC 語音通話完整鏈路（Issue #70 silent bug #1, #18, #55, #69-70）
+  路徑：登入 → 進聊天 → 發起語音通話 → permission 彈窗自動授權 → 接通 → 掛斷。
+
+  ⚠️ Flutter CanvasKit app：UI 在 canvas 上，所有狀態判斷用 screenshot_analyze
+  + shadow_* / ax_* 兩套交叉驗證。每次路由切換後必須 enable_a11y。
+
+  【Step 1: 確認登入完成】
+  - screenshot_analyze "頁面是否在 AgoraMarket 首頁？看到底部 tab（商品/訂單/錢包/我的）？"
+  - shadow_dump（確認 flt-semantics 有 4 個底部 tab）
+
+  【Step 2: 進入聊天/客服頁面】
+  - shadow_click role=tab name_regex="^我的$"
+  - wait 2000
+  - enable_a11y
+  - shadow_dump（找客服/AI助手/訊息/聊天入口）
+  - shadow_click role=button name_regex="客服|AI助手|聊天|訊息中心|聯繫|Chat|Support"
+  - wait 3000
+  - enable_a11y
+  - screenshot_analyze "是否進入聊天/AI 助手頁面？看到對話框與輸入欄位？"
+
+  若「我的」頁面找不到入口，回退方案：
+  - shadow_click role=tab name_regex="^商品$"
+  - wait 1500 / enable_a11y
+  - shadow_click role=button name_regex="USDT" （進第一商品）
+  - wait 2500 / enable_a11y
+  - shadow_click role=button name_regex="聯繫賣家|聊聊"
+  - wait 3000 / enable_a11y
+
+  【Step 3: 發起語音通話】
+  - shadow_dump（找通話/語音/Call/phone icon button）
+  - shadow_click role=button name_regex="語音|通話|Call|電話|Voice|phone"
+  - wait 2000
+
+  【Step 4: 驗證 permission 已授權】
+  - eval "JSON.stringify({mic: !!navigator.mediaDevices, perms: navigator.permissions ? 'api-ok' : 'no-api'})"
+    （確認 mediaDevices API 可用）
+  - eval "navigator.mediaDevices.getUserMedia({audio:true}).then(s=>({ok:true, tracks:s.getAudioTracks().length})).catch(e=>({ok:false, name:e.name, msg:e.message}))"
+    （Promise eval；prod 應 grant，回傳 ok:true）
+  - screenshot_analyze "畫面上是否出現 permission denied / 授權失敗 / 無法使用麥克風 等錯誤訊息？"
+    ⚠️ 重點：不應出現 NotAllowedError / 永久 denied 字樣
+
+  【Step 5: 接通 + 觀察通話狀態】
+  - wait 3000（等對方/模擬對端接通；若 prod 沒對端則停在「呼叫中」也算驗證通過）
+  - screenshot_analyze "是否進入通話畫面？看到通話計時、靜音按鈕、掛斷按鈕？或停在『呼叫中』？"
+  - shadow_dump（找掛斷按鈕；name 通常是「掛斷」「結束」「End」「Hang up」red icon）
+
+  【Step 6: 掛斷】
+  - shadow_click role=button name_regex="掛斷|結束|End|Hang|取消"
+  - wait 2000
+  - enable_a11y
+  - screenshot_analyze "是否回到聊天頁面或上一層？通話 UI 已關閉？"
+
+  【判定通過條件】
+  - 整段流程可達 Step 5（成功進入通話 UI 或停在「呼叫中」）
+  - getUserMedia 不出現 NotAllowedError
+  - Step 6 掛斷後回到聊天頁，無 console 嚴重錯誤
+
+  ⚠️ 嚴禁提早 done=true。Step 1 看到首頁不算過；必須跑到 Step 5 之後才能結束。
+  ⚠️ 若 Step 3 找不到語音通話按鈕（功能未上線），記錄並 done=true，標註「voice-call 入口缺失」。
+  ⚠️ flutter_type 只能 ASCII；對話訊息一律用 shadow_click + ax_click 操作。
+
+success_criteria:
+  - "成功登入並進入聊天/AI 助手頁面（看到對話框）"
+  - "嘗試發起語音通話，UI 進入通話狀態或顯示『呼叫中』畫面"
+  - "navigator.mediaDevices.getUserMedia({audio:true}) 成功回傳 audio track（無 NotAllowedError）"
+  - "permission 不出現永久 denied / 授權失敗錯誤訊息"
+  - "成功點擊掛斷按鈕，通話 UI 關閉並回到聊天頁"
+
+tags: [regression, webrtc, voice-call, agora, critical, issue-46, issue-70]
