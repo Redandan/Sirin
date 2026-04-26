@@ -20,6 +20,81 @@
 
 use serde_json::{json, Value};
 
+mod cache {
+    //! Local SQLite cache for KB entries — offline fallback when KB server
+    //! is down (Issue #37).  Single process-wide connection at
+    //! `<app_data_dir>/kb_cache.db`.
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Cache freshness window in seconds.  Hits younger than this skip the
+    /// network entirely; older hits still serve as fallback when the network
+    /// fails.
+    const FRESH_TTL_SECS: u64 = 3600;
+
+    fn now_secs() -> i64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0)
+    }
+
+    fn db() -> Option<&'static Mutex<rusqlite::Connection>> {
+        static DB: OnceLock<Option<Mutex<rusqlite::Connection>>> = OnceLock::new();
+        DB.get_or_init(|| {
+            let path = crate::platform::app_data_dir().join("kb_cache.db");
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let conn = rusqlite::Connection::open(&path).ok()?;
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS kb_cache ( \
+                     project    TEXT NOT NULL, \
+                     topic_key  TEXT NOT NULL, \
+                     content    TEXT NOT NULL, \
+                     fetched_at INTEGER NOT NULL, \
+                     PRIMARY KEY (project, topic_key) \
+                 );",
+            )
+            .ok()?;
+            Some(Mutex::new(conn))
+        })
+        .as_ref()
+    }
+
+    /// Returns `(content, age_secs)` if a cached entry exists.
+    pub fn get(project: &str, topic_key: &str) -> Option<(String, i64)> {
+        let mtx = db()?;
+        let conn = mtx.lock().unwrap_or_else(|e| e.into_inner());
+        conn.query_row(
+            "SELECT content, fetched_at FROM kb_cache \
+             WHERE project = ?1 AND topic_key = ?2",
+            rusqlite::params![project, topic_key],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+        )
+        .ok()
+        .map(|(content, fetched_at)| (content, now_secs() - fetched_at))
+    }
+
+    /// Cache hit is fresh (no need to hit network).
+    pub fn is_fresh(age_secs: i64) -> bool {
+        age_secs >= 0 && (age_secs as u64) < FRESH_TTL_SECS
+    }
+
+    pub fn set(project: &str, topic_key: &str, content: &str) {
+        let Some(mtx) = db() else { return };
+        let conn = mtx.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = conn.execute(
+            "INSERT INTO kb_cache (project, topic_key, content, fetched_at) \
+             VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT(project, topic_key) DO UPDATE SET \
+                 content = excluded.content, \
+                 fetched_at = excluded.fetched_at",
+            rusqlite::params![project, topic_key, content, now_secs()],
+        );
+    }
+}
+
 /// True when KB integration is enabled via env var.
 ///
 /// Returns `false` when `KB_ENABLED` is unset, empty, or any of `0`/`false`/`no`
@@ -85,17 +160,41 @@ pub async fn get(project: &str, topic_key: &str) -> Result<Option<String>, Strin
     if !enabled() {
         return Ok(None);
     }
+    // Fresh-cache fast path — skip network entirely.
+    if let Some((content, age)) = cache::get(project, topic_key) {
+        if cache::is_fresh(age) {
+            tracing::debug!(
+                "[kb_client] cache hit (fresh, {age}s): {project}/{topic_key}"
+            );
+            return Ok(Some(content));
+        }
+    }
+
     let args = json!({ "topicKey": topic_key, "project": project });
     let res = match crate::mcp_client::call_tool_with_bearer(
         &url(), "kbGet", args, bearer().as_deref()
     ).await {
         Ok(r) => r,
         Err(e) => {
-            tracing::debug!("[kb_client] kbGet({project}/{topic_key}) failed: {e}");
+            // Network failed — fall back to (possibly stale) cache.
+            if let Some((content, age)) = cache::get(project, topic_key) {
+                tracing::warn!(
+                    "[kb_client] kbGet({project}/{topic_key}) failed: {e}; \
+                     serving stale cache ({age}s old)"
+                );
+                return Ok(Some(content));
+            }
+            tracing::debug!(
+                "[kb_client] kbGet({project}/{topic_key}) failed: {e}; no cache"
+            );
             return Ok(None);
         }
     };
-    Ok(extract_text(&res))
+    let text = extract_text(&res);
+    if let Some(ref content) = text {
+        cache::set(project, topic_key, content);
+    }
+    Ok(text)
 }
 
 /// Semantic search over the KB.  Returns at most `limit` ranked hit bodies
