@@ -67,6 +67,15 @@ mod tests {
             body.contains("tools/list"),
             "body missing tools/list bootstrapping JS"
         );
+        // Issue #93: window.sirin helper API + self-discovery meta tag.
+        assert!(
+            body.contains("window.sirin =") || body.contains("window.sirin="),
+            "body missing window.sirin helper IIFE"
+        );
+        assert!(
+            body.contains(r#"name="sirin-helper-api""#),
+            "body missing sirin-helper-api meta tag"
+        );
     }
 
     #[test]

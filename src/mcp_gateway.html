@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <title>Sirin MCP Gateway</title>
 <meta name="sirin-mcp-endpoint" content="/mcp">
+<meta name="sirin-helper-api" content="window.sirin">
+<meta name="sirin-helper-version" content="1">
 <style>
 :root { --bg:#1A1A1A; --card:#222; --border:#333; --fg:#E0E0E0; --sub:#808080; --ok:#00FFA3; --err:#FF4B4B; --info:#4DA6FF; --num:#FFF; }
 * { box-sizing: border-box; }
@@ -35,9 +37,50 @@ pre.result { color: var(--num); }
 <body>
 <h1>Sirin MCP Gateway</h1>
 <p class="lede">Same-origin <code>POST /mcp</code> endpoint &mdash; JSON-RPC 2.0. No CORS.</p>
+<section id="helper-quickstart">
+<h2 style="font-size:14px;color:var(--num);margin:12px 0 4px">JS Helper (window.sirin)</h2>
+<pre class="result" style="display:block">await sirin.call('kb_get', {topic_key:'...', project:'sirin'})
+await sirin.tools.config_diagnostics({})
+await sirin.help()  // list all tools</pre>
+</section>
 <div id="status">Loading tools...</div>
 <div id="tools"></div>
 <script>
+window.sirin = {
+  endpoint: "/mcp", _id: 0, _tools: null,
+  async _rpc(method, params) {
+    this._id++;
+    const r = await fetch(this.endpoint, { method:"POST",
+      headers:{"content-type":"application/json"},
+      body: JSON.stringify({jsonrpc:"2.0", id:this._id, method, params: params||{}}) });
+    const j = await r.json();
+    if (j.error) throw new Error(j.error.message || JSON.stringify(j.error));
+    return j.result;
+  },
+  async listTools() {
+    if (!this._tools) this._tools = (await this._rpc("tools/list", {})).tools;
+    return this._tools;
+  },
+  async call(name, args) {
+    args = args || {};
+    const tools = await this.listTools();
+    const t = tools.find(x => x.name === name);
+    if (!t) throw new Error("Unknown tool: " + name + ". Try sirin.help()");
+    const props = (t.inputSchema && t.inputSchema.properties) || {};
+    const unknown = Object.keys(args).filter(k => !(k in props));
+    if (unknown.length) console.warn("[sirin] arg keys not in " + name + ".inputSchema:", unknown);
+    const result = await this._rpc("tools/call", { name, arguments: args });
+    if (result && result.content && result.content[0] && result.content[0].type === "text") {
+      try { return JSON.parse(result.content[0].text); } catch (e) { /* leave as-is */ }
+    }
+    return result;
+  },
+  async help() {
+    const tools = await this.listTools();
+    return tools.map(t => t.name + " — " + ((t.description||"").split("\n")[0])).join("\n");
+  },
+  tools: new Proxy({}, { get: (_, name) => (args) => window.sirin.call(name, args) })
+};
 // Tools whose name contains any of these keywords are listed but no form is
 // rendered &mdash; safe-by-default for the CiC self-discovery use case.
 const WRITE_KEYWORDS = ["write","delete","create","spawn","send","approve","reset","kill"];
