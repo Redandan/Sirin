@@ -43,6 +43,65 @@ pub fn notify_failure(test_name: &str, reason: &str, duration_ms: u64) {
     });
 }
 
+/// Format a weekly test-health digest from current `store::all_test_stats()`.
+///
+/// Pure formatter — no I/O.  Returned `None` when there is no run history
+/// at all, so callers can skip empty TG sends.
+pub fn format_weekly_digest() -> Option<String> {
+    let stats = crate::test_runner::store::all_test_stats();
+    if stats.is_empty() { return None; }
+    let total = stats.len();
+    let flaky_count = stats.iter().filter(|s| s.is_flaky).count();
+    let avg_pass: f64 = stats.iter().map(|s| s.pass_rate_7d).sum::<f64>() / total as f64;
+    let worst: Vec<&crate::test_runner::store::TestStats> = stats.iter()
+        .filter(|s| s.pass_rate_7d < 0.7)
+        .take(3)
+        .collect();
+
+    let mut msg = format!(
+        "Weekly Test Health | {total} tests | avg pass {:.0}% | {flaky_count} flaky",
+        avg_pass * 100.0,
+    );
+    if !worst.is_empty() {
+        msg.push_str("\nWorst:");
+        for s in &worst {
+            msg.push_str(&format!(
+                "\n  {} {:.0}% ({} runs)",
+                s.test_id,
+                s.pass_rate_7d * 100.0,
+                s.total_runs,
+            ));
+        }
+    }
+    Some(msg)
+}
+
+/// Fire-and-forget weekly digest send.  Same env-var contract as
+/// `notify_failure` — silently skipped when SIRIN_NOTIFY_BOT_TOKEN /
+/// SIRIN_NOTIFY_CHAT_ID are unset.  Caller decides scheduling (no cron
+/// framework wired here yet — see Issue #35 follow-up).
+pub fn weekly_test_digest() {
+    let Some(msg) = format_weekly_digest() else { return; };
+    let token = match std::env::var("SIRIN_NOTIFY_BOT_TOKEN") {
+        Ok(t) if !t.is_empty() => t,
+        _ => return,
+    };
+    let chat_id = match std::env::var("SIRIN_NOTIFY_CHAT_ID") {
+        Ok(c) if !c.is_empty() => c,
+        _ => return,
+    };
+    std::thread::spawn(move || {
+        let url = format!("https://api.telegram.org/bot{token}/sendMessage");
+        if let Err(e) = reqwest::blocking::Client::new()
+            .post(&url)
+            .json(&serde_json::json!({ "chat_id": chat_id, "text": msg }))
+            .send()
+        {
+            tracing::warn!(target: "sirin", "[notify] weekly digest send failed: {e}");
+        }
+    });
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
