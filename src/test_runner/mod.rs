@@ -102,6 +102,29 @@ async fn run_test_with_run_id(
     } else {
         let outcome = triage::triage(ctx, &test, &result).await;
         let triggered = auto_fix && triage::trigger_auto_fix(&test, &result, &outcome, run_id).await;
+
+        // Issue #34: persist triage classification to KB so future sessions can
+        // run `kbSearch("UiBug", project="sirin")` instead of reaching for
+        // SQLite.  Fire-and-forget — KB outage must never break a test run.
+        // Same shape as the failure / pass write-backs in `runs.rs::set_phase`.
+        // Uses a distinct topic key (`sirin-triage-{test_id}`) so it does not
+        // race with the failure writer that already targets
+        // `sirin-failure-{test_id}` from `runs.rs`.
+        let test_id_kb  = test.id.clone();
+        let category_kb = outcome.category.as_str().to_string();
+        let reason_kb   = outcome.reason.clone();
+        let auto_fix_kb = triggered;
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let (topic_key, title, content, tags) =
+                    triage::render_kb_entry(&test_id_kb, &category_kb, auto_fix_kb, &reason_kb);
+                let _ = crate::kb_client::write_raw_to_project(
+                    "sirin", &topic_key, &title, &content,
+                    "testing", &tags, "",
+                ).await;
+            });
+        }
+
         (
             Some(outcome.category.as_str().to_string()),
             Some(outcome.reason.clone()),
