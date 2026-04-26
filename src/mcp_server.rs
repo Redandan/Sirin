@@ -42,7 +42,7 @@
 
 use axum::{
     extract::Json,
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, Method, StatusCode},
     response::IntoResponse,
     routing::post,
     Router,
@@ -51,6 +51,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tower_http::timeout::TimeoutLayer;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -138,12 +139,53 @@ pub fn mcp_router() -> Router {
     // closed cleanly by hyper (proper FIN) instead of lingering in CLOSE_WAIT
     // while a hung handler (e.g. dead Chrome transport) keeps the connection
     // half-open.  Fixes the zombie-socket pattern observed on ports 7700/7710.
+    //
+    // CorsLayer allows Claude in Chrome (Beta) extension to issue MCP calls.
+    // Browsers send a CORS preflight (OPTIONS) before any cross-origin POST
+    // from a `chrome-extension://[id]` page; without this layer the preflight
+    // 404s and the extension never gets to send the real request.
     Router::new()
         .route("/mcp", post(mcp_handler))
+        .layer(cors_layer())
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             MCP_REQUEST_TIMEOUT,
         ))
+}
+
+/// Build the CorsLayer governing `/mcp`.
+///
+/// When `CLAUDE_CHROME_EXT_ID` is set, only `chrome-extension://<id>` is
+/// allowed — this is the strict mode for Claude in Chrome (Beta).  The
+/// extension ID is fixed by Chrome and the browser refuses to forge the
+/// `Origin` header, so this is a hard authentication boundary against any
+/// other extension or web origin.
+///
+/// When the env var is unset, all origins are allowed for backward
+/// compatibility with Claude Desktop, sirin-call, curl probes, and other
+/// non-browser MCP clients that don't send an `Origin` header at all.
+fn cors_layer() -> CorsLayer {
+    let base = CorsLayer::new()
+        .allow_methods([Method::POST, Method::OPTIONS])
+        .allow_headers(Any);
+    match std::env::var("CLAUDE_CHROME_EXT_ID")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+    {
+        Some(id) => {
+            let origin = format!("chrome-extension://{}", id.trim());
+            match origin.parse() {
+                Ok(hv) => base.allow_origin(AllowOrigin::exact(hv)),
+                Err(e) => {
+                    tracing::warn!(
+                        "CLAUDE_CHROME_EXT_ID={id:?} not a valid origin ({e}); falling back to allow-any"
+                    );
+                    base.allow_origin(Any)
+                }
+            }
+        }
+        None => base.allow_origin(Any),
+    }
 }
 
 // ── Handler ───────────────────────────────────────────────────────────────────
@@ -741,6 +783,31 @@ Sirin 會在指定工作目錄（可以是另一個 repo）啟動一個顧問 se
                     },
                     "required": ["cwd", "prompt"]
                 }
+            },
+            {
+                "name": "kb_search",
+                "description": "語意搜尋 AgoraMarket Knowledge Base，返回最相關的條目內容。KB 必須啟用（KB_ENABLED=1）。Bearer token 留在 Sirin 端，瀏覽器永遠看不到。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query":   { "type": "string",  "description": "搜尋查詢文字" },
+                        "project": { "type": "string",  "description": "KB project slug（預設讀 KB_PROJECT env，通常是 'agora_market'）" },
+                        "limit":   { "type": "integer", "description": "最多返回幾筆（預設 5，最大 20）" }
+                    },
+                    "required": ["query"]
+                }
+            },
+            {
+                "name": "kb_get",
+                "description": "依 topicKey 取得 Knowledge Base 單一條目。KB 必須啟用（KB_ENABLED=1）。Bearer token 留在 Sirin 端。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "topic_key": { "type": "string", "description": "KB topicKey（例如 'agora-pickup-flow'）" },
+                        "project":   { "type": "string", "description": "KB project slug（預設讀 KB_PROJECT env）" }
+                    },
+                    "required": ["topic_key"]
+                }
             }
         ]
     }))
@@ -788,6 +855,8 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         "dev_team_list_previews"  => return call_dev_team_list_previews(arguments).map(wrap_json),
         "dev_team_replay_preview" => return call_dev_team_replay_preview(arguments).map(wrap_json),
         "dev_team_read_issue"     => return call_dev_team_read_issue(arguments).map(wrap_json),
+        "kb_search"               => return call_kb_search(arguments).await.map(wrap_json),
+        "kb_get"                  => return call_kb_get(arguments).await.map(wrap_json),
         _ => {}
     }
 
@@ -2305,6 +2374,72 @@ fn call_get_run_trace(args: Value) -> Result<Value, String> {
     }))
 }
 
+// ── kb_search / kb_get ────────────────────────────────────────────────────────
+//
+// Thin MCP wrappers over `kb_client::search` / `kb_client::get`.  Bearer token
+// for the upstream KB MCP server lives in `.env` (KB_MCP_BEARER) and never
+// crosses into the Chrome extension — Claude in Chrome sees only the result
+// text returned by Sirin.
+
+async fn call_kb_search(args: Value) -> Result<Value, String> {
+    if !crate::kb_client::enabled() {
+        return Ok(json!({ "error": "KB 未啟用，請設定 KB_ENABLED=1" }));
+    }
+    let query = args["query"]
+        .as_str()
+        .ok_or("Missing 'query'")?
+        .to_string();
+    let project = args["project"]
+        .as_str()
+        .map(String::from)
+        .unwrap_or_else(crate::kb_client::default_project);
+    let limit = args["limit"].as_u64().unwrap_or(5).min(20) as usize;
+
+    match crate::kb_client::search(&project, &query, limit).await {
+        Ok(Some(text)) => Ok(json!({
+            "project": project,
+            "query":   query,
+            "result":  text,
+        })),
+        Ok(None) => Ok(json!({
+            "project": project,
+            "query":   query,
+            "result":  null,
+            "found":   false,
+        })),
+        Err(e) => Ok(json!({ "error": e })),
+    }
+}
+
+async fn call_kb_get(args: Value) -> Result<Value, String> {
+    if !crate::kb_client::enabled() {
+        return Ok(json!({ "error": "KB 未啟用，請設定 KB_ENABLED=1" }));
+    }
+    let topic = args["topic_key"]
+        .as_str()
+        .ok_or("Missing 'topic_key'")?
+        .to_string();
+    let project = args["project"]
+        .as_str()
+        .map(String::from)
+        .unwrap_or_else(crate::kb_client::default_project);
+
+    match crate::kb_client::get(&project, &topic).await {
+        Ok(Some(text)) => Ok(json!({
+            "project":   project,
+            "topic_key": topic,
+            "content":   text,
+        })),
+        Ok(None) => Ok(json!({
+            "project":   project,
+            "topic_key": topic,
+            "content":   null,
+            "found":     false,
+        })),
+        Err(e) => Ok(json!({ "error": e })),
+    }
+}
+
 #[cfg(test)]
 mod test_runner_mcp_tests {
     use super::*;
@@ -2486,6 +2621,59 @@ mod test_runner_mcp_tests {
             "timeout must outlive authz ask window (30s) + slowest handler");
         assert!(MCP_REQUEST_TIMEOUT <= Duration::from_secs(600),
             "timeout must not exceed 10min (defeats purpose of layer)");
+    }
+
+    /// CorsLayer must be constructible whether or not CLAUDE_CHROME_EXT_ID is
+    /// set — both branches of `cors_layer()` need to compile and not panic.
+    #[test]
+    fn cors_layer_strict_mode_constructs() {
+        std::env::set_var(
+            "CLAUDE_CHROME_EXT_ID",
+            "bfnaelmomeimhlpmgjnjophhpkkoljpa",
+        );
+        let _ = cors_layer();
+        std::env::remove_var("CLAUDE_CHROME_EXT_ID");
+    }
+
+    #[test]
+    fn cors_layer_open_mode_constructs() {
+        std::env::remove_var("CLAUDE_CHROME_EXT_ID");
+        let _ = cors_layer();
+    }
+
+    /// kb_search must short-circuit when KB is disabled (Chrome extensions
+    /// that try to call it on a fresh Sirin install must get a clear error
+    /// instead of a hang).
+    #[tokio::test]
+    async fn kb_search_returns_error_when_disabled() {
+        std::env::remove_var("KB_ENABLED");
+        let r = call_kb_search(json!({ "query": "anything" })).await.unwrap();
+        assert!(r.get("error").is_some(), "expected error payload, got {r}");
+    }
+
+    #[tokio::test]
+    async fn kb_search_rejects_missing_query() {
+        std::env::set_var("KB_ENABLED", "1");
+        let r = call_kb_search(json!({})).await;
+        assert!(r.is_err(), "must reject missing query: {r:?}");
+        std::env::remove_var("KB_ENABLED");
+    }
+
+    #[tokio::test]
+    async fn kb_get_rejects_missing_topic_key() {
+        std::env::set_var("KB_ENABLED", "1");
+        let r = call_kb_get(json!({})).await;
+        assert!(r.is_err(), "must reject missing topic_key: {r:?}");
+        std::env::remove_var("KB_ENABLED");
+    }
+
+    #[tokio::test]
+    async fn kb_get_returns_error_when_disabled() {
+        std::env::remove_var("KB_ENABLED");
+        let r = call_kb_get(json!({ "topic_key": "any-topic" }))
+            .await
+            .unwrap();
+        assert!(r.get("error").is_some(), "expected error payload, got {r}");
     }
 }
 
