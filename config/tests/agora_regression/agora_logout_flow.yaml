@@ -2,7 +2,7 @@ id: agora_logout_flow
 name: "登出流程測試"
 url: "https://redandan.github.io/?__test_role=buyer"
 
-max_iterations: 20
+max_iterations: 22
 timeout_secs: 360
 
 locale: zh-TW
@@ -18,22 +18,29 @@ goal: |
   ⚠️ scroll 正確格式：{"action":"scroll","y":800}
   ⚠️ 嚴禁提早終止：必須執行完所有步驟才能 done=true。
 
-  步驟（按順序執行，不跳過）：
-  1. shadow_click role=tab name_regex="^我的$"
-  2. wait 2000
-  3. screenshot_analyze "確認在「我的」頁面？看到個人頭像或設定入口？"
-  4. scroll y=800
-  5. wait 800
-  6. shadow_dump（查看目前可見的按鈕，找登出相關選項）
-  7. shadow_click role=button name_regex="登出|Logout|Log out|退出|Sign out"
-  8. wait 1500
-  9. screenshot_analyze "是否出現確認對話框？或已完成登出？"
-  10. shadow_click role=button name_regex="確認|確定|OK|Yes|是"（若有確認框則點擊，若無則此步驟跳過）
-  11. wait 3000
-  12. screenshot_analyze "登出後頁面狀態？是否跳回登入頁或首頁？"
-  13. done=true
+  ⚠️ Flutter tab 點擊不穩，本測試改用 hash route 直連 /profile。
+  ⚠️ 進入前先 wait_for_url 確認 __test_role=buyer 已 auto-login。
 
-  ⚠️ 步驟 10 的 shadow_click 若找不到目標，繼續執行步驟 11-13，勿中止。
+  步驟（按順序執行，不跳過）：
+  1. wait_for_url target="__test_role=buyer" timeout=8000
+     （確認 auto-login 已套用，URL 含 buyer role）
+  2. wait 2000
+  3. eval target='window.location.hash="#/profile"'
+     （直連個人頁，避開 tab 點擊不穩）
+  4. wait 2500
+  5. screenshot_analyze "確認在「我的」頁面？看到個人頭像或設定入口？若不在，fallback shadow_click role=tab name_regex=^我的$"
+  6. scroll y=800
+  7. wait 800
+  8. shadow_dump（查看目前可見的按鈕，找登出相關選項）
+  9. shadow_click role=button name_regex="登出|Logout|Log out|退出|Sign out"
+  10. wait 1500
+  11. screenshot_analyze "是否出現確認對話框？或已完成登出？"
+  12. shadow_click role=button name_regex="確認|確定|OK|Yes|是"（若有確認框則點擊，若無則此步驟跳過）
+  13. wait 3000
+  14. screenshot_analyze "登出後頁面狀態？是否跳回登入頁或首頁？"
+  15. done=true
+
+  ⚠️ 步驟 12 的 shadow_click 若找不到目標，繼續執行步驟 13-15，勿中止。
   ⚠️ 注意：URL 含 ?__test_role=buyer，Flutter auto-login 可能讓頁面立即重新登入。
 
 success_criteria:

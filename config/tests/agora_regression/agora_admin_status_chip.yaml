@@ -2,10 +2,13 @@ id: agora_admin_status_chip
 name: "AgoraMarket Admin 商品狀態 Chip 顏色 Regression (Issue #70 #22)"
 url: "https://redandan.github.io/?__test_role=admin"
 
-max_iterations: 8
+max_iterations: 10
 timeout_secs: 300
 
 locale: zh-TW
+
+# Chip 顏色判斷需要像素資訊，AX tree 取不到顏色 — 改走 vision LLM。
+perception: vision
 
 goal: |
   目標：打開 Admin 後台的商品管理頁，確認頁面可以正常載入，以及商品狀態 chip 有顏色顯示。
@@ -15,14 +18,20 @@ goal: |
   已知資訊：
   - 商品管理導航按鈕名稱是「商品與電商」
   - Flutter 頁面切換需要 wait 3000
+  - chip 載入慢，需先 wait_for_ax_ready 確保 Flutter semantics 穩定
 
   步驟（嚴格按順序，全部執行完才 done=true）：
-  1. shadow_click role=button name_regex="^商品與電商$"
-  2. wait 3000
-  3. screenshot_analyze "商品列表頁面載入了嗎？有看到商品和狀態標籤嗎？狀態標籤是灰色還是有顏色？"
-  4. done=true
+  1. wait_for_ax_ready timeout=8000
+     （等 Flutter AX tree 至少有 N 個 node，避免 click 在空骨架上）
+  2. shadow_click role=button name_regex="^商品與電商$"
+  3. wait 3000
+  4. wait_for_ax_ready timeout=8000
+     （頁面切換後再等一次，chip 才會渲染完成）
+  5. wait 1500
+  6. screenshot_analyze "商品列表頁面載入了嗎？有看到商品和狀態標籤嗎？狀態標籤是灰色還是有顏色？"
+  7. done=true
 
-  ⚠️ 步驟 3 screenshot_analyze 必須執行，不可跳過。
+  ⚠️ 步驟 6 screenshot_analyze 必須執行，不可跳過。
   ⚠️ done=true 後立刻結束，不需要再找其他商品。
 
 success_criteria:
