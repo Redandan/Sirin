@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sirin MCP Gateway</title>
+<meta name="sirin-mcp-endpoint" content="/mcp">
+<style>
+:root { --bg:#1A1A1A; --card:#222; --border:#333; --fg:#E0E0E0; --sub:#808080; --ok:#00FFA3; --err:#FF4B4B; --info:#4DA6FF; --num:#FFF; }
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); margin: 0; padding: 24px; font-family: ui-monospace, "JetBrains Mono", "Cascadia Code", monospace; font-size: 13px; line-height: 1.5; }
+h1 { color: var(--num); font-size: 18px; margin: 0 0 4px; font-weight: 600; }
+.lede { color: var(--sub); margin: 0 0 20px; } .lede code { color: var(--info); }
+#status { color: var(--sub); margin-bottom: 16px; } #status.ok { color: var(--ok); } #status.err { color: var(--err); }
+details { background: var(--card); border: 1px solid var(--border); border-radius: 4px; padding: 8px 12px; margin-bottom: 8px; }
+details:hover { border-color: #555; }
+summary { cursor: pointer; user-select: none; padding: 4px 0; color: var(--num); font-weight: 600; }
+summary .desc { color: var(--sub); font-weight: 400; margin-left: 8px; }
+summary .ro { color: var(--info); margin-left: 8px; font-size: 11px; }
+summary .wr { color: var(--err); margin-left: 8px; font-size: 11px; }
+.form { padding: 12px 0 4px; display: grid; gap: 8px; }
+label { display: grid; grid-template-columns: 180px 1fr; gap: 8px; align-items: center; }
+label .req { color: var(--err); } label .ptype { color: var(--sub); font-size: 11px; }
+input[type=text], textarea { background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 3px; padding: 6px 8px; font-family: inherit; font-size: 12px; width: 100%; }
+input[type=text]:focus, textarea:focus { outline: none; border-color: var(--info); }
+textarea { min-height: 56px; resize: vertical; }
+button { background: var(--bg); color: var(--ok); border: 1px solid var(--ok); border-radius: 3px; padding: 6px 14px; cursor: pointer; font-family: inherit; font-size: 12px; justify-self: start; }
+button:hover { background: var(--ok); color: var(--bg); }
+button[disabled] { opacity: 0.5; cursor: wait; }
+pre.result, pre.error { background: var(--bg); border: 1px solid var(--border); border-radius: 3px; padding: 8px; margin: 8px 0 0; max-height: 400px; overflow: auto; white-space: pre-wrap; word-break: break-word; font-size: 12px; }
+pre.error { border-color: var(--err); color: var(--err); }
+pre.result { color: var(--num); }
+.write-only { padding: 8px 0 0; color: var(--sub); font-style: italic; font-size: 12px; }
+</style>
+</head>
+<body>
+<h1>Sirin MCP Gateway</h1>
+<p class="lede">Same-origin <code>POST /mcp</code> endpoint &mdash; JSON-RPC 2.0. No CORS.</p>
+<div id="status">Loading tools...</div>
+<div id="tools"></div>
+<script>
+// Tools whose name contains any of these keywords are listed but no form is
+// rendered &mdash; safe-by-default for the CiC self-discovery use case.
+const WRITE_KEYWORDS = ["write","delete","create","spawn","send","approve","reset","kill"];
+function esc(s) {
+  return String(s == null ? "" : s).replace(/&/g,"&amp;").replace(/</g,"&lt;")
+    .replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+}
+function isWriteTool(name) {
+  const lower = String(name || "").toLowerCase();
+  return WRITE_KEYWORDS.some(k => lower.includes(k));
+}
+async function rpc(method, params) {
+  const r = await fetch("/mcp", { method: "POST",
+    headers: {"content-type": "application/json"},
+    body: JSON.stringify({jsonrpc: "2.0", id: Date.now(), method, params: params || {}}) });
+  if (!r.ok) throw new Error("HTTP " + r.status + " " + r.statusText);
+  const j = await r.json();
+  if (j.error) throw new Error(JSON.stringify(j.error));
+  return j.result;
+}
+function renderField(propName, propSchema, required) {
+  const type = (propSchema && propSchema.type) || "string";
+  const desc = (propSchema && propSchema.description) || "";
+  const reqMark = required ? '<span class="req">*</span>' : "";
+  const ptype = '<span class="ptype">' + esc(type) + (desc ? " &mdash; " + esc(desc) : "") + '</span>';
+  const attrs = 'data-name="' + esc(propName) + '" data-type="' + esc(type) + '"' + (required ? ' required' : '');
+  const input = (type === "object" || type === "array")
+    ? '<textarea ' + attrs + ' placeholder="JSON"></textarea>'
+    : '<input type="text" ' + attrs + '>';
+  return '<label><span>' + esc(propName) + reqMark + '<br>' + ptype + '</span>' + input + '</label>';
+}
+function collectArgs(formEl) {
+  const args = {};
+  formEl.querySelectorAll("[data-name]").forEach(el => {
+    const name = el.getAttribute("data-name");
+    const type = el.getAttribute("data-type") || "string";
+    const raw = el.value;
+    if (raw === "" || raw == null) return;
+    if (type === "number" || type === "integer") {
+      const n = Number(raw); if (!Number.isNaN(n)) args[name] = n;
+    } else if (type === "boolean") { args[name] = (raw === "true" || raw === "1");
+    } else if (type === "object" || type === "array") {
+      try { args[name] = JSON.parse(raw); }
+      catch (e) { throw new Error("field '" + name + "': invalid JSON: " + e.message); }
+    } else { args[name] = raw; }
+  });
+  return args;
+}
+async function runTool(toolName, formEl, resultEl, errorEl, btn) {
+  resultEl.style.display = "none"; errorEl.style.display = "none";
+  btn.disabled = true; btn.textContent = "Running...";
+  try {
+    const args = collectArgs(formEl);
+    const result = await rpc("tools/call", {name: toolName, arguments: args});
+    resultEl.textContent = JSON.stringify(result, null, 2);
+    resultEl.style.display = "block";
+  } catch (e) {
+    errorEl.textContent = String(e && e.message ? e.message : e);
+    errorEl.style.display = "block";
+  } finally { btn.disabled = false; btn.textContent = "Run"; }
+}
+function renderTool(tool) {
+  const wrap = document.createElement("details");
+  const writeOnly = isWriteTool(tool.name);
+  const tagHtml = writeOnly
+    ? '<span class="wr">[has side effects &mdash; form hidden]</span>'
+    : '<span class="ro">[read-only]</span>';
+  const desc = tool.description ? '<span class="desc">&mdash; ' + esc(tool.description) + '</span>' : "";
+  const summary = document.createElement("summary");
+  summary.innerHTML = esc(tool.name) + tagHtml + desc;
+  wrap.appendChild(summary);
+  if (writeOnly) {
+    const note = document.createElement("div");
+    note.className = "write-only";
+    note.textContent = "This tool's name matches a write/side-effect keyword. Form intentionally hidden. Call directly via POST /mcp tools/call if intended.";
+    wrap.appendChild(note); return wrap;
+  }
+  const schema = tool.inputSchema || {};
+  const props = schema.properties || {};
+  const required = new Set(schema.required || []);
+  const form = document.createElement("div");
+  form.className = "form";
+  let fieldsHtml = "";
+  Object.keys(props).forEach(p => { fieldsHtml += renderField(p, props[p], required.has(p)); });
+  form.innerHTML = fieldsHtml;
+  const btn = document.createElement("button");
+  btn.type = "button"; btn.textContent = "Run";
+  form.appendChild(btn);
+  const result = document.createElement("pre"); result.className = "result"; result.style.display = "none";
+  const error = document.createElement("pre"); error.className = "error"; error.style.display = "none";
+  form.appendChild(result); form.appendChild(error);
+  btn.addEventListener("click", () => runTool(tool.name, form, result, error, btn));
+  wrap.appendChild(form); return wrap;
+}
+async function init() {
+  const status = document.getElementById("status");
+  const root = document.getElementById("tools");
+  try {
+    const result = await rpc("tools/list", {});
+    const tools = (result && result.tools) || [];
+    tools.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    status.textContent = tools.length + " tool(s) loaded.";
+    status.className = "ok";
+    tools.forEach(t => root.appendChild(renderTool(t)));
+  } catch (e) {
+    status.textContent = "Failed to load tools: " + (e && e.message ? e.message : e);
+    status.className = "err";
+  }
+}
+if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
+else init();
+</script>
+</body>
+</html>
