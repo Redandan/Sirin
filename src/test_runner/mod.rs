@@ -22,6 +22,7 @@ pub mod screenshot_cache;
 pub mod ax_diff_context;
 pub mod som_renderer;
 pub mod action_verify;
+pub mod gif_recorder;
 
 pub use parser::{TestGoal, Fixture};
 pub use executor::{TestResult, TestStatus};
@@ -247,6 +248,7 @@ pub fn spawn_adhoc_run(req: AdhocRunRequest) -> Result<String, String> {
         perception: Default::default(),
         mask_sensitive: None,  // None → executor defaults to fail-secure on
         blocked_url_patterns: req.blocked_url_patterns.clone().unwrap_or_default(),
+        record_timeline_gif: true,  // adhoc runs default-on; same as YAML default
     };
 
     let run_id = runs::new_run(&test_id);
@@ -725,6 +727,7 @@ pub fn persist_adhoc_run(p: PersistAdhocParams) -> Result<PersistAdhocResult, St
         perception: goal.perception,
         mask_sensitive: goal.mask_sensitive,
         blocked_url_patterns: goal.blocked_url_patterns.clone(),
+        record_timeline_gif: goal.record_timeline_gif,
     };
 
     // Serialize and write.  serde_yaml uses 2-space indent and never
@@ -787,6 +790,7 @@ mod persist_tests {
             perception: Default::default(),
             mask_sensitive: None,
             blocked_url_patterns: Vec::new(),
+            record_timeline_gif: true,
         };
         let run_id = runs::new_run(test_id);
         runs::set_goal(&run_id, goal.clone());
@@ -873,6 +877,7 @@ mod persist_tests {
             perception: Default::default(),
             mask_sensitive: None,
             blocked_url_patterns: Vec::new(),
+            record_timeline_gif: false,  // synthetic placeholder — never executes
         });
         runs::set_phase(&run_id, runs::RunPhase::Running {
             step: 2,
@@ -957,6 +962,7 @@ mod persist_tests {
             perception: Default::default(),
             mask_sensitive: None,
             blocked_url_patterns: Vec::new(),
+            record_timeline_gif: true,
         };
         // Insert directly into SQLite — simulates the row that
         // record_run wrote at the original run completion.

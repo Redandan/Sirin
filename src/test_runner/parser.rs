@@ -141,7 +141,17 @@ pub struct TestGoal {
     /// `deny[].url_pattern`).
     #[serde(default)]
     pub blocked_url_patterns: Vec<String>,
+    /// Capture an action-annotated GIF timeline of the run (Issue #78).
+    /// When `true` (default), every ReAct iteration captures a frame and on
+    /// failure the frames are encoded into `test_failures/<run_id>/timeline.gif`
+    /// (the single failure-screenshot path stays for back-compat).
+    /// Set to `false` to disable for tests where the extra screenshot per step
+    /// is too expensive (slow Flutter pages).
+    #[serde(default = "default_record_timeline_gif")]
+    pub record_timeline_gif: bool,
 }
+
+fn default_record_timeline_gif() -> bool { true }
 
 impl TestGoal {
     /// Return the navigation URL with `url_query` appended as query string.
