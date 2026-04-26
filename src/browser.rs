@@ -1037,8 +1037,66 @@ pub fn install_console_capture() -> Result<(), String> {
 //  TIER 2 — COORDINATE INTERACTION & ELEMENT SCREENSHOT
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// Click at exact viewport coordinates (x, y).  Useful for Canvas-based UIs
-/// (e.g. Flutter Web) where CSS selectors don't work.
+/// Page-coordinate context — relates CSS pixels (the unit CDP expects for
+/// `Input.dispatchMouseEvent`) to the physical pixel size of `screenshot()`'s
+/// PNG output.  On HiDPI / Retina monitors `device_pixel_ratio > 1.0` and the
+/// two coord systems differ by that factor; on a plain 1080p panel they are
+/// equal.  See Issue #79.
+#[derive(Debug, Clone, Copy)]
+pub struct ViewportContext {
+    /// `window.innerWidth` — CSS pixels.
+    pub viewport_width: f64,
+    /// `window.innerHeight` — CSS pixels.
+    pub viewport_height: f64,
+    /// `window.devicePixelRatio` — physical_px / css_px.
+    pub device_pixel_ratio: f64,
+}
+
+impl ViewportContext {
+    /// Convert a screenshot-pixel (physical) coordinate into a CSS-pixel
+    /// coordinate suitable for `Input.dispatchMouseEvent`.
+    pub fn screenshot_to_css(&self, pixel_x: f64, pixel_y: f64) -> (f64, f64) {
+        let dpr = if self.device_pixel_ratio > 0.0 {
+            self.device_pixel_ratio
+        } else {
+            1.0
+        };
+        (pixel_x / dpr, pixel_y / dpr)
+    }
+}
+
+/// Probe the current page for viewport metrics needed to translate
+/// screenshot coordinates → CSS coordinates.  Cheap (single JS eval).
+pub fn viewport_context() -> Result<ViewportContext, String> {
+    let raw = evaluate_js(
+        r#"JSON.stringify({
+            vw:  window.innerWidth,
+            vh:  window.innerHeight,
+            dpr: window.devicePixelRatio || 1
+        })"#,
+    )?;
+    #[derive(serde::Deserialize)]
+    struct Probe {
+        vw: f64,
+        vh: f64,
+        dpr: f64,
+    }
+    let p: Probe = serde_json::from_str(&raw)
+        .map_err(|e| format!("viewport_context parse '{raw}': {e}"))?;
+    Ok(ViewportContext {
+        viewport_width: p.vw,
+        viewport_height: p.vh,
+        device_pixel_ratio: p.dpr,
+    })
+}
+
+/// Click at exact viewport coordinates (x, y) **in CSS pixels**.  Useful for
+/// Canvas-based UIs (e.g. Flutter Web) where CSS selectors don't work.
+///
+/// If your `(x, y)` came from a screenshot pixel position (e.g. a vision LLM
+/// reading the PNG returned by `screenshot()`), use `click_point_screenshot`
+/// instead — on HiDPI monitors the two coord systems differ by
+/// `devicePixelRatio` and this entry point will click the wrong place.
 pub fn click_point(x: f64, y: f64) -> Result<(), String> {
     with_tab(|tab| {
         // Point imported at module level
@@ -1046,6 +1104,19 @@ pub fn click_point(x: f64, y: f64) -> Result<(), String> {
             .map_err(|e| format!("click_point({x},{y}): {e}"))?;
         Ok(())
     })
+}
+
+/// Click at a coordinate read from the screenshot PNG (physical pixels).
+/// Auto-converts to CSS pixels using `window.devicePixelRatio` so the click
+/// hits the same element the vision LLM saw in the image.  See Issue #79.
+pub fn click_point_screenshot(px: f64, py: f64) -> Result<(), String> {
+    let ctx = viewport_context().unwrap_or(ViewportContext {
+        viewport_width: 0.0,
+        viewport_height: 0.0,
+        device_pixel_ratio: 1.0,
+    });
+    let (cx, cy) = ctx.screenshot_to_css(px, py);
+    click_point(cx, cy)
 }
 
 // ── Flutter Shadow DOM helpers ────────────────────────────────────────────────
@@ -1387,7 +1458,8 @@ pub fn flutter_enter() -> Result<String, String> {
     Ok(result)
 }
 
-/// Move the mouse to (x, y) without clicking — triggers hover effects.
+/// Move the mouse to (x, y) **in CSS pixels** without clicking — triggers
+/// hover effects.  See `click_point` for the CSS-vs-screenshot pixel caveat.
 pub fn hover_point(x: f64, y: f64) -> Result<(), String> {
     with_tab(|tab| {
         // Point imported at module level
@@ -1395,6 +1467,18 @@ pub fn hover_point(x: f64, y: f64) -> Result<(), String> {
             .map_err(|e| format!("hover({x},{y}): {e}"))?;
         Ok(())
     })
+}
+
+/// Hover at a coordinate read from the screenshot PNG (physical pixels).
+/// Auto-converts to CSS pixels using `window.devicePixelRatio`.  Issue #79.
+pub fn hover_point_screenshot(px: f64, py: f64) -> Result<(), String> {
+    let ctx = viewport_context().unwrap_or(ViewportContext {
+        viewport_width: 0.0,
+        viewport_height: 0.0,
+        device_pixel_ratio: 1.0,
+    });
+    let (cx, cy) = ctx.screenshot_to_css(px, py);
+    hover_point(cx, cy)
 }
 
 /// Hover over the first element matching a CSS selector.
@@ -2210,6 +2294,44 @@ mod tests {
     use super::*;
 
     // ── Pure unit tests (no Chrome needed) ────────────────────────────────────
+
+    // ── Issue #79: HiDPI screenshot↔CSS pixel conversion ──────────────────────
+
+    #[test]
+    fn viewport_ctx_dpr_2x_screenshot_to_css_halves_coords() {
+        let ctx = ViewportContext {
+            viewport_width: 1920.0,
+            viewport_height: 1080.0,
+            device_pixel_ratio: 2.0,
+        };
+        // A point at the bottom-right of a 2× screenshot (3840 × 2160) maps to
+        // the bottom-right of the 1920 × 1080 CSS viewport.
+        assert_eq!(ctx.screenshot_to_css(3840.0, 2160.0), (1920.0, 1080.0));
+        // Sub-pixel midpoints survive the divide.
+        assert_eq!(ctx.screenshot_to_css(1280.0, 840.0), (640.0, 420.0));
+    }
+
+    #[test]
+    fn viewport_ctx_dpr_1x_is_identity() {
+        let ctx = ViewportContext {
+            viewport_width: 1366.0,
+            viewport_height: 768.0,
+            device_pixel_ratio: 1.0,
+        };
+        assert_eq!(ctx.screenshot_to_css(640.0, 420.0), (640.0, 420.0));
+    }
+
+    #[test]
+    fn viewport_ctx_zero_or_negative_dpr_falls_back_to_1() {
+        // Defensive: a buggy probe returning 0 should not divide-by-zero or
+        // flip the coords — fall back to identity.
+        let ctx = ViewportContext {
+            viewport_width: 100.0,
+            viewport_height: 100.0,
+            device_pixel_ratio: 0.0,
+        };
+        assert_eq!(ctx.screenshot_to_css(50.0, 50.0), (50.0, 50.0));
+    }
 
     #[test]
     fn default_viewport_falls_back_when_env_unset() {

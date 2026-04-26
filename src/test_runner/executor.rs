@@ -1140,7 +1140,7 @@ fn build_prompt_vision(
 {criteria}
 
 ## Preferred actions (canvas-safe; call via tool "web_navigate", field "action")
-- click_point    — x, y: viewport pixel coords (from the screenshot).  Use this as the default for Flutter / canvas apps.
+- click_point    — x, y: pixel coords read directly off the screenshot PNG.  Use this as the default for Flutter / canvas apps.  ⚠️ HiDPI / Retina screens: ALWAYS pass `"coord_source": "screenshot"` so we divide by devicePixelRatio — without it your click lands at 2× / 4× the wrong place.
 - type           — target: CSS selector (if any), text: text to type.  On canvas pages without selectors, prefer click_point on the input first, then `type` with target omitted.
 - key            — target: key name (Enter / Tab / Escape)
 - scroll         — x, y: pixel deltas (default 0, 300)
@@ -1164,7 +1164,7 @@ definitively failed), set "done": true.
 Respond with STRICTLY valid JSON, no markdown fences, no prose:
 {{
   "thought": "<reasoning in {lang} — cite what you see in the screenshot>",
-  "action_input": {{ "action": "click_point", "x": 640, "y": 420 }},
+  "action_input": {{ "action": "click_point", "x": 640, "y": 420, "coord_source": "screenshot" }},
   "done": false,
   "final_answer": "<only when done=true: summary of outcome in {lang}>"
 }}

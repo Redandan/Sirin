@@ -552,8 +552,9 @@ fn handle_tools_list() -> Result<Value, String> {
                         "target":             { "type": "string", "description": "URL / CSS selector / JS expr / 文字，視 action 而定。close_session 時為 session_id" },
                         "text":               { "type": "string", "description": "type / ax_type 動作的輸入文字" },
                         "timeout":            { "type": "number", "description": "wait* 動作的 ms timeout（wait_for_url/ax_ready 預設 10000，wait_for_network_idle 預設 15000）" },
-                        "x":                  { "type": "number", "description": "click_point 的 x 座標 (CSS px)" },
-                        "y":                  { "type": "number", "description": "click_point 的 y 座標 (CSS px)" },
+                        "x":                  { "type": "number", "description": "click_point 的 x 座標（單位由 coord_source 決定，預設 CSS px）" },
+                        "y":                  { "type": "number", "description": "click_point 的 y 座標（單位由 coord_source 決定，預設 CSS px）" },
+                        "coord_source":       { "type": "string", "enum": ["css", "screenshot"], "description": "click_point/hover_point 的座標單位：'css'（預設，CDP 直用）或 'screenshot'（截圖物理像素，會自動除以 devicePixelRatio 修正 HiDPI 偏移）" },
                         "width":              { "type": "number", "description": "set_viewport 的 width (px)" },
                         "height":             { "type": "number", "description": "set_viewport 的 height (px)" },
                         "device_scale":       { "type": "number", "description": "set_viewport 的 devicePixelRatio (預設 1.0)" },
@@ -1925,8 +1926,13 @@ async fn call_browser_exec(args: Value, user_agent: &str) -> Result<Value, Strin
             "click_point" => {
                 let cx = x.ok_or("'click_point' requires 'x' (number)")?;
                 let cy = y.ok_or("'click_point' requires 'y' (number)")?;
-                browser::click_point(cx, cy)?;
-                Ok(json!({ "status": "clicked", "x": cx, "y": cy }))
+                // Issue #79: HiDPI screenshot coords need devicePixelRatio rescaling.
+                let source = args.get("coord_source").and_then(Value::as_str).unwrap_or("css");
+                match source {
+                    "screenshot" => browser::click_point_screenshot(cx, cy)?,
+                    _ => browser::click_point(cx, cy)?,
+                }
+                Ok(json!({ "status": "clicked", "x": cx, "y": cy, "coord_source": source }))
             }
             "set_viewport" => {
                 let w = width.ok_or("'set_viewport' requires 'width' (positive integer)")? as u32;
