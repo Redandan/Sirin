@@ -334,6 +334,30 @@ pub async fn trigger_auto_fix(test: &TestGoal, result: &TestResult, outcome: &Tr
     true
 }
 
+/// Render the (topic_key, title, content, tags) tuple used by the Issue #34
+/// fire-and-forget KB write-back.  Pulled out as a free function so the
+/// rendered shape can be unit-tested without spawning a tokio task.
+///
+/// `category` is the lowercase string form (`ui_bug`, `api_bug`, ...),
+/// `auto_fix` mirrors `TriageOutcome::auto_fix_triggered` after the auto-fix
+/// branch has run.  `reason` is the LLM (or rule-based) classification reason.
+pub fn render_kb_entry(
+    test_id: &str,
+    category: &str,
+    auto_fix: bool,
+    reason: &str,
+) -> (String, String, String, String) {
+    let topic_key = format!("sirin-triage-{test_id}");
+    let title     = format!("[TRIAGE] {test_id} → {category}");
+    let content   = format!(
+        "triage: {category}\n\
+         auto_fix_attempted: {auto_fix}\n\
+         reason: {reason}"
+    );
+    let tags = format!("triage,{category}");
+    (topic_key, title, content, tags)
+}
+
 /// Build a short summary of recent fix attempts to give Claude context.
 fn format_recent_fix_context(test_id: &str) -> String {
     let recent = super::store::recent_fixes(test_id, 3);
@@ -499,6 +523,39 @@ mod tests {
         std::fs::write(&path, vec![42u8; 20_000]).unwrap();
         assert!(!is_screenshot_all_black(path.to_str().unwrap()));
         let _ = std::fs::remove_file(path);
+    }
+
+    // ── Issue #34: triage → KB rendering ────────────────────────────────
+
+    #[test]
+    fn render_kb_entry_basic_ui_bug() {
+        let (topic, title, content, tags) =
+            render_kb_entry("agora-pickup-flow", "ui_bug", true, "按鈕沒渲染");
+        assert_eq!(topic, "sirin-triage-agora-pickup-flow");
+        assert_eq!(title, "[TRIAGE] agora-pickup-flow → ui_bug");
+        assert!(content.contains("triage: ui_bug"),         "got: {content}");
+        assert!(content.contains("auto_fix_attempted: true"), "got: {content}");
+        assert!(content.contains("reason: 按鈕沒渲染"),       "got: {content}");
+        assert_eq!(tags, "triage,ui_bug");
+    }
+
+    #[test]
+    fn render_kb_entry_no_auto_fix() {
+        let (_topic, _title, content, tags) =
+            render_kb_entry("flaky-test", "flaky", false, "<70% pass rate");
+        assert!(content.contains("auto_fix_attempted: false"), "got: {content}");
+        assert_eq!(tags, "triage,flaky");
+    }
+
+    #[test]
+    fn render_kb_entry_rendering_failure_no_auto_fix() {
+        // RenderingFailure must never trigger auto-fix — the tag must reflect
+        // the category accurately so kbSearch("rendering_failure") finds it.
+        let (_topic, title, content, tags) =
+            render_kb_entry("k14-exact", "rendering_failure", false, "all-black screenshot");
+        assert!(title.contains("rendering_failure"));
+        assert!(content.contains("auto_fix_attempted: false"));
+        assert_eq!(tags, "triage,rendering_failure");
     }
 
     #[test]
