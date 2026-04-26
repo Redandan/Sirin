@@ -246,6 +246,17 @@ pub struct TestRunView {
     pub duration_ms: Option<u64>,
     /// Short AI analysis or current action (truncated by UI).
     pub analysis:    Option<String>,
+    /// Current step index (only populated for active `RunPhase::Running`).
+    /// Drives the live progress indicator on the dashboard.
+    pub step:              Option<u32>,
+    /// Triage category for failed runs (e.g. "selector_not_found",
+    /// "timeout", "ai_assertion_failed").  None for passed/active runs.
+    pub failure_category:  Option<String>,
+    /// Pass rate for this `test_id` over the recent history window
+    /// (0.0..=1.0).  Populated only by `recent_test_runs` so the UI
+    /// can flag flaky tests (< 70%).  None for active rows or single-run
+    /// histories.
+    pub pass_rate:         Option<f32>,
 }
 
 // ── Service traits ───────────────────────────────────────────────────────────
