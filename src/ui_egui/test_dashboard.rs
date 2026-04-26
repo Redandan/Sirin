@@ -453,9 +453,9 @@ mod tests {
 
     #[test]
     fn text_filter_substring_case_insensitive() {
-        assert!(text_filter_matches("login", "agora_login_text"));
-        assert!(text_filter_matches("LOGIN", "agora_login_text"));
-        assert!(text_filter_matches("agora", "agora_login_text"));
-        assert!(!text_filter_matches("xxxxx", "agora_login_text"));
+        assert!(text_filter_matches("login", "agora_login_vision"));
+        assert!(text_filter_matches("LOGIN", "agora_login_vision"));
+        assert!(text_filter_matches("agora", "agora_login_vision"));
+        assert!(!text_filter_matches("xxxxx", "agora_login_vision"));
     }
 }
