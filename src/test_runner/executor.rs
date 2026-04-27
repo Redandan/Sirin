@@ -1624,7 +1624,7 @@ For Flutter/CanvasKit canvas apps AND exact-string assertions:
                        ⚠️ Use name_regex="^<exact>$" when the target name is a substring of other node names.
 - ax_value          — backend_id → exact text (value || name)
 - ax_click          — backend_id → click via DOM box model centre (Flutter-compatible 5-event sequence)
-- ax_focus          — backend_id → DOM focus
+- ax_focus          — backend_id → **scroll-to-element + DOM focus** (⭐ use for off-screen Flutter elements that ax_click misses)
 - ax_type           — backend_id, text → focus + insertText
 - ax_type_verified  — same as ax_type + read-back; returns {{typed, actual, matched}}
 
@@ -1636,8 +1636,9 @@ These query Flutter's `flt-semantics-host` directly via JS, avoiding AX tree col
                           (NOT CDP Input.dispatchMouseEvent — that causes about:blank on Flutter nav buttons)
 - shadow_type           — role + name_regex + text; clicks to focus then inserts text via CDP InsertText
 - flutter_type          — ASCII text only; fires CDP keydown per character (REQUIRED for Flutter textboxes).
-                          Call shadow_click + wait 350ms first to focus the field, THEN flutter_type.
+                          To focus: shadow_click + wait 350ms (shadow DOM elements) OR ax_focus (AX tree elements).
                           ⚠️ Input.InsertText does NOT work for Flutter — always use flutter_type.
+                          ⚠️ For off-screen AX elements: use ax_focus (NOT shadow_click / click_point) to scroll+focus first.
                           ⚠️ ASCII only — CJK/Unicode chars (你好等) have no keycode and will fail.
                           Use shadow_type for non-ASCII text (but note InsertText may not update Flutter state).
 - flutter_enter         — no params; sends Enter key to the active flt-text-editing input.
@@ -1661,6 +1662,17 @@ Flutter/CanvasKit interaction pattern (PREFERRED order using shadow DOM):
 enable_a11y 必須在 wait_for_ax_ready 之前，否則語義樹永遠不會被初始化。
 
 Fallback to ax_find/ax_click if shadow_find returns "no shadow root".
+
+⭐ **Flutter textbox off-screen (AX tree pattern):**
+When ax_find returns a textbox that is below the visible viewport (e.g. 取貨結束時間 inside
+an expanded section), ax_click will miss it (clicks the wrong coordinate).
+CORRECT sequence:
+  1. ax_find role=textbox name_regex="<name>"    → stores backend_id
+  2. ax_focus backend_id=<id>                    → SCROLLS to element + focuses it
+  3. flutter_type text="<value>"                 → types text (flt-text-editing activates)
+  4. ax_value backend_id=<id>                    → verifies value was accepted
+⚠️ ax_click does NOT scroll; ax_focus DOES scroll. Do NOT use click_point for off-screen elements.
+⚠️ flutter_enter is optional (value commits on blur); skip it if flt-text-editing is already gone.
 
 When you need EXACT text comparison (numbers, IDs), prefer ax_* over
 screenshot_analyze (which approximates).

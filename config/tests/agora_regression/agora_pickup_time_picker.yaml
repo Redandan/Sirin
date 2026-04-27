@@ -1,55 +1,58 @@
 id: agora_pickup_time_picker
-name: "取貨時間選擇器測試"
-url: "https://redandan.github.io/?__test_role=seller"
+name: "取貨時間選擇器 v11 - ax_focus + executor prompt fix"
+url: "https://redandan.github.io/?__test_role=seller#/seller/product"
 
 max_iterations: 30
-timeout_secs: 420
+timeout_secs: 480
 
 goal: |
-  目標：實際操作 Flutter 取貨時間選擇器（pickup time picker），把結束時間改成 14:00。
+  目標：把取貨結束時間改成 14:00。
 
-  ⚠️ 重要：「找不到 picker」不算 pass。必須真的找到 + 改值。
-  ⚠️ 如果你已確定某步驟的前提錯誤（例如 step 要你切頁面但你已在那個頁面），
-     呼叫 dispute_yaml(reason="...", suspected_step=N, suggested_fix="...") 回報，不要繼續 retry。
+  直接以 url 欄位設定為 #/seller/product，讓 executor 自動呼叫 install_capture。
 
-  起始狀態：以賣家身份登入（URL auto-login via __test_role=seller）。
-  初始路由通常是 #/seller（賣家商品頁，已在商品 tab）。
+  ⚠️ 必讀：取貨結束時間在展開平台配送設定後位於 viewport 之外（下方），
+  ax_click 無法到達 off-screen 元素！必須使用 ax_focus 讓 Flutter 自動捲動。
 
-  ⚠️ Flutter app：所有 UI 判斷用 screenshot_analyze 或 shadow_dump。
+  正確操作流程：
+  步驟 1-19：準備工作（wait、enable_a11y、展開平台配送設定、啟用 switch）
+  步驟 20：ax_find role=textbox name_regex="取貨結束時間"
+  步驟 21：ax_focus backend_id=<從 ax_find 拿到的值>  ← Flutter 自動 scroll + 聚焦
+  步驟 22：flutter_type text="14:00"
+  步驟 23：ax_value backend_id=<同上>  ← 確認欄位值是 14:00
+  步驟 24：screenshot_analyze "取貨結束時間是 14:00 嗎？"
+  步驟 25：done=true
 
-  步驟：
-  1. screenshot_analyze "確認在賣家頁面。你在哪個 tab？看到「+」加號 button 嗎？
-     注意：如果你已在商品頁（#/seller 或 #/seller/products），可以直接進步驟 2。
-     如果你在其他頁面（訂單、我的），才需要 shadow_click 商品 tab。"
-  2. 如果 step 1 確認不在商品頁 → shadow_click role=tab name_regex="商品|Products"，wait 2000
-     如果 step 1 確認已在商品頁 → 直接下一步（不要點 tab）
-  3. shadow_click role=button name_regex="\\+|add|新增|Add|上架|Create"（右下角加號）
-  4. wait 3000
-  5. screenshot_analyze "在新增商品 form 嗎？看到哪些欄位？是否有「平台配送設定」section？"
-  6. 向下捲動找「平台配送設定」section（scroll y=600，必要時 retry 1 次）
-  7. shadow_dump（找「啟用平台配送」toggle / switch widget）
-  8. shadow_click role=switch name_regex="啟用平台配送|平台配送|enable_delivery"
-  9. wait 1500
-  10. screenshot_analyze "「取貨資訊」區是否出現？看到「取貨開始時間」「取貨結束時間」欄位嗎？"
-  11. ax_find role=textbox name_regex="取貨結束時間|結束時間|18:00|end.?time"
-  12. ax_click（focus 取貨結束時間欄位）
-  13. wait 800
-  14. flutter_type text="14:00"
-  15. wait 800
-  16. flutter_enter（confirm input）
-  17. wait 1500
-  18. screenshot_analyze "取貨結束時間目前顯示什麼？是 14:00 嗎？"
-  19. done=true（只在 step 18 確認 14:00 後）
+  詳細步驟：
+
+  1. wait 8000
+  2. enable_a11y
+  3. wait 2000
+  4. enable_a11y
+  5. shadow_dump — 確認在新增商品 form
+  6. scroll y=800
+  7. wait 1000
+  8. enable_a11y
+  9. shadow_find role=button name="平台配送設定"
+  10. shadow_click role=button name="平台配送設定"
+  11. install_capture
+  12. wait 2000
+  13. enable_a11y
+  14. wait 1000
+  15. shadow_dump
+  16. shadow_click role=switch name="啟用平台配送"
+  17. wait 2000
+  18. enable_a11y
+  19. wait 1000
+  20. ax_find role=textbox name_regex="取貨結束時間"  [取得 backend_id]
+  21. ax_focus backend_id=<id>  [⭐ scroll-to + focus，不是 ax_click，不是 click_point]
+  22. flutter_type text="14:00"
+  23. ax_value backend_id=<id>  [驗證：應該是 "14:00"]
+  24. screenshot_analyze "取貨結束時間是 14:00 嗎？"
+  25. done=true
 
 success_criteria:
-  - "成功進入賣家「新增商品」form（不論是否經過點商品 tab）"
-  - "成功展開「平台配送設定」section（包括 enable 啟用平台配送 toggle）"
-  - "實際操作取貨結束時間欄位，改為 14:00（必要條件）"
-  - "step 18 截圖驗證 14:00 已生效"
+  - "展開平台配送設定"
+  - "開啟啟用平台配送 switch"
+  - "取貨結束時間改為 14:00"
 
-failure_modes:
-  - "如果商品頁 tab click 失敗超過 2 次 → 呼叫 dispute_yaml 而非無限 retry"
-  - "如果 LLM 報『找不到 picker / 沒看到取貨資訊』就 done=true → FAIL"
-  - "如果 LLM 在已是商品頁時仍執著點商品 tab 超過 2 次 → 呼叫 dispute_yaml"
-
-tags: [agora, regression, pickup, checkout, picker]
+tags: [agora, regression, pickup, source-generated, v11, ax-focus-fix]

@@ -290,6 +290,16 @@ pub fn ensure_open(headless: bool) -> Result<bool, String> {
             dir.display()
         );
     }
+    // Extend idle_browser_timeout from the default 30 s to 300 s.
+    // headless_chrome has TWO loops that share this timeout:
+    //   1. transport/mod.rs — the CDP WebSocket reader (marks connection closed on timeout)
+    //   2. browser/mod.rs  — the browser event loop (processes TargetInfoChanged etc.)
+    // During LLM-in-the-loop test runs Chrome can be idle for >30 s while the LLM
+    // thinks.  When the browser event loop times out first and drops its receiver,
+    // the transport loop later gets a SendError on TargetInfoChanged and commits
+    // suicide — crashing the entire CDP connection mid-test.
+    // 300 s covers the worst-case LLM + Flutter init delay with a 5× margin.
+    opts_builder.idle_browser_timeout(std::time::Duration::from_secs(300));
     let opts = opts_builder
         .build()
         .map_err(|e| format!("LaunchOptions: {e}"))?;
