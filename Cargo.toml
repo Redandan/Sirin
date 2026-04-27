@@ -101,3 +101,10 @@ codegen-units = 4      # 4 parallel codegen units (was 1) — ~2x faster link
 lto = "thin"           # thin LTO: ~90% of fat LTO's optimization, 3-4x faster
 opt-level = "s"
 strip = true
+
+
+[patch.crates-io]
+# Sirin vendor patch: transport/mod.rs — continue instead of break on browser
+# event SendError, preventing TargetInfoChanged from cascading into a full CDP
+# connection crash (see vendor/headless_chrome/src/browser/transport/mod.rs).
+headless_chrome = { path = "vendor/headless_chrome" }
