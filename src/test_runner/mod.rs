@@ -26,6 +26,19 @@ pub mod gif_recorder;
 
 pub use parser::{TestGoal, Fixture};
 pub use executor::{TestResult, TestStatus};
+
+/// Issue #98 — serialize concurrent `run_test_async` callers.
+///
+/// Sirin's `browser.rs` keeps a process-wide singleton Chrome session.  When
+/// multiple `spawn_run_async` / `spawn_adhoc_run` tasks fire `Page.navigate`
+/// against the same CDP target in parallel, Chrome aborts all but one with
+/// `net::ERR_ABORTED` at iter 0.  A single tokio mutex around the per-run
+/// async body queues callers without blocking the spawner — the public API
+/// still returns `run_id` immediately with `phase = Queued`.
+///
+/// This is the "Option 1" fix from #98; multi-session isolation (Option 2)
+/// is left for a future change.
+static TEST_RUN_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 #[allow(unused_imports)]
 pub use executor::TestStep;
 #[allow(unused_imports)]
@@ -200,6 +213,11 @@ pub fn spawn_run_async(test_id: String, auto_fix: bool) -> Result<String, String
             }
         };
         rt.block_on(async {
+            // Issue #98 — wait for any in-flight test to finish before
+            // touching the singleton browser.  Held only inside the spawned
+            // task so the caller still gets `run_id` immediately.
+            let _guard = TEST_RUN_LOCK.lock().await;
+
             let tools = crate::adk::tool::default_tool_registry();
             let ctx = crate::adk::context::AgentContext::new("mcp_async", tools)
                 .with_metadata("run_id", &run_id_clone);
@@ -270,6 +288,9 @@ pub fn spawn_adhoc_run(req: AdhocRunRequest) -> Result<String, String> {
             }
         };
         rt.block_on(async {
+            // Issue #98 — share the same singleton-Chrome lock as spawn_run_async.
+            let _guard = TEST_RUN_LOCK.lock().await;
+
             let tools = crate::adk::tool::default_tool_registry();
             let mut ctx = crate::adk::context::AgentContext::new("mcp_adhoc", tools)
                 .with_metadata("test_run_id", &run_id_clone);
@@ -1086,5 +1107,101 @@ mod batch_tests {
             3,
         );
         assert!(result.is_err(), "any unknown id must abort entire batch");
+    }
+}
+
+// ── Issue #98: serialize concurrent run_test_async callers ──────────────────
+#[cfg(test)]
+mod run_test_async_serialization_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    /// 5 concurrent acquisitions of `TEST_RUN_LOCK` must execute strictly
+    /// serially — never two holders at once.  This is the property that
+    /// prevents the singleton-Chrome `ERR_ABORTED at iter 0` race
+    /// reported in Issue #98.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn run_test_async_serializes_across_concurrent_callers() {
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let max_seen  = Arc::new(AtomicUsize::new(0));
+        let order     = Arc::new(tokio::sync::Mutex::new(Vec::<usize>::new()));
+
+        let mut handles = Vec::new();
+        for i in 0..5 {
+            let in_flight = in_flight.clone();
+            let max_seen  = max_seen.clone();
+            let order     = order.clone();
+            handles.push(tokio::spawn(async move {
+                // Stagger spawn order so all 5 contend for the lock.
+                tokio::time::sleep(Duration::from_millis(5 * i as u64)).await;
+                let _g = TEST_RUN_LOCK.lock().await;
+                let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                max_seen.fetch_max(now, Ordering::SeqCst);
+                order.lock().await.push(i);
+                // Hold the lock briefly so a buggy mutex would let a
+                // second holder in.
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                in_flight.fetch_sub(1, Ordering::SeqCst);
+            }));
+        }
+        for h in handles { h.await.unwrap(); }
+
+        // The whole point: never more than one holder at once.
+        let max = max_seen.load(Ordering::SeqCst);
+        assert_eq!(max, 1, "TEST_RUN_LOCK let {max} concurrent holders in — Issue #98 regression");
+        // All 5 callers must have run (none queued indefinitely / deadlocked).
+        assert_eq!(order.lock().await.len(), 5);
+    }
+
+    /// `spawn_run_async` returns `run_id` immediately — even when prior
+    /// callers are still waiting on `TEST_RUN_LOCK`, the spawner is not
+    /// blocked.  We verify the API contract: caller-side latency must
+    /// stay sub-second regardless of how many earlier runs are queued.
+    #[test]
+    fn spawn_run_async_returns_immediately_under_contention() {
+        // Hold the lock from a sidecar tokio runtime so the staticly-typed
+        // singleton is contended.  The threads spawned by `spawn_run_async`
+        // will block waiting for it — but `spawn_run_async` itself should
+        // return promptly because the lock acquisition lives inside the
+        // spawned task.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (tx_done, rx_done) = std::sync::mpsc::channel();
+        let _holder = std::thread::spawn(move || {
+            rt.block_on(async {
+                let _g = TEST_RUN_LOCK.lock().await;
+                // Hold until told to release.
+                let _ = rx_done.recv();
+            });
+        });
+        // Give the holder time to acquire.
+        std::thread::sleep(Duration::from_millis(50));
+
+        // `wiki_smoke` is the only test we can rely on — it's checked into
+        // config/tests/wiki_smoke.yaml.  We never actually let it execute
+        // (the lock is held), but spawning is enough to exercise the path.
+        let t0 = std::time::Instant::now();
+        let result = spawn_run_async("wiki_smoke".into(), false);
+        let spawn_latency = t0.elapsed();
+
+        // Drop the holder so the background task can resolve and exit.
+        let _ = tx_done.send(());
+
+        match result {
+            Ok(run_id) => {
+                assert!(run_id.starts_with("run_"), "unexpected run_id shape: {run_id}");
+                assert!(
+                    spawn_latency < Duration::from_secs(1),
+                    "spawn_run_async blocked {:?} under lock contention — caller-side mutex regression",
+                    spawn_latency,
+                );
+            }
+            Err(e) if e.contains("not found") => {
+                // wiki_smoke not on disk in this test env — skip rather than fail.
+                eprintln!("skipping: wiki_smoke fixture missing ({e})");
+            }
+            Err(e) => panic!("unexpected spawn_run_async error: {e}"),
+        }
     }
 }
