@@ -80,6 +80,11 @@ fn db() -> &'static Mutex<rusqlite::Connection> {
         let _ = conn.execute("ALTER TABLE test_runs ADD COLUMN goal_json TEXT", []);
         let _ = conn.execute("ALTER TABLE test_runs ADD COLUMN run_id TEXT", []);
         let _ = conn.execute("ALTER TABLE test_runs ADD COLUMN iterations INTEGER", []);
+        // Migration: Issue #103 — dispute_yaml action.  Three nullable columns
+        // for the LLM-supplied dispute metadata written when status='disputed'.
+        let _ = conn.execute("ALTER TABLE test_runs ADD COLUMN dispute_reason TEXT", []);
+        let _ = conn.execute("ALTER TABLE test_runs ADD COLUMN dispute_suspected_step INTEGER", []);
+        let _ = conn.execute("ALTER TABLE test_runs ADD COLUMN dispute_suggested_fix TEXT", []);
         let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_tr_runid ON test_runs(run_id)", []);
         // Single-column index on `started_at` for `recent_runs_all` —
         // Test Dashboard polls `ORDER BY started_at DESC LIMIT 30` every 3s.
@@ -130,18 +135,28 @@ pub struct NewRun<'a> {
     /// Iterations actually consumed.  Stored separately from
     /// history_json for cheap aggregate queries.
     pub iterations: Option<u32>,
+    // ── Issue #103: dispute_yaml fields ─────────────────────────────────────
+    /// LLM-supplied reason for the YAML spec dispute.  Only set when
+    /// status = "disputed".  Stored verbatim — never auto-acted on.
+    pub dispute_reason: Option<&'a str>,
+    /// Step index the LLM suspects is incorrect (0-based, LLM-supplied).
+    pub dispute_suspected_step: Option<i64>,
+    /// LLM-supplied suggestion for fixing the YAML step (informational only).
+    pub dispute_suggested_fix: Option<&'a str>,
 }
 
 pub fn record_run(r: NewRun<'_>) -> Result<i64, String> {
     let conn = db().lock().unwrap_or_else(|e| e.into_inner());
     conn.execute(
         "INSERT INTO test_runs(test_id, started_at, duration_ms, status, failure_category, \
-                               ai_analysis, screenshot_path, history_json, goal_json, run_id, iterations) \
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                               ai_analysis, screenshot_path, history_json, goal_json, run_id, \
+                               iterations, dispute_reason, dispute_suspected_step, dispute_suggested_fix) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
         rusqlite::params![
             r.test_id, r.started_at, r.duration_ms, r.status,
             r.failure_category, r.ai_analysis, r.screenshot_path, r.history_json,
             r.goal_json, r.run_id, r.iterations,
+            r.dispute_reason, r.dispute_suspected_step, r.dispute_suggested_fix,
         ],
     ).map_err(|e| format!("insert run: {e}"))?;
     let row_id = conn.last_insert_rowid();
@@ -570,6 +585,9 @@ mod tests {
                 goal_json: None,
                 run_id: None,
                 iterations: None,
+                dispute_reason: None,
+                dispute_suspected_step: None,
+                dispute_suggested_fix: None,
             }).unwrap();
             // Small delay so started_at ordering is deterministic
             std::thread::sleep(std::time::Duration::from_millis(2));
@@ -595,6 +613,9 @@ mod tests {
             goal_json: Some(goal_json),
             run_id: Some(&rid),
             iterations: Some(7),
+            dispute_reason: None,
+            dispute_suspected_step: None,
+            dispute_suggested_fix: None,
         }).unwrap();
         let recovered = find_run_by_run_id(&rid).expect("must find by run_id");
         assert_eq!(recovered.0, goal_json);
@@ -813,5 +834,40 @@ mod tests {
         store_knowledge(&tid, "selector_login", "button[aria-label=登入]").unwrap();
         assert_eq!(get_knowledge(&tid, "selector_login"), Some("button[aria-label=登入]".into()));
         assert_eq!(get_knowledge(&tid, "nonexistent"), None);
+    }
+
+    // ── Issue #103: dispute_yaml storage ──────────────────────────────────────
+
+    /// `record_run` with status="disputed" and dispute fields must round-trip
+    /// cleanly — the row is retrievable by `find_run_by_run_id` with the
+    /// "disputed" status string preserved.
+    #[test]
+    fn dispute_yaml_fields_stored_and_retrieved() {
+        let unique = chrono::Local::now().timestamp_nanos_opt().unwrap_or(0);
+        let tid = format!("dispute_store_{unique}");
+        let rid = format!("run_dispute_{unique}");
+        let now = chrono::Local::now().to_rfc3339();
+
+        record_run(NewRun {
+            test_id: &tid,
+            started_at: &now,
+            duration_ms: Some(5000),
+            status: "disputed",
+            failure_category: Some("yaml_spec"),
+            ai_analysis: Some("LLM reported YAML step 2 impossible"),
+            screenshot_path: None,
+            history_json: None,
+            goal_json: Some(r#"{"id":"t","goal":"g"}"#),
+            run_id: Some(&rid),
+            iterations: Some(3),
+            dispute_reason: Some("Step 2 already on target page, click has no effect"),
+            dispute_suspected_step: Some(2),
+            dispute_suggested_fix: Some("Add conditional: if not on page, navigate"),
+        }).unwrap();
+
+        // Verify the run_id lookup returns status "disputed" — that's what
+        // `get_test_result` surfaces via the in-memory registry's TestStatus::Disputed.
+        let (_, status, _) = find_run_by_run_id(&rid).expect("must find disputed run by run_id");
+        assert_eq!(status, "disputed");
     }
 }

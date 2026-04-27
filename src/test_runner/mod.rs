@@ -165,10 +165,11 @@ async fn run_test_with_run_id(
         started_at: &started,
         duration_ms: Some(result.duration_ms as i64),
         status: match result.status {
-            TestStatus::Passed  => "passed",
-            TestStatus::Failed  => "failed",
-            TestStatus::Timeout => "timeout",
-            TestStatus::Error   => "error",
+            TestStatus::Passed   => "passed",
+            TestStatus::Failed   => "failed",
+            TestStatus::Timeout  => "timeout",
+            TestStatus::Error    => "error",
+            TestStatus::Disputed => "disputed",
         },
         failure_category: category.as_deref(),
         ai_analysis: analysis.as_deref(),
@@ -177,6 +178,9 @@ async fn run_test_with_run_id(
         goal_json: goal_json.as_deref(),
         run_id,
         iterations: Some(result.iterations),
+        dispute_reason: result.dispute.as_ref().map(|d| d.reason.as_str()),
+        dispute_suspected_step: result.dispute.as_ref().and_then(|d| d.suspected_step),
+        dispute_suggested_fix: result.dispute.as_ref().and_then(|d| d.suggested_fix.as_deref()),
     });
 
     if fix_triggered {
@@ -307,10 +311,11 @@ pub fn spawn_adhoc_run(req: AdhocRunRequest) -> Result<String, String> {
             // Persist to SQLite — ad-hoc runs are still worth recording
             let history_json = serde_json::to_string(&result.history).ok();
             let status_str = match result.status {
-                TestStatus::Passed  => "passed",
-                TestStatus::Failed  => "failed",
-                TestStatus::Timeout => "timeout",
-                TestStatus::Error   => "error",
+                TestStatus::Passed   => "passed",
+                TestStatus::Failed   => "failed",
+                TestStatus::Timeout  => "timeout",
+                TestStatus::Error    => "error",
+                TestStatus::Disputed => "disputed",
             };
             // Persist the goal too so persist_adhoc_run can recover after
             // the in-memory run state is pruned (1 hour TTL).
@@ -327,6 +332,9 @@ pub fn spawn_adhoc_run(req: AdhocRunRequest) -> Result<String, String> {
                 goal_json: goal_json.as_deref(),
                 run_id: Some(&run_id_clone),
                 iterations: Some(result.iterations),
+                dispute_reason: result.dispute.as_ref().map(|d| d.reason.as_str()),
+                dispute_suspected_step: result.dispute.as_ref().and_then(|d| d.suspected_step),
+                dispute_suggested_fix: result.dispute.as_ref().and_then(|d| d.suggested_fix.as_deref()),
             });
 
             runs::set_phase(&run_id_clone, runs::RunPhase::Complete(result));
@@ -479,10 +487,11 @@ pub fn spawn_batch_run(
                 // Persist to SQLite — same shape as spawn_run_async.
                 let history_json = serde_json::to_string(&result.history).ok();
                 let status_str = match result.status {
-                    TestStatus::Passed  => "passed",
-                    TestStatus::Failed  => "failed",
-                    TestStatus::Timeout => "timeout",
-                    TestStatus::Error   => "error",
+                    TestStatus::Passed   => "passed",
+                    TestStatus::Failed   => "failed",
+                    TestStatus::Timeout  => "timeout",
+                    TestStatus::Error    => "error",
+                    TestStatus::Disputed => "disputed",
                 };
                 let goal_json = serde_json::to_string(&test).ok();
                 let _ = store::record_run(store::NewRun {
@@ -497,6 +506,9 @@ pub fn spawn_batch_run(
                     goal_json: goal_json.as_deref(),
                     run_id: Some(&run_id_clone),
                     iterations: Some(result.iterations),
+                    dispute_reason: result.dispute.as_ref().map(|d| d.reason.as_str()),
+                    dispute_suspected_step: result.dispute.as_ref().and_then(|d| d.suspected_step),
+                    dispute_suggested_fix: result.dispute.as_ref().and_then(|d| d.suggested_fix.as_deref()),
                 });
 
                 let passed = matches!(result.status, TestStatus::Passed);
@@ -829,6 +841,7 @@ mod persist_tests {
             final_analysis: None,
             screenshot_path: None,
             screenshot_error: None,
+            dispute: None,
         };
         runs::set_phase(&run_id, runs::RunPhase::Complete(fake_result));
         run_id
@@ -1005,6 +1018,9 @@ mod persist_tests {
             goal_json: Some(&goal_json_str),
             run_id: Some(&synthetic_run_id),
             iterations: Some(6),
+            dispute_reason: None,
+            dispute_suspected_step: None,
+            dispute_suggested_fix: None,
         }).unwrap();
 
         // NOTE: we deliberately do NOT call runs::new_run() — the in-memory

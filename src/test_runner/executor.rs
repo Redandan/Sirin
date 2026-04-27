@@ -252,6 +252,152 @@ fn record_guard_fire_to_kb(
     });
 }
 
+/// Handle the `dispute_yaml` action emitted by the LLM.
+///
+/// Three side-effects (all fire-and-forget):
+/// 1. KB write — `yaml-dispute-{test_id}-{run_id}` draft note (if KB_ENABLED=1).
+/// 2. `gh issue create` — opens a GitHub issue on Redandan/Sirin with structured body.
+///    Uses `std::process::Command` so no new crate dependency is needed.
+///
+/// Returns the `DisputeInfo` for the caller to embed in the `TestResult`.
+fn handle_dispute_yaml(
+    test_id: &str,
+    run_id: Option<&str>,
+    iteration: u32,
+    dispute: DisputeInfo,
+    final_url: &str,
+    llm_model: &str,
+) -> DisputeInfo {
+    let ts = chrono::Local::now().to_rfc3339();
+    let rid = run_id.unwrap_or("unknown");
+
+    // ── Layer 2: auto kbWrite ────────────────────────────────────────────────
+    {
+        let topic_key = format!(
+            "yaml-dispute-{}-{}",
+            slugify_for_topic(test_id, 40),
+            slugify_for_topic(rid, 20),
+        );
+        let title = format!("yaml-dispute({test_id}): iter {iteration} — {}", truncate(&dispute.reason, 60));
+        let step_note = dispute
+            .suspected_step
+            .map(|n| format!("Suspected step: {n}"))
+            .unwrap_or_else(|| "Suspected step: (unspecified)".into());
+        let fix_note = dispute
+            .suggested_fix
+            .as_deref()
+            .map(|f| format!("Suggested fix: {f}"))
+            .unwrap_or_else(|| "Suggested fix: (none)".into());
+        let content = format!(
+            "## Dispute report\n\
+             **Test**: `{test_id}`  \n\
+             **Run ID**: `{rid}`  \n\
+             **LLM**: {llm_model}  \n\
+             **Date**: {ts}  \n\
+             **Iteration when dispute fired**: {iteration}\n\n\
+             ## Reason (LLM-provided)\n\
+             > {reason}\n\n\
+             ## {step_note}\n\n\
+             ## {fix_note}\n\n\
+             ## Context\n\
+             - Final URL: {final_url}\n\
+             - KB entry: `{topic_key}`\n",
+            reason = dispute.reason,
+        );
+        let tags = format!("yaml-dispute,test-id-{}", slugify_for_topic(test_id, 30));
+        let tid = test_id.to_string();
+        tokio::spawn(async move {
+            let _ = crate::kb_client::write_raw_to_project(
+                &crate::kb_client::default_project(),
+                &topic_key,
+                &title,
+                &content,
+                "test-yaml-dispute",
+                &tags,
+                &format!("config/tests/{tid}.yaml"),
+            ).await;
+        });
+    }
+
+    // ── Layer 3: auto gh issue create ────────────────────────────────────────
+    {
+        let step_n = dispute.suspected_step.unwrap_or(-1);
+        let reason_short: String = dispute.reason.chars().take(50).collect();
+        let gh_title = if step_n >= 0 {
+            format!("yaml-dispute({test_id}): step {step_n} — {reason_short}")
+        } else {
+            format!("yaml-dispute({test_id}): {reason_short}")
+        };
+        let fix_section = dispute
+            .suggested_fix
+            .as_deref()
+            .map(|f| format!("> {f}"))
+            .unwrap_or_else(|| "(none provided)".into());
+        let step_section = if step_n >= 0 {
+            format!("step {step_n}: *(see YAML)*")
+        } else {
+            "(unspecified)".into()
+        };
+        let slug_test = slugify_for_topic(test_id, 40);
+        let slug_rid  = slugify_for_topic(rid, 20);
+        let gh_body = format!(
+            "## LLM Dispute Report\n\n\
+             **Test**: {test_id}\n\
+             **Run ID**: {rid}\n\
+             **LLM**: {llm_model}\n\
+             **Date**: {ts}\n\n\
+             ### Reason (LLM-provided)\n\
+             > {reason}\n\n\
+             ### Suspected step\n\
+             {step_section}\n\n\
+             ### Suggested fix (LLM-provided, 僅供參考)\n\
+             {fix_section}\n\n\
+             ### Context\n\
+             - URL: {final_url}\n\
+             - Iterations before dispute: {iteration}\n\n\
+             ### Raw context\n\
+             - KB entry: `yaml-dispute-{slug_test}-{slug_rid}`\n",
+            reason = dispute.reason,
+        );
+        let labels = "yaml-dispute,bot-flagged,triage";
+        match std::process::Command::new("gh")
+            .args([
+                "issue", "create",
+                "--repo", "Redandan/Sirin",
+                "--title", &gh_title,
+                "--body", &gh_body,
+                "--label", labels,
+            ])
+            .output()
+        {
+            Ok(out) if out.status.success() => {
+                let url = String::from_utf8_lossy(&out.stdout);
+                tracing::info!(
+                    "[dispute_yaml] '{}' — GitHub issue created: {}",
+                    test_id,
+                    url.trim()
+                );
+            }
+            Ok(out) => {
+                tracing::warn!(
+                    "[dispute_yaml] '{}' — gh issue create failed (exit {}): {}",
+                    test_id,
+                    out.status,
+                    String::from_utf8_lossy(&out.stderr).trim()
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "[dispute_yaml] '{}' — gh CLI not available or spawn failed: {e}",
+                    test_id
+                );
+            }
+        }
+    }
+
+    dispute
+}
+
 // ── Public types ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -297,11 +443,33 @@ pub struct TestResult {
     pub screenshot_error: Option<String>,
     pub history: Vec<TestStep>,
     pub final_analysis: Option<String>,
+    /// Populated when `status == Disputed` — carries the LLM-supplied
+    /// dispute payload from the `dispute_yaml` action.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispute: Option<DisputeInfo>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum TestStatus { Passed, Failed, Timeout, Error }
+pub enum TestStatus {
+    Passed,
+    Failed,
+    Timeout,
+    Error,
+    /// LLM identified a YAML/spec issue and called `dispute_yaml`.
+    /// Not a test failure — a signal that the spec needs human review.
+    /// Sirin auto-opens a GitHub issue and writes a KB entry.
+    Disputed,
+}
+
+/// Dispute metadata written when `dispute_yaml` action fires.
+/// All fields are LLM-provided and informational only — never auto-acted on.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DisputeInfo {
+    pub reason: String,
+    pub suspected_step: Option<i64>,
+    pub suggested_fix: Option<String>,
+}
 
 // ── Executor ─────────────────────────────────────────────────────────────────
 
@@ -674,6 +842,7 @@ pub async fn execute_test_tracked(
                     screenshot_error: cap.error,
                     history,
                     final_analysis: None,
+                    dispute: None,
                 };
             }
 
@@ -803,6 +972,7 @@ pub async fn execute_test_tracked(
                     screenshot_error: cap.error,
                     history,
                     final_analysis: Some(analysis.reason),
+                    dispute: None,
                 };
             }
 
@@ -825,6 +995,68 @@ pub async fn execute_test_tracked(
                     crate::browser::show_action_indicator(&label);
                 }).await;
             }
+            // Issue #103: `dispute_yaml` — LLM signals that the YAML spec has
+            // a bug.  Terminate the loop immediately with Disputed status.
+            // Side-effects: KB write + gh issue create (both fire-and-forget).
+            if action_label == "dispute_yaml" {
+                let reason = action_input
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("(no reason provided)")
+                    .to_string();
+                let suspected_step = action_input
+                    .get("suspected_step")
+                    .and_then(Value::as_i64);
+                let suggested_fix = action_input
+                    .get("suggested_fix")
+                    .and_then(Value::as_str)
+                    .map(String::from);
+                let dispute_info = DisputeInfo { reason: reason.clone(), suspected_step, suggested_fix };
+
+                // Capture URL for context (best-effort; ignore errors).
+                let final_url = ctx.call_tool("web_navigate", json!({"action":"url"})).await
+                    .ok()
+                    .and_then(|v| v.get("url").and_then(Value::as_str).map(String::from))
+                    .unwrap_or_default();
+
+                let dispute_out = handle_dispute_yaml(
+                    &test.id,
+                    run_id,
+                    iteration,
+                    dispute_info,
+                    &final_url,
+                    &llm_model,
+                );
+
+                // Push a trace step so the dispute is visible in the history.
+                let obs = format!("[dispute_yaml] reason: {reason}");
+                if let Some(rid) = run_id {
+                    runs::push_observation(rid, obs.clone());
+                }
+                let mut s = TestStep {
+                    thought: step.thought,
+                    action: action_input.clone(),
+                    observation: obs,
+                    ..Default::default()
+                };
+                trace_stamp(&mut s, parse_error_count);
+                history.push(s);
+
+                let cap = capture_screenshot(ctx, &test.id, run_id).await;
+                break 'react TestResult {
+                    test_id: test.id.clone(),
+                    status: TestStatus::Disputed,
+                    iterations: iteration + 1,
+                    duration_ms: started.elapsed().as_millis() as u64,
+                    error_message: Some(format!("dispute_yaml: {}", dispute_out.reason)),
+                    screenshot_path: cap.path,
+                    screenshot_error: cap.error,
+                    history,
+                    final_analysis: Some(format!("LLM disputed YAML spec at iteration {iteration}")),
+                    dispute: Some(dispute_out),
+                };
+            }
+
             // Dispatch to the appropriate tool.  `expand_observation` is a
             // meta-tool (reads run registry, no browser action).  Everything else
             // goes through `web_navigate`.
@@ -1027,6 +1259,7 @@ pub async fn execute_test_tracked(
             screenshot_error: cap.error,
             history,
             final_analysis: None,
+            dispute: None,
         }
     };  // end 'react block
 
@@ -1083,6 +1316,7 @@ async fn finalize_early(
         screenshot_error: cap.error,
         history: history.to_vec(),
         final_analysis: None,
+        dispute: None,
     }
 }
 
@@ -1431,6 +1665,22 @@ you can fetch the complete content by outputting an action that calls the
 `expand_observation` tool directly (not via web_navigate):
   {{"action": "expand_observation", "step": N}}
 Where N is the 0-indexed step number from the truncation hint.
+
+## dispute_yaml — 回報 YAML spec 問題（標準動作，非失敗）
+當你發現 YAML spec 本身有問題時，呼叫：
+  {{"action": "dispute_yaml", "reason": "<原因>", "suspected_step": <步驟編號或 null>, "suggested_fix": "<修正建議或 null>"}}
+
+**何時呼叫 dispute_yaml：**
+1. 你執行某 step 後預期 page 變化，但畫面沒變 → 先 retry 1 次再 dispute
+2. screenshot 顯示你**已經在 step 預設要去的目的地**（例如 step 2 說「切到商品頁」但你已在商品頁）
+3. element name_regex 跟畫面上實際 button label 明顯不符
+4. step 順序邏輯不通（例如 step N 需要 step M 的產出但 M 沒做到）
+
+**不要 dispute：**
+- 因為 element 暫時找不到（先 retry 1 次）
+- 因為 LLM 自己判斷不出來（dispute 要明確指出哪個 step 哪裡錯）
+
+dispute_yaml 不是失敗——是回報 spec 問題的標準動作。Sirin 會自動開 GitHub issue 給維護者。
 
 ## History
 {history}
@@ -2148,5 +2398,99 @@ mod tests {
         assert!(!is_error_observation(r#"{"ax_node_count":39}"#));
         assert!(!is_error_observation(""));
         assert!(!is_error_observation("Some unrelated text"));
+    }
+
+    // ── Issue #103: dispute_yaml ─────────────────────────────────────────────
+
+    /// `parse_step` must accept a `dispute_yaml` action without parse error.
+    /// The action has three optional fields in addition to "action".
+    #[test]
+    fn dispute_yaml_parses_correctly() {
+        let raw = r#"{
+            "thought": "Step 2 already on target page — spec is wrong",
+            "action_input": {
+                "action": "dispute_yaml",
+                "reason": "step 2 商品 tab 已 selected，click 沒反應",
+                "suspected_step": 2,
+                "suggested_fix": "改成 conditional: if not on page, click"
+            },
+            "done": false
+        }"#;
+        let s = parse_step(raw);
+        assert!(s.parse_error.is_none(), "dispute_yaml should parse cleanly: {:?}", s.parse_error);
+        assert_eq!(s.action_input["action"], "dispute_yaml");
+        assert_eq!(s.action_input["suspected_step"], 2);
+        assert!(!s.done, "dispute_yaml should not set done=true via parse_step");
+    }
+
+    /// `dispute_yaml` without optional fields (reason only) must also parse.
+    #[test]
+    fn dispute_yaml_parses_reason_only() {
+        let raw = r#"{"thought":"x","action_input":{"action":"dispute_yaml","reason":"element missing"},"done":false}"#;
+        let s = parse_step(raw);
+        assert!(s.parse_error.is_none());
+        assert_eq!(s.action_input["action"], "dispute_yaml");
+        // suspected_step absent → Value::Null
+        assert!(s.action_input.get("suspected_step").map_or(true, |v| v.is_null()));
+    }
+
+    /// `DisputeInfo` deserialized from `action_input` must carry the correct fields.
+    #[test]
+    fn dispute_info_extracts_fields_correctly() {
+        let action_input = json!({
+            "action": "dispute_yaml",
+            "reason": "step 3 already on destination",
+            "suspected_step": 3,
+            "suggested_fix": "remove step 3 or add condition"
+        });
+        let reason = action_input.get("reason").and_then(Value::as_str)
+            .unwrap_or("").to_string();
+        let suspected_step = action_input.get("suspected_step").and_then(Value::as_i64);
+        let suggested_fix = action_input.get("suggested_fix").and_then(Value::as_str)
+            .map(String::from);
+        let di = DisputeInfo { reason: reason.clone(), suspected_step, suggested_fix };
+
+        assert_eq!(di.reason, "step 3 already on destination");
+        assert_eq!(di.suspected_step, Some(3));
+        assert_eq!(di.suggested_fix.as_deref(), Some("remove step 3 or add condition"));
+    }
+
+    /// `handle_dispute_yaml` returns a `DisputeInfo` with the reason intact
+    /// and does NOT panic when KB and gh CLI are unavailable.
+    ///
+    /// KB write is async fire-and-forget and KB_ENABLED defaults to false in
+    /// tests.  gh CLI invocation may fail (not installed in CI) — the function
+    /// must log a warning and continue rather than panicking.
+    #[test]
+    fn dispute_yaml_handle_is_non_panicking() {
+        // Tokio runtime needed for the fire-and-forget KB spawn inside.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let info = DisputeInfo {
+                reason: "unit-test dispute reason".into(),
+                suspected_step: Some(1),
+                suggested_fix: Some("test fix".into()),
+            };
+            // No run_id — tests that gh CLI may be missing; should not panic.
+            let out = handle_dispute_yaml(
+                "test_dispute_non_panic",
+                Some("run_test_123"),
+                0,
+                info,
+                "https://example.com",
+                "gemini-test",
+            );
+            assert_eq!(out.reason, "unit-test dispute reason");
+            assert_eq!(out.suspected_step, Some(1));
+        });
+    }
+
+    /// `TestStatus::Disputed` round-trips through serde_json.
+    #[test]
+    fn test_status_disputed_serializes_as_lowercase() {
+        let s = serde_json::to_string(&TestStatus::Disputed).unwrap();
+        assert_eq!(s, r#""disputed""#);
+        let back: TestStatus = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, TestStatus::Disputed);
     }
 }
