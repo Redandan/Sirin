@@ -467,6 +467,50 @@ impl LlmConfig {
     }
 }
 
+// ── Vision specialist LLM config ─────────────────────────────────────────────
+
+/// Build an `LlmConfig` for vision-only calls (e.g. `screenshot_analyze`).
+///
+/// Reads four env vars:
+/// - `LLM_VISION_BACKEND`  — `ollama` | `lmstudio` | `gemini` | `anthropic`
+/// - `LLM_VISION_BASE_URL` — endpoint base URL
+/// - `LLM_VISION_MODEL`    — model name (e.g. `qwen/qwen2.5-vl-7b-instruct`)
+/// - `LLM_VISION_API_KEY`  — Bearer token
+///
+/// Returns `Some(LlmConfig)` only when **all four** are present and non-empty;
+/// returns `None` otherwise so callers fall back to the main LLM without change.
+pub fn vision_llm_config() -> Option<LlmConfig> {
+    let backend_str = std::env::var("LLM_VISION_BACKEND")
+        .ok()
+        .filter(|v| !v.trim().is_empty())?;
+    let base_url = std::env::var("LLM_VISION_BASE_URL")
+        .ok()
+        .filter(|v| !v.trim().is_empty())?;
+    let model = std::env::var("LLM_VISION_MODEL")
+        .ok()
+        .filter(|v| !v.trim().is_empty())?;
+    let api_key = std::env::var("LLM_VISION_API_KEY")
+        .ok()
+        .filter(|v| !v.trim().is_empty())?;
+
+    let backend = match backend_str.to_lowercase().as_str() {
+        "lmstudio" | "lm_studio" | "openai" => LlmBackend::LmStudio,
+        "gemini" | "google" => LlmBackend::Gemini,
+        "anthropic" | "claude" => LlmBackend::Anthropic,
+        _ => LlmBackend::Ollama,
+    };
+
+    Some(LlmConfig {
+        backend,
+        base_url,
+        model,
+        api_key: Some(api_key),
+        coding_model: None,
+        router_model: None,
+        large_model: None,
+    })
+}
+
 // ── Public message types ──────────────────────────────────────────────────────
 
 /// Role of a participant in a multi-turn conversation.
@@ -879,5 +923,49 @@ mod tests {
         assert_eq!(usr.role, MessageRole::User);
         assert_eq!(ast.role, MessageRole::Assistant);
         assert_eq!(usr.content, "hello");
+    }
+
+    // ── vision_llm_config ─────────────────────────────────────────────────────
+
+    #[test]
+    fn vision_llm_config_reads_env_vars() {
+        // Scope env-var changes so they don't leak into other tests.
+        // (Tests within the same binary share the process environment.)
+        std::env::set_var("LLM_VISION_BACKEND",  "lmstudio");
+        std::env::set_var("LLM_VISION_BASE_URL", "https://openrouter.ai/api/v1");
+        std::env::set_var("LLM_VISION_MODEL",    "qwen/qwen2.5-vl-7b-instruct");
+        std::env::set_var("LLM_VISION_API_KEY",  "sk-test-key");
+
+        let cfg = super::vision_llm_config();
+
+        // Cleanup before any assert (so a failing assert doesn't leave vars set).
+        std::env::remove_var("LLM_VISION_BACKEND");
+        std::env::remove_var("LLM_VISION_BASE_URL");
+        std::env::remove_var("LLM_VISION_MODEL");
+        std::env::remove_var("LLM_VISION_API_KEY");
+
+        let cfg = cfg.expect("should return Some when all four vars are set");
+        assert_eq!(cfg.backend, LlmBackend::LmStudio);
+        assert_eq!(cfg.base_url, "https://openrouter.ai/api/v1");
+        assert_eq!(cfg.model, "qwen/qwen2.5-vl-7b-instruct");
+        assert_eq!(cfg.api_key.as_deref(), Some("sk-test-key"));
+    }
+
+    #[test]
+    fn vision_llm_config_returns_none_if_incomplete() {
+        // Only set three of the four required vars — should return None.
+        std::env::set_var("LLM_VISION_BACKEND",  "gemini");
+        std::env::set_var("LLM_VISION_BASE_URL", "https://example.com");
+        std::env::set_var("LLM_VISION_MODEL",    "gemini-vision");
+        // LLM_VISION_API_KEY intentionally omitted.
+        std::env::remove_var("LLM_VISION_API_KEY");
+
+        let result = super::vision_llm_config();
+
+        std::env::remove_var("LLM_VISION_BACKEND");
+        std::env::remove_var("LLM_VISION_BASE_URL");
+        std::env::remove_var("LLM_VISION_MODEL");
+
+        assert!(result.is_none(), "should return None when API key is missing");
     }
 }
