@@ -13,7 +13,7 @@ sirin.log
 # ── Build artifacts ───────────────────────────────────────────────────────────
 /target/
 /target_*/
-.claude/worktrees/*/target/
+.claude/worktrees/
 .claude/tmp/
 dist/
 out/
@@ -67,3 +67,4 @@ test_data/
 bridge_live_test_*.txt
 bridge_test_screenshot.*
 integration_test_report_*.txt
+sirin-err.log
