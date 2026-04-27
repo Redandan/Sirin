@@ -1658,6 +1658,17 @@ Fallback to ax_find/ax_click if shadow_find returns "no shadow root".
 When you need EXACT text comparison (numbers, IDs), prefer ax_* over
 screenshot_analyze (which approximates).
 
+## 當 shadow_dump 找不到目標時的替代策略（重要）
+
+連續 2 次 shadow_dump 仍找不到目標元素時，立刻切換到 Vision-Coordinate 策略：
+
+1. screenshot_analyze "找 <目標元素> 的螢幕位置，估計中心 x, y 座標（viewport pixel）"
+2. click_point x=<估計值> y=<估計值> coord_source=screenshot
+
+⚠️ 不要在同一頁面 shadow_dump 超過 2 次。
+截圖可以直接看到 Flutter canvas 上的 UI，比 AX tree 更直接。
+click_point coord_source=screenshot 會自動修正 HiDPI 縮放。
+
 ## Robustness actions (test isolation + race-free)
 - go_back        — browser history back 1 step + waits for Flutter AX tree to settle (≥10 nodes, 8 s)
                    optional param: wait (extra ms after AX ready, e.g. {{"action":"go_back","wait":2000}})
