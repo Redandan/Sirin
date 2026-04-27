@@ -8,7 +8,9 @@
 /data/test_failures/
 /data/test_*.png
 /data/teams_profile/
-sirin.log
+sirin*.log
+sirin*.err.log
+sirin-err.log
 
 # ── Build artifacts ───────────────────────────────────────────────────────────
 /target/
@@ -67,4 +69,4 @@ test_data/
 bridge_live_test_*.txt
 bridge_test_screenshot.*
 integration_test_report_*.txt
-sirin-err.log
+sirin.err.log
