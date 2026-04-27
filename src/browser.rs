@@ -2754,35 +2754,68 @@ where
         }
     }; // mutex released here — NOT held during the CDP call
 
-    let result = f.clone()(&tab);
+    let mut result = f.clone()(&tab);
 
-    // If the call failed with a connection-closed error, try one auto-recover.
-    if let Err(ref e) = result {
-        if is_connection_closed(e) {
-            tracing::warn!("[browser] mid-call connection closed — attempting one-shot recovery");
-            // Clear singleton
-            *global().lock().unwrap_or_else(|e| e.into_inner()) = None;
-            // Re-launch in the mode the current test requested (not default_headless()).
-            // Flutter CanvasKit needs headless=false — using default would silently
-            // re-launch headless and cause a black screen for the rest of the test.
-            let recovery_headless = TEST_DESIRED_HEADLESS.load(Ordering::Relaxed);
-            ensure_open(recovery_headless)?;
-            // Retry exactly once with a fresh tab from the new session.
-            // After recovery the browser has only one tab (index 0) — clamp
-            // the thread-local to what actually exists so we don't panic.
-            let tab: Arc<Tab> = {
-                let guard = global().lock().unwrap_or_else(|e| e.into_inner());
-                match guard.as_ref() {
-                    Some(inner) => {
-                        let idx = THREAD_ACTIVE_TAB.with(|c| c.get())
-                            .unwrap_or(inner.active)
-                            .min(inner.tabs.len().saturating_sub(1));
-                        Arc::clone(&inner.tabs[idx])
+    // If the call failed with a connection-closed error, retry up to
+    // `MAX_RECOVERIES` times.  Pilot #003-rerun (Issue #97) showed
+    // `agora_pickup_time_picker` hitting `net::ERR_ABORTED` repeatedly on
+    // Flutter hash-route transitions — one-shot recovery isn't always enough
+    // when the underlying CDP transport is genuinely flapping.  Each retry
+    // resets the singleton + sleeps briefly to let Chrome settle.
+    const MAX_RECOVERIES: u32 = 3;
+    for attempt in 1..=MAX_RECOVERIES {
+        match &result {
+            Err(e) if is_connection_closed(e) => {
+                tracing::warn!(
+                    "[browser] mid-call connection closed (attempt {}/{}) — recovering",
+                    attempt, MAX_RECOVERIES
+                );
+                // Clear singleton so the next ensure_open spawns a fresh Chrome.
+                *global().lock().unwrap_or_else(|e| e.into_inner()) = None;
+                // Brief settle delay between recoveries — empirically the second+
+                // recovery succeeds when Chrome had a moment to release its locks.
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                // Re-launch in the mode the current test requested (not
+                // default_headless()).  Flutter CanvasKit needs headless=false
+                // — using default would silently re-launch headless and cause
+                // a black screen for the rest of the test.
+                let recovery_headless = TEST_DESIRED_HEADLESS.load(Ordering::Relaxed);
+                if let Err(launch_err) = ensure_open(recovery_headless) {
+                    tracing::error!(
+                        "[browser] recovery attempt {} failed at ensure_open: {}",
+                        attempt, launch_err
+                    );
+                    if attempt == MAX_RECOVERIES {
+                        return Err(format!(
+                            "browser recovery exhausted after {} attempts: {}",
+                            MAX_RECOVERIES, launch_err
+                        ));
                     }
-                    None => return Err("browser session lost after recovery".into()),
+                    continue;
                 }
-            };
-            return f(&tab);
+                // Get a fresh tab from the new session.  After recovery the
+                // browser has only one tab (index 0) — clamp THREAD_ACTIVE_TAB
+                // so we don't panic on out-of-bounds.
+                let tab: Arc<Tab> = {
+                    let guard = global().lock().unwrap_or_else(|e| e.into_inner());
+                    match guard.as_ref() {
+                        Some(inner) => {
+                            let idx = THREAD_ACTIVE_TAB.with(|c| c.get())
+                                .unwrap_or(inner.active)
+                                .min(inner.tabs.len().saturating_sub(1));
+                            Arc::clone(&inner.tabs[idx])
+                        }
+                        None => {
+                            if attempt == MAX_RECOVERIES {
+                                return Err("browser session lost after recovery".into());
+                            }
+                            continue;
+                        }
+                    }
+                };
+                result = f.clone()(&tab);
+            }
+            _ => break, // Ok, or non-connection-closed Err — stop retrying.
         }
     }
 
