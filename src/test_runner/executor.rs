@@ -1653,6 +1653,13 @@ Flutter/CanvasKit interaction pattern (PREFERRED order using shadow DOM):
   4. shadow_type_flutter        — for text input fields (NOT shadow_type which uses InsertText)
   After route change: wait ≥ 1000ms → enable_a11y → shadow_dump → interact.
 
+**常見錯誤（會導致 30 秒 timeout）：**
+❌ shadow_click → wait 3000 → wait_for_ax_ready  （缺 enable_a11y → timeout）
+✓ shadow_click → wait 2000 → enable_a11y → wait_for_ax_ready  （正確）
+
+每次 Flutter route 切換後都要重新 enable_a11y。
+enable_a11y 必須在 wait_for_ax_ready 之前，否則語義樹永遠不會被初始化。
+
 Fallback to ax_find/ax_click if shadow_find returns "no shadow root".
 
 When you need EXACT text comparison (numbers, IDs), prefer ax_* over
