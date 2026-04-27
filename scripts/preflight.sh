@@ -117,7 +117,8 @@ done
 echo
 echo "5. Recent Chrome Stability"
 if [ -f "sirin.err.log" ]; then
-  CRASHES=$(grep -c "Chrome crashed again\|connection closed.*recovering" sirin.err.log 2>/dev/null || echo 0)
+  CRASHES=$(grep -cE "Chrome crashed|connection closed.*recovering" sirin.err.log 2>/dev/null | tr -d "
+" || echo 0)
   LAUNCHES=$(grep -c "launched Chrome" sirin.err.log 2>/dev/null || echo 0)
   if [ "$CRASHES" -gt 5 ]; then
     warn "sirin.err.log shows ${CRASHES} Chrome crashes — check SIRIN_PERSISTENT_PROFILE"
@@ -127,6 +128,24 @@ if [ -f "sirin.err.log" ]; then
     ok "No Chrome crashes in sirin.err.log"
   fi
   ok "Chrome launches: ${LAUNCHES}"
+fi
+
+# ── 6. Action Registry Consistency ────────────────────────────────────────────
+echo
+echo "6. Action Registry Consistency (mcp_server vs builtins)"
+if [ -f "src/mcp_server.rs" ] && [ -f "src/adk/tool/builtins.rs" ]; then
+  # High-risk browser actions that should be in both
+  BROWSER_ACTIONS="goto screenshot screenshot_analyze click click_point type read eval wait exists attr scroll key console network url title close set_viewport enable_a11y ax_tree ax_find ax_value ax_click ax_focus ax_type ax_type_verified ax_snapshot ax_diff wait_for_ax_change wait_for_url wait_for_ax_ready wait_for_network_idle assert_ax_contains assert_url_matches shadow_find shadow_click shadow_dump flutter_type flutter_enter shadow_type_flutter go_back clear_state wait_new_tab wait_request list_sessions close_session dom_snapshot"
+  MISSING_COUNT=0
+  for action in $BROWSER_ACTIONS; do
+    if ! grep -q "\"$action\"" src/adk/tool/builtins.rs 2>/dev/null; then
+      warn "browser action '$action' missing from builtins.rs"
+      MISSING_COUNT=$((MISSING_COUNT+1))
+    fi
+  done
+  if [ "$MISSING_COUNT" -eq 0 ]; then
+    ok "all browser actions registered in builtins.rs"
+  fi
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────

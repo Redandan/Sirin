@@ -978,6 +978,53 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                         Ok(json!({ "elapsed_ms": elapsed, "url": target_url, "status": "matched" }))
                     }
 
+                    // Assertions (mirror mcp_server.rs — wired 2026-04-28)
+                    "assert_ax_contains" => {
+                        if target.is_empty() {
+                            return Err("'assert_ax_contains' requires 'target' = text to find".into());
+                        }
+                        let tree = crate::browser_ax::get_full_tree(false)?;
+                        let needle = target.to_lowercase();
+                        let found = tree.iter().any(|n| {
+                            n.name.as_deref().unwrap_or("").to_lowercase().contains(&needle)
+                                || n.value.as_deref().unwrap_or("").to_lowercase().contains(&needle)
+                        });
+                        let preview: Vec<String> = tree.iter().take(20)
+                            .filter_map(|n| n.name.clone().or_else(|| n.value.clone()))
+                            .collect();
+                        Ok(json!({ "passed": found, "target": target, "actual_ax_tree_preview": preview.join(" | ") }))
+                    }
+                    "assert_url_matches" => {
+                        if target.is_empty() {
+                            return Err("'assert_url_matches' requires 'target' (URL substring or /regex/)".into());
+                        }
+                        let url = browser::current_url().unwrap_or_default();
+                        let is_regex = target.starts_with('/') && target.ends_with('/') && target.len() > 2;
+                        let passed = if is_regex {
+                            let pattern = &target[1..target.len() - 1];
+                            regex::Regex::new(pattern).map(|re| re.is_match(&url)).unwrap_or(false)
+                        } else {
+                            url.contains(&target)
+                        };
+                        Ok(json!({ "passed": passed, "target": target, "actual_url": url }))
+                    }
+
+                    // Multi-session management (mirror mcp_server.rs — wired 2026-04-28)
+                    "list_sessions" => {
+                        let sessions = browser::list_sessions().unwrap_or_default();
+                        let items: Vec<Value> = sessions.into_iter().map(|(id, idx, url)| {
+                            json!({ "session_id": id, "tab_index": idx, "url": url })
+                        }).collect();
+                        Ok(json!({ "count": items.len(), "sessions": items }))
+                    }
+                    "close_session" => {
+                        if target.is_empty() {
+                            return Err("'close_session' requires 'target' = session_id".into());
+                        }
+                        browser::close_session(&target)?;
+                        Ok(json!({ "status": "closed", "session_id": target }))
+                    }
+
                     // ── Flutter Shadow DOM (bypasses CDP AX protocol) ─────────
                     "shadow_find" => {
                         let role = optional_string_field(&input, "role");
