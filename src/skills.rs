@@ -531,10 +531,11 @@ async fn execute_browser_test(user_input: &str) -> Result<String, String> {
 
     let elapsed_s = started.elapsed().as_secs_f64();
     let status_label = match result.status {
-        crate::test_runner::TestStatus::Passed  => "✓ PASSED",
-        crate::test_runner::TestStatus::Failed  => "✗ FAILED",
-        crate::test_runner::TestStatus::Timeout => "⏱ TIMEOUT",
-        crate::test_runner::TestStatus::Error   => "✗ ERROR",
+        crate::test_runner::TestStatus::Passed   => "✓ PASSED",
+        crate::test_runner::TestStatus::Failed   => "✗ FAILED",
+        crate::test_runner::TestStatus::Timeout  => "⏱ TIMEOUT",
+        crate::test_runner::TestStatus::Error    => "✗ ERROR",
+        crate::test_runner::TestStatus::Disputed => "⚠ DISPUTED",
     };
 
     let mut summary = format!(

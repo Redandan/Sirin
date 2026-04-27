@@ -370,10 +370,11 @@ pub fn to_json(s: &RunState) -> serde_json::Value {
         ),
         RunPhase::Complete(r) => (
             match r.status {
-                TestStatus::Passed  => "passed",
-                TestStatus::Failed  => "failed",
-                TestStatus::Timeout => "timeout",
-                TestStatus::Error   => "error",
+                TestStatus::Passed   => "passed",
+                TestStatus::Failed   => "failed",
+                TestStatus::Timeout  => "timeout",
+                TestStatus::Error    => "error",
+                TestStatus::Disputed => "disputed",
             },
             json!({
                 "iterations": r.iterations,
