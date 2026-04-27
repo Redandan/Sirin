@@ -816,6 +816,23 @@ Sirin 會在指定工作目錄（可以是另一個 repo）啟動一個顧問 se
                     },
                     "required": ["topic_key"]
                 }
+            },
+            {
+                "name": "kb_write",
+                "description": "Write a note to AgoraMarket Knowledge Base. Stored as layer=raw, status=draft, source=sirin. KB must be enabled (KB_ENABLED=1).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "topic_key": { "type": "string", "description": "unique kebab-case key, e.g. 'cic-result-demo-001'" },
+                        "title":     { "type": "string", "description": "human-readable title" },
+                        "content":   { "type": "string", "description": "note body (Markdown OK)" },
+                        "domain":    { "type": "string", "description": "e.g. 'tooling', 'cic', 'session-task'" },
+                        "tags":      { "type": "string", "description": "comma-separated, e.g. 'cic-task,result'" },
+                        "file_refs": { "type": "string", "description": "optional comma-separated file refs" },
+                        "project":   { "type": "string", "description": "KB project slug (default reads KB_PROJECT env)" }
+                    },
+                    "required": ["topic_key", "title", "content", "domain"]
+                }
             }
         ]
     }))
@@ -865,6 +882,7 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         "dev_team_read_issue"     => return call_dev_team_read_issue(arguments).map(wrap_json),
         "kb_search"               => return call_kb_search(arguments).await.map(wrap_json),
         "kb_get"                  => return call_kb_get(arguments).await.map(wrap_json),
+        "kb_write"                => return call_kb_write(arguments).await.map(wrap_json),
         _ => {}
     }
 
@@ -2457,6 +2475,36 @@ async fn call_kb_get(args: Value) -> Result<Value, String> {
     }
 }
 
+async fn call_kb_write(args: Value) -> Result<Value, String> {
+    if !crate::kb_client::enabled() {
+        return Ok(json!({ "error": "KB 未啟用，請設定 KB_ENABLED=1" }));
+    }
+    let topic_key = args["topic_key"].as_str().ok_or("Missing 'topic_key'")?.to_string();
+    let title     = args["title"].as_str().ok_or("Missing 'title'")?.to_string();
+    let content   = args["content"].as_str().ok_or("Missing 'content'")?.to_string();
+    let domain    = args["domain"].as_str().ok_or("Missing 'domain'")?.to_string();
+    if topic_key.is_empty() || title.is_empty() || content.is_empty() || domain.is_empty() {
+        return Err("topic_key, title, content, domain must all be non-empty".to_string());
+    }
+    let tags      = args["tags"].as_str().unwrap_or("").to_string();
+    let file_refs = args["file_refs"].as_str().unwrap_or("").to_string();
+    let project   = args["project"].as_str().map(String::from)
+        .unwrap_or_else(crate::kb_client::default_project);
+
+    match crate::kb_client::write_raw_to_project(
+        &project, &topic_key, &title, &content, &domain, &tags, &file_refs,
+    ).await {
+        Ok(()) => Ok(json!({
+            "project":    project,
+            "topic_key":  topic_key,
+            "status":     "accepted",
+            "layer":      "raw",
+            "confidence": 0.6,
+        })),
+        Err(e) => Ok(json!({ "error": e })),
+    }
+}
+
 #[cfg(test)]
 mod test_runner_mcp_tests {
     use super::*;
@@ -2691,6 +2739,53 @@ mod test_runner_mcp_tests {
             .await
             .unwrap();
         assert!(r.get("error").is_some(), "expected error payload, got {r}");
+    }
+
+    /// kb_write must appear in tools/list with required schema fields so CiC
+    /// can discover + invoke it via `window.sirin.tools.kb_write({...})`.
+    #[test]
+    fn kb_write_tool_exposed_in_tools_list() {
+        let v = handle_tools_list().expect("tools/list ok");
+        let tools = v["tools"].as_array().expect("tools array");
+        let entry = tools
+            .iter()
+            .find(|t| t["name"].as_str() == Some("kb_write"))
+            .expect("kb_write entry must be present");
+        assert!(entry["description"].as_str().unwrap_or("").contains("Knowledge Base"));
+        let required = entry["inputSchema"]["required"]
+            .as_array()
+            .expect("required array");
+        let req: Vec<&str> = required.iter().filter_map(Value::as_str).collect();
+        for k in ["topic_key", "title", "content", "domain"] {
+            assert!(req.contains(&k), "required must include {k}, got {req:?}");
+        }
+        let props = entry["inputSchema"]["properties"]
+            .as_object()
+            .expect("properties object");
+        for k in ["topic_key", "title", "content", "domain", "tags", "file_refs", "project"] {
+            assert!(props.contains_key(k), "properties must include {k}");
+        }
+    }
+
+    #[tokio::test]
+    async fn kb_write_returns_error_when_disabled() {
+        std::env::remove_var("KB_ENABLED");
+        let r = call_kb_write(json!({
+            "topic_key": "k", "title": "t", "content": "c", "domain": "d"
+        })).await.unwrap();
+        assert!(r.get("error").is_some(), "expected error payload, got {r}");
+    }
+
+    #[tokio::test]
+    async fn kb_write_rejects_missing_required_fields() {
+        std::env::set_var("KB_ENABLED", "1");
+        let r = call_kb_write(json!({ "title": "t", "content": "c", "domain": "d" })).await;
+        assert!(r.is_err(), "must reject missing topic_key: {r:?}");
+        let r = call_kb_write(json!({
+            "topic_key": "", "title": "t", "content": "c", "domain": "d"
+        })).await;
+        assert!(r.is_err(), "must reject empty topic_key: {r:?}");
+        std::env::remove_var("KB_ENABLED");
     }
 }
 
