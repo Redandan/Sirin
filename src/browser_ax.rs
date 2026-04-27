@@ -187,8 +187,9 @@ pub fn get_full_tree(include_ignored: bool) -> Result<Vec<AxNode>, String> {
     if raw_node_count(&tree) <= 2 {
         // Wait for potential post-navigation transient teardown to resolve.
         // Flutter rebuilds the Semantics tree after SPA route changes; the
-        // window is usually 300-800ms.  3 × 400ms = 1.2s covers it.
-        if !poll_tree_recovery(3, 400) {
+        // window can take up to 3 s on slow Flutter builds.
+        // 6 × 600ms = 3.6s covers the extended recovery window.
+        if !poll_tree_recovery(6, 600) {
             // Still tiny — attempt bootstrap (A/B; Tab×2 removed, see Issue #20).
             let _ = enable_flutter_semantics();
             std::thread::sleep(std::time::Duration::from_millis(400));
@@ -344,6 +345,21 @@ fn json_ax_value(node: &serde_json::Value, field: &str) -> Option<String> {
 /// {"action":"wait_for_ax_ready","min_nodes":20,"timeout":10000}
 /// ```
 pub fn wait_for_ax_ready(min_nodes: usize, timeout_ms: u64) -> Result<(u64, usize), String> {
+    // Guard: if enable_a11y was never called for this tab, the semantics tree
+    // will never be initialized — fail immediately instead of waiting out the
+    // full timeout (which would always be wasted time, typically 30 s).
+    let active = crate::browser::active_tab().unwrap_or(0);
+    {
+        let set = a11y_tabs().lock().unwrap_or_else(|e| e.into_inner());
+        if !set.contains(&active) {
+            return Err(format!(
+                "wait_for_ax_ready called before enable_a11y on tab {active}. \
+                 Call enable_a11y first, especially after Flutter route push. \
+                 Waiting for semantics that were never enabled will always timeout."
+            ));
+        }
+    }
+
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
     let t0 = std::time::Instant::now();
     loop {
@@ -1052,5 +1068,27 @@ mod tests {
     #[test]
     fn ax_value_to_string_returns_none_for_empty() {
         assert_eq!(ax_value_to_string(&None), None);
+    }
+
+    /// Verify that wait_for_ax_ready immediately returns Err when enable_a11y
+    /// has never been called for the active tab, instead of spinning for
+    /// the full timeout_ms (which would waste ~30 s per bad test call).
+    ///
+    /// This test exercises the guard path by ensuring the a11y-enabled set
+    /// does NOT contain the active tab index (0, since there's no real browser).
+    /// The function must return Err without sleeping.
+    #[test]
+    fn wait_for_ax_ready_errors_if_a11y_not_enabled() {
+        // Ensure tab 0 is NOT in the enabled set for this test.
+        // (Other tests in the suite do not touch a11y_tabs, but reset defensively.)
+        a11y_tabs().lock().unwrap_or_else(|e| e.into_inner()).remove(&0);
+
+        let result = wait_for_ax_ready(10, 5000);
+        assert!(result.is_err(), "expected Err when a11y not enabled, got {:?}", result);
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("enable_a11y"),
+            "error message should mention enable_a11y, got: {msg}"
+        );
     }
 }
