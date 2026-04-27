@@ -1358,21 +1358,30 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                 }
 
                 if analysis.is_none() {
-                    let llm = crate::llm::shared_llm();
+                    // Use the vision specialist LLM if configured via
+                    // LLM_VISION_BACKEND / LLM_VISION_BASE_URL / LLM_VISION_MODEL /
+                    // LLM_VISION_API_KEY; fall back to the main LLM when any var
+                    // is absent (backward-compatible, zero behaviour change).
+                    let vision_cfg = crate::llm::vision_llm_config();
+                    let main_llm = crate::llm::shared_llm();
+                    let llm_for_vision: &crate::llm::LlmConfig = match vision_cfg.as_ref() {
+                        Some(v) => v,
+                        None    => &main_llm,
+                    };
                     let client = crate::llm::shared_http();
                     // Use call_vision directly with the already-captured b64
                     // so we don't trigger analyze_screenshot's internal
                     // browser::screenshot() (the 4th capture pre-fix).
                     let vision_res = if !png_b64_inline.is_empty() {
                         crate::llm::call_vision(
-                            &client, &llm, &prompt_with_directive,
+                            &client, llm_for_vision, &prompt_with_directive,
                             &png_b64_inline, "image/png",
                         ).await
                     } else {
                         // Fallback: blocking_fut didn't pass png_b64 (e.g.
                         // older code path); legacy analyze_screenshot path
                         // still works but does its own capture.
-                        crate::llm::analyze_screenshot(&client, &llm, &prompt_with_directive).await
+                        crate::llm::analyze_screenshot(&client, llm_for_vision, &prompt_with_directive).await
                     };
                     match vision_res {
                         Ok(res) => {

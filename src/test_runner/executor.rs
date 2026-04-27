@@ -594,6 +594,19 @@ pub async fn execute_test_tracked(
         runs::set_phase(rid, runs::RunPhase::Running { step: 0, current_action: "goto".into() });
     }
 
+    // Vision specialist startup log (once per test, not per iteration).
+    match crate::llm::vision_llm_config() {
+        Some(ref v) => tracing::info!(
+            target: "sirin",
+            "[llm] vision specialist: backend={:?} model={}",
+            v.backend, v.model
+        ),
+        None => tracing::info!(
+            target: "sirin",
+            "[llm] vision specialist: (none, using main model)"
+        ),
+    }
+
     // 0-pre) Resolve docs_refs into a Markdown block the prompt builders can
     // splice in.  Each entry is read from disk (filesystem path) or fetched
     // from the central KB (topicKey).  Cached per test_id for the duration
