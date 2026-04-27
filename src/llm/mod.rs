@@ -489,9 +489,20 @@ pub fn vision_llm_config() -> Option<LlmConfig> {
     let model = std::env::var("LLM_VISION_MODEL")
         .ok()
         .filter(|v| !v.trim().is_empty())?;
-    let api_key = std::env::var("LLM_VISION_API_KEY")
-        .ok()
-        .filter(|v| !v.trim().is_empty())?;
+
+    // Warn explicitly when base_url is set but api_key is missing, so the user
+    // gets a clear signal that the vision specialist will be silently disabled.
+    let raw_api_key = std::env::var("LLM_VISION_API_KEY").unwrap_or_default();
+    if raw_api_key.trim().is_empty() {
+        tracing::warn!(
+            target: "sirin",
+            "[llm] LLM_VISION_BASE_URL is set ({}) but LLM_VISION_API_KEY is empty — \
+             vision specialist DISABLED. All screenshot_analyze calls will use the main LLM.",
+            base_url
+        );
+        return None;
+    }
+    let api_key = raw_api_key;
 
     let backend = match backend_str.to_lowercase().as_str() {
         "lmstudio" | "lm_studio" | "openai" => LlmBackend::LmStudio,
@@ -967,5 +978,30 @@ mod tests {
         std::env::remove_var("LLM_VISION_MODEL");
 
         assert!(result.is_none(), "should return None when API key is missing");
+    }
+
+    #[test]
+    fn vision_llm_config_warns_when_base_url_set_but_key_empty() {
+        // Arrange: base_url + backend + model are set, but api_key is empty string.
+        std::env::set_var("LLM_VISION_BACKEND",  "lmstudio");
+        std::env::set_var("LLM_VISION_BASE_URL", "https://openrouter.ai/api/v1");
+        std::env::set_var("LLM_VISION_MODEL",    "qwen/qwen2.5-vl-7b-instruct");
+        std::env::set_var("LLM_VISION_API_KEY",  "");
+
+        let result = super::vision_llm_config();
+
+        // Cleanup before assertions so env doesn't leak on failure.
+        std::env::remove_var("LLM_VISION_BACKEND");
+        std::env::remove_var("LLM_VISION_BASE_URL");
+        std::env::remove_var("LLM_VISION_MODEL");
+        std::env::remove_var("LLM_VISION_API_KEY");
+
+        // The function must return None (vision specialist disabled) when
+        // LLM_VISION_API_KEY is set but empty — the warning is emitted inside
+        // the function; we just assert the observable return value here.
+        assert!(
+            result.is_none(),
+            "should return None and warn when base_url is set but api_key is empty"
+        );
     }
 }
