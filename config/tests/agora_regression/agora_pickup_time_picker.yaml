@@ -1,23 +1,34 @@
 id: agora_pickup_time_picker
-name: "取貨時間選擇器 v9 - direct goto form URL"
+name: "取貨時間選擇器 v11 - ax_focus + executor prompt fix"
 url: "https://redandan.github.io/?__test_role=seller#/seller/product"
 
-max_iterations: 35
+max_iterations: 30
 timeout_secs: 480
 
 goal: |
   目標：把取貨結束時間改成 14:00。
 
   直接以 url 欄位設定為 #/seller/product，讓 executor 自動呼叫 install_capture。
-  避免 shadow_click 觸發 hash-route TargetInfoChanged 競態 crash。
 
-  步驟：
+  ⚠️ 必讀：取貨結束時間在展開平台配送設定後位於 viewport 之外（下方），
+  ax_click 無法到達 off-screen 元素！必須使用 ax_focus 讓 Flutter 自動捲動。
+
+  正確操作流程：
+  步驟 1-19：準備工作（wait、enable_a11y、展開平台配送設定、啟用 switch）
+  步驟 20：ax_find role=textbox name_regex="取貨結束時間"
+  步驟 21：ax_focus backend_id=<從 ax_find 拿到的值>  ← Flutter 自動 scroll + 聚焦
+  步驟 22：flutter_type text="14:00"
+  步驟 23：ax_value backend_id=<同上>  ← 確認欄位值是 14:00
+  步驟 24：screenshot_analyze "取貨結束時間是 14:00 嗎？"
+  步驟 25：done=true
+
+  詳細步驟：
 
   1. wait 8000
   2. enable_a11y
   3. wait 2000
   4. enable_a11y
-  5. shadow_dump — 確認在新增商品 form（看到 button:返回 或 group 等 form 元素）
+  5. shadow_dump — 確認在新增商品 form
   6. scroll y=800
   7. wait 1000
   8. enable_a11y
@@ -32,19 +43,16 @@ goal: |
   17. wait 2000
   18. enable_a11y
   19. wait 1000
-  20. ax_find role=textbox name_regex="取貨結束時間"
-  21. ax_click
-  22. wait 500
-  23. flutter_type text="14:00"
-  24. wait 500
-  25. flutter_enter
-  26. wait 1000
-  27. screenshot_analyze "取貨結束時間是 14:00 嗎？"
-  28. done=true
+  20. ax_find role=textbox name_regex="取貨結束時間"  [取得 backend_id]
+  21. ax_focus backend_id=<id>  [⭐ scroll-to + focus，不是 ax_click，不是 click_point]
+  22. flutter_type text="14:00"
+  23. ax_value backend_id=<id>  [驗證：應該是 "14:00"]
+  24. screenshot_analyze "取貨結束時間是 14:00 嗎？"
+  25. done=true
 
 success_criteria:
   - "展開平台配送設定"
   - "開啟啟用平台配送 switch"
   - "取貨結束時間改為 14:00"
 
-tags: [agora, regression, pickup, source-generated, v9, direct-goto]
+tags: [agora, regression, pickup, source-generated, v11, ax-focus-fix]
