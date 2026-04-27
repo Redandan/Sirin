@@ -48,20 +48,6 @@ fn required_string_field(input: &Value, key: &str) -> Result<String, String> {
     optional_string_field(input, key).ok_or_else(|| format!("Missing '{key}' string"))
 }
 
-/// Issue #74: resolve `target` (CSS selector) OR `ref_id` (CiC-style stable id
-/// from `dom_snapshot`) into a single CSS selector usable by the legacy
-/// click/type/read/exists/hover paths.  `ref_id` wins when both are present.
-fn resolve_target(input: &Value, fallback_target: &str, action: &str) -> Result<String, String> {
-    if let Some(ref_id) = optional_string_field(input, "ref_id") {
-        return crate::browser::resolve_ref(&ref_id);
-    }
-    if !fallback_target.is_empty() {
-        return Ok(fallback_target.to_string());
-    }
-    Err(format!(
-        "'{action}' requires 'target' (CSS selector) or 'ref_id' (from dom_snapshot)"
-    ))
-}
 
 /// Register all discovered external MCP tools into a registry.
 fn register_mcp_tools(registry: ToolRegistry) -> ToolRegistry {
@@ -630,8 +616,9 @@ pub(super) fn build_full_registry() -> ToolRegistry {
             // Advanced:    viewport, pdf, file_upload, iframe_eval, drag, http_auth
             let action = optional_string_field(&input, "action")
                 .unwrap_or_else(|| "goto".to_string());
+            // target / extra_blocked are needed by the builtins-specific goto / screenshot_analyze handlers.
+            // All other parameter parsing is delegated to browser_exec::dispatch().
             let target = optional_string_field(&input, "target").unwrap_or_default();
-            let text = optional_string_field(&input, "text").unwrap_or_default();
 
             let action_label = action.clone(); // preserved for timeout diagnostics (action moves into closure)
             let test_run_id = ctx.metadata.get("test_run_id").cloned(); // Extract test_run_id before spawn_blocking
@@ -644,23 +631,30 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                 .unwrap_or_default();
             let blocking_fut = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
                 use crate::browser;
+
+                // ── Test-runner-specific actions (not in browser_exec) ────────
+                // These need caller-side context (test_run_id, extra_blocked) or
+                // return a special sentinel value for the outer async vision handler.
                 match action.as_str() {
-                    // ── Navigation ───────────────────────────────────
                     "goto" => {
-                        if target.is_empty() { return Err("'goto' requires a 'target' URL".into()); }
                         // Issue #81: pre-navigation URL blocklist (CiC-style guard).
-                        // Cheap path: zero CDP, zero LLM tokens, before browser sees URL.
+                        if target.is_empty() { return Err("'goto' requires a 'target' URL".into()); }
                         if let Some(matched) = crate::authz::check_blocked_url(&target, extra_blocked.iter()) {
                             return Err(format!(
                                 "BlockedByPolicy: URL {target:?} matched blocked pattern {matched:?}"
                             ));
                         }
-                        browser::navigate(&target)?;
-                        let png = browser::screenshot()?;
-                        crate::events::publish(crate::events::AgentEvent::BrowserScreenshotReady {
-                            png_bytes: png, url: target.clone(),
-                        });
-                        Ok(json!({ "status": "navigated", "url": target }))
+                        // Delegate the actual navigation to the shared dispatch.
+                        // We override `browser_headless` in `input` — but input is already the
+                        // full JSON from the caller which may already include it.
+                        let result = crate::browser_exec::dispatch("goto", &input)?;
+                        // Publish screenshot event after navigation (test-runner feedback loop).
+                        if let Ok(png) = browser::screenshot() {
+                            crate::events::publish(crate::events::AgentEvent::BrowserScreenshotReady {
+                                png_bytes: png, url: target.clone(),
+                            });
+                        }
+                        return Ok(result);
                     }
                     "screenshot" => {
                         let png = browser::screenshot()?;
@@ -668,620 +662,64 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                         crate::events::publish(crate::events::AgentEvent::BrowserScreenshotReady {
                             png_bytes: png, url: url.clone(),
                         });
-                        Ok(json!({ "status": "screenshot captured", "url": url }))
+                        return Ok(json!({ "status": "screenshot captured", "url": url }));
                     }
-                    "title" => Ok(json!({ "title": browser::page_title()? })),
-                    "url"   => Ok(json!({ "url": browser::current_url()? })),
-                    "close" => { browser::close(); Ok(json!({ "status": "closed" })) }
-
-                    // ── DOM interaction ──────────────────────────────
-                    // Issue #74: each accepts EITHER `target` (selector) OR
-                    // `ref_id` (from dom_snapshot).  resolve_target() handles
-                    // both forms — ref_id wins when both are present.
-                    "click" => {
-                        let sel = resolve_target(&input, &target, "click")?;
-                        browser::click(&sel)?;
-                        Ok(json!({ "status": "clicked", "selector": sel }))
-                    }
-                    "type" => {
-                        let sel = resolve_target(&input, &target, "type")?;
-                        browser::type_text(&sel, &text)?;
-                        Ok(json!({ "status": "typed", "selector": sel, "length": text.len() }))
-                    }
-                    "read" => {
-                        let sel = resolve_target(&input, &target, "read")?;
-                        Ok(json!({ "selector": sel, "text": browser::get_text(&sel)? }))
-                    }
-                    "eval" => {
-                        if target.is_empty() { return Err("'eval' requires 'target' JS expression".into()); }
-                        Ok(json!({ "result": browser::evaluate_js(&target)? }))
-                    }
-                    "go_back" => {
-                        let wait_ms = input.get("wait").and_then(|v| v.as_u64()).unwrap_or(0);
-                        browser::go_back(wait_ms)?;
-                        let url = browser::current_url().unwrap_or_default();
-                        Ok(json!({ "status": "went_back", "url": url }))
-                    }
-                    "wait" => {
-                        if target.is_empty() { return Err("'wait' requires 'target' selector or ms number".into()); }
-                        // Plain number → millisecond sleep (e.g. {"action":"wait","target":"2000"}).
-                        if let Ok(ms) = target.trim().parse::<u64>() {
-                            std::thread::sleep(std::time::Duration::from_millis(ms));
-                            Ok(json!({ "status": "slept", "ms": ms }))
-                        } else {
-                            let ms = input.get("timeout").and_then(|v| v.as_u64()).unwrap_or(5000);
-                            browser::wait_for_ms(&target, ms)?;
-                            Ok(json!({ "status": "found", "selector": target }))
-                        }
-                    }
-                    "exists" => {
-                        // Issue #74: ref_id form returns false (rather than err)
-                        // when the ref is gone — matches the spirit of "does
-                        // this still exist?" instead of bubbling an error up.
-                        if let Some(ref_id) = optional_string_field(&input, "ref_id") {
-                            match browser::resolve_ref(&ref_id) {
-                                Ok(sel) => Ok(json!({
-                                    "ref_id": ref_id,
-                                    "selector": sel,
-                                    "exists": browser::element_exists(&sel)?
-                                })),
-                                Err(_) => Ok(json!({
-                                    "ref_id": ref_id,
-                                    "exists": false
-                                })),
-                            }
-                        } else if !target.is_empty() {
-                            Ok(json!({ "selector": target.clone(), "exists": browser::element_exists(&target)? }))
-                        } else {
-                            Err("'exists' requires 'target' selector or 'ref_id'".into())
-                        }
-                    }
-                    "count" => {
-                        if target.is_empty() { return Err("'count' requires 'target' selector".into()); }
-                        Ok(json!({ "selector": target, "count": browser::element_count(&target)? }))
-                    }
-                    "attr" => {
-                        if target.is_empty() { return Err("'attr' requires 'target' selector".into()); }
-                        if text.is_empty() { return Err("'attr' requires 'text' = attribute name".into()); }
-                        Ok(json!({ "selector": target, "attribute": &text, "value": browser::get_attribute(&target, &text)? }))
-                    }
-                    "value" => {
-                        if target.is_empty() { return Err("'value' requires 'target' selector".into()); }
-                        Ok(json!({ "selector": target, "value": browser::get_value(&target)? }))
-                    }
-
-                    // ── DOM snapshot (Issue #74) — CiC-style stable refs ─
-                    // `dom_snapshot` walks the visible DOM, assigns each
-                    // interactable element a short ref_id (e1, e2, …), and
-                    // returns {url, count, truncated, elements:[…]}.  Subsequent
-                    // click/type/read/exists/hover accept `ref_id` instead of
-                    // `target` to stay correct across re-renders.
+                    // DOM snapshot: test-runner stable ref-id system (builtins-only).
                     "dom_snapshot" => {
                         let max = input.get("max")
                             .and_then(Value::as_u64)
                             .map(|v| v as usize)
                             .unwrap_or(browser::DOM_SNAPSHOT_DEFAULT_MAX);
-                        let snap = browser::dom_snapshot(max)?;
-                        Ok(snap)
+                        return browser::dom_snapshot(max);
                     }
-
-                    // ── Keyboard / input ─────────────────────────────
-                    "key" => {
-                        if target.is_empty() { return Err("'key' requires 'target' key name".into()); }
-                        browser::press_key(&target)?;
-                        Ok(json!({ "status": "pressed", "key": target }))
-                    }
-                    "select" => {
-                        if target.is_empty() { return Err("'select' requires 'target' selector".into()); }
-                        if text.is_empty() { return Err("'select' requires 'text' = option value".into()); }
-                        browser::select_option(&target, &text)?;
-                        Ok(json!({ "status": "selected", "selector": target, "value": text }))
-                    }
-                    "scroll" => {
-                        let x = input.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                        let y = input.get("y").and_then(|v| v.as_f64()).unwrap_or(300.0);
-                        browser::scroll_by(x, y)?;
-                        Ok(json!({ "status": "scrolled", "x": x, "y": y }))
-                    }
-                    "scroll_to" => {
-                        if target.is_empty() { return Err("'scroll_to' requires 'target' selector".into()); }
-                        browser::scroll_into_view(&target)?;
-                        Ok(json!({ "status": "scrolled_to", "selector": target }))
-                    }
-
-                    // ── Coordinate interaction ──────────────────────
-                    "click_point" => {
-                        let x = input.get("x").and_then(|v| v.as_f64()).ok_or("'click_point' requires 'x'")?;
-                        let y = input.get("y").and_then(|v| v.as_f64()).ok_or("'click_point' requires 'y'")?;
-                        // Issue #79: vision LLMs read coords off a screenshot whose
-                        // physical pixel size differs from the CSS viewport on HiDPI
-                        // monitors.  `coord_source="screenshot"` triggers
-                        // devicePixelRatio rescaling; anything else (or absent) is
-                        // treated as raw CSS pixels for backward compatibility.
-                        let source = input.get("coord_source").and_then(|v| v.as_str()).unwrap_or("css");
-                        match source {
-                            "screenshot" => browser::click_point_screenshot(x, y)?,
-                            _ => browser::click_point(x, y)?,
-                        }
-                        Ok(json!({ "status": "clicked", "x": x, "y": y, "coord_source": source }))
-                    }
-                    "hover" => {
-                        // Issue #74: accept ref_id from dom_snapshot.
-                        let sel = resolve_target(&input, &target, "hover")?;
-                        browser::hover(&sel)?;
-                        Ok(json!({ "status": "hovered", "selector": sel }))
-                    }
-                    "hover_point" => {
-                        let x = input.get("x").and_then(|v| v.as_f64()).ok_or("'hover_point' requires 'x'")?;
-                        let y = input.get("y").and_then(|v| v.as_f64()).ok_or("'hover_point' requires 'y'")?;
-                        let source = input.get("coord_source").and_then(|v| v.as_str()).unwrap_or("css");
-                        match source {
-                            "screenshot" => browser::hover_point_screenshot(x, y)?,
-                            _ => browser::hover_point(x, y)?,
-                        }
-                        Ok(json!({ "status": "hovered", "x": x, "y": y, "coord_source": source }))
-                    }
-
-                    // ── Tabs ─────────────────────────────────────────
-                    "new_tab" => {
-                        let idx = browser::new_tab()?;
-                        if !target.is_empty() { browser::navigate(&target)?; }
-                        Ok(json!({ "tab_index": idx }))
-                    }
-                    "switch_tab" => {
-                        let idx = input.get("index").and_then(|v| v.as_u64())
-                            .ok_or("'switch_tab' requires 'index'")? as usize;
-                        browser::switch_tab(idx)?;
-                        Ok(json!({ "status": "switched", "tab_index": idx }))
-                    }
-                    "close_tab" => {
-                        let idx = input.get("index").and_then(|v| v.as_u64())
-                            .ok_or("'close_tab' requires 'index'")? as usize;
-                        browser::close_tab(idx)?;
-                        Ok(json!({ "status": "tab_closed", "index": idx }))
-                    }
-                    "list_tabs" => {
-                        let tabs = browser::list_tabs()?;
-                        let active = browser::active_tab()?;
-                        let arr: Vec<serde_json::Value> = tabs.into_iter()
-                            .map(|(i, u)| json!({"index": i, "url": u, "active": i == active}))
-                            .collect();
-                        Ok(json!({ "tabs": arr }))
-                    }
-
-                    // ── Cookies ──────────────────────────────────────
-                    "cookies" => {
-                        let raw = browser::get_cookies()?;
-                        let val: serde_json::Value = serde_json::from_str(&raw).unwrap_or(json!([]));
-                        Ok(json!({ "cookies": val }))
-                    }
-                    "set_cookie" => {
-                        let name = input.get("name").and_then(|v| v.as_str()).unwrap_or_default();
-                        let value = input.get("value").and_then(|v| v.as_str()).unwrap_or_default();
-                        let domain = input.get("domain").and_then(|v| v.as_str()).unwrap_or_default();
-                        let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("/");
-                        browser::set_cookie(name, value, domain, path)?;
-                        Ok(json!({ "status": "cookie_set", "name": name }))
-                    }
-                    "delete_cookie" => {
-                        if target.is_empty() { return Err("'delete_cookie' requires 'target' cookie name".into()); }
-                        browser::delete_cookie(&target)?;
-                        Ok(json!({ "status": "cookie_deleted", "name": target }))
-                    }
-
-                    // ── Storage ──────────────────────────────────────
-                    "localStorage_get" => {
-                        if target.is_empty() { return Err("requires 'target' key".into()); }
-                        Ok(json!({ "key": target, "value": browser::local_storage_get(&target)? }))
-                    }
-                    "localStorage_set" => {
-                        if target.is_empty() { return Err("requires 'target' key".into()); }
-                        browser::local_storage_set(&target, &text)?;
-                        Ok(json!({ "status": "set", "key": target }))
-                    }
-
-                    // ── Network / Console ────────────────────────────
-                    "network" => {
-                        let limit = input.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
-                        let raw = browser::captured_requests(limit)?;
-                        let val: serde_json::Value = serde_json::from_str(&raw).unwrap_or(json!([]));
-                        Ok(json!({ "requests": val }))
-                    }
-                    "console" => {
-                        let limit = input.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
-                        let raw = browser::console_messages(limit)?;
-                        let val: serde_json::Value = serde_json::from_str(&raw).unwrap_or(json!([]));
-                        Ok(json!({ "messages": val }))
-                    }
-                    "install_capture" => {
-                        browser::install_console_capture()?;
-                        browser::install_network_capture()?;
-                        Ok(json!({ "status": "console+network capture installed" }))
-                    }
-
-                    // ── Advanced ─────────────────────────────────────
-                    "viewport" => {
-                        let w = input.get("width").and_then(|v| v.as_u64()).unwrap_or(1280) as u32;
-                        let h = input.get("height").and_then(|v| v.as_u64()).unwrap_or(800) as u32;
-                        let scale = input.get("scale").and_then(|v| v.as_f64()).unwrap_or(1.0);
-                        let mobile = input.get("mobile").and_then(|v| v.as_bool()).unwrap_or(false);
-                        browser::set_viewport(w, h, scale, mobile)?;
-                        Ok(json!({ "status": "viewport_set", "width": w, "height": h }))
-                    }
-                    "pdf" => {
-                        let bytes = browser::pdf()?;
-                        Ok(json!({ "status": "pdf_exported", "bytes": bytes.len() }))
-                    }
-                    "drag" => {
-                        let fx = input.get("from_x").and_then(|v| v.as_f64()).ok_or("requires 'from_x'")?;
-                        let fy = input.get("from_y").and_then(|v| v.as_f64()).ok_or("requires 'from_y'")?;
-                        let tx = input.get("to_x").and_then(|v| v.as_f64()).ok_or("requires 'to_x'")?;
-                        let ty = input.get("to_y").and_then(|v| v.as_f64()).ok_or("requires 'to_y'")?;
-                        browser::drag(fx, fy, tx, ty)?;
-                        Ok(json!({ "status": "dragged" }))
-                    }
-                    "http_auth" => {
-                        let user = input.get("username").and_then(|v| v.as_str()).unwrap_or_default();
-                        let pass = input.get("password").and_then(|v| v.as_str()).unwrap_or_default();
-                        browser::set_http_auth(user, pass)?;
-                        Ok(json!({ "status": "auth_set" }))
-                    }
-
-                    // ── Accessibility tree (literal text, fast, Flutter-OK) ─
-                    "enable_a11y" => {
-                        crate::browser_ax::enable_flutter_semantics()?;
-                        // Poll until flt-semantics-host is non-empty (Flutter fills it async).
-                        // Max 15 × 200ms = 3 s; if still empty after that, return what we have.
-                        let mut shadow_ready = false;
-                        for _ in 0..15 {
-                            let count = browser::evaluate_js(
-                                "document.querySelector('flt-semantics-host')?.childElementCount||0"
-                            ).unwrap_or_default();
-                            if count.trim() != "0" {
-                                shadow_ready = true;
-                                break;
-                            }
-                            std::thread::sleep(std::time::Duration::from_millis(200));
-                        }
-                        let ax_count = {
-                            match crate::browser_ax::get_full_tree(false) {
-                                Ok(nodes) => nodes.len(),
-                                Err(_) => 0,
-                            }
-                        };
-                        Ok(json!({ "status": "semantics enabled", "ax_node_count": ax_count, "shadow_ready": shadow_ready }))
-                    }
-                    "wait_for_ax_ready" => {
-                        let min_nodes = input.get("min_nodes").and_then(Value::as_u64).unwrap_or(20) as usize;
-                        let timeout_ms = input.get("timeout_ms").or_else(|| input.get("timeout")).and_then(Value::as_u64).unwrap_or(10000);
-                        let (elapsed, count) = crate::browser_ax::wait_for_ax_ready(min_nodes, timeout_ms)?;
-                        Ok(json!({ "elapsed_ms": elapsed, "node_count": count }))
-                    }
-
-                    // wait_for_network_idle — block until the network has been quiet for idle_ms.
-                    // Essential for heavy Flutter pages (e.g. #/seller/product) that trigger
-                    // CDP silence timeouts if interacted with before all resources load.
-                    "wait_for_network_idle" => {
-                        let idle_ms = input.get("idle_ms").and_then(Value::as_u64).unwrap_or(500);
-                        let timeout_ms = input.get("timeout_ms").or_else(|| input.get("timeout")).and_then(Value::as_u64).unwrap_or(15000);
-                        let elapsed = crate::browser::wait_for_network_idle(idle_ms, timeout_ms)?;
-                        Ok(json!({ "elapsed_ms": elapsed, "status": "idle" }))
-                    }
-
-                    // wait_for_url — block until the current page URL matches target substring.
-                    "wait_for_url" => {
-                        let target_url = input.get("target").and_then(Value::as_str)
-                            .ok_or("'wait_for_url' requires 'target' = URL substring")?
-                            .to_string();
-                        let timeout_ms = input.get("timeout_ms").or_else(|| input.get("timeout")).and_then(Value::as_u64).unwrap_or(10000);
-                        let elapsed = crate::browser::wait_for_url(&target_url, timeout_ms)?;
-                        Ok(json!({ "elapsed_ms": elapsed, "url": target_url, "status": "matched" }))
-                    }
-
-                    // Assertions (mirror mcp_server.rs — wired 2026-04-28)
-                    "assert_ax_contains" => {
-                        if target.is_empty() {
-                            return Err("'assert_ax_contains' requires 'target' = text to find".into());
-                        }
-                        let tree = crate::browser_ax::get_full_tree(false)?;
-                        let needle = target.to_lowercase();
-                        let found = tree.iter().any(|n| {
-                            n.name.as_deref().unwrap_or("").to_lowercase().contains(&needle)
-                                || n.value.as_deref().unwrap_or("").to_lowercase().contains(&needle)
-                        });
-                        let preview: Vec<String> = tree.iter().take(20)
-                            .filter_map(|n| n.name.clone().or_else(|| n.value.clone()))
-                            .collect();
-                        Ok(json!({ "passed": found, "target": target, "actual_ax_tree_preview": preview.join(" | ") }))
-                    }
-                    "assert_url_matches" => {
-                        if target.is_empty() {
-                            return Err("'assert_url_matches' requires 'target' (URL substring or /regex/)".into());
-                        }
-                        let url = browser::current_url().unwrap_or_default();
-                        let is_regex = target.starts_with('/') && target.ends_with('/') && target.len() > 2;
-                        let passed = if is_regex {
-                            let pattern = &target[1..target.len() - 1];
-                            regex::Regex::new(pattern).map(|re| re.is_match(&url)).unwrap_or(false)
-                        } else {
-                            url.contains(&target)
-                        };
-                        Ok(json!({ "passed": passed, "target": target, "actual_url": url }))
-                    }
-
-                    // Multi-session management (mirror mcp_server.rs — wired 2026-04-28)
-                    "list_sessions" => {
-                        let sessions = browser::list_sessions().unwrap_or_default();
-                        let items: Vec<Value> = sessions.into_iter().map(|(id, idx, url)| {
-                            json!({ "session_id": id, "tab_index": idx, "url": url })
-                        }).collect();
-                        Ok(json!({ "count": items.len(), "sessions": items }))
-                    }
-                    "close_session" => {
-                        if target.is_empty() {
-                            return Err("'close_session' requires 'target' = session_id".into());
-                        }
-                        browser::close_session(&target)?;
-                        Ok(json!({ "status": "closed", "session_id": target }))
-                    }
-
-                    // ── Flutter Shadow DOM (bypasses CDP AX protocol) ─────────
-                    "shadow_find" => {
-                        let role = optional_string_field(&input, "role");
-                        let name = optional_string_field(&input, "name_regex")
-                            .or_else(|| optional_string_field(&input, "name"));
-                        let (x, y, label) = browser::shadow_find(role.as_deref(), name.as_deref())?;
-                        Ok(json!({ "found": true, "x": x, "y": y, "label": label }))
-                    }
-                    "shadow_click" => {
-                        let role = optional_string_field(&input, "role");
-                        let name = optional_string_field(&input, "name_regex")
-                            .or_else(|| optional_string_field(&input, "name"));
-                        let label = browser::shadow_click(role.as_deref(), name.as_deref())?;
-                        Ok(json!({ "status": "clicked", "label": label }))
-                    }
-                    "shadow_type" => {
-                        let role = optional_string_field(&input, "role");
-                        let name = optional_string_field(&input, "name_regex")
-                            .or_else(|| optional_string_field(&input, "name"));
-                        let text_val = input.get("text").and_then(Value::as_str)
-                            .ok_or("'shadow_type' requires 'text'")?;
-                        browser::shadow_type(role.as_deref(), name.as_deref(), text_val)?;
-                        Ok(json!({ "status": "typed", "text": text_val }))
-                    }
-                    // Flutter-native typing: shadow_click → wait 300ms → flutter_type
-                    // Use this instead of shadow_type for Flutter textboxes (which need
-                    // keydown events, not Input.InsertText).
-                    "flutter_type" => {
-                        // Accept both string "50" and number 50
-                        let text_owned = input.get("text")
-                            .map(|v| if let Some(s) = v.as_str() { s.to_string() } else { v.to_string().trim_matches('"').to_string() })
-                            .ok_or("'flutter_type' requires 'text'")?;
-                        browser::flutter_type(&text_owned)?;
-                        Ok(json!({ "status": "typed", "text": text_owned }))
-                    }
-                    "flutter_enter" => {
-                        // Send Enter key to the active flt-text-editing input — submits chat/form
-                        let result = browser::flutter_enter()?;
-                        Ok(json!({ "status": "ok", "result": result }))
-                    }
-                    "shadow_type_flutter" => {
-                        // All-in-one: find + click + wait 350ms + flutter_type
-                        let role = optional_string_field(&input, "role");
-                        let name = optional_string_field(&input, "name_regex")
-                            .or_else(|| optional_string_field(&input, "name"));
-                        let text_owned = input.get("text")
-                            .map(|v| if let Some(s) = v.as_str() { s.to_string() } else { v.to_string().trim_matches('"').to_string() })
-                            .ok_or("'shadow_type_flutter' requires 'text'")?;
-                        let label = browser::shadow_click(role.as_deref(), name.as_deref())?;
-                        std::thread::sleep(std::time::Duration::from_millis(350));
-                        browser::flutter_type(&text_owned)?;
-                        Ok(json!({ "status": "typed", "label": label, "text": text_owned }))
-                    }
-                    "shadow_dump" => {
-                        let items = browser::shadow_dump()?;
-                        Ok(json!({ "count": items.len(), "elements": items }))
-                    }
-
+                    // ax_tree: P1.2 optimisation — diff mode when test_run_id present.
                     "ax_tree" => {
                         let include_ignored = input.get("include_ignored").and_then(Value::as_bool).unwrap_or(false);
                         let nodes = crate::browser_ax::get_full_tree(include_ignored)?;
-                        
-                        // P1.2 optimization: Use A11y tree auto-diffing to reduce tokens
+
                         if let Some(rid) = &test_run_id {
-                            // Serialize nodes to tree format for diffing
-                            let tree_value: Value = serde_json::to_value(&nodes)
-                                .unwrap_or(json!({}));
-                            
-                            // Determine if this is the first call
+                            let tree_value: Value = serde_json::to_value(&nodes).unwrap_or(json!({}));
                             let mut is_first = false;
                             crate::test_runner::runs::mutate_ax_diff_context(rid, |diff_ctx| {
                                 is_first = diff_ctx.set_baseline_if_first(tree_value.clone());
                             });
-                            
-                            // If not first call, compute and return diff
                             if !is_first {
                                 if let Some(diff_ctx) = crate::test_runner::runs::get_ax_diff_context(rid) {
                                     let diff_result = diff_ctx.compute_diff(&tree_value);
                                     return Ok(json!({
-                                        "count": nodes.len(),
-                                        "nodes": nodes,
-                                        "diff_mode": true,
-                                        "diff_summary": diff_result,
+                                        "count": nodes.len(), "nodes": nodes,
+                                        "diff_mode": true, "diff_summary": diff_result,
                                     }));
                                 }
                             }
-                            
-                            // First call or no diff context: return full tree
-                            Ok(json!({
-                                "count": nodes.len(),
-                                "nodes": nodes,
+                            return Ok(json!({
+                                "count": nodes.len(), "nodes": nodes,
                                 "first_ax_tree_call": is_first,
-                            }))
-                        } else {
-                            // No test_run_id in context: return full tree
-                            Ok(json!({ "count": nodes.len(), "nodes": nodes }))
+                            }));
                         }
+                        return Ok(json!({ "count": nodes.len(), "nodes": nodes }));
                     }
-                    "ax_find" => {
-                        let role = optional_string_field(&input, "role");
-                        let name = optional_string_field(&input, "name");
-                        if role.is_none() && name.is_none() {
-                            return Err("'ax_find' requires 'role' and/or 'name'".into());
-                        }
-                        let name_regex = optional_string_field(&input, "name_regex");
-                        let not_name_matches: Vec<String> = input
-                            .get("not_name_matches")
-                            .and_then(Value::as_array)
-                            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-                            .unwrap_or_default();
-                        let limit = input.get("limit").and_then(Value::as_u64).unwrap_or(1) as usize;
-
-                        if limit <= 1 {
-                            match crate::browser_ax::find_by_role_and_name(
-                                role.as_deref(), name.as_deref(),
-                                name_regex.as_deref(), &not_name_matches,
-                            )? {
-                                Some(n) => Ok(json!({ "found": true, "node": n })),
-                                None    => Ok(json!({ "found": false, "node": null })),
-                            }
-                        } else {
-                            let nodes = crate::browser_ax::find_all_by_role_and_name(
-                                role.as_deref(), name.as_deref(),
-                                name_regex.as_deref(), &not_name_matches, limit,
-                            )?;
-                            Ok(json!({
-                                "found": !nodes.is_empty(),
-                                "count": nodes.len(),
-                                "nodes": nodes,
-                            }))
-                        }
-                    }
-                    "ax_snapshot" => {
-                        let snap_id_arg = optional_string_field(&input, "id");
-                        let id = crate::browser_ax::ax_snapshot(snap_id_arg.as_deref())?;
-                        Ok(json!({ "snapshot_id": id }))
-                    }
-                    "ax_diff" => {
-                        let before = input.get("before_id").and_then(Value::as_str)
-                            .ok_or("'ax_diff' requires 'before_id'")?;
-                        let after = input.get("after_id").and_then(Value::as_str)
-                            .ok_or("'ax_diff' requires 'after_id'")?;
-                        let diff = crate::browser_ax::ax_diff(before, after)?;
-                        Ok(json!({
-                            "added_count":   diff.added.len(),
-                            "removed_count": diff.removed.len(),
-                            "changed_count": diff.changed.len(),
-                            "added":   diff.added.iter().map(|n| json!({"node_id": n.node_id, "role": n.role, "name": n.name})).collect::<Vec<_>>(),
-                            "removed": diff.removed.iter().map(|n| json!({"node_id": n.node_id, "role": n.role, "name": n.name})).collect::<Vec<_>>(),
-                            "changed": diff.changed,
-                        }))
-                    }
-                    "wait_for_ax_change" => {
-                        let baseline_id = input.get("baseline_id").and_then(Value::as_str)
-                            .ok_or("'wait_for_ax_change' requires 'baseline_id'")?;
-                        let timeout_ms = input.get("timeout").and_then(Value::as_u64).unwrap_or(5000);
-                        let (new_id, diff) = crate::browser_ax::wait_for_ax_change(baseline_id, timeout_ms)?;
-                        Ok(json!({
-                            "new_snapshot_id": new_id,
-                            "added_count":   diff.added.len(),
-                            "removed_count": diff.removed.len(),
-                            "changed_count": diff.changed.len(),
-                        }))
-                    }
-                    "ax_value" => {
-                        let backend_id = input.get("backend_id").and_then(Value::as_u64)
-                            .ok_or("'ax_value' requires 'backend_id' (number)")?;
-                        let text = crate::browser_ax::read_node_text(backend_id as u32)?;
-                        Ok(json!({ "backend_id": backend_id, "text": text }))
-                    }
-                    "ax_click" => {
-                        let backend_id = input.get("backend_id").and_then(Value::as_u64)
-                            .ok_or("'ax_click' requires 'backend_id' (number)")?;
-                        crate::browser_ax::click_backend(backend_id as u32)?;
-                        Ok(json!({ "status": "clicked", "backend_id": backend_id }))
-                    }
-                    "ax_focus" => {
-                        let backend_id = input.get("backend_id").and_then(Value::as_u64)
-                            .ok_or("'ax_focus' requires 'backend_id' (number)")?;
-                        crate::browser_ax::focus_backend(backend_id as u32)?;
-                        Ok(json!({ "status": "focused", "backend_id": backend_id }))
-                    }
-                    "ax_type" => {
-                        let backend_id = input.get("backend_id").and_then(Value::as_u64)
-                            .ok_or("'ax_type' requires 'backend_id' (number)")?;
-                        crate::browser_ax::type_into_backend(backend_id as u32, &text)?;
-                        Ok(json!({ "status": "typed", "backend_id": backend_id, "length": text.len() }))
-                    }
-                    "ax_type_verified" => {
-                        let backend_id = input.get("backend_id").and_then(Value::as_u64)
-                            .ok_or("'ax_type_verified' requires 'backend_id' (number)")?;
-                        let r = crate::browser_ax::type_into_backend_verified(backend_id as u32, &text)?;
-                        Ok(json!(r))
-                    }
-
-                    // ── Test isolation ───────────────────────────
-                    "clear_state" => {
-                        browser::clear_browser_state()?;
-                        Ok(json!({ "status": "cleared" }))
-                    }
-
-                    "set_viewport" => {
-                        let w = input.get("width").and_then(Value::as_u64).unwrap_or(1440) as u32;
-                        let h = input.get("height").and_then(Value::as_u64).unwrap_or(1600) as u32;
-                        let scale = input.get("scale").and_then(Value::as_f64).unwrap_or(1.0);
-                        let mobile = input.get("mobile").and_then(Value::as_bool).unwrap_or(false);
-                        browser::set_viewport(w, h, scale, mobile)?;
-                        Ok(json!({ "status": "viewport_set", "width": w, "height": h }))
-                    }
-
-                    // ── Multi-tab / popup ────────────────────────
-                    "wait_new_tab" => {
-                        let timeout = input.get("timeout").and_then(Value::as_u64).unwrap_or(10000);
-                        // baseline=None → fn measures from same source as its loop
-                        let idx = browser::wait_for_new_tab(None, timeout)?;
-                        Ok(json!({ "status": "new tab opened", "active_tab": idx }))
-                    }
-
-                    // ── Network ──────────────────────────────────
-                    "wait_request" => {
-                        if target.is_empty() { return Err("'wait_request' requires 'target' = URL substring".into()); }
-                        let timeout = input.get("timeout").and_then(Value::as_u64).unwrap_or(10000);
-                        let raw = browser::wait_for_request(&target, timeout)?;
-                        let val: Value = serde_json::from_str(&raw).unwrap_or(json!({}));
-                        Ok(json!({ "request": val }))
-                    }
-
-                    // ── Vision: screenshot + LLM analysis ────────
+                    // screenshot_analyze: capture PNG once here; outer async handler
+                    // does the LLM call with cache + SoM support.
                     "screenshot_analyze" => {
-                        // Take screenshot, send to vision LLM with prompt, return analysis
                         if target.is_empty() {
                             return Err("'screenshot_analyze' requires 'target' = analysis prompt".into());
                         }
-                        // Capture screenshot ONCE on this blocking thread.
-                        // Pre-fix: this branch returned only `png_len` and the
-                        // outer async block then captured the screenshot
-                        // THREE more times (cache lookup, LLM call, cache
-                        // store) for a total of 4 captures per analyze call.
-                        // Each `browser::screenshot()` is a synchronous CDP
-                        // round-trip (~0.5–1 s), so a vision call burned
-                        // 1.5–3 s of pure overhead before the LLM saw a byte.
-                        // Now: capture once, base64-encode here, pass the b64
-                        // through the JSON channel so downstream uses it for
-                        // hash + LLM + cache store without re-capturing.
                         let png = browser::screenshot()?;
                         let png_len = png.len();
                         let b64 = crate::llm::base64_encode_bytes(&png);
-                        Ok(json!({
+                        return Ok(json!({
                             "__vision": true,
-                            "prompt": target,
-                            "png_len": png_len,
-                            "png_b64": b64,
-                        }))
+                            "prompt":   target,
+                            "png_len":  png_len,
+                            "png_b64":  b64,
+                        }));
                     }
-
-                    other => Err(format!("Unknown web_navigate action: {other}")),
+                    _ => {}
                 }
+
+                // ── All other actions: shared dispatch ────────────────────────
+                crate::browser_exec::dispatch(action.as_str(), &input)
             });
             // ── CDP call timeout ──────────────────────────────────────────────
             // If Chrome crashes mid-call the spawned blocking thread can block

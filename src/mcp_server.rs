@@ -1779,28 +1779,14 @@ async fn call_browser_exec(args: Value, user_agent: &str) -> Result<Value, Strin
     let t0 = std::time::Instant::now();
 
     let action = args["action"].as_str().ok_or("Missing action")?.to_string();
-    let target = args.get("target").and_then(Value::as_str).unwrap_or("").to_string();
-    let text   = args.get("text").and_then(Value::as_str).unwrap_or("").to_string();
+    // target / text / timeout are kept for the screenshot_analyze / ocr_find_text
+    // async-only handlers below; all other parameter parsing is done inside
+    // browser_exec::dispatch() which reads them from the raw `args` Value.
+    let target  = args.get("target").and_then(Value::as_str).unwrap_or("").to_string();
     let timeout = args.get("timeout").and_then(Value::as_u64);
     let headless_override = args.get("browser_headless").and_then(Value::as_bool);
-    // Coord args for click_point; viewport args for set_viewport.  Fixes #11.
-    let x = args.get("x").and_then(Value::as_f64);
-    let y = args.get("y").and_then(Value::as_f64);
-    let width = args.get("width").and_then(Value::as_u64);
-    let height = args.get("height").and_then(Value::as_u64);
-    let device_scale = args.get("device_scale").and_then(Value::as_f64).unwrap_or(1.0);
-    let mobile = args.get("mobile").and_then(Value::as_bool).unwrap_or(false);
-    // ax_* args
-    let backend_id = args.get("backend_id").and_then(Value::as_u64).map(|n| n as u32);
-    let role_arg = args.get("role").and_then(Value::as_str).map(String::from);
-    let name_arg = args.get("name").and_then(Value::as_str).map(String::from);
-    let include_ignored = args.get("include_ignored").and_then(Value::as_bool).unwrap_or(false);
-    // Issue #19 new args
+    // session_id pre-processing happens inside the blocking closure below.
     let session_id_arg = args.get("session_id").and_then(Value::as_str).map(String::from);
-    let scroll_arg = args.get("scroll").and_then(Value::as_bool).unwrap_or(false);
-    let scroll_max_arg = args.get("scroll_max").and_then(Value::as_u64).unwrap_or(10) as usize;
-    let min_nodes_arg = args.get("min_nodes").and_then(Value::as_u64).unwrap_or(20) as usize;
-    let idle_ms_arg = args.get("idle_ms").and_then(Value::as_u64).unwrap_or(500);
 
     // ── Async-only actions (need LLM call, can't go in spawn_blocking) ────
     if action == "screenshot_analyze" {
@@ -1853,8 +1839,8 @@ async fn call_browser_exec(args: Value, user_agent: &str) -> Result<Value, Strin
         }
     }
 
-    // Dispatch directly to crate::browser to avoid requiring an AgentContext
-    // for simple imperative calls.  Mirrors the web_navigate action set.
+    // Dispatch via the shared browser_exec module.  All common browser actions
+    // live there; only MCP-specific ext_* probes are handled inline below.
     let result = blocking("browser_exec_sync", move || -> Result<Value, String> {
         use crate::browser;
         let want_headless = headless_override.unwrap_or_else(browser::default_headless);
@@ -1869,409 +1855,31 @@ async fn call_browser_exec(args: Value, user_agent: &str) -> Result<Value, Strin
             browser::session_switch(sid)?;
         }
 
+        // ── Sirin Companion extension probes (MCP-only, not in browser_exec) ──
         match action.as_str() {
-            "goto" => {
-                if target.is_empty() { return Err("'goto' requires 'target' URL".into()); }
-                browser::ensure_open(want_headless)?;
-                browser::navigate(&target)?;
-                Ok(json!({ "status": "navigated", "url": target }))
-            }
-            "screenshot" => {
-                let png = browser::screenshot()?;
-                let b64 = base64_encode(&png);
-                let url = browser::current_url().unwrap_or_default();
-                Ok(json!({
-                    "mime": "image/png",
-                    "bytes_base64": b64,
-                    "size_bytes": png.len(),
-                    "url": url,
-                }))
-            }
-            "click" => {
-                if target.is_empty() { return Err("'click' requires 'target' selector".into()); }
-                browser::click(&target)?;
-                Ok(json!({ "status": "clicked", "selector": target }))
-            }
-            "type" => {
-                if target.is_empty() { return Err("'type' requires 'target' selector".into()); }
-                browser::type_text(&target, &text)?;
-                Ok(json!({ "status": "typed", "selector": target, "length": text.len() }))
-            }
-            "read" => {
-                if target.is_empty() { return Err("'read' requires 'target' selector".into()); }
-                Ok(json!({ "selector": target, "text": browser::get_text(&target)? }))
-            }
-            "eval" => {
-                if target.is_empty() { return Err("'eval' requires 'target' JS expression".into()); }
-                Ok(json!({ "result": browser::evaluate_js(&target)? }))
-            }
-            "go_back" => {
-                let wait_ms = args.get("wait").and_then(Value::as_u64).unwrap_or(0);
-                browser::go_back(wait_ms)?;
-                let url = browser::current_url().unwrap_or_default();
-                Ok(json!({ "status": "went_back", "url": url }))
-            }
-            "wait" => {
-                if target.is_empty() { return Err("'wait' requires 'target' selector".into()); }
-                browser::wait_for_ms(&target, timeout.unwrap_or(5000))?;
-                Ok(json!({ "status": "found", "selector": target }))
-            }
-            "exists" => {
-                if target.is_empty() { return Err("'exists' requires 'target' selector".into()); }
-                Ok(json!({ "selector": target, "exists": browser::element_exists(&target)? }))
-            }
-            "attr" => {
-                if target.is_empty() { return Err("'attr' requires 'target' selector".into()); }
-                if text.is_empty() { return Err("'attr' requires 'text' = attribute name".into()); }
-                Ok(json!({ "selector": target, "attribute": &text, "value": browser::get_attribute(&target, &text)? }))
-            }
-            "scroll" => {
-                let y = timeout.map(|t| t as f64).unwrap_or(300.0);
-                browser::scroll_by(0.0, y)?;
-                Ok(json!({ "status": "scrolled", "y": y }))
-            }
-            "key" => {
-                if target.is_empty() { return Err("'key' requires 'target' key name".into()); }
-                browser::press_key(&target)?;
-                Ok(json!({ "status": "pressed", "key": target }))
-            }
-            "console" => {
-                let limit = timeout.unwrap_or(20) as usize;
-                let raw = browser::console_messages(limit).unwrap_or_else(|_| "[]".into());
-                let val: Value = serde_json::from_str(&raw).unwrap_or(json!([]));
-                Ok(json!({ "messages": val }))
-            }
-            "network" => {
-                let limit = timeout.unwrap_or(20) as usize;
-                let raw = browser::captured_requests(limit).unwrap_or_else(|_| "[]".into());
-                let val: Value = serde_json::from_str(&raw).unwrap_or(json!([]));
-                Ok(json!({ "requests": val }))
-            }
-            "url"   => Ok(json!({ "url": browser::current_url()? })),
-            "title" => Ok(json!({ "title": browser::page_title()? })),
-            "close" => { browser::close(); Ok(json!({ "status": "closed" })) }
-            // Fixes #11: expose click_point + set_viewport so Flutter Web / CanvasKit
-            // apps (no DOM) can be driven by coordinate rather than CSS selector.
-            "click_point" => {
-                let cx = x.ok_or("'click_point' requires 'x' (number)")?;
-                let cy = y.ok_or("'click_point' requires 'y' (number)")?;
-                // Issue #79: HiDPI screenshot coords need devicePixelRatio rescaling.
-                let source = args.get("coord_source").and_then(Value::as_str).unwrap_or("css");
-                match source {
-                    "screenshot" => browser::click_point_screenshot(cx, cy)?,
-                    _ => browser::click_point(cx, cy)?,
-                }
-                Ok(json!({ "status": "clicked", "x": cx, "y": cy, "coord_source": source }))
-            }
-            "set_viewport" => {
-                let w = width.ok_or("'set_viewport' requires 'width' (positive integer)")? as u32;
-                let h = height.ok_or("'set_viewport' requires 'height' (positive integer)")? as u32;
-                browser::set_viewport(w, h, device_scale, mobile)?;
-                Ok(json!({
-                    "status": "viewport set",
-                    "width": w, "height": h,
-                    "device_scale": device_scale, "mobile": mobile
-                }))
-            }
-            // ── Accessibility tree (literal text — for exact assertions) ──
-            "enable_a11y" => {
-                // Always call enable_flutter_semantics() to trigger the placeholder click
-                // that builds flt-semantics-host DOM elements (used by shadow_find/shadow_dump).
-                // Safety net: detect about:blank URL reset and restore.
-                let saved_url = crate::browser::current_url().ok();
-                let _ = crate::browser_ax::enable_flutter_semantics();
-                // Poll until flt-semantics-host is non-empty (Flutter fills it async).
-                let mut shadow_ready = false;
-                for _ in 0..15 {
-                    let count = browser::evaluate_js(
-                        "document.querySelector('flt-semantics-host')?.childElementCount||0"
-                    ).unwrap_or_default();
-                    if count.trim() != "0" {
-                        shadow_ready = true;
-                        break;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(200));
-                }
-                if let Some(ref url) = saved_url {
-                    let cur = crate::browser::current_url().unwrap_or_default();
-                    if cur.contains("about:blank") && !url.contains("about:blank") && !url.is_empty() {
-                        tracing::warn!(
-                            "[browser_ax] enable_a11y: URL reset detected (about:blank) — restoring {url:?}"
-                        );
-                        let _ = crate::browser::navigate(url);
-                        std::thread::sleep(std::time::Duration::from_millis(500));
-                    }
-                }
-                let tree = crate::browser_ax::get_full_tree(false).unwrap_or_default();
-                Ok(json!({ "status": "semantics enabled", "ax_node_count": tree.len(), "shadow_ready": shadow_ready }))
-            }
-            "ax_tree" => {
-                let nodes = crate::browser_ax::get_full_tree(include_ignored)?;
-                Ok(json!({ "count": nodes.len(), "nodes": nodes }))
-            }
-            "ax_find" => {
-                if role_arg.is_none() && name_arg.is_none() {
-                    return Err("'ax_find' requires 'role' and/or 'name'".into());
-                }
-                let name_regex_arg = args.get("name_regex").and_then(Value::as_str).map(String::from);
-                let not_name_matches: Vec<String> = args.get("not_name_matches")
-                    .and_then(Value::as_array)
-                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-                    .unwrap_or_default();
-                let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(1) as usize;
-
-                // scroll=true: scroll-aware find (Issue #19 P1)
-                if scroll_arg {
-                    let (node, scrolled) = crate::browser_ax::find_scrolling_by_role_and_name(
-                        role_arg.as_deref(), name_arg.as_deref(),
-                        name_regex_arg.as_deref(), &not_name_matches,
-                        scroll_max_arg, 400.0,
-                    )?;
-                    return Ok(json!({
-                        "found": node.is_some(),
-                        "node": node,
-                        "scrolled_times": scrolled,
-                    }));
-                }
-
-                if limit <= 1 {
-                    match crate::browser_ax::find_by_role_and_name(
-                        role_arg.as_deref(), name_arg.as_deref(),
-                        name_regex_arg.as_deref(), &not_name_matches,
-                    )? {
-                        Some(node) => Ok(json!({ "found": true, "node": node })),
-                        None => Ok(json!({ "found": false, "node": null })),
-                    }
-                } else {
-                    let nodes = crate::browser_ax::find_all_by_role_and_name(
-                        role_arg.as_deref(), name_arg.as_deref(),
-                        name_regex_arg.as_deref(), &not_name_matches, limit,
-                    )?;
-                    Ok(json!({
-                        "found": !nodes.is_empty(),
-                        "count": nodes.len(),
-                        "nodes": nodes,
-                    }))
-                }
-            }
-            "ax_snapshot" => {
-                let snap_id_arg = args.get("id").and_then(Value::as_str).map(String::from);
-                let id = crate::browser_ax::ax_snapshot(snap_id_arg.as_deref())?;
-                Ok(json!({ "snapshot_id": id }))
-            }
-            "ax_diff" => {
-                let before = args["before_id"].as_str().ok_or("'ax_diff' requires 'before_id'")?;
-                let after  = args["after_id"].as_str().ok_or("'ax_diff' requires 'after_id'")?;
-                let diff = crate::browser_ax::ax_diff(before, after)?;
-                Ok(json!({
-                    "added_count":   diff.added.len(),
-                    "removed_count": diff.removed.len(),
-                    "changed_count": diff.changed.len(),
-                    "added":   diff.added.iter().map(|n| json!({"node_id": n.node_id, "role": n.role, "name": n.name})).collect::<Vec<_>>(),
-                    "removed": diff.removed.iter().map(|n| json!({"node_id": n.node_id, "role": n.role, "name": n.name})).collect::<Vec<_>>(),
-                    "changed": diff.changed,
-                }))
-            }
-            "wait_for_ax_change" => {
-                let baseline_id = args["baseline_id"].as_str().ok_or("'wait_for_ax_change' requires 'baseline_id'")?;
-                let to_ms = timeout.unwrap_or(5000);
-                let (new_id, diff) = crate::browser_ax::wait_for_ax_change(baseline_id, to_ms)?;
-                Ok(json!({
-                    "new_snapshot_id": new_id,
-                    "added_count":   diff.added.len(),
-                    "removed_count": diff.removed.len(),
-                    "changed_count": diff.changed.len(),
-                }))
-            }
-            "ax_value" => {
-                let id = backend_id.ok_or("'ax_value' requires 'backend_id' (number)")?;
-                Ok(json!({ "backend_id": id, "text": crate::browser_ax::read_node_text(id)? }))
-            }
-            "ax_click" => {
-                let id = backend_id.ok_or("'ax_click' requires 'backend_id' (number)")?;
-                crate::browser_ax::click_backend(id)?;
-                Ok(json!({ "status": "clicked", "backend_id": id }))
-            }
-            "ax_focus" => {
-                let id = backend_id.ok_or("'ax_focus' requires 'backend_id' (number)")?;
-                crate::browser_ax::focus_backend(id)?;
-                Ok(json!({ "status": "focused", "backend_id": id }))
-            }
-            "ax_type" => {
-                let id = backend_id.ok_or("'ax_type' requires 'backend_id' (number)")?;
-                crate::browser_ax::type_into_backend(id, &text)?;
-                Ok(json!({ "status": "typed", "backend_id": id, "length": text.len() }))
-            }
-            "ax_type_verified" => {
-                let id = backend_id.ok_or("'ax_type_verified' requires 'backend_id' (number)")?;
-                let r = crate::browser_ax::type_into_backend_verified(id, &text)?;
-                Ok(serde_json::to_value(&r).unwrap_or(json!({})))
-            }
-            // ── Test isolation ──────────────────────────────────────
-            "clear_state" => {
-                browser::clear_browser_state()?;
-                Ok(json!({ "status": "cleared" }))
-            }
-            // ── Flutter Shadow DOM ──────────────────────────────────────────
-            "shadow_find" => {
-                let role = args.get("role").and_then(Value::as_str).map(String::from);
-                let name = args.get("name_regex").or_else(|| args.get("name"))
-                    .and_then(Value::as_str).map(String::from);
-                let (x, y, label) = browser::shadow_find(role.as_deref(), name.as_deref())?;
-                Ok(json!({ "found": true, "x": x, "y": y, "label": label }))
-            }
-            "shadow_click" => {
-                let role = args.get("role").and_then(Value::as_str).map(String::from);
-                let name = args.get("name_regex").or_else(|| args.get("name"))
-                    .and_then(Value::as_str).map(String::from);
-                let label = browser::shadow_click(role.as_deref(), name.as_deref())?;
-                Ok(json!({ "status": "clicked", "label": label }))
-            }
-            "shadow_type" => {
-                let role = args.get("role").and_then(Value::as_str).map(String::from);
-                let name = args.get("name_regex").or_else(|| args.get("name"))
-                    .and_then(Value::as_str).map(String::from);
-                let text_val = args.get("text").and_then(Value::as_str)
-                    .ok_or("'shadow_type' requires 'text'")?;
-                browser::shadow_type(role.as_deref(), name.as_deref(), text_val)?;
-                Ok(json!({ "status": "typed", "text": text_val }))
-            }
-            "flutter_type" => {
-                // Accept both string "50" and number 50 (sirin-call key=value parses ints as JSON numbers)
-                let text_owned = args.get("text")
-                    .map(|v| if let Some(s) = v.as_str() { s.to_string() } else { v.to_string().trim_matches('"').to_string() })
-                    .ok_or("'flutter_type' requires 'text'")?;
-                browser::flutter_type(&text_owned)?;
-                Ok(json!({ "status": "typed", "text": text_owned }))
-            }
-            "flutter_enter" => {
-                // Send Enter key to flt-text-editing — submits chat message or form
-                let result = browser::flutter_enter()?;
-                Ok(json!({ "status": "ok", "result": result }))
-            }
-            "shadow_type_flutter" => {
-                let role = args.get("role").and_then(Value::as_str).map(String::from);
-                let name = args.get("name_regex").or_else(|| args.get("name"))
-                    .and_then(Value::as_str).map(String::from);
-                let text_owned = args.get("text")
-                    .map(|v| if let Some(s) = v.as_str() { s.to_string() } else { v.to_string().trim_matches('"').to_string() })
-                    .ok_or("'shadow_type_flutter' requires 'text'")?;
-                let label = browser::shadow_click(role.as_deref(), name.as_deref())?;
-                std::thread::sleep(std::time::Duration::from_millis(350));
-                browser::flutter_type(&text_owned)?;
-                Ok(json!({ "status": "typed", "label": label, "text": text_owned }))
-            }
-            "shadow_dump" => {
-                let items = browser::shadow_dump()?;
-                Ok(json!({ "count": items.len(), "elements": items }))
-            }
-            // ── Multi-tab / popup ───────────────────────────────────
-            "wait_new_tab" => {
-                let to_ms = timeout.unwrap_or(10000);
-                // baseline=None → fn measures from same source as its loop
-                let idx = browser::wait_for_new_tab(None, to_ms)?;
-                Ok(json!({ "status": "new tab opened", "active_tab": idx }))
-            }
-            // ── Network ─────────────────────────────────────────────
-            "wait_request" => {
-                if target.is_empty() {
-                    return Err("'wait_request' requires 'target' = URL substring".into());
-                }
-                let to_ms = timeout.unwrap_or(10000);
-                let raw = browser::wait_for_request(&target, to_ms)?;
-                let val: Value = serde_json::from_str(&raw).unwrap_or(json!({}));
-                Ok(json!({ "request": val }))
-            }
-            // ── Condition-based waits (Issue #19 P0) ─────────────────
-            "wait_for_url" => {
-                if target.is_empty() {
-                    return Err("'wait_for_url' requires 'target' (URL substring or /regex/)".into());
-                }
-                let to_ms = timeout.unwrap_or(10000);
-                let elapsed = browser::wait_for_url(&target, to_ms)?;
-                let url = browser::current_url().unwrap_or_default();
-                Ok(json!({ "status": "ready", "elapsed_ms": elapsed, "url": url }))
-            }
-            "wait_for_ax_ready" => {
-                let to_ms = timeout.unwrap_or(10000);
-                let (elapsed, count) = crate::browser_ax::wait_for_ax_ready(min_nodes_arg, to_ms)?;
-                Ok(json!({ "status": "ready", "elapsed_ms": elapsed, "ax_node_count": count }))
-            }
-            "wait_for_network_idle" => {
-                let to_ms = timeout.unwrap_or(15000);
-                let elapsed = browser::wait_for_network_idle(idle_ms_arg, to_ms)?;
-                Ok(json!({ "status": "idle", "elapsed_ms": elapsed }))
-            }
-            // ── Assertions (Issue #19 bonus) ──────────────────────────
-            "assert_ax_contains" => {
-                if target.is_empty() {
-                    return Err("'assert_ax_contains' requires 'target' = text to find".into());
-                }
-                let tree = crate::browser_ax::get_full_tree(false)?;
-                let needle = target.to_lowercase();
-                let found = tree.iter().any(|n| {
-                    n.name.as_deref().unwrap_or("").to_lowercase().contains(&needle)
-                        || n.value.as_deref().unwrap_or("").to_lowercase().contains(&needle)
-                });
-                let preview: Vec<String> = tree.iter().take(20)
-                    .filter_map(|n| n.name.clone().or_else(|| n.value.clone()))
-                    .collect();
-                Ok(json!({
-                    "passed": found,
-                    "target": target,
-                    "actual_ax_tree_preview": preview.join(" | "),
-                }))
-            }
-            "assert_url_matches" => {
-                if target.is_empty() {
-                    return Err("'assert_url_matches' requires 'target' (URL substring or /regex/)".into());
-                }
-                let url = browser::current_url().unwrap_or_default();
-                let is_regex = target.starts_with('/') && target.ends_with('/') && target.len() > 2;
-                let passed = if is_regex {
-                    let pattern = &target[1..target.len() - 1];
-                    regex::Regex::new(pattern).map(|re| re.is_match(&url)).unwrap_or(false)
-                } else {
-                    url.contains(&target)
-                };
-                Ok(json!({ "passed": passed, "target": target, "actual_url": url }))
-            }
-            // ── Named sessions (Issue #19 P1) ─────────────────────────
-            "list_sessions" => {
-                let sessions = browser::list_sessions().unwrap_or_default();
-                let items: Vec<Value> = sessions.into_iter().map(|(id, idx, url)| {
-                    json!({ "session_id": id, "tab_index": idx, "url": url })
-                }).collect();
-                Ok(json!({ "count": items.len(), "sessions": items }))
-            }
-            "close_session" => {
-                if target.is_empty() {
-                    return Err("'close_session' requires 'target' = session_id".into());
-                }
-                browser::close_session(&target)?;
-                Ok(json!({ "status": "closed", "session_id": target }))
-            }
-            // ── Sirin Companion extension probes (POC) ───────────────────────
             "ext_status" => {
-                Ok(serde_json::to_value(crate::ext_server::status())
-                    .map_err(|e| format!("ext_status serialize: {e}"))?)
+                return Ok(serde_json::to_value(crate::ext_server::status())
+                    .map_err(|e| format!("ext_status serialize: {e}"))?);
             }
             "ext_url" => {
                 // Authoritative URL from extension; falls back to CDP cache.
                 let tab_id = args.get("tab_id").and_then(Value::as_i64);
-                match crate::ext_server::authoritative_url(tab_id) {
+                return match crate::ext_server::authoritative_url(tab_id) {
                     Some(u) => Ok(json!({ "url": u, "source": "extension" })),
                     None    => Ok(json!({
                         "url":    browser::current_url().unwrap_or_default(),
                         "source": "cdp_cache_fallback",
                     })),
-                }
+                };
             }
             "ext_tabs" => {
-                Ok(json!({ "tabs": crate::ext_server::list_tabs() }))
+                return Ok(json!({ "tabs": crate::ext_server::list_tabs() }));
             }
-            other   => Err(format!("Unknown browser_exec action: {other}")),
+            _ => {}
         }
+
+        // ── All other actions: shared dispatch ────────────────────────────
+        crate::browser_exec::dispatch(action.as_str(), &args)
     })
     .await;
 
