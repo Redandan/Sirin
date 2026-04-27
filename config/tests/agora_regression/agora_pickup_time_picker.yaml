@@ -2,56 +2,54 @@ id: agora_pickup_time_picker
 name: "取貨時間選擇器測試"
 url: "https://redandan.github.io/?__test_role=seller"
 
-max_iterations: 25
-timeout_secs: 360
+max_iterations: 30
+timeout_secs: 420
 
 goal: |
   目標：實際操作 Flutter 取貨時間選擇器（pickup time picker），把結束時間改成 14:00。
 
-  ⚠️ 重要：「找不到 picker」**不算 pass**。必須真的找到 + 改值。
-  CiC 在同 task 上花 25 actions 達成此操作（switch role + scroll + toggle 平台配送），
-  Sirin 也應該至少達到同樣深度，不要 LLM 在「沒看到 picker」就放棄。
+  ⚠️ 重要：「找不到 picker」不算 pass。必須真的找到 + 改值。
+  ⚠️ 如果你已確定某步驟的前提錯誤（例如 step 要你切頁面但你已在那個頁面），
+     呼叫 dispute_yaml(reason="...", suspected_step=N, suggested_fix="...") 回報，不要繼續 retry。
 
   起始狀態：以賣家身份登入（URL auto-login via __test_role=seller）。
-  若一開始顯示買家視角，需要 switch role：
-    - shadow_click 「我的」tab → 「切換身份」→ 「賣家」
+  初始路由通常是 #/seller（賣家商品頁，已在商品 tab）。
 
   ⚠️ Flutter app：所有 UI 判斷用 screenshot_analyze 或 shadow_dump。
-  ⚠️ 如果某 step 找不到目標，**先 retry 1 次**；仍找不到才繼續往下。
-  ⚠️ Picker 可能藏在「啟用平台配送」toggle 後面 — 必須先 enable toggle 才會出現取貨資訊區。
 
   步驟：
-  1. screenshot_analyze "確認在賣家頁面，看到上方 tab 列（商品/訂單/我的）"
-  2. shadow_click role=tab name_regex="^商品$"（賣家商品列表）
-  3. wait 2000
-  4. shadow_click role=button name_regex="\\+|新增|上架"（加號 = 開新增商品 form）
-  5. wait 3000
-  6. screenshot_analyze "在新增商品 form 嗎？看到哪些欄位？是否有「平台配送設定」section？"
-  7. 向下捲動找「平台配送設定」section（scroll y=600，最多 retry 2 次）
-  8. shadow_dump（找「啟用平台配送」toggle / switch widget）
-  9. shadow_click role=switch name_regex="啟用平台配送|平台配送"
-  10. wait 1500
-  11. screenshot_analyze "「取貨資訊」區是否出現？看到「取貨開始時間」「取貨結束時間」欄位嗎？"
-  12. ax_find role=textbox name_regex="取貨結束時間|結束時間|18:00"
-  13. ax_click（focus 取貨結束時間欄位，使用 step 12 的 backend_id）
-  14. wait 800
-  15. flutter_type text="14:00"
-  16. wait 800
-  17. flutter_enter（confirm input）
-  18. wait 1500
-  19. screenshot_analyze "取貨結束時間目前顯示什麼？是 14:00 嗎？"
-  20. done=true（**只在 step 19 確認 14:00 後**）
+  1. screenshot_analyze "確認在賣家頁面。你在哪個 tab？看到「+」加號 button 嗎？
+     注意：如果你已在商品頁（#/seller 或 #/seller/products），可以直接進步驟 2。
+     如果你在其他頁面（訂單、我的），才需要 shadow_click 商品 tab。"
+  2. 如果 step 1 確認不在商品頁 → shadow_click role=tab name_regex="商品|Products"，wait 2000
+     如果 step 1 確認已在商品頁 → 直接下一步（不要點 tab）
+  3. shadow_click role=button name_regex="\\+|add|新增|Add|上架|Create"（右下角加號）
+  4. wait 3000
+  5. screenshot_analyze "在新增商品 form 嗎？看到哪些欄位？是否有「平台配送設定」section？"
+  6. 向下捲動找「平台配送設定」section（scroll y=600，必要時 retry 1 次）
+  7. shadow_dump（找「啟用平台配送」toggle / switch widget）
+  8. shadow_click role=switch name_regex="啟用平台配送|平台配送|enable_delivery"
+  9. wait 1500
+  10. screenshot_analyze "「取貨資訊」區是否出現？看到「取貨開始時間」「取貨結束時間」欄位嗎？"
+  11. ax_find role=textbox name_regex="取貨結束時間|結束時間|18:00|end.?time"
+  12. ax_click（focus 取貨結束時間欄位）
+  13. wait 800
+  14. flutter_type text="14:00"
+  15. wait 800
+  16. flutter_enter（confirm input）
+  17. wait 1500
+  18. screenshot_analyze "取貨結束時間目前顯示什麼？是 14:00 嗎？"
+  19. done=true（只在 step 18 確認 14:00 後）
 
 success_criteria:
-  - "成功進入賣家「新增商品」form"
+  - "成功進入賣家「新增商品」form（不論是否經過點商品 tab）"
   - "成功展開「平台配送設定」section（包括 enable 啟用平台配送 toggle）"
-  - "**實際操作取貨結束時間欄位，改為 14:00**（必要條件，不接受『找不到 picker』）"
-  - "step 19 截圖驗證 14:00 已生效"
+  - "實際操作取貨結束時間欄位，改為 14:00（必要條件）"
+  - "step 18 截圖驗證 14:00 已生效"
 
 failure_modes:
-  # 明示哪些情況算 fail，避免 LLM 自我認定 pass
-  - "如果 LLM report『找不到 picker / 沒看到取貨資訊』就 done=true → 視為 FAIL（spec 要求必須找到並操作）"
-  - "如果連『新增商品 form』都進不去 → FAIL"
-  - "如果『啟用平台配送』toggle 找不到 → FAIL（必須驗證它存在）"
+  - "如果商品頁 tab click 失敗超過 2 次 → 呼叫 dispute_yaml 而非無限 retry"
+  - "如果 LLM 報『找不到 picker / 沒看到取貨資訊』就 done=true → FAIL"
+  - "如果 LLM 在已是商品頁時仍執著點商品 tab 超過 2 次 → 呼叫 dispute_yaml"
 
 tags: [agora, regression, pickup, checkout, picker]
