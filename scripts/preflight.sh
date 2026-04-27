@@ -134,17 +134,20 @@ fi
 echo
 echo "6. Action Registry Consistency (mcp_server vs builtins)"
 if [ -f "src/mcp_server.rs" ] && [ -f "src/adk/tool/builtins.rs" ]; then
-  # High-risk browser actions that should be in both
+  # High-risk browser actions that should be in both callers.
+  # Since Issue #115 the shared dispatch lives in src/browser_exec.rs; actions
+  # defined there count as "registered in builtins" because builtins delegates
+  # to browser_exec::dispatch().  We search both files.
   BROWSER_ACTIONS="goto screenshot screenshot_analyze click click_point type read eval wait exists attr scroll key console network url title close set_viewport enable_a11y ax_tree ax_find ax_value ax_click ax_focus ax_type ax_type_verified ax_snapshot ax_diff wait_for_ax_change wait_for_url wait_for_ax_ready wait_for_network_idle assert_ax_contains assert_url_matches shadow_find shadow_click shadow_dump flutter_type flutter_enter shadow_type_flutter go_back clear_state wait_new_tab wait_request list_sessions close_session dom_snapshot"
   MISSING_COUNT=0
   for action in $BROWSER_ACTIONS; do
-    if ! grep -q "\"$action\"" src/adk/tool/builtins.rs 2>/dev/null; then
-      warn "browser action '$action' missing from builtins.rs"
+    if ! grep -q "\"$action\"" src/adk/tool/builtins.rs src/browser_exec.rs 2>/dev/null; then
+      warn "browser action '$action' missing from builtins.rs and browser_exec.rs"
       MISSING_COUNT=$((MISSING_COUNT+1))
     fi
   done
   if [ "$MISSING_COUNT" -eq 0 ]; then
-    ok "all browser actions registered in builtins.rs"
+    ok "all browser actions registered in builtins.rs (or shared browser_exec.rs)"
   fi
 fi
 
