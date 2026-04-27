@@ -958,6 +958,26 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                         Ok(json!({ "elapsed_ms": elapsed, "node_count": count }))
                     }
 
+                    // wait_for_network_idle — block until the network has been quiet for idle_ms.
+                    // Essential for heavy Flutter pages (e.g. #/seller/product) that trigger
+                    // CDP silence timeouts if interacted with before all resources load.
+                    "wait_for_network_idle" => {
+                        let idle_ms = input.get("idle_ms").and_then(Value::as_u64).unwrap_or(500);
+                        let timeout_ms = input.get("timeout_ms").or_else(|| input.get("timeout")).and_then(Value::as_u64).unwrap_or(15000);
+                        let elapsed = crate::browser::wait_for_network_idle(idle_ms, timeout_ms)?;
+                        Ok(json!({ "elapsed_ms": elapsed, "status": "idle" }))
+                    }
+
+                    // wait_for_url — block until the current page URL matches target substring.
+                    "wait_for_url" => {
+                        let target_url = input.get("target").and_then(Value::as_str)
+                            .ok_or("'wait_for_url' requires 'target' = URL substring")?
+                            .to_string();
+                        let timeout_ms = input.get("timeout_ms").or_else(|| input.get("timeout")).and_then(Value::as_u64).unwrap_or(10000);
+                        let elapsed = crate::browser::wait_for_url(&target_url, timeout_ms)?;
+                        Ok(json!({ "elapsed_ms": elapsed, "url": target_url, "status": "matched" }))
+                    }
+
                     // ── Flutter Shadow DOM (bypasses CDP AX protocol) ─────────
                     "shadow_find" => {
                         let role = optional_string_field(&input, "role");
