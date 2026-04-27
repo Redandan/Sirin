@@ -288,6 +288,13 @@ pub(super) async fn call_openai_messages(
         if let Some(key) = api_key {
             req = req.bearer_auth(key);
         }
+        // OpenRouter requires HTTP-Referer + X-Title to use free-tier models.
+        // Without these headers free calls return 402 Payment Required.
+        if base_url.contains("openrouter.ai") {
+            req = req
+                .header("HTTP-Referer", "https://sirin.local")
+                .header("X-Title", "Sirin Test Runner");
+        }
         let resp = req.send().await?;
 
         // 429 path — release permit before sleep, retry.
