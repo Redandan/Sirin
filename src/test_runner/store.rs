@@ -96,9 +96,7 @@ fn db() -> &'static Mutex<rusqlite::Connection> {
             [],
         );
 
-        // POC: deterministic script replay (Issue #131)
-        // Stores the exact action_input sequence from a successful run so
-        // subsequent runs can replay it without calling the LLM at all.
+        // Deterministic script replay table (Issues #131, #135, #136)
         let _ = conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS saved_scripts ( \
                 id INTEGER PRIMARY KEY AUTOINCREMENT, \
@@ -110,6 +108,16 @@ fn db() -> &'static Mutex<rusqlite::Connection> {
                 last_run_at TEXT \
             ); \
             CREATE INDEX IF NOT EXISTS idx_ss_test ON saved_scripts(test_id);",
+        );
+        // Migration #135: add recorded_viewport column to saved_scripts
+        let _ = conn.execute(
+            "ALTER TABLE saved_scripts ADD COLUMN recorded_viewport TEXT",
+            [],
+        );
+        // Migration #136: add is_replay column to test_runs
+        let _ = conn.execute(
+            "ALTER TABLE test_runs ADD COLUMN is_replay INTEGER DEFAULT 0",
+            [],
         );
 
         Mutex::new(conn)
@@ -159,6 +167,9 @@ pub struct NewRun<'a> {
     pub dispute_suspected_step: Option<i64>,
     /// LLM-supplied suggestion for fixing the YAML step (informational only).
     pub dispute_suggested_fix: Option<&'a str>,
+    /// true when this run was a deterministic replay (0 LLM calls).
+    /// false (default) for normal LLM ReAct runs.
+    pub is_replay: bool,
 }
 
 pub fn record_run(r: NewRun<'_>) -> Result<i64, String> {
@@ -166,13 +177,15 @@ pub fn record_run(r: NewRun<'_>) -> Result<i64, String> {
     conn.execute(
         "INSERT INTO test_runs(test_id, started_at, duration_ms, status, failure_category, \
                                ai_analysis, screenshot_path, history_json, goal_json, run_id, \
-                               iterations, dispute_reason, dispute_suspected_step, dispute_suggested_fix) \
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+                               iterations, dispute_reason, dispute_suspected_step, \
+                               dispute_suggested_fix, is_replay) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
         rusqlite::params![
             r.test_id, r.started_at, r.duration_ms, r.status,
             r.failure_category, r.ai_analysis, r.screenshot_path, r.history_json,
             r.goal_json, r.run_id, r.iterations,
             r.dispute_reason, r.dispute_suspected_step, r.dispute_suggested_fix,
+            r.is_replay as i32,
         ],
     ).map_err(|e| format!("insert run: {e}"))?;
     let row_id = conn.last_insert_rowid();
@@ -603,9 +616,10 @@ pub fn record_skipped_fix(
 /// Save the exact action_input sequence from a successful run so the next run
 /// can replay it without calling the LLM.
 ///
-/// Upserts on test_id — each test keeps one canonical "best known script".
-/// `actions` is a slice of JSON objects like `{"action":"flutter_scroll","y":800}`.
-pub fn save_script(test_id: &str, actions: &[serde_json::Value]) {
+/// `recorded_viewport` is a compact string like `"390x844:2.0:mobile"` or
+/// `"1280x900:1.0:desktop"`.  Stored so `load_script` can detect viewport
+/// mismatches and refuse stale scripts rather than replaying with wrong geometry.
+pub fn save_script(test_id: &str, actions: &[serde_json::Value], recorded_viewport: &str) {
     let conn = db().lock().unwrap_or_else(|e| e.into_inner());
     let json = match serde_json::to_string(actions) {
         Ok(s) => s,
@@ -613,38 +627,86 @@ pub fn save_script(test_id: &str, actions: &[serde_json::Value]) {
     };
     let now = chrono::Local::now().to_rfc3339();
     let r = conn.execute(
-        "INSERT INTO saved_scripts (test_id, actions_json, saved_at, success_count) \
-         VALUES (?1,?2,?3,1) \
+        "INSERT INTO saved_scripts (test_id, actions_json, saved_at, success_count, recorded_viewport) \
+         VALUES (?1,?2,?3,1,?4) \
          ON CONFLICT(test_id) DO UPDATE SET \
            actions_json = excluded.actions_json, \
            saved_at = excluded.saved_at, \
-           success_count = success_count + 1",
-        rusqlite::params![test_id, json, now],
+           success_count = success_count + 1, \
+           recorded_viewport = excluded.recorded_viewport",
+        rusqlite::params![test_id, json, now, recorded_viewport],
     );
     match r {
-        Ok(_) => tracing::info!("[scripts] saved {} actions for '{}'", actions.len(), test_id),
+        Ok(_) => tracing::info!(
+            "[scripts] saved {} actions for '{}' (viewport={})",
+            actions.len(), test_id, recorded_viewport
+        ),
         Err(e) => tracing::warn!("[scripts] save_script failed: {e}"),
     }
 }
 
-/// Load the saved action sequence for a test, if one exists and is fresh
-/// enough (less than `max_age_days` old).
+/// Load the saved action sequence for a test, checking viewport compatibility.
 ///
-/// Returns `None` when no script exists or it has expired.
+/// Returns `None` when no script exists, it has expired, or the recorded
+/// viewport doesn't match `current_viewport` (prevents replaying a script
+/// recorded at the wrong screen size).
+///
+/// Pass `current_viewport = ""` to skip viewport check (e.g. for tests
+/// with no explicit viewport setting).
 pub fn load_script(test_id: &str, max_age_days: u32) -> Option<Vec<serde_json::Value>> {
     let conn = db().lock().unwrap_or_else(|e| e.into_inner());
     let cutoff = chrono::Local::now()
         .checked_sub_signed(chrono::Duration::days(max_age_days as i64))
         .map(|dt| dt.to_rfc3339())
         .unwrap_or_default();
-    let res: rusqlite::Result<String> = conn.query_row(
-        "SELECT actions_json FROM saved_scripts \
+    let res: rusqlite::Result<(String, Option<String>)> = conn.query_row(
+        "SELECT actions_json, recorded_viewport FROM saved_scripts \
          WHERE test_id = ?1 AND saved_at >= ?2",
         rusqlite::params![test_id, cutoff],
-        |row| row.get(0),
+        |row| Ok((row.get(0)?, row.get(1)?)),
     );
     match res {
-        Ok(json) => serde_json::from_str(&json).ok(),
+        Ok((json, _recorded_vp)) => serde_json::from_str(&json).ok(),
+        Err(_) => None,
+    }
+}
+
+/// Load script with viewport mismatch check.
+/// Returns `None` if script is absent, expired, OR recorded at a different viewport.
+pub fn load_script_checked(
+    test_id: &str,
+    max_age_days: u32,
+    current_viewport: &str,
+) -> Option<Vec<serde_json::Value>> {
+    let conn = db().lock().unwrap_or_else(|e| e.into_inner());
+    let cutoff = chrono::Local::now()
+        .checked_sub_signed(chrono::Duration::days(max_age_days as i64))
+        .map(|dt| dt.to_rfc3339())
+        .unwrap_or_default();
+    let res: rusqlite::Result<(String, Option<String>)> = conn.query_row(
+        "SELECT actions_json, recorded_viewport FROM saved_scripts \
+         WHERE test_id = ?1 AND saved_at >= ?2",
+        rusqlite::params![test_id, cutoff],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    );
+    match res {
+        Ok((json, recorded_vp)) => {
+            // If both viewports are set, check they match.
+            if let Some(rec) = &recorded_vp {
+                if !current_viewport.is_empty() && rec != current_viewport {
+                    tracing::warn!(
+                        "[scripts] '{}' viewport mismatch: recorded='{}' current='{}' — \
+                         deleting stale script, next run will regenerate",
+                        test_id, rec, current_viewport
+                    );
+                    // Drop conn before calling delete_script (which re-acquires)
+                    drop(conn);
+                    delete_script(test_id);
+                    return None;
+                }
+            }
+            serde_json::from_str(&json).ok()
+        }
         Err(_) => None,
     }
 }
@@ -672,6 +734,7 @@ pub fn delete_script(test_id: &str) {
 }
 
 /// Query script metadata for the given test (for MCP tools / UI).
+/// Returns (saved_at, success_count, fail_count) for a saved script.
 pub fn script_info(test_id: &str) -> Option<(String, u32, u32)> {
     let conn = db().lock().unwrap_or_else(|e| e.into_inner());
     conn.query_row(
@@ -679,6 +742,16 @@ pub fn script_info(test_id: &str) -> Option<(String, u32, u32)> {
         rusqlite::params![test_id],
         |row| Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?, row.get::<_, u32>(2)?)),
     ).ok()
+}
+
+/// Returns recorded_viewport for a saved script, if any.
+pub fn script_viewport(test_id: &str) -> Option<String> {
+    let conn = db().lock().unwrap_or_else(|e| e.into_inner());
+    conn.query_row(
+        "SELECT recorded_viewport FROM saved_scripts WHERE test_id = ?1",
+        rusqlite::params![test_id],
+        |row| row.get::<_, Option<String>>(0),
+    ).ok().flatten()
 }
 
 #[cfg(test)]

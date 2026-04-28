@@ -1301,6 +1301,8 @@ fn call_test_analytics(args: Value) -> Result<Value, String> {
         "avg_iterations":       s.avg_iterations,
         "avg_duration_ms":      s.avg_duration_ms,
         "top_failure_category": s.top_failure_category,
+        // Script replay info (#136)
+        "has_script":           crate::test_runner::store::script_info(&s.test_id).is_some(),
     })).collect();
     Ok(json!({
         "tests":   items,
@@ -1316,39 +1318,51 @@ fn call_test_analytics(args: Value) -> Result<Value, String> {
 
 fn call_list_saved_scripts() -> Result<Value, String> {
     use crate::test_runner::store;
-    // Query all saved scripts with metadata
-    let conn = {
-        // Access via a public query helper — avoids exposing db() directly
-        // We reuse script_info for each test that has a script
-        let tests = store::all_test_stats();
-        let mut scripts: Vec<Value> = Vec::new();
-        for t in &tests {
-            if let Some((saved_at, success, fail)) = store::script_info(&t.test_id) {
-                // Load the script to count actions
-                let action_count = store::load_script(&t.test_id, 365)
-                    .map(|a| a.len())
-                    .unwrap_or(0);
-                scripts.push(json!({
-                    "test_id":      t.test_id,
-                    "saved_at":     saved_at,
-                    "success_count": success,
-                    "fail_count":   fail,
-                    "action_count": action_count,
-                    "pass_rate":    if success + fail > 0 {
-                        success as f64 / (success + fail) as f64
-                    } else { 0.0 },
-                }));
+    let tests = store::all_test_stats();
+    let mut scripts: Vec<Value> = Vec::new();
+    for t in &tests {
+        if let Some((saved_at, success, fail)) = store::script_info(&t.test_id) {
+            // Count actions without viewport check (use 365-day window)
+            let action_count = store::load_script(&t.test_id, 365)
+                .map(|a| a.len())
+                .unwrap_or(0);
+            // Viewport info (#135, #138)
+            let recorded_vp = store::script_viewport(&t.test_id)
+                .unwrap_or_else(|| "unknown".to_string());
+            // Compare with YAML's current viewport
+            let yaml_vp = crate::test_runner::parser::find(&t.test_id)
+                .and_then(|tg| tg.viewport.map(|v| format!("{}x{}:{:.1}:{}", v.width, v.height, v.scale,
+                    if v.mobile { "mobile" } else { "desktop" })))
+                .unwrap_or_else(|| "default".to_string());
+            let vp_match = recorded_vp == yaml_vp || recorded_vp == "unknown";
+            let mut entry = json!({
+                "test_id":           t.test_id,
+                "saved_at":          saved_at,
+                "success_count":     success,
+                "fail_count":        fail,
+                "action_count":      action_count,
+                "pass_rate":         if success + fail > 0 {
+                    success as f64 / (success + fail) as f64
+                } else { 0.0 },
+                "recorded_viewport": recorded_vp,
+                "current_viewport":  yaml_vp,
+                "viewport_ok":       vp_match,
+            });
+            if !vp_match {
+                entry["warning"] = json!(
+                    "⚠️ viewport mismatch — script will be auto-deleted on next run and regenerated"
+                );
             }
+            scripts.push(entry);
         }
-        scripts.sort_by(|a, b| {
-            b.get("success_count").and_then(Value::as_u64).unwrap_or(0)
-                .cmp(&a.get("success_count").and_then(Value::as_u64).unwrap_or(0))
-        });
-        scripts
-    };
+    }
+    scripts.sort_by(|a, b| {
+        b.get("success_count").and_then(Value::as_u64).unwrap_or(0)
+            .cmp(&a.get("success_count").and_then(Value::as_u64).unwrap_or(0))
+    });
     Ok(json!({
-        "count":   conn.len(),
-        "scripts": conn,
+        "count":   scripts.len(),
+        "scripts": scripts,
         "note":    "Scripts are used for deterministic replay (0 LLM calls). Delete stale scripts when UI changes."
     }))
 }

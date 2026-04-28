@@ -181,6 +181,7 @@ async fn run_test_with_run_id(
         dispute_reason: result.dispute.as_ref().map(|d| d.reason.as_str()),
         dispute_suspected_step: result.dispute.as_ref().and_then(|d| d.suspected_step),
         dispute_suggested_fix: result.dispute.as_ref().and_then(|d| d.suggested_fix.as_deref()),
+        is_replay: false,
     });
 
     if fix_triggered {
@@ -246,8 +247,20 @@ pub fn spawn_run_async(test_id: String, auto_fix: bool) -> Result<String, String
 
                 match run_test_with_run_id(&ctx, &test_id_clone, auto_fix, Some(&run_id_clone)).await {
                     Ok(r) => {
-                        let is_transient = matches!(r.status,
-                            TestStatus::Timeout | TestStatus::Error);
+                        // Transient = infrastructure issue, not test logic failure.
+                        // Retryable:
+                        //   - timeout / error (always infra)
+                        //   - failed with category=rendering_failure (Chrome all-black, infra)
+                        // Not retryable:
+                        //   - failed with logic categories (ui_bug, obsolete, etc.)
+                        //   - disputed (LLM thinks YAML is wrong)
+                        // screenshot all-black → error_message contains "all-black" or "rendering"
+                        let is_rendering_failure = r.status == TestStatus::Failed
+                            && r.error_message.as_deref()
+                                .map(|e| e.contains("all-black") || e.contains("rendering_failure"))
+                                .unwrap_or(false);
+                        let is_transient = matches!(r.status, TestStatus::Timeout | TestStatus::Error)
+                            || is_rendering_failure;
                         let should_retry = is_transient && attempt < max_retries;
 
                         if should_retry {
@@ -390,6 +403,7 @@ pub fn spawn_adhoc_run(req: AdhocRunRequest) -> Result<String, String> {
                 dispute_reason: result.dispute.as_ref().map(|d| d.reason.as_str()),
                 dispute_suspected_step: result.dispute.as_ref().and_then(|d| d.suspected_step),
                 dispute_suggested_fix: result.dispute.as_ref().and_then(|d| d.suggested_fix.as_deref()),
+        is_replay: false,
             });
 
             runs::set_phase(&run_id_clone, runs::RunPhase::Complete(result));
@@ -564,6 +578,7 @@ pub fn spawn_batch_run(
                     dispute_reason: result.dispute.as_ref().map(|d| d.reason.as_str()),
                     dispute_suspected_step: result.dispute.as_ref().and_then(|d| d.suspected_step),
                     dispute_suggested_fix: result.dispute.as_ref().and_then(|d| d.suggested_fix.as_deref()),
+        is_replay: false,
                 });
 
                 let passed = matches!(result.status, TestStatus::Passed);
@@ -1084,6 +1099,7 @@ mod persist_tests {
             dispute_reason: None,
             dispute_suspected_step: None,
             dispute_suggested_fix: None,
+            is_replay: false,
         }).unwrap();
 
         // NOTE: we deliberately do NOT call runs::new_run() — the in-memory

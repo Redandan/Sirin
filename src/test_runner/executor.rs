@@ -763,7 +763,16 @@ pub async fn execute_test_tracked(
     // If a saved script exists (< 7 days old) and hasn't failed too many times,
     // try to replay it without calling the LLM.  Fall through on any failure.
     'replay: {
-        let Some(saved_actions) = crate::test_runner::store::load_script(&test.id, 7) else { break 'replay; };
+        // Build current viewport string for mismatch detection.
+        let current_vp = test.viewport.as_ref()
+            .map(|v| format!("{}x{}:{:.1}:{}", v.width, v.height, v.scale,
+                             if v.mobile { "mobile" } else { "desktop" }))
+            .unwrap_or_default();
+
+        // Use viewport-checked load: auto-deletes and returns None on mismatch.
+        let Some(saved_actions) = crate::test_runner::store::load_script_checked(
+            &test.id, 7, &current_vp,
+        ) else { break 'replay; };
 
         // Auto-delete stale scripts: ≥3 replay failures with fail > success
         // means UI likely changed.  Delete so next run regenerates via LLM.
@@ -783,7 +792,7 @@ pub async fn execute_test_tracked(
             break 'replay;
         };
 
-        // Persist the run record so analytics / list_recent_runs includes it.
+        // Persist the run record (is_replay=true) so analytics can differentiate.
         let _ = crate::test_runner::store::record_run(crate::test_runner::store::NewRun {
             test_id: &test.id,
             started_at: &chrono::Local::now().to_rfc3339(),
@@ -799,6 +808,7 @@ pub async fn execute_test_tracked(
             dispute_reason: None,
             dispute_suspected_step: None,
             dispute_suggested_fix: None,
+            is_replay: true,
         });
         return result;
     }
@@ -1281,7 +1291,11 @@ pub async fn execute_test_tracked(
                     // deterministically without LLM (script replay POC).
                     let script_actions = extract_script_actions(&history);
                     if script_actions.len() >= 3 {
-                        crate::test_runner::store::save_script(&test.id, &script_actions);
+                        let vp = test.viewport.as_ref()
+                            .map(|v| format!("{}x{}:{:.1}:{}", v.width, v.height, v.scale,
+                                             if v.mobile { "mobile" } else { "desktop" }))
+                            .unwrap_or_else(|| "default".to_string());
+                        crate::test_runner::store::save_script(&test.id, &script_actions, &vp);
                     }
                     ScreenshotCapture { path: None, error: None }
                 } else {
