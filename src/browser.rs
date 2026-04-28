@@ -2358,6 +2358,7 @@ pub fn switch_tab(index: usize) -> Result<(), String> {
 }
 
 /// Close a tab by index. Cannot close the last tab.
+/// Sends CDP `Page.close` so Chrome actually removes the tab.
 pub fn close_tab(index: usize) -> Result<(), String> {
     let mut guard = global().lock().unwrap_or_else(|e| e.into_inner());
     let inner = guard.as_mut().ok_or("browser not open")?;
@@ -2367,6 +2368,9 @@ pub fn close_tab(index: usize) -> Result<(), String> {
     if index >= inner.tabs.len() {
         return Err(format!("tab index {index} out of range"));
     }
+    // Tell Chrome to actually close the tab.
+    // Tab::close(fire_unload=false) — skip beforeunload to avoid dialog blocking.
+    let _ = inner.tabs[index].close(false);
     inner.tabs.remove(index);
     if inner.active >= inner.tabs.len() {
         inner.active = inner.tabs.len() - 1;
@@ -2981,6 +2985,7 @@ pub fn list_sessions() -> Result<Vec<(String, usize, String)>, String> {
 }
 
 /// Close a named session and its associated tab.
+/// Sends CDP `Page.close` so Chrome actually removes the tab.
 pub fn close_session(session_id: &str) -> Result<(), String> {
     let mut guard = global().lock().unwrap_or_else(|e| e.into_inner());
     let inner = guard.as_mut().ok_or("browser not open")?;
@@ -2990,6 +2995,8 @@ pub fn close_session(session_id: &str) -> Result<(), String> {
         return Err("cannot close the last tab".into());
     }
     if idx < inner.tabs.len() {
+        // Tell Chrome to actually close the tab via Tab::close().
+        let _ = inner.tabs[idx].close(false);
         inner.tabs.remove(idx);
         if inner.active >= inner.tabs.len() {
             inner.active = inner.tabs.len() - 1;
