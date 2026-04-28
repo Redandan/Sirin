@@ -104,7 +104,7 @@ strip = true
 
 
 [patch.crates-io]
-# Sirin vendor patch: transport/mod.rs — continue instead of break on browser
-# event SendError, preventing TargetInfoChanged from cascading into a full CDP
-# connection crash (see vendor/headless_chrome/src/browser/transport/mod.rs).
-headless_chrome = { path = "vendor/headless_chrome" }
+# transport fix: continue instead of break on browser event SendError.
+# PR: https://github.com/Redandan/Sirin/pull/118
+# Fork: https://github.com/Redandan/rust-headless-chrome/tree/sirin-transport-fix
+headless_chrome = { git = "https://github.com/Redandan/rust-headless-chrome", branch = "sirin-transport-fix" }

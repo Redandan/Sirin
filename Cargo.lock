@@ -2006,6 +2006,7 @@ dependencies = [
 [[package]]
 name = "headless_chrome"
 version = "1.0.21"
+source = "git+https://github.com/Redandan/rust-headless-chrome?branch=sirin-transport-fix#27573595bc28e97e0c4ac32490d084a0793d4e53"
 dependencies = [
  "anyhow",
  "auto_generate_cdp",
