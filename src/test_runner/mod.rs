@@ -120,11 +120,25 @@ async fn run_test_with_run_id(
     }
     let result = executor::execute_test_tracked(&ctx_with_run, &test, run_id, None).await;
 
-    // Triage non-passed results
+    // Triage non-passed results.
+    // Wrap with 60 s timeout so a slow LLM response during triage doesn't block
+    // the run from completing and recording to SQLite (Issue #147).
     let (category, analysis, fix_triggered) = if matches!(result.status, TestStatus::Passed) {
         (None, None, false)
     } else {
-        let outcome = triage::triage(ctx, &test, &result).await;
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            triage::triage(ctx, &test, &result),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            tracing::warn!("[test_runner] '{}' triage timed out (60s) — using Unknown category", test.id);
+            triage::TriageOutcome {
+                category: triage::FailureCategory::Unknown,
+                reason: "triage timed out".to_string(),
+                auto_fix_triggered: false,
+            }
+        });
         let triggered = auto_fix && triage::trigger_auto_fix(&test, &result, &outcome, run_id).await;
 
         // Issue #34: persist triage classification to KB so future sessions can

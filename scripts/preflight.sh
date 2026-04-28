@@ -144,17 +144,32 @@ done
 echo
 echo "5. Recent Chrome Stability"
 if [ -f "sirin.err.log" ]; then
-  CRASHES=$(grep -cE "Chrome crashed|connection closed.*recovering" sirin.err.log 2>/dev/null | tr -d "
-" || echo 0)
-  LAUNCHES=$(grep -c "launched Chrome" sirin.err.log 2>/dev/null || echo 0)
-  if [ "$CRASHES" -gt 5 ]; then
-    warn "sirin.err.log shows ${CRASHES} Chrome crashes — check SIRIN_PERSISTENT_PROFILE"
-  elif [ "$CRASHES" -gt 0 ]; then
-    warn "sirin.err.log shows ${CRASHES} Chrome crashes (acceptable)"
+  # Only count crashes in the last 24 hours to avoid stale session data (#142).
+  # macOS uses -v for date, Linux uses -d; handle both.
+  CUTOFF=$(date -d '24 hours ago' '+%Y-%m-%dT%H:%M' 2>/dev/null || \
+           date -v -24H '+%Y-%m-%dT%H:%M' 2>/dev/null || \
+           date --date='24 hours ago' '+%Y-%m-%dT%H:%M' 2>/dev/null || \
+           echo "")
+  if [ -n "$CUTOFF" ]; then
+    CRASHES=$(awk -v cutoff="$CUTOFF" 'substr($1,2,16) >= cutoff' sirin.err.log 2>/dev/null | \
+              grep -cE "Chrome crashed|connection closed.*recovering" 2>/dev/null || echo 0)
+    LAUNCHES=$(awk -v cutoff="$CUTOFF" 'substr($1,2,16) >= cutoff' sirin.err.log 2>/dev/null | \
+               grep -c "launched Chrome" 2>/dev/null || echo 0)
+    WINDOW="last 24h"
   else
-    ok "No Chrome crashes in sirin.err.log"
+    # Fallback: all-time count if date arithmetic not available
+    CRASHES=$(grep -cE "Chrome crashed|connection closed.*recovering" sirin.err.log 2>/dev/null | tr -d $'\n' || echo 0)
+    LAUNCHES=$(grep -c "launched Chrome" sirin.err.log 2>/dev/null || echo 0)
+    WINDOW="all-time"
   fi
-  ok "Chrome launches: ${LAUNCHES}"
+  if [ "$CRASHES" -gt 5 ]; then
+    warn "sirin.err.log shows ${CRASHES} Chrome crashes (${WINDOW}) — check SIRIN_PERSISTENT_PROFILE"
+  elif [ "$CRASHES" -gt 0 ]; then
+    warn "sirin.err.log shows ${CRASHES} Chrome crashes (${WINDOW}, acceptable)"
+  else
+    ok "No Chrome crashes in sirin.err.log (${WINDOW})"
+  fi
+  ok "Chrome launches: ${LAUNCHES} (${WINDOW})"
 fi
 
 # ── 6. Action Registry Consistency ────────────────────────────────────────────

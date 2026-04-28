@@ -1285,7 +1285,20 @@ pub async fn execute_test_tracked(
             }
 
             if step.done {
-                let analysis = evaluate_success(ctx, test, &history, step.final_answer.clone()).await;
+                // Wrap evaluate_success with a 30 s timeout so a slow LLM response
+                // after done=true doesn't block the test forever (Issue #147).
+                let analysis = tokio::time::timeout(
+                    std::time::Duration::from_secs(30),
+                    evaluate_success(ctx, test, &history, step.final_answer.clone()),
+                )
+                .await
+                .unwrap_or_else(|_| {
+                    tracing::warn!("[test_runner] '{}' evaluate_success timed out (30s)", test.id);
+                    crate::test_runner::executor::SuccessAnalysis {
+                        passed: false,
+                        reason: "evaluate_success timed out — LLM took > 30 s".to_string(),
+                    }
+                });
                 let cap = if analysis.passed {
                     // Auto-save script on success so the next run can replay
                     // deterministically without LLM (script replay POC).
