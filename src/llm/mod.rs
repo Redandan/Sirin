@@ -628,9 +628,45 @@ impl LlmMessage {
 /// Returns `true` when the error string indicates a 429 rate-limit response
 /// from the backends layer.  Used by call sites to decide whether to try
 /// the configured fallback provider.
-fn is_rate_limit_err(e: &Box<dyn std::error::Error + Send + Sync>) -> bool {
+pub(crate) fn is_rate_limit_err(e: &Box<dyn std::error::Error + Send + Sync>) -> bool {
     let s = e.to_string();
     s.contains("429") || s.contains("Too Many Requests") || s.contains("rate-limited: max retries")
+}
+
+/// Inner helper: call an OpenAI-compatible endpoint with an explicit optional
+/// fallback config.  On 429 from primary, switches to fallback immediately.
+///
+/// Exposed as `pub(crate)` so tests can inject arbitrary mock configs without
+/// going through the `OnceLock`-backed `fallback_llm()` singleton.
+pub(crate) async fn call_openai_with_fallback(
+    client: &reqwest::Client,
+    primary_url: &str,
+    primary_model: &str,
+    primary_key: Option<&str>,
+    fallback: Option<&LlmConfig>,
+    prompt: String,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let result = call_openai(client, primary_url, primary_model, primary_key, prompt.clone()).await;
+    if let Err(ref e) = result {
+        if is_rate_limit_err(e) {
+            if let Some(fb) = fallback {
+                crate::sirin_log!(
+                    "[llm] 429 on primary ({}) — falling back to {}",
+                    primary_model,
+                    fb.model
+                );
+                return call_openai(
+                    client,
+                    &fb.base_url,
+                    &fb.model,
+                    fb.api_key.as_deref(),
+                    prompt,
+                )
+                .await;
+            }
+        }
+    }
+    result
 }
 
 pub async fn call_llm_simple(
@@ -652,36 +688,17 @@ pub async fn call_prompt(
     prompt: impl Into<String>,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let prompt = prompt.into();
-    let result = match llm.backend {
+    match llm.backend {
         LlmBackend::Ollama => {
-            call_ollama(client, &llm.base_url, &llm.model, prompt.clone(), None).await
+            call_ollama(client, &llm.base_url, &llm.model, prompt, None).await
         }
         LlmBackend::LmStudio | LlmBackend::Gemini | LlmBackend::Anthropic => {
-            call_openai(client, &llm.base_url, &llm.model, llm.api_key.as_deref(), prompt.clone())
-                .await
-        }
-    };
-    // 429 fallback — switch providers immediately instead of failing.
-    if let Err(ref e) = result {
-        if is_rate_limit_err(e) {
-            if let Some(fb) = fallback_llm() {
-                crate::sirin_log!(
-                    "[llm] 429 on primary ({}) — falling back to {}",
-                    llm.model,
-                    fb.model
-                );
-                return call_openai(
-                    client,
-                    &fb.base_url,
-                    &fb.model,
-                    fb.api_key.as_deref(),
-                    prompt,
-                )
-                .await;
-            }
+            call_openai_with_fallback(
+                client, &llm.base_url, &llm.model, llm.api_key.as_deref(),
+                fallback_llm().as_deref(), prompt,
+            ).await
         }
     }
-    result
 }
 
 /// Like [`call_prompt`] but uses the coding-specific model when configured.
@@ -697,36 +714,17 @@ pub async fn call_coding_prompt(
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let prompt = prompt.into();
     let model = llm.effective_coding_model();
-    let result = match llm.backend {
+    match llm.backend {
         LlmBackend::Ollama => {
-            call_ollama(client, &llm.base_url, model, prompt.clone(), None).await
+            call_ollama(client, &llm.base_url, model, prompt, None).await
         }
         LlmBackend::LmStudio | LlmBackend::Gemini | LlmBackend::Anthropic => {
-            call_openai(client, &llm.base_url, model, llm.api_key.as_deref(), prompt.clone())
-                .await
-        }
-    };
-    // 429 fallback — switch providers immediately instead of failing.
-    if let Err(ref e) = result {
-        if is_rate_limit_err(e) {
-            if let Some(fb) = fallback_llm() {
-                crate::sirin_log!(
-                    "[llm] 429 on primary ({}) — falling back to {}",
-                    model,
-                    fb.model
-                );
-                return call_openai(
-                    client,
-                    &fb.base_url,
-                    &fb.model,
-                    fb.api_key.as_deref(),
-                    prompt,
-                )
-                .await;
-            }
+            call_openai_with_fallback(
+                client, &llm.base_url, model, llm.api_key.as_deref(),
+                fallback_llm().as_deref(), prompt,
+            ).await
         }
     }
-    result
 }
 
 /// Like [`call_prompt`] but uses the router/planner model when configured.
@@ -1098,6 +1096,171 @@ mod tests {
         assert!(
             result.is_none(),
             "should return None and warn when base_url is set but api_key is empty"
+        );
+    }
+
+    // ── 429 fallback chain ────────────────────────────────────────────────────
+
+    #[test]
+    fn is_rate_limit_err_detects_various_429_formats() {
+        // Standard HTTP error string from reqwest
+        let e: Box<dyn std::error::Error + Send + Sync> =
+            "HTTP status client error (429 Too Many Requests)".into();
+        assert!(super::is_rate_limit_err(&e), "should detect HTTP 429 status");
+
+        // Our custom message from backends.rs after max retries
+        let e: Box<dyn std::error::Error + Send + Sync> =
+            "429 rate-limited: max retries exceeded for model=models/gemini-2.5-flash".into();
+        assert!(super::is_rate_limit_err(&e), "should detect custom rate-limit message");
+
+        // Plain 429 substring
+        let e: Box<dyn std::error::Error + Send + Sync> = "429".into();
+        assert!(super::is_rate_limit_err(&e), "should detect bare 429");
+
+        // OpenAI error body
+        let e: Box<dyn std::error::Error + Send + Sync> =
+            "error: Too Many Requests, please slow down".into();
+        assert!(super::is_rate_limit_err(&e), "should detect Too Many Requests");
+
+        // Non-429 errors must NOT match
+        let e: Box<dyn std::error::Error + Send + Sync> = "connection refused".into();
+        assert!(!super::is_rate_limit_err(&e), "connection refused is not 429");
+
+        let e: Box<dyn std::error::Error + Send + Sync> =
+            "HTTP status client error (401 Unauthorized)".into();
+        assert!(!super::is_rate_limit_err(&e), "401 is not 429");
+
+        let e: Box<dyn std::error::Error + Send + Sync> = "timeout elapsed".into();
+        assert!(!super::is_rate_limit_err(&e), "timeout is not 429");
+    }
+
+    // ── call_openai_with_fallback — mock server integration test ──────────────
+    //
+    // Spawns two minimal HTTP servers:
+    //   - primary_server: always returns 429 with the custom error body
+    //   - fallback_server: returns 200 with a valid OpenAI-compat JSON response
+    //
+    // Calls `call_openai_with_fallback` with explicit primary+fallback configs
+    // (bypasses the OnceLock singleton so no real API keys are needed).
+    // Asserts that:
+    //   1. primary_server receives exactly one request
+    //   2. fallback_server receives exactly one request
+    //   3. the returned text is "pong" (from fallback response)
+
+    // ── mock server helpers ───────────────────────────────────────────────────
+
+    /// Spawn a mock HTTP server that returns `status` for all connections.
+    /// Uses `Retry-After: 0` so `call_openai_messages` retries without delay.
+    /// Returns (addr, hit_counter).
+    async fn spawn_mock_server(
+        status: u16,
+        body: &'static str,
+    ) -> (std::net::SocketAddr, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits2 = Arc::clone(&hits);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let reason = if status == 429 { "Too Many Requests" } else { "OK" };
+
+        tokio::spawn(async move {
+            // Accept up to 10 connections so retry loops are served correctly.
+            for _ in 0..10 {
+                match listener.accept().await {
+                    Ok((mut stream, _)) => {
+                        let mut buf = vec![0u8; 4096];
+                        let _ = stream.read(&mut buf).await;
+                        hits2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        // Retry-After: 0 → no sleep between retries in backends.rs
+                        let resp = format!(
+                            "HTTP/1.1 {status} {reason}\r\n\
+                             Content-Type: application/json\r\n\
+                             Content-Length: {len}\r\n\
+                             Retry-After: 0\r\n\
+                             Connection: close\r\n\r\n{body}",
+                            len = body.len(),
+                        );
+                        let _ = stream.write_all(resp.as_bytes()).await;
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        (addr, hits)
+    }
+
+    #[tokio::test]
+    async fn fallback_chain_switches_to_fallback_on_429() {
+        // primary: always 429 with Retry-After: 0 (no sleep between retries)
+        let body_429 = r#"{"error":{"message":"rate limit","code":429}}"#;
+        let (primary_addr, primary_hits) = spawn_mock_server(429, body_429).await;
+
+        // fallback: returns valid OpenAI-compat JSON with "pong"
+        let body_ok = r#"{"choices":[{"message":{"role":"assistant","content":"pong"},"finish_reason":"stop"}]}"#;
+        let (fallback_addr, fallback_hits) = spawn_mock_server(200, body_ok).await;
+
+        let client = reqwest::Client::new();
+        let fallback_cfg = LlmConfig {
+            backend: LlmBackend::LmStudio,
+            base_url: format!("http://{fallback_addr}"),
+            model: "fallback-model".to_string(),
+            api_key: None,
+            coding_model: None,
+            router_model: None,
+            large_model: None,
+        };
+
+        let result = super::call_openai_with_fallback(
+            &client,
+            &format!("http://{primary_addr}"),
+            "primary-model",
+            None,
+            Some(&fallback_cfg),
+            "say: pong".to_string(),
+        )
+        .await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        assert!(result.is_ok(), "call should succeed via fallback; got: {result:?}");
+        assert_eq!(result.unwrap(), "pong", "fallback response should be 'pong'");
+        // primary hit 4× (initial + 3 retries, check fires on attempt 3):
+        //   attempt 0 → 429 (sleep 0s, rate_limit_attempt=1)
+        //   attempt 1 → 429 (sleep 0s, rate_limit_attempt=2)
+        //   attempt 2 → 429 (sleep 0s, rate_limit_attempt=3)
+        //   attempt 3 → 429, rate_limit_attempt >= 3 → return Err
+        assert_eq!(primary_hits.load(std::sync::atomic::Ordering::SeqCst), 4,
+            "primary must receive initial + 3 retry attempts (4 total)");
+        assert_eq!(fallback_hits.load(std::sync::atomic::Ordering::SeqCst), 1,
+            "fallback must be hit exactly once");
+    }
+
+    #[tokio::test]
+    async fn no_fallback_configured_returns_429_error() {
+        // primary: always 429 (all 3 retry attempts served)
+        let body_429 = r#"{"error":{"message":"rate limit","code":429}}"#;
+        let (addr, _hits) = spawn_mock_server(429, body_429).await;
+
+        let client = reqwest::Client::new();
+        let result = super::call_openai_with_fallback(
+            &client,
+            &format!("http://{addr}"),
+            "primary-model",
+            None,
+            None, // no fallback configured
+            "hello".to_string(),
+        )
+        .await;
+
+        assert!(result.is_err(), "should return Err when no fallback is configured");
+        let err_str = result.unwrap_err().to_string();
+        let err_box: Box<dyn std::error::Error + Send + Sync> = err_str.clone().into();
+        assert!(
+            super::is_rate_limit_err(&err_box),
+            "error should indicate rate limit; got: {err_str}"
         );
     }
 }
