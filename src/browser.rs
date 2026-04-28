@@ -2968,6 +2968,51 @@ pub fn session_switch(session_id: &str) -> Result<usize, String> {
     Ok(idx)
 }
 
+/// Snapshot of the current Chrome browser state for MCP `browser_status`.
+pub struct BrowserStatus {
+    pub is_open:           bool,
+    pub tab_count:         usize,
+    pub active_tab_index:  usize,
+    /// All tabs as (url) indexed by position.
+    pub tabs:              Vec<String>,
+    /// Named sessions: (session_id, tab_index, url).
+    pub named_sessions:    Vec<(String, usize, String)>,
+}
+
+/// Return a non-failing snapshot of the browser state.
+/// Safe to call even when Chrome is not running.
+pub fn browser_status() -> BrowserStatus {
+    let guard = global().lock().unwrap_or_else(|e| e.into_inner());
+    match guard.as_ref() {
+        None => BrowserStatus {
+            is_open: false,
+            tab_count: 0,
+            active_tab_index: 0,
+            tabs: vec![],
+            named_sessions: vec![],
+        },
+        Some(inner) => {
+            let tabs: Vec<String> = inner.tabs.iter()
+                .map(|t| t.get_url())
+                .collect();
+            let mut named: Vec<(String, usize, String)> = inner.sessions.iter()
+                .map(|(id, &idx)| {
+                    let url = inner.tabs.get(idx).map(|t| t.get_url()).unwrap_or_default();
+                    (id.clone(), idx, url)
+                })
+                .collect();
+            named.sort_by_key(|(_, idx, _)| *idx);
+            BrowserStatus {
+                is_open: true,
+                tab_count: tabs.len(),
+                active_tab_index: inner.active,
+                tabs,
+                named_sessions: named,
+            }
+        }
+    }
+}
+
 /// List all named sessions: returns Vec of (session_id, tab_index, url).
 pub fn list_sessions() -> Result<Vec<(String, usize, String)>, String> {
     let guard = global().lock().unwrap_or_else(|e| e.into_inner());
