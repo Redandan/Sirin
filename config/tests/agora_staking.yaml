@@ -5,6 +5,12 @@ url: "https://redandan.github.io/"
 # Flutter CanvasKit — UI 全部渲染在 canvas 上（WebGL 需要 GPU）
 max_iterations: 75
 timeout_secs: 700
+# H5 mobile viewport — AgoraMarket 會員端是手機版 App，必須用手機 viewport 測試
+viewport:
+  width: 390
+  height: 844
+  scale: 2.0
+  mobile: true
 retry_on_parse_error: 2
 
 fixture:
@@ -88,3 +94,4 @@ success_criteria:
   - "無嚴重錯誤（401/500 API 錯誤等）"
 
 tags: [staking, agora, issue-34, regression]
+

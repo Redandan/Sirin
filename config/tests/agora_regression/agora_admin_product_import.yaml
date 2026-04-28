@@ -4,6 +4,12 @@ url: "https://redandan.github.io/?__test_role=admin"
 
 max_iterations: 18
 timeout_secs: 300
+# Admin 後台是 PC 桌面版，使用標準桌面 viewport
+viewport:
+  width: 1280
+  height: 900
+  scale: 1.0
+  mobile: false
 
 locale: zh-TW
 
@@ -44,3 +50,4 @@ success_criteria:
   - "點擊「請選擇產品分類」按鈕後，dropdown 展開或頁面有變化（覆蓋 #4），且 AX tree 沒有 collapse 成空白（覆蓋 #20）"
 
 tags: [agora, regression, admin, product, import, category-filter, issue-70, critical]
+

@@ -4,6 +4,12 @@ url: "https://redandan.github.io/?__test_role=admin"
 
 max_iterations: 15
 timeout_secs: 240
+# Admin 後台是 PC 桌面版，使用標準桌面 viewport
+viewport:
+  width: 1280
+  height: 900
+  scale: 1.0
+  mobile: false
 
 goal: |
   驗證 admin 商品管理頁的分類篩選功能（Issue #70 Bug #4）。
@@ -35,3 +41,4 @@ success_criteria:
   - "找到並點擊「請選擇產品分類」篩選按鈕（記錄 dropdown 展開或失敗）"
 
 tags: [regression, admin, category-filter, agora, critical, issue-70]
+

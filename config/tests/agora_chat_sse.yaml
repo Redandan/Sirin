@@ -5,6 +5,12 @@ url: "https://redandan.github.io/"
 # Flutter CanvasKit — UI 全部渲染在 canvas 上（WebGL 需要 GPU）
 max_iterations: 45
 timeout_secs: 600
+# H5 mobile viewport — AgoraMarket 會員端是手機版 App，必須用手機 viewport 測試
+viewport:
+  width: 390
+  height: 844
+  scale: 2.0
+  mobile: true
 retry_on_parse_error: 2
 
 fixture:
@@ -83,3 +89,4 @@ success_criteria:
   - "無嚴重 SSE 錯誤（console 無 Failed to handle new message）"
 
 tags: [regression, chat, sse, agora, issue-9]
+

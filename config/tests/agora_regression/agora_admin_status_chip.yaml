@@ -4,6 +4,12 @@ url: "https://redandan.github.io/?__test_role=admin"
 
 max_iterations: 10
 timeout_secs: 300
+# Admin 後台是 PC 桌面版，使用標準桌面 viewport
+viewport:
+  width: 1280
+  height: 900
+  scale: 1.0
+  mobile: false
 
 locale: zh-TW
 
@@ -39,3 +45,4 @@ success_criteria:
   - "頁面上至少有一個商品狀態 chip 是彩色的（例如綠色），不是灰色 — 這就算通過，不需要看到全部三種狀態"
 
 tags: [agora, regression, admin]
+
