@@ -118,6 +118,20 @@ if [ -f "$REPO_YAML" ] && [ -f "$LOCALAPP_YAML" ]; then
   fi
 fi
 
+# Viewport check — buyer H5 tests must specify 390×844 mobile viewport
+BUYER_MISSING_VP=0
+for f in $(find config/tests -name "*.yaml" 2>/dev/null | head -30); do
+  if grep -q "__test_role=buyer" "$f" 2>/dev/null; then
+    if ! grep -q "^viewport:" "$f" 2>/dev/null; then
+      warn "$(basename $f .yaml): __test_role=buyer but missing viewport block (should be 390×844)"
+      BUYER_MISSING_VP=$((BUYER_MISSING_VP+1))
+    fi
+  fi
+done
+if [ "$BUYER_MISSING_VP" -eq 0 ]; then
+  ok "All buyer-side tests have correct H5 viewport (390×844)"
+fi
+
 # Check for lenient acceptance patterns
 for f in $(find config/tests -name "*.yaml" 2>/dev/null | head -10); do
   name=$(basename "$f" .yaml)

@@ -759,35 +759,48 @@ pub async fn execute_test_tracked(
 ) -> TestResult {
     use crate::test_runner::runs;
 
-    // ── Deterministic replay (POC) ────────────────────────────────────────────
-    // If a saved script exists for this test (and is < 7 days old), try to
-    // replay it without calling the LLM.  Only fall through to the full ReAct
-    // loop when replay fails (stale selectors, UI change, etc.).
-    if let Some(saved_actions) = crate::test_runner::store::load_script(&test.id, 7) {
-        if let Some(result) = try_replay_script(ctx, test, run_id, session_id, saved_actions).await {
-            // Persist the run record so analytics / list_recent_runs includes it.
-            let _ = crate::test_runner::store::record_run(crate::test_runner::store::NewRun {
-                test_id: &test.id,
-                started_at: &chrono::Local::now().to_rfc3339(),
-                duration_ms: Some(result.duration_ms as i64),
-                status: "passed",
-                failure_category: None,
-                ai_analysis: result.final_analysis.as_deref(),
-                screenshot_path: None,
-                history_json: None,
-                goal_json: None,
-                run_id,
-                iterations: Some(0),
-                dispute_reason: None,
-                dispute_suspected_step: None,
-                dispute_suggested_fix: None,
-            });
-            return result;
+    // ── Deterministic replay ─────────────────────────────────────────────────
+    // If a saved script exists (< 7 days old) and hasn't failed too many times,
+    // try to replay it without calling the LLM.  Fall through on any failure.
+    'replay: {
+        let Some(saved_actions) = crate::test_runner::store::load_script(&test.id, 7) else { break 'replay; };
+
+        // Auto-delete stale scripts: ≥3 replay failures with fail > success
+        // means UI likely changed.  Delete so next run regenerates via LLM.
+        if let Some((_, success, fail)) = crate::test_runner::store::script_info(&test.id) {
+            if fail >= 3 && fail > success {
+                tracing::warn!(
+                    "[scripts] '{}' script has {fail} failures (success={success}) — auto-deleting stale script",
+                    test.id
+                );
+                crate::test_runner::store::delete_script(&test.id);
+                break 'replay;
+            }
         }
-        tracing::info!(
-            "[scripts] '{}' replay failed — falling back to LLM ReAct loop",
-            test.id
-        );
+
+        let Some(result) = try_replay_script(ctx, test, run_id, session_id, saved_actions).await else {
+            tracing::info!("[scripts] '{}' replay failed — falling back to LLM ReAct loop", test.id);
+            break 'replay;
+        };
+
+        // Persist the run record so analytics / list_recent_runs includes it.
+        let _ = crate::test_runner::store::record_run(crate::test_runner::store::NewRun {
+            test_id: &test.id,
+            started_at: &chrono::Local::now().to_rfc3339(),
+            duration_ms: Some(result.duration_ms as i64),
+            status: "passed",
+            failure_category: None,
+            ai_analysis: result.final_analysis.as_deref(),
+            screenshot_path: None,
+            history_json: None,
+            goal_json: None,
+            run_id,
+            iterations: Some(0),
+            dispute_reason: None,
+            dispute_suspected_step: None,
+            dispute_suggested_fix: None,
+        });
+        return result;
     }
     // ── end replay ────────────────────────────────────────────────────────────
 
@@ -1122,29 +1135,88 @@ pub async fn execute_test_tracked(
             // response body" from Gemini when Chrome crashes cause concurrent request
             // interference).  We retry up to 3× with a short back-off before giving up.
             let (raw, llm_meta) = {
+                // Wrap the LLM call with the remaining deadline so that a
+                // blocking sleep inside the LLM layer (token-bucket rate
+                // limiter, API retry backoff) cannot push us past timeout_secs.
+                // Without this, a 210 s Gemini retry wait or a 35 s token-
+                // bucket sleep would block the thread and prevent the deadline
+                // check at the top of the loop from ever firing.
+                let time_left = deadline.saturating_duration_since(std::time::Instant::now());
+                if time_left.is_zero() {
+                    let cap = capture_screenshot(ctx, &test.id, run_id).await;
+                    break 'react TestResult {
+                        test_id: test.id.clone(),
+                        status: TestStatus::Timeout,
+                        iterations: iteration,
+                        duration_ms: started.elapsed().as_millis() as u64,
+                        error_message: Some(format!("timed out after {}s", test.timeout_secs)),
+                        screenshot_path: cap.path,
+                        screenshot_error: cap.error,
+                        history,
+                        final_analysis: None,
+                        dispute: None,
+                    };
+                }
+
                 let mut last_err = String::new();
                 let mut raw_opt: Option<(String, LlmCallMeta)> = None;
                 for attempt in 0u32..3 {
                     if attempt > 0 {
                         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                     }
-                    match call_test_llm(ctx, test, &history, hint_for_llm.as_deref(), &perception).await {
-                        Ok(pair) => { raw_opt = Some(pair); break; }
-                        Err(e) => {
+                    // Re-check deadline before each attempt (previous attempt's
+                    // retry backoff may have consumed significant time).
+                    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                    if remaining.is_zero() { break; }
+
+                    let llm_future = call_test_llm(ctx, test, &history, hint_for_llm.as_deref(), &perception);
+                    match tokio::time::timeout(remaining, llm_future).await {
+                        Ok(Ok(pair)) => { raw_opt = Some(pair); break; }
+                        Ok(Err(e)) => {
                             tracing::warn!(
                                 "[test_runner] '{}' iter {} LLM error (attempt {}/3): {e}",
                                 test.id, iteration, attempt + 1
                             );
                             last_err = e;
                         }
+                        Err(_elapsed) => {
+                            // Deadline expired while waiting for LLM (e.g. inside
+                            // token-bucket sleep or API retry).  Break out of
+                            // retry loop so the timeout branch below fires.
+                            last_err = format!("LLM call aborted: deadline exceeded ({}s)", test.timeout_secs);
+                            tracing::warn!(
+                                "[test_runner] '{}' iter {} LLM timed out (deadline exceeded)",
+                                test.id, iteration
+                            );
+                            break;
+                        }
                     }
                 }
                 match raw_opt {
                     Some(pair) => pair,
-                    None => break 'react finalize_early(
-                        ctx, run_id, test, &history,
-                        format!("LLM error after 3 attempts: {last_err}")
-                    ).await,
+                    None => {
+                        // Either all attempts failed or deadline expired.
+                        // If deadline is past, report timeout; otherwise LLM error.
+                        if std::time::Instant::now() >= deadline {
+                            let cap = capture_screenshot(ctx, &test.id, run_id).await;
+                            break 'react TestResult {
+                                test_id: test.id.clone(),
+                                status: TestStatus::Timeout,
+                                iterations: iteration,
+                                duration_ms: started.elapsed().as_millis() as u64,
+                                error_message: Some(format!("timed out after {}s", test.timeout_secs)),
+                                screenshot_path: cap.path,
+                                screenshot_error: cap.error,
+                                history,
+                                final_analysis: None,
+                                dispute: None,
+                            };
+                        }
+                        break 'react finalize_early(
+                            ctx, run_id, test, &history,
+                            format!("LLM error after 3 attempts: {last_err}")
+                        ).await
+                    }
                 }
             };
             // Trace stamp helper — captures the LLM metadata for THIS turn so

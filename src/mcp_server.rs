@@ -498,6 +498,22 @@ fn handle_tools_list() -> Result<Value, String> {
                 }
             },
             {
+                "name": "list_saved_scripts",
+                "description": "列出所有已儲存的確定性重播腳本（deterministic replay scripts）。顯示 test_id、儲存時間、成功/失敗次數、腳本 action 數量。用於管理腳本庫。",
+                "inputSchema": { "type": "object", "properties": {} }
+            },
+            {
+                "name": "delete_saved_script",
+                "description": "刪除指定測試的已儲存腳本，迫使下次跑 LLM ReAct loop 重新生成。當 UI 改版導致腳本失效時使用。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "test_id": { "type": "string", "description": "要刪除腳本的 test_id" }
+                    },
+                    "required": ["test_id"]
+                }
+            },
+            {
                 "name": "test_analytics",
                 "description": "聚合測試健康指標：pass rate (近 10 / 30 runs)、flaky 標記、avg iterations、avg duration、最常見 failure_category。不指定 test_id 時返回全部測試（依 pass_rate_7d 升序，最差優先）+ summary 區塊。",
                 "inputSchema": {
@@ -859,6 +875,8 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         "get_run_trace"        => return call_get_run_trace(arguments).map(wrap_json),
         "list_recent_runs"     => return call_list_recent_runs(arguments).map(wrap_json),
         "test_analytics"       => return call_test_analytics(arguments).map(wrap_json),
+        "list_saved_scripts"   => return call_list_saved_scripts().map(wrap_json),
+        "delete_saved_script"  => return call_delete_saved_script(arguments).map(wrap_json),
         "list_fixes"           => return call_list_fixes(arguments).map(wrap_json),
         "config_diagnostics"   => return call_config_diagnostics().map(wrap_json),
         "diagnose"             => return Ok(wrap_json(crate::diagnose::snapshot())),
@@ -1291,6 +1309,58 @@ fn call_test_analytics(args: Value) -> Result<Value, String> {
             "flaky_count":   flaky_count,
             "avg_pass_rate": avg_pass_rate,
         }
+    }))
+}
+
+// ── Saved Scripts (deterministic replay) ─────────────────────────────────────
+
+fn call_list_saved_scripts() -> Result<Value, String> {
+    use crate::test_runner::store;
+    // Query all saved scripts with metadata
+    let conn = {
+        // Access via a public query helper — avoids exposing db() directly
+        // We reuse script_info for each test that has a script
+        let tests = store::all_test_stats();
+        let mut scripts: Vec<Value> = Vec::new();
+        for t in &tests {
+            if let Some((saved_at, success, fail)) = store::script_info(&t.test_id) {
+                // Load the script to count actions
+                let action_count = store::load_script(&t.test_id, 365)
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                scripts.push(json!({
+                    "test_id":      t.test_id,
+                    "saved_at":     saved_at,
+                    "success_count": success,
+                    "fail_count":   fail,
+                    "action_count": action_count,
+                    "pass_rate":    if success + fail > 0 {
+                        success as f64 / (success + fail) as f64
+                    } else { 0.0 },
+                }));
+            }
+        }
+        scripts.sort_by(|a, b| {
+            b.get("success_count").and_then(Value::as_u64).unwrap_or(0)
+                .cmp(&a.get("success_count").and_then(Value::as_u64).unwrap_or(0))
+        });
+        scripts
+    };
+    Ok(json!({
+        "count":   conn.len(),
+        "scripts": conn,
+        "note":    "Scripts are used for deterministic replay (0 LLM calls). Delete stale scripts when UI changes."
+    }))
+}
+
+fn call_delete_saved_script(args: Value) -> Result<Value, String> {
+    let test_id = args.get("test_id").and_then(Value::as_str)
+        .ok_or("'delete_saved_script' requires 'test_id'")?;
+    crate::test_runner::store::delete_script(test_id);
+    Ok(json!({
+        "status":  "deleted",
+        "test_id": test_id,
+        "note":    "Next run will use LLM ReAct loop and regenerate the script on success."
     }))
 }
 
