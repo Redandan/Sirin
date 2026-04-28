@@ -117,8 +117,6 @@ coding_agent:\n  enabled: true\n  auto_approve_writes: true\n  max_iterations: 1
 /// repo version changed.  Skips silently when no repo `config/` is found
 /// (installed-binary mode).
 fn sync_repo_config_to_appdata(appdata_config: &std::path::Path) {
-    use std::fs;
-
     // Look for repo config/ relative to CWD (dev: `cargo run` from project root)
     // or next to the binary.
     let candidates = [

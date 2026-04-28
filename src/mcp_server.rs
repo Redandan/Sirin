@@ -1870,7 +1870,18 @@ async fn call_assistant_task(args: Value) -> Result<Value, String> {
                 error_message: if result.success { None } else {
                     Some(result.summary.clone())
                 },
-                screenshot_path: None,
+                // Issue #144: save final screenshot so get_test_result can surface it.
+                screenshot_path: result.screenshot_b64.as_deref().and_then(|b64| {
+                    let failures_dir = crate::platform::app_data_dir().join("test_failures");
+                    let path = failures_dir.join(format!(
+                        "assistant_{}.png",
+                        chrono::Local::now().format("%Y%m%d_%H%M%S")
+                    ));
+                    let _ = std::fs::create_dir_all(&failures_dir);
+                    let bytes = base64_decode(b64)?;
+                    std::fs::write(&path, &bytes).ok()?;
+                    Some(path.to_string_lossy().to_string())
+                }),
                 screenshot_error: None,
                 history: vec![],
                 final_analysis: Some(format!(
@@ -2659,6 +2670,29 @@ mod test_runner_mcp_tests {
         assert!(r.is_err(), "must reject empty topic_key: {r:?}");
         std::env::remove_var("KB_ENABLED");
     }
+}
+
+/// Minimal base64 decoder (no external dep). Returns None on invalid input.
+fn base64_decode(input: &str) -> Option<Vec<u8>> {
+    const TABLE: [i8; 256] = {
+        let mut t = [-1i8; 256];
+        let enc = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut i = 0usize;
+        while i < enc.len() { t[enc[i] as usize] = i as i8; i += 1; }
+        t
+    };
+    let clean: Vec<u8> = input.bytes().filter(|&b| b != b'=').collect();
+    let mut out = Vec::with_capacity(clean.len() * 3 / 4);
+    let mut buf = 0u32;
+    let mut bits = 0u32;
+    for &c in &clean {
+        let v = TABLE[c as usize];
+        if v < 0 { return None; }
+        buf = (buf << 6) | v as u32;
+        bits += 6;
+        if bits >= 8 { bits -= 8; out.push((buf >> bits) as u8); }
+    }
+    Some(out)
 }
 
 /// Minimal base64 encoder (no external dep).

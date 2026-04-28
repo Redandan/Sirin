@@ -62,7 +62,7 @@ pub async fn run_task(
 
     // Navigate to start URL if provided.
     if let Some(url) = start_url {
-        let mut nav = json!({ "action": "goto", "target": url });
+        let nav = json!({ "action": "goto", "target": url });
         let _ = ctx.call_tool("web_navigate", nav).await;
         std::thread::sleep(std::time::Duration::from_secs(3));
     }
