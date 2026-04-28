@@ -9,6 +9,7 @@ browser_headless: false
 
 max_iterations: 25
 timeout_secs: 360
+max_retries: 1  # H5 Flutter 偶發 Chrome 初始化延遲，自動重試一次
 retry_on_parse_error: 2
 
 # Permission 模擬作法：
@@ -100,3 +101,4 @@ success_criteria:
   - "成功點擊掛斷按鈕，通話 UI 關閉並回到聊天頁"
 
 tags: [regression, webrtc, voice-call, agora, critical, issue-46, issue-70]
+

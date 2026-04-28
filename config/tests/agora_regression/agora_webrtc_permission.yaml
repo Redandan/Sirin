@@ -6,6 +6,7 @@ url: "https://redandan.github.io/?__test_role=buyer"
 
 max_iterations: 15
 timeout_secs: 240
+max_retries: 1  # H5 Flutter 偶發 Chrome 初始化延遲，自動重試一次
 
 goal: |
   目標：驗證 AgoraMarket WebRTC 麥克風/攝影機 permission 問題已修復（Issue #70 Critical Bug #1）。
@@ -37,3 +38,4 @@ success_criteria:
   - "沒有顯示 camera/microphone 永久 denied 或授權永遠失敗的錯誤"
 
 tags: [regression, webrtc, agora, critical, issue-70]
+

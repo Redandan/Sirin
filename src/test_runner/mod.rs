@@ -226,9 +226,62 @@ pub fn spawn_run_async(test_id: String, auto_fix: bool) -> Result<String, String
             let ctx = crate::adk::context::AgentContext::new("mcp_async", tools)
                 .with_metadata("run_id", &run_id_clone);
 
-            match run_test_with_run_id(&ctx, &test_id_clone, auto_fix, Some(&run_id_clone)).await {
-                Ok(r) => runs::set_phase(&run_id_clone, runs::RunPhase::Complete(r)),
-                Err(e) => runs::set_phase(&run_id_clone, runs::RunPhase::Error(e)),
+            // Run the test, retrying on transient failures (timeout / error)
+            // up to `test.max_retries` extra times.  Logic failures (failed,
+            // disputed) are never retried — they need a human/auto-fix.
+            let max_retries = parser::find(&test_id_clone)
+                .map(|t| t.max_retries)
+                .unwrap_or(0);
+
+            let mut attempt = 0u32;
+            loop {
+                if attempt > 0 {
+                    tracing::warn!(
+                        "[test_runner] '{}' attempt {}/{} — previous run was transient \
+                         failure, retrying after 3s",
+                        test_id_clone, attempt + 1, max_retries + 1
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                }
+
+                match run_test_with_run_id(&ctx, &test_id_clone, auto_fix, Some(&run_id_clone)).await {
+                    Ok(r) => {
+                        let is_transient = matches!(r.status,
+                            TestStatus::Timeout | TestStatus::Error);
+                        let should_retry = is_transient && attempt < max_retries;
+
+                        if should_retry {
+                            tracing::warn!(
+                                "[test_runner] '{}' status={:?} (attempt {}/{}) — \
+                                 transient, will retry",
+                                test_id_clone, r.status, attempt + 1, max_retries + 1
+                            );
+                            attempt += 1;
+                            continue;
+                        }
+
+                        if attempt > 0 && !is_transient {
+                            tracing::info!(
+                                "[test_runner] '{}' recovered on attempt {}/{}: {:?}",
+                                test_id_clone, attempt + 1, max_retries + 1, r.status
+                            );
+                        }
+                        runs::set_phase(&run_id_clone, runs::RunPhase::Complete(r));
+                        break;
+                    }
+                    Err(e) => {
+                        if attempt < max_retries {
+                            tracing::warn!(
+                                "[test_runner] '{}' Err (attempt {}/{}) — retrying: {e}",
+                                test_id_clone, attempt + 1, max_retries + 1
+                            );
+                            attempt += 1;
+                            continue;
+                        }
+                        runs::set_phase(&run_id_clone, runs::RunPhase::Error(e));
+                        break;
+                    }
+                }
             }
         });
     });
@@ -272,6 +325,7 @@ pub fn spawn_adhoc_run(req: AdhocRunRequest) -> Result<String, String> {
         blocked_url_patterns: req.blocked_url_patterns.clone().unwrap_or_default(),
         record_timeline_gif: true,  // adhoc runs default-on; same as YAML default
         show_action_indicator: false,  // Issue #75: opt-in only; ad-hoc keeps clean DOM
+        max_retries: 0,  // ad-hoc runs don't retry by default
         viewport: None,  // ad-hoc uses process default viewport
     };
 
@@ -764,6 +818,7 @@ pub fn persist_adhoc_run(p: PersistAdhocParams) -> Result<PersistAdhocResult, St
         blocked_url_patterns: goal.blocked_url_patterns.clone(),
         record_timeline_gif: goal.record_timeline_gif,
         show_action_indicator: goal.show_action_indicator,
+        max_retries: goal.max_retries,
         viewport: goal.viewport.clone(),
     };
 
@@ -829,6 +884,7 @@ mod persist_tests {
             blocked_url_patterns: Vec::new(),
             record_timeline_gif: true,
             show_action_indicator: false,
+        max_retries: 0,
         viewport: None,
         };
         let run_id = runs::new_run(test_id);
@@ -919,6 +975,7 @@ mod persist_tests {
             blocked_url_patterns: Vec::new(),
             record_timeline_gif: false,  // synthetic placeholder — never executes
             show_action_indicator: false,
+        max_retries: 0,
         viewport: None,
         });
         runs::set_phase(&run_id, runs::RunPhase::Running {
@@ -1006,6 +1063,7 @@ mod persist_tests {
             blocked_url_patterns: Vec::new(),
             record_timeline_gif: true,
             show_action_indicator: false,
+        max_retries: 0,
         viewport: None,
         };
         // Insert directly into SQLite — simulates the row that

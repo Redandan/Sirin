@@ -4,6 +4,7 @@ url: "https://redandan.github.io/?__test_role=buyer"
 
 max_iterations: 25
 timeout_secs: 360
+max_retries: 1  # H5 Flutter 偶發 Chrome 初始化延遲，自動重試一次
 # H5 mobile viewport — AgoraMarket 會員端是手機版 App，必須用手機 viewport 測試viewport:  width: 390  height: 844  scale: 2.0  mobile: true
 retry_on_parse_error: 5
 
@@ -61,3 +62,4 @@ success_criteria:
   - "全程無 'Something went wrong' 錯誤訊息或 console error"
 
 tags: [agora, regression, e2e, checkout, order, issue-49, issue-70, critical]
+

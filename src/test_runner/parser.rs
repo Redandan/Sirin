@@ -163,6 +163,17 @@ pub struct TestGoal {
     /// security boundary** — page JS can read its existence trivially.
     #[serde(default)]
     pub show_action_indicator: bool,
+    /// Number of automatic retries when the test ends with `timeout` or
+    /// `error` (transient failures due to Chrome instability, network blips,
+    /// etc.).  Does NOT retry on `failed` (logic failure) or `disputed`.
+    ///
+    /// Default 0 (no retry).  Set to 1-2 for Flutter H5 tests where Chrome
+    /// initialization can occasionally stall on the first run.
+    ///
+    /// Each retry gets a fresh run_id; the last attempt's result is what
+    /// `spawn_run_async` reports to callers.
+    #[serde(default)]
+    pub max_retries: u32,
     /// Override the browser viewport for this test.
     ///
     /// Use this to match the intended device profile:

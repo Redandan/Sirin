@@ -4,6 +4,7 @@ url: "https://redandan.github.io/"
 
 max_iterations: 5
 timeout_secs: 120
+max_retries: 1  # H5 Flutter 偶發 Chrome 初始化延遲，自動重試一次
 
 # H5 mobile viewport — AgoraMarket 會員端是手機版 App，必須用手機 viewport 測試
 viewport:
@@ -33,3 +34,4 @@ success_criteria:
   - "Vision 確認頁面有實際內容（不是全黑或全白）"
 
 tags: [smoke, flutter, agora, vision, v3]
+

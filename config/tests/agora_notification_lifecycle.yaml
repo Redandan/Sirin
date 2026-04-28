@@ -6,6 +6,7 @@ locale: zh-TW
 # Flutter CanvasKit — UI 全部渲染在 canvas 上
 max_iterations: 50
 timeout_secs: 600
+max_retries: 1  # H5 Flutter 偶發 Chrome 初始化延遲，自動重試一次
 retry_on_parse_error: 2
 
 fixture:
@@ -108,3 +109,4 @@ success_criteria:
   - "SSE 接收與列表刷新無嚴重 console 錯誤（#67-68）"
 
 tags: [regression, notification, sse, agora, critical, issue-47, issue-70]
+

@@ -4,6 +4,7 @@ url: "https://redandan.github.io/?__test_role=buyer"
 
 max_iterations: 20
 timeout_secs: 300
+max_retries: 1  # H5 Flutter 偶發 Chrome 初始化延遲，自動重試一次
 # H5 mobile viewport — AgoraMarket 會員端是手機版 App，必須用手機 viewport 測試viewport:  width: 390  height: 844  scale: 2.0  mobile: true
 
 goal: |
@@ -38,3 +39,4 @@ success_criteria:
   - "若有通知，嘗試刪除後記錄結果（消失、需確認、或刪除 UI 缺失）"
 
 tags: [regression, notification, agora, critical, issue-70]
+
