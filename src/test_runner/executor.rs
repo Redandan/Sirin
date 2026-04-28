@@ -1885,6 +1885,31 @@ fn build_prompt_with_limits(
     let skipped = history.len().saturating_sub(max_history_steps);
     let visible = &history[skipped..];
 
+    // Issue #172: Pin screenshot_analyze results from skipped (omitted) steps.
+    // These are the most semantically dense observations — a multi-round test needs
+    // round-1 screenshot descriptions to be visible when the LLM evaluates round-2.
+    let pinned_screenshots: Vec<String> = if skipped > 0 {
+        history[..skipped].iter().enumerate()
+            .filter(|(_, s)| {
+                s.action.get("action").and_then(|v| v.as_str()) == Some("screenshot_analyze")
+            })
+            .map(|(i, s)| {
+                let obs = truncate(&s.observation, 400);
+                format!("[Step {} – screenshot_analyze] {obs}", i + 1)
+            })
+            .collect()
+    } else {
+        vec![]
+    };
+    let pin_block = if !pinned_screenshots.is_empty() {
+        format!(
+            "## 📸 Earlier screenshot_analyze results (pinned — referenced by later steps)\n{}\n---\n",
+            pinned_screenshots.join("\n")
+        )
+    } else {
+        String::new()
+    };
+
     let history_str = if visible.is_empty() && skipped == 0 {
         "(none yet)".to_string()
     } else {
@@ -1902,7 +1927,7 @@ fn build_prompt_with_limits(
             format!("[Step {step_n}]\nThought: {}\nAction: {}\nObservation: {obs}\n",
                 s.thought, s.action)
         }).collect::<Vec<_>>().join("---\n");
-        format!("{prefix}{steps}")
+        format!("{pin_block}{prefix}{steps}")
     };
 
     let hint_block = parse_error_hint
@@ -2244,10 +2269,14 @@ async fn call_test_llm(
             // Auto-switch to a compact rolling-window prompt after 8 steps.
             // Gemini Flash 2.0 (and similar models) start producing invalid JSON
             // at ~15K tokens (≈ iteration 13+ with full observations).
-            // Compact mode cuts the prompt to last 5 steps × 300-char obs,
+            // Compact mode cuts the prompt to last N steps × 300-char obs,
             // keeping the goal + criteria intact.  More generous than the
             // claude_cli path (3 steps, 200 chars) since bandwidth isn't the
             // issue here — it's JSON drift from a very long context window.
+            //
+            // Issue #172: window increased 5 → 10 so multi-round tests (17 steps/round)
+            // keep more recent context; screenshot_analyze from skipped steps are also
+            // pinned separately by build_prompt_with_limits regardless of window size.
             let prompt = if history.len() >= 8 {
                 tracing::debug!(
                     "[test_runner] {} iter {}: switching to compact prompt (history={})",
@@ -2255,7 +2284,7 @@ async fn call_test_llm(
                     history.len(),
                     history.len(),
                 );
-                build_prompt_with_limits(test, history, parse_error_hint, 5, 300)
+                build_prompt_with_limits(test, history, parse_error_hint, 10, 300)
             } else {
                 build_prompt(test, history, parse_error_hint)
             };
