@@ -139,16 +139,21 @@ pub(crate) fn dispatch(action: &str, input: &Value) -> Result<Value, String> {
             Ok(json!({ "status": "went_back", "url": url }))
         }
         "wait" => {
-            if target.is_empty() { return Err("'wait' requires 'target' selector or ms number".into()); }
-            // Plain number → millisecond sleep (e.g. {"action":"wait","target":"2000"}).
-            if let Ok(ms) = target.trim().parse::<u64>() {
+            // Accept ms as: numeric target ("target":2000 or "target":"2000"),
+            // "ms" field, or plain "ms" key.  LLMs sometimes send the number
+            // directly as JSON integer rather than a quoted string.
+            let ms_opt = input.get("target")
+                .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok())))
+                .or_else(|| input.get("ms").and_then(Value::as_u64));
+            if let Some(ms) = ms_opt {
                 std::thread::sleep(std::time::Duration::from_millis(ms));
-                Ok(json!({ "status": "slept", "ms": ms }))
-            } else {
-                let ms = input.get("timeout").and_then(Value::as_u64).unwrap_or(5000);
-                browser::wait_for_ms(target, ms)?;
-                Ok(json!({ "status": "found", "selector": target }))
+                return Ok(json!({ "status": "slept", "ms": ms }));
             }
+            // Selector wait (e.g. {"action":"wait","target":"#login-btn"})
+            if target.is_empty() { return Err("'wait' requires 'target' (ms number or CSS selector)".into()); }
+            let timeout_ms = input.get("timeout").and_then(Value::as_u64).unwrap_or(5000);
+            browser::wait_for_ms(target, timeout_ms)?;
+            Ok(json!({ "status": "found", "selector": target }))
         }
         "exists" => {
             if let Some(ref_id) = opt_str(input, "ref_id") {
