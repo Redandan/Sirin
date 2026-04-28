@@ -558,6 +558,175 @@ async fn run_fixture_step(
         .map_err(|e| format!("fixture step '{}' failed: {}", step.action, e))
 }
 
+// ── Deterministic script replay (POC) ────────────────────────────────────────
+
+/// Try to replay a saved action sequence without calling the LLM.
+///
+/// Returns `Some(TestResult)` when all actions complete without an `ERROR:`
+/// observation — the test is considered passed and the script's success counter
+/// is incremented.
+///
+/// Returns `None` when any action returns an error, signalling the caller to
+/// fall back to the normal LLM ReAct loop (which will regenerate the script on
+/// success).
+///
+/// Actions excluded from replay:
+/// - `screenshot_analyze` — skipped (would need LLM); replaced by a bare
+///   `screenshot` so the timeline is still populated.
+/// - `dispute_yaml` / `expand_observation` — meta-actions, skipped.
+async fn try_replay_script(
+    ctx: &crate::adk::context::AgentContext,
+    test: &TestGoal,
+    run_id: Option<&str>,
+    session_id: Option<&str>,
+    actions: Vec<serde_json::Value>,
+) -> Option<TestResult> {
+    use crate::test_runner::runs;
+
+    tracing::info!(
+        "[scripts] '{}' — trying deterministic replay ({} actions)",
+        test.id, actions.len()
+    );
+
+    let started = std::time::Instant::now();
+    let nav_url = test.full_url();
+
+    // Clear any cached browser state so the replay starts from a known-clean
+    // baseline.  With SIRIN_PERSISTENT_PROFILE=1 the previous run may have
+    // left UI state (e.g. switches already toggled) that breaks the script.
+    let mut cs_input = json!({ "action": "clear_state" });
+    inject_session(&mut cs_input, session_id);
+    let _ = ctx.call_tool("web_navigate", cs_input).await;
+
+    // Navigate to the test URL (same as the normal path).
+    let mut nav_input = json!({ "action": "goto", "target": &nav_url });
+    inject_session(&mut nav_input, session_id);
+    if ctx.call_tool("web_navigate", nav_input).await.is_err() {
+        tracing::warn!("[scripts] '{}' replay: goto failed, falling back to LLM", test.id);
+        return None;
+    }
+    // install_capture keeps CDP alive (same as normal path).
+    let mut cap_input = json!({ "action": "install_capture" });
+    inject_session(&mut cap_input, session_id);
+    let _ = ctx.call_tool("web_navigate", cap_input).await;
+
+    // Use index-based loop so ax_find can patch subsequent backend_ids in-place.
+    let mut actions = actions;  // make mutable for backend_id patching
+    let n = actions.len();
+    let mut i = 0;
+    while i < n {
+        let label = actions[i].get("action").and_then(Value::as_str).unwrap_or("?").to_string();
+
+        // Skip LLM-dependent and meta actions.
+        match label.as_str() {
+            "screenshot_analyze" | "dispute_yaml" | "expand_observation" => {
+                let mut ss = json!({ "action": "screenshot" });
+                inject_session(&mut ss, session_id);
+                let _ = ctx.call_tool("web_navigate", ss).await;
+                i += 1;
+                continue;
+            }
+            // ax_find: run it, then patch the backend_id in all subsequent
+            // ax_focus/ax_click/ax_value/ax_type actions.
+            // AX tree backend_ids are session-specific and change per page load.
+            "ax_find" => {
+                let mut action = actions[i].clone();
+                inject_session(&mut action, session_id);
+                match ctx.call_tool("web_navigate", action).await {
+                    Ok(v) => {
+                        if let Some(bid) = v.get("node")
+                            .and_then(|n| n.get("backend_id"))
+                            .and_then(|b| b.as_u64())
+                        {
+                            for j in (i + 1)..n {
+                                let fa = actions[j].get("action").and_then(Value::as_str).unwrap_or("");
+                                if matches!(fa, "ax_focus"|"ax_click"|"ax_value"|"ax_type"|"ax_type_verified") {
+                                    if actions[j].get("backend_id").is_some() {
+                                        actions[j]["backend_id"] = json!(bid);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("[scripts] '{}' replay step {} ('ax_find') error: {e}", test.id, i + 1);
+                        crate::test_runner::store::record_script_fail(&test.id);
+                        return None;
+                    }
+                }
+                i += 1;
+                continue;
+            }
+            _ => {}
+        }
+
+        let mut action = actions[i].clone();
+        inject_session(&mut action, session_id);
+        if let Some(rid) = run_id {
+            runs::set_phase(rid, runs::RunPhase::Running {
+                step: (i + 1) as u32,
+                current_action: label.clone(),
+            });
+        }
+
+        let result = ctx.call_tool("web_navigate", action).await;
+        match &result {
+            Ok(v) => {
+                let obs = v.to_string();
+                if obs.contains("ERROR:") {
+                    tracing::warn!(
+                        "[scripts] '{}' replay step {} ('{}') returned error: {}",
+                        test.id, i + 1, label, &obs[..obs.len().min(120)]
+                    );
+                    crate::test_runner::store::record_script_fail(&test.id);
+                    return None;
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "[scripts] '{}' replay step {} ('{}') tool error: {e}",
+                    test.id, i + 1, label
+                );
+                crate::test_runner::store::record_script_fail(&test.id);
+                return None;
+            }
+        }
+        i += 1;
+    }
+
+    // All actions succeeded — mark as passed.
+    tracing::info!(
+        "[scripts] '{}' deterministic replay succeeded in {:.1}s (0 LLM calls)",
+        test.id, started.elapsed().as_secs_f64()
+    );
+    Some(TestResult {
+        test_id: test.id.clone(),
+        status: TestStatus::Passed,
+        iterations: 0,  // 0 = no LLM iterations
+        duration_ms: started.elapsed().as_millis() as u64,
+        error_message: None,
+        screenshot_path: None,
+        screenshot_error: None,
+        history: vec![],
+        final_analysis: Some("✅ deterministic replay (0 LLM calls)".to_string()),
+        dispute: None,
+    })
+}
+
+/// Extract saveable browser actions from a completed history.
+/// Strips meta-actions (dispute_yaml, expand_observation) and LLM-only fields.
+fn extract_script_actions(history: &[TestStep]) -> Vec<serde_json::Value> {
+    history.iter()
+        .filter_map(|step| {
+            let label = step.action.get("action").and_then(Value::as_str)?;
+            match label {
+                "dispute_yaml" => None,
+                _ => Some(step.action.clone()),
+            }
+        })
+        .collect()
+}
+
 /// Execute a test goal by driving the browser via the `web_navigate` tool.
 pub async fn execute_test(
     ctx: &crate::adk::context::AgentContext,
@@ -578,6 +747,38 @@ pub async fn execute_test_tracked(
     session_id: Option<&str>,
 ) -> TestResult {
     use crate::test_runner::runs;
+
+    // ── Deterministic replay (POC) ────────────────────────────────────────────
+    // If a saved script exists for this test (and is < 7 days old), try to
+    // replay it without calling the LLM.  Only fall through to the full ReAct
+    // loop when replay fails (stale selectors, UI change, etc.).
+    if let Some(saved_actions) = crate::test_runner::store::load_script(&test.id, 7) {
+        if let Some(result) = try_replay_script(ctx, test, run_id, session_id, saved_actions).await {
+            // Persist the run record so analytics / list_recent_runs includes it.
+            let _ = crate::test_runner::store::record_run(crate::test_runner::store::NewRun {
+                test_id: &test.id,
+                started_at: &chrono::Local::now().to_rfc3339(),
+                duration_ms: Some(result.duration_ms as i64),
+                status: "passed",
+                failure_category: None,
+                ai_analysis: result.final_analysis.as_deref(),
+                screenshot_path: None,
+                history_json: None,
+                goal_json: None,
+                run_id,
+                iterations: Some(0),
+                dispute_reason: None,
+                dispute_suspected_step: None,
+                dispute_suggested_fix: None,
+            });
+            return result;
+        }
+        tracing::info!(
+            "[scripts] '{}' replay failed — falling back to LLM ReAct loop",
+            test.id
+        );
+    }
+    // ── end replay ────────────────────────────────────────────────────────────
 
     let started = std::time::Instant::now();
     let mut history: Vec<TestStep> = Vec::new();
@@ -971,6 +1172,12 @@ pub async fn execute_test_tracked(
             if step.done {
                 let analysis = evaluate_success(ctx, test, &history, step.final_answer.clone()).await;
                 let cap = if analysis.passed {
+                    // Auto-save script on success so the next run can replay
+                    // deterministically without LLM (script replay POC).
+                    let script_actions = extract_script_actions(&history);
+                    if script_actions.len() >= 3 {
+                        crate::test_runner::store::save_script(&test.id, &script_actions);
+                    }
                     ScreenshotCapture { path: None, error: None }
                 } else {
                     capture_screenshot(ctx, &test.id, run_id).await

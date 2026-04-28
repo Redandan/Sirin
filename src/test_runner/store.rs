@@ -96,6 +96,22 @@ fn db() -> &'static Mutex<rusqlite::Connection> {
             [],
         );
 
+        // POC: deterministic script replay (Issue #131)
+        // Stores the exact action_input sequence from a successful run so
+        // subsequent runs can replay it without calling the LLM at all.
+        let _ = conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS saved_scripts ( \
+                id INTEGER PRIMARY KEY AUTOINCREMENT, \
+                test_id TEXT NOT NULL UNIQUE, \
+                actions_json TEXT NOT NULL, \
+                saved_at TEXT NOT NULL, \
+                success_count INTEGER NOT NULL DEFAULT 1, \
+                fail_count INTEGER NOT NULL DEFAULT 0, \
+                last_run_at TEXT \
+            ); \
+            CREATE INDEX IF NOT EXISTS idx_ss_test ON saved_scripts(test_id);",
+        );
+
         Mutex::new(conn)
     })
 }
@@ -580,6 +596,89 @@ pub fn record_skipped_fix(
         rusqlite::params![test_id, run_id, category, now, reason],
     ).map_err(|e| format!("record_skipped_fix: {e}"))?;
     Ok(())
+}
+
+// ── Saved Scripts (deterministic replay POC) ─────────────────────────────────
+
+/// Save the exact action_input sequence from a successful run so the next run
+/// can replay it without calling the LLM.
+///
+/// Upserts on test_id — each test keeps one canonical "best known script".
+/// `actions` is a slice of JSON objects like `{"action":"flutter_scroll","y":800}`.
+pub fn save_script(test_id: &str, actions: &[serde_json::Value]) {
+    let conn = db().lock().unwrap_or_else(|e| e.into_inner());
+    let json = match serde_json::to_string(actions) {
+        Ok(s) => s,
+        Err(e) => { tracing::warn!("[scripts] save_script: serialise failed: {e}"); return; }
+    };
+    let now = chrono::Local::now().to_rfc3339();
+    let r = conn.execute(
+        "INSERT INTO saved_scripts (test_id, actions_json, saved_at, success_count) \
+         VALUES (?1,?2,?3,1) \
+         ON CONFLICT(test_id) DO UPDATE SET \
+           actions_json = excluded.actions_json, \
+           saved_at = excluded.saved_at, \
+           success_count = success_count + 1",
+        rusqlite::params![test_id, json, now],
+    );
+    match r {
+        Ok(_) => tracing::info!("[scripts] saved {} actions for '{}'", actions.len(), test_id),
+        Err(e) => tracing::warn!("[scripts] save_script failed: {e}"),
+    }
+}
+
+/// Load the saved action sequence for a test, if one exists and is fresh
+/// enough (less than `max_age_days` old).
+///
+/// Returns `None` when no script exists or it has expired.
+pub fn load_script(test_id: &str, max_age_days: u32) -> Option<Vec<serde_json::Value>> {
+    let conn = db().lock().unwrap_or_else(|e| e.into_inner());
+    let cutoff = chrono::Local::now()
+        .checked_sub_signed(chrono::Duration::days(max_age_days as i64))
+        .map(|dt| dt.to_rfc3339())
+        .unwrap_or_default();
+    let res: rusqlite::Result<String> = conn.query_row(
+        "SELECT actions_json FROM saved_scripts \
+         WHERE test_id = ?1 AND saved_at >= ?2",
+        rusqlite::params![test_id, cutoff],
+        |row| row.get(0),
+    );
+    match res {
+        Ok(json) => serde_json::from_str(&json).ok(),
+        Err(_) => None,
+    }
+}
+
+/// Record that a deterministic replay attempt failed (for observability).
+pub fn record_script_fail(test_id: &str) {
+    let conn = db().lock().unwrap_or_else(|e| e.into_inner());
+    let now = chrono::Local::now().to_rfc3339();
+    let _ = conn.execute(
+        "UPDATE saved_scripts SET fail_count = fail_count + 1, last_run_at = ?2 \
+         WHERE test_id = ?1",
+        rusqlite::params![test_id, now],
+    );
+}
+
+/// Delete a saved script (called when the script consistently fails and we
+/// want the next run to regenerate from scratch via LLM).
+pub fn delete_script(test_id: &str) {
+    let conn = db().lock().unwrap_or_else(|e| e.into_inner());
+    let _ = conn.execute(
+        "DELETE FROM saved_scripts WHERE test_id = ?1",
+        rusqlite::params![test_id],
+    );
+    tracing::info!("[scripts] deleted stale script for '{}'", test_id);
+}
+
+/// Query script metadata for the given test (for MCP tools / UI).
+pub fn script_info(test_id: &str) -> Option<(String, u32, u32)> {
+    let conn = db().lock().unwrap_or_else(|e| e.into_inner());
+    conn.query_row(
+        "SELECT saved_at, success_count, fail_count FROM saved_scripts WHERE test_id = ?1",
+        rusqlite::params![test_id],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?, row.get::<_, u32>(2)?)),
+    ).ok()
 }
 
 #[cfg(test)]

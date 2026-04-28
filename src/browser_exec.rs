@@ -43,6 +43,16 @@ fn u64_field(input: &Value, key: &str, default: u64) -> u64 {
     input.get(key).and_then(Value::as_u64).unwrap_or(default)
 }
 
+/// Parse a backend_id that may be a JSON number OR a JSON string.
+/// LLMs (especially DeepSeek) sometimes output `"backend_id":"94"` (string)
+/// instead of `"backend_id":94` (number).  Both are accepted here.
+fn parse_backend_id(input: &Value) -> Option<u32> {
+    input.get("backend_id").and_then(|v| {
+        v.as_u64()
+            .or_else(|| v.as_str().and_then(|s| s.trim().parse::<u64>().ok()))
+    }).map(|n| n as u32)
+}
+
 fn f64_field(input: &Value, key: &str, default: f64) -> f64 {
     input.get(key).and_then(Value::as_f64).unwrap_or(default)
 }
@@ -481,31 +491,31 @@ pub(crate) fn dispatch(action: &str, input: &Value) -> Result<Value, String> {
             }))
         }
         "ax_value" => {
-            let id = input.get("backend_id").and_then(Value::as_u64)
-                .ok_or("'ax_value' requires 'backend_id' (number)")? as u32;
+            let id = parse_backend_id(input)
+                .ok_or("'ax_value' requires 'backend_id' (number)")?;
             Ok(json!({ "backend_id": id, "text": crate::browser_ax::read_node_text(id)? }))
         }
         "ax_click" => {
-            let id = input.get("backend_id").and_then(Value::as_u64)
-                .ok_or("'ax_click' requires 'backend_id' (number)")? as u32;
+            let id = parse_backend_id(input)
+                .ok_or("'ax_click' requires 'backend_id' (number)")?;
             crate::browser_ax::click_backend(id)?;
             Ok(json!({ "status": "clicked", "backend_id": id }))
         }
         "ax_focus" => {
-            let id = input.get("backend_id").and_then(Value::as_u64)
-                .ok_or("'ax_focus' requires 'backend_id' (number)")? as u32;
+            let id = parse_backend_id(input)
+                .ok_or("'ax_focus' requires 'backend_id' (number)")?;
             crate::browser_ax::focus_backend(id)?;
             Ok(json!({ "status": "focused", "backend_id": id }))
         }
         "ax_type" => {
-            let id = input.get("backend_id").and_then(Value::as_u64)
-                .ok_or("'ax_type' requires 'backend_id' (number)")? as u32;
+            let id = parse_backend_id(input)
+                .ok_or("'ax_type' requires 'backend_id' (number)")?;
             crate::browser_ax::type_into_backend(id, text)?;
             Ok(json!({ "status": "typed", "backend_id": id, "length": text.len() }))
         }
         "ax_type_verified" => {
-            let id = input.get("backend_id").and_then(Value::as_u64)
-                .ok_or("'ax_type_verified' requires 'backend_id' (number)")? as u32;
+            let id = parse_backend_id(input)
+                .ok_or("'ax_type_verified' requires 'backend_id' (number)")?;
             let r = crate::browser_ax::type_into_backend_verified(id, text)?;
             Ok(serde_json::to_value(&r).unwrap_or(json!({})))
         }

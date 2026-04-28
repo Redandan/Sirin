@@ -46,7 +46,8 @@ goal: |
   19. wait 1000
   20. ax_find role=textbox name_regex="取貨結束時間"  [取得 backend_id]
   21. ax_focus backend_id=<id>  [⭐ scroll-to + focus，不是 ax_click，不是 click_point]
-  22. flutter_type text="14:00"
+  21b. wait 500  [等 flt-text-editing 建立]
+  22. flutter_type text="14:00"  [此時 flt-text-editing 已存在，會先清除再輸入]
   23. ax_value backend_id=<id>  [驗證：應該是 "14:00"]
   24. screenshot_analyze "取貨結束時間是 14:00 嗎？"
   25. done=true
