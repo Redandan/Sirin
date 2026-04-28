@@ -1033,6 +1033,17 @@ fn call_run_test_async(args: Value) -> Result<Value, String> {
     Ok(resp)
 }
 
+/// Average LLM calls per minute per test, used for RPM-aware batch sizing.
+fn calls_per_min_per_test_avg(test_ids: &[String]) -> f64 {
+    if test_ids.is_empty() { return 10.0; }
+    test_ids.iter().map(|tid| {
+        let stats = crate::test_runner::store::test_stats(tid);
+        if stats.avg_iterations > 0.0 && stats.avg_duration_ms > 0 {
+            stats.avg_iterations / (stats.avg_duration_ms as f64 / 60_000.0)
+        } else { 10.0 }
+    }).sum::<f64>() / test_ids.len() as f64
+}
+
 /// Spawn N tests in parallel, each on its own dedicated chrome tab.
 ///
 /// `max_concurrency` clamped to [1, 8].  CDP isn't designed for hundreds
@@ -1046,23 +1057,93 @@ fn call_run_test_batch(args: Value) -> Result<Value, String> {
     if test_ids.is_empty() {
         return Err("test_ids is empty".into());
     }
+
+    // ── RPM-aware concurrency cap ─────────────────────────────────────────────
+    //
+    // Running more tests in parallel than the LLM's RPM can support causes
+    // every test to stall at the token-bucket gate — total wall time increases
+    // but no individual test runs any faster.  Better to serialise: each test
+    // gets the full RPM budget and finishes in its natural time.
+    //
+    // Formula:
+    //   rpm                  = GEMINI_RPM (default 8 for Gemini free tier)
+    //   avg_calls_per_min    = avg_iterations / (avg_duration_ms / 60000)
+    //   safe_concurrency     = max(1, floor(rpm / avg_calls_per_min))
+    //
+    // We use the analytics of each requested test and average across them.
+    // For tests with no history, assume 10 calls/minute (conservative default).
+    let rpm = std::env::var("GEMINI_RPM")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|&r| r > 0.0)
+        .unwrap_or(8.0);
+
+    let provider = std::env::var("LLM_PROVIDER").unwrap_or_default();
+    let is_gemini = provider.to_lowercase().contains("gemini");
+
+    let safe_concurrency: usize = if is_gemini {
+        // Average calls/minute across all requested tests using their analytics.
+        let calls_per_min_per_test: f64 = test_ids
+            .iter()
+            .map(|tid| {
+                let stats = crate::test_runner::store::test_stats(tid);
+                if stats.avg_iterations > 0.0 && stats.avg_duration_ms > 0 {
+                    // calls/min = iterations / (duration in minutes)
+                    stats.avg_iterations / (stats.avg_duration_ms as f64 / 60_000.0)
+                } else {
+                    10.0 // conservative default for tests with no history
+                }
+            })
+            .sum::<f64>()
+            / test_ids.len() as f64;
+
+        let safe = (rpm / calls_per_min_per_test).floor() as usize;
+        safe.max(1)
+    } else {
+        8 // non-Gemini providers have no RPM concern; use hardware cap
+    };
+
     let raw_cap = args.get("max_concurrency")
         .and_then(Value::as_u64)
-        .unwrap_or(3) as usize;
-    let cap = raw_cap.clamp(1, 8);
+        .unwrap_or(safe_concurrency as u64) as usize;
+
+    let mut warn: Option<String> = None;
+    let cap = if raw_cap > safe_concurrency && is_gemini {
+        warn = Some(format!(
+            "max_concurrency={raw_cap} exceeds RPM-safe limit={safe_concurrency} \
+             (GEMINI_RPM={rpm:.0}, avg ~{:.1} LLM calls/min/test). \
+             Clamping to {safe_concurrency} to prevent 429 stalls. \
+             Increase GEMINI_RPM or use a paid tier for higher parallelism.",
+            calls_per_min_per_test_avg(&test_ids)
+        ));
+        safe_concurrency
+    } else {
+        raw_cap.clamp(1, 8)
+    };
+
+    tracing::info!(
+        "[batch] {} tests, concurrency={}/{} (RPM={:.0}, safe={})",
+        test_ids.len(), cap, raw_cap, rpm, safe_concurrency
+    );
 
     let run_ids = crate::test_runner::spawn_batch_run(test_ids.clone(), cap)?;
     // Pair each input test with its assigned run_id for client clarity.
     let pairs: Vec<Value> = test_ids.iter().zip(run_ids.iter())
         .map(|(tid, rid)| json!({ "test_id": tid, "run_id": rid }))
         .collect();
-    Ok(json!({
+    let mut resp = json!({
         "count": pairs.len(),
         "max_concurrency": cap,
+        "safe_concurrency": safe_concurrency,
+        "rpm_limit": rpm,
         "runs": pairs,
         "status": "queued",
         "poll_each_with": "get_test_result",
-    }))
+    });
+    if let Some(w) = warn {
+        resp["warning"] = json!(w);
+    }
+    Ok(resp)
 }
 
 fn call_get_test_result(args: Value) -> Result<Value, String> {
