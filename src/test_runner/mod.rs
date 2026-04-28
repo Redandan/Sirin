@@ -310,6 +310,13 @@ pub fn spawn_run_async(test_id: String, auto_fix: bool) -> Result<String, String
                     }
                 }
             }
+
+            // Navigate to about:blank after test finishes (pass or fail) so the
+            // browser tab is cleaned up — stops JS timers / WebGL / network
+            // activity and leaves a blank tab instead of the last test URL.
+            let _ = tokio::task::spawn_blocking(|| {
+                let _ = crate::browser::navigate("about:blank");
+            }).await;
         });
     });
 
@@ -421,6 +428,13 @@ pub fn spawn_adhoc_run(req: AdhocRunRequest) -> Result<String, String> {
             });
 
             runs::set_phase(&run_id_clone, runs::RunPhase::Complete(result));
+
+            // Navigate to about:blank after ad-hoc test finishes so the browser
+            // tab is cleaned up — stops ongoing JS/WebGL/network activity and
+            // leaves a blank tab rather than the last visited URL.
+            let _ = tokio::task::spawn_blocking(|| {
+                let _ = crate::browser::navigate("about:blank");
+            }).await;
         });
     });
 
