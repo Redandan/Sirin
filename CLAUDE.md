@@ -114,14 +114,18 @@ LLM_FALLBACK_MODEL=deepseek-chat  # = DeepSeek V4（自動 alias）
 
 Primary 429 → 立即切 fallback（0s 等待）。不設定 → Gemini 429 時測試卡 35s+。
 
-### Flutter 測試關鍵模式（2026-04-28 確認）
+### Flutter 測試關鍵模式（2026-04-29 更新）
 
 | 操作 | 正確方式 | 錯誤方式 |
 |---|---|---|
 | off-screen textbox 輸入 | `ax_find` → `ax_focus` → `flutter_type` | `ax_click`（不 scroll）|
 | scroll 後找按鈕 | `scroll` → `wait 800` → **再 shadow_dump** | 用舊 shadow_dump 結果 |
-| Flutter tab 切換 | `shadow_click role=tab` | `click_point`（CDP 座標）|
+| Flutter tab 切換（PageView） | `shadow_click role=tab` → `wait 2000` → `enable_a11y` → `wait 1000` | 切換後立即操作（PageView 動畫未完成）|
+| Flutter tab 切換（auto_route） | `shadow_click role=tab` | `click_point`（CDP 座標）|
 | 確認輸入值 | `ax_value backend_id=<id>` | `screenshot_analyze`（近似）|
+| CJK/中文輸入 | `flutter_type text="你好"` — 自動路由到 JS ClipboardEvent paste | `shadow_type`（InsertText 不保證 Flutter 接收）|
+| ExpansionTile 點擊 | `shadow_click role=group name_regex="..."` | `shadow_click role=button`（ExpansionTile AX role=group）|
+| ExpansionTile 展開後操作 | 展開後加 `wait 1500` + `enable_a11y` + `wait 800` | 立即截圖（動畫 ~300ms 未完成）|
 
 ### headless_chrome 已知修復
 
