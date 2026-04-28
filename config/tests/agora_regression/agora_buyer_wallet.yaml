@@ -5,6 +5,14 @@ url: "https://redandan.github.io/?__test_role=buyer"
 max_iterations: 18
 timeout_secs: 220
 
+# H5 mobile viewport — AgoraMarket 會員端是手機版 App，必須用手機 viewport 測試
+viewport:
+  width: 390
+  height: 844
+  scale: 2.0
+  mobile: true
+
+
 locale: zh-TW
 
 goal: |
@@ -33,3 +41,4 @@ success_criteria:
   - "看到交易記錄列表"
 
 tags: [regression, wallet, buyer, agora]
+

@@ -5,6 +5,14 @@ url: "https://redandan.github.io/"
 max_iterations: 8
 timeout_secs: 180
 
+# H5 mobile viewport — AgoraMarket 會員端是手機版 App，必須用手機 viewport 測試
+viewport:
+  width: 390
+  height: 844
+  scale: 2.0
+  mobile: true
+
+
 goal: |
   測試 Agora Market Flutter PWA 能正常載入並顯示登入表單。
 
@@ -25,3 +33,4 @@ success_criteria:
   - "Vision 確認頁面有實際內容（不是全黑或全白）"
 
 tags: [smoke, flutter, agora, vision, v2]
+

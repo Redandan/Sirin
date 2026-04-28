@@ -5,6 +5,14 @@ url: "https://redandan.github.io/?__test_role=buyer"
 max_iterations: 20
 timeout_secs: 360
 
+# H5 mobile viewport — AgoraMarket 會員端是手機版 App，必須用手機 viewport 測試
+viewport:
+  width: 390
+  height: 844
+  scale: 2.0
+  mobile: true
+
+
 locale: zh-TW
 
 goal: |
@@ -54,3 +62,4 @@ success_criteria:
   - "嘗試點擊登出後記錄結果（成功登出、需確認彈窗、或 auto-login 重新登入皆視為完成）"
 
 tags: [agora, regression, auth, v3]
+

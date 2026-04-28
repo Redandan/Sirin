@@ -272,6 +272,7 @@ pub fn spawn_adhoc_run(req: AdhocRunRequest) -> Result<String, String> {
         blocked_url_patterns: req.blocked_url_patterns.clone().unwrap_or_default(),
         record_timeline_gif: true,  // adhoc runs default-on; same as YAML default
         show_action_indicator: false,  // Issue #75: opt-in only; ad-hoc keeps clean DOM
+        viewport: None,  // ad-hoc uses process default viewport
     };
 
     let run_id = runs::new_run(&test_id);
@@ -763,6 +764,7 @@ pub fn persist_adhoc_run(p: PersistAdhocParams) -> Result<PersistAdhocResult, St
         blocked_url_patterns: goal.blocked_url_patterns.clone(),
         record_timeline_gif: goal.record_timeline_gif,
         show_action_indicator: goal.show_action_indicator,
+        viewport: goal.viewport.clone(),
     };
 
     // Serialize and write.  serde_yaml uses 2-space indent and never
@@ -827,6 +829,7 @@ mod persist_tests {
             blocked_url_patterns: Vec::new(),
             record_timeline_gif: true,
             show_action_indicator: false,
+        viewport: None,
         };
         let run_id = runs::new_run(test_id);
         runs::set_goal(&run_id, goal.clone());
@@ -916,6 +919,7 @@ mod persist_tests {
             blocked_url_patterns: Vec::new(),
             record_timeline_gif: false,  // synthetic placeholder — never executes
             show_action_indicator: false,
+        viewport: None,
         });
         runs::set_phase(&run_id, runs::RunPhase::Running {
             step: 2,
@@ -1002,6 +1006,7 @@ mod persist_tests {
             blocked_url_patterns: Vec::new(),
             record_timeline_gif: true,
             show_action_indicator: false,
+        viewport: None,
         };
         // Insert directly into SQLite — simulates the row that
         // record_run wrote at the original run completion.

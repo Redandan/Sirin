@@ -4,6 +4,7 @@ url: "https://redandan.github.io/?__test_role=buyer"
 
 max_iterations: 20
 timeout_secs: 300
+# H5 mobile viewport — AgoraMarket 會員端是手機版 App，必須用手機 viewport 測試viewport:  width: 390  height: 844  scale: 2.0  mobile: true
 
 goal: |
   目標：驗證 AgoraMarket 通知刪除功能（Issue #70 Critical Bug #2）。

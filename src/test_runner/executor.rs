@@ -591,6 +591,17 @@ async fn try_replay_script(
     let started = std::time::Instant::now();
     let nav_url = test.full_url();
 
+    // Apply per-test viewport before replay (same as the LLM path).
+    if let Some(vp) = &test.viewport {
+        let mut vp_input = json!({
+            "action": "set_viewport",
+            "width": vp.width, "height": vp.height,
+            "scale": vp.scale, "mobile": vp.mobile,
+        });
+        inject_session(&mut vp_input, session_id);
+        let _ = ctx.call_tool("web_navigate", vp_input).await;
+    }
+
     // Clear any cached browser state so the replay starts from a known-clean
     // baseline.  With SIRIN_PERSISTENT_PROFILE=1 the previous run may have
     // left UI state (e.g. switches already toggled) that breaks the script.
@@ -872,6 +883,28 @@ pub async fn execute_test_tracked(
         .and_then(|r| r)
     {
         return finalize_early(ctx, run_id, test, &history, format!("browser launch failed: {e}")).await;
+    }
+
+    // 0) Apply per-test viewport override before any navigation.
+    //    This ensures screenshots and element coordinates match the intended
+    //    device profile (e.g. H5 mobile: 390×844 vs PC: 1280×900).
+    if let Some(vp) = &test.viewport {
+        let mut vp_input = json!({
+            "action": "set_viewport",
+            "width": vp.width,
+            "height": vp.height,
+            "scale": vp.scale,
+            "mobile": vp.mobile,
+        });
+        inject_session(&mut vp_input, session_id);
+        if let Err(e) = ctx.call_tool("web_navigate", vp_input).await {
+            tracing::warn!("[test_runner] '{}' set_viewport failed (non-fatal): {e}", test.id);
+        } else {
+            tracing::info!(
+                "[test_runner] '{}' viewport → {}×{} scale={:.1} mobile={}",
+                test.id, vp.width, vp.height, vp.scale, vp.mobile
+            );
+        }
     }
 
     // 1) Navigate to the test URL (with url_query params merged in).

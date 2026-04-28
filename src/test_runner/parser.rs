@@ -163,7 +163,35 @@ pub struct TestGoal {
     /// security boundary** — page JS can read its existence trivially.
     #[serde(default)]
     pub show_action_indicator: bool,
+    /// Override the browser viewport for this test.
+    ///
+    /// Use this to match the intended device profile:
+    /// - Buyer H5 (mobile web): `{width: 390, height: 844, scale: 2.0, mobile: true}`
+    /// - Seller PC dashboard:   `{width: 1280, height: 900, scale: 1.0, mobile: false}`
+    ///
+    /// When omitted, Sirin uses the process-wide default viewport from
+    /// `SIRIN_DEFAULT_VIEWPORT` (typically 1440×1600).
+    /// ⚠️  Saved scripts embed the viewport used at recording time — running
+    /// a script at a different viewport may fail (layout and element positions
+    /// differ between mobile and desktop).
+    #[serde(default)]
+    pub viewport: Option<TestViewport>,
 }
+
+/// Viewport configuration for a test.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct TestViewport {
+    pub width: u32,
+    pub height: u32,
+    /// Device pixel ratio (CSS pixels → physical pixels).  Default 1.0.
+    #[serde(default = "default_scale")]
+    pub scale: f64,
+    /// Whether to emulate a mobile device (touch events, mobile UA, etc).
+    #[serde(default)]
+    pub mobile: bool,
+}
+
+fn default_scale() -> f64 { 1.0 }
 
 fn default_record_timeline_gif() -> bool { true }
 

@@ -5,6 +5,14 @@ url: "https://redandan.github.io/?__test_role=buyer"
 max_iterations: 25
 timeout_secs: 300
 
+# H5 mobile viewport — AgoraMarket 會員端是手機版 App，必須用手機 viewport 測試
+viewport:
+  width: 390
+  height: 844
+  scale: 2.0
+  mobile: true
+
+
 goal: |
   目標：驗證「直接購買」flow 結帳頁 UI 正常（Issue #70 #45）。
 
@@ -31,3 +39,4 @@ success_criteria:
   - "無 console error 或 'Something went wrong' 訊息"
 
 tags: [checkout, agora, issue-70, regression, refactor-verification]
+

@@ -6,6 +6,14 @@ locale: zh-TW
 max_iterations: 12
 timeout_secs: 180
 
+# H5 mobile viewport — AgoraMarket 會員端是手機版 App，必須用手機 viewport 測試
+viewport:
+  width: 390
+  height: 844
+  scale: 2.0
+  mobile: true
+
+
 goal: |
   目標：確認買家可搜尋商品並看到結果。
 
@@ -35,3 +43,4 @@ success_criteria:
   - "嘗試輸入 ASCII 關鍵字後頁面正常（無崩潰）"
 
 tags: [agora, regression, search]
+
