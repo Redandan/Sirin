@@ -1985,25 +1985,109 @@ pub fn shadow_type(role: Option<&str>, name_regex: Option<&str>, text: &str) -> 
 /// uses `tab.press_key()` (which sends proper CDP DispatchKeyEvent) so Flutter
 /// receives and processes each character.
 ///
+/// **CJK / non-ASCII support (Issue #143):** When `text` contains any non-ASCII
+/// character the per-key path is bypassed because CDP `DispatchKeyEvent` has no
+/// keycode for Unicode chars.  Instead we:
+///   1. Try JS `ClipboardEvent('paste')` simulation — Flutter's text-editing
+///      engine handles paste and updates `TextEditingController`.
+///   2. Fall back to CDP `Input.InsertText` if the paste JS fails.
+///
+/// For mixed ASCII+CJK text the entire string is sent as a paste so both
+/// scripts and the LLM can pass arbitrary Unicode without splitting the string.
+///
 /// Call `ax_click(backend_id)` or `shadow_click` first to focus the target field
 /// and let Flutter create its `flt-text-editing` input; wait ~300 ms before calling
 /// this function.
 pub fn flutter_type(text: &str) -> Result<(), String> {
+    let has_non_ascii = text.chars().any(|c| !c.is_ascii());
+
     // Clear existing content via JS — Ctrl+A + Delete does NOT work reliably in
     // Flutter Web because CDP Ctrl+A is processed as a literal 'a' character press.
-    // JS direct assignment to .value doesn't update Flutter's cursor state, but it
-    // empties the DOM value so our subsequent keydowns start from a clean state.
     let _ = evaluate_js(
         "(() => { const inp = document.querySelector('.flt-text-editing'); if (inp) inp.value = ''; })()"
     );
     std::thread::sleep(std::time::Duration::from_millis(30));
-    // Type each character individually so Flutter's keydown handler fires.
+
+    if has_non_ascii {
+        return flutter_type_unicode(text);
+    }
+
+    // ASCII fast path: fire CDP keydown per character so Flutter's keydown handler fires.
     for ch in text.chars() {
         let key_str = ch.to_string();
         press_key(&key_str)
             .map_err(|e| format!("flutter_type '{key_str}': {e}"))?;
         std::thread::sleep(std::time::Duration::from_millis(30));
     }
+    Ok(())
+}
+
+/// Insert non-ASCII / CJK text into the currently-focused Flutter text field.
+///
+/// Strategy (two-stage):
+///   1. JS clipboard paste simulation — Flutter Web's `EditableTextState`
+///      responds to `ClipboardEvent('paste')` and forwards the text to the
+///      `TextEditingController`.
+///   2. CDP `Input.InsertText` fallback — works when the focused element is a
+///      normal HTML input/textarea (non-Flutter or hybrid host).
+///
+/// This function is called automatically by `flutter_type` when the text
+/// contains any non-ASCII character.  It can also be called directly.
+pub fn flutter_type_unicode(text: &str) -> Result<(), String> {
+    // --- Stage 1: JS paste simulation ---
+    // Escape the text for safe JS embedding (handles quotes, backslashes, etc.)
+    let escaped = text
+        .replace('\\', "\\\\")
+        .replace('\'', "\\'")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r");
+
+    let js = format!(
+        r#"(function() {{
+            var text = '{escaped}';
+            var inp = document.querySelector('.flt-text-editing');
+            if (inp) {{
+                // Method A: ClipboardEvent paste (preferred — Flutter handles this)
+                try {{
+                    var dt = new DataTransfer();
+                    dt.setData('text/plain', text);
+                    inp.dispatchEvent(new ClipboardEvent('paste', {{
+                        clipboardData: dt,
+                        bubbles: true,
+                        cancelable: true
+                    }}));
+                    return 'paste_ok';
+                }} catch(e) {{}}
+                // Method B: InputEvent insertText (IME-like)
+                try {{
+                    inp.dispatchEvent(new InputEvent('input', {{
+                        data: text,
+                        inputType: 'insertText',
+                        bubbles: true,
+                        cancelable: true
+                    }}));
+                    return 'input_event_ok';
+                }} catch(e) {{}}
+            }}
+            return 'no_input';
+        }})()"#
+    );
+
+    let result = evaluate_js(&js)
+        .unwrap_or_else(|e| format!("js_err:{e}"));
+
+    if result.contains("paste_ok") || result.contains("input_event_ok") {
+        // Give Flutter a tick to process the event
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        return Ok(());
+    }
+
+    // --- Stage 2: CDP Input.InsertText fallback ---
+    with_tab(|tab| {
+        tab.call_method(Input::InsertText { text: text.to_string() })
+            .map_err(|e| format!("flutter_type_unicode InsertText: {e}"))
+    })?;
+    std::thread::sleep(std::time::Duration::from_millis(80));
     Ok(())
 }
 

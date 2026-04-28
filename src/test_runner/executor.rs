@@ -1975,12 +1975,11 @@ These query Flutter's `flt-semantics-host` directly via JS, avoiding AX tree col
 - shadow_click          — same params as shadow_find; clicks via JS PointerEvent dispatch
                           (NOT CDP Input.dispatchMouseEvent — that causes about:blank on Flutter nav buttons)
 - shadow_type           — role + name_regex + text; clicks to focus then inserts text via CDP InsertText
-- flutter_type          — ASCII text only; fires CDP keydown per character (REQUIRED for Flutter textboxes).
+- flutter_type          — Supports ASCII AND CJK/Unicode (你好、日本語、ภาษาไทย etc).
+                          ASCII: fires CDP keydown per character. CJK/non-ASCII: auto-switches to
+                          JS ClipboardEvent paste simulation → InsertText fallback (Issue #143).
                           To focus: shadow_click + wait 350ms (shadow DOM elements) OR ax_focus (AX tree elements).
-                          ⚠️ Input.InsertText does NOT work for Flutter — always use flutter_type.
                           ⚠️ For off-screen AX elements: use ax_focus (NOT shadow_click / click_point) to scroll+focus first.
-                          ⚠️ ASCII only — CJK/Unicode chars (你好等) have no keycode and will fail.
-                          Use shadow_type for non-ASCII text (but note InsertText may not update Flutter state).
 - flutter_enter         — no params; sends CDP Enter key to currently focused element.
                           ⭐ Now uses CDP press_key("Return") — works even AFTER flt-text-editing disappears.
                           Use immediately after flutter_type to submit forms.
