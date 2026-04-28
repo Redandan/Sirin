@@ -320,6 +320,9 @@ fn handle_dispute_yaml(
     }
 
     // ── Layer 3: auto gh issue create ────────────────────────────────────────
+    // ⚠️ #[cfg(not(test))] guard: unit tests must NEVER call gh CLI or they
+    //    will create real GitHub issues on every `cargo test` invocation.
+    #[cfg(not(test))]
     {
         let step_n = dispute.suspected_step.unwrap_or(-1);
         let reason_short: String = dispute.reason.chars().take(50).collect();
