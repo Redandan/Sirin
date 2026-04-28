@@ -1,46 +1,55 @@
 id: agora_logout_flow
-name: "登出流程測試 v2 - goto hash + shadow_click"
-url: "https://redandan.github.io/?__test_role=buyer#/profile"
+name: "登出流程測試 v3 - shadow_click 我的 tab"
+url: "https://redandan.github.io/?__test_role=buyer"
 
-max_iterations: 18
-timeout_secs: 300
+max_iterations: 20
+timeout_secs: 360
 
 locale: zh-TW
 
 goal: |
   目標：確認買家可登出，session 清除後回到登入頁。
 
-  起始狀態：URL 直接帶 #/profile 進入個人頁（避免 tab 點擊競態問題）。
+  起始狀態：以買家身份登入首頁（URL auto-login via __test_role=buyer）。
 
   ⚠️ Flutter CanvasKit：所有 UI 判斷用 screenshot_analyze 或 shadow_dump。
-  ⚠️ 登出按鈕在「我的」頁底部，需先 scroll 才能看到。
+  ⚠️ 不要用 goto 在測試中途跳頁，容易導致 Flutter 重新初始化。
+  ⚠️ 底部 tab 必須用 shadow_click（CDP click 對 Flutter 無效）。
 
-  步驟（按順序執行）：
+  步驟（按順序執行，不跳過）：
 
-  1. wait 6000
+  1. wait 7000
      （等 Flutter bootstrap + auto-login 套用）
   2. enable_a11y
-  3. wait 1500
-  4. screenshot_analyze "目前在「我的/個人」頁面嗎？看到個人資料或頭像？"
-  5. scroll y=1200
-  6. wait 800
-  7. shadow_dump
-     （列出目前可見的所有按鈕，找登出相關）
-  8. shadow_click role=button name_regex="登出|Logout|Log out|退出|Sign out"
-  9. wait 2000
-  10. screenshot_analyze "是否出現確認對話框？或已直接完成登出？"
-  11. shadow_click role=button name_regex="確認|確定|OK|Yes|是"
-      （若有確認框則點，若無就繼續）
-  12. wait 2000
-  13. screenshot_analyze "登出後狀態：是否跳回登入頁或首頁？"
-  14. done=true
+  3. wait 2000
+  4. shadow_dump
+     （查看底部 tab：商品/訂單/錢包/我的）
+  5. shadow_click role=tab name_regex="我的|Profile|Me|帳戶"
+     （點擊「我的」tab 進入個人頁）
+  6. wait 3000
+  7. enable_a11y
+  8. wait 1000
+  9. screenshot_analyze "確認在「我的/個人」頁面嗎？看到個人資料或設定入口？"
+  10. scroll y=1000
+  11. wait 800
+  12. shadow_dump
+      （列出目前可見的所有按鈕，找登出相關）
+  13. shadow_click role=button name_regex="登出|Logout|Log out|退出|Sign out"
+  14. wait 2000
+  15. screenshot_analyze "是否出現確認對話框？或已完成登出？"
+  16. shadow_click role=button name_regex="確認|確定|OK|Yes|是"
+      （若有確認框則點，找不到就繼續）
+  17. wait 2000
+  18. screenshot_analyze "登出後狀態：是否跳回登入頁或首頁？"
+  19. done=true
 
-  ⚠️ 步驟 11 找不到目標不要重試，直接往 12 繼續。
+  ⚠️ 步驟 5：若找不到「我的」tab，試 shadow_find role=button name_regex="^我的$|Profile"。
+  ⚠️ 步驟 16 找不到目標直接往 17 繼續，不要重試。
   ⚠️ 注意：URL 含 __test_role=buyer，Flutter auto-login 可能讓頁面立即重新登入（記錄此現象即可，視為 pass）。
 
 success_criteria:
   - "成功進入「我的」個人頁面（看到個人資料或設定選項）"
   - "成功捲動並找到登出按鈕（或記錄底部可見的所有按鈕）"
-  - "嘗試點擊登出後記錄結果（成功登出、需確認彈窗、或 auto-login 立即重新登入皆可）"
+  - "嘗試點擊登出後記錄結果（成功登出、需確認彈窗、或 auto-login 重新登入皆視為完成）"
 
-tags: [agora, regression, auth, v2]
+tags: [agora, regression, auth, v3]
