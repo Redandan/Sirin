@@ -43,6 +43,8 @@ goal: |
   6. flutter_scroll_until_visible role=button name_regex="物流設定"
   shadow_click role=button name_regex="^物流設定$"（點「物流設定」展開物流服務區塊）
   7. wait 1500
+  enable_a11y
+  wait 800
   8. screenshot_analyze "物流設定展開後的截圖。列出所有可見的物流服務選項（宅配到府/7-ELEVEN/全家）、每個的開關狀態（開/關）及運費金額。有沒有「服務類型」(service type) 下拉選單或任何空白的欄位？（Bug #3 驗證：運費欄位、服務類型欄位是否有預設值？）"
   9. scroll y=100（小幅捲動查看萊爾富/OK超商）
   10. screenshot_analyze "萊爾富和OK超商的開關狀態與運費。整體來說，5個物流服務的所有欄位（開關狀態、運費金額）是否都有值？有沒有任何空白欄位？這是 Bug #3 的驗證：service type 必須有預設值（非空白）。"

@@ -40,8 +40,8 @@ goal: |
      （Flutter canvas 需要 touch-drag scroll，window.scrollBy 無效）
   7. wait 1000
   8. enable_a11y
-  9. shadow_find role=button name="平台配送設定"
-  10. shadow_click role=button name="平台配送設定"
+  9. shadow_find role=group name="平台配送設定"
+  10. shadow_click role=group name="平台配送設定"
   11. install_capture
   12. wait 2000
   13. enable_a11y
@@ -60,7 +60,7 @@ goal: |
   25. done=true
 
 success_criteria:
-  - "展開平台配送設定"
+  - "展開平台配送設定（ExpansionTile，role=group）"
   - "開啟啟用平台配送 switch"
   - "取貨結束時間改為 14:00"
 

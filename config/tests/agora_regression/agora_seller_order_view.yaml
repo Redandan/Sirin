@@ -27,6 +27,9 @@ goal: |
   步驟（線性，步驟 8 無條件 done=true，不得提早）：
   1. wait 3000（等賣家儀表板完整載入）
   2. shadow_click role=tab name_regex="^訂單$"（點底部訂單 tab）
+  wait 2000
+  enable_a11y
+  wait 1000
   3. wait 2500（等訂單頁面載入）
   4. screenshot_analyze "賣家訂單頁面截圖。記錄：(1)頂部有哪些訂單分類 tab（待處理/處理中/已完成等）？(2)訂單列表顯示什麼（有訂單？空列表？）？(3)頁面最上方的統計數字是什麼？"
   5. shadow_click role=tab name_regex="^待處理$"（點待處理分類 tab）
