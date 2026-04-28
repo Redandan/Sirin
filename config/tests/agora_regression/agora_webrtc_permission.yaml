@@ -6,6 +6,12 @@ url: "https://redandan.github.io/?__test_role=buyer"
 
 max_iterations: 15
 timeout_secs: 240
+# H5 mobile viewport — AgoraMarket 會員端是手機版 App，必須用手機 viewport 測試
+viewport:
+  width: 390
+  height: 844
+  scale: 2.0
+  mobile: true
 max_retries: 1  # H5 Flutter 偶發 Chrome 初始化延遲，自動重試一次
 
 goal: |
@@ -38,4 +44,5 @@ success_criteria:
   - "沒有顯示 camera/microphone 永久 denied 或授權永遠失敗的錯誤"
 
 tags: [regression, webrtc, agora, critical, issue-70]
+
 

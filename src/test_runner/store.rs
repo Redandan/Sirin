@@ -776,6 +776,7 @@ mod tests {
                 dispute_reason: None,
                 dispute_suspected_step: None,
                 dispute_suggested_fix: None,
+                is_replay: false,
             }).unwrap();
             // Small delay so started_at ordering is deterministic
             std::thread::sleep(std::time::Duration::from_millis(2));
@@ -804,6 +805,7 @@ mod tests {
             dispute_reason: None,
             dispute_suspected_step: None,
             dispute_suggested_fix: None,
+                is_replay: false,
         }).unwrap();
         let recovered = find_run_by_run_id(&rid).expect("must find by run_id");
         assert_eq!(recovered.0, goal_json);
@@ -1050,7 +1052,8 @@ mod tests {
             iterations: Some(3),
             dispute_reason: Some("Step 2 already on target page, click has no effect"),
             dispute_suspected_step: Some(2),
-            dispute_suggested_fix: Some("Add conditional: if not on page, navigate"),
+            dispute_suggested_fix: None,
+            is_replay: false,
         }).unwrap();
 
         // Verify the run_id lookup returns status "disputed" — that's what

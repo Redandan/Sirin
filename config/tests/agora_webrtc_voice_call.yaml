@@ -9,6 +9,12 @@ browser_headless: false
 
 max_iterations: 25
 timeout_secs: 360
+# H5 mobile viewport — AgoraMarket 會員端是手機版 App，必須用手機 viewport 測試
+viewport:
+  width: 390
+  height: 844
+  scale: 2.0
+  mobile: true
 max_retries: 1  # H5 Flutter 偶發 Chrome 初始化延遲，自動重試一次
 retry_on_parse_error: 2
 
@@ -24,7 +30,7 @@ retry_on_parse_error: 2
 fixture:
   setup:
     - {action: "clear_state"}
-    - {action: "set_viewport", width: 1440, height: 1600}
+    -
     - {action: "goto", target: "https://redandan.github.io/?__test_role=buyer"}
     - {action: "wait", target: "5000"}
     - {action: "enable_a11y"}
@@ -101,4 +107,5 @@ success_criteria:
   - "成功點擊掛斷按鈕，通話 UI 關閉並回到聊天頁"
 
 tags: [regression, webrtc, voice-call, agora, critical, issue-46, issue-70]
+
 
