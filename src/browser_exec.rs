@@ -231,6 +231,18 @@ pub(crate) fn dispatch(action: &str, input: &Value) -> Result<Value, String> {
             browser::flutter_scroll(delta_y)?;
             Ok(json!({ "status": "scrolled", "delta_y": delta_y, "method": "touch-drag" }))
         }
+        "flutter_scroll_until_visible" => {
+            // Scroll Flutter canvas until a shadow DOM element appears in viewport.
+            // Preferred over flutter_scroll y=<fixed> because it adapts to
+            // different viewports and page layouts automatically.
+            let role_s   = opt_str(input, "role");
+            let role     = role_s.as_deref();
+            let name_str = opt_str2(input, "name_regex", "name");
+            let step = f64_field(input, "step", 300.0);
+            let max  = f64_field(input, "max_scroll", 2000.0);
+            let (x, y, label) = browser::flutter_scroll_until_visible(role, name_str, step, max)?;
+            Ok(json!({ "found": true, "x": x, "y": y, "label": label }))
+        }
         "scroll_to" => {
             if target.is_empty() { return Err("'scroll_to' requires 'target' selector".into()); }
             browser::scroll_into_view(target)?;

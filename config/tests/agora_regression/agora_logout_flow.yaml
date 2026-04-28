@@ -42,12 +42,10 @@ goal: |
   7. enable_a11y
   8. wait 1000
   9. screenshot_analyze "確認在「我的/個人」頁面嗎？看到個人資料或設定入口？"
-  10. flutter_scroll y=600
-      （Flutter canvas touch-drag scroll；390×844 手機螢幕，600px ≈ 70% 螢幕高，避免超出邊界）
-  11. wait 800
-  12. shadow_dump
-      （列出目前可見的所有按鈕，找登出相關）
-  13. shadow_click role=button name_regex="登出|Logout|Log out|退出|Sign out"
+  10. flutter_scroll_until_visible role=button name_regex="登出|Logout|Log out|退出|Sign out"
+      （⭐ 直接滾到登出按鈕可見位置，不用固定 y=600 的硬編碼）
+  11. shadow_dump（確認找到登出按鈕）
+  12. shadow_click role=button name_regex="登出|Logout|Log out|退出|Sign out"
   14. wait 2000
   15. screenshot_analyze "是否出現確認對話框？或已完成登出？"
   16. shadow_click role=button name_regex="確認|確定|OK|Yes|是"

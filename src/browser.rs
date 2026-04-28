@@ -2095,6 +2095,88 @@ pub fn flutter_scroll(delta_y: f64) -> Result<(), String> {
     evaluate_js(&js_touch).map(|_| ())
 }
 
+/// Scroll within a Flutter CanvasKit app until a specific shadow DOM element
+/// is visible, then stop.
+///
+/// Calls [`shadow_find`] after each scroll step to check whether the target
+/// is now in the viewport (getBoundingClientRect() height > 0).  Returns as
+/// soon as the element is found or `max_scroll_px` is exhausted.
+///
+/// `step_px` controls how many CSS pixels to scroll per iteration (default 300).
+/// `max_scroll_px` caps the total scroll distance (default 2000).
+///
+/// Returns `Ok((x, y, label))` of the found element on success, or `Err` if
+/// the element was not found within the scroll budget.
+pub fn flutter_scroll_until_visible(
+    role: Option<&str>,
+    name_regex: Option<&str>,
+    step_px: f64,
+    max_scroll_px: f64,
+) -> Result<(f64, f64, String), String> {
+    // Check if the element is already visible before scrolling.
+    if let Ok(hit) = shadow_find_in_viewport(role, name_regex) {
+        return Ok(hit);
+    }
+
+    let step = if step_px <= 0.0 { 300.0 } else { step_px };
+    let max  = if max_scroll_px <= 0.0 { 2000.0 } else { max_scroll_px };
+    let mut scrolled = 0.0;
+
+    while scrolled < max {
+        flutter_scroll(step)?;
+        scrolled += step;
+        std::thread::sleep(std::time::Duration::from_millis(400));
+
+        if let Ok(hit) = shadow_find_in_viewport(role, name_regex) {
+            return Ok(hit);
+        }
+    }
+
+    Err(format!(
+        "flutter_scroll_until_visible: '{}' not found after scrolling {scrolled}px",
+        name_regex.or(role).unwrap_or("?")
+    ))
+}
+
+/// Like [`shadow_find`] but only returns elements that are currently inside
+/// the viewport (getBoundingClientRect intersects window).
+fn shadow_find_in_viewport(
+    role: Option<&str>,
+    name_regex: Option<&str>,
+) -> Result<(f64, f64, String), String> {
+    if role.is_none() && name_regex.is_none() {
+        return Err("need role or name_regex".into());
+    }
+    let role_val = role.unwrap_or("").replace('\'', "\\'");
+    let name_val = name_regex.unwrap_or("").replace('\'', "\\'");
+    let js = format!(r#"(() => {{
+  const host = document.querySelector('flt-semantics-host');
+  if (!host || host.childElementCount === 0)
+    return JSON.stringify({{ found: false, reason: 'host empty' }});
+  const re = '{name_val}' ? new RegExp('{name_val}', 'iu') : null;
+  const sel = '{role_val}' ? '[role="{role_val}"]' : '[role]';
+  for (const el of host.querySelectorAll(sel)) {{
+    const lbl = el.getAttribute('aria-label') || el.textContent.trim() || '';
+    if (re && !re.test(lbl)) continue;
+    const r = el.getBoundingClientRect();
+    // Must be in viewport (height > 0 and top < window height)
+    if (r.height < 1 || r.top >= window.innerHeight || r.bottom <= 0) continue;
+    return JSON.stringify({{ found: true, x: r.left + r.width/2, y: r.top + r.height/2, label: lbl }});
+  }}
+  return JSON.stringify({{ found: false, reason: 'not in viewport' }});
+}})()"#);
+    let raw = evaluate_js(&js)?;
+    let v: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| format!("shadow_find_in_viewport parse: {e}"))?;
+    if v["found"].as_bool() != Some(true) {
+        return Err(v["reason"].as_str().unwrap_or("not found").to_string());
+    }
+    let x = v["x"].as_f64().ok_or("missing x")?;
+    let y = v["y"].as_f64().ok_or("missing y")?;
+    let label = v["label"].as_str().unwrap_or("").to_string();
+    Ok((x, y, label))
+}
+
 /// Move the mouse to (x, y) **in CSS pixels** without clicking — triggers
 /// hover effects.  See `click_point` for the CSS-vs-screenshot pixel caveat.
 pub fn hover_point(x: f64, y: f64) -> Result<(), String> {

@@ -1972,8 +1972,13 @@ These query Flutter's `flt-semantics-host` directly via JS, avoiding AX tree col
                           ⭐ Now uses CDP press_key("Return") — works even AFTER flt-text-editing disappears.
                           Use immediately after flutter_type to submit forms.
 - flutter_scroll        — Touch-drag scroll inside Flutter canvas (window.scrollBy does NOT work in Flutter).
-                          params: y (pixels, positive=scroll down). ⭐ Use this instead of scroll for Flutter pages.
+                          params: y (pixels, positive=scroll down). Use when you know the exact scroll distance.
                           Example: flutter_scroll y=800  (scroll down 800px)
+- flutter_scroll_until_visible — ⭐ PREFERRED over flutter_scroll: scrolls until target element appears in viewport.
+                          params: role (optional), name_regex (optional), step (px per scroll, default 300),
+                          max_scroll (total px cap, default 2000).
+                          Returns {{found, x, y, label}} when element found.
+                          Example: flutter_scroll_until_visible role=button name_regex="登出"
 - shadow_type_flutter   — all-in-one: shadow_click → wait 350ms → flutter_type; preferred for textboxes.
                           params: role, name_regex (or name), text
 
