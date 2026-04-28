@@ -2154,6 +2154,45 @@ async fn call_test_llm(
         crate::perception::PerceptionMode::Vision
     ) {
         if let Some(b64) = perception.screenshot_b64.as_deref() {
+            // Two-stage vision pipeline when a specialist is available:
+            //   Stage 1 — vision specialist (e.g. qwen3-vl-8b): describe the screenshot
+            //   Stage 2 — main LLM (DeepSeek/Gemini): decide the next action given description
+            //
+            // This avoids (a) passing images to text-only models (→ 400 Bad Request) and
+            // (b) asking small vision models to do complex ReAct JSON reasoning (→ poor decisions).
+            //
+            // If NO vision specialist is configured, fall back to the original single-stage
+            // call using the main LLM (which must be multimodal, e.g. Gemini Flash).
+            if let Some(vision_cfg) = crate::llm::vision_llm_config() {
+                // Stage 1: get a brief visual description of the current page.
+                let vision_desc_prompt =
+                    "簡短描述截圖（50字以內）：頁面類型、主要元素、當前狀態。";
+                let visual_desc = crate::llm::call_vision(
+                    ctx.http.as_ref(),
+                    &std::sync::Arc::new(vision_cfg),
+                    vision_desc_prompt,
+                    b64,
+                    "image/png",
+                )
+                .await
+                .unwrap_or_else(|_| "(截圖描述不可用)".to_string());
+
+                // Stage 2: main LLM decides next action with the visual description embedded.
+                let base_prompt = build_prompt_vision(test, history, parse_error_hint, perception);
+                let augmented = format!(
+                    "{base_prompt}\n\n## 截圖視覺描述（由 vision 模型提供）\n{visual_desc}"
+                );
+                let model = ctx.llm.effective_coding_model().to_string();
+                let res = crate::llm::call_coding_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), augmented)
+                    .await
+                    .map_err(|e| e.to_string());
+                return res.map(|s| (s, LlmCallMeta {
+                    model,
+                    latency_ms: started.elapsed().as_millis() as u64,
+                }));
+            }
+
+            // No vision specialist — single stage with main LLM (must be multimodal).
             let prompt = build_prompt_vision(test, history, parse_error_hint, perception);
             let model = format!("vision:{}", ctx.llm.model);
             let res = crate::llm::call_vision(
