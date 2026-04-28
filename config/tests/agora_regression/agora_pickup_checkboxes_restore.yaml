@@ -46,7 +46,8 @@ goal: |
   3. wait 2500
   4. shadow_click role=button name_regex="^編輯$"
   5. wait 4000
-  6. shadow_click role=button name_regex="^物流設定$"
+  6. flutter_scroll_until_visible role=button name_regex="物流設定"
+  shadow_click role=button name_regex="^物流設定$"
   7. wait 1500
   8. screenshot_analyze "【第一輪/狀態A】記錄：宅配到府、7-ELEVEN、全家 的開關是開還是關？"
   9. eval target='window.history.back()'
@@ -57,7 +58,8 @@ goal: |
   11. wait 2500
   12. shadow_click role=button name_regex="^編輯$"
   13. wait 4000
-  14. shadow_click role=button name_regex="^物流設定$"
+  14. flutter_scroll_until_visible role=button name_regex="物流設定"
+  shadow_click role=button name_regex="^物流設定$"
   15. wait 1500
   16. screenshot_analyze "【第二輪/狀態B】記錄：宅配到府、7-ELEVEN、全家 的開關是開還是關？與步驟8狀態A相同嗎？"
   17. done=true
@@ -73,4 +75,5 @@ success_criteria:
   - "不出現「未儲存的修改值」殘留（go_back 後重新開啟 = 原始儲存狀態）"
 
 tags: [regression, product, pickup, checkboxes, agora, critical, issue-70]
+
 

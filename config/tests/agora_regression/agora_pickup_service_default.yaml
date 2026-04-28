@@ -40,7 +40,8 @@ goal: |
   3. wait 2500
   4. shadow_click role=button name_regex="^編輯$"（點第一個商品的編輯按鈕）
   5. wait 4000（等商品編輯頁完整載入）
-  6. shadow_click role=button name_regex="^物流設定$"（點「物流設定」展開物流服務區塊）
+  6. flutter_scroll_until_visible role=button name_regex="物流設定"
+  shadow_click role=button name_regex="^物流設定$"（點「物流設定」展開物流服務區塊）
   7. wait 1500
   8. screenshot_analyze "物流設定展開後的截圖。列出所有可見的物流服務選項（宅配到府/7-ELEVEN/全家）、每個的開關狀態（開/關）及運費金額。有沒有「服務類型」(service type) 下拉選單或任何空白的欄位？（Bug #3 驗證：運費欄位、服務類型欄位是否有預設值？）"
   9. scroll y=100（小幅捲動查看萊爾富/OK超商）
@@ -54,4 +55,5 @@ success_criteria:
   - "確認各物流選項的欄位是否有預設值（非空白）— Bug #3 修復驗證"
 
 tags: [regression, product, pickup, service-type, agora, critical, issue-70]
+
 

@@ -55,7 +55,8 @@ goal: |
   3. wait 2500
   4. shadow_click role=button name_regex="^編輯$"（第一個商品的編輯按鈕）
   5. wait 4000
-  6. shadow_click role=button name_regex="^物流設定$"
+  6. flutter_scroll_until_visible role=button name_regex="物流設定"
+  shadow_click role=button name_regex="^物流設定$"
   7. wait 1500
   8. screenshot_analyze "【第一輪/狀態A】記錄：宅配到府、7-ELEVEN、全家 的開關（開/關）與運費。同時檢查：Bug #3 — 是否有任何 service type 欄位/下拉選單顯示為空？"
   9. scroll y=100
@@ -63,13 +64,14 @@ goal: |
   11. wait 1200
   12. screenshot_analyze "【第二輪/修改後】記錄：剛剛切換的開關現在是開還是關？哪一個服務被切換？"
   13. scroll y=-200（捲回頂部找儲存按鈕）
-  14. shadow_click role=button name_regex="^儲存$|^Save$|^儲 存$"
+  14. shadow_click role=button name_regex="^儲存$|^Save$|^儲 存$|^保存商品$|^更新商品$"
   15. wait 4000（等儲存完成 + 可能的 toast/返回列表動畫）
   16. shadow_click role=tab name_regex="^商品$"（若已被導回則無害；若還在編輯頁則退出）
   17. wait 2500
   18. shadow_click role=button name_regex="^編輯$"
   19. wait 4000
-  20. shadow_click role=button name_regex="^物流設定$"
+  20. flutter_scroll_until_visible role=button name_regex="物流設定"
+  shadow_click role=button name_regex="^物流設定$"
   21. wait 1500
   22. screenshot_analyze "【第三輪/狀態C】記錄：宅配到府、7-ELEVEN、全家 的開關狀態與運費。與步驟 12 的修改後狀態是否一致？（Bug #5/#25 PASS 條件：步驟 10 切換的那個開關，重新編輯時值必須與步驟 12 相同）"
   23. done=true
@@ -81,4 +83,5 @@ success_criteria:
   - "第三輪重新編輯後展開物流設定，狀態C 反映第二輪的修改（Bug #5 / #25 PASS — 儲存的值未被丟棄）"
 
 tags: [regression, product, pickup, save-reload, agora, critical, issue-70, issue-48]
+
 
