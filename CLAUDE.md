@@ -69,6 +69,27 @@ Central Panel:  ScrollArea 包裹, 內邊距 12pt
 - **Deadlock signal:** if a cargo output file stays at 0 bytes for >30s, the
   process is waiting for the lock — kill it and retry.
 
+## AgoraMarket 網頁架構（必讀，開測試前先確認）
+
+| 端 | 類型 | 正確 viewport | URL 特徵 |
+|---|---|---|---|
+| **Buyer（會員/購物）** | **H5 手機版** | `390×844 scale=2 mobile=true` | `__test_role=buyer` |
+| **Seller（商家後台）** | PC 桌面版 | `1280×900 scale=1 mobile=false` | `__test_role=seller` |
+
+⚠️ **新增 buyer 測試必須加 viewport block：**
+```yaml
+viewport:
+  width: 390
+  height: 844
+  scale: 2.0
+  mobile: true
+```
+
+⚠️ **viewport 設錯的症狀**：截圖 > 800KB（應為 ~500KB），看到兩欄寬桌面版面而非手機單欄。
+用 `browser_exec action=set_viewport + screenshot` 先驗證再寫 YAML。
+
+KB: `trap-agoramarket-buyer-h5-viewport`
+
 ## Benchmark / LLM 比較 SOP（跑前必做）
 
 ```bash
