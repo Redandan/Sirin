@@ -69,6 +69,45 @@ Central Panel:  ScrollArea 包裹, 內邊距 12pt
 - **Deadlock signal:** if a cargo output file stays at 0 bytes for >30s, the
   process is waiting for the lock — kill it and retry.
 
+## Benchmark / LLM 比較 SOP（跑前必做）
+
+```bash
+bash scripts/preflight.sh   # 6-section 驗證，FAIL 則修完再跑
+```
+
+preflight 檢查項目：
+1. **Core LLM Keys** — primary + fallback LLM key 長度驗證
+2. **Sirin gateway** — http://127.0.0.1:7700/gateway 必須 200
+3. **Vision smoke** — vision model 接受 image input
+4. **YAML health** — repo == LOCALAPPDATA + lenient acceptance warning
+5. **Chrome stability** — sirin.err.log crash 統計
+6. **Action registry** — builtins.rs vs browser_exec.rs 一致性
+
+### LLM fallback chain（必須設定）
+
+```env
+LLM_FALLBACK_BASE_URL=https://api.deepseek.com/v1
+LLM_FALLBACK_API_KEY=sk-...       # platform.deepseek.com，新帳號 $5 免費
+LLM_FALLBACK_MODEL=deepseek-chat  # = DeepSeek V4（自動 alias）
+```
+
+Primary 429 → 立即切 fallback（0s 等待）。不設定 → Gemini 429 時測試卡 35s+。
+
+### Flutter 測試關鍵模式（2026-04-28 確認）
+
+| 操作 | 正確方式 | 錯誤方式 |
+|---|---|---|
+| off-screen textbox 輸入 | `ax_find` → `ax_focus` → `flutter_type` | `ax_click`（不 scroll）|
+| scroll 後找按鈕 | `scroll` → `wait 800` → **再 shadow_dump** | 用舊 shadow_dump 結果 |
+| Flutter tab 切換 | `shadow_click role=tab` | `click_point`（CDP 座標）|
+| 確認輸入值 | `ax_value backend_id=<id>` | `screenshot_analyze`（近似）|
+
+### headless_chrome 已知修復
+
+- **TargetInfoChanged cascade crash**（PR #118）：`transport/mod.rs break→continue`，git fork: `Redandan/rust-headless-chrome@sirin-transport-fix`
+- **idle_browser_timeout**（PR #124）：300s→1800s，避免 browser event loop 超時
+- **YAML config 自動同步**（PR #124）：啟動時自動 diff+copy `./config/` → LOCALAPPDATA
+
 ## Multi-agent spawn rules
 
 KB: [`sirin/trap-parallel-agent-worktree-contention`](https://github.com/Redandan/Sirin/issues/76)
