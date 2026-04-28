@@ -67,6 +67,75 @@ fn gemini_semaphore() -> &'static Arc<tokio::sync::Semaphore> {
 /// Max number of empty-response retries before giving up.
 const GEMINI_EMPTY_MAX_RETRIES: u32 = 2;
 
+// ── Token-bucket rate limiter for Gemini RPM ─────────────────────────────────
+//
+// The semaphore above caps *concurrent* requests; this bucket caps *requests
+// per minute* (RPM).  Together they prevent both:
+//   (a) thundering-herd when many tests run in parallel, and
+//   (b) steady-state 429s when sequential tests exhaust the per-minute quota.
+//
+// Design: sliding-window token bucket.  Tokens refill continuously at
+// `rpm / 60` per second.  Each API call consumes one token.  If the bucket
+// is empty the call sleeps for exactly the time until the next token is
+// available — no wasted time, no 429, no retry loop.
+//
+// Configure via `GEMINI_RPM` (default 8, leaving a 20% buffer on the 10 RPM
+// free tier).  Set to 0 or omit to disable rate limiting.
+
+struct TokenBucket {
+    capacity: f64,
+    tokens: f64,
+    refill_rate: f64,          // tokens per second
+    last: std::time::Instant,
+}
+
+impl TokenBucket {
+    fn new(rpm: u32) -> Self {
+        let capacity = rpm as f64;
+        Self {
+            capacity,
+            tokens: capacity,            // start full
+            refill_rate: capacity / 60.0,
+            last: std::time::Instant::now(),
+        }
+    }
+
+    /// Returns the duration to sleep before proceeding (zero if immediately available).
+    fn wait_duration(&mut self) -> std::time::Duration {
+        let elapsed = self.last.elapsed().as_secs_f64();
+        self.last = std::time::Instant::now();
+        self.tokens = (self.tokens + elapsed * self.refill_rate).min(self.capacity);
+
+        if self.tokens >= 1.0 {
+            self.tokens -= 1.0;
+            std::time::Duration::ZERO
+        } else {
+            // Time until we accumulate one token
+            let wait_secs = (1.0 - self.tokens) / self.refill_rate;
+            self.tokens = 0.0;
+            std::time::Duration::from_secs_f64(wait_secs)
+        }
+    }
+}
+
+fn gemini_rate_limiter() -> Option<&'static std::sync::Mutex<TokenBucket>> {
+    static BUCKET: OnceLock<Option<std::sync::Mutex<TokenBucket>>> = OnceLock::new();
+    BUCKET
+        .get_or_init(|| {
+            let rpm = std::env::var("GEMINI_RPM")
+                .ok()
+                .and_then(|v| v.parse::<u32>().ok())
+                .unwrap_or(8); // 80% of the 10 RPM free-tier cap
+            if rpm == 0 {
+                None
+            } else {
+                crate::sirin_log!("[llm] gemini rate limiter = {} RPM (set GEMINI_RPM to override)", rpm);
+                Some(std::sync::Mutex::new(TokenBucket::new(rpm)))
+            }
+        })
+        .as_ref()
+}
+
 // ── HTTP request / response types (private to this module) ───────────────────
 
 #[derive(Serialize)]
@@ -270,6 +339,27 @@ pub(super) async fn call_openai_messages(
     let mut rate_limit_attempt = 0u32;
     let mut empty_attempt = 0u32;
     loop {
+        // ── Token-bucket rate throttle (Gemini only) ─────────────────────────
+        // Sleep the EXACT amount needed to stay within GEMINI_RPM.
+        // This runs BEFORE acquiring the concurrency semaphore so the sleep
+        // does not hold a permit while waiting.
+        if gemini {
+            if let Some(limiter) = gemini_rate_limiter() {
+                let wait = limiter
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .wait_duration();
+                if !wait.is_zero() {
+                    crate::sirin_log!(
+                        "[llm] rate-limiter: sleeping {:.1}s to stay within GEMINI_RPM model={}",
+                        wait.as_secs_f64(),
+                        model
+                    );
+                    tokio::time::sleep(wait).await;
+                }
+            }
+        }
+
         // Acquire a permit for Gemini, dropped at end of this iteration so
         // backoff sleeps don't hold up other waiters.  Local backends skip.
         let _gemini_permit = if gemini {
@@ -298,7 +388,15 @@ pub(super) async fn call_openai_messages(
         let resp = req.send().await?;
 
         // 429 path — release permit before sleep, retry.
+        // With the token-bucket rate limiter active, 429s should be rare;
+        // these retries are a safety net for transient API hiccups.
         if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            // Check BEFORE sleeping so we do exactly `max_retries` sleeps:
+            //   attempt 0: 429 → check(0>=3? no) → sleep → attempt=1
+            //   attempt 1: 429 → check(1>=3? no) → sleep → attempt=2
+            //   attempt 2: 429 → check(2>=3? no) → sleep → attempt=3
+            //   attempt 3: 429 → check(3>=3? YES) → return Err  (3 sleeps, 4 requests)
+            // NOTE: the mock-server test in mod.rs validates this is exactly 4 requests.
             if rate_limit_attempt >= 3 {
                 crate::sirin_log!("[llm] 429 max retries exceeded model={}", model);
                 // Return a detectable error so callers can trigger LLM fallback
@@ -308,10 +406,8 @@ pub(super) async fn call_openai_messages(
                 )
                 .into());
             }
-            // Shortened delays (5 s → 10 s → 20 s, total 35 s) vs old
-            // (30 s → 60 s → 120 s, total 210 s).  The fallback chain in
-            // `call_coding_prompt` / `call_prompt` triggers as soon as this
-            // returns Err, so keeping waits short matters.
+            // Honour Retry-After if present; else use progressive backoff.
+            // With the token-bucket limiter these are rare; keep waits short.
             let wait_secs = resp
                 .headers()
                 .get("retry-after")
