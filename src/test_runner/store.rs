@@ -355,17 +355,33 @@ pub fn test_stats(test_id: &str) -> TestStats {
     }
 }
 
-/// Aggregate health metrics for every test that has at least one row in
-/// `test_runs`.  Sorted by `pass_rate_7d` ascending (worst first) so callers
-/// can take(N) for "needs attention" lists.
+/// Aggregate health metrics for named regression tests (excludes adhoc_* and
+/// tests with fewer than `MIN_RUNS` total runs).  Sorted by `pass_rate_7d`
+/// ascending (worst first) so callers can take(N) for "needs attention" lists.
+///
+/// Adhoc runs (id starts with `adhoc_`) are one-shot explorations — they
+/// pollute the flaky_count metric and are excluded from summary analytics.
+/// Tests with < `MIN_RUNS` have insufficient data for a meaningful pass rate.
+const ANALYTICS_MIN_RUNS: usize = 3;
+
 pub fn all_test_stats() -> Vec<TestStats> {
     let conn = db().lock().unwrap_or_else(|e| e.into_inner());
-    let mut stmt = match conn.prepare("SELECT DISTINCT test_id FROM test_runs") {
+    // Exclude adhoc_* (one-shot, not regression tests) and tests with too few
+    // runs to draw conclusions.  COUNT(*) filter applied here for efficiency.
+    let mut stmt = match conn.prepare(
+        "SELECT test_id FROM test_runs \
+         WHERE test_id NOT LIKE 'adhoc_%' \
+         GROUP BY test_id \
+         HAVING COUNT(*) >= ?1",
+    ) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
     let ids: Vec<String> = stmt
-        .query_map([], |row| row.get::<_, String>(0))
+        .query_map(
+            rusqlite::params![ANALYTICS_MIN_RUNS as i64],
+            |row| row.get::<_, String>(0),
+        )
         .map(|it| it.filter_map(Result::ok).collect())
         .unwrap_or_default();
     drop(stmt);

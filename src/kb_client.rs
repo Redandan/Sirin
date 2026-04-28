@@ -274,14 +274,31 @@ pub async fn write_raw_to_project(
         "source":     "sirin",
         "project":    project,
     });
-    if let Err(e) = crate::mcp_client::call_tool_with_bearer(
-        &url(), "kbWrite", args, bearer().as_deref()
-    ).await {
-        tracing::warn!("[kb_client] kbWrite({project}/{topic_key}) failed: {e}");
-        return Err(e);
+    // Retry up to 3× with exponential backoff (2s → 4s).
+    // KB write is best-effort — we log and return Err on final failure so
+    // callers (triage.rs) can ignore if they prefer, but we don't silently drop.
+    let mut last_err = String::new();
+    for attempt in 0u32..3 {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_secs(2u64 << (attempt - 1))).await;
+        }
+        match crate::mcp_client::call_tool_with_bearer(
+            &url(), "kbWrite", args.clone(), bearer().as_deref()
+        ).await {
+            Ok(_) => {
+                tracing::debug!("[kb_client] wrote raw note {project}/{topic_key}");
+                return Ok(());
+            }
+            Err(e) => {
+                last_err = e.to_string();
+                tracing::warn!(
+                    "[kb_client] kbWrite({project}/{topic_key}) failed (attempt {}/3): {e}",
+                    attempt + 1
+                );
+            }
+        }
     }
-    tracing::debug!("[kb_client] wrote raw note {project}/{topic_key}");
-    Ok(())
+    Err(last_err)
 }
 
 /// Helper: pull the textual body out of an MCP tool response.

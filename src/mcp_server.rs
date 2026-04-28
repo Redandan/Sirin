@@ -1187,6 +1187,7 @@ fn call_test_analytics(args: Value) -> Result<Value, String> {
         Some(tid) => vec![crate::test_runner::store::test_stats(tid)],
         None      => crate::test_runner::store::all_test_stats(),
     };
+    // Named regression tests only (adhoc_* excluded, min 3 runs enforced in store).
     let total_tests = stats.len();
     let flaky_count = stats.iter().filter(|s| s.is_flaky).count();
     let avg_pass_rate = if total_tests == 0 { 0.0 } else {
@@ -1205,7 +1206,7 @@ fn call_test_analytics(args: Value) -> Result<Value, String> {
     Ok(json!({
         "tests":   items,
         "summary": {
-            "total_tests":   total_tests,
+            "total_tests":   total_tests,   // named regression only (adhoc_* excluded, ≥3 runs)
             "flaky_count":   flaky_count,
             "avg_pass_rate": avg_pass_rate,
         }

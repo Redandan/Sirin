@@ -42,6 +42,19 @@ case "$LLM_PROVIDER" in
   *) warn "Unknown LLM_PROVIDER='$LLM_PROVIDER'" ;;
 esac
 
+# Fallback LLM (429 auto-switch)
+FALLBACK_URL=$(grep "^LLM_FALLBACK_BASE_URL=" "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
+FALLBACK_KEY=$(grep "^LLM_FALLBACK_API_KEY=" "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
+FALLBACK_MODEL=$(grep "^LLM_FALLBACK_MODEL=" "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
+
+if [ -z "$FALLBACK_URL" ]; then
+  warn "LLM_FALLBACK_BASE_URL not set → no 429 auto-switch (Gemini rate-limit will stall tests 35s+ per retry)"
+elif [ -z "$FALLBACK_KEY" ] || [ "${#FALLBACK_KEY}" -lt 20 ]; then
+  fail "LLM_FALLBACK_BASE_URL set but LLM_FALLBACK_API_KEY empty/short → fallback DISABLED"
+else
+  ok "Fallback LLM: ${FALLBACK_MODEL} @ ${FALLBACK_URL} (key ${#FALLBACK_KEY} chars)"
+fi
+
 # Vision specialist
 VISION_URL=$(grep "^LLM_VISION_BASE_URL=" "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
 VISION_KEY=$(grep "^LLM_VISION_API_KEY=" "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
