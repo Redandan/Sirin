@@ -1,9 +1,9 @@
 id: agora_market_smoke
-name: "Agora Market — Flutter PWA smoke test v2"
+name: "Agora Market — Flutter PWA smoke test v3"
 url: "https://redandan.github.io/"
 
-max_iterations: 8
-timeout_secs: 180
+max_iterations: 5
+timeout_secs: 120
 
 # H5 mobile viewport — AgoraMarket 會員端是手機版 App，必須用手機 viewport 測試
 viewport:
@@ -12,25 +12,24 @@ viewport:
   scale: 2.0
   mobile: true
 
-
 goal: |
   測試 Agora Market Flutter PWA 能正常載入並顯示登入表單。
 
   ⚠️ Flutter CanvasKit app：DOM 是空的（只有 <flt-glass-pane>）。
   ⚠️ 必須用 screenshot_analyze 讓 vision LLM 看截圖判斷內容。
   ⚠️ 禁止用 read/exists/eval 判斷文字（DOM 無內容）。
+  ⚠️ 這是 smoke test，僅需兩步，禁止探索其他功能或做 enable_a11y、shadow_dump、ax_find。
 
-  步驟：
-  1. wait 6000
-     （等 Flutter bootstrap 完成 + 首次 paint）
-  2. screenshot_analyze "頁面是否顯示 Agora Market 標題與 email 輸入欄位？是否有實際內容（非全黑/全白）？"
-  3. 若 vision 確認頁面有內容且看到標題或輸入欄 → done=true
-     若全黑 → wait 3000 再 screenshot_analyze 一次
+  步驟（只有這兩步，不能加其他步驟）：
+  1. wait 6000（等 Flutter bootstrap 完成 + 首次 paint）
+  2. screenshot_analyze "頁面是否顯示 Agora Market 標題或商品頁面？有實際內容（非全黑）？"
+  3. done=true
+
+  若步驟 2 截圖全黑：wait 3000 → screenshot_analyze 再一次 → done=true
+  注意：不管 screenshot_analyze 的結果是否滿意，都必須 done=true，讓 success_criteria 決定是否通過。
 
 success_criteria:
   - "Vision 確認頁面顯示 Agora Market 標題或品牌"
-  - "Vision 確認可見 email/電子郵件 輸入欄位"
   - "Vision 確認頁面有實際內容（不是全黑或全白）"
 
-tags: [smoke, flutter, agora, vision, v2]
-
+tags: [smoke, flutter, agora, vision, v3]

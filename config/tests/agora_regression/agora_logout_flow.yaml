@@ -23,6 +23,9 @@ goal: |
   ⚠️ Flutter CanvasKit：所有 UI 判斷用 screenshot_analyze 或 shadow_dump。
   ⚠️ 不要用 goto 在測試中途跳頁，容易導致 Flutter 重新初始化。
   ⚠️ 底部 tab 必須用 shadow_click（CDP click 對 Flutter 無效）。
+  ❌ 絕對禁止：不要用 shadow_find 拿座標後再 click_point！
+     click_point 對 Flutter nav 按鈕會導致 about:blank，畫面消失。
+     正確：shadow_click role=tab name_regex="我的"（直接一步完成）
 
   步驟（按順序執行，不跳過）：
 
@@ -33,7 +36,7 @@ goal: |
   4. shadow_dump
      （查看底部 tab：商品/訂單/錢包/我的）
   5. shadow_click role=tab name_regex="我的|Profile|Me|帳戶"
-     （點擊「我的」tab 進入個人頁）
+     （⭐ 直接 shadow_click，不要先 shadow_find 再 click_point！）
   6. wait 3000
   7. enable_a11y
   8. wait 1000
