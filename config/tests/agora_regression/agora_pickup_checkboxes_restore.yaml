@@ -46,10 +46,10 @@ goal: |
   3. wait 2500
   4. shadow_click role=button name_regex="^編輯$"
   5. wait 4000
-  6. flutter_scroll_until_visible role=button name_regex="物流設定"
-  shadow_click role=button name_regex="^物流設定$"
-  7. wait 1500
-  8. screenshot_analyze "【第一輪/狀態A】記錄：宅配到府、7-ELEVEN、全家 的開關是開還是關？"
+  6. flutter_scroll_until_visible role=button name_regex="物流設定"（捲動到按鈕可見）
+  7. shadow_click role=button name_regex="^物流設定$"（展開物流設定）
+  8. wait 1500
+  9. screenshot_analyze "【第一輪/狀態A】記錄：宅配到府、7-ELEVEN、全家 的開關是開還是關？"
   9. eval target='window.history.back()'
      （hash route 下用 JS history.back() 退出編輯，避免 go_back 跳 about:blank）
      接著 wait_for_ax_ready timeout=6000；若仍非預期，fallback navigate_to
@@ -58,11 +58,11 @@ goal: |
   11. wait 2500
   12. shadow_click role=button name_regex="^編輯$"
   13. wait 4000
-  14. flutter_scroll_until_visible role=button name_regex="物流設定"
-  shadow_click role=button name_regex="^物流設定$"
-  15. wait 1500
-  16. screenshot_analyze "【第二輪/狀態B】記錄：宅配到府、7-ELEVEN、全家 的開關是開還是關？與步驟8狀態A相同嗎？"
-  17. done=true
+  14. flutter_scroll_until_visible role=button name_regex="物流設定"（捲動到按鈕可見）
+  15. shadow_click role=button name_regex="^物流設定$"（展開物流設定）
+  16. wait 1500
+  17. screenshot_analyze "【第二輪/狀態B】記錄：宅配到府、7-ELEVEN、全家 的開關是開還是關？與步驟9狀態A相同嗎？（Bug #5 驗證：go_back 後重進應顯示相同的原始儲存狀態）"
+  18. done=true
 
   ⚠️ 步驟 8 的 screenshot_analyze 是第一輪結束點，嚴禁步驟 8 前 done=true。
   ⚠️ 步驟 9 用 eval window.history.back() + wait_for_ax_ready；

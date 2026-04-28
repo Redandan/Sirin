@@ -2,8 +2,8 @@ id: agora_product_form_pickup
 name: "AgoraMarket 商品表單 Pickup 設定儲存還原驗證 (Issue #70 #3 #5 #10 #25)"
 url: "https://redandan.github.io/?__test_role=seller"
 
-max_iterations: 32
-timeout_secs: 540
+max_iterations: 35
+timeout_secs: 600
 
 # Seller 後台是 PC 桌面版，使用標準桌面 viewport
 viewport:
@@ -14,74 +14,75 @@ viewport:
 
 locale: zh-TW
 
-# Hard-won pickup-flow lessons auto-injected when KB_ENABLED=1.  Covers
-# Flutter 商品/編輯/物流設定 navigation, animation timing, five 物流
-# service names, infra traps already worked-around by Sirin runtime.
 kb_refs:
   - agora-pickup-flow
 
 goal: |
   目標：端到端驗證商品表單 pickup 設定流程 — 涵蓋 Issue #70 silent bugs #3 / #5 / #10 / #25。
-    - #3  pickup service type 預設值非空（pickup_address_setting_page.dart）
-    - #5  pickup checkboxes 修改後儲存，重新編輯時 switches 必須完整還原（這個版本是 save → reload，
-          與 agora_pickup_checkboxes_restore 的 cancel → reopen 互補）
+    - #3  pickup service type 預設值非空
+    - #5  pickup checkboxes 修改後儲存，重新編輯時 switches 必須完整還原
     - #10 商品上架表單可順利進入並展開物流設定
-    - #25 編輯後儲存的物流設定在重新編輯時被完整保留（regression — 修復前儲存後切換值會被丟掉）
+    - #25 編輯後儲存的物流設定在重新編輯時被完整保留
 
   起始狀態：以賣家身份登入，已在賣家儀表板首頁（URL auto-login via __test_role=seller）。
 
   已知資訊（嚴格遵守）：
-  - 賣家首頁是儀表板（賣場設定/批量導入商品），不是商品列表。
-    必須先點底部「商品」tab 才能進入商品管理列表。
-  - 商品管理列表：每個商品卡片有「編輯」按鈕，點「編輯」進入編輯頁。
-  - 商品編輯頁的「物流設定」按鈕可用 shadow_click 找到並點擊（不需先捲動）。
-  - 點「物流設定」後，宅配到府/7-ELEVEN/全家 的開關和運費欄位會顯示在頁面下半部。
+  - 賣家首頁是儀表板，不是商品列表。必須先點底部「商品」tab 才能進入商品管理列表。
+  - 商品管理列表：每個商品卡片有「編輯」按鈕。
+  - 商品編輯頁的「物流設定」按鈕在 1280×900 PC viewport 下位於畫面下方（viewport 外）。
+    必須先 flutter_scroll_until_visible 捲動到按鈕可見，再 shadow_click 才能成功展開。
   - 五個物流服務：宅配到府、7-ELEVEN、全家、萊爾富、OK超商。
-  - 編輯頁底部有「儲存」按鈕，儲存後會回到商品列表（或顯示成功 toast）。
-  - 退出編輯頁用 go_back action（history.back() + 等 AX tree 就緒）。
+  - 儲存按鈕叫「保存商品」或「更新商品」（不是「儲存」）。
+  - 儲存後頁面會返回商品列表（或顯示 toast）。
 
   ⚠️ 本測試三輪閉環，缺一不可：
-     第一輪 步驟 1-9   ：進入商品編輯 → 展開物流設定 → 記錄狀態A（修改前的儲存值，含 service type 預設）
-     第二輪 步驟 10-15 ：切換其中一個 pickup 開關（例如 7-ELEVEN）→ 點儲存 → 等待返回列表
-     第三輪 步驟 16-22 ：再次進入商品編輯 → 展開物流設定 → 記錄狀態C → done=true
-     最終比對：狀態C 必須反映第二輪的修改（Bug #5 / #25 修復驗證）。
-  ⚠️ 唯一允許 done=true 的位置是步驟 22，其他任何步驟都不能 done=true。
-  ⚠️ Flutter app：所有 UI 判斷用 screenshot_analyze。
-  ⚠️ 不論任何步驟失敗，都必須繼續執行到步驟 22 才能輸出 done=true。嚴禁提早終止。
+     第一輪（步驟 1-9）：進入商品編輯 → 展開物流設定 → 記錄狀態A（修改前的儲存值）
+     第二輪（步驟 10-16）：切換其中一個 pickup 開關 → 點保存商品 → 等待返回列表
+     第三輪（步驟 17-24）：再次進入商品編輯 → 展開物流設定 → 記錄狀態C → done=true
+     最終比對：狀態C 必須反映第二輪的修改（Bug #5/#25 驗證）。
 
-  步驟（線性，全部 22 步必須依序執行）：
+  ⚠️ 唯一允許 done=true 的位置是步驟 24，其他步驟不能 done=true。
+  ⚠️ 不論任何步驟失敗，都必須繼續執行到步驟 24 才能輸出 done=true。嚴禁提早終止。
+
+  步驟（線性，全部 24 步必須依序執行）：
+
+  === 第一輪：記錄狀態 A ===
   1. wait 3000（等賣家儀表板完整載入）
-  2. shadow_click role=tab name_regex="^商品$"
+  2. shadow_click role=tab name_regex="^商品$"（進入商品管理列表）
   3. wait 2500
   4. shadow_click role=button name_regex="^編輯$"（第一個商品的編輯按鈕）
   5. wait 4000
-  6. flutter_scroll_until_visible role=button name_regex="物流設定"
-  shadow_click role=button name_regex="^物流設定$"
-  7. wait 1500
-  8. screenshot_analyze "【第一輪/狀態A】記錄：宅配到府、7-ELEVEN、全家 的開關（開/關）與運費。同時檢查：Bug #3 — 是否有任何 service type 欄位/下拉選單顯示為空？"
-  9. scroll y=100
-  10. shadow_click role=switch name_regex="7-ELEVEN|7-Eleven|全家"（切換其中一個 pickup 開關以製造修改）
-  11. wait 1200
-  12. screenshot_analyze "【第二輪/修改後】記錄：剛剛切換的開關現在是開還是關？哪一個服務被切換？"
-  13. scroll y=-200（捲回頂部找儲存按鈕）
-  14. shadow_click role=button name_regex="^儲存$|^Save$|^儲 存$|^保存商品$|^更新商品$"
-  15. wait 4000（等儲存完成 + 可能的 toast/返回列表動畫）
-  16. shadow_click role=tab name_regex="^商品$"（若已被導回則無害；若還在編輯頁則退出）
-  17. wait 2500
-  18. shadow_click role=button name_regex="^編輯$"
-  19. wait 4000
-  20. flutter_scroll_until_visible role=button name_regex="物流設定"
-  shadow_click role=button name_regex="^物流設定$"
-  21. wait 1500
-  22. screenshot_analyze "【第三輪/狀態C】記錄：宅配到府、7-ELEVEN、全家 的開關狀態與運費。與步驟 12 的修改後狀態是否一致？（Bug #5/#25 PASS 條件：步驟 10 切換的那個開關，重新編輯時值必須與步驟 12 相同）"
-  23. done=true
+  6. flutter_scroll_until_visible role=button name_regex="物流設定"（捲動到物流設定按鈕）
+  7. shadow_click role=button name_regex="^物流設定$"（展開物流設定區塊）
+  8. wait 1500
+  9. screenshot_analyze "【第一輪/狀態A】記錄：宅配到府、7-ELEVEN、全家 的開關（開/關）與運費。同時檢查：Bug #3 — 是否有 service type 欄位顯示為空？"
+
+  === 第二輪：修改並儲存 ===
+  10. scroll y=100（確保開關可見）
+  11. shadow_click role=switch name_regex="7-ELEVEN|7-Eleven|全家"（切換其中一個 pickup 開關）
+  12. wait 1200
+  13. screenshot_analyze "【第二輪/修改後】記錄：剛剛切換的開關現在是開還是關？哪一個服務被切換？"
+  14. flutter_scroll_until_visible role=button name_regex="保存商品|更新商品|儲存"（捲回找儲存按鈕）
+  15. shadow_click role=button name_regex="^保存商品$|^更新商品$|^儲存$|^Save$"
+  16. wait 4000（等儲存完成 + 返回列表動畫）
+
+  === 第三輪：重新編輯，確認狀態 C ===
+  17. shadow_click role=tab name_regex="^商品$"（確保在商品列表；若已在列表則無害點擊）
+  18. wait 2500
+  19. enable_a11y（重新初始化 Flutter semantics）
+  20. wait 1000
+  21. shadow_click role=button name_regex="^編輯$"（再次進入同商品編輯頁）
+  22. wait 4000
+  23. flutter_scroll_until_visible role=button name_regex="物流設定"（捲動到物流設定）
+  24. shadow_click role=button name_regex="^物流設定$"（展開物流設定）
+  25. wait 1500
+  26. screenshot_analyze "【第三輪/狀態C】記錄：宅配到府、7-ELEVEN、全家 的開關狀態與運費。與步驟 13 的修改後狀態是否一致？（Bug #5/#25 PASS 條件：步驟 11 切換的那個開關，重新編輯時值必須與步驟 13 相同）"
+  27. done=true
 
 success_criteria:
   - "第一輪成功進入商品編輯頁並展開物流設定（涵蓋 #10）"
   - "狀態A 中所有 pickup 服務的 service type 欄位皆非空（Bug #3 PASS）"
   - "成功切換至少一個 pickup 開關並完成儲存返回列表"
-  - "第三輪重新編輯後展開物流設定，狀態C 反映第二輪的修改（Bug #5 / #25 PASS — 儲存的值未被丟棄）"
+  - "第三輪重新編輯後展開物流設定，狀態C 反映第二輪的修改（Bug #5/#25 PASS）"
 
 tags: [regression, product, pickup, save-reload, agora, critical, issue-70, issue-48]
-
-
