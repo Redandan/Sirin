@@ -5,6 +5,13 @@ url: "https://redandan.github.io/?__test_role=seller"
 max_iterations: 32
 timeout_secs: 540
 
+# Seller 後台是 PC 桌面版，使用標準桌面 viewport
+viewport:
+  width: 1280
+  height: 900
+  scale: 1.0
+  mobile: false
+
 locale: zh-TW
 
 # Hard-won pickup-flow lessons auto-injected when KB_ENABLED=1.  Covers
@@ -74,3 +81,4 @@ success_criteria:
   - "第三輪重新編輯後展開物流設定，狀態C 反映第二輪的修改（Bug #5 / #25 PASS — 儲存的值未被丟棄）"
 
 tags: [regression, product, pickup, save-reload, agora, critical, issue-70, issue-48]
+

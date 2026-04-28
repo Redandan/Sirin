@@ -5,6 +5,13 @@ url: "https://redandan.github.io/?__test_role=seller"
 max_iterations: 20
 timeout_secs: 250
 
+# Seller 後台是 PC 桌面版，使用標準桌面 viewport
+viewport:
+  width: 1280
+  height: 900
+  scale: 1.0
+  mobile: false
+
 locale: zh-TW
 
 goal: |
@@ -39,3 +46,4 @@ success_criteria:
   - "物流服務運費欄位有預設值（非空白）"
 
 tags: [regression, product, seller, create, agora]
+

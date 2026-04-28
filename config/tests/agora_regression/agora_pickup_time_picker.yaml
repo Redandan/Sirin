@@ -5,6 +5,13 @@ url: "https://redandan.github.io/?__test_role=seller#/seller/product"
 max_iterations: 30
 timeout_secs: 480
 
+# Seller 後台是 PC 桌面版，使用標準桌面 viewport
+viewport:
+  width: 1280
+  height: 900
+  scale: 1.0
+  mobile: false
+
 goal: |
   目標：把取貨結束時間改成 14:00。
 

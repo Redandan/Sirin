@@ -5,6 +5,13 @@ url: "https://redandan.github.io/?__test_role=seller"
 max_iterations: 18
 timeout_secs: 220
 
+# Seller 後台是 PC 桌面版，使用標準桌面 viewport
+viewport:
+  width: 1280
+  height: 900
+  scale: 1.0
+  mobile: false
+
 locale: zh-TW
 
 # Hard-won pickup-flow lessons auto-injected when KB_ENABLED=1.  Covers
@@ -47,3 +54,4 @@ success_criteria:
   - "確認各物流選項的欄位是否有預設值（非空白）— Bug #3 修復驗證"
 
 tags: [regression, product, pickup, service-type, agora, critical, issue-70]
+

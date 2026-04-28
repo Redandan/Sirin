@@ -5,6 +5,13 @@ url: "https://redandan.github.io/?__test_role=seller"
 max_iterations: 16
 timeout_secs: 200
 
+# Seller 後台是 PC 桌面版，使用標準桌面 viewport
+viewport:
+  width: 1280
+  height: 900
+  scale: 1.0
+  mobile: false
+
 locale: zh-TW
 
 goal: |
@@ -32,3 +39,4 @@ success_criteria:
   - "看到充值或提現操作按鈕"
 
 tags: [regression, wallet, seller, agora]
+

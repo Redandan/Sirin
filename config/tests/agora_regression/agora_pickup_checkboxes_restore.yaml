@@ -5,6 +5,13 @@ url: "https://redandan.github.io/?__test_role=seller"
 max_iterations: 25
 timeout_secs: 420
 
+# Seller 後台是 PC 桌面版，使用標準桌面 viewport
+viewport:
+  width: 1280
+  height: 900
+  scale: 1.0
+  mobile: false
+
 locale: zh-TW
 
 # Hard-won pickup-flow lessons auto-injected when KB_ENABLED=1.  Covers
@@ -66,3 +73,4 @@ success_criteria:
   - "不出現「未儲存的修改值」殘留（go_back 後重新開啟 = 原始儲存狀態）"
 
 tags: [regression, product, pickup, checkboxes, agora, critical, issue-70]
+

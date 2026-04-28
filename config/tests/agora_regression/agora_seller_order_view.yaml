@@ -5,6 +5,13 @@ url: "https://redandan.github.io/?__test_role=seller"
 max_iterations: 16
 timeout_secs: 200
 
+# Seller 後台是 PC 桌面版，使用標準桌面 viewport
+viewport:
+  width: 1280
+  height: 900
+  scale: 1.0
+  mobile: false
+
 locale: zh-TW
 
 goal: |
@@ -33,3 +40,4 @@ success_criteria:
   - "頁面有回應（有訂單、空列表、或 API 錯誤提示都算通過；重點是頁面載入而非資料正確）"
 
 tags: [regression, orders, seller, agora]
+
