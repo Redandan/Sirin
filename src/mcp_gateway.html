@@ -48,9 +48,33 @@ await sirin.help()  // list all tools</pre>
 <script>
 window.sirin = {
   endpoint: "/mcp", _id: 0, _tools: null,
+  // Issue #140: Kaspersky and some AV extensions patch window.fetch to block
+  // localhost requests.  We detect a patched fetch by checking toString()
+  // for the [native code] signature, and fall back to an iframe's unpatched
+  // native fetch when the main window's fetch is wrapped.
+  _nativeFetch: null,
+  async _getFetch() {
+    if (this._nativeFetch) return this._nativeFetch;
+    const isNative = typeof fetch !== "undefined" &&
+      (fetch.toString().includes("[native code]") ||
+       fetch.toString().includes("function fetch("));
+    if (isNative) {
+      this._nativeFetch = fetch.bind(window);
+      return this._nativeFetch;
+    }
+    // Patched fetch detected (e.g. Kaspersky) — get native fetch from an iframe.
+    console.warn("[sirin] window.fetch appears patched (AV extension?). Falling back to iframe native fetch.");
+    const iframe = document.createElement("iframe");
+    iframe.style.display = "none";
+    document.body.appendChild(iframe);
+    await new Promise(r => { iframe.onload = r; iframe.src = "about:blank"; });
+    this._nativeFetch = iframe.contentWindow.fetch.bind(iframe.contentWindow);
+    return this._nativeFetch;
+  },
   async _rpc(method, params) {
     this._id++;
-    const r = await fetch(this.endpoint, { method:"POST",
+    const fetchFn = await this._getFetch();
+    const r = await fetchFn(this.endpoint, { method:"POST",
       headers:{"content-type":"application/json"},
       body: JSON.stringify({jsonrpc:"2.0", id:this._id, method, params: params||{}}) });
     const j = await r.json();
