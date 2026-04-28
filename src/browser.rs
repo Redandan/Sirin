@@ -2033,14 +2033,20 @@ pub fn flutter_type(text: &str) -> Result<(), String> {
 ///
 /// This function is called automatically by `flutter_type` when the text
 /// contains any non-ASCII character.  It can also be called directly.
+/// Escape `text` for embedding in a single-quoted JS string literal.
+/// Handles: backslash, single-quote, newline, carriage-return.
+/// Kept as a separate fn so it can be unit-tested without a browser.
+pub(crate) fn escape_for_js_single_quote(text: &str) -> String {
+    text.replace('\\', "\\\\")
+        .replace('\'', "\\'")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+}
+
 pub fn flutter_type_unicode(text: &str) -> Result<(), String> {
     // --- Stage 1: JS paste simulation ---
     // Escape the text for safe JS embedding (handles quotes, backslashes, etc.)
-    let escaped = text
-        .replace('\\', "\\\\")
-        .replace('\'', "\\'")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r");
+    let escaped = escape_for_js_single_quote(text);
 
     let js = format!(
         r#"(function() {{
@@ -3135,6 +3141,60 @@ mod tests {
     use super::*;
 
     // ── Pure unit tests (no Chrome needed) ────────────────────────────────────
+
+    // ── Issue #143: flutter_type_unicode JS escape helper ─────────────────────
+
+    #[test]
+    fn js_escape_plain_ascii_unchanged() {
+        assert_eq!(escape_for_js_single_quote("hello"), "hello");
+        assert_eq!(escape_for_js_single_quote("12345"), "12345");
+    }
+
+    #[test]
+    fn js_escape_backslash_doubled() {
+        assert_eq!(escape_for_js_single_quote("a\\b"), "a\\\\b");
+    }
+
+    #[test]
+    fn js_escape_single_quote_escaped() {
+        assert_eq!(escape_for_js_single_quote("it's"), "it\\'s");
+    }
+
+    #[test]
+    fn js_escape_newline_and_cr_escaped() {
+        assert_eq!(escape_for_js_single_quote("a\nb"), "a\\nb");
+        assert_eq!(escape_for_js_single_quote("a\rb"), "a\\rb");
+        assert_eq!(escape_for_js_single_quote("a\r\nb"), "a\\r\\nb");
+    }
+
+    #[test]
+    fn js_escape_cjk_passthrough() {
+        // CJK chars don't need escaping — verify they survive unchanged
+        let chinese = "你好世界";
+        assert_eq!(escape_for_js_single_quote(chinese), chinese);
+        let thai = "สวัสดี";
+        assert_eq!(escape_for_js_single_quote(thai), thai);
+    }
+
+    #[test]
+    fn js_escape_mixed_content() {
+        let input = "O'Brien\n\\path\\";
+        let expected = "O\\'Brien\\n\\\\path\\\\";
+        assert_eq!(escape_for_js_single_quote(input), expected);
+    }
+
+    #[test]
+    fn flutter_type_detects_non_ascii() {
+        // has_non_ascii detection: any non-ASCII char triggers the unicode path.
+        // Since we can't call flutter_type without a browser, we test the
+        // detection predicate directly.
+        assert!("你好".chars().any(|c| !c.is_ascii()), "CJK should be non-ASCII");
+        assert!("สวัสดี".chars().any(|c| !c.is_ascii()), "Thai should be non-ASCII");
+        assert!(!"hello".chars().any(|c| !c.is_ascii()), "pure ASCII should NOT trigger");
+        assert!(!"abc123".chars().any(|c| !c.is_ascii()), "alphanum is ASCII");
+        // Mixed: even one CJK triggers the path
+        assert!("hello 你".chars().any(|c| !c.is_ascii()), "mixed should trigger");
+    }
 
     // ── Issue #79: HiDPI screenshot↔CSS pixel conversion ──────────────────────
 

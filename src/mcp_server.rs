@@ -2670,6 +2670,38 @@ mod test_runner_mcp_tests {
         assert!(r.is_err(), "must reject empty topic_key: {r:?}");
         std::env::remove_var("KB_ENABLED");
     }
+
+    // ── Issue #144: base64_decode must invert base64_encode ─────────────────────
+
+    #[test]
+    fn base64_decode_roundtrip_ascii() {
+        let src = b"Hello, Sirin!";
+        let encoded = base64_encode(src);
+        let decoded = base64_decode(&encoded).expect("decode should succeed");
+        assert_eq!(decoded, src, "decode(encode(x)) == x for ASCII");
+    }
+
+    #[test]
+    fn base64_decode_roundtrip_binary() {
+        let src: Vec<u8> = (0u8..=255).collect();
+        let encoded = base64_encode(&src);
+        let decoded = base64_decode(&encoded).expect("decode of all-bytes should succeed");
+        assert_eq!(decoded, src, "decode(encode(x)) == x for all byte values");
+    }
+
+    #[test]
+    fn base64_decode_roundtrip_empty() {
+        let encoded = base64_encode(b"");
+        let decoded = base64_decode(&encoded).expect("decode empty should succeed");
+        assert_eq!(decoded, b"", "empty roundtrip");
+    }
+
+    #[test]
+    fn base64_decode_rejects_invalid_char() {
+        // '@' is not a valid base64 character
+        let result = base64_decode("SGVsbG8@");
+        assert!(result.is_none(), "should return None for invalid base64 chars");
+    }
 }
 
 /// Minimal base64 decoder (no external dep). Returns None on invalid input.

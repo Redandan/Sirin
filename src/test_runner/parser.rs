@@ -580,9 +580,11 @@ url_query:
         // Correct login role per test (via __test_role= URL param)
         let buyer_tests  = ["agora_search_keyword", "agora_logout_flow",
             "agora_navigation_breadcrumb", "agora_cart_add_remove",
-            "agora_checkout_dry", "agora_pickup_time_picker",
+            "agora_checkout_dry",
             "agora_notification_delete", "agora_webrtc_permission"];
-        let seller_tests = ["agora_pickup_checkboxes_restore", "agora_pickup_service_default"];
+        // agora_pickup_time_picker edits seller product-form pickup settings → seller role
+        let seller_tests = ["agora_pickup_checkboxes_restore", "agora_pickup_service_default",
+            "agora_pickup_time_picker"];
         let admin_tests  = ["agora_admin_status_chip", "agora_admin_category_filter"];
 
         for (ids, role) in [
