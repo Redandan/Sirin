@@ -809,6 +809,31 @@ Sirin 會在指定工作目錄（可以是另一個 repo）啟動一個顧問 se
                 }
             },
             {
+                "name": "assistant_task",
+                "description": "用自然語言請求執行一般網頁任務（非 Flutter 測試）。\
+Sirin 透過視覺驅動的 ReAct loop 操作瀏覽器完成任務，回傳結果摘要。\n\
+適用場景：\n\
+- 在 Google Maps 找附近餐廳並過濾評分\n\
+- 在 Facebook 查詢修車廠聯絡資訊\n\
+- 翻譯外語頁面內容（支援泰文等）\n\
+- 在任意網頁填表、搜尋、提取資料\n\
+注意：使用 Sirin 的 Chrome session（需先啟動 Sirin），最多執行 25 步。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "request": {
+                            "type": "string",
+                            "description": "自然語言任務描述，例如：在 Google Maps 找附近評分 4 星以上的泰式餐廳"
+                        },
+                        "url": {
+                            "type": "string",
+                            "description": "選填：起始 URL，例如 https://maps.google.com"
+                        }
+                    },
+                    "required": ["request"]
+                }
+            },
+            {
                 "name": "kb_search",
                 "description": "語意搜尋 AgoraMarket Knowledge Base，返回最相關的條目內容。KB 必須啟用（KB_ENABLED=1）。Bearer token 留在 Sirin 端，瀏覽器永遠看不到。",
                 "inputSchema": {
@@ -884,6 +909,7 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         "page_state"           => return call_page_state(arguments).await.map(wrap_json),
         "consult"              => return call_consult(arguments).map(wrap_json),
         "supervised_run"       => return call_supervised_run(arguments).map(wrap_json),
+        "assistant_task"       => return call_assistant_task(arguments).await.map(wrap_json),
         "agent_team_status"    => return call_agent_team_status(arguments).map(wrap_json),
         "agent_team_task"      => return call_agent_team_task(arguments).map(wrap_json),
         "agent_team_test"      => return call_agent_team_test(arguments).map(wrap_json),
@@ -1796,6 +1822,78 @@ fn call_consult(args: Value) -> Result<Value, String> {
     Ok(json!({
         "advice": advice,
         "consultant_cwd": cwd,
+    }))
+}
+
+/// 自然語言助理任務 — 視覺驅動的 ReAct loop（非同步，立即回傳 run_id）。
+/// 用 get_test_result 輪詢狀態，完成後 analysis 欄位包含結果。
+async fn call_assistant_task(args: Value) -> Result<Value, String> {
+    let request = args.get("request").and_then(Value::as_str)
+        .ok_or("'assistant_task' requires 'request'")?
+        .to_string();
+    let url = args.get("url").and_then(Value::as_str).map(String::from);
+
+    tracing::info!("[assistant] queuing task: {}", &request[..request.len().min(80)]);
+
+    // Use the test runner's run registry for polling compatibility.
+    let run_id = crate::test_runner::runs::new_run("assistant");
+    let run_id_clone = run_id.clone();
+    let request_clone = request.clone();
+
+    std::thread::spawn(move || {
+        let rt = match tokio::runtime::Runtime::new() {
+            Ok(r) => r,
+            Err(e) => {
+                crate::test_runner::runs::set_phase(
+                    &run_id_clone,
+                    crate::test_runner::runs::RunPhase::Error(format!("runtime: {e}"))
+                );
+                return;
+            }
+        };
+        rt.block_on(async {
+            let _guard = crate::test_runner::TEST_RUN_LOCK.lock().await;
+            let tools = crate::adk::tool::default_tool_registry();
+            let ctx = crate::adk::context::AgentContext::new("assistant", tools);
+            let result = crate::assistant::run_task(&ctx, &request_clone, url.as_deref()).await;
+
+            // Encode result as a synthetic TestResult so get_test_result works.
+            let tr = crate::test_runner::executor::TestResult {
+                test_id: "assistant".to_string(),
+                status: if result.success {
+                    crate::test_runner::executor::TestStatus::Passed
+                } else {
+                    crate::test_runner::executor::TestStatus::Failed
+                },
+                iterations: result.steps,
+                duration_ms: 0,
+                error_message: if result.success { None } else {
+                    Some(result.summary.clone())
+                },
+                screenshot_path: None,
+                screenshot_error: None,
+                history: vec![],
+                final_analysis: Some(format!(
+                    "{}\n\ndata: {}",
+                    result.summary,
+                    result.data.as_ref()
+                        .map(|d| d.to_string())
+                        .unwrap_or_default()
+                )),
+                dispute: None,
+            };
+            crate::test_runner::runs::set_phase(
+                &run_id_clone,
+                crate::test_runner::runs::RunPhase::Complete(tr)
+            );
+        });
+    });
+
+    Ok(json!({
+        "run_id":       run_id,
+        "status":       "queued",
+        "poll_with":    "get_test_result",
+        "request":      request,
     }))
 }
 

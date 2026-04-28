@@ -38,7 +38,7 @@ pub use executor::{TestResult, TestStatus};
 ///
 /// This is the "Option 1" fix from #98; multi-session isolation (Option 2)
 /// is left for a future change.
-static TEST_RUN_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(crate) static TEST_RUN_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 #[allow(unused_imports)]
 pub use executor::TestStep;
 #[allow(unused_imports)]
