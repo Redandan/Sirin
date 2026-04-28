@@ -29,7 +29,8 @@ goal: |
   3. wait 2000
   4. enable_a11y
   5. shadow_dump — 確認在新增商品 form
-  6. scroll y=800
+  6. flutter_scroll y=800
+     （Flutter canvas 需要 touch-drag scroll，window.scrollBy 無效）
   7. wait 1000
   8. enable_a11y
   9. shadow_find role=button name="平台配送設定"

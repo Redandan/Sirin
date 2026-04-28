@@ -195,8 +195,26 @@ pub(crate) fn dispatch(action: &str, input: &Value) -> Result<Value, String> {
         "scroll" => {
             let x = f64_field(input, "x", 0.0);
             let y = f64_field(input, "y", 300.0);
-            browser::scroll_by(x, y)?;
-            Ok(json!({ "status": "scrolled", "x": x, "y": y }))
+            // flutter=true → use touch-drag gesture (works inside Flutter canvas)
+            // flutter=false (default) → window.scrollBy (works for normal HTML pages)
+            let flutter_mode = input.get("flutter")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if flutter_mode {
+                browser::flutter_scroll(y)?;
+            } else {
+                browser::scroll_by(x, y)?;
+            }
+            Ok(json!({ "status": "scrolled", "x": x, "y": y, "flutter": flutter_mode }))
+        }
+        "flutter_scroll" => {
+            // Dedicated Flutter canvas touch-scroll action.
+            // delta_y > 0 = scroll down (page moves up), < 0 = scroll up.
+            let delta_y = input.get("y").or_else(|| input.get("delta_y"))
+                .and_then(Value::as_f64)
+                .unwrap_or(400.0);
+            browser::flutter_scroll(delta_y)?;
+            Ok(json!({ "status": "scrolled", "delta_y": delta_y, "method": "touch-drag" }))
         }
         "scroll_to" => {
             if target.is_empty() { return Err("'scroll_to' requires 'target' selector".into()); }

@@ -948,16 +948,38 @@ fn remove_hide_for_tool_use(tab: &Tab) {
     }
 }
 
+/// All-black PNG threshold: real Flutter/HTML pages render to ≥ 15 KB.
+/// A < 14 KB PNG almost always means Chrome recovered but Flutter hasn't
+/// painted its first frame yet.
+const SCREENSHOT_BLACK_THRESHOLD_BYTES: usize = 14_000;
+
 pub fn screenshot() -> Result<Vec<u8>, String> {
-    with_tab(|tab| {
-        inject_privacy_mask(tab);
-        inject_hide_for_tool_use(tab);
-        let res = tab.capture_screenshot(CaptureScreenshotFormatOption::Png, None, None, true)
-            .map_err(|e| format!("screenshot: {e}"));
-        remove_hide_for_tool_use(tab);
-        remove_privacy_mask(tab);
-        res
-    })
+    // Auto-retry up to 2 extra times if the screenshot is all-black.
+    // Flutter WebGL / CanvasKit needs a moment to re-render after Chrome
+    // recovery; waiting 2 s and retrying is far cheaper than failing the test.
+    for attempt in 0u8..3 {
+        if attempt > 0 {
+            tracing::warn!(
+                "[screenshot] result is all-black (attempt {}/3) — waiting 2s for Flutter re-render",
+                attempt
+            );
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+        let bytes = with_tab(|tab| {
+            inject_privacy_mask(tab);
+            inject_hide_for_tool_use(tab);
+            let res = tab
+                .capture_screenshot(CaptureScreenshotFormatOption::Png, None, None, true)
+                .map_err(|e| format!("screenshot: {e}"));
+            remove_hide_for_tool_use(tab);
+            remove_privacy_mask(tab);
+            res
+        })?;
+        if bytes.len() >= SCREENSHOT_BLACK_THRESHOLD_BYTES || attempt == 2 {
+            return Ok(bytes);
+        }
+    }
+    unreachable!()
 }
 
 /// Returns the current tab's URL, or an empty string if the browser is not open.
@@ -1985,20 +2007,92 @@ pub fn flutter_type(text: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Send the Enter key to the currently active Flutter text field (`flt-text-editing`).
-/// Use this after `flutter_type` to submit a chat message or form without needing
-/// to find and click the (possibly icon-only, unlabeled) send button.
+/// Send the Enter key to the currently active Flutter text field.
+///
+/// Uses CDP `Input.DispatchKeyEvent` via `press_key("Return")` — this targets
+/// whatever element currently has browser focus, so it works even after Flutter
+/// removes the ephemeral `flt-text-editing` DOM element (which disappears a few
+/// milliseconds after the last character is typed).
+///
+/// The old JS-based approach (`dispatchEvent` on `.flt-text-editing`) failed
+/// whenever there was any delay between `flutter_type` and `flutter_enter`
+/// because Flutter had already cleaned up its text editing element.
 pub fn flutter_enter() -> Result<String, String> {
-    let result = evaluate_js(
-        r#"(function() {
-            var inp = document.querySelector('.flt-text-editing');
-            if (!inp) { return JSON.stringify({sent: false, error: 'flt-text-editing not found'}); }
-            inp.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
-            inp.dispatchEvent(new KeyboardEvent('keyup',   {key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:false}));
-            return JSON.stringify({sent: true, value: inp.value});
-        })()"#
-    )?;
-    Ok(result)
+    press_key("Return").map_err(|e| format!("flutter_enter: {e}"))?;
+    Ok(r#"{"sent":true}"#.to_string())
+}
+
+/// Scroll within a Flutter CanvasKit app by simulating a touch drag gesture.
+///
+/// `window.scrollBy` / wheel events don't move Flutter's internal scroll
+/// controller — Flutter intercepts them before they can bubble.  Instead we
+/// dispatch a `pointerdown → pointermove → pointerup` sequence (touch type)
+/// on the Flutter glass pane, which Flutter's gesture recogniser translates
+/// into a scroll delta.
+///
+/// `delta_y` > 0 scrolls DOWN (finger moves UP on screen).
+/// `delta_y` < 0 scrolls UP.
+///
+/// Uses 8 interpolated `pointermove` steps to trigger Flutter's velocity
+/// tracking; a single pointermove sometimes causes Flutter to treat the
+/// gesture as a tap instead of a scroll.
+/// Scroll within a Flutter CanvasKit app.
+///
+/// Tries two strategies in sequence, returning as soon as one works:
+///
+/// 1. **WheelEvent** — Flutter Web's `dart:html` listener handles `wheel`
+///    events and translates them to scroll gestures.  This is the fastest
+///    approach and works for most Flutter Scrollable widgets.
+///
+/// 2. **Touch-drag fallback** — dispatches `pointerdown → pointermove × 8 →
+///    pointerup` on the glass pane.  Flutter's gesture recogniser translates
+///    this into a drag-scroll delta.
+///
+/// `delta_y` > 0 scrolls DOWN, < 0 scrolls UP.
+/// Both strategies dispatch to the centre of the viewport so the active
+/// scrollable widget receives the event.
+pub fn flutter_scroll(delta_y: f64) -> Result<(), String> {
+    // Strategy 1: WheelEvent — preferred, lowest latency
+    let js_wheel = format!(r#"(function() {{
+    const target = document.querySelector('flt-glass-pane')
+                || document.querySelector('canvas')
+                || document.body;
+    const cx = window.innerWidth  / 2;
+    const cy = window.innerHeight / 2;
+    for (let i = 0; i < 3; i++) {{
+        target.dispatchEvent(new WheelEvent('wheel', {{
+            bubbles: true, cancelable: true,
+            clientX: cx, clientY: cy,
+            deltaY: {delta_y} / 3,
+            deltaMode: 0,
+        }}));
+    }}
+    return 'wheel';
+}})()"#);
+    let _ = evaluate_js(&js_wheel);
+
+    // Strategy 2: Touch-drag (8 pointermove steps for velocity tracking)
+    let steps = 8i32;
+    let step_y = delta_y / steps as f64;
+    let js_touch = format!(r#"(function() {{
+    const pane = document.querySelector('flt-glass-pane')
+              || document.querySelector('canvas')
+              || document.body;
+    const cx = window.innerWidth  / 2;
+    const cy = window.innerHeight / 2;
+    const mk = (type, y) => new PointerEvent(type, {{
+        bubbles: true, cancelable: true,
+        clientX: cx, clientY: y,
+        pointerId: 9, pointerType: 'touch', isPrimary: true,
+    }});
+    pane.dispatchEvent(mk('pointerdown', cy));
+    for (let i = 1; i <= {steps}; i++) {{
+        pane.dispatchEvent(mk('pointermove', cy - ({step_y} * i)));
+    }}
+    pane.dispatchEvent(mk('pointerup', cy - {delta_y}));
+    return 'touch';
+}})()"#);
+    evaluate_js(&js_touch).map(|_| ())
 }
 
 /// Move the mouse to (x, y) **in CSS pixels** without clicking — triggers

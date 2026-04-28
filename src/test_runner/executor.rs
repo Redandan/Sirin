@@ -1626,7 +1626,8 @@ For Flutter/CanvasKit canvas apps AND exact-string assertions:
 - ax_click          — backend_id → click via DOM box model centre (Flutter-compatible 5-event sequence)
 - ax_focus          — backend_id → **scroll-to-element + DOM focus** (⭐ use for off-screen Flutter elements that ax_click misses)
 - ax_type           — backend_id, text → focus + insertText
-- ax_type_verified  — same as ax_type + read-back; returns {{typed, actual, matched}}
+- ax_type_verified  — ⭐ PREFERRED for all Flutter text inputs: ax_focus + flutter_type + ax_value verify
+                      in one call; returns {{typed, actual, matched}}. Use this instead of the 4-step sequence.
 
 ## Flutter Shadow DOM actions (⭐ PREFERRED for Flutter/CanvasKit — bypasses CDP AX protocol)
 These query Flutter's `flt-semantics-host` directly via JS, avoiding AX tree collapse issues:
@@ -1641,9 +1642,12 @@ These query Flutter's `flt-semantics-host` directly via JS, avoiding AX tree col
                           ⚠️ For off-screen AX elements: use ax_focus (NOT shadow_click / click_point) to scroll+focus first.
                           ⚠️ ASCII only — CJK/Unicode chars (你好等) have no keycode and will fail.
                           Use shadow_type for non-ASCII text (but note InsertText may not update Flutter state).
-- flutter_enter         — no params; sends Enter key to the active flt-text-editing input.
-                          Use immediately after flutter_type to submit a chat message or form.
-                          ⚠️ More reliable than shadow_click on icon-only unlabeled send buttons.
+- flutter_enter         — no params; sends CDP Enter key to currently focused element.
+                          ⭐ Now uses CDP press_key("Return") — works even AFTER flt-text-editing disappears.
+                          Use immediately after flutter_type to submit forms.
+- flutter_scroll        — Touch-drag scroll inside Flutter canvas (window.scrollBy does NOT work in Flutter).
+                          params: y (pixels, positive=scroll down). ⭐ Use this instead of scroll for Flutter pages.
+                          Example: flutter_scroll y=800  (scroll down 800px)
 - shadow_type_flutter   — all-in-one: shadow_click → wait 350ms → flutter_type; preferred for textboxes.
                           params: role, name_regex (or name), text
 
@@ -1652,6 +1656,8 @@ Flutter/CanvasKit interaction pattern (PREFERRED order using shadow DOM):
   2. shadow_dump                — inspect what's available (first call on each page)
   3. shadow_click               — for buttons and tabs
   4. shadow_type_flutter        — for text input fields (NOT shadow_type which uses InsertText)
+  5. flutter_scroll y=<N>       — ⭐ use INSTEAD of scroll when page doesn't respond to scroll
+                                  (Flutter CanvasKit ignores window.scrollBy; touch-drag works)
   After route change: wait ≥ 1000ms → enable_a11y → shadow_dump → interact.
 
 **常見錯誤（會導致 30 秒 timeout）：**
