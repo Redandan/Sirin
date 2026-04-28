@@ -290,16 +290,25 @@ pub fn ensure_open(headless: bool) -> Result<bool, String> {
             dir.display()
         );
     }
-    // Extend idle_browser_timeout from the default 30 s to 300 s.
+    // Extend idle_browser_timeout from the default 30 s to 1800 s (30 min).
     // headless_chrome has TWO loops that share this timeout:
     //   1. transport/mod.rs — the CDP WebSocket reader (marks connection closed on timeout)
     //   2. browser/mod.rs  — the browser event loop (processes TargetInfoChanged etc.)
-    // During LLM-in-the-loop test runs Chrome can be idle for >30 s while the LLM
-    // thinks.  When the browser event loop times out first and drops its receiver,
-    // the transport loop later gets a SendError on TargetInfoChanged and commits
-    // suicide — crashing the entire CDP connection mid-test.
-    // 300 s covers the worst-case LLM + Flutter init delay with a 5× margin.
-    opts_builder.idle_browser_timeout(std::time::Duration::from_secs(300));
+    //
+    // When the browser event loop times out and drops its receiver, TargetInfoChanged
+    // arriving at the transport layer causes a SendError.  Our vendor patch (PR #118)
+    // changes this from `break` to `continue`, preventing cascade death.  But the
+    // browser event loop is still dead, meaning subsequent TargetInfoChanged events
+    // show up as "WARN Couldn't send browser an event" in the log.
+    //
+    // 1800 s (30 min) covers worst-case LLM stall scenarios:
+    //   - Gemini 429 retries (now 35 s with fast-fail): 35 × 3 = 105 s max
+    //   - DeepSeek fallback also 429 (rare): 35 s more
+    //   - Flutter init silence: up to 15 s
+    //   Total worst-case: ~155 s — well within 1800 s margin.
+    // Truly broken Chrome connections are detected by Sirin's mid-call recovery
+    // code (src/browser.rs with_tab() retry loop) rather than relying on idle timeout.
+    opts_builder.idle_browser_timeout(std::time::Duration::from_secs(1800));
     let opts = opts_builder
         .build()
         .map_err(|e| format!("LaunchOptions: {e}"))?;

@@ -33,6 +33,9 @@
 //! | `ROUTER_MODEL`      | *(falls back to main model)*   | Small model for Router/Planner; kept resident in Ollama via `keep_alive=-1` |
 //! | `CODING_MODEL`      | *(falls back to main model)*   | Dedicated model for CodingAgent |
 //! | `LARGE_MODEL`       | *(falls back to main model)*   | Large model for deep reasoning  |
+//! | `LLM_FALLBACK_BASE_URL` | *(none)*                   | OpenAI-compat URL for 429 fallback (e.g. `https://api.deepseek.com/v1`) |
+//! | `LLM_FALLBACK_API_KEY`  | *(none)*                   | API key for fallback provider   |
+//! | `LLM_FALLBACK_MODEL`    | *(none)*                   | Model name for fallback (e.g. `deepseek-chat`) |
 
 mod backends;
 mod probe;
@@ -134,6 +137,41 @@ pub(crate) fn shared_router_llm() -> Arc<LlmConfig> {
         );
         Arc::new(cfg)
     }))
+}
+
+/// Returns the process-wide **fallback** LLM config, initialised from
+/// `LLM_FALLBACK_{BASE_URL,API_KEY,MODEL}` environment variables.
+///
+/// Returns `None` when no fallback is configured (variables absent or empty).
+/// Used by [`call_coding_prompt`] and [`call_prompt`] to switch providers
+/// instantly when the primary returns a 429 rate-limit error, avoiding the
+/// previous 30s+60s+120s retry wait.
+pub(crate) fn fallback_llm() -> Option<Arc<LlmConfig>> {
+    static FALLBACK: OnceLock<Option<Arc<LlmConfig>>> = OnceLock::new();
+    FALLBACK
+        .get_or_init(|| {
+            let base_url = std::env::var("LLM_FALLBACK_BASE_URL")
+                .ok()
+                .filter(|v| !v.trim().is_empty())?;
+            let model = std::env::var("LLM_FALLBACK_MODEL")
+                .ok()
+                .filter(|v| !v.trim().is_empty())?;
+            let api_key = std::env::var("LLM_FALLBACK_API_KEY")
+                .ok()
+                .filter(|v| !v.trim().is_empty());
+            let cfg = LlmConfig {
+                backend: LlmBackend::LmStudio, // OpenAI-compat covers DeepSeek, OpenRouter, etc.
+                base_url,
+                model: model.clone(),
+                api_key,
+                coding_model: None,
+                router_model: None,
+                large_model: None,
+            };
+            crate::sirin_log!("[llm] fallback configured: model={}", model);
+            Some(Arc::new(cfg))
+        })
+        .clone()
 }
 
 // ── UI-editable LLM config (persisted to config/llm.yaml) ────────────────────
@@ -587,6 +625,14 @@ impl LlmMessage {
 
 /// Convenience wrapper: uses the shared LLM config and the process-wide HTTP client.
 /// Intended for one-off UI calls that don't have an existing client/config in scope.
+/// Returns `true` when the error string indicates a 429 rate-limit response
+/// from the backends layer.  Used by call sites to decide whether to try
+/// the configured fallback provider.
+fn is_rate_limit_err(e: &Box<dyn std::error::Error + Send + Sync>) -> bool {
+    let s = e.to_string();
+    s.contains("429") || s.contains("Too Many Requests") || s.contains("rate-limited: max retries")
+}
+
 pub async fn call_llm_simple(
     prompt: &str,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
@@ -596,28 +642,54 @@ pub async fn call_llm_simple(
 }
 
 /// Send `prompt` to the configured LLM backend and return the trimmed response.
+///
+/// On 429 rate-limit from the primary provider, automatically retries once
+/// using the fallback LLM (configured via `LLM_FALLBACK_*` env vars).
+/// If no fallback is set, or the fallback also fails, returns the original error.
 pub async fn call_prompt(
     client: &reqwest::Client,
     llm: &LlmConfig,
     prompt: impl Into<String>,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let prompt = prompt.into();
-    match llm.backend {
-        LlmBackend::Ollama => call_ollama(client, &llm.base_url, &llm.model, prompt, None).await,
+    let result = match llm.backend {
+        LlmBackend::Ollama => {
+            call_ollama(client, &llm.base_url, &llm.model, prompt.clone(), None).await
+        }
         LlmBackend::LmStudio | LlmBackend::Gemini | LlmBackend::Anthropic => {
-            call_openai(
-                client,
-                &llm.base_url,
-                &llm.model,
-                llm.api_key.as_deref(),
-                prompt,
-            )
-            .await
+            call_openai(client, &llm.base_url, &llm.model, llm.api_key.as_deref(), prompt.clone())
+                .await
+        }
+    };
+    // 429 fallback — switch providers immediately instead of failing.
+    if let Err(ref e) = result {
+        if is_rate_limit_err(e) {
+            if let Some(fb) = fallback_llm() {
+                crate::sirin_log!(
+                    "[llm] 429 on primary ({}) — falling back to {}",
+                    llm.model,
+                    fb.model
+                );
+                return call_openai(
+                    client,
+                    &fb.base_url,
+                    &fb.model,
+                    fb.api_key.as_deref(),
+                    prompt,
+                )
+                .await;
+            }
         }
     }
+    result
 }
 
 /// Like [`call_prompt`] but uses the coding-specific model when configured.
+///
+/// On 429 rate-limit from the primary provider, automatically retries once
+/// using the fallback LLM (configured via `LLM_FALLBACK_*` env vars).
+/// This is the primary call path for the test runner — instant fallback
+/// prevents the 429 retry wait (35 s) from cascading into test timeouts.
 pub async fn call_coding_prompt(
     client: &reqwest::Client,
     llm: &LlmConfig,
@@ -625,12 +697,36 @@ pub async fn call_coding_prompt(
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let prompt = prompt.into();
     let model = llm.effective_coding_model();
-    match llm.backend {
-        LlmBackend::Ollama => call_ollama(client, &llm.base_url, model, prompt, None).await,
+    let result = match llm.backend {
+        LlmBackend::Ollama => {
+            call_ollama(client, &llm.base_url, model, prompt.clone(), None).await
+        }
         LlmBackend::LmStudio | LlmBackend::Gemini | LlmBackend::Anthropic => {
-            call_openai(client, &llm.base_url, model, llm.api_key.as_deref(), prompt).await
+            call_openai(client, &llm.base_url, model, llm.api_key.as_deref(), prompt.clone())
+                .await
+        }
+    };
+    // 429 fallback — switch providers immediately instead of failing.
+    if let Err(ref e) = result {
+        if is_rate_limit_err(e) {
+            if let Some(fb) = fallback_llm() {
+                crate::sirin_log!(
+                    "[llm] 429 on primary ({}) — falling back to {}",
+                    model,
+                    fb.model
+                );
+                return call_openai(
+                    client,
+                    &fb.base_url,
+                    &fb.model,
+                    fb.api_key.as_deref(),
+                    prompt,
+                )
+                .await;
+            }
         }
     }
+    result
 }
 
 /// Like [`call_prompt`] but uses the router/planner model when configured.

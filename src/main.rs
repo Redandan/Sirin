@@ -93,6 +93,11 @@ fn ensure_first_run_dirs() {
         }
     }
 
+    // Dev-mode YAML sync (#123): if a repo `config/` directory exists next to
+    // the binary (or CWD), copy any newer YAML files to LOCALAPPDATA/Sirin/config/
+    // so tests always pick up the latest YAML without a manual cp step.
+    sync_repo_config_to_appdata(&cfg);
+
     if !cfg.join("persona.yaml").exists() {
         let default_yaml = "\
 identity:\n  name: 助手1\n  professional_tone: brief\n\
@@ -101,6 +106,64 @@ objectives: []\nroi_thresholds:\n  min_usd_to_notify: 5.0\n  min_usd_to_call_rem
 coding_agent:\n  enabled: true\n  auto_approve_writes: true\n  max_iterations: 10\n";
         let _ = fs::write(cfg.join("persona.yaml"), default_yaml);
         tracing::info!(target: "sirin", "[main] Created default config/persona.yaml");
+    }
+}
+
+/// Sync YAML files from the repo `config/` directory to
+/// `%LOCALAPPDATA%/Sirin/config/` in dev mode (closes #123).
+///
+/// Only copies files that are NEWER in the repo than in LOCALAPPDATA, so
+/// manually customised LOCALAPPDATA files are not overwritten unless the
+/// repo version changed.  Skips silently when no repo `config/` is found
+/// (installed-binary mode).
+fn sync_repo_config_to_appdata(appdata_config: &std::path::Path) {
+    use std::fs;
+
+    // Look for repo config/ relative to CWD (dev: `cargo run` from project root)
+    // or next to the binary.
+    let candidates = [
+        std::path::PathBuf::from("config"),
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("config")))
+            .unwrap_or_default(),
+    ];
+
+    let repo_config = candidates.iter().find(|p| p.is_dir() && p != &appdata_config);
+    let Some(repo_cfg) = repo_config else { return };
+
+    let mut synced = 0usize;
+    sync_dir_recursive(repo_cfg, appdata_config, &mut synced);
+    if synced > 0 {
+        tracing::info!(target: "sirin", "[config] synced {} YAML file(s) from repo → LOCALAPPDATA", synced);
+    }
+}
+
+fn sync_dir_recursive(src: &std::path::Path, dst: &std::path::Path, count: &mut usize) {
+    use std::fs;
+    let Ok(entries) = fs::read_dir(src) else { return };
+    let _ = fs::create_dir_all(dst);
+    for entry in entries.flatten() {
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if src_path.is_dir() {
+            sync_dir_recursive(&src_path, &dst_path, count);
+        } else if src_path.extension().map(|e| e == "yaml" || e == "yml").unwrap_or(false) {
+            // Only copy if src is newer than dst (or dst doesn't exist).
+            let should_copy = {
+                let dst_mtime = dst_path.metadata().and_then(|m| m.modified()).ok();
+                let src_mtime = src_path.metadata().and_then(|m| m.modified()).ok();
+                match (src_mtime, dst_mtime) {
+                    (Some(s), Some(d)) => s > d,
+                    _ => true, // dst missing or can't stat → copy
+                }
+            };
+            if should_copy {
+                if fs::copy(&src_path, &dst_path).is_ok() {
+                    *count += 1;
+                }
+            }
+        }
     }
 }
 

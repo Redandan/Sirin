@@ -1677,6 +1677,15 @@ CORRECT sequence:
 When you need EXACT text comparison (numbers, IDs), prefer ax_* over
 screenshot_analyze (which approximates).
 
+## Flutter scroll 後重新 shadow_dump（重要）
+
+Flutter 使用 lazy rendering — 捲動後新出現的元素需要重新呼叫 shadow_dump 才能看到。
+模式：
+  scroll y=<N>  → wait 800  → shadow_dump（重新取得捲動後的元素列表）→ shadow_click
+
+如果 shadow_dump 在 scroll 前已呼叫，scroll 後必須再呼叫一次，否則找不到
+下方的按鈕（如「登出」、「提交」、時間欄位等）。
+
 ## 當 shadow_dump 找不到目標時的替代策略（重要）
 
 連續 2 次 shadow_dump 仍找不到目標元素時，立刻切換到 Vision-Coordinate 策略：

@@ -301,14 +301,23 @@ pub(super) async fn call_openai_messages(
         if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
             if rate_limit_attempt >= 3 {
                 crate::sirin_log!("[llm] 429 max retries exceeded model={}", model);
-                return Err(resp.error_for_status().unwrap_err().into());
+                // Return a detectable error so callers can trigger LLM fallback
+                // immediately rather than propagating an HTTP status error.
+                return Err(format!(
+                    "429 rate-limited: max retries exceeded for model={model}"
+                )
+                .into());
             }
+            // Shortened delays (5 s → 10 s → 20 s, total 35 s) vs old
+            // (30 s → 60 s → 120 s, total 210 s).  The fallback chain in
+            // `call_coding_prompt` / `call_prompt` triggers as soon as this
+            // returns Err, so keeping waits short matters.
             let wait_secs = resp
                 .headers()
                 .get("retry-after")
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(30u64 << rate_limit_attempt); // 30 → 60 → 120
+                .unwrap_or(5u64 << rate_limit_attempt); // 5 → 10 → 20
             crate::sirin_log!(
                 "[llm] 429 rate-limited — waiting {}s (attempt {}/3) model={}",
                 wait_secs,
