@@ -60,13 +60,13 @@ goal: |
   11. screenshot_analyze "【第一輪/狀態A】記錄：宅配到府、7-ELEVEN、全家 的開關（開/關）與運費。同時檢查：Bug #3 — 是否有 service type 欄位顯示為空？"
 
   === 第二輪：修改並儲存 ===
-  12. scroll y=100（確保開關可見）
-  13. shadow_dump（列出當前可見的 switch 元素；pickup service 開關的 role=switch，沒有 name）
-  ⚠️ Flutter Switch 在 AX tree 沒有 accessible name，只能靠 role=switch 找到。
-     依 shadow_dump 結果選擇第一個 role=switch 元素。
-  shadow_click role=switch（點擊第一個可見的 pickup service 開關）
+  12. scroll y=400（捲動讓物流服務表格進入視窗，把頂部的「商品狀態」開關推出視窗外）
+  13. screenshot_analyze "【第二輪/準備切換】截圖。找到物流服務開關表格（宅配到府/7-ELEVEN/全家行）。
+      請回報：頁面上第一個物流服務開關（宅配到府或7-ELEVEN）的位置（螢幕百分比座標 x%, y%）。
+      ⚠️ 不要點商品狀態開關（那個在頁面頂端）。物流服務開關在頁面下半部的表格裡。"
+  → click_point 點擊分析識別出的物流服務開關位置（用螢幕絕對座標）
   14. wait 1200
-  15. screenshot_analyze "【第二輪/修改後】記錄：剛剛切換的開關現在是開還是關？哪一個服務被切換？"
+  15. screenshot_analyze "【第二輪/修改後】記錄：剛剛切換的開關現在是開還是關？哪一個服務被切換？（確認不是商品狀態，而是物流服務）"
   16. flutter_scroll_until_visible role=button name_regex="保存商品|更新商品|儲存"（捲回找儲存按鈕）
   17. shadow_click role=button name_regex="^保存商品$|^更新商品$|^儲存$|^Save$"
   18. wait 4000（等儲存完成 + 返回列表動畫）
