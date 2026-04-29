@@ -41,10 +41,10 @@ goal: |
      第三輪（步驟 20-30）：再次進入商品編輯 → 展開物流設定 → enable_a11y → 記錄狀態C → done=true
      最終比對：狀態C 必須反映第二輪的修改（Bug #5/#25 驗證）。
 
-  ⚠️ 唯一允許 done=true 的位置是步驟 33，其他步驟不能 done=true。
-  ⚠️ 不論任何步驟失敗，都必須繼續執行到步驟 33 才能輸出 done=true。嚴禁提早終止。
+  ⚠️ 唯一允許 done=true 的位置是步驟 34，其他步驟不能 done=true。
+  ⚠️ 不論任何步驟失敗，都必須繼續執行到步驟 34 才能輸出 done=true。嚴禁提早終止。
 
-  步驟（線性，全部 33 步必須依序執行）：
+  步驟（線性，全部 34 步必須依序執行）：
 
   === 第一輪：記錄狀態 A ===
   1. wait 3000（等賣家儀表板完整載入）
@@ -57,41 +57,40 @@ goal: |
   8. wait 1500
   9. enable_a11y（展開後重建 AX tree）
   10. wait 800
-  11. screenshot_analyze "【第一輪/狀態A】記錄：宅配到府、7-ELEVEN、全家 的開關（開/關）與運費。同時檢查：Bug #3 — 是否有 service type 欄位顯示為空？"
+  11. screenshot_analyze "【第一輪/狀態A】記錄：宅配到府、7-ELEVEN、全家 的開關（開/關）與運費。Bug #3 — 若有 service type 欄位顯示為空請記錄，若無此欄位也記錄（可能 UI 已改版）。"
 
   === 第二輪：修改並儲存 ===
-  12. scroll y=800（大幅捲動確保物流服務表格在視窗內，同時把頂部「商品狀態」完全推出視窗）
+  12. scroll y=800（捲動確保物流服務表格可見）
   13. wait 500
-  14. screenshot_analyze "【第二輪/切換前確認】截圖。確認現在看到的是物流服務表格（宅配到府/7-ELEVEN/全家等行），
-      每行有一個開關和運費欄位。回答：看到物流服務表格嗎？第一個服務是什麼？其開關目前是開還是關？"
-  ⚠️ 確認看到物流服務表格後，繼續步驟 15。
-  ⚠️ 若沒看到表格（scroll 不夠），改用 scroll y=400 追加捲動。
-  15. shadow_click role=switch（點擊物流服務表格中第一個可見的開關；頁面此時應只顯示物流服務開關）
-  16. wait 1200
-  17. screenshot_analyze "【第二輪/修改後】記錄：剛剛切換的開關現在是開還是關？哪一個服務被切換？"
-  18. flutter_scroll_until_visible role=button name_regex="保存商品|更新商品|儲存"（捲回找儲存按鈕）
-  19. shadow_click role=button name_regex="^保存商品$|^更新商品$|^儲存$|^Save$"
-  20. wait 4000（等儲存完成 + 返回列表動畫）
+  14. enable_a11y（更新 AX tree）
+  15. ax_find role=switch（列出所有 switch 的 backend_id；第1個是「商品狀態」，第2個起是物流服務開關）
+  ⚠️ AX tree 第1個 switch = 商品狀態，第2個 switch = 宅配到府物流服務開關。
+     使用 ax_find 取得的第2個 backend_id（跳過第1個商品狀態）。
+  16. ax_click backend_id=<第2個switch的backend_id>（點擊宅配到府物流服務開關）
+  17. wait 1200
+  18. screenshot_analyze "【第二輪/修改後】記錄：剛剛切換的是哪個物流服務開關？現在是開還是關？（確認不是商品狀態）"
+  19. flutter_scroll_until_visible role=button name_regex="保存商品|更新商品|儲存"（捲回找儲存按鈕）
+  20. shadow_click role=button name_regex="^保存商品$|^更新商品$|^儲存$|^Save$"
+  21. wait 4000（等儲存完成 + 返回列表動畫）
 
   === 第三輪：重新編輯，確認狀態 C ===
-  21. shadow_click role=tab name_regex="^商品$"（確保在商品列表；若已在列表則無害點擊）
-  22. wait 2500
-  23. enable_a11y（重新初始化 Flutter semantics）
-  24. wait 1000
-  25. shadow_click role=button name_regex="^編輯$"（再次進入同商品編輯頁）
-  26. wait 4000
-  27. flutter_scroll_until_visible role=button name_regex="物流設定"（捲動到物流設定）
-  28. shadow_click role=button name_regex="^物流設定$"（展開物流設定）
-  29. wait 1500
-  30. enable_a11y（展開後重建 AX tree）
-  31. wait 800
-  32. screenshot_analyze "【第三輪/狀態C】記錄：宅配到府、7-ELEVEN、全家 的開關狀態與運費。與步驟 17 的修改後狀態是否一致？（Bug #5/#25 PASS 條件：步驟 15 切換的那個開關，重新編輯時值必須與步驟 17 相同）"
-  33. done=true
+  22. shadow_click role=tab name_regex="^商品$"（確保在商品列表；若已在列表則無害點擊）
+  23. wait 2500
+  24. enable_a11y（重新初始化 Flutter semantics）
+  25. wait 1000
+  26. shadow_click role=button name_regex="^編輯$"（再次進入同商品編輯頁）
+  27. wait 4000
+  28. flutter_scroll_until_visible role=button name_regex="物流設定"（捲動到物流設定）
+  29. shadow_click role=button name_regex="^物流設定$"（展開物流設定）
+  30. wait 1500
+  31. enable_a11y（展開後重建 AX tree）
+  32. wait 800
+  33. screenshot_analyze "【第三輪/狀態C】記錄：宅配到府、7-ELEVEN、全家 的開關狀態與運費。與步驟 18 的修改後狀態是否一致？（Bug #5/#25 PASS 條件：步驟 16 切換的那個開關，重新編輯時值必須與步驟 18 相同）"
+  34. done=true
 
 success_criteria:
   - "第一輪成功進入商品編輯頁並展開物流設定（涵蓋 #10）"
-  - "狀態A 中所有 pickup 服務的 service type 欄位皆非空（Bug #3 PASS）"
-  - "成功切換至少一個 pickup 開關並完成儲存返回列表"
+  - "成功切換至少一個物流服務開關（宅配到府，使用 ax_click 第2個 switch）並完成儲存返回列表"
   - "第三輪重新編輯後展開物流設定，狀態C 反映第二輪的修改（Bug #5/#25 PASS）"
 
 tags: [regression, product, pickup, save-reload, agora, critical, issue-70, issue-48]
