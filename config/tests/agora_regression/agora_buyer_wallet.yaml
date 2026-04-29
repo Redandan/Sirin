@@ -26,14 +26,16 @@ goal: |
   ⚠️ Flutter app：所有 UI 判斷用 screenshot_analyze。
   ⚠️ 不論任何步驟失敗，都必須繼續執行到步驟 7 才能輸出 done=true。嚴禁提早終止。
 
-  步驟（線性，步驟 7 無條件 done=true，不得提早）：
+  步驟（線性，步驟 9 無條件 done=true，不得提早）：
   1. wait 3000（等買家頁面完整載入）
-  2. shadow_click role=tab name_regex="^錢包$"（點底部錢包 tab）
-  3. wait 2500（等錢包頁面載入）
-  4. screenshot_analyze "錢包頁面截圖。記錄：(1)總資產金額是多少、(2)可用餘額、(3)凍結金額、(4)質押金額。有沒有「儲值」「提款」「質押」按鈕？"
-  5. scroll y=100（向下捲動查看交易記錄）
-  6. screenshot_analyze "交易記錄截圖。列出最近 3-5 筆交易的日期、金額、類型（質押/交易/支付等）。餘額和交易記錄是否正常顯示？"
-  7. done=true
+  2. enable_a11y（初始化 Flutter semantics）
+  3. wait 1000
+  4. shadow_click role=tab name_regex="^錢包$"（點底部錢包 tab）
+  5. wait 2500（等錢包頁面載入）
+  6. screenshot_analyze "錢包頁面截圖。記錄：(1)總資產金額是多少、(2)可用餘額、(3)凍結金額、(4)質押金額。有沒有「儲值」「提款」「質押」按鈕？"
+  7. scroll y=100（向下捲動查看交易記錄）
+  8. screenshot_analyze "交易記錄截圖。列出最近 3-5 筆交易的日期、金額、類型（質押/交易/支付等）。餘額和交易記錄是否正常顯示？"
+  9. done=true
 
 success_criteria:
   - "成功點擊底部錢包 tab 並進入錢包頁面"
