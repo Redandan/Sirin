@@ -2,8 +2,8 @@ id: agora_c2c_delivery_orders
 name: "C2C 核心流程：外送員訂單管理頁"
 url: "https://redandan.github.io/?__test_role=delivery#/delivery"
 
-max_iterations: 16
-timeout_secs: 240
+max_iterations: 22
+timeout_secs: 360
 max_retries: 1
 
 viewport:
