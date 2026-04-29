@@ -145,10 +145,11 @@ echo
 echo "5. Recent Chrome Stability"
 if [ -f "sirin.err.log" ]; then
   # Only count crashes in the last 24 hours to avoid stale session data (#142).
-  # macOS uses -v for date, Linux uses -d; handle both.
+  # Try multiple date syntaxes: GNU (Linux), BSD (macOS), Windows Git-Bash (PowerShell fallback).
   CUTOFF=$(date -d '24 hours ago' '+%Y-%m-%dT%H:%M' 2>/dev/null || \
            date -v -24H '+%Y-%m-%dT%H:%M' 2>/dev/null || \
            date --date='24 hours ago' '+%Y-%m-%dT%H:%M' 2>/dev/null || \
+           powershell -NoProfile -Command "(Get-Date).AddHours(-24).ToString('yyyy-MM-ddTHH:mm')" 2>/dev/null || \
            echo "")
   if [ -n "$CUTOFF" ]; then
     CRASHES=$(awk -v cutoff="$CUTOFF" 'substr($1,2,16) >= cutoff' sirin.err.log 2>/dev/null | \
