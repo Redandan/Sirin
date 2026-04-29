@@ -602,4 +602,56 @@ url_query:
             }
         }
     }
+
+    /// Issue #178: YAML step number lint — detects duplicate or non-consecutive step
+    /// numbers in the goal text, which confuse the LLM and cause premature termination.
+    ///
+    /// Pattern: lines starting with "  N. " where N is an integer.
+    #[test]
+    fn agora_regression_yamls_step_numbers_are_consecutive() {
+        let all = load_all();
+        for test in &all {
+            // Extract step numbers from goal text: match lines like "  1. " or "  12. "
+            let mut step_numbers: Vec<u32> = test.goal
+                .lines()
+                .filter_map(|line| {
+                    let trimmed = line.trim_start();
+                    // Match "N. " at the start of a non-empty line
+                    let dot_pos = trimmed.find(". ")?;
+                    let num_str = &trimmed[..dot_pos];
+                    // Only digits (no letters before the dot)
+                    if num_str.chars().all(|c| c.is_ascii_digit()) && !num_str.is_empty() {
+                        num_str.parse::<u32>().ok()
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            if step_numbers.len() < 2 {
+                continue; // No numbered steps, skip
+            }
+
+            // Check for duplicates
+            let mut seen = std::collections::HashSet::new();
+            for &n in &step_numbers {
+                assert!(
+                    seen.insert(n),
+                    "test '{}' has duplicate step number {} in goal",
+                    test.id, n
+                );
+            }
+
+            // Check consecutive from min to max
+            step_numbers.sort_unstable();
+            let min = *step_numbers.first().unwrap();
+            let max = *step_numbers.last().unwrap();
+            let expected_count = (max - min + 1) as usize;
+            assert_eq!(
+                step_numbers.len(), expected_count,
+                "test '{}' has non-consecutive step numbers {:?} (min={} max={}, expected {} steps but found {})",
+                test.id, step_numbers, min, max, expected_count, step_numbers.len()
+            );
+        }
+    }
 }

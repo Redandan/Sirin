@@ -191,6 +191,36 @@ pub fn set_phase(run_id: &str, phase: RunPhase) {
     }
 }
 
+/// Force-terminate a zombie run by setting it to Error state.
+///
+/// When a spawned test run gets stuck (e.g. LLM call hanging for >timeout_secs),
+/// it stays in `Running` in-memory indefinitely because the executor deadline
+/// check only fires between LLM calls.  Restarting Sirin is the only other option.
+///
+/// This function immediately sets the run to `Error("killed by user")` so:
+/// - `get_test_result` returns the error state
+/// - The next `run_test_async` caller gets the TEST_RUN_LOCK on next iteration
+///   (the lock is held by the spawned OS thread; killing the phase here doesn't
+///   release the lock immediately, but the next test will time-out and release it).
+///
+/// Returns Err if the run_id is not found.
+pub fn kill_run(run_id: &str) -> Result<(), String> {
+    let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+    match reg.get_mut(run_id) {
+        Some(s) => {
+            // Only kill if currently Running or Queued — don't overwrite completed runs.
+            match s.phase {
+                RunPhase::Running { .. } | RunPhase::Queued => {
+                    s.phase = RunPhase::Error("killed by user".into());
+                    Ok(())
+                }
+                _ => Err(format!("run '{run_id}' is already completed (phase is not Running/Queued)")),
+            }
+        }
+        None => Err(format!("run '{run_id}' not found in in-memory registry")),
+    }
+}
+
 /// Render the action sequence of a passing run as a compact bullet list so
 /// future searches over `kbSearch("...selector...")` can recover the working
 /// click target / form field path without dragging in noisy LLM thoughts.

@@ -46,6 +46,7 @@ goal: |
       （⭐ 直接滾到登出按鈕可見位置，不用固定 y=600 的硬編碼）
   11. shadow_dump（確認找到登出按鈕）
   12. shadow_click role=button name_regex="登出|Logout|Log out|退出|Sign out"
+  13. wait 1000
   14. wait 2000
   15. screenshot_analyze "是否出現確認對話框？或已完成登出？"
   16. shadow_click role=button name_regex="確認|確定|OK|Yes|是"

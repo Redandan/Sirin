@@ -379,6 +379,17 @@ fn handle_tools_list() -> Result<Value, String> {
                 }
             },
             {
+                "name": "kill_run",
+                "description": "強制終止卡住的 in-memory test run（zombie）。\n\n當 run_test_async 啟動的 run 因 LLM call 阻塞而超過 timeout_secs 仍顯示 running 時使用。\n設為 error 狀態，讓後續 run_test_async 呼叫可以正常取得 TEST_RUN_LOCK。\n⚠️ 只能終止 Running/Queued 狀態的 run；已完成的 run 無法覆蓋。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "run_id": { "type": "string", "description": "要強制終止的 run_id" }
+                    },
+                    "required": ["run_id"]
+                }
+            },
+            {
                 "name": "get_screenshot",
                 "description": "依 run_id 取得失敗截圖（base64 PNG）。若 bytes 為 null，screenshot_error 說明為何失敗。",
                 "inputSchema": {
@@ -903,6 +914,7 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         "run_adhoc_test"       => return call_run_adhoc_test(arguments).map(wrap_json),
         "persist_adhoc_run"    => return call_persist_adhoc_run(arguments).map(wrap_json),
         "get_test_result"      => return call_get_test_result(arguments).map(wrap_json),
+        "kill_run"             => return call_kill_run(arguments).map(wrap_json),
         "get_screenshot"       => return call_get_screenshot(arguments).map(wrap_json),
         "get_full_observation" => return call_get_full_observation(arguments).map(wrap_json),
         "get_run_trace"        => return call_get_run_trace(arguments).map(wrap_json),
@@ -1204,6 +1216,18 @@ fn call_get_test_result(args: Value) -> Result<Value, String> {
     match crate::test_runner::runs::get(run_id) {
         Some(state) => Ok(crate::test_runner::runs::to_json(&state)),
         None => Err(format!("run_id '{run_id}' not found (may have been pruned)")),
+    }
+}
+
+fn call_kill_run(args: Value) -> Result<Value, String> {
+    let run_id = args["run_id"].as_str().ok_or("Missing run_id")?;
+    match crate::test_runner::runs::kill_run(run_id) {
+        Ok(()) => Ok(json!({
+            "status": "killed",
+            "run_id": run_id,
+            "message": format!("run '{}' set to error state (killed by user)", run_id)
+        })),
+        Err(e) => Err(e),
     }
 }
 

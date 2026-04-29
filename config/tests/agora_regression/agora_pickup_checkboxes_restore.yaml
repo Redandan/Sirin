@@ -50,19 +50,19 @@ goal: |
   7. shadow_click role=button name_regex="^物流設定$"（展開物流設定）
   8. wait 1500
   9. screenshot_analyze "【第一輪/狀態A】記錄：宅配到府、7-ELEVEN、全家 的開關是開還是關？"
-  9. eval target='window.history.back()'
+  10. eval target='window.history.back()'
      （hash route 下用 JS history.back() 退出編輯，避免 go_back 跳 about:blank）
      接著 wait_for_ax_ready timeout=6000；若仍非預期，fallback navigate_to
      "https://redandan.github.io/?__test_role=seller#/seller/products" 重新進入。
-  10. shadow_click role=tab name_regex="^商品$"
-  11. wait 2500
-  12. shadow_click role=button name_regex="^編輯$"
-  13. wait 4000
-  14. flutter_scroll_until_visible role=button name_regex="物流設定"（捲動到按鈕可見）
-  15. shadow_click role=button name_regex="^物流設定$"（展開物流設定）
-  16. wait 1500
-  17. screenshot_analyze "【第二輪/狀態B】記錄：宅配到府、7-ELEVEN、全家 的開關是開還是關？與步驟9狀態A相同嗎？（Bug #5 驗證：go_back 後重進應顯示相同的原始儲存狀態）"
-  18. done=true
+  11. shadow_click role=tab name_regex="^商品$"
+  12. wait 2500
+  13. shadow_click role=button name_regex="^編輯$"
+  14. wait 4000
+  15. flutter_scroll_until_visible role=button name_regex="物流設定"（捲動到按鈕可見）
+  16. shadow_click role=button name_regex="^物流設定$"（展開物流設定）
+  17. wait 1500
+  18. screenshot_analyze "【第二輪/狀態B】記錄：宅配到府、7-ELEVEN、全家 的開關是開還是關？與步驟9狀態A相同嗎？（Bug #5 驗證：go_back 後重進應顯示相同的原始儲存狀態）"
+  19. done=true
 
   ⚠️ 步驟 8 的 screenshot_analyze 是第一輪結束點，嚴禁步驟 8 前 done=true。
   ⚠️ 步驟 9 用 eval window.history.back() + wait_for_ax_ready；
