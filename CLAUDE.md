@@ -74,7 +74,7 @@ Central Panel:  ScrollArea 包裹, 內邊距 12pt
 | 端 | 類型 | 正確 viewport | URL 特徵 |
 |---|---|---|---|
 | **Buyer（會員/購物）** | **H5 手機版** | `390×844 scale=2 mobile=true` | `__test_role=buyer` |
-| **Seller（商家後台）** | PC 桌面版 | `1280×900 scale=1 mobile=false` | `__test_role=seller` |
+| **Seller（商家後台）** | **H5 手機版** | `390×844 scale=2 mobile=true` | `__test_role=seller` |
 
 ⚠️ **新增 buyer 測試必須加 viewport block：**
 ```yaml

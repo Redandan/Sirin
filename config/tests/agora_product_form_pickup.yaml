@@ -5,12 +5,12 @@ url: "https://redandan.github.io/?__test_role=seller"
 max_iterations: 50
 timeout_secs: 720
 
-# Seller 後台是 PC 桌面版，使用標準桌面 viewport
+# Seller 後台是 H5 手機版，與 Buyer 相同 viewport
 viewport:
-  width: 1280
-  height: 900
-  scale: 1.0
-  mobile: false
+  width: 390
+  height: 844
+  scale: 2.0
+  mobile: true
 
 locale: zh-TW
 
@@ -29,7 +29,7 @@ goal: |
   已知資訊（嚴格遵守）：
   - 賣家首頁是儀表板，不是商品列表。必須先點底部「商品」tab 才能進入商品管理列表。
   - 商品管理列表：每個商品卡片有「編輯」按鈕。
-  - 商品編輯頁的「物流設定」按鈕在 1280×900 PC viewport 下位於畫面下方（viewport 外）。
+  - 商品編輯頁的「物流設定」按鈕在 390×844 H5 viewport 下位於畫面下方（viewport 外）。
     必須先 flutter_scroll_until_visible 捲動到按鈕可見，再 shadow_click 才能成功展開。
   - 五個物流服務：宅配到府、7-ELEVEN、全家、萊爾富、OK超商。
   - 儲存按鈕叫「保存商品」或「更新商品」（不是「儲存」）。

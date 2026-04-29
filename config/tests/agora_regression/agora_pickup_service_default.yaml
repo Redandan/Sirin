@@ -5,12 +5,12 @@ url: "https://redandan.github.io/?__test_role=seller"
 max_iterations: 18
 timeout_secs: 220
 
-# Seller 後台是 PC 桌面版，使用標準桌面 viewport
+# Seller 後台是 H5 手機版，與 Buyer 相同 viewport
 viewport:
-  width: 1280
-  height: 900
-  scale: 1.0
-  mobile: false
+  width: 390
+  height: 844
+  scale: 2.0
+  mobile: true
 
 locale: zh-TW
 
