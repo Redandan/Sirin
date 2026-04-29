@@ -26,9 +26,9 @@ goal: |
   ⚠️ 步驟 14 無條件 done=true。
 
   步驟（線性，步驟 14 done=true）：
-  1. wait 3000
+  1. wait 4000（等買家首頁完整載入）
   2. enable_a11y
-  3. wait 1500
+  3. wait 2000
   4. shadow_click role=button name_regex="USDT"（進入商品詳情）
   5. wait 2500
   6. enable_a11y

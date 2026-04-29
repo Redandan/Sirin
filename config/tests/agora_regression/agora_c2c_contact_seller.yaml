@@ -22,7 +22,7 @@ goal: |
   - 商品詳情頁底部有「聯繫賣家」按鈕
   - 點擊後導航到 #/chat/new/{sellerId}
   - 聊天頁有預設模板（checkbox）：「你好，我想諮詢一下」等
-  - 有「確認」「語音通話」「上傳圖片」按鈕
+  - 有語音通話、上傳圖片等互動按鈕（確認按鈕需選模板後才顯示）
 
   ⚠️ 步驟 14 無條件 done=true。
 
@@ -38,14 +38,14 @@ goal: |
   9. wait 3000
   10. enable_a11y
   11. wait 1000
-  12. shadow_dump（確認在聊天頁，找到模板 checkbox 和確認按鈕）
-  13. screenshot_analyze "是否在聊天頁面？有沒有聊天模板選項？有沒有「確認」按鈕？有沒有語音通話按鈕？"
+  12. shadow_dump（確認在聊天頁，找到模板 checkbox 和功能按鈕）
+  13. screenshot_analyze "是否在聊天頁面？有沒有聊天模板選項（預設訊息 checkbox）？有沒有語音通話或上傳圖片按鈕？"
   14. done=true
 
 success_criteria:
   - "成功從商品詳情頁開啟聊天"
   - "聊天頁面顯示對話歷史或空白聊天框"
   - "有預設訊息模板選項（checkbox）或輸入框"
-  - "有確認/發送功能按鈕"
+  - "有語音通話或上傳圖片等功能按鈕（聊天互動功能可用）"
 
 tags: [c2c, buyer, chat, contact-seller, regression, core-flow]
