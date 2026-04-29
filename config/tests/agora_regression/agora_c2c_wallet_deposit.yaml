@@ -1,0 +1,50 @@
+id: agora_c2c_wallet_deposit
+name: "C2C 核心流程：買家錢包儲值 UI 驗證"
+url: "https://redandan.github.io/?__test_role=buyer"
+
+max_iterations: 16
+timeout_secs: 240
+max_retries: 1
+
+viewport:
+  width: 390
+  height: 844
+  scale: 2.0
+  mobile: true
+
+locale: zh-TW
+
+goal: |
+  目標：驗證買家錢包儲值功能的 UI 可正常載入，包含金額選擇和儲值按鈕。
+
+  已知資訊：
+  - 錢包頁有「儲值」按鈕，點擊後到 #/wallet/deposit
+  - 儲值頁顯示當前餘額（USDT）
+  - 有快速選擇金額按鈕：$10, $50, $100, $500, $1000
+  - 有「創建儲值」確認按鈕（不實際操作，只驗 UI）
+
+  ⚠️ 步驟 12 無條件 done=true。
+
+  步驟（線性，步驟 12 done=true）：
+  1. wait 3000
+  2. enable_a11y
+  3. wait 1500
+  4. shadow_click role=tab name_regex="^錢包$"（點底部錢包 tab）
+  5. wait 2500
+  6. enable_a11y
+  7. wait 1000
+  8. shadow_click role=button name_regex="^儲值$"（進入儲值頁）
+  9. wait 2500
+  10. enable_a11y
+  11. wait 1000
+  12. shadow_dump（確認在儲值頁，找到金額按鈕和創建儲值按鈕）
+  13. screenshot_analyze "是否在儲值頁？有沒有當前餘額顯示？有沒有快速選擇金額按鈕（$10/$50/$100）？有沒有「創建儲值」按鈕？"
+  14. done=true
+
+success_criteria:
+  - "成功從錢包頁進入儲值頁（#/wallet/deposit）"
+  - "顯示當前 USDT 餘額"
+  - "有快速選擇金額按鈕（$10/$50/$100/$500/$1000）"
+  - "有「創建儲值」按鈕（確認 UI 可用，不實際儲值）"
+
+tags: [c2c, buyer, wallet, deposit, regression, core-flow]

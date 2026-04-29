@@ -1,0 +1,48 @@
+id: agora_c2c_delivery_orders
+name: "C2C 核心流程：外送員訂單管理頁"
+url: "https://redandan.github.io/?__test_role=delivery#/delivery"
+
+max_iterations: 16
+timeout_secs: 240
+max_retries: 1
+
+viewport:
+  width: 390
+  height: 844
+  scale: 2.0
+  mobile: true
+
+locale: zh-TW
+
+goal: |
+  目標：驗證外送員訂單管理頁可正常載入，包含訂單列表和狀態分類。
+
+  已知資訊：
+  - 外送員底部 tab：首頁/訂單/收入/我的
+  - 訂單 tab 顯示配送中的訂單（或空列表提示）
+  - 每筆訂單有訂單編號、取貨地址、配送地址
+
+  ⚠️ 步驟 12 無條件 done=true。
+
+  步驟（線性，步驟 12 done=true）：
+  1. clear_state（清除其他 session，確保以外送員身份載入）
+  2. wait 5000（等 Flutter 冷載入）
+  3. enable_a11y
+  4. wait 2000
+  5. shadow_click role=tab name_regex="^訂單$"（切換到訂單 tab）
+  6. wait 2500
+  7. enable_a11y
+  8. wait 1000
+  9. shadow_dump（確認在訂單 tab，找到訂單列表或空狀態）
+  10. screenshot_analyze "外送員訂單 tab 截圖：有沒有待配送或配送中的訂單？若無訂單，顯示什麼提示文字？有沒有訂單狀態分類？"
+  11. shadow_click role=tab name_regex="^收入$"（切換到收入 tab）
+  12. wait 2000
+  13. screenshot_analyze "外送員收入 tab 截圖：有沒有收入統計（今日/本週/本月）？有沒有收入明細列表？"
+  14. done=true
+
+success_criteria:
+  - "成功載入外送員訂單 tab"
+  - "訂單 tab 顯示訂單列表（有訂單）或空狀態提示（無訂單）"
+  - "成功切換到收入 tab"
+
+tags: [c2c, delivery, orders, earnings, regression, core-flow]

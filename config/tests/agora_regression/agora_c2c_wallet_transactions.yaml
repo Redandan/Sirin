@@ -1,0 +1,49 @@
+id: agora_c2c_wallet_transactions
+name: "C2C 核心流程：買家錢包交易記錄驗證"
+url: "https://redandan.github.io/?__test_role=buyer"
+
+max_iterations: 16
+timeout_secs: 240
+max_retries: 1
+
+viewport:
+  width: 390
+  height: 844
+  scale: 2.0
+  mobile: true
+
+locale: zh-TW
+
+goal: |
+  目標：驗證買家錢包交易記錄可正常顯示，包含支付/利息/質押等交易類型。
+
+  已知資訊：
+  - 錢包頁底部有交易記錄（含日期、金額、類型）
+  - 交易類型：支付（-USDT）、利息（+USDT）、質押（-USDT）、交易
+  - 有「查看全部」按鈕可看完整交易歷史
+
+  ⚠️ 步驟 12 無條件 done=true。
+
+  步驟（線性，步驟 12 done=true）：
+  1. wait 3000
+  2. enable_a11y
+  3. wait 1500
+  4. shadow_click role=tab name_regex="^錢包$"（點底部錢包 tab）
+  5. wait 2500
+  6. enable_a11y
+  7. wait 1000
+  8. scroll y=300（捲動看到交易記錄）
+  9. wait 500
+  10. shadow_dump（確認看到交易記錄列表）
+  11. screenshot_analyze "錢包頁截圖：有沒有交易記錄（含日期和金額）？有沒有「查看全部」按鈕？記錄最近幾筆交易的類型和金額。"
+  12. shadow_click role=button name_regex="^查看全部$"（查看完整交易歷史）
+  13. wait 2500
+  14. screenshot_analyze "完整交易歷史截圖：有哪些交易類型（支付/利息/質押/交易）？最近的交易日期是什麼？"
+  15. done=true
+
+success_criteria:
+  - "成功進入錢包頁，看到餘額顯示"
+  - "有交易記錄列表（含日期和金額）"
+  - "成功點擊「查看全部」進入交易歷史頁"
+
+tags: [c2c, buyer, wallet, transactions, regression, core-flow]
