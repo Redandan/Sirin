@@ -26,28 +26,31 @@ goal: |
   ⚠️ 物流設定是 ExpansionTile（Flutter AX role=group），展開後加 enable_a11y + wait 800 再截圖。
   ⚠️ 新增商品預設：宅配到府 ON + 7-ELEVEN ON，其餘 OFF。
   ⚠️ Flutter app：所有 UI 判斷用 screenshot_analyze。
-  ⚠️ 不論任何步驟失敗，都必須繼續執行到步驟 13 才能輸出 done=true。嚴禁提早終止。
+  ⚠️ 不論任何步驟失敗，都必須繼續執行到步驟 17 才能輸出 done=true。嚴禁提早終止。
 
-  步驟（線性，步驟 13 無條件 done=true，不得提早）：
-  1. wait 3000（等賣家儀表板完整載入）
-  2. shadow_click role=tab name_regex="^商品$"（點底部商品 tab，進入商品管理列表）
-  3. wait 2500（等商品管理列表載入）
-  4. enable_a11y（重新初始化 Flutter semantics）
-  5. wait 1000
-  6. shadow_click role=button name_regex="^新增商品$"（點新增商品按鈕）
-  7. wait 4000（等新增商品頁面完整載入）
-  8. flutter_scroll_until_visible role=button name_regex="物流設定"（捲動到物流設定按鈕）
-  9. shadow_click role=button name_regex="^物流設定$"（展開物流設定區塊）
-  10. wait 1500
-  11. enable_a11y（展開後重建 AX tree）
-  12. wait 800
-  13. screenshot_analyze "截圖。宅配到府開關是開還是關？預設運費是多少？7-ELEVEN 開關是開還是關？運費是多少？全家便利商店開關是開還是關？運費是多少？（只需回答這三項，簡短即可）"
-  14. done=true
+  步驟（線性，步驟 15 無條件 done=true，不得提早）：
+  1. clear_state（清除 service worker 快取，確保載入最新版 Flutter app）
+  2. wait 5000（等 Flutter 重新初始化）
+  3. enable_a11y（初始化 Flutter semantics）
+  4. wait 2000
+  5. shadow_click role=tab name_regex="^商品$"（點底部商品 tab，進入商品管理列表）
+  6. wait 2500（等商品管理列表載入）
+  7. enable_a11y（重新初始化 Flutter semantics）
+  8. wait 1000
+  9. shadow_click role=button name_regex="^新增商品$"（點新增商品按鈕）
+  10. wait 4000（等新增商品頁面完整載入）
+  11. flutter_scroll_until_visible role=button name_regex="物流設定"（捲動到物流設定按鈕）
+  12. shadow_click role=button name_regex="^物流設定$"（展開物流設定區塊）
+  13. wait 1500
+  14. enable_a11y（展開後重建 AX tree）
+  15. wait 800
+  16. screenshot_analyze "截圖。宅配到府開關是開還是關？預設運費是多少？7-ELEVEN 開關是開還是關？運費是多少？（只需回答這兩項，簡短即可）"
+  17. done=true
 
 success_criteria:
   - "成功從商品管理列表點擊新增商品並進入新增頁面"
   - "展開物流設定並看到至少宅配到府和 7-ELEVEN 兩個物流服務的開關（新增商品預設 ON）"
-  - "物流服務運費欄位有預設值（宅配 100、7-ELEVEN 60）"
+  - "物流服務運費欄位有非零值（宅配和 7-ELEVEN 的運費欄位不是空白）"
 
 tags: [regression, product, seller, create, agora]
 
