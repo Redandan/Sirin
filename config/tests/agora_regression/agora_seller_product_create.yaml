@@ -2,8 +2,8 @@ id: agora_seller_product_create
 name: "AgoraMarket 賣家新增商品表單驗證"
 url: "https://redandan.github.io/?__test_role=seller"
 
-max_iterations: 20
-timeout_secs: 250
+max_iterations: 25
+timeout_secs: 420
 
 # Seller 後台是 PC 桌面版，使用標準桌面 viewport
 viewport:
@@ -22,29 +22,32 @@ goal: |
   ⚠️ 賣家首頁是儀表板（賣場設定/批量導入商品），不是商品列表。
     必須先點底部「商品」tab 才能進入商品管理列表。
   ⚠️ 商品管理列表頂部有「新增商品」按鈕，用 shadow_click 點擊。
-  ⚠️ 新增商品頁面的「物流設定」按鈕可用 shadow_click 直接找到（不需先捲動）。
-  ⚠️ 點「物流設定」後，物流服務開關會出現在頁面下半部，不需捲動即可看到前三個。
+  ⚠️ 新增商品頁面的「物流設定」按鈕位於頁面下方，需先 flutter_scroll_until_visible 捲到可見。
+  ⚠️ 物流設定是 ExpansionTile（Flutter AX role=group），展開後加 enable_a11y + wait 800 再截圖。
+  ⚠️ 新增商品預設：宅配到府 ON + 7-ELEVEN ON，其餘 OFF。
   ⚠️ Flutter app：所有 UI 判斷用 screenshot_analyze。
-  ⚠️ 不論任何步驟失敗，都必須繼續執行到步驟 11 才能輸出 done=true。嚴禁提早終止。
+  ⚠️ 不論任何步驟失敗，都必須繼續執行到步驟 13 才能輸出 done=true。嚴禁提早終止。
 
-  步驟（線性，步驟 11 無條件 done=true，不得提早）：
+  步驟（線性，步驟 13 無條件 done=true，不得提早）：
   1. wait 3000（等賣家儀表板完整載入）
   2. shadow_click role=tab name_regex="^商品$"（點底部商品 tab，進入商品管理列表）
-  3. wait 3000（等商品管理列表載入）
-  4. shadow_click role=button name_regex="^新增商品$"（點新增商品按鈕）
-  5. wait 4000（等新增商品頁面完整載入）
-  6. flutter_scroll_until_visible role=button name_regex="物流設定"
-  shadow_click role=button name_regex="^物流設定$"（展開物流設定區塊）
-  7. wait 1500
-  8. screenshot_analyze "截圖。宅配到府開關是開還是關？預設運費是多少？7-ELEVEN 開關是開還是關？運費是多少？全家便利商店開關是開還是關？運費是多少？（只需回答這三項，簡短即可）"
-  9. scroll y=100（小幅向下查看萊爾富/OK超商）
-  10. screenshot_analyze "截圖。萊爾富開關是開還是關？OK超商開關是開還是關？整體有預設值嗎？（簡短回答）"
-  11. done=true
+  3. wait 2500（等商品管理列表載入）
+  4. enable_a11y（重新初始化 Flutter semantics）
+  5. wait 1000
+  6. shadow_click role=button name_regex="^新增商品$"（點新增商品按鈕）
+  7. wait 4000（等新增商品頁面完整載入）
+  8. flutter_scroll_until_visible role=button name_regex="物流設定"（捲動到物流設定按鈕）
+  9. shadow_click role=button name_regex="^物流設定$"（展開物流設定區塊）
+  10. wait 1500
+  11. enable_a11y（展開後重建 AX tree）
+  12. wait 800
+  13. screenshot_analyze "截圖。宅配到府開關是開還是關？預設運費是多少？7-ELEVEN 開關是開還是關？運費是多少？全家便利商店開關是開還是關？運費是多少？（只需回答這三項，簡短即可）"
+  14. done=true
 
 success_criteria:
   - "成功從商品管理列表點擊新增商品並進入新增頁面"
-  - "展開物流設定並看到至少宅配到府和 7-ELEVEN 兩個物流服務的開關"
-  - "物流服務運費欄位有預設值（非空白）"
+  - "展開物流設定並看到至少宅配到府和 7-ELEVEN 兩個物流服務的開關（新增商品預設 ON）"
+  - "物流服務運費欄位有預設值（宅配 100、7-ELEVEN 60）"
 
 tags: [regression, product, seller, create, agora]
 
