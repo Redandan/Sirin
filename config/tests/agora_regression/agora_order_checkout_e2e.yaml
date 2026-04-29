@@ -23,9 +23,9 @@ goal: |
   ⚠️ 所有點擊只用 shadow_click（role + name_regex）。嚴禁 click_point。
   ⚠️ 加入購物車後會彈出規格選擇（SKU），必須先選規格再確認加入。
   ⚠️ 購物車結帳按鈕實際名稱是「全部結帳」（非「結帳」或「前往結帳」）。
-  ⚠️ 步驟 16 無條件 done=true，嚴禁提早終止。
+  ⚠️ 步驟 20 無條件 done=true，嚴禁提早終止。
 
-  步驟（線性，步驟 16 無條件 done=true）：
+  步驟（線性，步驟 20 無條件 done=true）：
   1. wait 3000（等首頁完整載入）
   2. enable_a11y（初始化 Flutter semantics）
   3. wait 1500
@@ -41,8 +41,14 @@ goal: |
   13. wait 2000
   14. shadow_click role=button name_regex="^購物車$"（點頂部購物車圖示進入購物車）
   15. wait 2500
-  16. screenshot_analyze "是否在購物車頁面？看到剛加入的商品嗎？有「全部結帳」按鈕嗎？"
-  17. done=true
+  16. enable_a11y（確保購物車頁 Flutter semantics 已更新）
+  17. wait 1000
+  18. shadow_dump（列出購物車頁所有元素，確認頁面已載入 + 找到「全部結帳」按鈕）
+  19. screenshot_analyze "是否在購物車頁面？看到剛加入的商品嗎？有「全部結帳」按鈕嗎？"
+  20. done=true
+
+  ⚠️ 步驟 18 shadow_dump + 步驟 19 screenshot_analyze 均必須執行。
+  ⚠️ 不可在步驟 18 前 done=true。
 
 success_criteria:
   - "成功點擊商品卡進入詳情頁"
