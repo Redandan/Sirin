@@ -1,0 +1,49 @@
+id: agora_c2c_delivery_dashboard
+name: "C2C 核心流程：外送員儀表板 UI 驗證"
+url: "https://redandan.github.io/?__test_role=delivery#/delivery"
+
+max_iterations: 15
+timeout_secs: 240
+max_retries: 1
+
+# H5 mobile viewport — 外送員後台是手機版
+viewport:
+  width: 390
+  height: 844
+  scale: 2.0
+  mobile: true
+
+locale: zh-TW
+
+goal: |
+  目標：驗證外送員儀表板可正常載入，顯示今日統計、工作狀態開關和訂單資訊。
+
+  已知資訊：
+  - 外送員路由：#/delivery（直接導航可到達）
+  - 儀表板顯示：今日收入、完成訂單數、待接單/配送中/已完成統計
+  - 工作狀態開關（switch：正在接單中/停止接單）
+  - 底部 4 個 tab：首頁/訂單/收入/我的
+  - 快捷功能：歷史訂單、配送指南、訊息中心、個人設定
+
+  ⚠️ 步驟 11 無條件 done=true。
+
+  步驟（線性，步驟 11 done=true）：
+  1. wait 4000（等 Flutter 載入）
+  2. enable_a11y
+  3. wait 2000
+  4. shadow_dump（確認在外送員儀表板，看到統計數字和工作開關）
+  5. screenshot_analyze "外送員儀表板截圖：有今日收入金額嗎？有待接單/配送中/已完成統計嗎？有工作狀態開關嗎？有底部 4 個 tab（首頁/訂單/收入/我的）嗎？"
+  6. shadow_click role=tab name_regex="^訂單$"（切換到訂單 tab）
+  7. wait 2000
+  8. enable_a11y
+  9. wait 1000
+  10. screenshot_analyze "外送員訂單 tab 截圖：有沒有訂單列表？若無訂單，顯示什麼提示文字？"
+  11. done=true
+
+success_criteria:
+  - "成功載入外送員儀表板（#/delivery）"
+  - "儀表板顯示今日統計（收入、完成訂單數）"
+  - "有工作狀態開關（接單/停止）"
+  - "有底部導航 tab（首頁/訂單/收入/我的）"
+
+tags: [c2c, delivery, dashboard, regression, core-flow]

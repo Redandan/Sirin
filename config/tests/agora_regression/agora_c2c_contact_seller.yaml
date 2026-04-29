@@ -27,20 +27,21 @@ goal: |
   ⚠️ 步驟 14 無條件 done=true。
 
   步驟（線性，步驟 14 done=true）：
-  1. wait 3000
-  2. enable_a11y
-  3. wait 1500
-  4. shadow_click role=button name_regex="USDT"（進入商品詳情）
-  5. wait 2500
-  6. enable_a11y
-  7. wait 1000
-  8. shadow_click role=button name_regex="^聯繫賣家$"（開啟聊天）
-  9. wait 3000
-  10. enable_a11y
-  11. wait 1000
-  12. shadow_dump（確認在聊天頁，找到模板 checkbox 和功能按鈕）
-  13. screenshot_analyze "是否在聊天頁面（#/chat/）？有沒有預設訊息模板（checkbox 選項）或對話框？記錄頁面主要 UI 元素。"
-  14. done=true
+  1. clear_state（清除其他 session 殘留，確保以買家身份啟動）
+  2. wait 5000（等 Flutter 重新初始化）
+  3. enable_a11y
+  4. wait 2000
+  5. shadow_click role=button name_regex="USDT"（進入商品詳情）
+  6. wait 2500
+  7. enable_a11y
+  8. wait 1000
+  9. shadow_click role=button name_regex="^聯繫賣家$"（開啟聊天）
+  10. wait 3000
+  11. enable_a11y
+  12. wait 1000
+  13. shadow_dump（確認在聊天頁，找到模板 checkbox 和功能按鈕）
+  14. screenshot_analyze "是否在聊天頁面（#/chat/）？有沒有預設訊息模板（checkbox 選項）或對話框？記錄頁面主要 UI 元素。"
+  15. done=true
 
 success_criteria:
   - "成功從商品詳情頁開啟聊天"
