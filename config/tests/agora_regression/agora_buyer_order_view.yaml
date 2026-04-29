@@ -2,8 +2,8 @@ id: agora_buyer_order_view
 name: "AgoraMarket 買家訂單管理頁驗證"
 url: "https://redandan.github.io/?__test_role=buyer"
 
-max_iterations: 14
-timeout_secs: 180
+max_iterations: 18
+timeout_secs: 240
 max_retries: 1  # H5 Flutter 偶發 Chrome 初始化延遲，自動重試一次
 
 # H5 mobile viewport — AgoraMarket 會員端是手機版 App，必須用手機 viewport 測試
@@ -24,20 +24,22 @@ goal: |
 
   ⚠️ 必須點底部「訂單」tab，不是搜尋或其他按鈕。
   ⚠️ Flutter app：所有 UI 判斷用 screenshot_analyze。
-  ⚠️ 不論任何步驟失敗，都必須繼續執行到步驟 8 才能輸出 done=true。嚴禁提早終止。
+  ⚠️ 不論任何步驟失敗，都必須繼續執行到步驟 13 才能輸出 done=true。嚴禁提早終止。
 
-  步驟（線性，步驟 8 無條件 done=true，不得提早）：
+  步驟（線性，步驟 13 無條件 done=true，不得提早）：
   1. wait 3000（等買家頁面完整載入）
-  2. shadow_click role=tab name_regex="^訂單$"（點底部訂單 tab）
-  3. wait 2500（等訂單頁面載入）
-  4. screenshot_analyze "訂單頁面截圖。記錄頂部有哪些訂單分類 tab（全部/待出貨/待收貨/已完成/退貨退款/不成立等）？訂單列表顯示什麼（有訂單？空列表？）？"
-  5. shadow_click role=tab name_regex="^待出貨$"（點待出貨 tab）
-  6. wait 1500
-  7. screenshot_analyze "待出貨訂單截圖。有幾筆待出貨訂單？每筆顯示哪些資訊（商品名/金額/狀態）？若空列表，記錄空列表的顯示文字。"
-  8. shadow_click role=tab name_regex="^已完成$"（點已完成 tab）
-  9. wait 1500
-  10. screenshot_analyze "已完成訂單截圖。有幾筆已完成訂單？記錄最新一筆的商品名稱和金額。"
-  11. done=true
+  2. enable_a11y（初始化 Flutter semantics）
+  3. wait 1500
+  4. shadow_click role=tab name_regex="^訂單$"（點底部訂單 tab）
+  5. wait 2500（等訂單頁面載入）
+  6. screenshot_analyze "訂單頁面截圖。記錄頂部有哪些訂單分類 tab（全部/待出貨/待收貨/已完成/退貨退款/不成立等）？訂單列表顯示什麼（有訂單？空列表？）？"
+  7. shadow_click role=tab name_regex="^待出貨$"（點待出貨 tab）
+  8. wait 1500
+  9. screenshot_analyze "待出貨訂單截圖。有幾筆待出貨訂單？每筆顯示哪些資訊（商品名/金額/狀態）？若空列表，記錄空列表的顯示文字。"
+  10. shadow_click role=tab name_regex="^已完成$"（點已完成 tab）
+  11. wait 1500
+  12. screenshot_analyze "已完成訂單截圖。有幾筆已完成訂單？記錄最新一筆的商品名稱和金額。"
+  13. done=true
 
 success_criteria:
   - "成功點擊底部訂單 tab 並進入訂單管理頁"
