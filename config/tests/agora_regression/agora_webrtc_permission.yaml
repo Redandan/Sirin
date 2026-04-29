@@ -24,15 +24,18 @@ goal: |
   ⚠️ 嚴禁提早終止：必須執行完所有步驟才能 done=true。
 
   步驟（按順序執行，不跳過）：
-  1. screenshot_analyze "確認在首頁，看到商品列表和底部 tab"
-  2. shadow_click role=button name_regex="USDT"（進入第一個商品詳情頁）
-  3. wait 2500
-  4. screenshot_analyze "是否在商品詳情頁？找聯繫賣家/客服/通話相關按鈕"
-  5. shadow_dump（查看詳情頁所有按鈕，找通話/聊天入口）
-  6. shadow_click role=button name_regex="聯繫賣家|客服|通話|視訊|Chat|Call|WebRTC|聊聊"
-  7. wait 3000
-  8. screenshot_analyze "是否進入聊天/通話頁面？出現 permission 請求彈窗？還是錯誤訊息？記錄所有結果"
-  9. done=true
+  1. wait 3000（等買家首頁完整載入）
+  2. enable_a11y（初始化 Flutter semantics）
+  3. wait 1500
+  4. screenshot_analyze "確認在首頁，看到商品列表和底部 tab"
+  5. shadow_click role=button name_regex="USDT"（進入第一個商品詳情頁）
+  6. wait 2500
+  7. screenshot_analyze "是否在商品詳情頁？找聯繫賣家/客服/通話相關按鈕"
+  8. shadow_dump（查看詳情頁所有按鈕，找通話/聊天入口）
+  9. shadow_click role=button name_regex="聯繫賣家|客服|通話|視訊|Chat|Call|WebRTC|聊聊"
+  10. wait 3000
+  11. screenshot_analyze "是否進入聊天/通話頁面？出現 permission 請求彈窗？還是錯誤訊息？記錄所有結果"
+  12. done=true
 
   ⚠️ 必須完整執行步驟 1-9，嚴禁在步驟 1 後立即 done=true。
   ⚠️ 若步驟 6 找不到聯繫賣家按鈕，繼續執行步驟 7-9（記錄無此功能）。
