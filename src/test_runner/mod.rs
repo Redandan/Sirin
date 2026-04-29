@@ -610,6 +610,8 @@ pub fn spawn_batch_run(
                 });
 
                 let passed = matches!(result.status, TestStatus::Passed);
+                // Issue #180: extract before result is moved into set_phase.
+                let timed_out = matches!(result.status, TestStatus::Timeout | TestStatus::Error);
                 let reason = if passed {
                     None
                 } else {
@@ -622,8 +624,21 @@ pub fn spawn_batch_run(
                 // Best-effort close the dedicated tab.  Browser actions hold
                 // the session in `OnceLock<Mutex>` — release it so the next
                 // batch doesn't accumulate ghost tabs.
+                //
+                // Issue #180: if the test timed out or errored, Chrome may be
+                // in a degraded state (CDP commands slow, JS hanging).
+                // Navigate the named-session tab to about:blank first to stop
+                // all ongoing activity before closing, giving Chrome ~1s to
+                // recover before the next batch test starts on a new tab.
                 let sid = session_id.clone();
                 let _ = tokio::task::spawn_blocking(move || {
+                    if timed_out {
+                        // Switch to the named-session tab and blank it out.
+                        if crate::browser::session_switch(&sid).is_ok() {
+                            let _ = crate::browser::navigate("about:blank");
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(1500));
+                    }
                     let _ = crate::browser::close_session(&sid);
                 }).await;
             });
