@@ -2,8 +2,8 @@ id: agora_cart_add_remove
 name: "商品詳情頁購買按鈕驗證"
 url: "https://redandan.github.io/?__test_role=buyer"
 
-max_iterations: 16
-timeout_secs: 240
+max_iterations: 20
+timeout_secs: 300
 max_retries: 1  # H5 Flutter 偶發 Chrome 初始化延遲，自動重試一次
 
 # H5 mobile viewport — AgoraMarket 會員端是手機版 App，必須用手機 viewport 測試
@@ -27,18 +27,21 @@ goal: |
   ⚠️ 嚴禁提早終止：必須執行完所有步驟才能 done=true。
 
   步驟（按順序執行，不跳過）：
-  1. shadow_click role=button name_regex="USDT"（點第一個商品卡進入詳情）
-  2. wait 2500
-  3. screenshot_analyze "是否在商品詳情頁？看到哪些按鈕？"
-  4. scroll y=300
-  5. shadow_dump（查看詳情頁所有按鈕名稱）
-  6. screenshot_analyze "有「加入購物車」按鈕嗎？還是只有「立即購買」？記錄所有購買相關按鈕"
-  7. shadow_click role=button name_regex="立即購買|加入購物車|Buy Now|Add to Cart|購買"
-  8. wait 2000
-  9. screenshot_analyze "點擊購買後的頁面狀態？是否進入結帳頁、彈出規格選擇框、或顯示錯誤？"
-  10. done=true
+  1. wait 3000（等買家首頁完整載入）
+  2. enable_a11y（初始化 Flutter semantics）
+  3. wait 1500
+  4. shadow_click role=button name_regex="USDT"（點第一個商品卡進入詳情）
+  5. wait 2500
+  6. screenshot_analyze "是否在商品詳情頁？看到哪些按鈕？"
+  7. scroll y=300
+  8. shadow_dump（查看詳情頁所有按鈕名稱）
+  9. screenshot_analyze "有「加入購物車」按鈕嗎？還是只有「立即購買」？記錄所有購買相關按鈕"
+  10. shadow_click role=button name_regex="立即購買|加入購物車|Buy Now|Add to Cart|購買"
+  11. wait 2000
+  12. screenshot_analyze "點擊購買後的頁面狀態？是否進入結帳頁、彈出規格選擇框、或顯示錯誤？"
+  13. done=true
 
-  ⚠️ 必須完整執行步驟 1-10，嚴禁在步驟 6 前 done=true。
+  ⚠️ 必須完整執行步驟 1-13，嚴禁在步驟 9 前 done=true。
   ⚠️ 若 shadow_click 找不到購買按鈕，繼續執行步驟 8-10（記錄找不到的情況）。
 
 success_criteria:

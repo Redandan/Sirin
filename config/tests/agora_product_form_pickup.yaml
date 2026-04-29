@@ -61,7 +61,10 @@ goal: |
 
   === 第二輪：修改並儲存 ===
   12. scroll y=100（確保開關可見）
-  13. shadow_click role=switch name_regex="7-ELEVEN|7-Eleven|全家"（切換其中一個 pickup 開關）
+  13. shadow_dump（列出當前可見的 switch 元素；pickup service 開關的 role=switch，沒有 name）
+  ⚠️ Flutter Switch 在 AX tree 沒有 accessible name，只能靠 role=switch 找到。
+     依 shadow_dump 結果選擇第一個 role=switch 元素。
+  shadow_click role=switch（點擊第一個可見的 pickup service 開關）
   14. wait 1200
   15. screenshot_analyze "【第二輪/修改後】記錄：剛剛切換的開關現在是開還是關？哪一個服務被切換？"
   16. flutter_scroll_until_visible role=button name_regex="保存商品|更新商品|儲存"（捲回找儲存按鈕）
