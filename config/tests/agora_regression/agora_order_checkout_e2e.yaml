@@ -36,28 +36,30 @@ goal: |
   ⚠️ 任一步驟失敗仍必須執行到步驟 14 才能 done=true。嚴禁提早終止。
   ⚠️ 這是 E2E 真實下單，會在後端產生訂單記錄 — 是預期行為（測試帳號）。
 
-  步驟（線性，步驟 14 無條件 done=true，不得提早）：
+  步驟（線性，步驟 23 無條件 done=true，不得提早）：
   1. wait 3000（等首頁完整載入）
-  2. screenshot_analyze "確認在買家首頁，看到商品卡片列表（含 USDT 價格）"
-  3. shadow_click role=button name_regex="USDT"（點第一個商品卡進入詳情）
-  4. wait 2500
-  5. screenshot_analyze "是否在商品詳情頁？記錄商品名稱、價格、可見的物流/取貨欄位是否有預設值（Bug #3：service type 必須非空白）"
-  6. scroll y=400（捲到底部找購買按鈕）
-  7. shadow_click role=button name_regex="加入購物車|立即購買|確認購買|Buy Now|Add to Cart|購買"
-  8. wait 3000
-  9. screenshot_analyze "點購買後的狀態：是規格選擇彈窗？結帳頁？購物車？記錄看到的標題與按鈕"
-  10. shadow_click role=button name_regex="結帳|前往結帳|去結帳|下一步|確認|Checkout|Continue"
-  11. wait 3000
-  12. screenshot_analyze "結帳頁截圖：訂單摘要、金額、付款方式選項、收貨/取貨資訊欄位是否都有預設值（Bug #3）？「下單/Place Order」按鈕是否可點（非 disabled）？"
-  13. shadow_click role=button name_regex="USDT|錢包餘額|餘額支付|Balance"（選付款方式 — 若已預選則此步驟可能 no-op）
-  14. wait 1500
-  15. shadow_click role=button name_regex="^下單$|^確認下單$|^送出訂單$|^Place Order$|^Submit$"
-  16. wait 4500（等下單請求 + 跳轉）
-  17. screenshot_analyze "下單後的狀態：是否跳到訂單成功頁、訂單詳情、或回到訂單列表？記錄頁面標題與顯示的訂單資訊"
-  18. shadow_click role=tab name_regex="^訂單$"（點底部訂單 tab 確認訂單入列）
-  19. wait 2500
-  20. screenshot_analyze "我的訂單頁截圖：剛下的訂單是否出現在最上方？記錄商品名、金額、狀態（待出貨/待付款/處理中等）"
-  21. done=true
+  2. enable_a11y（初始化 Flutter semantics）
+  3. wait 1500
+  4. screenshot_analyze "確認在買家首頁，看到商品卡片列表（含 USDT 價格）"
+  5. shadow_click role=button name_regex="USDT"（點第一個商品卡進入詳情）
+  6. wait 2500
+  7. screenshot_analyze "是否在商品詳情頁？記錄商品名稱、價格、可見的物流/取貨欄位是否有預設值（Bug #3：service type 必須非空白）"
+  8. scroll y=400（捲到底部找購買按鈕）
+  9. shadow_click role=button name_regex="加入購物車|立即購買|確認購買|Buy Now|Add to Cart|購買"
+  10. wait 3000
+  11. screenshot_analyze "點購買後的狀態：是規格選擇彈窗？結帳頁？購物車？記錄看到的標題與按鈕"
+  12. shadow_click role=button name_regex="結帳|前往結帳|去結帳|下一步|確認|Checkout|Continue"
+  13. wait 3000
+  14. screenshot_analyze "結帳頁截圖：訂單摘要、金額、付款方式選項、收貨/取貨資訊欄位是否都有預設值（Bug #3）？「下單/Place Order」按鈕是否可點（非 disabled）？"
+  15. shadow_click role=button name_regex="USDT|錢包餘額|餘額支付|Balance"（選付款方式 — 若已預選則此步驟可能 no-op）
+  16. wait 1500
+  17. shadow_click role=button name_regex="^下單$|^確認下單$|^送出訂單$|^Place Order$|^Submit$"
+  18. wait 4500（等下單請求 + 跳轉）
+  19. screenshot_analyze "下單後的狀態：是否跳到訂單成功頁、訂單詳情、或回到訂單列表？記錄頁面標題與顯示的訂單資訊"
+  20. shadow_click role=tab name_regex="^訂單$"（點底部訂單 tab 確認訂單入列）
+  21. wait 2500
+  22. screenshot_analyze "我的訂單頁截圖：剛下的訂單是否出現在最上方？記錄商品名、金額、狀態（待出貨/待付款/處理中等）"
+  23. done=true
 
 success_criteria:
   - "成功從商品詳情頁加入購物車或進入結帳"
