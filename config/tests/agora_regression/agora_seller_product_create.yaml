@@ -26,7 +26,7 @@ goal: |
   ⚠️ 物流設定是 ExpansionTile（Flutter AX role=group），展開後加 enable_a11y + wait 800 再截圖。
   ⚠️ 新增商品預設：宅配到府 ON + 7-ELEVEN ON，其餘 OFF。
   ⚠️ Flutter app：所有 UI 判斷用 screenshot_analyze。
-  ⚠️ 不論任何步驟失敗，都必須繼續執行到步驟 14 才能輸出 done=true。嚴禁提早終止。
+  ⚠️ 不論任何步驟失敗，都必須繼續執行到步驟 17 才能輸出 done=true。嚴禁提早終止。
 
   步驟（線性，步驟 14 無條件 done=true，不得提早）：
   1. wait 3000（等賣家儀表板完整載入）
@@ -43,8 +43,9 @@ goal: |
   12. wait 1500
   13. enable_a11y（展開後重建 AX tree）
   14. wait 800
-  15. screenshot_analyze "截圖。宅配到府開關是開還是關？預設運費是多少？7-ELEVEN 開關是開還是關？運費是多少？（只需回答這兩項，簡短即可）"
-  16. done=true
+  15. scroll y=200（捲動讓宅配+7-ELEVEN 開關都進入視窗）
+  16. screenshot_analyze "截圖。宅配到府開關是開還是關？預設運費是多少？7-ELEVEN 開關是開還是關？運費是多少？（只需回答這兩項，簡短即可）"
+  17. done=true
 
 success_criteria:
   - "成功從商品管理列表點擊新增商品並進入新增頁面"
