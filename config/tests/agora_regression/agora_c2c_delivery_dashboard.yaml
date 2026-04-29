@@ -25,20 +25,21 @@ goal: |
   - 底部 4 個 tab：首頁/訂單/收入/我的
   - 快捷功能：歷史訂單、配送指南、訊息中心、個人設定
 
-  ⚠️ 步驟 11 無條件 done=true。
+  ⚠️ 步驟 12 無條件 done=true。
 
-  步驟（線性，步驟 11 done=true）：
-  1. wait 4000（等 Flutter 載入）
-  2. enable_a11y
-  3. wait 2000
-  4. shadow_dump（確認在外送員儀表板，看到統計數字和工作開關）
-  5. screenshot_analyze "外送員儀表板截圖：有今日收入金額嗎？有待接單/配送中/已完成統計嗎？有工作狀態開關嗎？有底部 4 個 tab（首頁/訂單/收入/我的）嗎？"
-  6. shadow_click role=tab name_regex="^訂單$"（切換到訂單 tab）
-  7. wait 2000
-  8. enable_a11y
-  9. wait 1000
-  10. screenshot_analyze "外送員訂單 tab 截圖：有沒有訂單列表？若無訂單，顯示什麼提示文字？"
-  11. done=true
+  步驟（線性，步驟 13 done=true）：
+  1. clear_state（清除買家/賣家 session，確保以外送員身份重新載入）
+  2. wait 5000（等 Flutter 冷載入完成）
+  3. enable_a11y
+  4. wait 2000
+  5. shadow_dump（確認在外送員儀表板，看到統計數字和工作開關）
+  6. screenshot_analyze "外送員儀表板截圖：有今日收入金額嗎？有待接單/配送中/已完成統計嗎？有工作狀態開關嗎？有底部 4 個 tab（首頁/訂單/收入/我的）嗎？"
+  7. shadow_click role=tab name_regex="^訂單$"（切換到訂單 tab）
+  8. wait 2000
+  9. enable_a11y
+  10. wait 1000
+  11. screenshot_analyze "外送員訂單 tab 截圖：有沒有訂單列表？若無訂單，顯示什麼提示文字？"
+  12. done=true
 
 success_criteria:
   - "成功載入外送員儀表板（#/delivery）"
