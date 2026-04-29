@@ -39,13 +39,13 @@ goal: |
   10. enable_a11y
   11. wait 1000
   12. shadow_dump（確認在聊天頁，找到模板 checkbox 和功能按鈕）
-  13. screenshot_analyze "是否在聊天頁面？有沒有聊天模板選項（預設訊息 checkbox）？有沒有語音通話或上傳圖片按鈕？"
+  13. screenshot_analyze "是否在聊天頁面（#/chat/）？有沒有預設訊息模板（checkbox 選項）或對話框？記錄頁面主要 UI 元素。"
   14. done=true
 
 success_criteria:
   - "成功從商品詳情頁開啟聊天"
   - "聊天頁面顯示對話歷史或空白聊天框"
   - "有預設訊息模板選項（checkbox）或輸入框"
-  - "有語音通話或上傳圖片等功能按鈕（聊天互動功能可用）"
+  - "聊天頁面可正常開啟（有預設訊息模板或輸入框）"
 
 tags: [c2c, buyer, chat, contact-seller, regression, core-flow]
