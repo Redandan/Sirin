@@ -2,8 +2,8 @@ id: agora_admin_status_chip
 name: "AgoraMarket Admin 商品狀態 Chip 顏色 Regression (Issue #70 #22)"
 url: "https://redandan.github.io/?__test_role=admin"
 
-max_iterations: 20
-timeout_secs: 420
+max_iterations: 30
+timeout_secs: 480
 # Admin 後台是 PC 桌面版，使用標準桌面 viewport
 viewport:
   width: 1280

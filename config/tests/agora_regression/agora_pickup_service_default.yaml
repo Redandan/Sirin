@@ -32,23 +32,23 @@ goal: |
   ⚠️ 商品編輯頁的「物流設定」按鈕可用 shadow_click 找到並點擊（不需先捲動）。
   ⚠️ 點「物流設定」後，宅配到府/7-ELEVEN/全家 的開關和運費欄位會顯示在頁面下半部。
   ⚠️ Flutter app：所有 UI 判斷用 screenshot_analyze。
-  ⚠️ 不論任何步驟失敗，都必須繼續執行到步驟 10 才能輸出 done=true。嚴禁提早終止。
+  ⚠️ 不論任何步驟失敗，都必須繼續執行到步驟 13 才能輸出 done=true。嚴禁提早終止。
 
-  步驟（線性，步驟 10 無條件 done=true，不得提早）：
+  步驟（線性，步驟 13 無條件 done=true，不得提早）：
   1. wait 3000（等賣家儀表板完整載入）
   2. shadow_click role=tab name_regex="^商品$"（點底部商品 tab，進入商品管理列表）
   3. wait 2500
   4. shadow_click role=button name_regex="^編輯$"（點第一個商品的編輯按鈕）
   5. wait 4000（等商品編輯頁完整載入）
-  6. flutter_scroll_until_visible role=button name_regex="物流設定"
-  shadow_click role=button name_regex="^物流設定$"（點「物流設定」展開物流服務區塊）
-  7. wait 1500
-  enable_a11y
-  wait 800
-  8. screenshot_analyze "物流設定展開後的截圖。列出所有可見的物流服務選項（宅配到府/7-ELEVEN/全家）、每個的開關狀態（開/關）及運費金額。有沒有「服務類型」(service type) 下拉選單或任何空白的欄位？（Bug #3 驗證：運費欄位、服務類型欄位是否有預設值？）"
-  9. scroll y=100（小幅捲動查看萊爾富/OK超商）
-  10. screenshot_analyze "萊爾富和OK超商的開關狀態與運費。整體來說，5個物流服務的所有欄位（開關狀態、運費金額）是否都有值？有沒有任何空白欄位？這是 Bug #3 的驗證：service type 必須有預設值（非空白）。"
-  11. done=true
+  6. flutter_scroll_until_visible role=button name_regex="物流設定"（捲動到物流設定按鈕）
+  7. shadow_click role=button name_regex="^物流設定$"（點「物流設定」展開物流服務區塊）
+  8. wait 1500
+  9. enable_a11y（展開後重建 AX tree）
+  10. wait 800
+  11. screenshot_analyze "物流設定展開後的截圖。列出所有可見的物流服務選項（宅配到府/7-ELEVEN/全家）、每個的開關狀態（開/關）及運費金額。有沒有「服務類型」(service type) 下拉選單或任何空白的欄位？（Bug #3 驗證：運費欄位、服務類型欄位是否有預設值？）"
+  12. scroll y=100（小幅捲動查看萊爾富/OK超商）
+  13. screenshot_analyze "萊爾富和OK超商的開關狀態與運費。整體來說，5個物流服務的所有欄位（開關狀態、運費金額）是否都有值？有沒有任何空白欄位？這是 Bug #3 的驗證：service type 必須有預設值（非空白）。"
+  14. done=true
 
 success_criteria:
   - "成功透過商品 tab + 編輯按鈕進入商品編輯頁"
