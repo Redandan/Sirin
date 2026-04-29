@@ -41,10 +41,10 @@ goal: |
      第三輪（步驟 20-30）：再次進入商品編輯 → 展開物流設定 → enable_a11y → 記錄狀態C → done=true
      最終比對：狀態C 必須反映第二輪的修改（Bug #5/#25 驗證）。
 
-  ⚠️ 唯一允許 done=true 的位置是步驟 30，其他步驟不能 done=true。
-  ⚠️ 不論任何步驟失敗，都必須繼續執行到步驟 30 才能輸出 done=true。嚴禁提早終止。
+  ⚠️ 唯一允許 done=true 的位置是步驟 33，其他步驟不能 done=true。
+  ⚠️ 不論任何步驟失敗，都必須繼續執行到步驟 33 才能輸出 done=true。嚴禁提早終止。
 
-  步驟（線性，全部 30 步必須依序執行）：
+  步驟（線性，全部 33 步必須依序執行）：
 
   === 第一輪：記錄狀態 A ===
   1. wait 3000（等賣家儀表板完整載入）
@@ -80,13 +80,13 @@ goal: |
   24. wait 1000
   25. shadow_click role=button name_regex="^編輯$"（再次進入同商品編輯頁）
   26. wait 4000
-  25. flutter_scroll_until_visible role=button name_regex="物流設定"（捲動到物流設定）
-  26. shadow_click role=button name_regex="^物流設定$"（展開物流設定）
-  27. wait 1500
-  28. enable_a11y（展開後重建 AX tree）
-  29. wait 800
-  30. screenshot_analyze "【第三輪/狀態C】記錄：宅配到府、7-ELEVEN、全家 的開關狀態與運費。與步驟 17 的修改後狀態是否一致？（Bug #5/#25 PASS 條件：步驟 15 切換的那個開關，重新編輯時值必須與步驟 17 相同）"
-  31. done=true
+  27. flutter_scroll_until_visible role=button name_regex="物流設定"（捲動到物流設定）
+  28. shadow_click role=button name_regex="^物流設定$"（展開物流設定）
+  29. wait 1500
+  30. enable_a11y（展開後重建 AX tree）
+  31. wait 800
+  32. screenshot_analyze "【第三輪/狀態C】記錄：宅配到府、7-ELEVEN、全家 的開關狀態與運費。與步驟 17 的修改後狀態是否一致？（Bug #5/#25 PASS 條件：步驟 15 切換的那個開關，重新編輯時值必須與步驟 17 相同）"
+  33. done=true
 
 success_criteria:
   - "第一輪成功進入商品編輯頁並展開物流設定（涵蓋 #10）"
