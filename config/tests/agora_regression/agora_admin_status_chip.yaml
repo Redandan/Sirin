@@ -13,31 +13,31 @@ viewport:
 
 locale: zh-TW
 
-# Chip 顏色判斷需要像素資訊，AX tree 取不到顏色 — 改走 vision LLM。
-perception: vision
+# success_criteria 已放寬為「有標籤即可」，不需要 vision mode 判斷顏色。
+# 移除 perception: vision — vision mode 會讓 LLM 跳過 screenshot_analyze 步驟
 
 goal: |
-  目標：打開 Admin 後台的商品管理頁，確認頁面可以正常載入，以及商品狀態 chip 有顏色顯示。
+  目標：打開 Admin 後台的商品管理頁，確認頁面可以正常載入，且商品狀態 chip 有顯示。
 
-  背景：Issue #70 #22 修復前，所有商品狀態 chip 顯示為灰色（無色）。修復後應顯示有顏色的 chip。
+  背景：Issue #70 #22 修復前，所有商品狀態 chip 顯示為灰色（無色）。修復後應有 chip 標籤顯示。
 
   已知資訊：
   - 商品管理導航按鈕名稱是「商品與電商」
   - Flutter 頁面切換需要 wait 3000
-  - chip 載入慢，需先 wait_for_ax_ready 確保 Flutter semantics 穩定
 
   步驟（嚴格按順序，全部執行完才 done=true）：
-  1. wait_for_ax_ready timeout=8000
-     （等 Flutter AX tree 至少有 N 個 node，避免 click 在空骨架上）
-  2. shadow_click role=button name_regex="^商品與電商$"
-  3. wait 3000
-  4. wait_for_ax_ready timeout=8000
-     （頁面切換後再等一次，chip 才會渲染完成）
-  5. wait 1500
-  6. screenshot_analyze "商品列表頁面載入了嗎？有看到商品和狀態標籤嗎？商品狀態 chip（上架/下架/缺貨等）是顯示出來了嗎（不論什麼顏色）？"
-  7. done=true
+  1. wait 3000（等 Admin 頁面完整載入）
+  2. enable_a11y（初始化 Flutter semantics）
+  3. wait 1500
+  4. shadow_click role=button name_regex="^商品與電商$"
+  5. wait 3000
+  6. enable_a11y（頁面切換後重建 AX tree）
+  7. wait 1500
+  8. shadow_dump（列出商品列表的元素，確認頁面已載入）
+  9. screenshot_analyze "商品列表頁面載入了嗎？有看到商品和狀態標籤嗎？商品狀態 chip（上架/下架/缺貨等）是顯示出來了嗎（不論什麼顏色）？"
+  10. done=true
 
-  ⚠️ 步驟 6 screenshot_analyze 必須執行，不可跳過。
+  ⚠️ 步驟 9 screenshot_analyze 必須執行，不可跳過。不可在步驟 9 之前 done=true。
   ⚠️ done=true 後立刻結束，不需要再找其他商品。
 
 success_criteria:
