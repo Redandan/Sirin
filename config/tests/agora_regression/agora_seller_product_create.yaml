@@ -26,12 +26,12 @@ goal: |
   ⚠️ 物流設定是 ExpansionTile（Flutter AX role=group），展開後加 enable_a11y + wait 800 再截圖。
   ⚠️ 新增商品預設：宅配到府 ON + 7-ELEVEN ON，其餘 OFF。
   ⚠️ Flutter app：所有 UI 判斷用 screenshot_analyze。
-  ⚠️ 不論任何步驟失敗，都必須繼續執行到步驟 16 才能輸出 done=true。嚴禁提早終止。
+  ⚠️ 不論任何步驟失敗，都必須繼續執行到步驟 14 才能輸出 done=true。嚴禁提早終止。
 
-  步驟（線性，步驟 15 無條件 done=true，不得提早）：
-  1. clear_state（清除 service worker 快取，確保載入最新版 Flutter app）
-  2. wait_for_ax_ready timeout=30000（等 Flutter 完整初始化 — clear_state 後冷載入需 20-40s）
-  3. wait 2000
+  步驟（線性，步驟 14 無條件 done=true，不得提早）：
+  1. wait 3000（等賣家儀表板完整載入）
+  2. enable_a11y（初始化 Flutter semantics）
+  3. wait 1500
   4. shadow_click role=tab name_regex="^商品$"（點底部商品 tab，進入商品管理列表）
   5. wait 2500（等商品管理列表載入）
   6. enable_a11y（重新初始化 Flutter semantics）
