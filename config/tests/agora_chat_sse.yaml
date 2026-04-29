@@ -1,6 +1,6 @@
 id: agora_chat_sse
 name: "AgoraMarket 智能客服 SSE 即時訊息驗證 (Issue #9)"
-url: "https://redandan.github.io/"
+url: "https://redandan.github.io/?__test_role=buyer"
 
 # Flutter CanvasKit — UI 全部渲染在 canvas 上（WebGL 需要 GPU）
 max_iterations: 45
@@ -13,25 +13,14 @@ viewport:
   mobile: true
 retry_on_parse_error: 2
 
-fixture:
-  setup:
-    - {action: "clear_state"}
-    - {action: "set_viewport", width: 1440, height: 1600}
-    - {action: "goto", target: "https://redandan.github.io/"}
-    - {action: "enable_a11y"}
-  cleanup:
-    - {action: "clear_state"}
-
 goal: |
   【Flutter CanvasKit Web 應用測試 — Shadow DOM 方案】
 
   ⚠️ 重要：這是 Flutter CanvasKit 應用，所有 UI 渲染在 canvas 上。
   使用 shadow_* actions，直接查 flt-semantics-host。
 
-  【Step 1: 登入】
-  - shadow_dump（確認在登入頁面）
-  - shadow_click role=button name_regex="測試買家"
-  - wait 3000
+  【Step 1: 等待買家首頁載入（?__test_role=buyer 自動登入）】
+  - wait 4000
   - enable_a11y
   - shadow_dump（確認在首頁，看到商品/訂單/錢包/我的 tab）
 
@@ -75,7 +64,7 @@ goal: |
   可選：eval "JSON.stringify(window.__sseErrors || [])" 確認無 SSE console 錯誤
 
   【重要注意事項】
-  - flutter_type text="hello"（只能輸入 ASCII，不能輸入中文）
+  - flutter_type text="hello"（支援 ASCII 和 CJK，統一走 flutter_type）
   - ⚠️ flutter_type 後必須 enable_a11y，否則 shadow_ready=false
   - ⚠️ 聊天訊息不在 flt-semantics 樹，用 screenshot_analyze 而非 shadow_dump 驗證
   - ⚠️ 看到聊天界面正常 + 訊息送出後，立即 done=true，不要繼續循環
