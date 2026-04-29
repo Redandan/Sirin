@@ -31,7 +31,7 @@ goal: |
   起始狀態：買家已 auto-login（URL ?__test_role=buyer），位於首頁商品列表。
 
   ⚠️ Flutter CanvasKit app：UI 判斷一律用 screenshot_analyze（不要依賴 DOM）。
-  ⚠️ 點擊優先 shadow_click（role + name_regex）；找不到才用 click_point + 螢幕座標。
+  ⚠️ 所有點擊只用 shadow_click（role + name_regex）。嚴禁 click_point — 會導致 convergence guard。
   ⚠️ 底部 4 個 tab：role=tab name=「商品/訂單/錢包/我的」。
   ⚠️ 任一步驟失敗仍必須執行到步驟 14 才能 done=true。嚴禁提早終止。
   ⚠️ 這是 E2E 真實下單，會在後端產生訂單記錄 — 是預期行為（測試帳號）。
