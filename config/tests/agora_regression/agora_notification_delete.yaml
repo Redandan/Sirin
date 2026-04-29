@@ -25,15 +25,18 @@ goal: |
   ⚠️ 嚴禁提早終止：必須執行完所有步驟才能 done=true。
 
   步驟（按順序執行，不跳過）：
-  1. screenshot_analyze "確認在首頁，頂部右側看到哪些按鈕圖示？"
-  2. shadow_click role=button name_regex="訊息|通知|Notification"（點擊訊息/通知中心）
-  3. wait 3000（等待 Flutter 頁面載入）
-  4. screenshot_analyze "是否在通知/訊息列表頁？看到哪些通知項目？列表是空的嗎？"
-  5. shadow_dump（列出通知項目和可用操作按鈕）
-  6. shadow_click role=button name_regex="刪除|Delete|移除|清除|全部已讀|×|✕"（嘗試刪除通知）
-  7. wait 1500
-  8. screenshot_analyze "刪除操作後的狀態？通知消失、確認彈窗、或無刪除功能？"
-  9. done=true
+  1. wait 3000（等買家首頁完整載入）
+  2. enable_a11y（初始化 Flutter semantics）
+  3. wait 1500
+  4. screenshot_analyze "確認在首頁，頂部右側看到哪些按鈕圖示？"
+  5. shadow_click role=button name_regex="訊息|通知|Notification"（點擊訊息/通知中心）
+  6. wait 3000（等待 Flutter 頁面載入）
+  7. screenshot_analyze "是否在通知/訊息列表頁？看到哪些通知項目？列表是空的嗎？"
+  8. shadow_dump（列出通知項目和可用操作按鈕）
+  9. shadow_click role=button name_regex="刪除|Delete|移除|清除|全部已讀|×|✕"（嘗試刪除通知）
+  10. wait 1500
+  11. screenshot_analyze "刪除操作後的狀態？通知消失、確認彈窗、或無刪除功能？"
+  12. done=true
 
   ⚠️ 必須完整執行步驟 1-9，嚴禁在步驟 4 前 done=true。
   ⚠️ 步驟 6 若找不到刪除按鈕（空通知列表或無刪除 UI），繼續執行步驟 7-9。

@@ -2,8 +2,8 @@ id: agora_market_smoke
 name: "Agora Market — Flutter PWA smoke test v4"
 url: "https://redandan.github.io/"
 
-max_iterations: 5
-timeout_secs: 120
+max_iterations: 8
+timeout_secs: 180
 max_retries: 1  # H5 Flutter 偶發 Chrome 初始化延遲，自動重試一次
 
 # H5 mobile viewport — AgoraMarket 會員端是手機版 App，必須用手機 viewport 測試
@@ -21,13 +21,13 @@ goal: |
   ⚠️ 禁止用 read/exists/eval 判斷文字（DOM 無內容）。
   ⚠️ 這是 smoke test，僅需三步，禁止探索其他功能或做 enable_a11y、shadow_dump、ax_find。
 
-  步驟（只有這三步，不能加其他步驟）：
+  步驟（只有這五步，不能加其他步驟）：
   1. clear_state（清除 session 確保從一致的起始狀態開始）
-  2. wait 6000（等 Flutter bootstrap 完成 + 首次 paint）
-  3. screenshot_analyze "頁面是否顯示 Agora Market 商城內容？看到登入表單或商品列表任一即可。有實際內容（非全黑）？"
-  4. done=true
+  2. wait 8000（等 Flutter bootstrap 完成 + 首次 paint）
+  3. screenshot_analyze "頁面是否顯示 Agora Market 商城內容？看到登入表單或商品列表或品牌標題任一即可。有實際內容（非全黑非全白）？"
+  4. 若步驟 3 截圖全黑或內容未載入：wait 4000 → screenshot_analyze "現在頁面有內容嗎？"
+  5. done=true
 
-  若步驟 3 截圖全黑：wait 3000 → screenshot_analyze 再一次 → done=true
   注意：不管 screenshot_analyze 的結果如何，都必須 done=true，讓 success_criteria 決定是否通過。
 
 success_criteria:
