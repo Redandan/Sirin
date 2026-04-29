@@ -1,0 +1,56 @@
+id: agora_c2c_place_order
+name: "C2C 核心流程：買家實際下單並確認訂單建立"
+url: "https://redandan.github.io/?__test_role=buyer"
+
+max_iterations: 25
+timeout_secs: 360
+max_retries: 1
+
+viewport:
+  width: 390
+  height: 844
+  scale: 2.0
+  mobile: true
+
+locale: zh-TW
+
+goal: |
+  目標：買家完整走完「商品→選規格→確認購買→下單→確認訂單出現在訂單列表」流程。
+
+  已知資訊：
+  - 購買流程：商品詳情→購買→SKU對話框→確認購買→#/purchase-confirm
+  - purchase-confirm 有「確認購買 USDT X.XX」按鈕（真實下單）
+  - 下單後跳回商品頁（#/products/ID）
+  - 訂單頁可能顯示「訂單數據格式錯誤」（已知 bug），但不影響下單本身
+  - 下單成功的判斷：成功從 purchase-confirm 頁執行了確認購買操作
+
+  ⚠️ 這會產生真實測試訂單（測試帳號可接受）。
+  ⚠️ 步驟 18 無條件 done=true。
+
+  步驟（線性，步驟 18 done=true）：
+  1. wait 3000
+  2. enable_a11y
+  3. wait 1500
+  4. shadow_click role=button name_regex="USDT"（選第一個商品）
+  5. wait 2500
+  6. scroll y=400
+  7. shadow_click role=button name_regex="^購買$"（開啟 SKU 對話框）
+  8. wait 2000
+  9. shadow_click role=button name_regex="128GB|256GB|64GB|32GB"（選規格）
+  10. wait 1000
+  11. shadow_click role=button name_regex="^確認購買$"（跳到 purchase-confirm）
+  12. wait 3000
+  13. enable_a11y
+  14. wait 1000
+  15. screenshot_analyze "是否在結帳確認頁？看到「確認購買 USDT X」按鈕嗎？記錄商品名稱和金額。"
+  16. shadow_click role=button name_regex="確認購買 USDT"（真實下單）
+  17. wait 4000
+  18. screenshot_analyze "下單後頁面狀態：是回到商品頁、顯示成功提示、還是其他？記錄當前頁面標題和內容。"
+  19. done=true
+
+success_criteria:
+  - "成功到達結帳確認頁（purchase-confirm），看到商品摘要"
+  - "結帳確認頁有「確認購買 USDT X」按鈕"
+  - "成功點擊確認購買（無論跳轉到哪個頁面都算成功）"
+
+tags: [c2c, buyer, order, place-order, regression, core-flow]

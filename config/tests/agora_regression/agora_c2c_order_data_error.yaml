@@ -1,0 +1,40 @@
+id: agora_c2c_order_data_error
+name: "C2C 已知 Bug：訂單數據格式錯誤驗證 (Issue #XX)"
+url: "https://redandan.github.io/?__test_role=buyer"
+
+max_iterations: 12
+timeout_secs: 180
+max_retries: 1
+
+viewport:
+  width: 390
+  height: 844
+  scale: 2.0
+  mobile: true
+
+locale: zh-TW
+
+goal: |
+  目標：驗證訂單列表頁面的「訂單數據格式錯誤」bug 狀態。
+
+  背景：已知 bug — 買賣雙方訂單頁均顯示「訂單數據格式錯誤，請聯繫客服或稍後再試」。
+  本測試追蹤此 bug 是否已修復。
+
+  ⚠️ 步驟 10 無條件 done=true。
+
+  步驟（線性，步驟 10 done=true）：
+  1. wait 3000
+  2. enable_a11y
+  3. wait 1500
+  4. goto target="https://redandan.github.io/?__test_role=buyer#/orders"
+  5. wait 2500
+  6. enable_a11y
+  7. wait 1000
+  8. shadow_dump（記錄訂單頁狀態）
+  9. screenshot_analyze "訂單頁是否顯示「訂單數據格式錯誤」？還是正常顯示訂單列表？記錄頁面確切文字。"
+  10. done=true
+
+success_criteria:
+  - "訂單頁面可正常載入（不顯示「訂單數據格式錯誤」）"
+
+tags: [c2c, buyer, orders, bug-tracking, regression]

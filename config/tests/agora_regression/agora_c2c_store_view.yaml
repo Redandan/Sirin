@@ -1,0 +1,50 @@
+id: agora_c2c_store_view
+name: "C2C 核心流程：查看賣家商店頁面"
+url: "https://redandan.github.io/?__test_role=buyer"
+
+max_iterations: 18
+timeout_secs: 240
+max_retries: 1
+
+viewport:
+  width: 390
+  height: 844
+  scale: 2.0
+  mobile: true
+
+locale: zh-TW
+
+goal: |
+  目標：驗證買家可從商品詳情頁查看賣家商店，
+  商店頁面顯示店家資訊、商品列表、評分等。
+
+  已知資訊：
+  - 商品詳情頁有「查看商店」按鈕
+  - 點擊後導航到 #/store/{sellerId}
+  - 商店頁有：店家評分、回覆率、商品列表（含價格）、聊天按鈕
+
+  ⚠️ 步驟 14 無條件 done=true。
+
+  步驟（線性，步驟 14 done=true）：
+  1. wait 3000
+  2. enable_a11y
+  3. wait 1500
+  4. shadow_click role=button name_regex="USDT"（進入商品詳情）
+  5. wait 2500
+  6. enable_a11y
+  7. wait 1000
+  8. shadow_click role=button name_regex="^查看商店$"（進入賣家商店）
+  9. wait 3000
+  10. enable_a11y
+  11. wait 1000
+  12. shadow_dump（確認在商店頁，找到商品列表和評分資訊）
+  13. screenshot_analyze "是否在賣家商店頁？有沒有店家評分、商品列表、聊天按鈕？記錄商品數量和店家資訊。"
+  14. done=true
+
+success_criteria:
+  - "成功從商品詳情頁導航到賣家商店頁"
+  - "商店頁顯示至少一個商品"
+  - "有聊天或聯繫賣家功能入口"
+  - "有店家評分或基本資訊"
+
+tags: [c2c, buyer, store, seller-profile, regression, core-flow]
