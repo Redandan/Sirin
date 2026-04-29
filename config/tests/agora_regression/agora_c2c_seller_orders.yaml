@@ -1,0 +1,50 @@
+id: agora_c2c_seller_orders
+name: "C2C 核心流程：賣家訂單管理頁 UI 驗證"
+url: "https://redandan.github.io/?__test_role=seller"
+
+max_iterations: 18
+timeout_secs: 240
+max_retries: 1
+
+# H5 mobile viewport — Seller 後台是手機版
+viewport:
+  width: 390
+  height: 844
+  scale: 2.0
+  mobile: true
+
+locale: zh-TW
+
+goal: |
+  目標：驗證賣家訂單管理頁可正常載入，所有訂單狀態分類 tab 顯示正確。
+
+  起始狀態：賣家已 auto-login，在賣家儀表板首頁。
+
+  已知資訊：
+  - 底部有 4 個 tab：商品、訂單、錢包、我的
+  - 訂單頁有 6 個 tab：全部、待出貨、待收貨、已完成、退貨/退款、不成立
+  - 無訂單時顯示「暫無訂單」或空列表（正常現象）
+
+  ⚠️ 步驟 12 無條件 done=true。
+
+  步驟（線性，步驟 12 done=true）：
+  1. wait 3000
+  2. enable_a11y
+  3. wait 1500
+  4. shadow_click role=tab name_regex="^訂單$"（點底部訂單 tab）
+  5. wait 2500
+  6. enable_a11y
+  7. wait 1000
+  8. shadow_dump（確認訂單管理頁已載入，找到 tab 列表）
+  9. screenshot_analyze "訂單管理頁截圖：有哪些訂單狀態 tab（全部/待出貨/待收貨/已完成/退貨退款/不成立）？訂單列表是空的還是有訂單？"
+  10. shadow_click role=tab name_regex="^待出貨$"（切換到待出貨 tab）
+  11. wait 1500
+  12. screenshot_analyze "待出貨 tab：有幾筆待出貨訂單？若為空顯示什麼提示文字？"
+  13. done=true
+
+success_criteria:
+  - "成功進入賣家訂單管理頁"
+  - "看到至少 4 個訂單狀態分類 tab（全部/待出貨/待收貨/已完成）"
+  - "成功切換到待出貨 tab（空列表或有訂單均可）"
+
+tags: [c2c, seller, orders, regression, core-flow]

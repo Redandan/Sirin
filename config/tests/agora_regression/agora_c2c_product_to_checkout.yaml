@@ -1,0 +1,60 @@
+id: agora_c2c_product_to_checkout
+name: "C2C 核心流程：買家商品→選規格→結帳確認頁"
+url: "https://redandan.github.io/?__test_role=buyer"
+
+max_iterations: 22
+timeout_secs: 300
+max_retries: 1
+
+# H5 mobile viewport
+viewport:
+  width: 390
+  height: 844
+  scale: 2.0
+  mobile: true
+
+locale: zh-TW
+
+goal: |
+  目標：驗證買家從商品列表到結帳確認頁的完整流程（C2C 核心路徑）。
+  ⚠️ DRY RUN — 不真正下單，只驗證到「確認購買 USDT X」按鈕出現即可。
+
+  起始狀態：買家已 auto-login，在首頁商品列表。
+
+  已知資訊：
+  - 點「購買」按鈕後，彈出 SKU 規格選擇對話框（group:立即購買）
+  - 對話框底部有「確認購買」按鈕
+  - 點「確認購買」後跳到 #/purchase-confirm 頁面
+  - purchase-confirm 頁有：商品摘要、寄送方式（7-ELEVEN 等）、總金額
+  - 最終確認按鈕名稱格式：「確認購買 USDT X.XX」
+
+  ⚠️ 嚴禁 click_point — 只用 shadow_click。
+  ⚠️ 步驟 14 無條件 done=true。
+
+  步驟（線性，步驟 14 done=true）：
+  1. wait 3000
+  2. enable_a11y
+  3. wait 1500
+  4. shadow_click role=button name_regex="USDT"（點第一個商品卡）
+  5. wait 2500
+  6. screenshot_analyze "是否在商品詳情頁？記錄商品名稱和價格。"
+  7. scroll y=400（捲到底部找購買按鈕）
+  8. shadow_click role=button name_regex="^購買$"（開啟規格選擇對話框）
+  9. wait 2000
+  10. shadow_click role=button name_regex="128GB|256GB|64GB|32GB"（選第一個 SKU）
+  11. wait 1000
+  12. shadow_click role=button name_regex="^確認購買$"（跳到 purchase-confirm）
+  13. wait 3000
+  14. enable_a11y
+  15. wait 1000
+  16. shadow_dump（確認在結帳頁，找到「確認購買 USDT」按鈕）
+  17. screenshot_analyze "是否在結帳確認頁？看到商品名稱、運費選項、總金額？有「確認購買 USDT X」按鈕嗎？"
+  18. done=true
+
+success_criteria:
+  - "成功從商品列表進入商品詳情頁"
+  - "成功開啟 SKU 選擇對話框並選擇規格"
+  - "成功到達結帳確認頁（#/purchase-confirm）"
+  - "結帳確認頁顯示商品摘要、運費選項、確認購買按鈕"
+
+tags: [c2c, buyer, checkout, regression, core-flow]

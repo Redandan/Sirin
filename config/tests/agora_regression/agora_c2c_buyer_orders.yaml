@@ -1,0 +1,52 @@
+id: agora_c2c_buyer_orders
+name: "C2C 核心流程：買家訂單狀態追蹤"
+url: "https://redandan.github.io/?__test_role=buyer"
+
+max_iterations: 18
+timeout_secs: 240
+max_retries: 1
+
+# H5 mobile viewport
+viewport:
+  width: 390
+  height: 844
+  scale: 2.0
+  mobile: true
+
+locale: zh-TW
+
+goal: |
+  目標：驗證買家訂單管理頁可正常載入，各狀態 tab 可正常切換。
+
+  起始狀態：買家已 auto-login，在首頁。
+
+  已知資訊：
+  - 底部 tab：商品、訂單、錢包、我的
+  - 訂單頁 tab：全部、待出貨、待收貨、已完成、退貨退款、不成立
+  - 每個 tab 顯示對應狀態的訂單，空列表時顯示提示文字
+
+  ⚠️ 步驟 14 無條件 done=true。
+
+  步驟（線性，步驟 14 done=true）：
+  1. wait 3000
+  2. enable_a11y
+  3. wait 1500
+  4. shadow_click role=tab name_regex="^訂單$"（點底部訂單 tab）
+  5. wait 2500
+  6. enable_a11y
+  7. wait 1000
+  8. screenshot_analyze "訂單頁截圖：有哪些訂單狀態 tab？目前顯示的訂單列表內容？"
+  9. shadow_click role=tab name_regex="^待收貨$"（切換到待收貨 tab）
+  10. wait 1500
+  11. screenshot_analyze "待收貨 tab 截圖：有幾筆待收貨訂單？訂單卡片顯示商品名稱、金額、狀態嗎？"
+  12. shadow_click role=tab name_regex="^已完成$"（切換到已完成 tab）
+  13. wait 1500
+  14. screenshot_analyze "已完成 tab 截圖：有幾筆已完成訂單？最近一筆顯示什麼資訊（商品名、金額、完成時間）？"
+  15. done=true
+
+success_criteria:
+  - "成功進入買家訂單管理頁"
+  - "看到全部/待出貨/待收貨/已完成 tab"
+  - "成功切換待收貨和已完成 tab（有訂單或空列表均可通過）"
+
+tags: [c2c, buyer, orders, tracking, regression, core-flow]
