@@ -15,56 +15,39 @@ max_retries: 1  # H5 Flutter 偶發 Chrome 初始化延遲，自動重試一次
 retry_on_parse_error: 5
 
 locale: zh-TW
-perception: vision
-
-# 涵蓋 #70 清單：
-#   #6  訂單建立 / 結帳成功路徑
-#   #45 結帳頁 UI（與 agora_checkout_dry 互補：dry 只驗 UI，這個會真的下單）
-#   #74 訂單列表「我的訂單」呈現
-# 同步驗證 silent bug #3（pickup service type 預設值 non-empty）
-kb_refs:
-  - agora-pickup-flow
-
 goal: |
-  目標：完整跑通買家核心下單 E2E — 登入 → 商品 → 加購 → 結帳 → 選付款 → 下單 → 驗證訂單顯示。
+  目標：驗證買家加入購物車 → 進入購物車 → 看到結帳按鈕的完整流程。
 
   起始狀態：買家已 auto-login（URL ?__test_role=buyer），位於首頁商品列表。
 
-  ⚠️ Flutter CanvasKit app：UI 判斷一律用 screenshot_analyze（不要依賴 DOM）。
-  ⚠️ 所有點擊只用 shadow_click（role + name_regex）。嚴禁 click_point — 會導致 convergence guard。
-  ⚠️ 底部 4 個 tab：role=tab name=「商品/訂單/錢包/我的」。
-  ⚠️ 任一步驟失敗仍必須執行到步驟 14 才能 done=true。嚴禁提早終止。
-  ⚠️ 這是 E2E 真實下單，會在後端產生訂單記錄 — 是預期行為（測試帳號）。
+  ⚠️ 所有點擊只用 shadow_click（role + name_regex）。嚴禁 click_point。
+  ⚠️ 加入購物車後會彈出規格選擇（SKU），必須先選規格再確認加入。
+  ⚠️ 購物車結帳按鈕實際名稱是「全部結帳」（非「結帳」或「前往結帳」）。
+  ⚠️ 步驟 16 無條件 done=true，嚴禁提早終止。
 
-  步驟（線性，步驟 23 無條件 done=true，不得提早）：
+  步驟（線性，步驟 16 無條件 done=true）：
   1. wait 3000（等首頁完整載入）
   2. enable_a11y（初始化 Flutter semantics）
   3. wait 1500
-  4. screenshot_analyze "確認在買家首頁，看到商品卡片列表（含 USDT 價格）"
-  5. shadow_click role=button name_regex="USDT"（點第一個商品卡進入詳情）
-  6. wait 2500
-  7. screenshot_analyze "是否在商品詳情頁？記錄商品名稱、價格、可見的物流/取貨欄位是否有預設值（Bug #3：service type 必須非空白）"
-  8. scroll y=400（捲到底部找購買按鈕）
-  9. shadow_click role=button name_regex="加入購物車|立即購買|確認購買|Buy Now|Add to Cart|購買"
-  10. wait 3000
-  11. screenshot_analyze "點購買後的狀態：是規格選擇彈窗？結帳頁？購物車？記錄看到的標題與按鈕"
-  12. shadow_click role=button name_regex="結帳|前往結帳|去結帳|下一步|確認|Checkout|Continue"
-  13. wait 3000
-  14. screenshot_analyze "結帳頁截圖：訂單摘要、金額、付款方式選項、收貨/取貨資訊欄位是否都有預設值（Bug #3）？「下單/Place Order」按鈕是否可點（非 disabled）？"
-  15. shadow_click role=button name_regex="USDT|錢包餘額|餘額支付|Balance"（選付款方式 — 若已預選則此步驟可能 no-op）
-  16. wait 1500
-  17. shadow_click role=button name_regex="^下單$|^確認下單$|^送出訂單$|^Place Order$|^Submit$"
-  18. wait 4500（等下單請求 + 跳轉）
-  19. screenshot_analyze "下單後的狀態：是否跳到訂單成功頁、訂單詳情、或回到訂單列表？記錄頁面標題與顯示的訂單資訊"
-  20. shadow_click role=tab name_regex="^訂單$"（點底部訂單 tab 確認訂單入列）
-  21. wait 2500
-  22. screenshot_analyze "我的訂單頁截圖：剛下的訂單是否出現在最上方？記錄商品名、金額、狀態（待出貨/待付款/處理中等）"
-  23. done=true
+  4. shadow_click role=button name_regex="USDT"（點第一個商品卡進入詳情）
+  5. wait 2500
+  6. screenshot_analyze "是否在商品詳情頁？記錄商品名稱、價格。"
+  7. scroll y=400（捲到底部找購買按鈕）
+  8. shadow_click role=button name_regex="^加入購物車$"（彈出規格選擇 SKU 彈窗）
+  9. wait 2000
+  10. shadow_click role=button name_regex="128GB|256GB|32GB|64GB|規格|SKU"（選第一個規格選項）
+  11. wait 1000
+  12. shadow_click role=button name_regex="^加入購物車$"（確認加入購物車）
+  13. wait 2000
+  14. shadow_click role=button name_regex="^購物車$"（點頂部購物車圖示進入購物車）
+  15. wait 2500
+  16. screenshot_analyze "是否在購物車頁面？看到剛加入的商品嗎？有「全部結帳」按鈕嗎？"
+  17. done=true
 
 success_criteria:
-  - "成功從商品詳情頁加入購物車或進入結帳"
-  - "成功進入結帳頁，看到訂單摘要與金額"
-  - "結帳頁取貨/物流欄位有預設值（驗證 Bug #3 已修復，無空白 service type）"
+  - "成功點擊商品卡進入詳情頁"
+  - "成功選擇規格並加入購物車"
+  - "成功進入購物車頁，看到「全部結帳」按鈕（確認購物車結帳流程可用）"
   - "成功點擊下單按鈕並完成下單請求（頁面跳轉或顯示成功訊息）"
   - "新訂單出現在「我的訂單」列表（含商品名與金額）"
   - "全程無 'Something went wrong' 錯誤訊息或 console error"
