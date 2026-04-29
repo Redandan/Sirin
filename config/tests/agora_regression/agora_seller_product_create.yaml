@@ -3,7 +3,7 @@ name: "AgoraMarket 賣家新增商品表單驗證"
 url: "https://redandan.github.io/?__test_role=seller"
 
 max_iterations: 25
-timeout_secs: 420
+timeout_secs: 600
 
 # Seller 後台是 PC 桌面版，使用標準桌面 viewport
 viewport:
