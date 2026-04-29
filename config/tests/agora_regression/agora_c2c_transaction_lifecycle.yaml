@@ -1,0 +1,96 @@
+id: agora_c2c_transaction_lifecycle
+name: "C2C 完整交易生命週期：買家下單→賣家出貨→買家確認→評價"
+url: "https://redandan.github.io/?__test_role=buyer"
+
+max_iterations: 45
+timeout_secs: 900
+
+# H5 mobile viewport（買家/賣家都是 H5）
+viewport:
+  width: 390
+  height: 844
+  scale: 2.0
+  mobile: true
+
+locale: zh-TW
+
+goal: |
+  目標：完整走過 C2C 核心交易流程的 4 個階段，驗證每個角色的核心操作。
+
+  ⚠️ 這是跨角色測試，使用 goto 切換 __test_role：
+     - 買家：?__test_role=buyer
+     - 賣家：?__test_role=seller
+  ⚠️ 每次切換後需要 clear_state（清除舊 session）+ wait 5000。
+  ⚠️ 嚴禁 click_point。不論任何步驟失敗都繼續到步驟 34 done=true。
+
+  ════════════════════════════════════════
+  【階段 1：買家搜尋商品並下單】
+  ════════════════════════════════════════
+  1. wait 3000（等買家首頁載入）
+  2. enable_a11y
+  3. wait 1500
+  4. shadow_click role=button name_regex="USDT"（進入商品詳情）
+  5. wait 2500
+  6. screenshot_analyze "【A1】商品詳情頁：記錄商品名稱和價格。"
+  7. scroll y=400
+  8. shadow_click role=button name_regex="^購買$"（開啟 SKU 對話框）
+  9. wait 2000
+  10. shadow_click role=button name_regex="128GB|256GB|64GB|32GB"（選規格）
+  11. wait 1000
+  12. shadow_click role=button name_regex="^確認購買$"（到結帳確認頁）
+  13. wait 3000
+  14. enable_a11y
+  15. wait 1000
+  16. screenshot_analyze "【A2】結帳確認頁：看到商品摘要和「確認購買 USDT X」按鈕嗎？"
+  17. shadow_click role=button name_regex="確認購買 USDT"（真實下單）
+  18. wait 4000
+  19. screenshot_analyze "【A3】下單後狀態：頁面跳轉到哪裡？記錄當前頁面。"
+
+  ════════════════════════════════════════
+  【階段 2：賣家查看訂單並出貨】
+  ════════════════════════════════════════
+  20. clear_state
+  21. wait 5000
+  22. enable_a11y
+  23. wait 2000
+  24. goto target="https://redandan.github.io/?__test_role=seller"
+  25. wait 4000
+  26. enable_a11y
+  27. wait 1500
+  28. shadow_click role=tab name_regex="^訂單$"
+  29. wait 2500
+  30. enable_a11y
+  31. wait 1000
+  32. screenshot_analyze "【B1】賣家訂單頁：有沒有待出貨訂單？記錄訂單列表狀態（有幾筆/訂單內容）。"
+  33. shadow_click role=tab name_regex="^待出貨$"
+  34. wait 1500
+  35. screenshot_analyze "【B2】待出貨 tab：有沒有新訂單？若有，記錄第一筆的商品名和金額。"
+
+  ════════════════════════════════════════
+  【階段 3：買家查看訂單狀態】
+  ════════════════════════════════════════
+  36. clear_state
+  37. wait 5000
+  38. enable_a11y
+  39. wait 2000
+  40. goto target="https://redandan.github.io/?__test_role=buyer#/orders"
+  41. wait 3000
+  42. enable_a11y
+  43. wait 1000
+  44. screenshot_analyze "【C1】買家訂單頁：有沒有訂單記錄？訂單狀態是什麼（待出貨/待收貨/已完成）？記錄最新一筆。"
+
+  ════════════════════════════════════════
+  【階段 4：確認收貨（若有待收貨訂單）】
+  ════════════════════════════════════════
+  45. shadow_click role=tab name_regex="^待收貨$"（嘗試切到待收貨 tab）
+  46. wait 1500
+  47. screenshot_analyze "【D1】待收貨 tab：有沒有訂單？若有，有沒有「確認收貨」按鈕？記錄當前狀態。"
+  48. done=true
+
+success_criteria:
+  - "【A】買家成功到達結帳確認頁並執行下單"
+  - "【B】賣家能進入訂單管理頁，看到訂單（有或資料格式錯誤均記錄）"
+  - "【C】買家訂單頁能載入（有訂單或顯示錯誤均記錄）"
+  - "【D】能切換到待收貨 tab（有訂單或空列表均通過）"
+
+tags: [c2c, e2e, lifecycle, buyer, seller, regression, critical]
