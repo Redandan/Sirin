@@ -237,6 +237,20 @@ pub fn spawn_run_async(test_id: String, auto_fix: bool) -> Result<String, String
             // task so the caller still gets `run_id` immediately.
             let _guard = TEST_RUN_LOCK.lock().await;
 
+            // Issue #182 — early-exit after acquiring the lock: if kill_run() was
+            // called while this run was queued, skip execution entirely so we don't
+            // run a test that the user already cancelled.
+            if matches!(
+                runs::get(&run_id_clone).map(|s| s.phase),
+                Some(runs::RunPhase::Error(_))
+            ) {
+                tracing::info!(
+                    "[test_runner] '{}' was killed while queued — skipping after lock acquired",
+                    run_id_clone
+                );
+                return;
+            }
+
             let tools = crate::adk::tool::default_tool_registry();
             let ctx = crate::adk::context::AgentContext::new("mcp_async", tools)
                 .with_metadata("run_id", &run_id_clone);
