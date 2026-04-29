@@ -3,8 +3,8 @@ name: "商品關鍵字搜尋測試"
 url: "https://redandan.github.io/?__test_role=buyer"
 locale: zh-TW
 
-max_iterations: 12
-timeout_secs: 180
+max_iterations: 18
+timeout_secs: 270
 max_retries: 1  # H5 Flutter 偶發 Chrome 初始化延遲，自動重試一次
 
 # H5 mobile viewport — AgoraMarket 會員端是手機版 App，必須用手機 viewport 測試

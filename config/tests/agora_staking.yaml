@@ -1,6 +1,6 @@
 id: agora_staking
 name: "AgoraMarket Staking 質押功能驗證 (Issue #34)"
-url: "https://redandan.github.io/"
+url: "https://redandan.github.io/?__test_role=buyer"
 
 # Flutter CanvasKit — UI 全部渲染在 canvas 上（WebGL 需要 GPU）
 max_iterations: 75
@@ -13,15 +13,6 @@ viewport:
   mobile: true
 retry_on_parse_error: 2
 
-fixture:
-  setup:
-    - {action: "clear_state"}
-    - {action: "set_viewport", width: 1440, height: 1600}
-    - {action: "goto", target: "https://redandan.github.io/"}
-    - {action: "enable_a11y"}
-  cleanup:
-    - {action: "clear_state"}
-
 goal: |
   【Flutter CanvasKit Web 應用測試 — Shadow DOM 方案】
 
@@ -30,10 +21,8 @@ goal: |
 
   ⚠️ 質押金額最低 50 USDT。如果 API 或 UI 阻擋，需先取消現有質押。
 
-  【Step 1: 登入】
-  - shadow_dump（確認在登入頁面）
-  - shadow_click role=button name_regex="測試買家"
-  - wait 3000
+  【Step 1: 等待買家首頁載入（?__test_role=buyer 自動登入）】
+  - wait 4000
   - enable_a11y
   - shadow_dump（確認在首頁，看到商品/訂單/錢包/我的 tab）
 
