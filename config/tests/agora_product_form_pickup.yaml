@@ -60,30 +60,32 @@ goal: |
   11. screenshot_analyze "【第一輪/狀態A】記錄：宅配到府、7-ELEVEN、全家 的開關（開/關）與運費。同時檢查：Bug #3 — 是否有 service type 欄位顯示為空？"
 
   === 第二輪：修改並儲存 ===
-  12. scroll y=400（捲動讓物流服務表格進入視窗，把頂部的「商品狀態」開關推出視窗外）
-  13. screenshot_analyze "【第二輪/準備切換】截圖。找到物流服務開關表格（宅配到府/7-ELEVEN/全家行）。
-      請回報：頁面上第一個物流服務開關（宅配到府或7-ELEVEN）的位置（螢幕百分比座標 x%, y%）。
-      ⚠️ 不要點商品狀態開關（那個在頁面頂端）。物流服務開關在頁面下半部的表格裡。"
-  → click_point 點擊分析識別出的物流服務開關位置（用螢幕絕對座標）
-  14. wait 1200
-  15. screenshot_analyze "【第二輪/修改後】記錄：剛剛切換的開關現在是開還是關？哪一個服務被切換？（確認不是商品狀態，而是物流服務）"
-  16. flutter_scroll_until_visible role=button name_regex="保存商品|更新商品|儲存"（捲回找儲存按鈕）
-  17. shadow_click role=button name_regex="^保存商品$|^更新商品$|^儲存$|^Save$"
-  18. wait 4000（等儲存完成 + 返回列表動畫）
+  12. scroll y=800（大幅捲動確保物流服務表格在視窗內，同時把頂部「商品狀態」完全推出視窗）
+  13. wait 500
+  14. screenshot_analyze "【第二輪/切換前確認】截圖。確認現在看到的是物流服務表格（宅配到府/7-ELEVEN/全家等行），
+      每行有一個開關和運費欄位。回答：看到物流服務表格嗎？第一個服務是什麼？其開關目前是開還是關？"
+  ⚠️ 確認看到物流服務表格後，繼續步驟 15。
+  ⚠️ 若沒看到表格（scroll 不夠），改用 scroll y=400 追加捲動。
+  15. shadow_click role=switch（點擊物流服務表格中第一個可見的開關；頁面此時應只顯示物流服務開關）
+  16. wait 1200
+  17. screenshot_analyze "【第二輪/修改後】記錄：剛剛切換的開關現在是開還是關？哪一個服務被切換？"
+  18. flutter_scroll_until_visible role=button name_regex="保存商品|更新商品|儲存"（捲回找儲存按鈕）
+  19. shadow_click role=button name_regex="^保存商品$|^更新商品$|^儲存$|^Save$"
+  20. wait 4000（等儲存完成 + 返回列表動畫）
 
   === 第三輪：重新編輯，確認狀態 C ===
-  19. shadow_click role=tab name_regex="^商品$"（確保在商品列表；若已在列表則無害點擊）
-  20. wait 2500
-  21. enable_a11y（重新初始化 Flutter semantics）
-  22. wait 1000
-  23. shadow_click role=button name_regex="^編輯$"（再次進入同商品編輯頁）
-  24. wait 4000
+  21. shadow_click role=tab name_regex="^商品$"（確保在商品列表；若已在列表則無害點擊）
+  22. wait 2500
+  23. enable_a11y（重新初始化 Flutter semantics）
+  24. wait 1000
+  25. shadow_click role=button name_regex="^編輯$"（再次進入同商品編輯頁）
+  26. wait 4000
   25. flutter_scroll_until_visible role=button name_regex="物流設定"（捲動到物流設定）
   26. shadow_click role=button name_regex="^物流設定$"（展開物流設定）
   27. wait 1500
   28. enable_a11y（展開後重建 AX tree）
   29. wait 800
-  30. screenshot_analyze "【第三輪/狀態C】記錄：宅配到府、7-ELEVEN、全家 的開關狀態與運費。與步驟 15 的修改後狀態是否一致？（Bug #5/#25 PASS 條件：步驟 13 切換的那個開關，重新編輯時值必須與步驟 15 相同）"
+  30. screenshot_analyze "【第三輪/狀態C】記錄：宅配到府、7-ELEVEN、全家 的開關狀態與運費。與步驟 17 的修改後狀態是否一致？（Bug #5/#25 PASS 條件：步驟 15 切換的那個開關，重新編輯時值必須與步驟 17 相同）"
   31. done=true
 
 success_criteria:
