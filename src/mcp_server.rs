@@ -368,6 +368,25 @@ fn handle_tools_list() -> Result<Value, String> {
                 }
             },
             {
+                "name": "run_test_pipeline",
+                "description": "以管線方式循序執行多個 YAML test，組成粗粒度的交易流程測試。\n\n與 run_test_batch（並行）不同，pipeline 保證執行順序：stage1 完成後才跑 stage2。\n適用場景：C2C 交易生命週期（買家下單→賣家出貨→買家確認）等有依賴順序的流程。\n\n返回：pipeline_id（識別整批）+ 每個 stage 的 run_id（可分別 poll）。\nstop_on_failure=true 時，某 stage 失敗後跳過後續 stage。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "stage_ids": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "按執行順序的 test_id 清單（每個都要存在於 config/tests/）"
+                        },
+                        "stop_on_failure": {
+                            "type": "boolean",
+                            "description": "某 stage 失敗後是否停止後續（預設 false = 繼續跑完所有）"
+                        }
+                    },
+                    "required": ["stage_ids"]
+                }
+            },
+            {
                 "name": "get_test_result",
                 "description": "依 run_id 取得測試狀態。可能狀態：queued | running | passed | failed | timeout | error。",
                 "inputSchema": {
@@ -911,6 +930,7 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         "list_tests"           => return call_list_tests(arguments).map(wrap_json),
         "run_test_async"       => return call_run_test_async(arguments).map(wrap_json),
         "run_test_batch"       => return call_run_test_batch(arguments).map(wrap_json),
+        "run_test_pipeline"    => return call_run_test_pipeline(arguments).map(wrap_json),
         "run_adhoc_test"       => return call_run_adhoc_test(arguments).map(wrap_json),
         "persist_adhoc_run"    => return call_persist_adhoc_run(arguments).map(wrap_json),
         "get_test_result"      => return call_get_test_result(arguments).map(wrap_json),
@@ -1209,6 +1229,41 @@ fn call_run_test_batch(args: Value) -> Result<Value, String> {
         resp["warning"] = json!(w);
     }
     Ok(resp)
+}
+
+fn call_run_test_pipeline(args: Value) -> Result<Value, String> {
+    let stage_ids: Vec<String> = args.get("stage_ids")
+        .and_then(Value::as_array)
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .ok_or("Missing stage_ids (array of strings)")?;
+    if stage_ids.is_empty() {
+        return Err("stage_ids is empty".into());
+    }
+    let stop_on_failure = args.get("stop_on_failure")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    let (pipeline_id, run_ids) =
+        crate::test_runner::spawn_pipeline_run(stage_ids.clone(), stop_on_failure)?;
+
+    let stages: Vec<Value> = stage_ids.iter().zip(run_ids.iter())
+        .enumerate()
+        .map(|(i, (tid, rid))| json!({
+            "stage": i + 1,
+            "test_id": tid,
+            "run_id": rid,
+        }))
+        .collect();
+
+    Ok(json!({
+        "pipeline_id": pipeline_id,
+        "stage_count": stages.len(),
+        "stop_on_failure": stop_on_failure,
+        "stages": stages,
+        "status": "running",
+        "poll_each_with": "get_test_result",
+        "note": "Stages run sequentially — poll each run_id independently."
+    }))
 }
 
 fn call_get_test_result(args: Value) -> Result<Value, String> {

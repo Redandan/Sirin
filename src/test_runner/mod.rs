@@ -671,6 +671,155 @@ pub fn spawn_batch_run(
     Ok(run_ids)
 }
 
+/// Run a pipeline of tests sequentially, where each stage is a named YAML test.
+///
+/// Unlike `spawn_batch_run` (parallel/independent), a pipeline runs stages
+/// **in order** — one finishes before the next starts.  This lets coarse-grained
+/// "lifecycle" tests be expressed as a composition of fine-grained tests:
+///
+/// ```
+/// run_test_pipeline(["c2c_place_order", "c2c_seller_orders", "c2c_buyer_confirm"])
+/// ```
+///
+/// Returns a `pipeline_id` (can be used to identify the run group) and the
+/// per-stage `run_id`s in order.  Each stage run is still individually
+/// pollable via `get_test_result`.
+///
+/// If `stop_on_failure` is true, the pipeline stops after the first failed/
+/// timeout/error stage and marks remaining stages as skipped (Error state).
+pub fn spawn_pipeline_run(
+    stage_ids: Vec<String>,
+    stop_on_failure: bool,
+) -> Result<(String, Vec<String>), String> {
+    if stage_ids.is_empty() {
+        return Err("stage_ids is empty".into());
+    }
+    // Pre-validate all stages.
+    for id in &stage_ids {
+        if parser::find(id).is_none() {
+            return Err(format!("stage test '{}' not found", id));
+        }
+    }
+
+    let pipeline_id = format!(
+        "pipeline_{}",
+        chrono::Local::now().format("%Y%m%d_%H%M%S_%3f")
+    );
+    let total = stage_ids.len();
+
+    // Allocate run_ids up-front so callers can track them immediately.
+    let run_ids: Vec<String> = stage_ids
+        .iter()
+        .map(|id| runs::new_run(id))
+        .collect();
+
+    let pipeline_id_clone = pipeline_id.clone();
+    let run_ids_clone = run_ids.clone();
+    let stage_ids_clone = stage_ids.clone();
+
+    std::thread::spawn(move || {
+        let rt = match tokio::runtime::Runtime::new() {
+            Ok(r) => r,
+            Err(e) => {
+                for rid in &run_ids_clone {
+                    runs::set_phase(rid, runs::RunPhase::Error(
+                        format!("pipeline runtime init failed: {e}")
+                    ));
+                }
+                return;
+            }
+        };
+        rt.block_on(async {
+            tracing::info!(
+                "[pipeline] '{}' starting {} stages (stop_on_failure={})",
+                pipeline_id_clone, total, stop_on_failure
+            );
+            let mut aborted = false;
+            for (idx, (stage_id, run_id)) in
+                stage_ids_clone.iter().zip(run_ids_clone.iter()).enumerate()
+            {
+                if aborted {
+                    runs::set_phase(
+                        run_id,
+                        runs::RunPhase::Error("skipped — earlier stage failed".into()),
+                    );
+                    continue;
+                }
+
+                tracing::info!(
+                    "[pipeline] '{}' stage {}/{}: '{}'",
+                    pipeline_id_clone, idx + 1, total, stage_id
+                );
+
+                // Wait for TEST_RUN_LOCK then execute stage.
+                let _guard = TEST_RUN_LOCK.lock().await;
+                let tools = crate::adk::tool::default_tool_registry();
+                let ctx = crate::adk::context::AgentContext::new("pipeline", tools)
+                    .with_metadata("run_id", run_id)
+                    .with_metadata("pipeline_id", &pipeline_id_clone);
+
+                let result = executor::execute_test_tracked(
+                    &ctx,
+                    &parser::find(stage_id).unwrap(),
+                    Some(run_id),
+                    None,
+                ).await;
+
+                let passed = matches!(result.status, TestStatus::Passed);
+                let status_str = match result.status {
+                    TestStatus::Passed   => "passed",
+                    TestStatus::Failed   => "failed",
+                    TestStatus::Timeout  => "timeout",
+                    TestStatus::Error    => "error",
+                    TestStatus::Disputed => "disputed",
+                };
+
+                // Persist stage result.
+                let history_json = serde_json::to_string(&result.history).ok();
+                let goal_json = serde_json::to_string(
+                    &parser::find(stage_id).unwrap()
+                ).ok();
+                let _ = store::record_run(store::NewRun {
+                    test_id: stage_id,
+                    started_at: &chrono::Local::now().to_rfc3339(),
+                    duration_ms: Some(result.duration_ms as i64),
+                    status: status_str,
+                    failure_category: None,
+                    ai_analysis: result.final_analysis.as_deref(),
+                    screenshot_path: result.screenshot_path.as_deref(),
+                    history_json: history_json.as_deref(),
+                    goal_json: goal_json.as_deref(),
+                    run_id: Some(run_id),
+                    iterations: Some(result.iterations),
+                    dispute_reason: result.dispute.as_ref().map(|d| d.reason.as_str()),
+                    dispute_suspected_step: result.dispute.as_ref().and_then(|d| d.suspected_step),
+                    dispute_suggested_fix: result.dispute.as_ref().and_then(|d| d.suggested_fix.as_deref()),
+                    is_replay: false,
+                });
+
+                runs::set_phase(run_id, runs::RunPhase::Complete(result));
+
+                if stop_on_failure && !passed {
+                    tracing::warn!(
+                        "[pipeline] '{}' stage '{}'={} — stopping (stop_on_failure=true)",
+                        pipeline_id_clone, stage_id, status_str
+                    );
+                    aborted = true;
+                }
+
+                // Brief recovery between stages.
+                let _ = tokio::task::spawn_blocking(|| {
+                    let _ = crate::browser::navigate("about:blank");
+                }).await;
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            tracing::info!("[pipeline] '{}' all {} stages done", pipeline_id_clone, total);
+        });
+    });
+
+    Ok((pipeline_id, run_ids))
+}
+
 /// Run all tests matching the optional tag filter.
 pub async fn run_all(
     ctx: &crate::adk::context::AgentContext,
