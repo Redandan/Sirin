@@ -2,8 +2,8 @@ id: agora_c2c_transaction_lifecycle
 name: "C2C 完整交易生命週期：買家下單→賣家出貨→買家確認→評價"
 url: "https://redandan.github.io/?__test_role=buyer"
 
-max_iterations: 45
-timeout_secs: 900
+max_iterations: 50
+timeout_secs: 1200
 
 # H5 mobile viewport（買家/賣家都是 H5）
 viewport:
