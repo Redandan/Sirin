@@ -34,10 +34,10 @@ goal: |
   步驟（線性，步驟 12 done=true）：
   1. goto target="https://redandan.github.io/?__test_role=delivery#/delivery"
      （明確重新導航，確保 __test_role=delivery 在 URL 中）
-  2. wait 5000（等 auto-login 完成 + Flutter 冷載入）
+  2. wait 8000（等 auto-login 從前一 test 的 buyer session 切換到 delivery，需要 8s）
   3. enable_a11y
   4. wait 2000
-  5. enable_a11y（二次確保 AX tree 就緒，防 shadow_dump 回空導致 LLM 循環）
+  5. enable_a11y（二次確保 AX tree 就緒）
   6. wait 1000
   7. screenshot_analyze "外送員儀表板截圖：有今日收入金額嗎？有待接單/配送中/已完成統計嗎？有工作狀態開關嗎？有底部 4 個 tab（首頁/訂單/收入/我的）嗎？"
   8. shadow_click role=tab name_regex="^訂單$"（切換到訂單 tab）
