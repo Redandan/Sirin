@@ -37,11 +37,11 @@ goal: |
   4. wait 2000
   5. enable_a11y
   6. shadow_dump — 確認在新增商品 form（應看到商品名稱、價格等欄位）
-  7. flutter_scroll_until_visible role=group name="平台配送設定"
-     （捲動直到元素真正進入視野，避免 fixed scroll y=800 後座標漂移誤點）
-  8. wait 1500（等捲動完成）
-  9. enable_a11y（重新初始化 AX tree，確保元素位置正確）
-  10. wait 800
+  7. flutter_scroll y=1500
+     （大幅捲動越過商品分類區，到達表單底部出貨設定/平台配送設定）
+  8. wait 1500（等 Flutter 重新渲染）
+  9. enable_a11y（重新初始化 AX tree — 必須在 scroll 後再次呼叫）
+  10. wait 1500（確保 AX tree 完全穩定）
   11. shadow_click role=group name="平台配送設定"（展開 ExpansionTile）
   12. wait 1500（等展開動畫完成）
   13. enable_a11y（展開後重新初始化 AX tree）
