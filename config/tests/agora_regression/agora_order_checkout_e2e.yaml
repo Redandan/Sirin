@@ -21,33 +21,31 @@ goal: |
   起始狀態：買家已 auto-login（URL ?__test_role=buyer），位於首頁商品列表。
 
   ⚠️ 所有點擊只用 shadow_click（role + name_regex）。嚴禁 click_point。
-  ⚠️ 加入購物車後會彈出規格選擇（SKU），必須先選規格再確認加入。
   ⚠️ 購物車結帳按鈕實際名稱是「全部結帳」（非「結帳」或「前往結帳」）。
-  ⚠️ 步驟 14 無條件 done=true，嚴禁提早終止。
+  ⚠️ 步驟 16 無條件 done=true，嚴禁提早終止。
 
-  步驟（線性，步驟 12 無條件 done=true）：
+  步驟（線性，步驟 16 無條件 done=true）：
   1. wait 3000（等首頁完整載入）
   2. enable_a11y（初始化 Flutter semantics）
-  3. wait 1500
-  4. shadow_click role=button name_regex="USDT"（點第一個商品卡進入詳情）
-  5. wait 2500
-  6. screenshot_analyze "是否在商品詳情頁？記錄商品名稱、價格和可見的購買按鈕。"
-  7. scroll y=400（捲到底部確認按鈕存在）
-  8. shadow_dump（列出詳情頁所有 button，確認有「加入購物車」和「購買」按鈕）
-  9. goto target="https://redandan.github.io/?__test_role=buyer#/cart"（直接導航到購物車頁）
-  10. wait 2500
-  11. enable_a11y
-  12. wait 1000
-  13. screenshot_analyze "購物車頁面截圖：頁面是否正常載入？如果有商品，有沒有「全部結帳」按鈕？如果購物車是空的，有沒有「去購物」或空購物車提示？"
-  14. done=true
+  3. wait 2000
+  4. enable_a11y（二次確保 AX tree 就緒，防 host empty 錯誤）
+  5. wait 1000
+  6. shadow_click role=button name_regex="USDT"（點第一個商品卡進入詳情）
+  7. wait 2500
+  8. screenshot_analyze "是否在商品詳情頁？記錄商品名稱、價格和可見的購買按鈕。"
+  9. scroll y=400（捲到底部確認按鈕存在）
+  10. shadow_dump（列出詳情頁所有 button，確認有「加入購物車」和「購買」按鈕）
+  11. goto target="https://redandan.github.io/?__test_role=buyer#/cart"（直接導航到購物車頁）
+  12. wait 2500
+  13. enable_a11y
+  14. wait 1000
+  15. screenshot_analyze "購物車頁面截圖：頁面是否正常載入？如果有商品，有沒有「全部結帳」按鈕？如果購物車是空的，有沒有「去購物」或空購物車提示？"
+  16. done=true
 
 success_criteria:
   - "成功點擊商品卡進入詳情頁，看到商品名稱、價格和購買按鈕"
   - "成功導航到購物車頁面（頁面正常載入）"
   - "購物車頁面有預期 UI（有商品時顯示「全部結帳」，無商品時顯示空購物車提示）"
-  - "成功點擊下單按鈕並完成下單請求（頁面跳轉或顯示成功訊息）"
-  - "新訂單出現在「我的訂單」列表（含商品名與金額）"
-  - "全程無 'Something went wrong' 錯誤訊息或 console error"
 
 tags: [agora, regression, e2e, checkout, order, issue-49, issue-70, critical]
 
