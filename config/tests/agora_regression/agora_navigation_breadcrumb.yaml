@@ -26,20 +26,21 @@ goal: |
   ⚠️ 商品卡 AX 樹：role=button，name 含多行文字與 USDT 價格。
   ⚠️ 即使某個步驟找不到元素也繼續往下，不要重試同一步驟。
 
-  步驟（線性，步驟 13 無條件 done=true）：
-  1. wait 3000（等 Flutter 首頁完整載入）
-  2. enable_a11y（初始化 Flutter semantics）
-  3. wait 2000
-  4. enable_a11y（二次確保 AX tree 就緒）
-  5. wait 1000
-  6. screenshot_analyze "確認在首頁，看到商品卡片列表嗎？"
-  7. shadow_click role=button name_regex="USDT"（點第一個商品卡進入詳情頁）
-  8. wait 2500
-  9. screenshot_analyze "是否進入商品詳情頁？看到商品名稱和價格嗎？"
-  10. eval target='window.history.back()'（觸發瀏覽器返回上一頁）
-  11. wait 3000（等 hash 路由回到首頁）
-  12. screenshot_analyze "是否回到首頁商品列表？目前頁面狀態？"
-  13. done=true
+  步驟（線性，步驟 14 無條件 done=true）：
+  1. goto target="https://redandan.github.io/?__test_role=buyer"（強制以買家身份登入，覆蓋前一測試 session）
+  2. wait 5000（等 auto-login + Flutter 買家首頁載入）
+  3. enable_a11y（初始化 Flutter semantics）
+  4. wait 2000
+  5. enable_a11y（二次確保 AX tree 就緒）
+  6. wait 1000
+  7. screenshot_analyze "確認在首頁，看到商品卡片列表嗎？"
+  8. shadow_click role=button name_regex="USDT"（點第一個商品卡進入詳情頁）
+  9. wait 2500
+  10. screenshot_analyze "是否進入商品詳情頁？看到商品名稱和價格嗎？"
+  11. eval target='window.history.back()'（觸發瀏覽器返回上一頁）
+  12. wait 3000（等 hash 路由回到首頁）
+  13. screenshot_analyze "是否回到首頁商品列表？目前頁面狀態？"
+  14. done=true
 
 success_criteria:
   - "從首頁可進入商品詳情頁（看到商品名稱與價格）"

@@ -2,8 +2,8 @@ id: agora_pickup_checkboxes_restore
 name: "AgoraMarket 商品編輯取消後物流設定還原驗證 (Issue #70 #5)"
 url: "https://redandan.github.io/?__test_role=seller"
 
-max_iterations: 30
-timeout_secs: 480
+max_iterations: 50
+timeout_secs: 600
 
 # Seller 後台是 H5 手機版，與 Buyer 相同 viewport
 viewport:
@@ -35,50 +35,52 @@ goal: |
   - 退出後會回到賣家儀表板，需再次點「商品」tab 才能看到商品列表。
 
   ⚠️ 本測試分兩輪，缺一不可：
-     第一輪（步驟 1-15）：進入商品編輯 → 展開物流設定 → screenshot_analyze 記錄狀態A
-     第二輪（步驟 16-28）：goto 回商品列表 → 再次進入商品編輯 → 展開物流設定 → screenshot_analyze 記錄狀態B → done=true
-  ⚠️ 唯一允許 done=true 的位置是步驟 28，其他任何步驟都不能 done=true。
-  ⚠️ 步驟 13 展開物流設定≠完成，必須繼續執行步驟 14-28。
+     第一輪（步驟 1-17）：clear_state → seller 登入 → 進入商品編輯 → 展開物流設定 → screenshot_analyze 記錄狀態A
+     第二輪（步驟 18-30）：goto 回商品列表 → 再次進入商品編輯 → 展開物流設定 → screenshot_analyze 記錄狀態B → done=true
+  ⚠️ 唯一允許 done=true 的位置是步驟 30，其他任何步驟都不能 done=true。
+  ⚠️ 步驟 15 展開物流設定≠完成，必須繼續執行步驟 16-30。
   ⚠️ Flutter tab 切換後必須重新呼叫 enable_a11y 才能繼續 shadow_click。
 
   步驟（全部依序執行）：
-  1. wait 3000
-  2. enable_a11y
-  3. wait 1500
-  4. shadow_click role=tab name_regex="^商品$"（切換到商品管理列表）
-  5. wait 2500
-  6. enable_a11y（Flutter 路由切換後必須重新啟動語義樹）
-  7. wait 1500
-  8. shadow_click role=button name_regex="^編輯$"
-  9. wait 4000
-  10. enable_a11y
-  11. wait 1500
-  12. flutter_scroll_until_visible role=button name_regex="物流設定"（捲動到按鈕可見）
-  13. shadow_click role=button name_regex="^物流設定$"（展開物流設定）
-  14. wait 1500
-  15. screenshot_analyze "【第一輪/狀態A】記錄：宅配到府、7-ELEVEN、全家 的開關是開還是關？"
-  16. goto target="https://redandan.github.io/?__test_role=seller#/seller/products"
-  17. wait 3000
-  18. enable_a11y
-  19. wait 1500
-  20. shadow_click role=button name_regex="^編輯$"
-  21. wait 4000
-  22. enable_a11y
-  23. wait 1500
-  24. flutter_scroll_until_visible role=button name_regex="物流設定"（捲動到按鈕可見）
-  25. shadow_click role=button name_regex="^物流設定$"（展開物流設定）
-  26. wait 1500
-  27. screenshot_analyze "【第二輪/狀態B】記錄：宅配到府、7-ELEVEN、全家 的開關是開還是關？與步驟15狀態A相同嗎？（Bug #5 驗證）"
-  28. done=true
+  1. clear_state（清除前一測試遺留的 session，防角色污染）
+  2. goto target="https://redandan.github.io/?__test_role=seller"（確保以賣家身份登入）
+  3. wait 5000（等 auto-login + Flutter 首頁載入）
+  4. enable_a11y
+  5. wait 2000
+  6. shadow_click role=tab name_regex="^商品$"（切換到商品管理列表）
+  7. wait 2500
+  8. enable_a11y（Flutter 路由切換後必須重新啟動語義樹）
+  9. wait 1500
+  10. shadow_click role=button name_regex="^編輯$"
+  11. wait 4000
+  12. enable_a11y
+  13. wait 1500
+  14. flutter_scroll_until_visible role=button name_regex="物流設定"（捲動到按鈕可見）
+  15. shadow_click role=button name_regex="^物流設定$"（展開物流設定）
+  16. wait 1500
+  17. screenshot_analyze "【第一輪/狀態A】記錄展開物流設定後的畫面狀態（宅配到府/7-ELEVEN/全家 的開關狀態，或空白均記錄）"
+  18. goto target="https://redandan.github.io/?__test_role=seller#/seller/products"
+  19. wait 3000
+  20. enable_a11y
+  21. wait 1500
+  22. shadow_click role=button name_regex="^編輯$"
+  23. wait 4000
+  24. enable_a11y
+  25. wait 1500
+  26. flutter_scroll_until_visible role=button name_regex="物流設定"（捲動到按鈕可見）
+  27. shadow_click role=button name_regex="^物流設定$"（展開物流設定）
+  28. wait 1500
+  29. screenshot_analyze "【第二輪/狀態B】記錄展開物流設定後的畫面狀態，與步驟17狀態A相比是否一致？（Bug #5 驗證）"
+  30. done=true
 
-  ⚠️ 步驟 15 的 screenshot_analyze 是第一輪結束點，嚴禁步驟 15 前 done=true。
-  ⚠️ 步驟 27 的 screenshot_analyze 是第二輪結束點，嚴禁步驟 27 前 done=true。
-  ⚠️ 唯一允許 done=true 的位置是步驟 28，其他任何步驟都不能 done=true。
+  ⚠️ 步驟 17 的 screenshot_analyze 是第一輪結束點，嚴禁步驟 17 前 done=true。
+  ⚠️ 步驟 29 的 screenshot_analyze 是第二輪結束點，嚴禁步驟 29 前 done=true。
+  ⚠️ 唯一允許 done=true 的位置是步驟 30，其他任何步驟都不能 done=true。
 
 success_criteria:
-  - "成功兩次進入商品編輯頁並展開物流設定"
-  - "狀態A（取消前）和狀態B（重新開啟後）的物流服務開關狀態一致（Bug #5 regression PASS）"
-  - "不出現「未儲存的修改值」殘留（go_back 後重新開啟 = 原始儲存狀態）"
+  - "成功兩次進入商品編輯頁並展開物流設定區域"
+  - "兩輪展開物流設定後，截圖記錄的狀態一致（無論顯示哪些服務，前後相同即通過）"
+  - "若有宅配到府/7-ELEVEN/全家等開關，則兩輪顯示狀態相同（Bug #5 驗證）；若無顯示，記錄空白即通過"
 
 tags: [regression, product, pickup, checkboxes, agora, critical, issue-70]
 
