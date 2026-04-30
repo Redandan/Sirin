@@ -70,6 +70,10 @@ pub struct RunState {
     /// every `set_phase` call.  #[serde(skip)] — not persistent.
     #[serde(skip, default = "std::time::Instant::now")]
     pub last_phase_updated_at: std::time::Instant,
+    /// #192 — Whether this run used deterministic script replay or LLM.
+    /// Set by executor: "script" for saved-script replay, "llm" for AI-driven.
+    /// None = unknown (run not yet started).
+    pub replay_mode: Option<String>,
 }
 
 // ── Registry singleton ───────────────────────────────────────────────────────
@@ -101,6 +105,7 @@ pub fn new_run(test_id: &str) -> String {
         som_label_map: None,
         recent_ax_nodes: None,
         last_phase_updated_at: std::time::Instant::now(),
+        replay_mode: None,
     };
     registry().lock().unwrap_or_else(|e| e.into_inner())
         .insert(run_id.clone(), state);
@@ -227,6 +232,14 @@ pub fn kill_run(run_id: &str) -> Result<(), String> {
             }
         }
         None => Err(format!("run '{run_id}' not found in in-memory registry")),
+    }
+}
+
+/// Set the replay mode ("script" | "llm") for a run.  Called by executor. (#192)
+pub fn set_replay_mode(run_id: &str, mode: &str) {
+    let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(s) = reg.get_mut(run_id) {
+        s.replay_mode = Some(mode.to_string());
     }
 }
 
@@ -439,6 +452,7 @@ pub fn to_json(s: &RunState) -> serde_json::Value {
         "started_at": s.started_at,
         "status": status,
         "idle_secs": idle_secs,
+        "replay_mode": s.replay_mode,  // #192 "script" | "llm" | null
         "details": extra,
     })
 }

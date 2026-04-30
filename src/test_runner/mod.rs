@@ -251,6 +251,36 @@ pub fn spawn_run_async(test_id: String, auto_fix: bool) -> Result<String, String
                 return;
             }
 
+            // Issue #190 — auto-kill watchdog: if idle_secs > threshold the LLM
+            // is hung.  We spawn a lightweight Tokio task that checks every 30s
+            // and calls kill_run once the threshold is exceeded.
+            // The watchdog exits automatically when the run leaves Running state.
+            {
+                let watch_id = run_id_clone.clone();
+                const IDLE_THRESHOLD_SECS: u64 = 90;
+                tokio::spawn(async move {
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                        let state = runs::get(&watch_id);
+                        match state.map(|s| (s.phase.clone(), s.last_phase_updated_at)) {
+                            Some((runs::RunPhase::Running { .. }, last_updated)) => {
+                                let idle = last_updated.elapsed().as_secs();
+                                if idle > IDLE_THRESHOLD_SECS {
+                                    tracing::warn!(
+                                        "[watchdog] '{}' idle {}s > {}s — auto-killing",
+                                        watch_id, idle, IDLE_THRESHOLD_SECS
+                                    );
+                                    let _ = runs::kill_run(&watch_id);
+                                    break;
+                                }
+                            }
+                            None | Some((runs::RunPhase::Queued, _)) => {} // not started yet
+                            _ => break, // terminal state — watchdog done
+                        }
+                    }
+                });
+            }
+
             let tools = crate::adk::tool::default_tool_registry();
             let ctx = crate::adk::context::AgentContext::new("mcp_async", tools)
                 .with_metadata("run_id", &run_id_clone);

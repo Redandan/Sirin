@@ -790,8 +790,17 @@ pub async fn execute_test_tracked(
             }
         }
 
+        // Mark as script mode before attempting replay (#192)
+        if let Some(rid) = run_id {
+            runs::set_replay_mode(rid, "script");
+        }
+
         let Some(result) = try_replay_script(ctx, test, run_id, session_id, saved_actions).await else {
             tracing::info!("[scripts] '{}' replay failed — falling back to LLM ReAct loop", test.id);
+            // Reset to llm mode on fallback (#192)
+            if let Some(rid) = run_id {
+                runs::set_replay_mode(rid, "llm");
+            }
             break 'replay;
         };
 
@@ -816,6 +825,11 @@ pub async fn execute_test_tracked(
         return result;
     }
     // ── end replay ────────────────────────────────────────────────────────────
+
+    // LLM path — mark replay_mode = "llm" (#192)
+    if let Some(rid) = run_id {
+        runs::set_replay_mode(rid, "llm");
+    }
 
     let started = std::time::Instant::now();
     let mut history: Vec<TestStep> = Vec::new();
