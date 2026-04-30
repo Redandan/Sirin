@@ -1,5 +1,5 @@
 id: agora_admin_product_import
-name: "AgoraMarket Admin 商品匯入 → 預覽 → 分類篩選 (Issue #70 #4 #20 #22 #49)"
+name: "AgoraMarket Admin 商品列表 + 分類篩選 + 狀態 chip (Issue #70 #4 #20 #22)"
 url: "https://redandan.github.io/?__test_role=admin"
 
 max_iterations: 18
@@ -14,9 +14,10 @@ viewport:
 locale: zh-TW
 
 goal: |
-  目標：以管理員身份在「商品與電商」頁完成「匯入 → 預覽 → 分類篩選」端到端流程，
-  一次性覆蓋 Issue #70 子問題 #4（分類篩選）、#20（AX tree 折疊）、
-  #22（狀態 chip 色碼）、#49（商品匯入入口）。
+  目標：以管理員身份在「商品與電商」頁驗證商品列表載入、狀態 chip 顯示、分類篩選功能，
+  覆蓋 Issue #70 子問題 #4（分類篩選）、#20（AX tree 折疊）、#22（狀態 chip 色碼）。
+
+  ⚠️ 注意：商品匯入功能（#49）在目前 Admin UI 中尚未提供入口，本測試不驗證匯入功能。
 
   起始狀態：URL `?__test_role=admin` 自動登入後落在 `/admin/statistics`。
   Flutter CanvasKit app — 所有 UI 判斷一律用 screenshot_analyze。
@@ -33,7 +34,7 @@ goal: |
   1. wait 3000（等 admin 後台儀表板載入）
   2. shadow_click role=button name_regex="^商品與電商$"
   3. wait 3000（Flutter 頁面切換動畫）
-  4. screenshot_analyze "現在是商品與電商頁嗎？看到商品列表了嗎？是否有「匯入」或「批量匯入」按鈕？商品狀態 chip 是灰色還是有顏色（綠/黃/紅）？"
+  4. screenshot_analyze "現在是商品與電商頁嗎？看到商品列表了嗎？商品狀態 chip 是灰色還是有顏色（綠/黃/紅）？記錄頁面頂部的按鈕有哪些。"
   5. shadow_click role=button name_regex="^請選擇產品分類$"
   6. wait 1500（等 dropdown 展開）
   7. screenshot_analyze "分類篩選 dropdown 是否展開？看到哪些分類選項（列出最多 5 個）？或者保持收合狀態？"

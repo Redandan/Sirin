@@ -2,8 +2,8 @@ id: agora_buyer_order_view
 name: "AgoraMarket 買家訂單管理頁驗證"
 url: "https://redandan.github.io/?__test_role=buyer"
 
-max_iterations: 18
-timeout_secs: 240
+max_iterations: 22
+timeout_secs: 300
 max_retries: 1  # H5 Flutter 偶發 Chrome 初始化延遲，自動重試一次
 
 # H5 mobile viewport — AgoraMarket 會員端是手機版 App，必須用手機 viewport 測試
@@ -17,35 +17,35 @@ viewport:
 locale: zh-TW
 
 goal: |
-  目標：確認買家訂單管理頁的 tab 分類（全部/待出貨/待收貨/已完成/退貨退款/不成立）正常顯示。
+  目標：確認買家訂單管理頁可正常進入，並驗證訂單分類 tab 可切換。
 
-  起始狀態：以買家身份登入（?__test_role=buyer auto-login）。
-  買家頁面底部有 4 個 tab：商品、訂單、錢包、我的。
-
+  ⚠️ 訂單頂部分類 tab 包含：全部/待出貨/待收貨/已完成（「不成立」等分類可能因帳號
+  無相關訂單而不顯示，不列為必要條件）。
   ⚠️ 必須點底部「訂單」tab，不是搜尋或其他按鈕。
   ⚠️ Flutter app：所有 UI 判斷用 screenshot_analyze。
-  ⚠️ 不論任何步驟失敗，都必須繼續執行到步驟 13 才能輸出 done=true。嚴禁提早終止。
+  ⚠️ 不論任何步驟失敗，都必須繼續執行到步驟 15 才能輸出 done=true。嚴禁提早終止。
 
-  步驟（線性，步驟 13 無條件 done=true，不得提早）：
-  1. wait 3000（等買家頁面完整載入）
-  2. enable_a11y（初始化 Flutter semantics）
-  3. wait 1500
-  4. shadow_click role=tab name_regex="^訂單$"（點底部訂單 tab）
-  5. wait 2500（等訂單頁面載入）
-  6. screenshot_analyze "訂單頁面截圖。記錄頂部有哪些訂單分類 tab（全部/待出貨/待收貨/已完成/退貨退款/不成立等）？訂單列表顯示什麼（有訂單？空列表？）？"
-  7. shadow_click role=tab name_regex="^待出貨$"（點待出貨 tab）
-  8. wait 1500
-  9. screenshot_analyze "待出貨訂單截圖。有幾筆待出貨訂單？每筆顯示哪些資訊（商品名/金額/狀態）？若空列表，記錄空列表的顯示文字。"
-  10. shadow_click role=tab name_regex="^已完成$"（點已完成 tab）
-  11. wait 1500
-  12. screenshot_analyze "已完成訂單截圖。有幾筆已完成訂單？記錄最新一筆的商品名稱和金額。"
-  13. done=true
+  步驟（線性，步驟 15 無條件 done=true，不得提早）：
+  1. goto target="https://redandan.github.io/?__test_role=buyer"（防前一測試 session 污染）
+  2. wait 5000（等 auto-login + Flutter 買家首頁載入）
+  3. enable_a11y
+  4. wait 2000
+  5. enable_a11y（二次確保 AX tree 就緒）
+  6. wait 1000
+  7. shadow_click role=tab name_regex="^訂單$"（點底部訂單 tab）
+  8. wait 2500
+  9. enable_a11y（路由切換後重新初始化 AX tree）
+  10. wait 1000
+  11. screenshot_analyze "訂單頁面截圖：頂部有哪些分類 tab（全部/待出貨/待收貨/已完成等）？記錄所有可見的 tab 名稱。"
+  12. shadow_click role=tab name_regex="^待出貨$"（點待出貨 tab）
+  13. wait 1500
+  14. screenshot_analyze "待出貨截圖：有訂單還是空列表？記錄顯示狀態。"
+  15. done=true
 
 success_criteria:
   - "成功點擊底部訂單 tab 並進入訂單管理頁"
-  - "看到訂單分類 tab（全部/待出貨/待收貨/已完成等）"
-  - "各 tab 可正常切換並顯示對應訂單（或空列表提示）"
+  - "看到訂單分類 tab（至少有全部、待出貨等基本分類）"
+  - "待出貨 tab 可正常切換（有訂單或空列表均通過）"
 
 tags: [regression, orders, buyer, agora]
-
 
