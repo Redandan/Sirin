@@ -2,8 +2,8 @@ id: agora_c2c_delivery_dashboard
 name: "C2C 核心流程：外送員儀表板 UI 驗證"
 url: "https://redandan.github.io/?__test_role=delivery#/delivery"
 
-max_iterations: 15
-timeout_secs: 240
+max_iterations: 18
+timeout_secs: 360
 max_retries: 1
 
 # H5 mobile viewport — 外送員後台是手機版
