@@ -36,5 +36,6 @@ goal: |
 
 success_criteria:
   - "訂單頁面可正常載入（不顯示「訂單數據格式錯誤」）"
+  - "頁面顯示訂單狀態 tab（全部/待出貨/待收貨 等）或空列表提示，確認已進入訂單頁而非登入頁"
 
 tags: [c2c, buyer, orders, bug-tracking, regression]
