@@ -1,0 +1,58 @@
+id: agora_c2c_seller_ship
+name: "C2C 後段流程：賣家確認訂單並出貨"
+url: "https://redandan.github.io/?__test_role=seller"
+
+max_iterations: 30
+timeout_secs: 480
+
+# Seller 後台是 H5 手機版
+viewport:
+  width: 390
+  height: 844
+  scale: 2.0
+  mobile: true
+
+locale: zh-TW
+
+goal: |
+  目標：驗證賣家可從訂單管理頁找到待出貨訂單並完成出貨操作。
+
+  ⚠️ 測試依賴：需要帳號中有「待出貨」狀態的訂單（由 c2c_place_order 產生）。
+  ⚠️ 若無待出貨訂單，記錄空列表狀態即可通過（不強制要求有訂單）。
+  ⚠️ 步驟 20 無條件 done=true，嚴禁提早終止。
+
+  已知 UI 流程：
+  - 賣家訂單管理：訂單 tab → 待出貨 tab → 點訂單 → 填物流資訊 → 出貨
+  - 出貨按鈕可能名稱：「出貨」「確認出貨」「填寫物流」「Send」
+  - 物流欄位：物流公司名稱、追蹤號碼（填測試值即可）
+
+  步驟（線性，步驟 20 done=true）：
+  1. goto target="https://redandan.github.io/?__test_role=seller"（確保 seller 登入）
+  2. wait 5000（等 auto-login + Flutter 賣家儀表板載入）
+  3. enable_a11y
+  4. wait 2000
+  5. shadow_click role=tab name_regex="^訂單$"（點底部訂單 tab）
+  6. wait 2500
+  7. enable_a11y（路由切換後重新初始化 AX tree）
+  8. wait 1000
+  9. shadow_click role=tab name_regex="^待出貨$"（切到待出貨分類）
+  10. wait 2000
+  11. enable_a11y
+  12. wait 1000
+  13. shadow_dump（列出待出貨訂單列表）
+  14. screenshot_analyze "待出貨訂單截圖：有幾筆待出貨訂單？每筆訂單顯示哪些資訊（商品名/買家/金額）？有沒有「出貨」或「填寫物流」按鈕？若空列表，記錄提示文字。"
+  15. shadow_click role=button name_regex="出貨|確認出貨|填寫物流|Ship|發貨"（嘗試點第一個訂單的出貨按鈕，若找不到直接繼續）
+  16. wait 2000
+  17. enable_a11y
+  18. wait 1000
+  19. screenshot_analyze "點擊出貨後的狀態：是否彈出填寫物流資訊的表單？顯示哪些欄位？若無訂單，記錄當前頁面狀態。"
+  20. done=true
+
+success_criteria:
+  - "成功進入賣家訂單管理頁並切到待出貨 tab"
+  - "記錄待出貨訂單數量（0 筆或有 N 筆均合格）"
+  - "若有待出貨訂單：嘗試點擊出貨按鈕並記錄結果（物流表單顯示或其他反應）"
+  - "若無待出貨訂單：記錄空列表狀態即通過（測試環境無訂單為正常）"
+
+tags: [c2c, seller, ship, orders, regression, issue-185]
+

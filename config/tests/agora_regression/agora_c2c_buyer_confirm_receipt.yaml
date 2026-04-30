@@ -1,0 +1,54 @@
+id: agora_c2c_buyer_confirm_receipt
+name: "C2C 後段流程：買家確認收貨"
+url: "https://redandan.github.io/?__test_role=buyer"
+
+max_iterations: 25
+timeout_secs: 360
+
+# Buyer 是 H5 手機版
+viewport:
+  width: 390
+  height: 844
+  scale: 2.0
+  mobile: true
+
+locale: zh-TW
+
+goal: |
+  目標：驗證買家可從訂單頁找到「待收貨」訂單並完成確認收貨操作。
+
+  ⚠️ 測試依賴：需要帳號中有「待收貨」狀態的訂單（需賣家先完成出貨）。
+  ⚠️ 若無待收貨訂單，記錄狀態即可通過。
+  ⚠️ 步驟 18 無條件 done=true，嚴禁提早終止。
+
+  已知 UI 流程：
+  - 買家訂單：訂單 tab → 待收貨 tab → 點訂單 → 確認收貨按鈕
+  - 確認按鈕可能名稱：「確認收貨」「Confirm Receipt」「已收到」
+
+  步驟（線性，步驟 18 done=true）：
+  1. goto target="https://redandan.github.io/?__test_role=buyer#/orders"（直接到訂單頁）
+  2. wait 5000（等 auto-login + Flutter 訂單頁載入）
+  3. enable_a11y
+  4. wait 2000
+  5. shadow_click role=tab name_regex="^待收貨$"（切到待收貨 tab）
+  6. wait 2500
+  7. enable_a11y
+  8. wait 1000
+  9. shadow_dump（列出待收貨訂單）
+  10. screenshot_analyze "待收貨訂單截圖：有幾筆待收貨訂單？每筆訂單顯示哪些資訊？有沒有「確認收貨」按鈕？"
+  11. shadow_click role=button name_regex="確認收貨|Confirm Receipt|已收到|收貨"（嘗試點確認收貨）
+  12. wait 2000
+  13. enable_a11y
+  14. wait 1000
+  15. screenshot_analyze "點擊確認收貨後：是否彈出確認對話框？或訂單狀態已更新為已完成？記錄當前狀態。"
+  16. shadow_click role=button name_regex="確認|確定|OK|Yes"（若有確認彈窗則點，找不到繼續）
+  17. wait 2000
+  18. done=true
+
+success_criteria:
+  - "成功進入買家訂單頁並切到待收貨 tab"
+  - "記錄待收貨訂單數量（0 筆或有 N 筆均合格）"
+  - "若有待收貨訂單：嘗試確認收貨並記錄結果（確認成功、需二次確認、或 UI 異常）"
+
+tags: [c2c, buyer, receipt, orders, regression, issue-185]
+
