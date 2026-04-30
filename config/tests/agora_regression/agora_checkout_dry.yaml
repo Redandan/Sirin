@@ -2,8 +2,8 @@ id: agora_checkout_dry
 name: "AgoraMarket Checkout DRY 驗證 (Issue #70 #45)"
 url: "https://redandan.github.io/?__test_role=buyer"
 
-max_iterations: 25
-timeout_secs: 300
+max_iterations: 30
+timeout_secs: 360
 max_retries: 1  # H5 Flutter 偶發 Chrome 初始化延遲，自動重試一次
 
 # H5 mobile viewport — AgoraMarket 會員端是手機版 App，必須用手機 viewport 測試
@@ -23,19 +23,22 @@ goal: |
   ⚠️ 安全模式：看到「下單」或「Place Order」按鈕即算通過，絕對不點擊下單！
 
   步驟（直接購買 flow）：
-  1. wait 3000（等買家首頁完整載入）
-  2. enable_a11y（初始化 Flutter semantics）
-  3. wait 1500
-  4. screenshot_analyze "確認在首頁，看到商品卡片"
-  5. shadow_click role=button name_regex="USDT"（點第一個商品卡進入詳情）
-  6. wait 2500
-  7. screenshot_analyze "是否在商品詳情頁？看到商品名稱、價格？"
-  8. scroll y=400（向下捲動找底部購買按鈕）
-  9. screenshot_analyze "是否看到「立即購買」、「確認購買」或類似按鈕？"
-  10. shadow_click role=button name_regex="立即購買|確認購買|Buy Now|直接購買|購買"
-  11. wait 3000
-  12. screenshot_analyze "是否進入結帳頁？看到訂單摘要、金額、下單按鈕嗎？記錄狀態。"
-  13. done=true（不要點下單！記錄結帳頁 UI 狀態即可）
+  1. goto target="https://redandan.github.io/?__test_role=buyer"（防 session 污染）
+  2. wait 4000（等 auto-login + Flutter 買家首頁載入）
+  3. enable_a11y
+  4. wait 2000
+  5. enable_a11y（二次確保 AX tree 就緒）
+  6. wait 1000
+  7. screenshot_analyze "確認在首頁，看到商品卡片"
+  8. shadow_click role=button name_regex="USDT"（點第一個商品卡進入詳情）
+  9. wait 2500
+  10. screenshot_analyze "是否在商品詳情頁？看到商品名稱、價格？"
+  11. scroll y=400（向下捲動找底部購買按鈕）
+  12. screenshot_analyze "是否看到「立即購買」、「確認購買」或類似按鈕？"
+  13. shadow_click role=button name_regex="立即購買|確認購買|Buy Now|直接購買|購買"
+  14. wait 3000
+  15. screenshot_analyze "是否進入結帳頁？看到訂單摘要、金額、下單按鈕嗎？記錄狀態。"
+  16. done=true（不要點下單！記錄結帳頁 UI 狀態即可）
 
 success_criteria:
   - "從商品詳情頁可進入結帳頁面"

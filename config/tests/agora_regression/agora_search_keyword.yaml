@@ -3,8 +3,8 @@ name: "商品關鍵字搜尋測試"
 url: "https://redandan.github.io/?__test_role=buyer"
 locale: zh-TW
 
-max_iterations: 18
-timeout_secs: 270
+max_iterations: 25
+timeout_secs: 360
 max_retries: 1  # H5 Flutter 偶發 Chrome 初始化延遲，自動重試一次
 
 # H5 mobile viewport — AgoraMarket 會員端是手機版 App，必須用手機 viewport 測試
@@ -29,18 +29,21 @@ goal: |
   B. shadow_click role=button name_regex="搜尋|Search|搜索|magnifying|放大鏡|🔍"
   C. eval target='window.location.hash="#/search"'（hash route 直連搜尋頁）
 
-  步驟（線性，步驟 10 無條件 done=true）：
-  1. wait_for_ax_ready timeout=6000
-  2. screenshot_analyze "確認在首頁。頂部有搜尋圖示嗎？有搜尋欄嗎？"
-  3. shadow_dump（列出所有 role=button 和 role=textfield）
-  4. 依 A→B→C 順序嘗試搜尋入口（前面成功就繼續）
-  5. wait 1500
-  6. flutter_type text="iPhone"
-  7. wait 500
-  8. flutter_enter（送出搜尋；若失敗則 shadow_click role=button name_regex="搜尋|Search|🔍" 再試）
-  9. wait 2500
-  10. screenshot_analyze "搜尋後頁面是什麼狀態？有商品列表嗎？"
-  11. done=true
+  步驟（線性，步驟 13 無條件 done=true）：
+  1. goto target="https://redandan.github.io/?__test_role=buyer"（防 session 污染）
+  2. wait 4000（等 auto-login + Flutter 首頁載入）
+  3. enable_a11y
+  4. wait 1500
+  5. screenshot_analyze "確認在首頁。頂部有搜尋圖示嗎？有搜尋欄嗎？"
+  6. shadow_dump（列出所有 role=button 和 role=textfield）
+  7. 依 A→B→C 順序嘗試搜尋入口（前面成功就繼續）
+  8. wait 1500
+  9. flutter_type text="iPhone"
+  10. wait 500
+  11. flutter_enter（送出搜尋；若失敗則 shadow_click role=button name_regex="搜尋|Search|🔍" 再試）
+  12. wait 2500
+  13. screenshot_analyze "搜尋後頁面是什麼狀態？有商品列表嗎？"
+  14. done=true
 
 success_criteria:
   - "成功找到搜尋入口（搜尋欄、搜尋圖示、或任何搜尋相關 UI）"
