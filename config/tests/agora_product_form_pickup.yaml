@@ -1,6 +1,6 @@
 id: agora_product_form_pickup
 name: "AgoraMarket 商品表單 Pickup 設定儲存還原驗證 (Issue #70 #3 #5 #10 #25)"
-url: "https://agoramarket.purrtechllc.com/?__test_role=seller"
+url: "https://redandan.github.io/?__test_role=seller"
 
 max_iterations: 50
 timeout_secs: 720

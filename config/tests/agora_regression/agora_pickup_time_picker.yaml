@@ -1,6 +1,6 @@
 id: agora_pickup_time_picker
 name: "取貨時間選擇器 v11 - ax_focus + executor prompt fix"
-url: "https://agoramarket.purrtechllc.com/?__test_role=seller#/seller/product"
+url: "https://redandan.github.io/?__test_role=seller#/seller/product"
 
 max_iterations: 30
 timeout_secs: 480

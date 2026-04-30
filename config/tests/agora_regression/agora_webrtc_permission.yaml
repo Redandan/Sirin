@@ -1,6 +1,6 @@
 id: agora_webrtc_permission
 name: "AgoraMarket WebRTC Permission 修復驗證 (Issue #70 #1)"
-url: "https://agoramarket.purrtechllc.com/?__test_role=buyer"
+url: "https://redandan.github.io/?__test_role=buyer"
 
 # Flutter CanvasKit: headless Chrome 不 paint，必須開啟實體視窗
 

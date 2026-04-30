@@ -1,6 +1,6 @@
 id: agora_login_vision
 name: "AgoraMarket 登入流程 — vision perception (Flutter Canvas)"
-url: "https://agoramarket.purrtechllc.com/#/login"
+url: "https://redandan.github.io/#/login"
 
 max_iterations: 20
 timeout_secs: 300
@@ -18,7 +18,7 @@ perception: vision
 fixture:
   setup:
     - {action: "clear_state"}
-    - {action: "goto", target: "https://agoramarket.purrtechllc.com/#/login"}
+    - {action: "goto", target: "https://redandan.github.io/#/login"}
     - {action: "wait", target: "4000"}
   cleanup:
     - {action: "clear_state"}

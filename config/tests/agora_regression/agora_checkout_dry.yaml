@@ -1,6 +1,6 @@
 id: agora_checkout_dry
 name: "AgoraMarket Checkout DRY 驗證 (Issue #70 #45)"
-url: "https://agoramarket.purrtechllc.com/?__test_role=buyer"
+url: "https://redandan.github.io/?__test_role=buyer"
 
 max_iterations: 25
 timeout_secs: 300

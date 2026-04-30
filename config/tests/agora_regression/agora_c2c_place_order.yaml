@@ -1,6 +1,6 @@
 id: agora_c2c_place_order
 name: "C2C 核心流程：買家實際下單並確認訂單建立"
-url: "https://agoramarket.purrtechllc.com/?__test_role=buyer"
+url: "https://redandan.github.io/?__test_role=buyer"
 
 max_iterations: 25
 timeout_secs: 360

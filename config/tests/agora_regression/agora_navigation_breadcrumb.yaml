@@ -1,6 +1,6 @@
 id: agora_navigation_breadcrumb
 name: "頁面導航與返回測試"
-url: "https://agoramarket.purrtechllc.com/?__test_role=buyer"
+url: "https://redandan.github.io/?__test_role=buyer"
 
 max_iterations: 12
 timeout_secs: 180
@@ -40,7 +40,7 @@ goal: |
   7. wait 2500
   8. screenshot_analyze "是否進入商品詳情頁？看到商品名稱和價格嗎？"
   9. eval target='window.history.back()'（觸發瀏覽器返回上一頁）
-  10. wait_for_url target="^https://agoramarket.purrtechllc.com/(\\?[^#]*)?(#/?)?$" timeout=8000
+  10. wait_for_url target="^https://redandan.github.io/(\\?[^#]*)?(#/?)?$" timeout=8000
      （等待 hash 路由回到首頁；若 timeout 也繼續，記錄狀態即可）
   11. screenshot_analyze "是否回到首頁商品列表？目前頁面狀態？"
   12. done=true

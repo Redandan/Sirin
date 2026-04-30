@@ -1,6 +1,6 @@
 id: agora_c2c_delivery_dashboard
 name: "C2C 核心流程：外送員儀表板 UI 驗證"
-url: "https://agoramarket.purrtechllc.com/?__test_role=delivery#/delivery"
+url: "https://redandan.github.io/?__test_role=delivery#/delivery"
 
 max_iterations: 15
 timeout_secs: 240

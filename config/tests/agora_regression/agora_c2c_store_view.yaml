@@ -1,6 +1,6 @@
 id: agora_c2c_store_view
 name: "C2C 核心流程：查看賣家商店頁面"
-url: "https://agoramarket.purrtechllc.com/?__test_role=buyer"
+url: "https://redandan.github.io/?__test_role=buyer"
 
 max_iterations: 18
 timeout_secs: 240

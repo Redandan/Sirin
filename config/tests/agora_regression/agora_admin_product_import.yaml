@@ -1,6 +1,6 @@
 id: agora_admin_product_import
 name: "AgoraMarket Admin 商品匯入 → 預覽 → 分類篩選 (Issue #70 #4 #20 #22 #49)"
-url: "https://agoramarket.purrtechllc.com/?__test_role=admin"
+url: "https://redandan.github.io/?__test_role=admin"
 
 max_iterations: 18
 timeout_secs: 300

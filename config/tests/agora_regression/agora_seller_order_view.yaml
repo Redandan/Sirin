@@ -1,6 +1,6 @@
 id: agora_seller_order_view
 name: "AgoraMarket 賣家訂單管理頁驗證"
-url: "https://agoramarket.purrtechllc.com/?__test_role=seller"
+url: "https://redandan.github.io/?__test_role=seller"
 
 max_iterations: 16
 timeout_secs: 200

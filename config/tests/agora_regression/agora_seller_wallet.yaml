@@ -1,6 +1,6 @@
 id: agora_seller_wallet
 name: "AgoraMarket 賣家錢包頁面驗證"
-url: "https://agoramarket.purrtechllc.com/?__test_role=seller"
+url: "https://redandan.github.io/?__test_role=seller"
 
 max_iterations: 16
 timeout_secs: 200

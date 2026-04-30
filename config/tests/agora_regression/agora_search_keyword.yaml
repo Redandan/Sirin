@@ -1,6 +1,6 @@
 id: agora_search_keyword
 name: "商品關鍵字搜尋測試"
-url: "https://agoramarket.purrtechllc.com/?__test_role=buyer"
+url: "https://redandan.github.io/?__test_role=buyer"
 locale: zh-TW
 
 max_iterations: 18

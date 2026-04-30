@@ -1,6 +1,6 @@
 id: agora_c2c_order_data_error
 name: "C2C 已知 Bug：訂單數據格式錯誤驗證 (Issue #XX)"
-url: "https://agoramarket.purrtechllc.com/?__test_role=buyer"
+url: "https://redandan.github.io/?__test_role=buyer"
 
 max_iterations: 12
 timeout_secs: 180
@@ -26,7 +26,7 @@ goal: |
   1. wait 3000
   2. enable_a11y
   3. wait 1500
-  4. goto target="https://agoramarket.purrtechllc.com/?__test_role=buyer#/orders"
+  4. goto target="https://redandan.github.io/?__test_role=buyer#/orders"
   5. wait 2500
   6. enable_a11y
   7. wait 1000

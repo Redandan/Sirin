@@ -1,6 +1,6 @@
 id: agora_notification_lifecycle
 name: "AgoraMarket 通知生命週期 — 接收/已讀/刪除 (Issue #47, #70 #2/#67-68)"
-url: "https://agoramarket.purrtechllc.com/?__test_role=buyer"
+url: "https://redandan.github.io/?__test_role=buyer"
 locale: zh-TW
 
 # Flutter CanvasKit — UI 全部渲染在 canvas 上
@@ -19,7 +19,7 @@ fixture:
   setup:
     - {action: "clear_state"}
     -
-    - {action: "goto", target: "https://agoramarket.purrtechllc.com/?__test_role=buyer"}
+    - {action: "goto", target: "https://redandan.github.io/?__test_role=buyer"}
     - {action: "enable_a11y"}
   cleanup:
     - {action: "clear_state"}

@@ -1,6 +1,6 @@
 id: agora_pickup_checkboxes_restore
 name: "AgoraMarket 商品編輯取消後物流設定還原驗證 (Issue #70 #5)"
-url: "https://agoramarket.purrtechllc.com/?__test_role=seller"
+url: "https://redandan.github.io/?__test_role=seller"
 
 max_iterations: 25
 timeout_secs: 420
@@ -50,7 +50,7 @@ goal: |
   7. shadow_click role=button name_regex="^物流設定$"（展開物流設定）
   8. wait 1500
   9. screenshot_analyze "【第一輪/狀態A】記錄：宅配到府、7-ELEVEN、全家 的開關是開還是關？"
-  10. goto target="https://agoramarket.purrtechllc.com/?__test_role=seller#/seller/products"
+  10. goto target="https://redandan.github.io/?__test_role=seller#/seller/products"
      （明確導航回商品列表，不用 history.back()
       ⚠️ history.back() 有時會回到前一 session 的 admin 頁面導致 zombie）
   11. wait 3000

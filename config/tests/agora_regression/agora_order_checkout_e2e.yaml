@@ -1,6 +1,6 @@
 id: agora_order_checkout_e2e
 name: "AgoraMarket 核心下單流程 E2E (Issue #49 / #70 #6,#45,#74)"
-url: "https://agoramarket.purrtechllc.com/?__test_role=buyer"
+url: "https://redandan.github.io/?__test_role=buyer"
 
 max_iterations: 25
 timeout_secs: 360
@@ -34,7 +34,7 @@ goal: |
   6. screenshot_analyze "是否在商品詳情頁？記錄商品名稱、價格和可見的購買按鈕。"
   7. scroll y=400（捲到底部確認按鈕存在）
   8. shadow_dump（列出詳情頁所有 button，確認有「加入購物車」和「購買」按鈕）
-  9. goto target="https://agoramarket.purrtechllc.com/?__test_role=buyer#/cart"（直接導航到購物車頁）
+  9. goto target="https://redandan.github.io/?__test_role=buyer#/cart"（直接導航到購物車頁）
   10. wait 2500
   11. enable_a11y
   12. wait 1000

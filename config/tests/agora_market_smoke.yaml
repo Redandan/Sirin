@@ -1,6 +1,6 @@
 id: agora_market_smoke
 name: "Agora Market — Flutter PWA smoke test v4"
-url: "https://agoramarket.purrtechllc.com/"
+url: "https://redandan.github.io/"
 
 max_iterations: 8
 timeout_secs: 180
