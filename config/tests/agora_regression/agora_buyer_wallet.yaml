@@ -1,6 +1,6 @@
 id: agora_buyer_wallet
 name: "AgoraMarket 買家錢包（Wallet）頁面驗證"
-url: "https://redandan.github.io/?__test_role=buyer"
+url: "https://agoramarket.purrtechllc.com/?__test_role=buyer"
 
 max_iterations: 18
 timeout_secs: 220

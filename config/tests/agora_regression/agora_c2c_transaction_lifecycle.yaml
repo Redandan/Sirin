@@ -1,6 +1,6 @@
 id: agora_c2c_transaction_lifecycle
 name: "C2C 完整交易生命週期：買家下單→賣家出貨→買家確認→評價"
-url: "https://redandan.github.io/?__test_role=buyer"
+url: "https://agoramarket.purrtechllc.com/?__test_role=buyer"
 
 max_iterations: 45
 timeout_secs: 900
@@ -53,7 +53,7 @@ goal: |
   21. wait 5000
   22. enable_a11y
   23. wait 2000
-  24. goto target="https://redandan.github.io/?__test_role=seller"
+  24. goto target="https://agoramarket.purrtechllc.com/?__test_role=seller"
   25. wait 4000
   26. enable_a11y
   27. wait 1500
@@ -73,7 +73,7 @@ goal: |
   37. wait 5000
   38. enable_a11y
   39. wait 2000
-  40. goto target="https://redandan.github.io/?__test_role=buyer#/orders"
+  40. goto target="https://agoramarket.purrtechllc.com/?__test_role=buyer#/orders"
   41. wait 3000
   42. enable_a11y
   43. wait 1000

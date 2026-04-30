@@ -1,6 +1,6 @@
 id: agora_webrtc_voice_call
 name: "AgoraMarket WebRTC 語音通話完整流程 (Issue #70 #1, #18, #55, #69-70)"
-url: "https://redandan.github.io/?__test_role=buyer"
+url: "https://agoramarket.purrtechllc.com/?__test_role=buyer"
 locale: zh-TW
 
 # Flutter CanvasKit + WebRTC：headless Chrome 不 paint，且 mic/camera permission
@@ -24,14 +24,14 @@ retry_on_parse_error: 2
 #   --use-fake-device-for-media-stream（注入虛擬麥克風 + 鏡頭）
 #   兩者由 src/browser.rs 的 default chrome args 提供，這裡無需重設。
 #   如果 prod 之後改成 prompt 流程，必須在 fixture.setup 裡補上
-#   {action: "grant_permissions", target: "https://redandan.github.io",
+#   {action: "grant_permissions", target: "https://agoramarket.purrtechllc.com",
 #    permissions: ["audioCapture","videoCapture"]}。
 
 fixture:
   setup:
     - {action: "clear_state"}
     -
-    - {action: "goto", target: "https://redandan.github.io/?__test_role=buyer"}
+    - {action: "goto", target: "https://agoramarket.purrtechllc.com/?__test_role=buyer"}
     - {action: "wait", target: "5000"}
     - {action: "enable_a11y"}
   cleanup:

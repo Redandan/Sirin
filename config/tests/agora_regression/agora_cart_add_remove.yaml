@@ -1,6 +1,6 @@
 id: agora_cart_add_remove
 name: "商品詳情頁購買按鈕驗證"
-url: "https://redandan.github.io/?__test_role=buyer"
+url: "https://agoramarket.purrtechllc.com/?__test_role=buyer"
 
 max_iterations: 20
 timeout_secs: 300

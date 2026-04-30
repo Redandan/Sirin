@@ -1,6 +1,6 @@
 id: agora_c2c_contact_seller
 name: "C2C 核心流程：買家聯繫賣家（聊天入口）"
-url: "https://redandan.github.io/?__test_role=buyer"
+url: "https://agoramarket.purrtechllc.com/?__test_role=buyer"
 
 max_iterations: 18
 timeout_secs: 240

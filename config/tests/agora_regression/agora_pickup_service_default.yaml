@@ -1,6 +1,6 @@
 id: agora_pickup_service_default
 name: "AgoraMarket Pickup Service Type 預設值驗證 (Issue #70 #3)"
-url: "https://redandan.github.io/?__test_role=seller"
+url: "https://agoramarket.purrtechllc.com/?__test_role=seller"
 
 max_iterations: 18
 timeout_secs: 220

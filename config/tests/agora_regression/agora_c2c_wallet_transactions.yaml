@@ -1,6 +1,6 @@
 id: agora_c2c_wallet_transactions
 name: "C2C 核心流程：買家錢包交易記錄驗證"
-url: "https://redandan.github.io/?__test_role=buyer"
+url: "https://agoramarket.purrtechllc.com/?__test_role=buyer"
 
 max_iterations: 16
 timeout_secs: 240

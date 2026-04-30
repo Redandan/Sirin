@@ -1,6 +1,6 @@
 id: agora_logout_flow
 name: "登出流程測試 v3 - shadow_click 我的 tab"
-url: "https://redandan.github.io/?__test_role=buyer"
+url: "https://agoramarket.purrtechllc.com/?__test_role=buyer"
 
 max_iterations: 20
 timeout_secs: 360

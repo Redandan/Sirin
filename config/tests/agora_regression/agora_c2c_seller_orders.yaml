@@ -1,6 +1,6 @@
 id: agora_c2c_seller_orders
 name: "C2C 核心流程：賣家訂單管理頁 UI 驗證"
-url: "https://redandan.github.io/?__test_role=seller"
+url: "https://agoramarket.purrtechllc.com/?__test_role=seller"
 
 max_iterations: 18
 timeout_secs: 240
