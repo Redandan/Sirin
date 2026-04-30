@@ -34,7 +34,7 @@ goal: |
   ⚠️ Flutter app：所有 UI 判斷用 screenshot_analyze。
   ⚠️ 不論任何步驟失敗，都必須繼續執行到步驟 13 才能輸出 done=true。嚴禁提早終止。
 
-  步驟（線性，步驟 16 無條件 done=true，不得提早）：
+  步驟（線性，步驟 22 無條件 done=true，不得提早）：
   1. goto target="https://redandan.github.io/?__test_role=seller"（確保以賣家身份從首頁開始）
   2. wait 5000（等 auto-login + Flutter 賣家儀表板載入）
   3. enable_a11y
@@ -47,15 +47,16 @@ goal: |
   10. wait 4000（等商品編輯頁完整載入）
   11. enable_a11y（進入編輯頁後重建 AX tree）
   12. wait 1500
-  13. flutter_scroll_until_visible role=button name_regex="物流設定"（捲動到物流設定按鈕）
-  14. shadow_click role=button name_regex="^物流設定$"（點「物流設定」展開物流服務區塊）
-  15. wait 1500（等展開動畫完成）
-  16. enable_a11y（展開後重建 AX tree）
-  17. wait 800
-  18. screenshot_analyze "物流設定展開後的截圖。列出所有可見的物流服務選項（宅配到府/7-ELEVEN/全家）、每個的開關狀態（開/關）及運費金額。有沒有任何空白欄位？（Bug #3 驗證）"
-  19. scroll y=100（小幅捲動查看萊爾富/OK超商）
-  20. screenshot_analyze "萊爾富和OK超商的開關狀態與運費。整體來說，5個物流服務的所有欄位是否都有值？有沒有任何空白欄位？（Bug #3 驗證）"
-  21. done=true
+  13. scroll y=600（捲動到表單底部尋找物流/出貨設定區塊）
+  14. wait 1000
+  15. enable_a11y
+  16. wait 800
+  17. shadow_click role=button name_regex="^物流設定$|^出貨設定$"（點「物流設定」或「出貨設定」展開物流服務區塊）
+  18. wait 1500（等展開動畫完成）
+  19. enable_a11y（展開後重建 AX tree）
+  20. wait 800
+  21. screenshot_analyze "物流/出貨設定展開後的截圖。列出所有可見的物流服務選項（宅配到府/7-ELEVEN/全家/萊爾富/OK超商）、每個的開關狀態（開/關）及運費金額。有沒有任何空白欄位？（Bug #3 驗證）"
+  22. done=true
 
 success_criteria:
   - "成功透過商品 tab + 編輯按鈕進入商品編輯頁"

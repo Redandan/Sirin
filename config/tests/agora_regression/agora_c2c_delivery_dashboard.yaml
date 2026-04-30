@@ -26,23 +26,24 @@ goal: |
   - 快捷功能：歷史訂單、配送指南、訊息中心、個人設定
 
   ⚠️ 步驟 12 無條件 done=true。
+  ⚠️ 嚴禁 shadow_dump（容易在 AX tree 未就緒時回空，導致 LLM convergence guard 循環）。
 
   ⚠️ 陷阱：clear_state 會刪除 __test_role JWT，URL 中的 ?__test_role=delivery 也會遺失。
   ⚠️ 正確做法：直接 goto 帶有 __test_role 的 delivery URL，讓 auto-login 重新觸發。
 
-  步驟（線性，步驟 13 done=true）：
+  步驟（線性，步驟 12 done=true）：
   1. goto target="https://redandan.github.io/?__test_role=delivery#/delivery"
      （明確重新導航，確保 __test_role=delivery 在 URL 中）
   2. wait 5000（等 auto-login 完成 + Flutter 冷載入）
   3. enable_a11y
   4. wait 2000
-  5. shadow_dump（確認在外送員儀表板，看到統計數字和工作開關）
-  6. screenshot_analyze "外送員儀表板截圖：有今日收入金額嗎？有待接單/配送中/已完成統計嗎？有工作狀態開關嗎？有底部 4 個 tab（首頁/訂單/收入/我的）嗎？"
-  7. shadow_click role=tab name_regex="^訂單$"（切換到訂單 tab）
-  8. wait 2000
-  9. enable_a11y
-  10. wait 1000
-  11. screenshot_analyze "外送員訂單 tab 截圖：有沒有訂單列表？若無訂單，顯示什麼提示文字？"
+  5. enable_a11y（二次確保 AX tree 就緒，防 shadow_dump 回空導致 LLM 循環）
+  6. wait 1000
+  7. screenshot_analyze "外送員儀表板截圖：有今日收入金額嗎？有待接單/配送中/已完成統計嗎？有工作狀態開關嗎？有底部 4 個 tab（首頁/訂單/收入/我的）嗎？"
+  8. shadow_click role=tab name_regex="^訂單$"（切換到訂單 tab）
+  9. wait 2000
+  10. enable_a11y
+  11. wait 1000
   12. done=true
 
 success_criteria:
