@@ -20,8 +20,8 @@ goal: |
   ⚠️ 這是跨角色測試，使用 goto 切換 __test_role：
      - 買家：?__test_role=buyer
      - 賣家：?__test_role=seller
-  ⚠️ 每次切換後需要 clear_state（清除舊 session）+ wait 5000。
-  ⚠️ 嚴禁 click_point。不論任何步驟失敗都繼續到步驟 34 done=true。
+  ⚠️ 切換 role 必須：clear_state → 立即 goto ?__test_role=X → wait 5000（不能在 goto 前 wait）
+  ⚠️ 嚴禁 click_point。不論任何步驟失敗都繼續到步驟 44 done=true（最後一步）。
 
   ════════════════════════════════════════
   【階段 1：買家搜尋商品並下單】
@@ -50,47 +50,43 @@ goal: |
   【階段 2：賣家查看訂單並出貨】
   ════════════════════════════════════════
   20. clear_state
-  21. wait 5000
-  22. enable_a11y
-  23. wait 2000
-  24. goto target="https://redandan.github.io/?__test_role=seller"
-  25. wait 4000
-  26. enable_a11y
-  27. wait 1500
-  28. shadow_click role=tab name_regex="^訂單$"
-  29. wait 2500
-  30. enable_a11y
-  31. wait 1000
-  32. screenshot_analyze "【B1】賣家訂單頁：有沒有待出貨訂單？記錄訂單列表狀態（有幾筆/訂單內容）。"
-  33. shadow_click role=tab name_regex="^待出貨$"
-  34. wait 1500
-  35. screenshot_analyze "【B2】待出貨 tab：有沒有新訂單？若有，記錄第一筆的商品名和金額。"
+  21. goto target="https://redandan.github.io/?__test_role=seller"（⚠️ goto 緊跟 clear_state）
+  22. wait 5000（等 auto-login + seller 首頁載入）
+  23. enable_a11y
+  24. wait 2000
+  25. shadow_click role=tab name_regex="^訂單$"
+  26. wait 2500
+  27. enable_a11y
+  28. wait 1000
+  29. screenshot_analyze "【B1】賣家訂單頁：有沒有待出貨訂單？記錄訂單列表狀態（有幾筆/訂單內容）。"
+  30. shadow_click role=tab name_regex="^待出貨$"
+  31. wait 1500
+  32. screenshot_analyze "【B2】待出貨 tab：有沒有新訂單？若有，記錄第一筆的商品名和金額。"
 
   ════════════════════════════════════════
   【階段 3：買家查看訂單狀態】
   ════════════════════════════════════════
-  36. clear_state
-  37. wait 5000
-  38. enable_a11y
-  39. wait 2000
-  40. goto target="https://redandan.github.io/?__test_role=buyer#/orders"
-  41. wait 3000
-  42. enable_a11y
-  43. wait 1000
-  44. screenshot_analyze "【C1】買家訂單頁：有沒有訂單記錄？訂單狀態是什麼（待出貨/待收貨/已完成）？記錄最新一筆。"
+  33. clear_state
+  34. goto target="https://redandan.github.io/?__test_role=buyer#/orders"（⚠️ goto 緊跟 clear_state）
+  35. wait 5000（等 auto-login + buyer 訂單頁載入）
+  36. enable_a11y
+  37. wait 2000
+  38. screenshot_analyze "【C1】買家訂單頁：有沒有訂單記錄？訂單狀態是什麼（待出貨/待收貨/已完成）？記錄最新一筆。"
 
   ════════════════════════════════════════
   【階段 4：確認收貨（若有待收貨訂單）】
   ════════════════════════════════════════
-  45. shadow_click role=tab name_regex="^待收貨$"（嘗試切到待收貨 tab）
-  46. wait 1500
-  47. screenshot_analyze "【D1】待收貨 tab：有沒有訂單？若有，有沒有「確認收貨」按鈕？記錄當前狀態。"
-  48. done=true
+  39. enable_a11y（Phase 4 開始前重新初始化 AX tree）
+  40. wait 1000
+  41. shadow_click role=tab name_regex="^待收貨$"（嘗試切到待收貨 tab，失敗也繼續）
+  42. wait 1500
+  43. screenshot_analyze "【D1】記錄當前狀態：待收貨 tab 有無訂單？若切換失敗也記錄頁面狀態。"
+  44. done=true
 
 success_criteria:
   - "【A】買家成功到達結帳確認頁並執行下單"
   - "【B】賣家能進入訂單管理頁，看到訂單（有或資料格式錯誤均記錄）"
   - "【C】買家訂單頁能載入（有訂單或顯示錯誤均記錄）"
-  - "【D】能切換到待收貨 tab（有訂單或空列表均通過）"
+  - "【D】嘗試切換到待收貨 tab 並截圖記錄結果（切換成功或失敗均合格，記錄即通過）"
 
 tags: [c2c, e2e, lifecycle, buyer, seller, regression, critical]

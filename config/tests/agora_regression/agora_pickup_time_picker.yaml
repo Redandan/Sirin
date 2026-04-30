@@ -2,8 +2,8 @@ id: agora_pickup_time_picker
 name: "取貨時間選擇器 v11 - ax_focus + executor prompt fix"
 url: "https://redandan.github.io/?__test_role=seller#/seller/product"
 
-max_iterations: 30
-timeout_secs: 480
+max_iterations: 35
+timeout_secs: 600
 
 # Seller 後台是 H5 手機版，與 Buyer 相同 viewport
 viewport:
@@ -21,43 +21,47 @@ goal: |
   ax_click 無法到達 off-screen 元素！必須使用 ax_focus 讓 Flutter 自動捲動。
 
   正確操作流程：
-  步驟 1-19：準備工作（wait、enable_a11y、展開平台配送設定、啟用 switch）
-  步驟 20：ax_find role=textbox name_regex="取貨結束時間"
-  步驟 21：ax_focus backend_id=<從 ax_find 拿到的值>  ← Flutter 自動 scroll + 聚焦
-  步驟 22：flutter_type text="14:00"
-  步驟 23：ax_value backend_id=<同上>  ← 確認欄位值是 14:00
-  步驟 24：screenshot_analyze "取貨結束時間是 14:00 嗎？"
-  步驟 25：done=true
+  步驟 1-23：準備工作（goto → wait → enable_a11y → scroll → 展開平台配送設定 → 等動畫 → 啟用 switch）
+  步驟 24：ax_find role=textbox name_regex="取貨結束時間"
+  步驟 25：ax_focus backend_id=<從 ax_find 拿到的值>  ← Flutter 自動 scroll + 聚焦
+  步驟 27：flutter_type text="14:00"
+  步驟 28：ax_value backend_id=<同上>  ← 確認欄位值是 14:00
+  步驟 29：screenshot_analyze "取貨結束時間是 14:00 嗎？"
+  步驟 30：done=true
 
   詳細步驟：
 
-  1. wait 8000
-  2. enable_a11y
-  3. wait 2000
-  4. enable_a11y
-  5. shadow_dump — 確認在新增商品 form
-  6. flutter_scroll y=800
+  1. goto target="https://redandan.github.io/?__test_role=seller#/seller/product"（確保在新增商品頁，清除前一測試 session 影響）
+  2. wait 8000（等 auto-login + Flutter 新增商品 form 完整載入）
+  3. enable_a11y
+  4. wait 2000
+  5. enable_a11y
+  6. shadow_dump — 確認在新增商品 form（應看到商品名稱、價格等欄位）
+  7. flutter_scroll y=800
      （Flutter canvas 需要 touch-drag scroll，window.scrollBy 無效）
-  7. wait 1000
-  8. enable_a11y
-  9. shadow_find role=group name="平台配送設定"
-  10. shadow_click role=group name="平台配送設定"
-  11. install_capture
-  12. wait 2000
-  13. enable_a11y
-  14. wait 1000
-  15. shadow_dump
-  16. shadow_click role=switch name="啟用平台配送"
-  17. wait 2000
-  18. enable_a11y
-  19. wait 1000
-  20. ax_find role=textbox name_regex="取貨結束時間"  [取得 backend_id]
-  21. ax_focus backend_id=<id>  [⭐ scroll-to + focus，不是 ax_click，不是 click_point]
-  21b. wait 500  [等 flt-text-editing 建立]
-  22. flutter_type text="14:00"  [此時 flt-text-editing 已存在，會先清除再輸入]
-  23. ax_value backend_id=<id>  [驗證：應該是 "14:00"]
-  24. screenshot_analyze "取貨結束時間是 14:00 嗎？"
-  25. done=true
+  8. wait 1000
+  9. enable_a11y
+  10. shadow_find role=group name="平台配送設定"
+  11. shadow_click role=group name="平台配送設定"（展開 ExpansionTile）
+  12. wait 1500（等展開動畫完成）
+  13. enable_a11y（展開後重新初始化 AX tree）
+  14. wait 800
+  15. install_capture
+  16. wait 1000
+  17. enable_a11y
+  18. wait 500
+  19. shadow_dump（確認展開成功，看到「啟用平台配送」switch）
+  20. shadow_click role=switch name="啟用平台配送"
+  21. wait 2000
+  22. enable_a11y
+  23. wait 1000
+  24. ax_find role=textbox name_regex="取貨結束時間"  [取得 backend_id]
+  25. ax_focus backend_id=<id>  [⭐ scroll-to + focus]
+  26. wait 500  [等 flt-text-editing 建立]
+  27. flutter_type text="14:00"
+  28. ax_value backend_id=<id>  [驗證：應該是 "14:00"]
+  29. screenshot_analyze "取貨結束時間是 14:00 嗎？"
+  30. done=true
 
 success_criteria:
   - "展開平台配送設定（ExpansionTile，role=group）"
