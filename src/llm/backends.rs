@@ -387,6 +387,31 @@ pub(super) async fn call_openai_messages(
         }
         let resp = req.send().await?;
 
+        // 402 path — OpenRouter free-tier providers (e.g. Parasail for qwen-vl)
+        // return 402 Payment Required on per-minute burst limits, not on credit
+        // exhaustion. The required HTTP-Referer/X-Title headers are already
+        // added above. Treat as transient: retry with longer backoff (2 attempts).
+        if resp.status() == reqwest::StatusCode::PAYMENT_REQUIRED {
+            if rate_limit_attempt >= 2 {
+                crate::sirin_log!("[llm] 402 max retries exceeded model={}", model);
+                return Err(format!(
+                    "402 rate-limited (provider burst limit): max retries exceeded for model={model}"
+                )
+                .into());
+            }
+            let wait_secs = 15u64 << rate_limit_attempt; // 15 → 30
+            crate::sirin_log!(
+                "[llm] 402 Payment Required — waiting {}s (attempt {}/2) model={}",
+                wait_secs,
+                rate_limit_attempt + 1,
+                model
+            );
+            drop(_gemini_permit);
+            tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
+            rate_limit_attempt += 1;
+            continue;
+        }
+
         // 429 path — release permit before sleep, retry.
         // With the token-bucket rate limiter active, 429s should be rare;
         // these retries are a safety net for transient API hiccups.
