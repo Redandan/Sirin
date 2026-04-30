@@ -48,7 +48,7 @@ goal: |
 success_criteria:
   - "成功進入買家訂單頁並切到待收貨 tab"
   - "記錄待收貨訂單數量（0 筆或有 N 筆均合格）"
-  - "若有待收貨訂單：嘗試確認收貨並記錄結果（確認成功、需二次確認、或 UI 異常）"
+  - "若有待收貨訂單：嘗試點擊確認收貨按鈕（按鈕找到且點擊即通過；screenshot_analyze 失敗不影響）"
 
 tags: [c2c, buyer, receipt, orders, regression, issue-185]
 

@@ -35,7 +35,7 @@ goal: |
   6. wait 2500
   7. enable_a11y（路由切換後重新初始化 AX tree）
   8. wait 1000
-  9. shadow_click role=tab name_regex="^待出貨$"（切到待出貨分類）
+  9. shadow_click role=tab name_regex="^待處理$|^待出貨$"（切到待處理/待出貨分類；賣家端用「待處理」）
   10. wait 2000
   11. enable_a11y
   12. wait 1000
