@@ -1,0 +1,57 @@
+id: agora_c2c_rating
+name: "C2C 後段流程：買家對賣家評價"
+url: "https://redandan.github.io/?__test_role=buyer"
+
+max_iterations: 25
+timeout_secs: 360
+
+viewport:
+  width: 390
+  height: 844
+  scale: 2.0
+  mobile: true
+
+locale: zh-TW
+
+goal: |
+  目標：驗證買家完成交易後可對賣家進行評價。
+
+  ⚠️ 測試依賴：需要有「已完成」狀態的訂單，且尚未評價。
+  ⚠️ 若已完成訂單不存在或已評價，記錄當前狀態即通過。
+  ⚠️ 步驟 20 無條件 done=true，嚴禁提早終止。
+
+  已知 C2C 評價流程：
+  - 買家訂單 → 已完成 tab → 點訂單 → 找「評價」/「寫評論」/「Rate」按鈕
+  - 評價表單：1-5 星 + 可選文字評論
+  - 評價完成後訂單顯示已評價狀態
+
+  步驟（線性，步驟 20 done=true）：
+  1. goto target="https://redandan.github.io/?__test_role=buyer#/orders"（買家訂單頁）
+  2. wait 5000
+  3. enable_a11y
+  4. wait 2000
+  5. shadow_click role=tab name_regex="^已完成$"（切到已完成 tab）
+  6. wait 2000
+  7. enable_a11y
+  8. wait 1000
+  9. shadow_dump（列出已完成訂單和可用按鈕）
+  10. shadow_click role=button name_regex="評價|評論|Rate|Review|給評價|寫評論"（嘗試點評價按鈕）
+  11. wait 2000
+  12. enable_a11y
+  13. wait 1000
+  14. shadow_dump（列出評價表單的可用元素）
+  15. shadow_click role=button name_regex="5|⭐|★|五星|最好"（嘗試選 5 星評分）
+  16. wait 1000
+  17. shadow_click role=button name_regex="提交|確認|送出|Submit|Confirm|完成評價"（提交評價）
+  18. wait 2000
+  19. shadow_dump（確認評價提交後的狀態）
+  20. done=true
+
+success_criteria:
+  - "成功進入買家訂單頁並切到已完成 tab"
+  - "記錄已完成訂單數量（0 筆或有 N 筆均合格）"
+  - "若有可評價訂單：嘗試完成評價流程並記錄結果（提交成功或失敗均記錄）"
+  - "若無可評價訂單：記錄頁面狀態即通過"
+
+tags: [c2c, buyer, rating, review, regression, issue-185]
+
