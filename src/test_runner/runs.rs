@@ -63,6 +63,13 @@ pub struct RunState {
     /// Updated whenever ax_tree is called; used to prepare SoM labels before vision LLM.
     #[serde(skip)]
     pub recent_ax_nodes: Option<Vec<serde_json::Value>>,
+    /// Timestamp of the last phase update (set_phase call).  Used by
+    /// `to_json` to expose `idle_secs` so callers can detect stuck runs
+    /// where the test hasn't progressed for an unusually long time.
+    /// Initialized to `Instant::now()` on first `new_run`; updated on
+    /// every `set_phase` call.  #[serde(skip)] — not persistent.
+    #[serde(skip, default = "std::time::Instant::now")]
+    pub last_phase_updated_at: std::time::Instant,
 }
 
 // ── Registry singleton ───────────────────────────────────────────────────────
@@ -93,6 +100,7 @@ pub fn new_run(test_id: &str) -> String {
         ax_diff_context: crate::test_runner::ax_diff_context::AxDiffContext::new(),
         som_label_map: None,
         recent_ax_nodes: None,
+        last_phase_updated_at: std::time::Instant::now(),
     };
     registry().lock().unwrap_or_else(|e| e.into_inner())
         .insert(run_id.clone(), state);
@@ -188,6 +196,7 @@ pub fn set_phase(run_id: &str, phase: RunPhase) {
     let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(s) = reg.get_mut(run_id) {
         s.phase = phase;
+        s.last_phase_updated_at = std::time::Instant::now(); // #182 idle watchdog
     }
 }
 
@@ -418,11 +427,18 @@ pub fn to_json(s: &RunState) -> serde_json::Value {
         ),
         RunPhase::Error(e) => ("error", json!({ "error": e })),
     };
+    // #182 — expose idle_secs for running tests so callers can detect stuck runs.
+    // Only meaningful for Running phase; for terminal/queued phases it's 0.
+    let idle_secs = match &s.phase {
+        RunPhase::Running { .. } => s.last_phase_updated_at.elapsed().as_secs(),
+        _ => 0,
+    };
     json!({
         "run_id": s.run_id,
         "test_id": s.test_id,
         "started_at": s.started_at,
         "status": status,
+        "idle_secs": idle_secs,
         "details": extra,
     })
 }

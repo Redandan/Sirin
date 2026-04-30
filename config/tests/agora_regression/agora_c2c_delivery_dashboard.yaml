@@ -27,9 +27,13 @@ goal: |
 
   ⚠️ 步驟 12 無條件 done=true。
 
+  ⚠️ 陷阱：clear_state 會刪除 __test_role JWT，URL 中的 ?__test_role=delivery 也會遺失。
+  ⚠️ 正確做法：直接 goto 帶有 __test_role 的 delivery URL，讓 auto-login 重新觸發。
+
   步驟（線性，步驟 13 done=true）：
-  1. clear_state（清除買家/賣家 session，確保以外送員身份重新載入）
-  2. wait 5000（等 Flutter 冷載入完成）
+  1. goto target="https://redandan.github.io/?__test_role=delivery#/delivery"
+     （明確重新導航，確保 __test_role=delivery 在 URL 中）
+  2. wait 5000（等 auto-login 完成 + Flutter 冷載入）
   3. enable_a11y
   4. wait 2000
   5. shadow_dump（確認在外送員儀表板，看到統計數字和工作開關）

@@ -27,8 +27,9 @@ goal: |
   ⚠️ 步驟 14 無條件 done=true。
 
   步驟（線性，步驟 14 done=true）：
-  1. clear_state（清除其他 session 殘留，確保以買家身份啟動）
-  2. wait 5000（等 Flutter 重新初始化）
+  1. goto target="https://redandan.github.io/?__test_role=buyer"
+     （明確重新導航，保留 __test_role=buyer，觸發 auto-login）
+  2. wait 5000（等 auto-login + Flutter 重新初始化）
   3. enable_a11y
   4. wait 2000
   5. shadow_click role=button name_regex="USDT"（進入商品詳情）

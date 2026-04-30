@@ -25,8 +25,9 @@ goal: |
   ⚠️ 步驟 12 無條件 done=true。
 
   步驟（線性，步驟 12 done=true）：
-  1. clear_state（清除其他 session，確保以外送員身份載入）
-  2. wait 5000（等 Flutter 冷載入）
+  1. goto target="https://redandan.github.io/?__test_role=delivery#/delivery"
+     （明確重新導航，保留 __test_role=delivery 在 URL 中，觸發 auto-login）
+  2. wait 5000（等 auto-login + Flutter 冷載入）
   3. enable_a11y
   4. wait 2000
   5. shadow_click role=tab name_regex="^訂單$"（切換到訂單 tab）
