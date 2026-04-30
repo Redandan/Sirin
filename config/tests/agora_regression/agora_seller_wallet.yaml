@@ -1,9 +1,9 @@
 id: agora_seller_wallet
-name: "AgoraMarket 賣家錢包頁面驗證"
+name: "AgoraMarket 賣家錢包頁面驗證 v2 (AM#117 fix)"
 url: "https://redandan.github.io/?__test_role=seller"
 
-max_iterations: 16
-timeout_secs: 200
+max_iterations: 20
+timeout_secs: 300
 
 # Seller 後台是 H5 手機版，與 Buyer 相同 viewport
 viewport:
@@ -15,31 +15,34 @@ viewport:
 locale: zh-TW
 
 goal: |
-  目標：確認賣家可從儀表板進入錢包頁面，並看到餘額與操作按鈕。
+  目標：確認賣家可從儀表板點擊「賣家錢包」進入錢包頁，並看到餘額與操作按鈕。
 
-  起始狀態：以賣家身份登入（?__test_role=seller auto-login），已在賣家儀表板首頁。
+  ✅ AgoraMarket #117 已修復 AppCard InkWell Semantics，
+     shadow_click role=button name_regex="賣家錢包" 可正常導航到 #/seller/wallet。
 
-  ⚠️ 兩步導航法：先讓 __test_role 完成 auto-login（landing 在首頁），
-     再用不含 __test_role 的 hash URL 導航到錢包頁（避免重新觸發登入流）。
   ⚠️ Flutter app：所有 UI 判斷用 screenshot_analyze。
-  ⚠️ 不論任何步驟失敗，都必須繼續執行到步驟 10 才能輸出 done=true。嚴禁提早終止。
+  ⚠️ 步驟 14 無條件 done=true，嚴禁提早終止。
 
-  ⚠️ 已知限制：AppCard InkWell 缺 Semantics（AgoraMarket #117），shadow_click 無法導航到錢包頁。
-  ⚠️ 暫時以「賣家首頁正常載入 + 看到賣家錢包入口」作為測試目標，等 #117 修完再升級。
-
-  步驟（線性，步驟 7 無條件 done=true，不得提早）：
-  1. wait 5000（等賣家 auto-login 完成並 landing 在首頁）
-  2. enable_a11y
-  3. wait 1500
-  4. screenshot_analyze "賣家儀表板首頁截圖。確認看到以下快速操作按鈕：賣場設定、批量導入商品、賣家錢包。記錄訂單統計數字（待處理/處理中/已完成）。"
-  5. scroll y=200（確認看到賣家錢包按鈕）
-  6. screenshot_analyze "確認頁面底部的賣家錢包格子是否可見？"
-  7. done=true
+  步驟（線性，步驟 14 done=true）：
+  1. goto target="https://redandan.github.io/?__test_role=seller"（確保 seller 登入）
+  2. wait 5000（等 auto-login + Flutter 賣家儀表板載入）
+  3. enable_a11y
+  4. wait 2000
+  5. screenshot_analyze "賣家儀表板首頁：看到哪些快速操作卡片（賣場設定/批量導入商品/賣家錢包）？"
+  6. shadow_click role=button name_regex="賣家錢包"（點擊錢包卡片進入 #/seller/wallet）
+  7. wait 3000（等錢包頁載入）
+  8. enable_a11y
+  9. wait 1500
+  10. screenshot_analyze "錢包頁截圖：看到 USDT 餘額嗎？有哪些操作按鈕（儲值/提現/轉帳等）？顯示哪些資訊？"
+  11. shadow_dump（列出錢包頁所有可見節點）
+  12. scroll y=300（確認下方有無更多資訊）
+  13. screenshot_analyze "捲動後：有沒有交易歷史或其他錢包資訊？"
+  14. done=true
 
 success_criteria:
-  - "成功以賣家身份登入並看到儀表板首頁（顯示訂單統計和快速操作格子）"
-  - "頁面可見賣家錢包入口按鈕"
-  - "⚠️ 暫時性測試（AgoraMarket #117 修完後改為驗證錢包頁內容）"
+  - "成功從儀表板點擊「賣家錢包」卡片並導航到錢包頁（#/seller/wallet）"
+  - "錢包頁顯示 USDT 餘額（數字或 0）"
+  - "有操作按鈕（儲值/提現/轉帳或類似功能）"
 
-tags: [regression, wallet, seller, agora]
+tags: [regression, wallet, seller, agora, am-117-verified]
 
