@@ -21,67 +21,70 @@ goal: |
      - 買家：?__test_role=buyer
      - 賣家：?__test_role=seller
   ⚠️ 切換 role 必須：clear_state → 立即 goto ?__test_role=X → wait 5000（不能在 goto 前 wait）
-  ⚠️ 嚴禁 click_point。不論任何步驟失敗都繼續到步驟 44 done=true（最後一步）。
+  ⚠️ 嚴禁 click_point。不論任何步驟失敗都繼續到步驟 47 done=true（最後一步）。
 
   ════════════════════════════════════════
   【階段 1：買家搜尋商品並下單】
   ════════════════════════════════════════
-  1. wait 3000（等買家首頁載入）
-  2. enable_a11y
-  3. wait 1500
-  4. shadow_click role=button name_regex="USDT"（進入商品詳情）
-  5. wait 2500
-  6. screenshot_analyze "【A1】商品詳情頁：記錄商品名稱和價格。"
-  7. scroll y=400
-  8. shadow_click role=button name_regex="^購買$"（開啟 SKU 對話框）
-  9. wait 2000
-  10. shadow_click role=button name_regex="128GB|256GB|64GB|32GB"（選規格）
-  11. wait 1000
-  12. shadow_click role=button name_regex="^確認購買$"（到結帳確認頁）
-  13. wait 3000
-  14. enable_a11y
-  15. wait 1000
-  16. screenshot_analyze "【A2】結帳確認頁：看到商品摘要和「確認購買 USDT X」按鈕嗎？"
-  17. shadow_click role=button name_regex="確認購買 USDT"（真實下單）
-  18. wait 4000
-  19. screenshot_analyze "【A3】下單後狀態：頁面跳轉到哪裡？記錄當前頁面。"
+  1. goto target="https://redandan.github.io/?__test_role=buyer"（確保從買家首頁開始）
+  2. wait 5000（等 auto-login + Flutter 首頁載入）
+  3. enable_a11y
+  4. wait 2000
+  5. enable_a11y（二次確保 AX tree 就緒）
+  6. wait 1000
+  7. shadow_click role=button name_regex="USDT"（進入商品詳情）
+  8. wait 2500
+  9. screenshot_analyze "【A1】商品詳情頁：記錄商品名稱和價格。"
+  10. scroll y=400
+  11. shadow_click role=button name_regex="^購買$"（開啟 SKU 對話框）
+  12. wait 2000
+  13. shadow_click role=button name_regex="128GB|256GB|64GB|32GB"（選規格）
+  14. wait 1000
+  15. shadow_click role=button name_regex="^確認購買$"（到結帳確認頁）
+  16. wait 3000
+  17. enable_a11y
+  18. wait 1000
+  19. screenshot_analyze "【A2】結帳確認頁：看到商品摘要和「確認購買 USDT X」按鈕嗎？"
+  20. shadow_click role=button name_regex="確認購買 USDT"（真實下單）
+  21. wait 4000
+  22. screenshot_analyze "【A3】下單後狀態：頁面跳轉到哪裡？記錄當前頁面。"
 
   ════════════════════════════════════════
   【階段 2：賣家查看訂單並出貨】
   ════════════════════════════════════════
-  20. clear_state
-  21. goto target="https://redandan.github.io/?__test_role=seller"（⚠️ goto 緊跟 clear_state）
-  22. wait 5000（等 auto-login + seller 首頁載入）
-  23. enable_a11y
-  24. wait 2000
-  25. shadow_click role=tab name_regex="^訂單$"
-  26. wait 2500
-  27. enable_a11y
-  28. wait 1000
-  29. screenshot_analyze "【B1】賣家訂單頁：有沒有待出貨訂單？記錄訂單列表狀態（有幾筆/訂單內容）。"
-  30. shadow_click role=tab name_regex="^待出貨$"
-  31. wait 1500
-  32. screenshot_analyze "【B2】待出貨 tab：有沒有新訂單？若有，記錄第一筆的商品名和金額。"
+  23. clear_state
+  24. goto target="https://redandan.github.io/?__test_role=seller"（⚠️ goto 緊跟 clear_state）
+  25. wait 5000（等 auto-login + seller 首頁載入）
+  26. enable_a11y
+  27. wait 2000
+  28. shadow_click role=tab name_regex="^訂單$"
+  29. wait 2500
+  30. enable_a11y
+  31. wait 1000
+  32. screenshot_analyze "【B1】賣家訂單頁：有沒有待出貨訂單？記錄訂單列表狀態（有幾筆/訂單內容）。"
+  33. shadow_click role=tab name_regex="^待出貨$"
+  34. wait 1500
+  35. screenshot_analyze "【B2】待出貨 tab：有沒有新訂單？若有，記錄第一筆的商品名和金額。"
 
   ════════════════════════════════════════
   【階段 3：買家查看訂單狀態】
   ════════════════════════════════════════
-  33. clear_state
-  34. goto target="https://redandan.github.io/?__test_role=buyer#/orders"（⚠️ goto 緊跟 clear_state）
-  35. wait 5000（等 auto-login + buyer 訂單頁載入）
-  36. enable_a11y
-  37. wait 2000
-  38. screenshot_analyze "【C1】買家訂單頁：有沒有訂單記錄？訂單狀態是什麼（待出貨/待收貨/已完成）？記錄最新一筆。"
+  36. clear_state
+  37. goto target="https://redandan.github.io/?__test_role=buyer#/orders"（⚠️ goto 緊跟 clear_state）
+  38. wait 5000（等 auto-login + buyer 訂單頁載入）
+  39. enable_a11y
+  40. wait 2000
+  41. screenshot_analyze "【C1】買家訂單頁：有沒有訂單記錄？訂單狀態是什麼（待出貨/待收貨/已完成）？記錄最新一筆。"
 
   ════════════════════════════════════════
   【階段 4：確認收貨（若有待收貨訂單）】
   ════════════════════════════════════════
-  39. enable_a11y（Phase 4 開始前重新初始化 AX tree）
-  40. wait 1000
-  41. shadow_click role=tab name_regex="^待收貨$"（嘗試切到待收貨 tab，失敗也繼續）
-  42. wait 1500
-  43. screenshot_analyze "【D1】記錄當前狀態：待收貨 tab 有無訂單？若切換失敗也記錄頁面狀態。"
-  44. done=true
+  42. enable_a11y（Phase 4 開始前重新初始化 AX tree）
+  43. wait 1000
+  44. shadow_click role=tab name_regex="^待收貨$"（嘗試切到待收貨 tab，失敗也繼續）
+  45. wait 1500
+  46. screenshot_analyze "【D1】記錄當前狀態：待收貨 tab 有無訂單？若切換失敗也記錄頁面狀態。"
+  47. done=true
 
 success_criteria:
   - "【A】買家成功到達結帳確認頁並執行下單"

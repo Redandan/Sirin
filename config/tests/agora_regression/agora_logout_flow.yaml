@@ -30,37 +30,38 @@ goal: |
 
   步驟（按順序執行，不跳過）：
 
-  1. wait 7000
+  1. goto target="https://redandan.github.io/?__test_role=buyer"（防前一測試 session 污染，確保從買家首頁開始）
+  2. wait 7000
      （等 Flutter bootstrap + auto-login 套用）
-  2. enable_a11y
-  3. wait 2000
-  4. shadow_dump
+  3. enable_a11y
+  4. wait 2000
+  5. shadow_dump
      （查看底部 tab：商品/訂單/錢包/我的）
-  5. shadow_click role=tab name_regex="我的|Profile|Me|帳戶"
+  6. shadow_click role=tab name_regex="我的|Profile|Me|帳戶"
      （⭐ 直接 shadow_click，不要先 shadow_find 再 click_point！）
-  6. wait 3000
-  7. enable_a11y
-  8. wait 1000
-  9. screenshot_analyze "確認在「我的/個人」頁面嗎？看到個人資料或設定入口？"
-  10. scroll y=500（捲動到頁面中段）
-  11. wait 500
-  12. scroll y=500（繼續捲動至底部）
-  13. wait 500
-  14. scroll y=500（確保到達最底部的登出按鈕）
-  15. wait 800
-  16. enable_a11y
-  17. wait 500
-  18. shadow_click name_regex="登出|Logout|Log out|退出|Sign out"（不限 role，找任何包含此文字的節點）
-  19. wait 1000
-  20. wait 2000
-  21. screenshot_analyze "是否出現確認對話框？或已完成登出？"
-  22. shadow_click name_regex="確認|確定|OK|Yes|是"
+  7. wait 3000
+  8. enable_a11y
+  9. wait 1000
+  10. screenshot_analyze "確認在「我的/個人」頁面嗎？看到個人資料或設定入口？"
+  11. scroll y=500（捲動到頁面中段）
+  12. wait 500
+  13. scroll y=500（繼續捲動至底部）
+  14. wait 500
+  15. scroll y=500（確保到達最底部的登出按鈕）
+  16. wait 800
+  17. enable_a11y
+  18. wait 500
+  19. shadow_click name_regex="登出|Logout|Log out|退出|Sign out"（不限 role，找任何包含此文字的節點）
+  20. wait 1000
+  21. wait 2000
+  22. screenshot_analyze "是否出現確認對話框？或已完成登出？"
+  23. shadow_click name_regex="確認|確定|OK|Yes|是"
       （若有確認框則點，找不到就繼續）
-  23. wait 2000
-  24. screenshot_analyze "登出後狀態：是否跳回登入頁或首頁？"
-  25. done=true
+  24. wait 2000
+  25. screenshot_analyze "登出後狀態：是否跳回登入頁或首頁？"
+  26. done=true
 
-  ⚠️ 步驟 5：若找不到「我的」tab，試 shadow_find role=button name_regex="^我的$|Profile"。
+  ⚠️ 步驟 6：若找不到「我的」tab，試 shadow_find role=button name_regex="^我的$|Profile"。
   ⚠️ 步驟 22 找不到目標直接往 23 繼續，不要重試。
   ⚠️ 注意：URL 含 __test_role=buyer，Flutter auto-login 可能讓頁面立即重新登入（記錄此現象即可，視為 pass）。
 
