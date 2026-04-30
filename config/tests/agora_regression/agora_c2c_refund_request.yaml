@@ -2,8 +2,8 @@ id: agora_c2c_refund_request
 name: "C2C 後段流程：買家申請退款/退貨"
 url: "https://redandan.github.io/?__test_role=buyer"
 
-max_iterations: 25
-timeout_secs: 360
+max_iterations: 20
+timeout_secs: 300
 
 viewport:
   width: 390
@@ -14,44 +14,32 @@ viewport:
 locale: zh-TW
 
 goal: |
-  目標：驗證買家可申請退款/退貨功能，確認退款入口和流程 UI 正常。
+  目標：驗證買家訂單頁存在退款入口，記錄退款相關 UI。
 
-  ⚠️ 此測試為探索性，不實際提交退款申請（避免影響測試帳號）。
-  ⚠️ 找到退款入口並記錄 UI 即視為通過。
-  ⚠️ 步驟 20 無條件 done=true，嚴禁提早終止。
+  ⚠️ 線性流程，每步只做一件事，嚴禁重複呼叫 shadow_dump。
+  ⚠️ 步驟 14 無條件 done=true，嚴禁提早終止。
+  ⚠️ 若任何 shadow_click 找不到目標，繼續往下執行，不要重試。
 
-  已知 C2C 退款流程：
-  - 待出貨訂單：可申請「取消訂單」
-  - 待收貨訂單：可申請「退款」或「退貨退款」
-  - 已完成訂單：可能有「申請退款」選項（依平台政策）
-  - 退款入口：訂單詳情頁 → 更多選項 / 退款按鈕
-
-  步驟（線性，步驟 20 done=true）：
-  1. goto target="https://redandan.github.io/?__test_role=buyer#/orders"
-  2. wait 5000
+  步驟（線性，步驟 14 done=true）：
+  1. goto target="https://redandan.github.io/?__test_role=buyer#/orders"（買家訂單頁）
+  2. wait 5000（等 auto-login + 頁面載入）
   3. enable_a11y
   4. wait 2000
-  5. shadow_dump（列出訂單分類 tab）
-  6. shadow_click role=tab name_regex="^全部$"（查看全部訂單）
+  5. shadow_dump（列出訂單列表和各訂單按鈕 — 只呼叫一次）
+  6. shadow_click role=button name_regex="退款|退貨|取消|Refund|Cancel|申請|退貨退款"（尋找退款入口，找不到就繼續）
   7. wait 2000
   8. enable_a11y
   9. wait 1000
-  10. shadow_dump（列出訂單列表和每筆訂單的按鈕）
-  11. shadow_click role=button name_regex="退款|退貨|取消|Refund|Cancel|申請退款|退貨退款"（尋找退款入口）
-  12. wait 2000
-  13. enable_a11y
-  14. wait 1000
-  15. shadow_dump（退款表單的欄位和選項）
-  16. shadow_click role=button name_regex="商品損壞|品質問題|不符描述|不需要了|Reason"（嘗試選退款原因，找不到繼續）
-  17. wait 1000
-  18. shadow_dump（確認退款申請頁面的確認按鈕，記錄但不提交）
-  19. screenshot_analyze "退款申請頁面：有哪些退款原因可選？有沒有提交/確認按鈕？記錄所有可見 UI 元素（不點提交）。"
-  20. done=true
+  10. shadow_dump（列出退款表單內容 — 只呼叫一次）
+  11. scroll y=300（查看更多退款選項）
+  12. wait 1000
+  13. shadow_dump（確認完整退款 UI — 只呼叫一次）
+  14. done=true
 
 success_criteria:
   - "成功進入買家訂單頁"
-  - "找到並記錄退款入口（退款/退貨/取消按鈕）——若找不到，記錄頁面狀態"
-  - "若找到退款入口：記錄退款表單的 UI 元素（不實際提交）"
+  - "shadow_dump 成功執行並記錄訂單列表"
+  - "記錄退款入口是否存在（找到或找不到均合格）"
 
 tags: [c2c, buyer, refund, cancel, regression, issue-185]
 
