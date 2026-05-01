@@ -37,28 +37,32 @@ goal: |
   4. wait 3000（Flutter form 有大量欄位，AX tree 建構需時）
   5. enable_a11y（二次確保，不用 scroll — AX tree 已包含 off-screen 元素）
   6. wait 2000
-  7. shadow_dump（確認 AX tree 已有「平台配送設定」button）
-  8. shadow_click role=button name_regex="平台配送設定"
-     （⚠️ 已確認：platform delivery 是 role=button 非 group；不需 scroll，shadow_dump 無捲動即可見）
-  9. wait 1500（等展開動畫完成）
-  10. enable_a11y（展開後重新初始化 AX tree）
-  11. wait 800
-  12. install_capture
-  13. wait 1000
-  14. enable_a11y
-  15. wait 500
-  16. shadow_dump（確認展開成功，看到「啟用平台配送」switch）
-  17. shadow_click role=switch name="啟用平台配送"
-  18. wait 2000
-  19. enable_a11y
-  20. wait 1000
-  21. ax_find role=textbox name_regex="取貨結束時間"  [取得 backend_id]
-  22. ax_focus backend_id=<id>  [⭐ scroll-to + focus]
-  23. wait 500  [等 flt-text-editing 建立]
-  24. flutter_type text="14:00"
-  25. ax_value backend_id=<id>  [驗證：應該是 "14:00"]
-  26. screenshot_analyze "取貨結束時間是 14:00 嗎？"
-  27. done=true
+  7. flutter_scroll y=700
+     （適度捲動，讓平台配送設定 button 進入 viewport；不捲太多避免座標漂移）
+  8. wait 2000（等 Flutter 重新渲染）
+  9. enable_a11y（scroll 後必須重新初始化 AX tree）
+  10. wait 1500
+  11. shadow_click role=button name_regex="平台配送設定"
+      （⚠️ 已確認 role=button，不是 group！需在 viewport 內才能收到 PointerEvent）
+  12. wait 1500（等展開動畫完成）
+  13. enable_a11y（展開後重新初始化 AX tree）
+  14. wait 800
+  15. install_capture
+  16. wait 1000
+  17. enable_a11y
+  18. wait 500
+  19. shadow_dump（確認展開成功，看到「啟用平台配送」switch）
+  20. shadow_click role=switch name="啟用平台配送"
+  21. wait 2000
+  22. enable_a11y
+  23. wait 1000
+  24. ax_find role=textbox name_regex="取貨結束時間"  [取得 backend_id]
+  25. ax_focus backend_id=<id>  [⭐ scroll-to + focus]
+  26. wait 500  [等 flt-text-editing 建立]
+  27. flutter_type text="14:00"
+  28. ax_value backend_id=<id>  [驗證：應該是 "14:00"]
+  29. screenshot_analyze "取貨結束時間是 14:00 嗎？"
+  30. done=true
 
 success_criteria:
   - "展開平台配送設定（ExpansionTile，role=group）"
