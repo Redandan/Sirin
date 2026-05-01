@@ -565,6 +565,17 @@ fn handle_tools_list() -> Result<Value, String> {
                 }
             },
             {
+                "name": "test_coverage",
+                "description": "AgoraMarket 功能地圖覆蓋率報告。\n\n讀取 config/coverage/agora_market.yaml 功能地圖，交叉比對現有測試和 saved scripts，輸出：\n• 每個功能模組的覆蓋率（%）\n• 各功能點的狀態（confirmed/partial/missing）\n• 哪些測試覆蓋該功能 + 是否有 replay script\n• 覆蓋缺口（missing features）清單\n• 建議下一步新增哪個測試",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "group_id": { "type": "string", "description": "選填：只看特定 feature group（如 'buyer_browse'）" },
+                        "show_missing_only": { "type": "boolean", "description": "只顯示 missing features，預設 false" }
+                    }
+                }
+            },
+            {
                 "name": "list_flaky_tests",
                 "description": "列出歷史上不穩定（flaky）的測試，依 pass rate 升序（最差優先）。\n\n等同 test_analytics 但只回傳 flaky 條目，方便快速定位需要重點關注的測試。\n\nflaky 定義：近 10 次中 pass rate < threshold（預設 70%）且至少 3 次 runs。",
                 "inputSchema": {
@@ -996,6 +1007,7 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         "test_analytics"       => return call_test_analytics(arguments).map(wrap_json),
         "test_summary"         => return call_test_summary(arguments).map(wrap_json),
         "list_flaky_tests"     => return call_list_flaky_tests(arguments).map(wrap_json),
+        "test_coverage"        => return call_test_coverage(arguments).map(wrap_json),
         "explain_failure"      => return call_explain_failure(arguments).await.map(wrap_json),
         "list_saved_scripts"   => return call_list_saved_scripts().map(wrap_json),
         "delete_saved_script"  => return call_delete_saved_script(arguments).map(wrap_json),
@@ -1577,6 +1589,143 @@ fn call_test_summary(args: Value) -> Result<Value, String> {
         "console_warnings_total": console_warnings_total,
         "recommendation":         recommendation,
         "results":                results,
+    }))
+}
+
+/// test_coverage — read agora_market.yaml feature map and compute coverage statistics.
+fn call_test_coverage(args: Value) -> Result<Value, String> {
+    let group_filter = args.get("group_id").and_then(Value::as_str).map(String::from);
+    let missing_only = args.get("show_missing_only").and_then(Value::as_bool).unwrap_or(false);
+
+    // Load feature map config.
+    let map_path = crate::platform::config_path("coverage/agora_market.yaml");
+    let map_src = std::fs::read_to_string(&map_path)
+        .map_err(|e| format!("Cannot read coverage map {map_path:?}: {e}"))?;
+    let map: serde_json::Value = serde_yaml::from_str(&map_src)
+        .map_err(|e| format!("Parse error in agora_market.yaml: {e}"))?;
+
+    // Build a lookup: test_id → { has_script, pass_rate, last_status }
+    let all_tests = crate::test_runner::list_tests();
+    let all_scripts = crate::test_runner::store::all_test_stats();
+    let all_saved: std::collections::HashMap<String, bool> = all_tests.iter()
+        .map(|t| (t.id.clone(), crate::test_runner::store::script_info(&t.id).is_some()))
+        .collect();
+    let stats_map: std::collections::HashMap<&str, _> = all_scripts.iter()
+        .map(|s| (s.test_id.as_str(), s))
+        .collect();
+
+    let groups_raw = map["feature_groups"].as_array()
+        .ok_or("feature_groups missing or not array")?;
+
+    let mut total_features = 0usize;
+    let mut total_covered = 0usize;
+    let mut all_gaps: Vec<Value> = Vec::new();
+    let mut group_results: Vec<Value> = Vec::new();
+
+    for g in groups_raw {
+        let gid = g["id"].as_str().unwrap_or("?");
+        if let Some(ref f) = group_filter {
+            if gid != f { continue; }
+        }
+        let gname = g["name"].as_str().unwrap_or(gid);
+
+        let features_raw = g["features"].as_array().map(|a| a.as_slice()).unwrap_or(&[]);
+        let mut covered_count = 0usize;
+        let mut feature_results: Vec<Value> = Vec::new();
+
+        for feat in features_raw {
+            let fid = feat["id"].as_str().unwrap_or("?");
+            let fname = feat["name"].as_str().unwrap_or(fid);
+            let status = feat["status"].as_str().unwrap_or("missing");
+
+            // Resolve which tests cover this feature.
+            let test_ids: Vec<&str> = feat["test_ids"].as_array()
+                .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+                .unwrap_or_default();
+
+            let covering_tests: Vec<Value> = test_ids.iter().map(|tid| {
+                let has_script = all_saved.get(*tid).copied().unwrap_or(false);
+                let stat = stats_map.get(tid);
+                let pass_rate = stat.map(|s| s.pass_rate_7d).unwrap_or(0.0);
+                let last_status = stat.and_then(|_| {
+                    crate::test_runner::store::recent_runs(tid, 1).into_iter().next()
+                        .map(|r| r.status)
+                }).unwrap_or_else(|| "never_run".into());
+                json!({
+                    "test_id":      tid,
+                    "has_script":   has_script,
+                    "pass_rate_7d": pass_rate,
+                    "last_status":  last_status,
+                })
+            }).collect();
+
+            let is_covered = status != "missing" && !test_ids.is_empty();
+            if is_covered { covered_count += 1; }
+
+            if missing_only && status != "missing" { continue; }
+
+            feature_results.push(json!({
+                "id":       fid,
+                "name":     fname,
+                "status":   status,
+                "tests":    covering_tests,
+            }));
+
+            if status == "missing" {
+                all_gaps.push(json!({
+                    "feature_id":    fid,
+                    "feature_name":  fname,
+                    "group_id":      gid,
+                    "group_name":    gname,
+                    "suggestion":    format!("新增 agora_{} 測試 YAML", fid),
+                }));
+            }
+        }
+
+        let feat_total = features_raw.len();
+        let pct = if feat_total > 0 { (covered_count * 100 / feat_total) as u32 } else { 0 };
+        total_features += feat_total;
+        total_covered += covered_count;
+
+        group_results.push(json!({
+            "id":       gid,
+            "name":     gname,
+            "role":     g["role"],
+            "covered":  covered_count,
+            "total":    feat_total,
+            "pct":      pct,
+            "features": feature_results,
+        }));
+    }
+
+    let overall_pct = if total_features > 0 {
+        (total_covered * 100 / total_features) as u32
+    } else { 0 };
+
+    // Script summary across all regression tests.
+    let total_tests = all_tests.len();
+    let tests_with_script = all_saved.values().filter(|&&v| v).count();
+    let tests_llm_only = all_tests.iter()
+        .filter(|t| !all_saved.get(&t.id).copied().unwrap_or(false))
+        .map(|t| t.id.as_str())
+        .filter(|id| id.starts_with("agora_"))
+        .collect::<Vec<_>>();
+
+    Ok(json!({
+        "product":    map["product"],
+        "version":    map["version"],
+        "overall": {
+            "covered":  total_covered,
+            "total":    total_features,
+            "pct":      overall_pct,
+        },
+        "script_status": {
+            "total_tests":        total_tests,
+            "has_script":         tests_with_script,
+            "llm_only_tests":     tests_llm_only,
+        },
+        "groups": group_results,
+        "gaps":   all_gaps,
     }))
 }
 

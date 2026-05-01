@@ -1,0 +1,299 @@
+# AgoraMarket 功能地圖 (Feature Map)
+# 定義每個功能模組、功能點，以及哪些 test tags 覆蓋它們。
+# 用於 test_coverage MCP 工具計算覆蓋率和找出 gap。
+#
+# 欄位說明：
+#   feature_groups[].covered_by : 有這些 tag 的 test 算「覆蓋此 group」
+#   features[].test_ids         : 明確指定覆蓋此 feature 的 test（可選）
+#   features[].covered_by_tags  : 有這些 tag 的 test 覆蓋此 feature（可選）
+#   features[].status           : confirmed | partial | missing
+
+product: agora_market
+version: "1.1"
+
+feature_groups:
+  # ─── Buyer 購物端 ───────────────────────────────────────────────────
+  - id: buyer_browse
+    name: "Buyer：商品瀏覽 & 搜尋"
+    role: buyer
+    covered_by: [buyer, search, product]
+    features:
+      - id: product_list
+        name: 商品列表頁
+        test_ids: [agora_market_smoke]
+        status: partial
+
+      - id: product_search
+        name: 關鍵字搜尋
+        test_ids: [agora_search_keyword]
+        status: confirmed
+
+      - id: product_detail
+        name: 商品詳情頁（名稱/價格/SKU）
+        test_ids: [agora_order_checkout_e2e]
+        status: confirmed
+
+      - id: add_to_cart
+        name: 加入購物車 & 購物車頁
+        test_ids: [agora_cart_add_remove, agora_order_checkout_e2e]
+        status: confirmed
+
+  - id: buyer_checkout
+    name: "Buyer：結帳 & 訂單"
+    role: buyer
+    covered_by: [buyer, checkout, order]
+    features:
+      - id: checkout_flow
+        name: 下單確認頁 → 真實下單
+        test_ids: [agora_c2c_place_order]
+        status: confirmed
+
+      - id: purchase_confirm
+        name: 購買確認流程（SKU 選擇 → 確認）
+        test_ids: [agora_checkout_dry, agora_c2c_place_order]
+        status: confirmed
+
+      - id: order_view
+        name: 訂單管理頁（全部/待出貨/待收貨/已完成 tab）
+        test_ids: [agora_buyer_order_view]
+        status: confirmed
+
+      - id: order_receipt
+        name: 確認收貨流程
+        test_ids: [agora_c2c_buyer_confirm_receipt]
+        status: confirmed
+
+  - id: buyer_wallet
+    name: "Buyer：錢包 & 儲值"
+    role: buyer
+    covered_by: [buyer, wallet]
+    features:
+      - id: wallet_balance
+        name: 錢包餘額顯示
+        test_ids: [agora_buyer_wallet]
+        status: confirmed
+
+      - id: wallet_deposit
+        name: 儲值 UI（金額選擇/創建儲值按鈕）
+        test_ids: [agora_c2c_wallet_deposit]
+        status: confirmed
+
+      - id: wallet_transactions
+        name: 錢包交易記錄
+        test_ids: [agora_c2c_wallet_transactions]
+        status: confirmed
+
+      - id: wallet_withdraw
+        name: 提現流程
+        status: missing
+
+  - id: buyer_social
+    name: "Buyer：社交 & 通知"
+    role: buyer
+    covered_by: [buyer, notification]
+    features:
+      - id: notification_center
+        name: 通知/訊息中心
+        test_ids: [agora_notification_delete]
+        status: partial
+
+      - id: c2c_contact_seller
+        name: C2C 聯繫賣家（店鋪聊天）
+        test_ids: [agora_c2c_contact_seller]
+        status: confirmed
+
+      - id: logout
+        name: 登出流程
+        test_ids: [agora_logout_flow]
+        status: confirmed
+
+  # ─── Seller 賣家端 ──────────────────────────────────────────────────
+  - id: seller_products
+    name: "Seller：商品管理"
+    role: seller
+    covered_by: [seller, product]
+    features:
+      - id: product_create
+        name: 新增商品（基本資訊 + 分類 + 價格）
+        test_ids: [agora_seller_product_create]
+        status: confirmed
+
+      - id: product_edit
+        name: 編輯既有商品
+        status: missing
+
+      - id: product_delivery_settings
+        name: 商品物流設定（宅配/超商/服務類型預設值）
+        test_ids: [agora_pickup_service_default, agora_pickup_checkboxes_restore, agora_pickup_time_picker]
+        status: confirmed
+
+      - id: product_import
+        name: 批量匯入商品（Admin 端）
+        test_ids: [agora_admin_product_import]
+        status: partial
+
+  - id: seller_orders
+    name: "Seller：訂單處理"
+    role: seller
+    covered_by: [seller, orders]
+    features:
+      - id: order_list
+        name: 訂單管理頁（待處理/已完成）
+        test_ids: [agora_c2c_seller_orders, agora_seller_order_view]
+        status: confirmed
+
+      - id: order_ship
+        name: 確認訂單 → 出貨操作
+        test_ids: [agora_c2c_seller_ship]
+        status: confirmed
+
+  - id: seller_wallet
+    name: "Seller：錢包"
+    role: seller
+    covered_by: [seller, wallet]
+    features:
+      - id: seller_wallet_view
+        name: 賣家錢包頁（餘額/操作按鈕）
+        test_ids: [agora_seller_wallet]
+        status: confirmed
+
+      - id: seller_withdraw
+        name: 賣家提現
+        status: missing
+
+  - id: seller_store
+    name: "Seller：店鋪"
+    role: seller
+    covered_by: [seller, store]
+    features:
+      - id: store_view
+        name: 店鋪主頁（買家視角）
+        test_ids: [agora_c2c_store_view]
+        status: confirmed
+
+      - id: store_settings
+        name: 賣家店鋪設定
+        status: missing
+
+  # ─── C2C 交易流程 ───────────────────────────────────────────────────
+  - id: c2c_transaction
+    name: "C2C：核心交易生命週期"
+    role: [buyer, seller]
+    covered_by: [c2c, e2e]
+    features:
+      - id: c2c_place_order
+        name: 買家下單（商品→SKU→確認購買）
+        test_ids: [agora_c2c_place_order, agora_c2c_transaction_lifecycle]
+        status: confirmed
+
+      - id: c2c_seller_ship
+        name: 賣家出貨確認
+        test_ids: [agora_c2c_seller_ship, agora_c2c_transaction_lifecycle]
+        status: confirmed
+
+      - id: c2c_buyer_receive
+        name: 買家確認收貨
+        test_ids: [agora_c2c_buyer_confirm_receipt, agora_c2c_transaction_lifecycle]
+        status: confirmed
+
+      - id: c2c_rating
+        name: 買賣雙方評價
+        test_ids: [agora_c2c_rating]
+        status: partial
+
+      - id: c2c_refund
+        name: 退款/退貨申請
+        test_ids: [agora_c2c_refund_request]
+        status: partial
+
+      - id: c2c_dispute
+        name: 爭議處理（客服介入）
+        status: missing
+
+  - id: c2c_browse
+    name: "C2C：商品瀏覽 & 結帳"
+    role: buyer
+    covered_by: [c2c, buyer]
+    features:
+      - id: c2c_product_to_checkout
+        name: 商品頁 → 購物車 → 結帳流程
+        test_ids: [agora_c2c_product_to_checkout]
+        status: confirmed
+
+      - id: c2c_order_data_error
+        name: 訂單數據格式錯誤容錯（#114）
+        test_ids: [agora_c2c_order_data_error]
+        status: confirmed
+
+  # ─── Admin 管理後台 ─────────────────────────────────────────────────
+  - id: admin_products
+    name: "Admin：商品管理"
+    role: admin
+    covered_by: [admin]
+    features:
+      - id: admin_category_filter
+        name: 分類篩選功能（dropdown 展開/AX tree 不崩）
+        test_ids: [agora_admin_category_filter]
+        status: confirmed
+
+      - id: admin_product_import
+        name: 商品列表 + 狀態 Chip 顯示
+        test_ids: [agora_admin_product_import]
+        status: confirmed
+
+      - id: admin_status_chip
+        name: 商品狀態 chip 色碼（上架/下架/售完）
+        test_ids: [agora_admin_status_chip]
+        status: confirmed
+
+      - id: admin_user_mgmt
+        name: 用戶管理
+        status: missing
+
+      - id: admin_order_mgmt
+        name: 訂單管理（admin 視角）
+        status: missing
+
+  # ─── Delivery 外送員 ────────────────────────────────────────────────
+  - id: delivery_ops
+    name: "Delivery：外送員"
+    role: delivery
+    covered_by: [delivery]
+    features:
+      - id: delivery_dashboard
+        name: 外送員儀表板（統計/工作狀態開關）
+        test_ids: [agora_c2c_delivery_dashboard]
+        status: confirmed
+
+      - id: delivery_orders
+        name: 外送員訂單管理頁（待配送/收入 tab）
+        test_ids: [agora_c2c_delivery_orders]
+        status: confirmed
+
+      - id: delivery_route
+        name: 導航/配送路線
+        status: missing
+
+      - id: delivery_income
+        name: 收入統計
+        status: missing
+
+  # ─── 跨角色 / 基礎設施 ─────────────────────────────────────────────
+  - id: cross_role
+    name: "跨角色 & 基礎"
+    role: [buyer, seller, delivery, admin]
+    covered_by: [navigation, auth]
+    features:
+      - id: navigation_breadcrumb
+        name: 頁面導航 & 返回（hash-route）
+        test_ids: [agora_navigation_breadcrumb]
+        status: confirmed
+
+      - id: webrtc_permission
+        name: WebRTC 麥克風/鏡頭權限 UI
+        test_ids: [agora_webrtc_permission]
+        status: confirmed
+
+      - id: staking
+        name: Staking 功能
+        status: missing
