@@ -37,13 +37,13 @@ goal: |
   4. wait 3000（Flutter form 有大量欄位，AX tree 建構需時）
   5. enable_a11y（二次確保，不用 scroll — AX tree 已包含 off-screen 元素）
   6. wait 2000
-  7. flutter_scroll y=700
-     （適度捲動，讓平台配送設定 button 進入 viewport；不捲太多避免座標漂移）
-  8. wait 2000（等 Flutter 重新渲染）
-  9. enable_a11y（scroll 後必須重新初始化 AX tree）
+  7. flutter_scroll_until_visible role=button name_regex="平台配送設定"
+     （⚠️ 使用正確 role=button；此動作自動捲動直到元素進入 viewport，避免固定 scroll 的座標漂移問題）
+  8. wait 1500（等捲動完成）
+  9. enable_a11y（元素已在 viewport，重建 AX tree）
   10. wait 1500
   11. shadow_click role=button name_regex="平台配送設定"
-      （⚠️ 已確認 role=button，不是 group！需在 viewport 內才能收到 PointerEvent）
+      （元素已在 viewport 內，PointerEvent 可正確觸及）
   12. wait 1500（等展開動畫完成）
   13. enable_a11y（展開後重新初始化 AX tree）
   14. wait 800
