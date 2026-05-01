@@ -362,17 +362,100 @@ impl TestRunnerService for RealService {
             });
         }
 
-        // Discovery layer: until the auto-crawler ships, mock as
-        // discovered == total_features (every feature in YAML is "known").
-        let discovered = total_features;
+        // Discovery layer (Issue #247) — read from SQLite when the crawler
+        // has run; fall back to total_features (mock) until then.
+        let (discovered, discovery_status) =
+            match crate::test_runner::discovery::latest_run() {
+                Ok(Some(run)) => {
+                    let count = crate::test_runner::discovery::feature_count()
+                        .unwrap_or(total_features as u32);
+                    let status = match run.status.as_str() {
+                        "running" => crate::ui_service::DiscoveryStatus::Crawling {
+                            started_at: run.started_at,
+                        },
+                        "done" => crate::ui_service::DiscoveryStatus::Done {
+                            at: run.finished_at.unwrap_or(run.started_at),
+                            total_widgets: run.total_widgets.unwrap_or(0),
+                        },
+                        _ => crate::ui_service::DiscoveryStatus::NotRun,
+                    };
+                    (count as usize, status)
+                }
+                _ => (total_features, crate::ui_service::DiscoveryStatus::NotRun),
+            };
 
         Ok(CoverageData {
             product, version,
             total_covered, total_features, groups,
             discovered,
             scripted: total_scripted,
-            discovery_status: crate::ui_service::DiscoveryStatus::NotRun,
+            discovery_status,
         })
+    }
+
+    fn discovery_data(&self) -> Result<DiscoveryDataView, String> {
+        use crate::ui_service::{DiscoveryStatus, DiscoveredFeatureView};
+
+        let latest = crate::test_runner::discovery::latest_run()?;
+        let features_raw = crate::test_runner::discovery::list_features()?;
+        let features: Vec<DiscoveredFeatureView> = features_raw.into_iter().map(|f| {
+            DiscoveredFeatureView {
+                route: f.route,
+                label: f.label,
+                kind: f.kind,
+                selector: f.selector,
+                last_seen: f.last_seen,
+            }
+        }).collect();
+        let total = features.len() as u32;
+
+        let (status, last_run_at) = match latest {
+            None => (DiscoveryStatus::NotRun, None),
+            Some(r) => {
+                let st = match r.status.as_str() {
+                    "running" => DiscoveryStatus::Crawling { started_at: r.started_at.clone() },
+                    "done"    => DiscoveryStatus::Done {
+                        at: r.finished_at.clone().unwrap_or(r.started_at.clone()),
+                        total_widgets: r.total_widgets.unwrap_or(0),
+                    },
+                    _ => DiscoveryStatus::NotRun,
+                };
+                (st, r.finished_at.or(Some(r.started_at)))
+            }
+        };
+
+        Ok(DiscoveryDataView { status, total, features, last_run_at })
+    }
+
+    fn launch_discovery(&self, seed_url: &str, max_depth: u32) -> Result<String, String> {
+        let run_id = format!(
+            "disc_{}",
+            chrono::Utc::now().format("%Y%m%d_%H%M%S")
+        );
+        crate::test_runner::discovery::begin_run(&run_id, seed_url, max_depth)?;
+
+        // Detached thread — UI polls latest_run() to track progress.  Errors
+        // get persisted as run.status = "failed" + error message.
+        let run_id_owned = run_id.clone();
+        let seed_owned   = seed_url.to_string();
+        std::thread::spawn(move || {
+            match crate::test_runner::discovery::crawl_app(
+                &seed_owned, max_depth, &run_id_owned,
+            ) {
+                Ok(count) => {
+                    let _ = crate::test_runner::discovery::finish_run(
+                        &run_id_owned, "done", Some(count), None,
+                    );
+                }
+                Err(e) => {
+                    let _ = crate::test_runner::discovery::finish_run(
+                        &run_id_owned, "failed", Some(0), Some(&e),
+                    );
+                }
+            }
+        });
+
+        Ok(run_id)
     }
 }
 

@@ -23,6 +23,7 @@ pub mod ax_diff_context;
 pub mod som_renderer;
 pub mod action_verify;
 pub mod gif_recorder;
+pub mod discovery;
 
 pub use parser::{TestGoal, Fixture};
 pub use executor::{TestResult, TestStatus};

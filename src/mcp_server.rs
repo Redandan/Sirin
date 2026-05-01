@@ -576,6 +576,34 @@ fn handle_tools_list() -> Result<Value, String> {
                 }
             },
             {
+                "name": "discover_app",
+                "description": "Issue #247 — 啟動自動探索爬蟲。Sirin 開瀏覽器到 seed_url，用 dom_snapshot 列舉可互動元件（button/link/input/tab），存到 SQLite discovered_features 表。\n\n用於 Coverage 3-tier funnel 的「探索」層 — 補 YAML coverage map 沒列到的功能。\n\n回傳 run_id（立即返回，crawl 在背景跑）。用 discovery_status 查狀態。",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["seed_url"],
+                    "properties": {
+                        "seed_url":  { "type": "string", "description": "起始 URL（爬蟲第一個導覽到的頁面）" },
+                        "max_depth": { "type": "number", "description": "遞迴深度上限（iter 2 只支援 1，更深需後續 PR）" }
+                    }
+                }
+            },
+            {
+                "name": "discovery_status",
+                "description": "查最近一次 discovery 爬蟲狀態。回傳 status (running/done/failed)、started_at、finished_at、total_widgets、累計 distinct features 數。",
+                "inputSchema": { "type": "object", "properties": {} }
+            },
+            {
+                "name": "discovery_features",
+                "description": "列出 discovery 爬蟲找到的所有 features（route/label/kind/selector/last_seen）。可用 limit + kind 過濾。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "limit": { "type": "number", "description": "回傳上限，預設 100" },
+                        "kind":  { "type": "string", "description": "選填：只看某個 kind（button/link/form_input/tab/menuitem）" }
+                    }
+                }
+            },
+            {
                 "name": "list_flaky_tests",
                 "description": "列出歷史上不穩定（flaky）的測試，依 pass rate 升序（最差優先）。\n\n等同 test_analytics 但只回傳 flaky 條目，方便快速定位需要重點關注的測試。\n\nflaky 定義：近 10 次中 pass rate < threshold（預設 70%）且至少 3 次 runs。",
                 "inputSchema": {
@@ -1378,6 +1406,9 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         "test_summary"         => return call_test_summary(arguments).map(wrap_json),
         "list_flaky_tests"        => return call_list_flaky_tests(arguments).map(wrap_json),
         "test_coverage"           => return call_test_coverage(arguments).map(wrap_json),
+        "discover_app"            => return call_discover_app(arguments).map(wrap_json),
+        "discovery_status"        => return call_discovery_status().map(wrap_json),
+        "discovery_features"      => return call_discovery_features(arguments).map(wrap_json),
         "replay_last_failure"     => return call_replay_last_failure(arguments).map(wrap_json),
         "shadow_dump_diff"        => return call_shadow_dump_diff(arguments).map(wrap_json),
         "compare_with_replay"     => return call_compare_with_replay(arguments).map(wrap_json),
@@ -2147,6 +2178,96 @@ fn call_test_coverage(args: Value) -> Result<Value, String> {
         },
         "groups": group_results,
         "gaps":   all_gaps,
+    }))
+}
+
+/// #247 — discover_app: kick off discovery crawler in a background thread.
+fn call_discover_app(args: Value) -> Result<Value, String> {
+    let seed_url = args.get("seed_url").and_then(Value::as_str)
+        .ok_or("seed_url required")?.to_string();
+    let max_depth = args.get("max_depth").and_then(Value::as_u64)
+        .map(|n| n as u32).unwrap_or(1);
+
+    let run_id = format!(
+        "disc_{}",
+        chrono::Utc::now().format("%Y%m%d_%H%M%S")
+    );
+    crate::test_runner::discovery::begin_run(&run_id, &seed_url, max_depth)?;
+
+    let run_id_owned = run_id.clone();
+    let seed_owned   = seed_url.clone();
+    std::thread::spawn(move || {
+        match crate::test_runner::discovery::crawl_app(
+            &seed_owned, max_depth, &run_id_owned,
+        ) {
+            Ok(count) => {
+                let _ = crate::test_runner::discovery::finish_run(
+                    &run_id_owned, "done", Some(count), None,
+                );
+            }
+            Err(e) => {
+                let _ = crate::test_runner::discovery::finish_run(
+                    &run_id_owned, "failed", Some(0), Some(&e),
+                );
+            }
+        }
+    });
+
+    Ok(json!({
+        "run_id":    run_id,
+        "seed_url":  seed_url,
+        "max_depth": max_depth,
+        "note":      "crawl spawned; poll discovery_status for progress",
+    }))
+}
+
+/// #247 — discovery_status: snapshot of latest run + counts.
+fn call_discovery_status() -> Result<Value, String> {
+    let latest = crate::test_runner::discovery::latest_run()?;
+    let total  = crate::test_runner::discovery::feature_count().unwrap_or(0);
+    match latest {
+        None => Ok(json!({
+            "status":            "not_run",
+            "total_features":    total,
+            "note":              "discovery 從未執行；用 discover_app 啟動",
+        })),
+        Some(r) => Ok(json!({
+            "status":            r.status,
+            "run_id":            r.run_id,
+            "started_at":        r.started_at,
+            "finished_at":       r.finished_at,
+            "total_widgets":     r.total_widgets,
+            "error":             r.error,
+            "seed_url":          r.seed_url,
+            "max_depth":         r.max_depth,
+            "total_features":    total,
+        })),
+    }
+}
+
+/// #247 — discovery_features: list discovered features (newest first).
+fn call_discovery_features(args: Value) -> Result<Value, String> {
+    let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(100) as usize;
+    let kind_filter = args.get("kind").and_then(Value::as_str).map(String::from);
+
+    let mut feats = crate::test_runner::discovery::list_features()?;
+    if let Some(ref k) = kind_filter {
+        feats.retain(|f| f.kind == *k);
+    }
+    let total = feats.len();
+    feats.truncate(limit);
+
+    Ok(json!({
+        "total":     total,
+        "returned":  feats.len(),
+        "features":  feats.iter().map(|f| json!({
+            "route":     f.route,
+            "label":     f.label,
+            "kind":      f.kind,
+            "selector":  f.selector,
+            "last_seen": f.last_seen,
+            "run_id":    f.run_id,
+        })).collect::<Vec<_>>(),
     }))
 }
 

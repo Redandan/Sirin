@@ -16,6 +16,13 @@ fn db_path() -> PathBuf {
     crate::platform::app_data_dir().join("memory").join("test_memory.db")
 }
 
+/// Shared DB accessor for the discovery module — Issue #247 keeps its
+/// `discovered_features` / `discovery_runs` tables in the same SQLite file
+/// so the schema migrations and OnceLock init stay centralized here.
+pub(crate) fn __db_for_discovery() -> &'static Mutex<rusqlite::Connection> {
+    db()
+}
+
 fn db() -> &'static Mutex<rusqlite::Connection> {
     static DB: OnceLock<Mutex<rusqlite::Connection>> = OnceLock::new();
     DB.get_or_init(|| {
@@ -124,6 +131,39 @@ fn db() -> &'static Mutex<rusqlite::Connection> {
         let _ = conn.execute(
             "ALTER TABLE test_runs ADD COLUMN console_log TEXT",
             [],
+        );
+
+        // Issue #247 — discovery crawler tables.
+        // `discovery_runs` tracks each crawl invocation.
+        // `discovered_features` is a feature inventory the crawler builds —
+        // each row = one (route, label, kind) it observed.
+        // The diff against `coverage/agora_market.yaml` produces the
+        // 3-tier funnel's "Discovered" count + "Discovery Gaps" list.
+        let _ = conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS discovery_runs ( \
+                id INTEGER PRIMARY KEY AUTOINCREMENT, \
+                run_id TEXT NOT NULL UNIQUE, \
+                started_at TEXT NOT NULL, \
+                finished_at TEXT, \
+                status TEXT NOT NULL, \
+                total_widgets INTEGER, \
+                error TEXT, \
+                seed_url TEXT, \
+                max_depth INTEGER \
+            ); \
+            CREATE INDEX IF NOT EXISTS idx_disc_run_started ON discovery_runs(started_at DESC); \
+            CREATE TABLE IF NOT EXISTS discovered_features ( \
+                id INTEGER PRIMARY KEY AUTOINCREMENT, \
+                route TEXT NOT NULL, \
+                label TEXT NOT NULL, \
+                kind TEXT NOT NULL, \
+                selector TEXT, \
+                last_seen TEXT NOT NULL, \
+                run_id TEXT, \
+                UNIQUE(route, label, kind) \
+            ); \
+            CREATE INDEX IF NOT EXISTS idx_disc_feat_route ON discovered_features(route); \
+            CREATE INDEX IF NOT EXISTS idx_disc_feat_run ON discovered_features(run_id);",
         );
 
         Mutex::new(conn)

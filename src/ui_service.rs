@@ -508,6 +508,29 @@ pub struct CoverageData {
     pub discovery_status: DiscoveryStatus,
 }
 
+/// One feature Sirin's auto-crawler observed in the running app.
+/// The diff between this set and the YAML coverage map drives the
+/// "Discovery Gaps" list in the Coverage panel.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiscoveredFeatureView {
+    pub route:     String,
+    pub label:     String,
+    /// "button" | "link" | "form_input" | "page" | "tab" | "menuitem"
+    pub kind:      String,
+    pub selector:  Option<String>,
+    pub last_seen: String,
+}
+
+/// Top-level discovery snapshot — Issue #247.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiscoveryDataView {
+    pub status:        DiscoveryStatus,
+    pub total:         u32,
+    pub features:      Vec<DiscoveredFeatureView>,
+    /// RFC-3339 timestamp of the last completed run, if any.
+    pub last_run_at:   Option<String>,
+}
+
 /// Test runner data for the Test Dashboard panel — recent history + active runs.
 pub trait TestRunnerService: Send + Sync + 'static {
     /// Most-recent completed runs from SQLite (newest first).
@@ -524,6 +547,12 @@ pub trait TestRunnerService: Send + Sync + 'static {
     /// Parse `config/coverage/agora_market.yaml` and return a typed coverage
     /// snapshot.  Cheap (file read + parse, no DB queries).
     fn test_coverage_data(&self) -> Result<CoverageData, String>;
+    /// Snapshot of the auto-discovery state — Issue #247.
+    /// Returns NotRun + empty features when the crawler has never run.
+    fn discovery_data(&self) -> Result<DiscoveryDataView, String>;
+    /// Kick off a discovery crawl asynchronously. Returns the run_id.
+    /// `max_depth` caps recursion (clickable elements within clickables).
+    fn launch_discovery(&self, seed_url: &str, max_depth: u32) -> Result<String, String>;
 }
 
 /// Aggregate trait the UI consumes as `Arc<dyn AppService>`.
