@@ -105,6 +105,22 @@ pub fn enabled() -> bool {
     matches!(v.as_str(), "1" | "true" | "yes" | "on")
 }
 
+/// True when per-run telemetry writes (pass/fail/triage/stuck-loop notes) are
+/// enabled.  Defaults to **false** to avoid KB draft pollution.
+///
+/// These raw-layer notes (sirin-pass-*, sirin-failure-*, yaml-dispute-*, etc.)
+/// have short-term debug value but accumulate quickly and dilute semantic search.
+/// Set `KB_WRITE_TELEMETRY=1` to re-enable (e.g. during a debugging session).
+///
+/// Long-term knowledge should be written by Claude sessions via `kbWrite` directly
+/// with `layer=topic, status=confirmed` — not by automated test runs.
+///
+/// Issue: #218
+pub fn telemetry_write_enabled() -> bool {
+    let v = std::env::var("KB_WRITE_TELEMETRY").unwrap_or_default().to_lowercase();
+    matches!(v.as_str(), "1" | "true" | "yes" | "on")
+}
+
 /// MCP endpoint URL, env-overridable.
 ///
 /// Default `http://localhost:3001/mcp` covers the local-dev case where a
@@ -258,7 +274,11 @@ pub async fn write_raw_to_project(
     tags: &str,
     file_refs: &str,
 ) -> Result<(), String> {
-    if !enabled() {
+    // Guard 1: KB must be enabled at all.
+    // Guard 2: Per-run telemetry writes are OFF by default to prevent KB draft
+    //          pollution (sirin-pass-*, sirin-failure-*, yaml-dispute-*, etc.).
+    //          Set KB_WRITE_TELEMETRY=1 to re-enable during debugging. (#218)
+    if !enabled() || !telemetry_write_enabled() {
         return Ok(());
     }
     let args = json!({
