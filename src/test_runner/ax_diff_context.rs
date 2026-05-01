@@ -133,7 +133,7 @@ fn diff_trees(baseline: &Value, current: &Value) -> Value {
         }
 
         // Check for removed nodes
-        for (id, _baseline_node) in &baseline_map {
+        for id in baseline_map.keys() {
             if !current_nodes.iter().any(|n| n.get("backend_id").and_then(|v| v.as_u64()) == Some(*id)) {
                 changed_nodes.push(json!({
                     "backend_id": id,

@@ -287,7 +287,7 @@ fn collect_hidden_backend_ids() -> Result<HashSet<u32>, String> {
                     depth: Some(0),
                     pierce: Some(false),
                 }) {
-                    let bid = desc.node.backend_node_id as u32;
+                    let bid = desc.node.backend_node_id;
                     out.insert(bid);
                 }
             }

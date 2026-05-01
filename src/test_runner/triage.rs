@@ -124,7 +124,7 @@ pub async fn triage(
     // Even a handful of error messages dramatically improves category accuracy
     // (e.g. "404 /api/products" → api_bug instead of ui_bug).
     let console_section = run_id
-        .and_then(|rid| crate::test_runner::store::get_console_log(rid))
+        .and_then(crate::test_runner::store::get_console_log)
         .map(|log_json| {
             // Parse and extract error-level messages only (warnings less useful for classification).
             let msgs: Vec<String> = serde_json::from_str::<serde_json::Value>(&log_json)

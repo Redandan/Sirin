@@ -189,10 +189,14 @@ impl SidebarState {
     fn ensure_view_visible(&mut self, view: &View) {
         match view {
             View::Workspace(_) => self.agents_open = true,
-            View::Settings | View::Log => self.system_open = true,
-            View::TestRuns | View::Coverage | View::BrowserMonitor => self.testing_open = true,
-            View::Team | View::McpPlayground => self.automation_open = true,
-            View::AiRouter | View::SessionTasks | View::CostKb => self.ops_open = true,
+            View::Settings | View::Log =>
+                self.system_open = true,
+            View::TestRuns | View::Coverage | View::BrowserMonitor =>
+                self.testing_open = true,
+            View::Team | View::McpPlayground =>
+                self.automation_open = true,
+            View::AiRouter | View::SessionTasks | View::CostKb =>
+                self.ops_open = true,
         }
     }
 }
@@ -264,9 +268,9 @@ fn show_icon_nav(
     ui.add_space(theme::SP_XS);
 
     // ── TESTING ──────────────────────────────────────────────────────────
-    nav_icon(ui, Icon::Lines,   "Test Runs",      View::TestRuns,       view);
-    nav_icon(ui, Icon::Glyph("▦"), "Coverage",   View::Coverage,       view);
-    nav_icon(ui, Icon::Globe,   "Browser",        View::BrowserMonitor, view);
+    nav_icon(ui, Icon::Lines,   "Test Runs",  View::TestRuns,       view);
+    nav_icon(ui, Icon::Monitor, "Coverage",   View::Coverage,       view); // grid-like icon
+    nav_icon(ui, Icon::Globe,   "Browser",    View::BrowserMonitor, view);
 
     ui.add_space(theme::SP_XS);
     thin_strip(ui);
@@ -274,24 +278,25 @@ fn show_icon_nav(
 
     // ── AUTOMATION ───────────────────────────────────────────────────────
     nav_icon(ui, Icon::People,  "Dev Squad",      View::Team,          view);
-    nav_icon(ui, Icon::Glyph("⚙"), "MCP",        View::McpPlayground, view);
+    nav_icon(ui, Icon::Gear,    "MCP Playground", View::McpPlayground, view);
 
     ui.add_space(theme::SP_XS);
     thin_strip(ui);
     ui.add_space(theme::SP_XS);
 
     // ── OPS ──────────────────────────────────────────────────────────────
-    nav_icon(ui, Icon::Glyph("⚡"), "AI Router",  View::AiRouter,     view);
-    nav_icon(ui, Icon::Glyph("📋"), "Tasks",      View::SessionTasks, view);
-    nav_icon(ui, Icon::Glyph("$"),  "Cost & KB",  View::CostKb,       view);
+    // Reuse drawn icons — Glyph single ASCII chars for consistency.
+    nav_icon(ui, Icon::Glyph("A"), "AI Router",     View::AiRouter,     view);
+    nav_icon(ui, Icon::Glyph("T"), "Session/Tasks", View::SessionTasks, view);
+    nav_icon(ui, Icon::Glyph("$"), "Cost & KB",     View::CostKb,       view);
 
     ui.add_space(theme::SP_XS);
     thin_strip(ui);
     ui.add_space(theme::SP_XS);
 
     // ── SYSTEM ───────────────────────────────────────────────────────────
-    nav_icon(ui, Icon::Gear,    "Settings",       View::Settings, view);
-    nav_icon(ui, Icon::Monitor, "Log",            View::Log,      view);
+    nav_icon(ui, Icon::Gear,        "Settings", View::Settings, view);
+    nav_icon(ui, Icon::Glyph("L"),  "Log",      View::Log,      view);
 
     // ── Bottom: expand button + status dots ──────────────────────────
     ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {

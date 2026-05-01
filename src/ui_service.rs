@@ -324,6 +324,10 @@ pub trait IntegrationService: Send + Sync + 'static {
     fn mcp_tools(&self) -> Vec<McpToolDetail>;
     /// Execute an MCP tool by name with JSON arguments.
     fn mcp_call(&self, tool_name: &str, args_json: &str) -> Result<String, String>;
+    /// Call a Sirin-local MCP tool at http://127.0.0.1:7700/mcp.
+    /// Use this for tools defined in src/mcp_server.rs (route_query, kb_stats, etc.)
+    /// rather than mcp_call() which targets external servers.
+    fn sirin_mcp_call(&self, tool_name: &str, args_json: &str) -> Result<String, String>;
 
     fn meeting_active(&self) -> bool;
     fn meeting_start(&self, participants: Vec<String>) -> String;

@@ -196,13 +196,13 @@ async fn run_test_with_run_id(
                 tracing::warn!("[test_runner] '{}' overridden to failed: console errors found (fail_on_console_errors=true)", test.id);
                 TestStatus::Failed
             } else {
-                result.status.clone()
+                result.status
             }
         } else {
-            result.status.clone()
+            result.status
         }
     } else {
-        result.status.clone()
+        result.status
     };
 
     let _ = store::record_run(store::NewRun {

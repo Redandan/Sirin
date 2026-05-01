@@ -93,6 +93,22 @@ pub(super) fn mcp_call(_svc: &RealService, tool_name: &str, args_json: &str) -> 
     Ok(serde_json::to_string_pretty(&result).unwrap_or_else(|_| format!("{result}")))
 }
 
+/// Call a Sirin-local MCP tool at http://127.0.0.1:7700/mcp.
+pub(super) fn sirin_mcp_call(_svc: &crate::ui_service_impl::RealService, tool_name: &str, args_json: &str) -> Result<String, String> {
+    let url   = "http://127.0.0.1:7700/mcp".to_string();
+    let name  = tool_name.to_string();
+    let args: serde_json::Value = serde_json::from_str(args_json)
+        .map_err(|e| format!("Invalid JSON: {e}"))?;
+
+    let rt = tokio::runtime::Handle::try_current()
+        .map_err(|_| "No tokio runtime".to_string())?;
+    let result = std::thread::spawn(move || {
+        rt.block_on(crate::mcp_client::call_tool(&url, &name, args))
+    }).join().map_err(|_| "Thread panic".to_string())??;
+
+    Ok(serde_json::to_string_pretty(&result).unwrap_or_else(|_| format!("{result}")))
+}
+
 // ── Meeting ──────────────────────────────────────────────────────────────────
 
 pub(super) fn meeting_active(_svc: &RealService) -> bool {

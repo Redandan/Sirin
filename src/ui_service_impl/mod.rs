@@ -114,6 +114,7 @@ impl IntegrationService for RealService {
     fn teams_running(&self) -> bool { integrations::teams_running(self) }
     fn mcp_tools(&self) -> Vec<McpToolDetail> { integrations::mcp_tools(self) }
     fn mcp_call(&self, tool: &str, args: &str) -> Result<String, String> { integrations::mcp_call(self, tool, args) }
+    fn sirin_mcp_call(&self, tool: &str, args: &str) -> Result<String, String> { integrations::sirin_mcp_call(self, tool, args) }
     fn meeting_active(&self) -> bool { integrations::meeting_active(self) }
     fn meeting_start(&self, participants: Vec<String>) -> String { integrations::meeting_start(self, participants) }
     fn meeting_end(&self) { integrations::meeting_end(self) }

@@ -193,7 +193,7 @@ fn show_coverage_data(ui: &mut egui::Ui, data: &CoverageData) {
     }
 }
 
-pub fn coverage_color(pct: f32) -> egui::Color32 {
+fn coverage_color(pct: f32) -> egui::Color32 {
     if pct >= 0.80 { theme::ACCENT }
     else if pct >= 0.50 { theme::YELLOW }
     else { theme::DANGER }

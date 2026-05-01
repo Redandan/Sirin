@@ -241,10 +241,7 @@ async fn call_assistant_llm(
     let visual_desc = if let Some(b64) = screenshot_b64 {
         if let Some(vision_cfg) = crate::llm::vision_llm_config() {
             let vision_prompt = "簡短描述截圖上看到的頁面內容（50字以內）：標題、主要元素、頁面狀態。";
-            match crate::llm::call_vision(&http, &vision_cfg, vision_prompt, b64, "image/png").await {
-                Ok(desc) => Some(desc),
-                Err(_) => None,
-            }
+            crate::llm::call_vision(&http, &vision_cfg, vision_prompt, b64, "image/png").await.ok()
         } else {
             None
         }
