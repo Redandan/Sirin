@@ -37,8 +37,9 @@ goal: |
   4. wait 3000（Flutter form 有大量欄位，AX tree 建構需時）
   5. enable_a11y（二次確保，不用 scroll — AX tree 已包含 off-screen 元素）
   6. wait 2000
-  7. shadow_dump（確認 AX tree 已有「平台配送設定」group — 若找不到，表示 form 未完整載入）
-  8. shadow_click role=group name="平台配送設定"（直接點擊，不需先 scroll；Flutter shadow DOM 支援 off-screen click）
+  7. shadow_dump（確認 AX tree 已有「平台配送設定」button）
+  8. shadow_click role=button name_regex="平台配送設定"
+     （⚠️ 已確認：platform delivery 是 role=button 非 group；不需 scroll，shadow_dump 無捲動即可見）
   9. wait 1500（等展開動畫完成）
   10. enable_a11y（展開後重新初始化 AX tree）
   11. wait 800
