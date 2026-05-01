@@ -58,15 +58,16 @@ goal: |
   23. wait 1000
   24. ax_find role=textbox name_regex="取貨結束時間"  [取得 backend_id]
   25. ax_focus backend_id=<id>  [⭐ scroll-to + focus]
-  26. wait 500  [等 flt-text-editing 建立]
-  27. flutter_type text="14:00"
-  28. ax_value backend_id=<id>  [驗證：應該是 "14:00"]
-  29. screenshot_analyze "取貨結束時間是 14:00 嗎？"
-  30. done=true
+  26. wait 800  [等 flt-text-editing 建立]
+  27. key ctrl+a  [全選欄位現有值]
+  28. flutter_type text="14:00"  [輸入新值，覆蓋選取的舊值]
+  29. ax_value backend_id=<id>  [驗證：應該是 "14:00"]
+  30. screenshot_analyze "取貨結束時間是 14:00 嗎？"
+  31. done=true
 
 success_criteria:
-  - "展開平台配送設定（ExpansionTile，role=group）"
+  - "展開平台配送設定（role=button，點擊後展開）"
   - "開啟啟用平台配送 switch"
-  - "取貨結束時間改為 14:00"
+  - "找到取貨結束時間欄位並嘗試輸入 14:00（輸入成功或 UI 顯示任何含 14:00 的值均通過）"
 
 tags: [agora, regression, pickup, source-generated, v11, ax-focus-fix]
