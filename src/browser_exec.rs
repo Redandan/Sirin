@@ -106,6 +106,11 @@ pub(crate) fn dispatch(action: &str, input: &Value) -> Result<Value, String> {
                 .unwrap_or_else(browser::default_headless);
             browser::ensure_open(headless)?;
             browser::navigate(target)?;
+            // Issue #220: re-install console capture after every navigation.
+            // JS injection is page-scoped — a page reload (navigate) clears
+            // window.__sirin_console.  Best-effort: ignore errors (e.g. if the
+            // new page immediately redirects before we can inject).
+            let _ = browser::install_console_capture();
             Ok(json!({ "status": "navigated", "url": target }))
         }
         "screenshot" => {
