@@ -757,10 +757,8 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                 // P1.1 optimization: Prepare SoM (Set-of-Mark) visual labels
                 // if AX tree is available (interactive elements → numbered labels)
                 let run_id = ctx.metadata.get("test_run_id");
-                if !screenshot_b64.is_empty() && run_id.is_some() {
-                    // Try to fetch recent AX tree (if available from last ax_tree call)
-                    // For MVP, SoM preparation is optional; if unavailable, continue with plain vision
-                    let run_id_str = run_id.unwrap();
+                if !screenshot_b64.is_empty() {
+                    if let Some(run_id_str) = run_id {
                     if let Some(recent_ax_nodes) = crate::test_runner::runs::get_recent_ax_nodes(run_id_str) {
                         let som_renderer = crate::test_runner::som_renderer::SoMRenderer::with_defaults();
                         
@@ -793,8 +791,9 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                             }
                         }
                     }
+                    } // end if let Some(run_id_str)
                 }
-                
+
                 // Preserve size_bytes + url from the blocking screenshot call so that
                 // executor.rs::is_all_black_screenshot() can detect black frames even
                 // when the action is screenshot_analyze (not just screenshot).

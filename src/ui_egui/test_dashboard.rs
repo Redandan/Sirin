@@ -423,7 +423,7 @@ fn show_coverage_data(ui: &mut egui::Ui, data: &CoverageData) {
                 ui.colored_label(theme::DANGER, RichText::new("○").size(theme::FONT_CAPTION));
                 ui.colored_label(
                     theme::TEXT_DIM,
-                    RichText::new(format!("{feat_name}")).size(theme::FONT_CAPTION),
+                    RichText::new(feat_name.to_string()).size(theme::FONT_CAPTION),
                 );
                 ui.colored_label(
                     theme::TEXT_DIM,
@@ -542,8 +542,8 @@ fn show_filter_row(ui: &mut egui::Ui, state: &mut TestDashState) {
         );
 
         // Quick "clear" affordance when filters are active.
-        if state.status_filter != StatusFilter::All || !state.text_filter.is_empty() {
-            if ui
+        if (state.status_filter != StatusFilter::All || !state.text_filter.is_empty())
+            && ui
                 .add(egui::Button::new(RichText::new("✕").size(theme::FONT_CAPTION)))
                 .on_hover_text("clear filter")
                 .clicked()
@@ -551,7 +551,6 @@ fn show_filter_row(ui: &mut egui::Ui, state: &mut TestDashState) {
                 state.status_filter = StatusFilter::All;
                 state.text_filter.clear();
             }
-        }
     });
 }
 

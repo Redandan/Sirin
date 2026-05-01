@@ -202,8 +202,7 @@ pub fn list_preview_comments() -> Vec<PreviewComment> {
 pub fn latest_preview_for(task_id: &str) -> Option<PreviewComment> {
     list_preview_comments()
         .into_iter()
-        .filter(|p| p.task_id == task_id)
-        .last()
+        .rfind(|p| p.task_id == task_id)
 }
 
 /// Replay (i.e. actually post) a previously-saved dry-run preview.

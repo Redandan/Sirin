@@ -156,11 +156,10 @@ fn sync_dir_recursive(src: &std::path::Path, dst: &std::path::Path, count: &mut 
                     _ => true, // dst missing or can't stat → copy
                 }
             };
-            if should_copy {
-                if fs::copy(&src_path, &dst_path).is_ok() {
+            if should_copy
+                && fs::copy(&src_path, &dst_path).is_ok() {
                     *count += 1;
                 }
-            }
         }
     }
 }

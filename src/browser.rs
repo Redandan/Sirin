@@ -103,7 +103,7 @@ static HEARTBEAT_STOP: AtomicBool = AtomicBool::new(false);
 // other threads have written to `inner.active`.
 thread_local! {
     static THREAD_ACTIVE_TAB: std::cell::Cell<Option<usize>> =
-        std::cell::Cell::new(None);
+        const { std::cell::Cell::new(None) };
 }
 
 /// Called by the test executor at test start to register the desired
@@ -117,10 +117,10 @@ pub fn set_test_headless_mode(headless: bool) {
 /// Called once near process start.  `1`/`true`/`yes` → on (default),
 /// `0`/`false`/`no` → off.  Any other value also leaves it on (fail-secure).
 pub fn init_privacy_mask_from_env() {
-    let on = match std::env::var("SIRIN_PRIVACY_MASK").ok().as_deref() {
-        Some("0") | Some("false") | Some("FALSE") | Some("no") | Some("NO") => false,
-        _ => true,
-    };
+    let on = !matches!(
+        std::env::var("SIRIN_PRIVACY_MASK").ok().as_deref(),
+        Some("0") | Some("false") | Some("FALSE") | Some("no") | Some("NO")
+    );
     PRIVACY_MASK_ENABLED.store(on, Ordering::Relaxed);
 }
 
@@ -282,7 +282,7 @@ pub fn ensure_open(headless: bool) -> Result<bool, String> {
     let mut opts_builder = LaunchOptions::default_builder();
     opts_builder
         .headless(headless)
-        .args(stability_args.iter().map(|s| std::ffi::OsStr::new(s)).collect());
+        .args(stability_args.iter().map(std::ffi::OsStr::new).collect());
     if let Some(dir) = persistent_profile.as_ref() {
         opts_builder.user_data_dir(Some(dir.clone()));
         tracing::info!(
@@ -404,7 +404,7 @@ fn resolve_default_viewport() -> (u32, u32) {
     if trimmed.is_empty() {
         return (DEFAULT_W, DEFAULT_H);
     }
-    let parts: Vec<&str> = trimmed.split(|c: char| c == 'x' || c == 'X' || c == ',').collect();
+    let parts: Vec<&str> = trimmed.split(['x', 'X', ',']).collect();
     if parts.len() != 2 {
         tracing::warn!(
             "[browser] SIRIN_DEFAULT_VIEWPORT='{raw}' not in WxH form; using {DEFAULT_W}x{DEFAULT_H}"
@@ -1105,7 +1105,7 @@ fn looks_like_css_selector(s: &str) -> bool {
         return true;
     }
     // If it contains non-ASCII characters it is almost certainly text content, not CSS
-    if s.chars().any(|c| !c.is_ascii()) {
+    if !s.is_ascii() {
         return false;
     }
     // All-ASCII: treat as CSS (tag name, class combo, attribute, etc.)
@@ -1999,7 +1999,7 @@ pub fn shadow_type(role: Option<&str>, name_regex: Option<&str>, text: &str) -> 
 /// and let Flutter create its `flt-text-editing` input; wait ~300 ms before calling
 /// this function.
 pub fn flutter_type(text: &str) -> Result<(), String> {
-    let has_non_ascii = text.chars().any(|c| !c.is_ascii());
+    let has_non_ascii = !text.is_ascii();
 
     // Clear existing content via JS — Ctrl+A + Delete does NOT work reliably in
     // Flutter Web because CDP Ctrl+A is processed as a literal 'a' character press.

@@ -652,12 +652,16 @@ async fn try_replay_script(
                             .and_then(|n| n.get("backend_id"))
                             .and_then(|b| b.as_u64())
                         {
-                            for j in (i + 1)..n {
-                                let fa = actions[j].get("action").and_then(Value::as_str).unwrap_or("");
-                                if matches!(fa, "ax_focus"|"ax_click"|"ax_value"|"ax_type"|"ax_type_verified") {
-                                    if actions[j].get("backend_id").is_some() {
-                                        actions[j]["backend_id"] = json!(bid);
-                                    }
+                            for action in actions[(i + 1)..n].iter_mut() {
+                                let is_target = action.get("action")
+                                    .and_then(Value::as_str)
+                                    .map(|fa| matches!(fa,
+                                        "ax_focus"|"ax_click"|"ax_value"|"ax_type"|"ax_type_verified"
+                                    ))
+                                    .unwrap_or(false)
+                                    && action.get("backend_id").is_some();
+                                if is_target {
+                                    action["backend_id"] = json!(bid);
                                 }
                             }
                         }
@@ -2451,9 +2455,9 @@ fn action_signature(action_input: &Value) -> String {
         .get("target")
         .or_else(|| action_input.get("role"))
         .or_else(|| action_input.get("backend_id"))
-        .and_then(|v| match v {
-            Value::String(s) => Some(s.clone()),
-            other            => Some(other.to_string()),
+        .map(|v| match v {
+            Value::String(s) => s.clone(),
+            other            => other.to_string(),
         })
         .unwrap_or_default();
     let tertiary = action_input
@@ -2530,9 +2534,7 @@ fn parse_plaintext_step(raw: &str) -> Option<ParsedStep> {
     let end = end_off?;
     let json_blob = &after_label[brace_start..=end];
     let action_input: Value = serde_json::from_str(json_blob).ok()?;
-    if action_input.get("action").and_then(Value::as_str).is_none() {
-        return None;
-    }
+    action_input.get("action").and_then(Value::as_str)?;
     Some(ParsedStep {
         thought: String::new(),
         action_input,

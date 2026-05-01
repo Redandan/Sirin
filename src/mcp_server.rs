@@ -2145,7 +2145,7 @@ fn call_list_flaky_tests(args: Value) -> Result<Value, String> {
 
     let all_stats = crate::test_runner::store::all_test_stats();
     let mut flaky: Vec<Value> = all_stats.iter()
-        .filter(|s| s.total_runs >= 3 && (s.pass_rate_7d as f64) < threshold)
+        .filter(|s| s.total_runs >= 3 && s.pass_rate_7d < threshold)
         .map(|s| json!({
             "test_id":              s.test_id,
             "pass_rate_7d":         s.pass_rate_7d,
@@ -2241,8 +2241,8 @@ async fn call_explain_failure(args: Value) -> Result<Value, String> {
          Root cause explanation:",
         run_id = run_id,
         status = status,
-        err = error_msg.as_deref().unwrap_or("(none)").to_string(),
-        ai = ai_analysis.as_deref().unwrap_or("(none)").to_string(),
+        err = error_msg.as_deref().unwrap_or("(none)"),
+        ai = ai_analysis.as_deref().unwrap_or("(none)"),
         hist = if history_summary.is_empty() { "  (not available)".to_string() } else { history_summary.clone() },
         console = console_section,
     );
@@ -2513,7 +2513,7 @@ fn call_suggest_allowlist(args: Value) -> Result<Value, String> {
                         .and_then(|i| i.get("command"))
                         .and_then(Value::as_str)
                         .unwrap_or("");
-                    let first = cmd.trim().split_whitespace().next().unwrap_or("?");
+                    let first = cmd.split_whitespace().next().unwrap_or("?");
                     // Strip path prefixes, keep executable name only.
                     let exe = first.rsplit(&['/', '\\']).next().unwrap_or(first);
                     // Remove characters that aren't alphanumeric, underscore, dot, or dash.
@@ -3485,7 +3485,7 @@ async fn call_kb_stats(args: Value) -> Result<Value, String> {
         } else if t == "by status:" { section = "status"; }
         else if t == "by layer:"  { section = "layer"; }
         else if t == "by domain:" { section = "domain"; }
-        else if !t.is_empty() && section != "" {
+        else if !t.is_empty() && !section.is_empty() {
             let parts: Vec<&str> = t.split_whitespace().collect();
             if parts.len() >= 2 {
                 let key = parts[0].to_string();
@@ -4801,8 +4801,8 @@ async fn call_browser_exec(args: Value, user_agent: &str) -> Result<Value, Strin
         // ── Sirin Companion extension probes (MCP-only, not in browser_exec) ──
         match action.as_str() {
             "ext_status" => {
-                return Ok(serde_json::to_value(crate::ext_server::status())
-                    .map_err(|e| format!("ext_status serialize: {e}"))?);
+                return serde_json::to_value(crate::ext_server::status())
+                    .map_err(|e| format!("ext_status serialize: {e}"));
             }
             "ext_url" => {
                 // Authoritative URL from extension; falls back to CDP cache.

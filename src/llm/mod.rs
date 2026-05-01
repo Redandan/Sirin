@@ -628,7 +628,7 @@ impl LlmMessage {
 /// Returns `true` when the error string indicates a 429 rate-limit response
 /// from the backends layer.  Used by call sites to decide whether to try
 /// the configured fallback provider.
-pub(crate) fn is_rate_limit_err(e: &Box<dyn std::error::Error + Send + Sync>) -> bool {
+pub(crate) fn is_rate_limit_err(e: &(dyn std::error::Error + Send + Sync)) -> bool {
     let s = e.to_string();
     s.contains("429") || s.contains("Too Many Requests") || s.contains("rate-limited: max retries")
 }
@@ -648,7 +648,7 @@ pub(crate) async fn call_openai_with_fallback(
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let result = call_openai(client, primary_url, primary_model, primary_key, prompt.clone()).await;
     if let Err(ref e) = result {
-        if is_rate_limit_err(e) {
+        if is_rate_limit_err(e.as_ref()) {
             if let Some(fb) = fallback {
                 crate::sirin_log!(
                     "[llm] 429 on primary ({}) — falling back to {}",
@@ -1106,32 +1106,32 @@ mod tests {
         // Standard HTTP error string from reqwest
         let e: Box<dyn std::error::Error + Send + Sync> =
             "HTTP status client error (429 Too Many Requests)".into();
-        assert!(super::is_rate_limit_err(&e), "should detect HTTP 429 status");
+        assert!(super::is_rate_limit_err(e.as_ref()), "should detect HTTP 429 status");
 
         // Our custom message from backends.rs after max retries
         let e: Box<dyn std::error::Error + Send + Sync> =
             "429 rate-limited: max retries exceeded for model=models/gemini-2.5-flash".into();
-        assert!(super::is_rate_limit_err(&e), "should detect custom rate-limit message");
+        assert!(super::is_rate_limit_err(e.as_ref()), "should detect custom rate-limit message");
 
         // Plain 429 substring
         let e: Box<dyn std::error::Error + Send + Sync> = "429".into();
-        assert!(super::is_rate_limit_err(&e), "should detect bare 429");
+        assert!(super::is_rate_limit_err(e.as_ref()), "should detect bare 429");
 
         // OpenAI error body
         let e: Box<dyn std::error::Error + Send + Sync> =
             "error: Too Many Requests, please slow down".into();
-        assert!(super::is_rate_limit_err(&e), "should detect Too Many Requests");
+        assert!(super::is_rate_limit_err(e.as_ref()), "should detect Too Many Requests");
 
         // Non-429 errors must NOT match
         let e: Box<dyn std::error::Error + Send + Sync> = "connection refused".into();
-        assert!(!super::is_rate_limit_err(&e), "connection refused is not 429");
+        assert!(!super::is_rate_limit_err(e.as_ref()), "connection refused is not 429");
 
         let e: Box<dyn std::error::Error + Send + Sync> =
             "HTTP status client error (401 Unauthorized)".into();
-        assert!(!super::is_rate_limit_err(&e), "401 is not 429");
+        assert!(!super::is_rate_limit_err(e.as_ref()), "401 is not 429");
 
         let e: Box<dyn std::error::Error + Send + Sync> = "timeout elapsed".into();
-        assert!(!super::is_rate_limit_err(&e), "timeout is not 429");
+        assert!(!super::is_rate_limit_err(e.as_ref()), "timeout is not 429");
     }
 
     // ── call_openai_with_fallback — mock server integration test ──────────────
