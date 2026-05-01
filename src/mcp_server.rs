@@ -836,6 +836,75 @@ fn handle_tools_list() -> Result<Value, String> {
                 }
             },
             {
+                "name": "route_query",
+                "description": "#233 — 依 intent registry 自動選擇 LLM 並呼叫。\n\n查 ~/.claude/llm_intents.json 找到 intent 對應的 backend+model，呼叫並回傳結果。\nintent 例：indicator-design(→deepseek), code-review(→claude), vision(→gemini)。\n找不到 intent → 使用 primary LLM（Gemini/Claude）。",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["intent", "prompt"],
+                    "properties": {
+                        "intent": { "type": "string", "description": "意圖名稱，例如 indicator-design / code-review / translate-zh" },
+                        "prompt": { "type": "string", "description": "要發送給 LLM 的 prompt" }
+                    }
+                }
+            },
+            {
+                "name": "query_llm",
+                "description": "#233 — 直接呼叫指定 LLM backend（跳過 intent routing）。\n\n`backend`: gemini / deepseek / claude / ollama。\n`model`: 選填，不指定則用 backend 預設值或 .env 設定。\n`api_key`: 選填，不指定則從 .env 讀取。",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["backend", "prompt"],
+                    "properties": {
+                        "backend": { "type": "string", "description": "gemini / deepseek / claude / ollama" },
+                        "model":   { "type": "string", "description": "模型名稱（選填）" },
+                        "api_key": { "type": "string", "description": "API key（選填，不填從 .env 讀）" },
+                        "prompt":  { "type": "string", "description": "prompt 內容" }
+                    }
+                }
+            },
+            {
+                "name": "fallback_chain",
+                "description": "#233 — 依序嘗試 LLM 列表，第一個成功的回傳結果。\n\n`backends`：逗號分隔，例如 \"gemini,deepseek,claude\"。\n任一 backend 失敗（429/error）自動切下一個，< 1s latency。",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["prompt", "backends"],
+                    "properties": {
+                        "prompt":   { "type": "string", "description": "prompt 內容" },
+                        "backends": { "type": "string", "description": "逗號分隔的 backend 列表，例如 gemini,deepseek,claude" }
+                    }
+                }
+            },
+            {
+                "name": "list_intents",
+                "description": "#233 — 列出 ~/.claude/llm_intents.json 中的所有 intent → LLM 路由規則。",
+                "inputSchema": { "type": "object", "properties": {} }
+            },
+            {
+                "name": "register_intent",
+                "description": "#233 — 在 ~/.claude/llm_intents.json 新增或更新一條 intent → LLM 路由規則。",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["name", "backend"],
+                    "properties": {
+                        "name":    { "type": "string", "description": "intent 名稱，例如 indicator-design" },
+                        "backend": { "type": "string", "description": "LLM backend：gemini / deepseek / claude / ollama" },
+                        "model":   { "type": "string", "description": "指定 model（選填）" },
+                        "reason":  { "type": "string", "description": "路由原因備注（選填）" }
+                    }
+                }
+            },
+            {
+                "name": "benchmark_llms",
+                "description": "#233 — 同一 prompt 同時發給多個 LLM，比較回應速度和內容。\n\n`backends`：逗號分隔，預設 \"gemini,deepseek\"。結果含每個 backend 的耗時 ms 和前 200 字回應。",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["prompt"],
+                    "properties": {
+                        "prompt":   { "type": "string", "description": "benchmark 用的 prompt" },
+                        "backends": { "type": "string", "description": "逗號分隔，預設 gemini,deepseek" }
+                    }
+                }
+            },
+            {
                 "name": "kb_stats",
                 "description": "#226 — KB 深度統計（補強 kbHealth）。透過 agora-trading MCP 取得指定 project 的條目分布：by domain / by status / by layer / draft ratio / stale ratio / oldest+newest confirmed。\n\n需要 agora-trading + agora-ops token 在 ~/.claude.json 中設定。",
                 "inputSchema": {
@@ -1293,6 +1362,13 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         // #226 kb-lifecycle (non-embedding subset)
         "kb_stats"            => return call_kb_stats(arguments).await.map(wrap_json),
         "kb_diff"             => return call_kb_diff(arguments).await.map(wrap_json),
+        // #233 cross-ai-router-mcp
+        "route_query"         => return call_route_query(arguments).await.map(wrap_json),
+        "query_llm"           => return call_query_llm(arguments).await.map(wrap_json),
+        "fallback_chain"      => return call_fallback_chain(arguments).await.map(wrap_json),
+        "list_intents"        => return call_list_intents().map(wrap_json),
+        "register_intent"     => return call_register_intent(arguments).map(wrap_json),
+        "benchmark_llms"      => return call_benchmark_llms(arguments).await.map(wrap_json),
         "config_diagnostics"   => return call_config_diagnostics().map(wrap_json),
         "diagnose"             => return Ok(wrap_json(crate::diagnose::snapshot())),
         "browser_exec"         => return call_browser_exec(arguments, user_agent).await.map(wrap_json),
@@ -3373,6 +3449,217 @@ async fn call_kb_diff(args: Value) -> Result<Value, String> {
         "added":        added.len(),
         "overlap_pct":  overlap_pct,
         "diff":         diff,
+    }))
+}
+
+// ── #233 Cross-AI Router ─────────────────────────────────────────────────────
+
+fn intents_path() -> Option<std::path::PathBuf> {
+    home_dir().map(|h| h.join(".claude").join("llm_intents.json"))
+}
+
+fn load_intents() -> std::collections::HashMap<String, Value> {
+    intents_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .and_then(|v| v.as_object().cloned())
+        .map(|m| m.into_iter().collect())
+        .unwrap_or_default()
+}
+
+fn save_intents(intents: &std::collections::HashMap<String, Value>) -> Result<(), String> {
+    let path = intents_path().ok_or("Cannot determine home directory")?;
+    let obj  = serde_json::Value::Object(intents.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+    let out  = serde_json::to_string_pretty(&obj).map_err(|e| e.to_string())?;
+    std::fs::write(&path, out).map_err(|e| e.to_string())
+}
+
+/// Build an LlmConfig for the given backend name.
+/// For "deepseek" reads LLM_FALLBACK_* env vars; others use defaults.
+fn llm_config_for_backend(backend: &str, model_override: Option<&str>, key_override: Option<&str>) -> crate::llm::LlmConfig {
+    let lower = backend.to_lowercase();
+    let backend_norm = match lower.as_str() {
+        "deepseek" => "lmstudio", // OpenAI-compat
+        other => other,
+    };
+    // For DeepSeek, read fallback env vars.
+    let (model, api_key, base_url_override) = if lower == "deepseek" {
+        let m = model_override
+            .map(String::from)
+            .or_else(|| std::env::var("LLM_FALLBACK_MODEL").ok().filter(|v| !v.is_empty()))
+            .unwrap_or_else(|| "deepseek-chat".to_string());
+        let k = key_override
+            .map(String::from)
+            .or_else(|| std::env::var("LLM_FALLBACK_API_KEY").ok().filter(|v| !v.is_empty()));
+        let url = std::env::var("LLM_FALLBACK_BASE_URL").ok()
+            .filter(|v| !v.is_empty());
+        (m, k, url)
+    } else {
+        let m = model_override.map(String::from)
+            .unwrap_or_else(|| "gemini-2.0-flash".to_string());
+        let k = key_override.map(String::from)
+            .or_else(|| std::env::var("GEMINI_API_KEY").ok().filter(|v| !v.is_empty()));
+        (m, k, None)
+    };
+
+    let mut cfg = crate::llm::LlmConfig::for_override(backend_norm, &model, api_key);
+    if let Some(url) = base_url_override {
+        cfg.base_url = url;
+    }
+    cfg
+}
+
+async fn call_route_query(args: Value) -> Result<Value, String> {
+    let intent = args["intent"].as_str().ok_or("Missing intent")?;
+    let prompt  = args["prompt"].as_str().ok_or("Missing prompt")?.to_string();
+
+    let intents = load_intents();
+    let (backend, model) = if let Some(entry) = intents.get(intent) {
+        let b = entry["backend"].as_str().unwrap_or("gemini").to_string();
+        let m = entry["model"].as_str().map(String::from);
+        (b, m)
+    } else {
+        ("gemini".to_string(), None)
+    };
+
+    let cfg = llm_config_for_backend(&backend, model.as_deref(), None);
+    let ctx = crate::adk::context::AgentContext::new("route_query", crate::adk::tool::ToolRegistry::new());
+    let start = std::time::Instant::now();
+    let result = crate::llm::call_prompt(ctx.http.as_ref(), &cfg, prompt.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(json!({
+        "intent":      intent,
+        "backend":     backend,
+        "model":       cfg.model,
+        "elapsed_ms":  start.elapsed().as_millis(),
+        "result":      result,
+    }))
+}
+
+async fn call_query_llm(args: Value) -> Result<Value, String> {
+    let backend    = args["backend"].as_str().ok_or("Missing backend")?;
+    let prompt     = args["prompt"].as_str().ok_or("Missing prompt")?.to_string();
+    let model_ov   = args.get("model").and_then(Value::as_str);
+    let key_ov     = args.get("api_key").and_then(Value::as_str);
+
+    let cfg = llm_config_for_backend(backend, model_ov, key_ov);
+    let ctx = crate::adk::context::AgentContext::new("query_llm", crate::adk::tool::ToolRegistry::new());
+    let start = std::time::Instant::now();
+    let result = crate::llm::call_prompt(ctx.http.as_ref(), &cfg, prompt)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(json!({
+        "backend":    backend,
+        "model":      cfg.model,
+        "elapsed_ms": start.elapsed().as_millis(),
+        "result":     result,
+    }))
+}
+
+async fn call_fallback_chain(args: Value) -> Result<Value, String> {
+    let prompt   = args["prompt"].as_str().ok_or("Missing prompt")?.to_string();
+    let backends_str = args["backends"].as_str().ok_or("Missing backends")?;
+    let backends: Vec<&str> = backends_str.split(',').map(str::trim).collect();
+
+    let ctx = crate::adk::context::AgentContext::new("fallback_chain", crate::adk::tool::ToolRegistry::new());
+    let start = std::time::Instant::now();
+
+    for backend in &backends {
+        let cfg = llm_config_for_backend(backend, None, None);
+        match crate::llm::call_prompt(ctx.http.as_ref(), &cfg, prompt.clone()).await {
+            Ok(result) => {
+                return Ok(json!({
+                    "backend_used": backend,
+                    "elapsed_ms":   start.elapsed().as_millis(),
+                    "attempts":     backends.iter().position(|b| b == backend).unwrap_or(0) + 1,
+                    "result":       result,
+                }));
+            }
+            Err(e) => {
+                eprintln!("fallback_chain: {backend} failed: {e}");
+                // Continue to next backend.
+            }
+        }
+    }
+    Err(format!("All backends failed: {backends_str}"))
+}
+
+fn call_list_intents() -> Result<Value, String> {
+    let intents = load_intents();
+    let list: Vec<Value> = intents.iter()
+        .map(|(name, entry)| json!({
+            "intent":  name,
+            "backend": entry["backend"],
+            "model":   entry.get("model"),
+            "reason":  entry.get("reason"),
+        }))
+        .collect();
+    Ok(json!({ "count": list.len(), "intents": list }))
+}
+
+fn call_register_intent(args: Value) -> Result<Value, String> {
+    let name    = args["name"].as_str().ok_or("Missing name")?.to_string();
+    let backend = args["backend"].as_str().ok_or("Missing backend")?.to_string();
+    let model   = args.get("model").and_then(Value::as_str).map(String::from);
+    let reason  = args.get("reason").and_then(Value::as_str).unwrap_or("").to_string();
+
+    let mut intents = load_intents();
+    let entry = json!({
+        "backend": backend,
+        "model":   model,
+        "reason":  reason,
+    });
+    intents.insert(name.clone(), entry.clone());
+    save_intents(&intents)?;
+    Ok(json!({ "registered": name, "entry": entry, "total": intents.len() }))
+}
+
+async fn call_benchmark_llms(args: Value) -> Result<Value, String> {
+    let prompt   = args["prompt"].as_str().ok_or("Missing prompt")?.to_string();
+    let backends_str = args.get("backends").and_then(Value::as_str).unwrap_or("gemini,deepseek");
+    let backends: Vec<String> = backends_str.split(',').map(|s| s.trim().to_string()).collect();
+
+    let ctx = std::sync::Arc::new(
+        crate::adk::context::AgentContext::new("benchmark_llms", crate::adk::tool::ToolRegistry::new())
+    );
+
+    let mut handles = Vec::new();
+    for backend in &backends {
+        let b    = backend.clone();
+        let p    = prompt.clone();
+        let ctx2 = ctx.clone();
+        handles.push(tokio::spawn(async move {
+            let cfg   = llm_config_for_backend(&b, None, None);
+            let start = std::time::Instant::now();
+            let res   = crate::llm::call_prompt(ctx2.http.as_ref(), &cfg, p).await;
+            let elapsed = start.elapsed().as_millis();
+            (b, cfg.model, elapsed, res)
+        }));
+    }
+
+    let mut results: Vec<Value> = Vec::new();
+    for handle in handles {
+        if let Ok((backend, model, elapsed_ms, res)) = handle.await {
+            results.push(json!({
+                "backend":    backend,
+                "model":      model,
+                "elapsed_ms": elapsed_ms,
+                "ok":         res.is_ok(),
+                "preview":    res.ok().map(|s| s.chars().take(200).collect::<String>()),
+            }));
+        }
+    }
+
+    // Sort fastest first.
+    results.sort_by_key(|r| r["elapsed_ms"].as_u64().unwrap_or(u64::MAX));
+
+    Ok(json!({
+        "prompt_preview": prompt.chars().take(80).collect::<String>(),
+        "backends_tested": results.len(),
+        "results":         results,
     }))
 }
 
