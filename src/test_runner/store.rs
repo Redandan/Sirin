@@ -1116,6 +1116,7 @@ mod tests {
             dispute_suspected_step: Some(2),
             dispute_suggested_fix: None,
             is_replay: false,
+            console_log: None,
         }).unwrap();
 
         // Verify the run_id lookup returns status "disputed" — that's what

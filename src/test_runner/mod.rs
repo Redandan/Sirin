@@ -1179,6 +1179,7 @@ mod persist_tests {
             record_timeline_gif: true,
             show_action_indicator: false,
         max_retries: 0,
+        fail_on_console_errors: false,
         viewport: None,
         };
         let run_id = runs::new_run(test_id);
@@ -1270,6 +1271,7 @@ mod persist_tests {
             record_timeline_gif: false,  // synthetic placeholder — never executes
             show_action_indicator: false,
         max_retries: 0,
+        fail_on_console_errors: false,
         viewport: None,
         });
         runs::set_phase(&run_id, runs::RunPhase::Running {
@@ -1358,6 +1360,7 @@ mod persist_tests {
             record_timeline_gif: true,
             show_action_indicator: false,
         max_retries: 0,
+        fail_on_console_errors: false,
         viewport: None,
         };
         // Insert directly into SQLite — simulates the row that

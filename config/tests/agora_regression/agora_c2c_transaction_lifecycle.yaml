@@ -53,7 +53,7 @@ goal: |
   【階段 2：賣家查看訂單並出貨】
   ════════════════════════════════════════
   23. clear_state
-  24. goto target="https://redandan.github.io/?__test_role=seller"（⚠️ goto 緊跟 clear_state）
+  24. goto target="https://redandan.github.io/?__test_role=seller"（⚠️ 角色切換後立即 goto）
   25. wait 5000（等 auto-login + seller 首頁載入）
   26. enable_a11y
   27. wait 2000
@@ -70,7 +70,7 @@ goal: |
   【階段 3：買家查看訂單狀態】
   ════════════════════════════════════════
   36. clear_state
-  37. goto target="https://redandan.github.io/?__test_role=buyer#/orders"（⚠️ goto 緊跟 clear_state）
+  37. goto target="https://redandan.github.io/?__test_role=buyer#/orders"（⚠️ 角色切換後立即 goto）
   38. wait 5000（等 auto-login + buyer 訂單頁載入）
   39. enable_a11y
   40. wait 2000
