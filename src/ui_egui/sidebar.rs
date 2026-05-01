@@ -161,27 +161,13 @@ fn draw_gear(painter: &egui::Painter, c: egui::Pos2, col: egui::Color32) {
 /// `expanded`=false → icon-only narrow strip (default, like the reference image).
 /// `expanded`=true  → labelled accordion mode.
 pub struct SidebarState {
-    pub expanded:       bool,
-    pub agents_open:    bool,
-    pub testing_open:   bool,
-    pub automation_open: bool,
-    pub ops_open:       bool,
-    pub system_open:    bool,
-    // legacy — kept for ensure_view_visible compat
-    pub tools_open:     bool,
+    pub expanded:    bool,
+    pub agents_open: bool,
 }
 
 impl Default for SidebarState {
     fn default() -> Self {
-        Self {
-            expanded:        false,
-            agents_open:     true,
-            testing_open:    true,
-            automation_open: false,
-            ops_open:        false,
-            system_open:     false,
-            tools_open:      false,
-        }
+        Self { expanded: false, agents_open: true }
     }
 }
 
@@ -189,14 +175,7 @@ impl SidebarState {
     fn ensure_view_visible(&mut self, view: &View) {
         match view {
             View::Workspace(_) => self.agents_open = true,
-            View::Settings | View::Log =>
-                self.system_open = true,
-            View::TestRuns | View::Coverage | View::BrowserMonitor =>
-                self.testing_open = true,
-            View::Team | View::McpPlayground =>
-                self.automation_open = true,
-            View::AiRouter | View::SessionTasks | View::CostKb =>
-                self.ops_open = true,
+            _ => {} // 4 flat nav items — always visible, no section to expand
         }
     }
 }
@@ -267,36 +246,11 @@ fn show_icon_nav(
     thin_strip(ui);
     ui.add_space(theme::SP_XS);
 
-    // ── TESTING ──────────────────────────────────────────────────────────
-    nav_icon(ui, Icon::Lines,   "Test Runs",  View::TestRuns,       view);
-    nav_icon(ui, Icon::Monitor, "Coverage",   View::Coverage,       view); // grid-like icon
-    nav_icon(ui, Icon::Globe,   "Browser",    View::BrowserMonitor, view);
-
-    ui.add_space(theme::SP_XS);
-    thin_strip(ui);
-    ui.add_space(theme::SP_XS);
-
-    // ── AUTOMATION ───────────────────────────────────────────────────────
-    nav_icon(ui, Icon::People,  "Dev Squad",      View::Team,          view);
-    nav_icon(ui, Icon::Gear,    "MCP Playground", View::McpPlayground, view);
-
-    ui.add_space(theme::SP_XS);
-    thin_strip(ui);
-    ui.add_space(theme::SP_XS);
-
-    // ── OPS ──────────────────────────────────────────────────────────────
-    // Reuse drawn icons — Glyph single ASCII chars for consistency.
-    nav_icon(ui, Icon::Glyph("A"), "AI Router",     View::AiRouter,     view);
-    nav_icon(ui, Icon::Glyph("T"), "Session/Tasks", View::SessionTasks, view);
-    nav_icon(ui, Icon::Glyph("$"), "Cost & KB",     View::CostKb,       view);
-
-    ui.add_space(theme::SP_XS);
-    thin_strip(ui);
-    ui.add_space(theme::SP_XS);
-
-    // ── SYSTEM ───────────────────────────────────────────────────────────
-    nav_icon(ui, Icon::Gear,        "Settings", View::Settings, view);
-    nav_icon(ui, Icon::Glyph("L"),  "Log",      View::Log,      view);
+    // ── 4 functional groups ───────────────────────────────────────────────
+    nav_icon(ui, Icon::Lines,  "Testing\n(Runs|Coverage|Browser)", View::Testing,    view);
+    nav_icon(ui, Icon::People, "Automation\n(Squad|MCP)",          View::Automation, view);
+    nav_icon(ui, Icon::Globe,  "OPS\n(AI|Tasks|Cost/KB)",          View::Ops,        view);
+    nav_icon(ui, Icon::Gear,   "System\n(Settings|Log)",           View::System,     view);
 
     // ── Bottom: expand button + status dots ──────────────────────────
     ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
@@ -526,52 +480,11 @@ fn show_expanded(
     ui.add_space(theme::SP_SM);
     theme::thin_separator(ui);
 
-    // ── TESTING ──────────────────────────────────────────────────────────
-    if group_header(ui, "TESTING", state.testing_open) {
-        state.testing_open = !state.testing_open;
-    }
-    if state.testing_open {
-        nav_item(ui, "Test Runs",    View::TestRuns,       view);
-        nav_item(ui, "Coverage",     View::Coverage,       view);
-        nav_item(ui, "Browser",      View::BrowserMonitor, view);
-    }
-
-    ui.add_space(theme::SP_XS);
-    theme::thin_separator(ui);
-
-    // ── AUTOMATION ───────────────────────────────────────────────────────
-    if group_header(ui, "AUTOMATION", state.automation_open) {
-        state.automation_open = !state.automation_open;
-    }
-    if state.automation_open {
-        nav_item(ui, "Dev Squad",      View::Team,          view);
-        nav_item(ui, "MCP Playground", View::McpPlayground, view);
-    }
-
-    ui.add_space(theme::SP_XS);
-    theme::thin_separator(ui);
-
-    // ── OPS ──────────────────────────────────────────────────────────────
-    if group_header(ui, "OPS", state.ops_open) {
-        state.ops_open = !state.ops_open;
-    }
-    if state.ops_open {
-        nav_item(ui, "AI Router",        View::AiRouter,     view);
-        nav_item(ui, "Session & Tasks",  View::SessionTasks, view);
-        nav_item(ui, "Cost & KB",        View::CostKb,       view);
-    }
-
-    ui.add_space(theme::SP_XS);
-    theme::thin_separator(ui);
-
-    // ── SYSTEM ───────────────────────────────────────────────────────────
-    if group_header(ui, "SYSTEM", state.system_open) {
-        state.system_open = !state.system_open;
-    }
-    if state.system_open {
-        nav_item(ui, "Settings", View::Settings, view);
-        nav_item(ui, "Log",      View::Log,      view);
-    }
+    // ── 4 unified sections ────────────────────────────────────────────────
+    nav_item(ui, "Testing",    View::Testing,    view);
+    nav_item(ui, "Automation", View::Automation, view);
+    nav_item(ui, "OPS",        View::Ops,        view);
+    nav_item(ui, "System",     View::System,     view);
 
     ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
         ui.add_space(theme::SP_SM);

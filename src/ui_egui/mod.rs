@@ -14,6 +14,9 @@ mod coverage_panel;
 mod browser_monitor;
 mod mcp_playground;
 mod ops_panel;
+mod testing_panel;
+mod automation_panel;
+mod system_panel;
 
 use std::sync::Arc;
 use std::collections::VecDeque;
@@ -27,20 +30,10 @@ use crate::ui_service::*;
 #[derive(PartialEq, Clone)]
 enum View {
     Workspace(usize),
-    // TESTING
-    TestRuns,
-    Coverage,
-    BrowserMonitor,
-    // AUTOMATION
-    Team,
-    McpPlayground,
-    // OPS
-    AiRouter,
-    SessionTasks,
-    CostKb,
-    // SYSTEM
-    Settings,
-    Log,
+    Testing,      // Runs | Coverage | Browser  (tab bar inside)
+    Automation,   // Dev Squad | MCP            (tab bar inside)
+    Ops,          // AI Router | Tasks | Cost   (tab bar inside)
+    System,       // Settings | Log             (tab bar inside)
 }
 
 // ── Toast ────────────────────────────────────────────────────────────────────
@@ -70,17 +63,13 @@ pub struct SirinApp {
     // Sidebar rename state (replaces unsafe static mut)
     renaming: Option<(usize, String)>,
 
-    sidebar_state: sidebar::SidebarState,
-    log_state: log_view::LogState,
-    workspace_state: workspace::WorkspaceState,
-    settings_state: settings::SettingsState,
-    team_state: team_panel::TeamPanelState,
-    test_dash_state: test_dashboard::TestDashState,
-    // New panels (v0.4.7 UI redesign)
-    coverage_state:     coverage_panel::CoveragePanelState,
-    browser_mon_state:  browser_monitor::BrowserMonitorState,
-    mcp_play_state:     mcp_playground::McpPlaygroundState,
-    ops_state:          ops_panel::OpsPanelState,
+    sidebar_state:    sidebar::SidebarState,
+    workspace_state:  workspace::WorkspaceState,
+    // Consolidated panels (v0.4.7)
+    testing_state:    testing_panel::TestingPanelState,
+    automation_state: automation_panel::AutomationPanelState,
+    ops_state:        ops_panel::OpsPanelState,
+    system_state:     system_panel::SystemPanelState,
 
     /// Dismissed once per session so the banner doesn't reappear after dismiss
     update_banner_dismissed: bool,
@@ -103,14 +92,12 @@ impl SirinApp {
             last_refresh: std::time::Instant::now() - std::time::Duration::from_secs(60),
             toasts: VecDeque::new(),
             renaming: None,
-            sidebar_state: Default::default(),
-            log_state: Default::default(), workspace_state: Default::default(),
-            settings_state: Default::default(), team_state: Default::default(),
-            test_dash_state: Default::default(),
-            coverage_state:    Default::default(),
-            browser_mon_state: Default::default(),
-            mcp_play_state:    Default::default(),
-            ops_state:         Default::default(),
+            sidebar_state:    Default::default(),
+            workspace_state:  Default::default(),
+            testing_state:    Default::default(),
+            automation_state: Default::default(),
+            ops_state:        Default::default(),
+            system_state:     Default::default(),
             update_banner_dismissed: false,
             prev_view: View::Workspace(0),
             // Far in the past so initial frame doesn't show a spurious loading.
@@ -132,8 +119,8 @@ impl eframe::App for SirinApp {
         if self.last_refresh.elapsed() > std::time::Duration::from_secs(5) { self.refresh(); }
         ctx.request_repaint_after(std::time::Duration::from_secs(5));
 
-        // Deactivate screenshot pump when BrowserMonitor view is not open
-        if !matches!(self.view, View::BrowserMonitor) {
+        // Deactivate screenshot pump when Testing panel is not on Browser tab
+        if !matches!(self.view, View::Testing) {
             if let Some(ms) = crate::monitor::state() {
                 ms.set_view_active(false);
             }
@@ -171,26 +158,10 @@ impl eframe::App for SirinApp {
                 } else {
                     match self.view.clone() {
                         View::Workspace(idx) => workspace::show(ui, &self.svc, &self.agents, idx, &self.tasks, &self.pending_counts, &mut self.workspace_state),
-                        // TESTING
-                        View::TestRuns      => test_dashboard::show(ui, &self.svc, &mut self.test_dash_state),
-                        View::Coverage      => coverage_panel::show(ui, &self.svc, &mut self.coverage_state),
-                        View::BrowserMonitor => browser_monitor::show(ui, &self.svc, &mut self.browser_mon_state),
-                        // AUTOMATION
-                        View::Team          => team_panel::show(ui, &self.svc, &mut self.team_state),
-                        View::McpPlayground => mcp_playground::show(ui, &self.svc, &mut self.mcp_play_state),
-                        // OPS
-                        View::AiRouter | View::SessionTasks | View::CostKb => {
-                            // Sync tab before rendering.
-                            self.ops_state.tab = match self.view {
-                                View::AiRouter      => ops_panel::OpsTab::AiRouter,
-                                View::SessionTasks  => ops_panel::OpsTab::SessionTasks,
-                                _                   => ops_panel::OpsTab::CostKb,
-                            };
-                            ops_panel::show(ui, &self.svc, &mut self.ops_state);
-                        }
-                        // SYSTEM
-                        View::Settings => settings::show(ui, &self.svc, &self.agents, &mut self.settings_state),
-                        View::Log      => log_view::show(ui, &self.svc, &mut self.log_state),
+                        View::Testing    => testing_panel::show(ui, &self.svc, &mut self.testing_state),
+                        View::Automation => automation_panel::show(ui, &self.svc, &mut self.automation_state),
+                        View::Ops        => ops_panel::show(ui, &self.svc, &mut self.ops_state),
+                        View::System     => system_panel::show(ui, &self.svc, &self.agents, &mut self.system_state),
                     }
                 }
             });
