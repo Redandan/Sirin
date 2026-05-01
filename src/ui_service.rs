@@ -471,7 +471,28 @@ pub struct CoverageGroupView {
     pub features: Vec<CoverageFeatureView>,
 }
 
+/// Status of the auto-discovery crawler (separate process that scans the
+/// running app for widgets/routes and writes them to a SQLite inventory).
+/// Commit 2 ships with `NotRun` — the real crawler lands in a follow-up PR.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DiscoveryStatus {
+    /// Discovery has never been run — UI shows "未實作 (mock)" label.
+    NotRun,
+    /// Crawler is currently running.
+    #[allow(dead_code)]
+    Crawling { started_at: String },
+    /// Last finished run timestamp (RFC-3339) and total widgets found.
+    #[allow(dead_code)]
+    Done { at: String, total_widgets: u32 },
+}
+
 /// Top-level coverage snapshot for the whole product.
+///
+/// 3-tier funnel:
+///   1. **discovered** — features Sirin's auto-crawler found (≥ total_features)
+///   2. **covered**    — alias of `total_covered`; features with at least one test_id
+///   3. **scripted**   — covered features whose tests have graduated from LLM
+///                       decision-making to deterministic replay scripts
 #[derive(Debug, Clone, PartialEq)]
 pub struct CoverageData {
     pub product:        String,
@@ -479,6 +500,12 @@ pub struct CoverageData {
     pub total_covered:  usize,
     pub total_features: usize,
     pub groups:         Vec<CoverageGroupView>,
+    /// Auto-discovery total — for the scaffold, equals total_features (mock).
+    pub discovered:     usize,
+    /// Covered features whose tests are deterministic scripts (no-LLM replay).
+    /// Heuristic in commit 2: counts features with status == "confirmed".
+    pub scripted:       usize,
+    pub discovery_status: DiscoveryStatus,
 }
 
 /// Test runner data for the Test Dashboard panel — recent history + active runs.

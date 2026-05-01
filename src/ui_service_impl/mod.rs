@@ -311,6 +311,7 @@ impl TestRunnerService for RealService {
 
         let mut total_covered  = 0usize;
         let mut total_features = 0usize;
+        let mut total_scripted = 0usize;
         let mut groups = Vec::new();
 
         for g in groups_raw {
@@ -339,6 +340,13 @@ impl TestRunnerService for RealService {
 
                 if status != "missing" && !test_ids.is_empty() {
                     covered_count += 1;
+                    // Scaffold heuristic: "confirmed" = stable enough that the
+                    // test can be promoted to a deterministic replay script.
+                    // Real implementation will check per-test replay_mode in
+                    // the run history (see plan §Coverage 3-Tier Model).
+                    if status == "confirmed" {
+                        total_scripted += 1;
+                    }
                 }
                 features.push(CoverageFeatureView { id: fid, name: fname, status, test_ids });
             }
@@ -354,7 +362,17 @@ impl TestRunnerService for RealService {
             });
         }
 
-        Ok(CoverageData { product, version, total_covered, total_features, groups })
+        // Discovery layer: until the auto-crawler ships, mock as
+        // discovered == total_features (every feature in YAML is "known").
+        let discovered = total_features;
+
+        Ok(CoverageData {
+            product, version,
+            total_covered, total_features, groups,
+            discovered,
+            scripted: total_scripted,
+            discovery_status: crate::ui_service::DiscoveryStatus::NotRun,
+        })
     }
 }
 
