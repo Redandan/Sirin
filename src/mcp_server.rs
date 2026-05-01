@@ -587,6 +587,32 @@ fn handle_tools_list() -> Result<Value, String> {
                 }
             },
             {
+                "name": "replay_last_failure",
+                "description": "讀取某個測試最近一次失敗 run 的逐步執行記錄（step-by-step inspection）。\n\n不重新執行測試 — 直接從 SQLite history_json 取出每一個 action 和 LLM observation，讓你像翻日誌一樣審查失敗過程。\n\n`break_at` 可限制只看前 N 步，適合定位哪一步開始出錯。",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["test_id"],
+                    "properties": {
+                        "test_id":  { "type": "string", "description": "YAML test_id，例如 agora_cart_add_remove" },
+                        "break_at": { "type": "number",  "description": "只返回前 N 步，0=全部（預設）" }
+                    }
+                }
+            },
+            {
+                "name": "shadow_dump_diff",
+                "description": "對比一次失敗 run 中第 A 步和第 B 步的 LLM observation（AX tree 快照）。以行為單位的 unified diff 格式輸出，方便定位 ExpansionTile 動畫、tab 切換等 UI 狀態變化。",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["test_id", "step_a", "step_b"],
+                    "properties": {
+                        "test_id": { "type": "string", "description": "YAML test_id" },
+                        "step_a":  { "type": "number",  "description": "第一個步驟編號（1-based）" },
+                        "step_b":  { "type": "number",  "description": "第二個步驟編號（1-based）" },
+                        "run_id":  { "type": "string",  "description": "指定 run_id（選填，預設用最新失敗 run）" }
+                    }
+                }
+            },
+            {
                 "name": "explain_failure",
                 "description": "用 LLM 解釋某次測試失敗的根因。整合截圖分析、console errors、歷史步驟、AI analysis，產生人類可讀的診斷報告。\n\n適合 debug 時快速理解失敗原因，不需要手動翻 history_json。",
                 "inputSchema": {
@@ -605,6 +631,172 @@ fn handle_tools_list() -> Result<Value, String> {
                     "properties": {
                         "test_id": { "type": "string", "description": "選填" },
                         "limit":   { "type": "number", "description": "預設 20" }
+                    }
+                }
+            },
+            {
+                "name": "suggest_allowlist",
+                "description": "#229 — 掃描 ~/.claude/projects/**/*.jsonl 找出高頻 tool-call pattern，建議加到 Claude Code allowlist。\n\n`threshold`：同一 pattern 出現 N 次以上才建議（預設 2）。\n`sessions`：掃最近 N 個 session（預設 10）。\n`project_key`：限制掃指定 project 目錄名稱（例如 C--Users-Redan-IdeaProjects-Sirin），不指定則掃全部。\n\n回傳結果排除已在 allow list 中的 pattern，只顯示新增建議。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "threshold":   { "type": "number", "description": "出現次數閾值，預設 2" },
+                        "sessions":    { "type": "number", "description": "掃最近 N 個 session，預設 10" },
+                        "project_key": { "type": "string", "description": "限定 project 目錄名稱（可選）" }
+                    }
+                }
+            },
+            {
+                "name": "list_redundant_allow",
+                "description": "#229 — 找出 ~/.claude/settings.json allowlist 中的冗餘項目。\n\n冗餘定義：如果 pattern A 的前綴已被 wildcard pattern B 涵蓋（例如 Bash(git commit:*) 已被 Bash(git:*) 涵蓋），則 A 是冗餘的。\n\n回傳建議刪除的列表。",
+                "inputSchema": { "type": "object", "properties": {} }
+            },
+            {
+                "name": "list_allowlist",
+                "description": "#225 — 列出 ~/.claude/settings.json permissions.allow 中所有項目。同時計算 Bash wildcard 和 exact 項目數量。",
+                "inputSchema": { "type": "object", "properties": {} }
+            },
+            {
+                "name": "add_allow",
+                "description": "#225 — 向 ~/.claude/settings.json permissions.allow 新增一條 pattern。\n\n原子寫入：讀取 → 修改 → 寫回（JSON 格式化，4-space indent）。重複 pattern 自動去重。",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["pattern"],
+                    "properties": {
+                        "pattern": { "type": "string", "description": "例如 Bash(cargo:*) 或 Read" }
+                    }
+                }
+            },
+            {
+                "name": "remove_allow",
+                "description": "#225 — 從 ~/.claude/settings.json permissions.allow 刪除指定 pattern（精確匹配）。",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["pattern"],
+                    "properties": {
+                        "pattern": { "type": "string", "description": "要刪除的 pattern（完整字串匹配）" }
+                    }
+                }
+            },
+            {
+                "name": "list_slash_commands",
+                "description": "#225 — 列出 ~/.claude/commands/*.md 中所有 slash commands（name + 前 3 行 description）。",
+                "inputSchema": { "type": "object", "properties": {} }
+            },
+            {
+                "name": "list_hooks",
+                "description": "#225 — 列出 ~/.claude/settings.json hooks 設定（event → command 清單）。",
+                "inputSchema": { "type": "object", "properties": {} }
+            },
+            {
+                "name": "save_point",
+                "description": "#227 — 在 ~/.claude/session_points.json 儲存一個進度記錄點（save point）。可在 session 內或跨 session 快速恢復上下文，比 handoff 更輕量。\n\nttl_days 預設 7 天後自動過期。",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["label"],
+                    "properties": {
+                        "label":    { "type": "string", "description": "唯一識別名稱，例如 debug-issue-230" },
+                        "summary":  { "type": "string", "description": "進度摘要（自由文字）" },
+                        "ttl_days": { "type": "number", "description": "存活天數，預設 7" }
+                    }
+                }
+            },
+            {
+                "name": "list_points",
+                "description": "#227 — 列出所有未過期的 save points（最新在前）。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "label_contains": { "type": "string", "description": "過濾：label 包含此字串（選填）" }
+                    }
+                }
+            },
+            {
+                "name": "restore_point",
+                "description": "#227 — 讀取指定 save point 的 summary，用於恢復上下文。",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["label"],
+                    "properties": {
+                        "label": { "type": "string", "description": "要恢復的 save point label" }
+                    }
+                }
+            },
+            {
+                "name": "expire_points",
+                "description": "#227 — 清除 ~/.claude/session_points.json 中已過期的 save points（saved_at + ttl_days < now）。",
+                "inputSchema": { "type": "object", "properties": {} }
+            },
+            {
+                "name": "session_cost",
+                "description": "#232 — 解析 ~/.claude/projects/**/*.jsonl 計算指定 session（或最新 session）的 token 使用量和 API 費用估算。\n\n包含：input/output/cache tokens、USD 費用估算（用 Anthropic 公定價）、cache hit rate、最高成本 tool 排行。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id":  { "type": "string", "description": "JSONL 檔案名稱（不含 .jsonl），選填，預設最新" },
+                        "project_key": { "type": "string", "description": "限定 project 目錄，選填" }
+                    }
+                }
+            },
+            {
+                "name": "list_expensive_sessions",
+                "description": "#232 — 列出最貴的 N 個 sessions（依 USD 成本降序）。\n\n`top` 預設 10。`project_key` 可限定 project 目錄。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "top":         { "type": "number", "description": "回傳數量，預設 10" },
+                        "project_key": { "type": "string", "description": "限定 project 目錄，選填" }
+                    }
+                }
+            },
+            {
+                "name": "create_task",
+                "description": "#228 — 在 ~/.claude/tasks.json 建立一個 task 追蹤項目，取代 MEMORY.md 手動維護的 backlog。\n\n`priority`: P0=緊急 / P1=重要 / P2=一般。回傳 task_id（格式 T-YYYYMMDD-NNNN）。",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["project", "description"],
+                    "properties": {
+                        "project":     { "type": "string", "description": "project 識別碼，例如 sirin / agora-backend / flutter" },
+                        "description": { "type": "string", "description": "任務描述" },
+                        "priority":    { "type": "string", "description": "P0 / P1 / P2，預設 P1" },
+                        "kb_refs":     { "type": "string", "description": "相關 KB topicKey（逗號分隔，選填）" }
+                    }
+                }
+            },
+            {
+                "name": "list_tasks",
+                "description": "#228 — 列出 ~/.claude/tasks.json 中的 tasks（預設只列 open）。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "project":  { "type": "string",  "description": "過濾 project（選填）" },
+                        "status":   { "type": "string",  "description": "open / done / all，預設 open" },
+                        "priority": { "type": "string",  "description": "過濾 priority（P0/P1/P2，選填）" }
+                    }
+                }
+            },
+            {
+                "name": "mark_task_done",
+                "description": "#228 — 將 task 標為 done，附帶 resolution 說明。",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["task_id", "resolution"],
+                    "properties": {
+                        "task_id":    { "type": "string", "description": "T-YYYYMMDD-NNNN 格式的 task ID" },
+                        "resolution": { "type": "string", "description": "完成說明或 commit hash" }
+                    }
+                }
+            },
+            {
+                "name": "link_task",
+                "description": "#228 — 把 task 和 GitHub issue URL 或 KB topicKey 連結。",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["task_id"],
+                    "properties": {
+                        "task_id":     { "type": "string", "description": "T-YYYYMMDD-NNNN" },
+                        "github_url":  { "type": "string", "description": "GitHub issue URL（選填）" },
+                        "kb_topickey": { "type": "string", "description": "KB topicKey（選填）" }
                     }
                 }
             },
@@ -1006,12 +1198,35 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         "list_recent_runs"     => return call_list_recent_runs(arguments).map(wrap_json),
         "test_analytics"       => return call_test_analytics(arguments).map(wrap_json),
         "test_summary"         => return call_test_summary(arguments).map(wrap_json),
-        "list_flaky_tests"     => return call_list_flaky_tests(arguments).map(wrap_json),
-        "test_coverage"        => return call_test_coverage(arguments).map(wrap_json),
-        "explain_failure"      => return call_explain_failure(arguments).await.map(wrap_json),
+        "list_flaky_tests"        => return call_list_flaky_tests(arguments).map(wrap_json),
+        "test_coverage"           => return call_test_coverage(arguments).map(wrap_json),
+        "replay_last_failure"     => return call_replay_last_failure(arguments).map(wrap_json),
+        "shadow_dump_diff"        => return call_shadow_dump_diff(arguments).map(wrap_json),
+        "explain_failure"         => return call_explain_failure(arguments).await.map(wrap_json),
         "list_saved_scripts"   => return call_list_saved_scripts().map(wrap_json),
         "delete_saved_script"  => return call_delete_saved_script(arguments).map(wrap_json),
         "list_fixes"           => return call_list_fixes(arguments).map(wrap_json),
+        "suggest_allowlist"    => return call_suggest_allowlist(arguments).map(wrap_json),
+        "list_redundant_allow" => return call_list_redundant_allow().map(wrap_json),
+        // #225 claude-config-mcp
+        "list_allowlist"       => return call_list_allowlist().map(wrap_json),
+        "add_allow"            => return call_add_allow(arguments).map(wrap_json),
+        "remove_allow"         => return call_remove_allow(arguments).map(wrap_json),
+        "list_slash_commands"  => return call_list_slash_commands().map(wrap_json),
+        "list_hooks"           => return call_list_hooks().map(wrap_json),
+        // #227 session-memory-mcp
+        "save_point"           => return call_save_point(arguments).map(wrap_json),
+        "list_points"          => return call_list_points(arguments).map(wrap_json),
+        "restore_point"        => return call_restore_point(arguments).map(wrap_json),
+        "expire_points"        => return call_expire_points().map(wrap_json),
+        // #232 session-cost-mcp
+        "session_cost"            => return call_session_cost(arguments).map(wrap_json),
+        "list_expensive_sessions" => return call_list_expensive_sessions(arguments).map(wrap_json),
+        // #228 task-tracker-mcp
+        "create_task"    => return call_create_task(arguments).map(wrap_json),
+        "list_tasks"     => return call_list_tasks(arguments).map(wrap_json),
+        "mark_task_done" => return call_mark_task_done(arguments).map(wrap_json),
+        "link_task"      => return call_link_task(arguments).map(wrap_json),
         "config_diagnostics"   => return call_config_diagnostics().map(wrap_json),
         "diagnose"             => return Ok(wrap_json(crate::diagnose::snapshot())),
         "browser_exec"         => return call_browser_exec(arguments, user_agent).await.map(wrap_json),
@@ -1366,6 +1581,14 @@ fn call_get_test_result(args: Value) -> Result<Value, String> {
     }
 
     Ok(result)
+}
+
+/// Portable home directory — USERPROFILE on Windows, HOME on Unix.
+fn home_dir() -> Option<std::path::PathBuf> {
+    std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .ok()
+        .map(std::path::PathBuf::from)
 }
 
 /// Parse a console_log JSON string (array of {level, text}) and return
@@ -1855,6 +2078,139 @@ async fn call_explain_failure(args: Value) -> Result<Value, String> {
     }))
 }
 
+/// #230 — replayLastFailure: step-by-step inspection of the last failed run.
+fn call_replay_last_failure(args: Value) -> Result<Value, String> {
+    let test_id  = args["test_id"].as_str().ok_or("Missing test_id")?;
+    let break_at = args.get("break_at").and_then(Value::as_u64).unwrap_or(0) as usize;
+
+    let row = crate::test_runner::store::last_failed_run(test_id)
+        .ok_or_else(|| format!("No failed run found for test_id={test_id}"))?;
+
+    let (run_id, started_at, duration_ms, failure_category, ai_analysis,
+         iterations, history_json, console_log) = row;
+
+    // Parse steps from history_json.
+    let steps_raw: Vec<Value> = history_json
+        .as_deref()
+        .and_then(|h| serde_json::from_str::<Value>(h).ok())
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default();
+
+    let steps_total = steps_raw.len();
+    let steps_shown: Vec<Value> = steps_raw
+        .into_iter()
+        .enumerate()
+        .take(if break_at == 0 { usize::MAX } else { break_at })
+        .map(|(i, s)| {
+            let action  = s.get("action").and_then(Value::as_str).unwrap_or("?").to_string();
+            let args_v  = s.get("args").cloned().unwrap_or(Value::Null);
+            let result  = s.get("result").and_then(Value::as_str).unwrap_or("").to_string();
+            let obs     = s.get("observation").and_then(Value::as_str).unwrap_or("").to_string();
+            json!({
+                "step":        i + 1,
+                "action":      action,
+                "args":        args_v,
+                "result":      result,
+                "observation": obs,
+            })
+        })
+        .collect();
+
+    let console_errors = console_log.as_deref().map(parse_console_counts).map(|(e,_)| e).unwrap_or(0);
+
+    Ok(json!({
+        "test_id":          test_id,
+        "run_id":           run_id,
+        "started_at":       started_at,
+        "duration_ms":      duration_ms,
+        "failure_category": failure_category,
+        "iterations":       iterations,
+        "console_errors":   console_errors,
+        "ai_analysis":      ai_analysis,
+        "steps_total":      steps_total,
+        "steps_shown":      steps_shown.len(),
+        "steps":            steps_shown,
+    }))
+}
+
+/// #230 — shadowDumpDiff: unified diff of LLM observations at step A vs step B.
+fn call_shadow_dump_diff(args: Value) -> Result<Value, String> {
+    let test_id = args["test_id"].as_str().ok_or("Missing test_id")?;
+    let step_a  = args["step_a"].as_u64().ok_or("Missing step_a")? as usize;
+    let step_b  = args["step_b"].as_u64().ok_or("Missing step_b")? as usize;
+    let run_id_override = args.get("run_id").and_then(Value::as_str);
+
+    // Get history_json from the specified run or latest failed run.
+    let history_json: Option<String> = if let Some(rid) = run_id_override {
+        crate::test_runner::store::find_history_by_run_id(rid)
+            .and_then(|(_, _, _, hj)| hj)
+    } else {
+        crate::test_runner::store::last_failed_run(test_id)
+            .and_then(|(_, _, _, _, _, _, hj, _)| hj)
+    };
+
+    let steps_raw: Vec<Value> = history_json
+        .as_deref()
+        .and_then(|h| serde_json::from_str::<Value>(h).ok())
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default();
+
+    let steps_total = steps_raw.len();
+
+    // Helper to extract observation at a 1-based step index.
+    let get_obs = |n: usize| -> Result<String, String> {
+        if n == 0 || n > steps_total {
+            return Err(format!(
+                "step {n} out of range (run has {steps_total} steps)"
+            ));
+        }
+        Ok(steps_raw[n - 1]
+            .get("observation")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string())
+    };
+
+    let obs_a = get_obs(step_a)?;
+    let obs_b = get_obs(step_b)?;
+
+    // Simple line-level unified diff (no external crate needed).
+    let lines_a: Vec<&str> = obs_a.lines().collect();
+    let lines_b: Vec<&str> = obs_b.lines().collect();
+
+    let removed: Vec<String> = lines_a.iter()
+        .filter(|l| !lines_b.contains(l))
+        .map(|l| format!("- {l}"))
+        .collect();
+    let added: Vec<String> = lines_b.iter()
+        .filter(|l| !lines_a.contains(l))
+        .map(|l| format!("+ {l}"))
+        .collect();
+    let unchanged_count = lines_a.iter().filter(|l| lines_b.contains(l)).count();
+
+    let diff = if removed.is_empty() && added.is_empty() {
+        "  (no differences in observation text)".to_string()
+    } else {
+        format!("{}\n{}", removed.join("\n"), added.join("\n"))
+    };
+
+    let action_a = steps_raw[step_a - 1].get("action").and_then(Value::as_str).unwrap_or("?");
+    let action_b = steps_raw[step_b - 1].get("action").and_then(Value::as_str).unwrap_or("?");
+
+    Ok(json!({
+        "test_id":         test_id,
+        "steps_total":     steps_total,
+        "step_a": { "n": step_a, "action": action_a, "lines": lines_a.len() },
+        "step_b": { "n": step_b, "action": action_b, "lines": lines_b.len() },
+        "unchanged_lines": unchanged_count,
+        "removed_lines":   removed.len(),
+        "added_lines":     added.len(),
+        "diff":            diff,
+        "obs_a":           obs_a,
+        "obs_b":           obs_b,
+    }))
+}
+
 fn call_test_analytics(args: Value) -> Result<Value, String> {
     let test_id = args.get("test_id").and_then(Value::as_str);
     let stats = match test_id {
@@ -1887,6 +2243,687 @@ fn call_test_analytics(args: Value) -> Result<Value, String> {
             "avg_pass_rate": avg_pass_rate,
         }
     }))
+}
+
+// ── #229 Permission Allowlist ─────────────────────────────────────────────────
+
+/// Scan ~/.claude/projects/**/*.jsonl and suggest allowlist patterns.
+fn call_suggest_allowlist(args: Value) -> Result<Value, String> {
+    use std::collections::HashMap;
+
+    let threshold   = args.get("threshold").and_then(Value::as_u64).unwrap_or(2) as usize;
+    let sessions    = args.get("sessions").and_then(Value::as_u64).unwrap_or(10) as usize;
+    let proj_filter = args.get("project_key").and_then(Value::as_str).map(String::from);
+
+    // Locate ~/.claude/projects
+    let home = home_dir().ok_or("Cannot determine home directory")?;
+    let projects_dir = home.join(".claude").join("projects");
+    if !projects_dir.exists() {
+        return Err(format!("Projects dir not found: {projects_dir:?}"));
+    }
+
+    // Collect all JSONL files across project dirs.
+    let mut jsonl_files: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&projects_dir) {
+        for entry in entries.flatten() {
+            let dir = entry.path();
+            if !dir.is_dir() { continue; }
+            if let Some(ref key) = proj_filter {
+                let dir_name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if !dir_name.contains(key.as_str()) { continue; }
+            }
+            // Flat JSONL files directly inside each project dir.
+            if let Ok(files) = std::fs::read_dir(&dir) {
+                for f in files.flatten() {
+                    let p = f.path();
+                    if p.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                        jsonl_files.push(p);
+                    }
+                }
+            }
+        }
+    }
+
+    // Sort by modification time, newest first; take last N sessions.
+    jsonl_files.sort_by(|a, b| {
+        let mt_a = a.metadata().and_then(|m| m.modified()).ok();
+        let mt_b = b.metadata().and_then(|m| m.modified()).ok();
+        mt_b.cmp(&mt_a)
+    });
+    jsonl_files.truncate(sessions);
+
+    // Read current allowlist from settings.json.
+    let settings_path = home.join(".claude").join("settings.json");
+    let existing_allow: std::collections::HashSet<String> = std::fs::read_to_string(&settings_path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .and_then(|v| v["permissions"]["allow"].as_array().cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|v| v.as_str().map(String::from))
+        .collect();
+
+    // Count tool-call patterns across scanned files.
+    let mut counter: HashMap<String, usize> = HashMap::new();
+    let mut files_scanned = 0usize;
+
+    for fpath in &jsonl_files {
+        let content = match std::fs::read_to_string(fpath) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        files_scanned += 1;
+        for line in content.lines() {
+            let Ok(obj) = serde_json::from_str::<Value>(line) else { continue };
+            let msg = obj.get("message").unwrap_or(&obj);
+            let content_arr = msg.get("content").and_then(Value::as_array);
+            let Some(arr) = content_arr else { continue };
+            for item in arr {
+                let Some(typ) = item.get("type").and_then(Value::as_str) else { continue };
+                if typ != "tool_use" { continue; }
+                let name = item.get("name").and_then(Value::as_str).unwrap_or("?");
+                let pattern = if name == "Bash" {
+                    let cmd = item.get("input")
+                        .and_then(|i| i.get("command"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let first = cmd.trim().split_whitespace().next().unwrap_or("?");
+                    // Strip path prefixes, keep executable name only.
+                    let exe = first.rsplit(&['/', '\\']).next().unwrap_or(first);
+                    // Remove characters that aren't alphanumeric, underscore, dot, or dash.
+                    let exe: String = exe.chars()
+                        .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '.' || *c == '-')
+                        .collect();
+                    if exe.is_empty() { "Bash(?:*)".to_string() }
+                    else { format!("Bash({exe}:*)") }
+                } else {
+                    name.to_string()
+                };
+                *counter.entry(pattern).or_insert(0) += 1;
+            }
+        }
+    }
+
+    // Build suggestions: high-frequency AND not already in allowlist.
+    let mut suggestions: Vec<Value> = counter.iter()
+        .filter(|(pat, &cnt)| cnt >= threshold && !existing_allow.contains(*pat))
+        .map(|(pat, &cnt)| json!({ "pattern": pat, "frequency": cnt }))
+        .collect();
+    suggestions.sort_by(|a, b| {
+        b["frequency"].as_u64().cmp(&a["frequency"].as_u64())
+    });
+
+    Ok(json!({
+        "files_scanned":  files_scanned,
+        "sessions_limit": sessions,
+        "threshold":      threshold,
+        "new_suggestions": suggestions.len(),
+        "suggestions":    suggestions,
+    }))
+}
+
+/// List redundant entries in ~/.claude/settings.json allowlist.
+/// A pattern is redundant if it is strictly covered by another wildcard pattern
+/// already in the list (e.g. `Bash(git log:*)` is redundant when `Bash(git:*)` exists).
+fn call_list_redundant_allow() -> Result<Value, String> {
+    let home = home_dir().ok_or("Cannot determine home directory")?;
+    let settings_path = home.join(".claude").join("settings.json");
+    let src = std::fs::read_to_string(&settings_path)
+        .map_err(|e| format!("Cannot read settings.json: {e}"))?;
+    let parsed: Value = serde_json::from_str(&src)
+        .map_err(|e| format!("Parse error: {e}"))?;
+    let allow: Vec<String> = parsed["permissions"]["allow"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .filter_map(|v| v.as_str().map(String::from))
+        .collect();
+
+    // Wildcards: patterns that end with :*)
+    let wildcards: Vec<&str> = allow.iter()
+        .filter(|p| p.ends_with(":*)"))
+        .map(String::as_str)
+        .collect();
+
+    // For each pattern, check if it's strictly covered by a wildcard.
+    let mut redundant: Vec<Value> = Vec::new();
+    for pat in &allow {
+        if !pat.ends_with(":*)") {
+            // Specific pattern — check if any wildcard covers it.
+            for wc in &wildcards {
+                // A pattern `Bash(git log:*)` is covered by `Bash(git:*)`
+                // if pat starts with wc_prefix where wc_prefix = wc without the trailing ":*)".
+                let wc_prefix = &wc[..wc.len() - 3]; // drop ":*)"
+                if pat.starts_with(wc_prefix) && pat != *wc {
+                    redundant.push(json!({
+                        "pattern":     pat,
+                        "covered_by":  wc,
+                        "suggestion":  "remove",
+                    }));
+                    break;
+                }
+            }
+            continue;
+        }
+        // Wildcard pattern — check if another wildcard is a strict prefix.
+        for other_wc in &wildcards {
+            if *other_wc == pat.as_str() { continue; }
+            let other_prefix = &other_wc[..other_wc.len() - 3];
+            let self_prefix  = &pat[..pat.len() - 3];
+            if self_prefix.starts_with(other_prefix) && self_prefix != other_prefix {
+                redundant.push(json!({
+                    "pattern":    pat,
+                    "covered_by": other_wc,
+                    "suggestion": "remove",
+                }));
+                break;
+            }
+        }
+    }
+
+    Ok(json!({
+        "total_allow_entries": allow.len(),
+        "redundant_count":     redundant.len(),
+        "redundant":           redundant,
+    }))
+}
+
+// ── #225 Claude Config Management ────────────────────────────────────────────
+
+/// Read ~/.claude/settings.json, apply a mutating closure, write back atomically.
+fn mutate_settings<F>(f: F) -> Result<(), String>
+where
+    F: FnOnce(&mut Value) -> Result<(), String>,
+{
+    let home = home_dir().ok_or("Cannot determine home directory")?;
+    let path = home.join(".claude").join("settings.json");
+    let src  = std::fs::read_to_string(&path)
+        .map_err(|e| format!("Cannot read settings.json: {e}"))?;
+    let mut parsed: Value = serde_json::from_str(&src)
+        .map_err(|e| format!("Parse error: {e}"))?;
+    f(&mut parsed)?;
+    let out = serde_json::to_string_pretty(&parsed)
+        .map_err(|e| format!("Serialize error: {e}"))?;
+    std::fs::write(&path, out).map_err(|e| format!("Write error: {e}"))?;
+    Ok(())
+}
+
+fn call_list_allowlist() -> Result<Value, String> {
+    let home = home_dir().ok_or("Cannot determine home directory")?;
+    let path = home.join(".claude").join("settings.json");
+    let src  = std::fs::read_to_string(&path)
+        .map_err(|e| format!("Cannot read settings.json: {e}"))?;
+    let parsed: Value = serde_json::from_str(&src)
+        .map_err(|e| format!("Parse error: {e}"))?;
+    let allow: Vec<String> = parsed["permissions"]["allow"]
+        .as_array().unwrap_or(&vec![])
+        .iter().filter_map(|v| v.as_str().map(String::from)).collect();
+
+    let wildcard_count = allow.iter().filter(|p| p.ends_with(":*)")).count();
+    let exact_count    = allow.len() - wildcard_count;
+
+    Ok(json!({
+        "total":    allow.len(),
+        "wildcard": wildcard_count,
+        "exact":    exact_count,
+        "entries":  allow,
+    }))
+}
+
+fn call_add_allow(args: Value) -> Result<Value, String> {
+    let pattern = args["pattern"].as_str().ok_or("Missing pattern")?.to_string();
+    let mut already_existed = false;
+    mutate_settings(|v| {
+        let arr = v["permissions"]["allow"]
+            .as_array_mut()
+            .ok_or_else(|| "permissions.allow is not an array".to_string())?;
+        let pat_val = Value::String(pattern.clone());
+        if arr.contains(&pat_val) {
+            already_existed = true;
+        } else {
+            arr.push(pat_val);
+        }
+        Ok(())
+    })?;
+    Ok(json!({
+        "pattern":        pattern,
+        "added":          !already_existed,
+        "already_existed": already_existed,
+    }))
+}
+
+fn call_remove_allow(args: Value) -> Result<Value, String> {
+    let pattern = args["pattern"].as_str().ok_or("Missing pattern")?.to_string();
+    let mut removed = false;
+    mutate_settings(|v| {
+        let arr = v["permissions"]["allow"]
+            .as_array_mut()
+            .ok_or_else(|| "permissions.allow is not an array".to_string())?;
+        let before = arr.len();
+        arr.retain(|v| v.as_str() != Some(pattern.as_str()));
+        removed = arr.len() < before;
+        Ok(())
+    })?;
+    Ok(json!({ "pattern": pattern, "removed": removed }))
+}
+
+fn call_list_slash_commands() -> Result<Value, String> {
+    let home = home_dir().ok_or("Cannot determine home directory")?;
+    let cmd_dir = home.join(".claude").join("commands");
+    if !cmd_dir.exists() {
+        return Ok(json!({ "commands": [], "note": "~/.claude/commands/ not found" }));
+    }
+    let mut cmds: Vec<Value> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&cmd_dir) {
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("md") { continue; }
+            let name = p.file_stem().and_then(|s| s.to_str())
+                .unwrap_or("?").to_string();
+            let body = std::fs::read_to_string(&p).unwrap_or_default();
+            // Extract first non-empty line as description.
+            let desc = body.lines()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("")
+                .trim_start_matches('#')
+                .trim()
+                .to_string();
+            cmds.push(json!({ "name": name, "description": desc }));
+        }
+    }
+    cmds.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+    Ok(json!({ "count": cmds.len(), "commands": cmds }))
+}
+
+fn call_list_hooks() -> Result<Value, String> {
+    let home = home_dir().ok_or("Cannot determine home directory")?;
+    let path = home.join(".claude").join("settings.json");
+    let src  = std::fs::read_to_string(&path)
+        .map_err(|e| format!("Cannot read settings.json: {e}"))?;
+    let parsed: Value = serde_json::from_str(&src)
+        .map_err(|e| format!("Parse error: {e}"))?;
+    let hooks = parsed.get("hooks").cloned().unwrap_or(Value::Object(Default::default()));
+    Ok(json!({ "hooks": hooks }))
+}
+
+// ── #227 Session Memory (save points) ────────────────────────────────────────
+
+fn session_points_path() -> Option<std::path::PathBuf> {
+    home_dir().map(|h| h.join(".claude").join("session_points.json"))
+}
+
+fn load_points() -> Vec<Value> {
+    session_points_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default()
+}
+
+fn save_points(points: &[Value]) -> Result<(), String> {
+    let path = session_points_path().ok_or("Cannot determine home directory")?;
+    let out = serde_json::to_string_pretty(&Value::Array(points.to_vec()))
+        .map_err(|e| e.to_string())?;
+    std::fs::write(&path, out).map_err(|e| e.to_string())
+}
+
+fn call_save_point(args: Value) -> Result<Value, String> {
+    let label    = args["label"].as_str().ok_or("Missing label")?.to_string();
+    let summary  = args.get("summary").and_then(Value::as_str).unwrap_or("").to_string();
+    let ttl_days = args.get("ttl_days").and_then(Value::as_f64).unwrap_or(7.0) as u64;
+
+    let now = chrono::Local::now();
+    let saved_at  = now.to_rfc3339();
+    let expire_at = (now + chrono::Duration::days(ttl_days as i64)).to_rfc3339();
+
+    let mut points = load_points();
+    // Upsert by label.
+    let existing_idx = points.iter().position(|p| p["label"].as_str() == Some(&label));
+    let entry = json!({
+        "label":     label,
+        "summary":   summary,
+        "saved_at":  saved_at,
+        "expire_at": expire_at,
+        "ttl_days":  ttl_days,
+    });
+    if let Some(i) = existing_idx {
+        points[i] = entry.clone();
+    } else {
+        points.push(entry.clone());
+    }
+    save_points(&points)?;
+    Ok(json!({ "saved": entry, "total_points": points.len() }))
+}
+
+fn call_list_points(args: Value) -> Result<Value, String> {
+    let filter = args.get("label_contains").and_then(Value::as_str).map(String::from);
+    let now = chrono::Local::now().to_rfc3339();
+
+    let points = load_points();
+    let active: Vec<&Value> = points.iter()
+        .filter(|p| p["expire_at"].as_str().map(|e| e > now.as_str()).unwrap_or(true))
+        .filter(|p| {
+            if let Some(ref f) = filter {
+                p["label"].as_str().map(|l| l.contains(f.as_str())).unwrap_or(false)
+            } else {
+                true
+            }
+        })
+        .collect();
+
+    Ok(json!({
+        "count":  active.len(),
+        "points": active,
+    }))
+}
+
+fn call_restore_point(args: Value) -> Result<Value, String> {
+    let label = args["label"].as_str().ok_or("Missing label")?;
+    let points = load_points();
+    let point = points.iter()
+        .find(|p| p["label"].as_str() == Some(label))
+        .ok_or_else(|| format!("Save point '{label}' not found"))?;
+    Ok(point.clone())
+}
+
+fn call_expire_points() -> Result<Value, String> {
+    let now = chrono::Local::now().to_rfc3339();
+    let all = load_points();
+    let before = all.len();
+    let active: Vec<Value> = all.into_iter()
+        .filter(|p| p["expire_at"].as_str().map(|e| e > now.as_str()).unwrap_or(true))
+        .collect();
+    let removed = before - active.len();
+    save_points(&active)?;
+    Ok(json!({ "removed": removed, "remaining": active.len() }))
+}
+
+// ── #232 Session Cost Tracking ────────────────────────────────────────────────
+
+/// Anthropic model pricing (USD per million tokens, as of 2025-05).
+/// Format: (input_mtok, output_mtok, cache_write_mtok, cache_read_mtok)
+fn model_pricing(model: &str) -> (f64, f64, f64, f64) {
+    match model {
+        m if m.contains("opus")   => (15.0, 75.0, 18.75, 1.50),
+        m if m.contains("sonnet") => (3.0,  15.0,  3.75,  0.30),
+        m if m.contains("haiku")  => (0.25,  1.25,  0.30,  0.03),
+        _                         => (3.0,  15.0,  3.75,  0.30), // default sonnet
+    }
+}
+
+struct SessionTokens {
+    session_id: String,
+    input: u64,
+    output: u64,
+    cache_read: u64,
+    cache_write: u64,
+    total_messages: u64,
+    cost_usd: f64,
+}
+
+fn parse_session(path: &std::path::Path) -> Option<SessionTokens> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let session_id = path.file_stem()?.to_str()?.to_string();
+    let mut input = 0u64;
+    let mut output = 0u64;
+    let mut cache_read = 0u64;
+    let mut cache_write = 0u64;
+    let mut total_messages = 0u64;
+    let mut cost_usd = 0.0f64;
+
+    for line in content.lines() {
+        let Ok(obj) = serde_json::from_str::<Value>(line) else { continue };
+        let msg = obj.get("message").unwrap_or(&obj);
+        let Some(usage) = msg.get("usage") else { continue };
+        let model = msg.get("model").and_then(Value::as_str).unwrap_or("sonnet");
+        let (pi, po, pw, pr) = model_pricing(model);
+
+        let inp  = usage.get("input_tokens").and_then(Value::as_u64).unwrap_or(0);
+        let out  = usage.get("output_tokens").and_then(Value::as_u64).unwrap_or(0);
+        let cr   = usage.get("cache_read_input_tokens").and_then(Value::as_u64).unwrap_or(0);
+        let cw   = usage.get("cache_creation_input_tokens").and_then(Value::as_u64).unwrap_or(0);
+
+        input += inp; output += out; cache_read += cr; cache_write += cw;
+        total_messages += 1;
+
+        cost_usd += (inp as f64 / 1_000_000.0) * pi
+            + (out as f64 / 1_000_000.0) * po
+            + (cr  as f64 / 1_000_000.0) * pr
+            + (cw  as f64 / 1_000_000.0) * pw;
+    }
+
+    if total_messages == 0 { return None; }
+    Some(SessionTokens { session_id, input, output, cache_read, cache_write, total_messages, cost_usd })
+}
+
+fn collect_jsonl_files(project_key: Option<&str>) -> Vec<std::path::PathBuf> {
+    let home = match home_dir() { Some(h) => h, None => return Vec::new() };
+    let projects_dir = home.join(".claude").join("projects");
+    let mut files = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&projects_dir) {
+        for e in entries.flatten() {
+            let dir = e.path();
+            if !dir.is_dir() { continue; }
+            if let Some(key) = project_key {
+                let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if !name.contains(key) { continue; }
+            }
+            if let Ok(fents) = std::fs::read_dir(&dir) {
+                for f in fents.flatten() {
+                    let p = f.path();
+                    if p.extension().and_then(|x| x.to_str()) == Some("jsonl") {
+                        files.push(p);
+                    }
+                }
+            }
+        }
+    }
+    files
+}
+
+fn call_session_cost(args: Value) -> Result<Value, String> {
+    let session_id = args.get("session_id").and_then(Value::as_str).map(String::from);
+    let proj_key   = args.get("project_key").and_then(Value::as_str).map(String::from);
+
+    let files = collect_jsonl_files(proj_key.as_deref());
+    if files.is_empty() {
+        return Err("No JSONL files found in ~/.claude/projects".to_string());
+    }
+
+    let target_file: Option<std::path::PathBuf> = if let Some(ref sid) = session_id {
+        files.into_iter().find(|p| {
+            p.file_stem().and_then(|s| s.to_str()) == Some(sid.as_str())
+        })
+    } else {
+        // Latest file by modification time.
+        files.into_iter().max_by_key(|p| {
+            p.metadata().and_then(|m| m.modified()).ok()
+        })
+    };
+
+    let path = target_file.ok_or_else(|| format!("Session '{}' not found", session_id.as_deref().unwrap_or("latest")))?;
+    let t = parse_session(&path).ok_or("No usage data found in session")?;
+
+    let cache_hit_pct = if t.cache_read + t.cache_write > 0 {
+        (t.cache_read as f64 / (t.cache_read + t.cache_write) as f64) * 100.0
+    } else { 0.0 };
+
+    Ok(json!({
+        "session_id":     t.session_id,
+        "file":           path.to_string_lossy(),
+        "tokens": {
+            "input":       t.input,
+            "output":      t.output,
+            "cache_read":  t.cache_read,
+            "cache_write": t.cache_write,
+            "total":       t.input + t.output + t.cache_read + t.cache_write,
+        },
+        "cache_hit_pct":  cache_hit_pct,
+        "messages":       t.total_messages,
+        "cost_usd":       format!("{:.4}", t.cost_usd),
+    }))
+}
+
+fn call_list_expensive_sessions(args: Value) -> Result<Value, String> {
+    let top      = args.get("top").and_then(Value::as_u64).unwrap_or(10) as usize;
+    let proj_key = args.get("project_key").and_then(Value::as_str).map(String::from);
+
+    let files = collect_jsonl_files(proj_key.as_deref());
+    let mut sessions: Vec<Value> = files.iter()
+        .filter_map(|p| parse_session(p))
+        .map(|t| json!({
+            "session_id":  t.session_id,
+            "cost_usd":    t.cost_usd,
+            "cost_usd_fmt": format!("{:.4}", t.cost_usd),
+            "input":       t.input,
+            "output":      t.output,
+            "cache_read":  t.cache_read,
+            "messages":    t.total_messages,
+        }))
+        .collect();
+
+    sessions.sort_by(|a, b| {
+        b["cost_usd"].as_f64().partial_cmp(&a["cost_usd"].as_f64())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    sessions.truncate(top);
+
+    let total_usd: f64 = sessions.iter()
+        .filter_map(|s| s["cost_usd"].as_f64())
+        .sum();
+
+    Ok(json!({
+        "top":         top,
+        "shown":       sessions.len(),
+        "total_usd":   format!("{:.4}", total_usd),
+        "sessions":    sessions,
+    }))
+}
+
+// ── #228 Task Tracker ─────────────────────────────────────────────────────────
+
+fn tasks_path() -> Option<std::path::PathBuf> {
+    home_dir().map(|h| h.join(".claude").join("tasks.json"))
+}
+
+fn load_tasks() -> Vec<Value> {
+    tasks_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default()
+}
+
+fn persist_tasks(tasks: &[Value]) -> Result<(), String> {
+    let path = tasks_path().ok_or("Cannot determine home directory")?;
+    let out = serde_json::to_string_pretty(&Value::Array(tasks.to_vec()))
+        .map_err(|e| e.to_string())?;
+    std::fs::write(&path, out).map_err(|e| e.to_string())
+}
+
+fn call_create_task(args: Value) -> Result<Value, String> {
+    let project  = args["project"].as_str().ok_or("Missing project")?.to_string();
+    let desc     = args["description"].as_str().ok_or("Missing description")?.to_string();
+    let priority = args.get("priority").and_then(Value::as_str).unwrap_or("P1").to_string();
+    let kb_refs  = args.get("kb_refs").and_then(Value::as_str).unwrap_or("").to_string();
+
+    let now = chrono::Local::now();
+    let date_str = now.format("%Y%m%d").to_string();
+    let mut tasks = load_tasks();
+    let seq = tasks.iter()
+        .filter(|t| t["id"].as_str().map(|s| s.starts_with(&format!("T-{date_str}"))).unwrap_or(false))
+        .count() + 1;
+    let id = format!("T-{date_str}-{seq:04}");
+
+    let task = json!({
+        "id":          id.clone(),
+        "project":     project,
+        "description": desc,
+        "priority":    priority,
+        "status":      "open",
+        "kb_refs":     kb_refs,
+        "created_at":  now.to_rfc3339(),
+        "done_at":     null,
+        "resolution":  null,
+        "github_url":  null,
+    });
+    tasks.push(task.clone());
+    persist_tasks(&tasks)?;
+    Ok(json!({ "task_id": id, "task": task }))
+}
+
+fn call_list_tasks(args: Value) -> Result<Value, String> {
+    let project_filter  = args.get("project").and_then(Value::as_str).map(String::from);
+    let status_filter   = args.get("status").and_then(Value::as_str).unwrap_or("open");
+    let priority_filter = args.get("priority").and_then(Value::as_str).map(String::from);
+
+    let tasks = load_tasks();
+    let filtered: Vec<&Value> = tasks.iter()
+        .filter(|t| {
+            let status = t["status"].as_str().unwrap_or("open");
+            match status_filter {
+                "all"  => true,
+                "open" => status == "open",
+                "done" => status == "done",
+                other  => status == other,
+            }
+        })
+        .filter(|t| {
+            if let Some(ref proj) = project_filter {
+                t["project"].as_str() == Some(proj.as_str())
+            } else { true }
+        })
+        .filter(|t| {
+            if let Some(ref pri) = priority_filter {
+                t["priority"].as_str() == Some(pri.as_str())
+            } else { true }
+        })
+        .collect();
+
+    Ok(json!({
+        "total":  filtered.len(),
+        "filter": { "project": project_filter, "status": status_filter, "priority": priority_filter },
+        "tasks":  filtered,
+    }))
+}
+
+fn call_mark_task_done(args: Value) -> Result<Value, String> {
+    let task_id    = args["task_id"].as_str().ok_or("Missing task_id")?;
+    let resolution = args["resolution"].as_str().ok_or("Missing resolution")?.to_string();
+    let now = chrono::Local::now().to_rfc3339();
+
+    let mut tasks = load_tasks();
+    let idx = tasks.iter().position(|t| t["id"].as_str() == Some(task_id))
+        .ok_or_else(|| format!("Task '{task_id}' not found"))?;
+    if let Some(obj) = tasks[idx].as_object_mut() {
+        obj.insert("status".to_string(), Value::String("done".to_string()));
+        obj.insert("done_at".to_string(), Value::String(now));
+        obj.insert("resolution".to_string(), Value::String(resolution));
+    }
+    let updated = tasks[idx].clone();
+    persist_tasks(&tasks)?;
+    Ok(updated)
+}
+
+fn call_link_task(args: Value) -> Result<Value, String> {
+    let task_id     = args["task_id"].as_str().ok_or("Missing task_id")?;
+    let github_url  = args.get("github_url").and_then(Value::as_str).map(String::from);
+    let kb_topickey = args.get("kb_topickey").and_then(Value::as_str).map(String::from);
+
+    let mut tasks = load_tasks();
+    let idx = tasks.iter().position(|t| t["id"].as_str() == Some(task_id))
+        .ok_or_else(|| format!("Task '{task_id}' not found"))?;
+    if let Some(obj) = tasks[idx].as_object_mut() {
+        if let Some(ref url) = github_url {
+            obj.insert("github_url".to_string(), Value::String(url.clone()));
+        }
+        if let Some(ref key) = kb_topickey {
+            obj.insert("kb_topickey".to_string(), Value::String(key.clone()));
+        }
+    }
+    let updated = tasks[idx].clone();
+    persist_tasks(&tasks)?;
+    Ok(updated)
 }
 
 // ── Saved Scripts (deterministic replay) ─────────────────────────────────────

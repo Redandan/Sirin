@@ -363,6 +363,48 @@ pub fn find_history_by_run_id(
     ).ok()
 }
 
+/// Find the most recent failed (or timed-out) run for a given test_id.
+///
+/// Returns a tuple:
+///   (run_id, started_at, duration_ms, failure_category, ai_analysis,
+///    iterations, history_json, console_log)
+///
+/// Used by `replayLastFailure` and `shadowDumpDiff` MCP tools (#230).
+pub fn last_failed_run(
+    test_id: &str,
+) -> Option<(
+    String,           // run_id
+    String,           // started_at
+    Option<i64>,      // duration_ms
+    Option<String>,   // failure_category
+    Option<String>,   // ai_analysis
+    Option<i64>,      // iterations
+    Option<String>,   // history_json
+    Option<String>,   // console_log
+)> {
+    let conn = db().lock().unwrap_or_else(|e| e.into_inner());
+    conn.query_row(
+        "SELECT run_id, started_at, duration_ms, failure_category, ai_analysis, \
+         iterations, history_json, console_log \
+         FROM test_runs WHERE test_id = ?1 AND status IN ('failed','timeout') \
+         ORDER BY started_at DESC LIMIT 1",
+        rusqlite::params![test_id],
+        |row| {
+            Ok((
+                row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<i64>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<String>>(7)?,
+            ))
+        },
+    )
+    .ok()
+}
+
 pub fn recent_runs(test_id: &str, limit: usize) -> Vec<RunRecord> {
     let conn = db().lock().unwrap_or_else(|e| e.into_inner());
     let mut stmt = match conn.prepare(

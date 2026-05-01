@@ -1,5 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-#![recursion_limit = "256"]
+#![recursion_limit = "512"]
 
 mod adk;
 #[allow(dead_code)] mod agent_config;

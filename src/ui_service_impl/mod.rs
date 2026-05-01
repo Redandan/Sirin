@@ -291,6 +291,70 @@ impl TestRunnerService for RealService {
         // they want auto-fix).
         crate::test_runner::spawn_run_async(test_id.to_string(), false)
     }
+
+    fn test_coverage_data(&self) -> Result<CoverageData, String> {
+        use serde_json::Value;
+
+        let map_path = crate::platform::config_path("coverage/agora_market.yaml");
+        let src = std::fs::read_to_string(&map_path)
+            .map_err(|e| format!("Cannot read coverage map {map_path:?}: {e}"))?;
+        // Parse via serde_yaml → serde_json::Value (same pattern as mcp_server).
+        let map: Value = serde_yaml::from_str(&src)
+            .map_err(|e| format!("Parse error in agora_market.yaml: {e}"))?;
+
+        let product = map["product"].as_str().unwrap_or("agora_market").to_string();
+        let version = map["version"].as_str().unwrap_or("?").to_string();
+
+        let groups_raw = map["feature_groups"].as_array()
+            .ok_or_else(|| "feature_groups missing or not array".to_string())?;
+
+        let mut total_covered  = 0usize;
+        let mut total_features = 0usize;
+        let mut groups = Vec::new();
+
+        for g in groups_raw {
+            let gid   = g["id"].as_str().unwrap_or("?").to_string();
+            let gname = g["name"].as_str().unwrap_or(&gid).to_string();
+            let role  = match &g["role"] {
+                Value::String(s)  => s.clone(),
+                Value::Array(arr) => arr.iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join("+"),
+                _                 => String::new(),
+            };
+
+            let features_raw = g["features"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+            let mut covered_count = 0usize;
+            let mut features = Vec::new();
+
+            for feat in features_raw {
+                let fid    = feat["id"].as_str().unwrap_or("?").to_string();
+                let fname  = feat["name"].as_str().unwrap_or(&fid).to_string();
+                let status = feat["status"].as_str().unwrap_or("missing").to_string();
+                let test_ids: Vec<String> = feat["test_ids"].as_array()
+                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                    .unwrap_or_default();
+
+                if status != "missing" && !test_ids.is_empty() {
+                    covered_count += 1;
+                }
+                features.push(CoverageFeatureView { id: fid, name: fname, status, test_ids });
+            }
+
+            total_features += features.len();
+            total_covered  += covered_count;
+
+            groups.push(CoverageGroupView {
+                id: gid, name: gname, role,
+                covered: covered_count,
+                total: features.len(),
+                features,
+            });
+        }
+
+        Ok(CoverageData { product, version, total_covered, total_features, groups })
+    }
 }
 
 // `impl AppService for RealService` is satisfied automatically by the blanket

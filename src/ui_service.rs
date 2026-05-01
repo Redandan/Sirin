@@ -444,6 +444,39 @@ pub trait BrowserService: Send + Sync + 'static {
     fn browser_tab_count(&self) -> usize;
 }
 
+/// Coverage data for a single feature (from `config/coverage/agora_market.yaml`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CoverageFeatureView {
+    pub id:       String,
+    pub name:     String,
+    /// "confirmed" | "partial" | "missing"
+    pub status:   String,
+    /// YAML test_ids explicitly linked to this feature.
+    pub test_ids: Vec<String>,
+}
+
+/// Coverage data for one feature group (e.g. "Buyer：結帳 & 訂單").
+#[derive(Debug, Clone, PartialEq)]
+pub struct CoverageGroupView {
+    pub id:       String,
+    pub name:     String,
+    pub role:     String,
+    /// How many features in this group are confirmed/partial (not missing).
+    pub covered:  usize,
+    pub total:    usize,
+    pub features: Vec<CoverageFeatureView>,
+}
+
+/// Top-level coverage snapshot for the whole product.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CoverageData {
+    pub product:        String,
+    pub version:        String,
+    pub total_covered:  usize,
+    pub total_features: usize,
+    pub groups:         Vec<CoverageGroupView>,
+}
+
 /// Test runner data for the Test Dashboard panel — recent history + active runs.
 pub trait TestRunnerService: Send + Sync + 'static {
     /// Most-recent completed runs from SQLite (newest first).
@@ -457,6 +490,9 @@ pub trait TestRunnerService: Send + Sync + 'static {
     /// Equivalent to MCP `run_test_async` tool but in-process.  Errors when
     /// the test_id isn't found in `config/tests/`.
     fn launch_test_run(&self, test_id: &str) -> Result<String, String>;
+    /// Parse `config/coverage/agora_market.yaml` and return a typed coverage
+    /// snapshot.  Cheap (file read + parse, no DB queries).
+    fn test_coverage_data(&self) -> Result<CoverageData, String>;
 }
 
 /// Aggregate trait the UI consumes as `Arc<dyn AppService>`.
