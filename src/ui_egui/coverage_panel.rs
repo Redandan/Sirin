@@ -1,13 +1,23 @@
-//! Coverage Panel — standalone view (previously sub-tab of test_dashboard).
-//! Shows the feature map from config/coverage/agora_market.yaml with
-//! per-group progress bars and a missing-feature gap list.
+//! Coverage Panel — full-page 3-tier funnel + per-group + per-feature detail.
+//!
+//! Tiers (top to bottom in the funnel):
+//!   1. Discovered — features Sirin's auto-crawler found (mock until real
+//!                   discovery module ships)
+//!   2. Covered    — features with at least one YAML test_id
+//!   3. Scripted   — covered features whose tests are deterministic replay
+//!                   scripts (no longer need LLM decisions)
+//!
+//! Per-feature glyphs:
+//!   ⚡ = scripted (status: confirmed) — deterministic, fastest
+//!   🤖 = LLM-only (status: partial)   — still requires LLM each run
+//!   ○ = missing                      — no test at all
 
 use std::sync::Arc;
 use eframe::egui::{self, RichText, ScrollArea};
-use crate::ui_service::{AppService, CoverageData};
+use crate::ui_service::{AppService, CoverageData, DiscoveryStatus};
 use super::theme;
 
-// ── State ──────────────────────────────────────────────────────��─────────────
+// ── State ────────────────────────────────────────────────────────────────────
 
 pub struct CoveragePanelState {
     data:    Option<Result<CoverageData, String>>,
@@ -27,7 +37,6 @@ impl Default for CoveragePanelState {
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, state: &mut CoveragePanelState) {
-    // Refresh every 30 s or on first load.
     if state.data.is_none()
         || state.refresh.elapsed() > std::time::Duration::from_secs(30)
     {
@@ -35,21 +44,12 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, state: &mut CoveragePa
         state.refresh = std::time::Instant::now();
     }
 
-    // Header row with refresh button.
+    // ── Header ───────────────────────────────────────────────────────────
     ui.horizontal(|ui| {
-        ui.colored_label(theme::TEXT, RichText::new("COVERAGE").size(theme::FONT_TITLE).strong());
-        ui.add_space(theme::SP_SM);
-        if let Some(Ok(data)) = &state.data {
-            let pct = if data.total_features > 0 {
-                data.total_covered as f32 / data.total_features as f32
-            } else { 0.0 };
-            let col = coverage_color(pct);
-            ui.colored_label(col,
-                RichText::new(format!("{}/{} ({:.0}%)",
-                    data.total_covered, data.total_features, pct * 100.0))
-                    .size(theme::FONT_SMALL).strong().monospace(),
-            );
-        }
+        ui.colored_label(
+            theme::TEXT,
+            RichText::new("COVERAGE").size(theme::FONT_TITLE).strong(),
+        );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.add(egui::Button::new(
                 RichText::new("↻ Refresh").size(theme::FONT_CAPTION).color(theme::TEXT_DIM)
@@ -71,43 +71,125 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, state: &mut CoveragePa
                 });
             }
             Some(Err(e)) => {
-                ui.colored_label(theme::DANGER,
-                    RichText::new(format!("⚠ {e}")).size(theme::FONT_SMALL));
+                ui.colored_label(
+                    theme::DANGER,
+                    RichText::new(format!("⚠ {e}")).size(theme::FONT_SMALL),
+                );
             }
             Some(Ok(data)) => {
-                show_coverage_data(ui, data);
+                show_funnel(ui, data);
+                ui.add_space(theme::SP_LG);
+                show_groups(ui, data);
+                show_gaps(ui, data);
             }
         }
     });
 }
 
-// ── Internal renderers ────────────────────────────────────────────────────────
+// ── 3-tier funnel (top of page) ──────────────────────────────────────────────
 
-fn show_coverage_data(ui: &mut egui::Ui, data: &CoverageData) {
-    let pct = if data.total_features > 0 {
-        data.total_covered as f32 / data.total_features as f32
-    } else { 0.0 };
+fn show_funnel(ui: &mut egui::Ui, d: &CoverageData) {
+    let total = d.discovered.max(1);
+    let cov_pct = d.total_covered as f32 / total as f32;
+    let scr_pct = d.scripted as f32 / total as f32;
+    let bar_w = 300.0;
 
-    // Overall bar.
+    egui::Frame::new()
+        .fill(theme::CARD)
+        .corner_radius(4.0)
+        .inner_margin(theme::SP_MD)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.colored_label(
+                    theme::TEXT,
+                    RichText::new(&d.product).size(theme::FONT_BODY).strong(),
+                );
+                ui.colored_label(
+                    theme::TEXT_DIM,
+                    RichText::new(format!("v{}", d.version))
+                        .size(theme::FONT_CAPTION).monospace(),
+                );
+            });
+            ui.add_space(theme::SP_SM);
+
+            funnel_row(ui, "探索 Discovered",
+                d.discovered, total, 1.0, theme::TEXT_DIM, bar_w);
+            if matches!(d.discovery_status, DiscoveryStatus::NotRun) {
+                ui.horizontal(|ui| {
+                    ui.add_space(160.0);
+                    ui.colored_label(
+                        theme::TEXT_DIM,
+                        RichText::new("(mock — discovery 模組待實作；功能規劃中)")
+                            .size(theme::FONT_CAPTION).italics(),
+                    );
+                });
+            }
+            funnel_row(ui, "覆蓋 Covered",
+                d.total_covered, total, cov_pct, theme::ACCENT, bar_w);
+            funnel_row(ui, "有腳本 Scripted",
+                d.scripted, total, scr_pct, theme::INFO, bar_w);
+
+            ui.add_space(theme::SP_SM);
+            ui.horizontal(|ui| {
+                ui.add_space(160.0);
+                ui.colored_label(
+                    theme::TEXT_DIM,
+                    RichText::new("⚡ scripted   🤖 LLM-only   ○ missing")
+                        .size(theme::FONT_CAPTION).monospace(),
+                );
+            });
+        });
+}
+
+fn funnel_row(
+    ui:    &mut egui::Ui,
+    label: &str,
+    n:     usize,
+    _max:  usize,
+    pct:   f32,
+    color: egui::Color32,
+    bar_w: f32,
+) {
     ui.horizontal(|ui| {
-        ui.colored_label(theme::TEXT_DIM,
-            RichText::new(format!("{} v{}", data.product, data.version))
-                .size(theme::FONT_CAPTION).monospace());
-        ui.add_space(theme::SP_MD);
-        let bar_w = 160.0;
-        let bar_h = 8.0;
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(bar_w, bar_h), egui::Sense::hover());
+        ui.allocate_ui_with_layout(
+            egui::vec2(160.0, 18.0),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.colored_label(theme::TEXT,
+                    RichText::new(label).size(theme::FONT_SMALL));
+            },
+        );
+        ui.allocate_ui_with_layout(
+            egui::vec2(40.0, 18.0),
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
+                ui.colored_label(theme::TEXT,
+                    RichText::new(format!("{n}"))
+                        .size(theme::FONT_SMALL).monospace().strong());
+            },
+        );
+        ui.add_space(theme::SP_SM);
+        let (rect, _) = ui.allocate_exact_size(
+            egui::vec2(bar_w, 8.0), egui::Sense::hover());
         let p = ui.painter_at(rect);
-        p.rect_filled(rect, 3.0, theme::BORDER);
-        let fill_w = (rect.width() * pct).max(0.0);
-        p.rect_filled(egui::Rect::from_min_size(rect.min, egui::vec2(fill_w, bar_h)),
-            3.0, coverage_color(pct));
+        p.rect_filled(rect, 2.0, theme::BORDER);
+        let fw = (rect.width() * pct.clamp(0.0, 1.0)).max(0.0);
+        p.rect_filled(
+            egui::Rect::from_min_size(rect.min, egui::vec2(fw, 8.0)),
+            2.0, color,
+        );
+        ui.add_space(theme::SP_SM);
+        ui.colored_label(theme::TEXT_DIM,
+            RichText::new(format!("{:.0}%", pct * 100.0))
+                .size(theme::FONT_CAPTION).monospace());
     });
-    ui.add_space(theme::SP_MD);
+    ui.add_space(theme::SP_XS);
+}
 
-    let mut gaps: Vec<(&str, &str, &str)> = Vec::new();
+// ── Per-group cards ──────────────────────────────────────────────────────────
 
-    for group in &data.groups {
+fn show_groups(ui: &mut egui::Ui, d: &CoverageData) {
+    for group in &d.groups {
         let gpct = if group.total > 0 {
             group.covered as f32 / group.total as f32
         } else { 0.0 };
@@ -121,76 +203,116 @@ fn show_coverage_data(ui: &mut egui::Ui, data: &CoverageData) {
                 ui.horizontal(|ui| {
                     ui.colored_label(gcol, RichText::new("●").size(9.0));
                     ui.colored_label(theme::TEXT,
-                        RichText::new(&group.name).size(theme::FONT_SMALL).strong());
+                        RichText::new(&group.name)
+                            .size(theme::FONT_SMALL).strong());
                     if !group.role.is_empty() {
                         ui.colored_label(theme::TEXT_DIM,
                             RichText::new(format!("[{}]", group.role))
                                 .size(theme::FONT_CAPTION).monospace());
                     }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.colored_label(gcol,
-                            RichText::new(format!("{}/{}", group.covered, group.total))
-                                .size(theme::FONT_CAPTION).monospace());
-                        let bw = 60.0; let bh = 6.0;
-                        let (r, _) = ui.allocate_exact_size(egui::vec2(bw, bh), egui::Sense::hover());
-                        let p = ui.painter_at(r);
-                        p.rect_filled(r, 2.0, theme::BORDER);
-                        let fw = (r.width() * gpct).max(0.0);
-                        p.rect_filled(egui::Rect::from_min_size(r.min, egui::vec2(fw, bh)), 2.0, gcol);
-                    });
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            ui.colored_label(gcol,
+                                RichText::new(format!("{}/{}", group.covered, group.total))
+                                    .size(theme::FONT_CAPTION).monospace());
+                            let bw = 60.0; let bh = 6.0;
+                            let (r, _) = ui.allocate_exact_size(
+                                egui::vec2(bw, bh), egui::Sense::hover());
+                            let p = ui.painter_at(r);
+                            p.rect_filled(r, 2.0, theme::BORDER);
+                            let fw = (r.width() * gpct).max(0.0);
+                            p.rect_filled(egui::Rect::from_min_size(
+                                r.min, egui::vec2(fw, bh)), 2.0, gcol);
+                        },
+                    );
                 });
                 ui.add_space(theme::SP_XS);
                 for feat in &group.features {
-                    let (dot, col) = match feat.status.as_str() {
-                        "confirmed" => ("✓", theme::ACCENT),
-                        "partial"   => ("◐", theme::YELLOW),
-                        _           => ("○", theme::DANGER),
+                    let (glyph, col) = match feat.status.as_str() {
+                        "confirmed" => ("⚡", theme::INFO),
+                        "partial"   => ("🤖", theme::YELLOW),
+                        _           => ("○",  theme::DANGER),
                     };
                     ui.horizontal(|ui| {
                         ui.add_space(theme::SP_MD);
-                        ui.colored_label(col, RichText::new(dot).size(theme::FONT_CAPTION));
+                        ui.colored_label(col,
+                            RichText::new(glyph).size(theme::FONT_BODY));
                         ui.colored_label(
                             if feat.status == "missing" { theme::TEXT_DIM } else { theme::TEXT },
-                            RichText::new(&feat.name).size(theme::FONT_CAPTION));
+                            RichText::new(&feat.name).size(theme::FONT_CAPTION),
+                        );
                         if !feat.test_ids.is_empty() {
                             ui.colored_label(theme::TEXT_DIM,
                                 RichText::new(format!("← {}", feat.test_ids.join(", ")))
                                     .size(theme::FONT_CAPTION).monospace());
                         }
                     });
-                    if feat.status == "missing" {
-                        gaps.push((&group.name, &feat.id, &feat.name));
-                    }
                 }
             });
         ui.add_space(theme::SP_XS);
     }
+}
 
-    if !gaps.is_empty() {
-        ui.add_space(theme::SP_SM);
-        theme::thin_separator(ui);
-        ui.add_space(theme::SP_SM);
-        ui.colored_label(theme::DANGER,
-            RichText::new(format!("GAPS  {} missing", gaps.len()))
-                .size(theme::FONT_SMALL).strong());
-        ui.add_space(theme::SP_XS);
-        for (gname, fid, fname) in &gaps {
-            ui.horizontal(|ui| {
-                ui.add_space(theme::SP_SM);
-                ui.colored_label(theme::DANGER, RichText::new("○").size(theme::FONT_CAPTION));
-                ui.colored_label(theme::TEXT_DIM,
-                    RichText::new(*fname).size(theme::FONT_CAPTION));
-                ui.colored_label(theme::TEXT_DIM,
-                    RichText::new(format!("— {gname}")).size(theme::FONT_CAPTION));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+// ── Bottom GAPS list ─────────────────────────────────────────────────────────
+
+fn show_gaps(ui: &mut egui::Ui, d: &CoverageData) {
+    let mut coverage_gaps: Vec<(&str, &str, &str)> = Vec::new();
+    for group in &d.groups {
+        for feat in &group.features {
+            if feat.status == "missing" {
+                coverage_gaps.push((&group.name, &feat.id, &feat.name));
+            }
+        }
+    }
+
+    if coverage_gaps.is_empty() {
+        return;
+    }
+
+    ui.add_space(theme::SP_SM);
+    theme::thin_separator(ui);
+    ui.add_space(theme::SP_SM);
+
+    ui.colored_label(theme::DANGER,
+        RichText::new(format!("COVERAGE GAPS  {} missing", coverage_gaps.len()))
+            .size(theme::FONT_SMALL).strong());
+    ui.add_space(theme::SP_XS);
+    for (gname, fid, fname) in &coverage_gaps {
+        ui.horizontal(|ui| {
+            ui.add_space(theme::SP_SM);
+            ui.colored_label(theme::DANGER,
+                RichText::new("○").size(theme::FONT_CAPTION));
+            ui.colored_label(theme::TEXT_DIM,
+                RichText::new(*fname).size(theme::FONT_CAPTION));
+            ui.colored_label(theme::TEXT_DIM,
+                RichText::new(format!("— {gname}")).size(theme::FONT_CAPTION));
+            ui.with_layout(
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
                     ui.colored_label(theme::INFO,
                         RichText::new(format!("agora_{fid}"))
                             .size(theme::FONT_CAPTION).monospace())
                         .on_hover_text("suggested YAML test name");
-                });
-            });
-        }
+                },
+            );
+        });
     }
+
+    // Discovery gaps (mock — empty until real crawler ships).
+    ui.add_space(theme::SP_SM);
+    theme::thin_separator(ui);
+    ui.add_space(theme::SP_SM);
+    ui.colored_label(theme::TEXT_DIM,
+        RichText::new("DISCOVERY GAPS  0 (discovery module 待實作)")
+            .size(theme::FONT_SMALL).strong());
+    ui.add_space(theme::SP_XS);
+    ui.horizontal(|ui| {
+        ui.add_space(theme::SP_SM);
+        ui.colored_label(theme::TEXT_DIM,
+            RichText::new("(自動爬到、但 YAML 沒列的功能會出現在這裡)")
+                .size(theme::FONT_CAPTION).italics());
+    });
 }
 
 fn coverage_color(pct: f32) -> egui::Color32 {
