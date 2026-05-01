@@ -931,6 +931,19 @@ fn handle_tools_list() -> Result<Value, String> {
                 }
             },
             {
+                "name": "kb_duplicate_check",
+                "description": "#226 — 找出 KB 中內容高度重疊的條目（Jaccard 文字相似度），不需要 Chroma embedding。\n\n`threshold`：0.0-1.0，預設 0.7（70% 重疊才算重複）。\n`topic_keys`：逗號分隔，指定要比較的 topicKey 清單；不指定則比較所有傳入的候選集。\n`project`：預設 sirin。\n\n回傳：相似對（pair_a, pair_b, jaccard_score）清單，score 高 → 越相似。",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["topic_keys"],
+                    "properties": {
+                        "topic_keys": { "type": "string", "description": "逗號分隔的 topicKey 清單（至少 2 個）" },
+                        "project":   { "type": "string", "description": "project slug，預設 sirin" },
+                        "threshold": { "type": "number", "description": "Jaccard 相似度閾值，預設 0.7" }
+                    }
+                }
+            },
+            {
                 "name": "kb_stats",
                 "description": "#226 — KB 深度統計（補強 kbHealth）。透過 agora-trading MCP 取得指定 project 的條目分布：by domain / by status / by layer / draft ratio / stale ratio / oldest+newest confirmed。\n\n需要 agora-trading + agora-ops token 在 ~/.claude.json 中設定。",
                 "inputSchema": {
@@ -1386,8 +1399,9 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         "get_latest_handoff"  => return call_get_latest_handoff(arguments).map(wrap_json),
         "list_handoff_history"=> return call_list_handoff_history(arguments).map(wrap_json),
         // #226 kb-lifecycle (non-embedding subset)
-        "kb_stats"            => return call_kb_stats(arguments).await.map(wrap_json),
-        "kb_diff"             => return call_kb_diff(arguments).await.map(wrap_json),
+        "kb_stats"             => return call_kb_stats(arguments).await.map(wrap_json),
+        "kb_diff"              => return call_kb_diff(arguments).await.map(wrap_json),
+        "kb_duplicate_check"   => return call_kb_duplicate_check(arguments).await.map(wrap_json),
         // #231 agora-daily-brief
         "generate_daily_brief"=> return call_generate_daily_brief(arguments).await.map(wrap_json),
         // #226 kb-merge
@@ -3267,7 +3281,86 @@ fn call_list_handoff_history(args: Value) -> Result<Value, String> {
     }))
 }
 
-// ── #226 KB Lifecycle (non-embedding subset) ─────────────────────────────────
+// ── #226 KB Lifecycle ────────────────────────────────────────────────────────
+
+/// Compute Jaccard similarity between two texts using word bags.
+fn jaccard_similarity(a: &str, b: &str) -> f64 {
+    use std::collections::HashSet;
+    let words_a: HashSet<&str> = a.split_whitespace().collect();
+    let words_b: HashSet<&str> = b.split_whitespace().collect();
+    let intersection = words_a.intersection(&words_b).count();
+    let union        = words_a.union(&words_b).count();
+    if union == 0 { return 0.0; }
+    intersection as f64 / union as f64
+}
+
+async fn call_kb_duplicate_check(args: Value) -> Result<Value, String> {
+    let keys_str  = args["topic_keys"].as_str().ok_or("Missing topic_keys")?;
+    let project   = args.get("project").and_then(Value::as_str).unwrap_or("sirin");
+    let threshold = args.get("threshold").and_then(Value::as_f64).unwrap_or(0.7);
+
+    let keys: Vec<&str> = keys_str.split(',').map(str::trim).filter(|k| !k.is_empty()).collect();
+    if keys.len() < 2 {
+        return Err("Need at least 2 topic_keys to compare".to_string());
+    }
+
+    // Fetch all entries concurrently.
+    let mut fetch_handles = Vec::new();
+    for key in &keys {
+        let k = key.to_string();
+        let p = project.to_string();
+        fetch_handles.push(tokio::spawn(async move {
+            kb_get_via_http(&k, &p).await.map(|c| (k, c))
+        }));
+    }
+
+    let mut entries: Vec<(String, String)> = Vec::new();
+    let mut errors:  Vec<String>            = Vec::new();
+    for h in fetch_handles {
+        match h.await {
+            Ok(Ok((k, c))) => entries.push((k, c)),
+            Ok(Err(e))     => errors.push(e),
+            Err(e)         => errors.push(e.to_string()),
+        }
+    }
+
+    // All-pairs Jaccard comparison.
+    let mut duplicates: Vec<Value> = Vec::new();
+    for i in 0..entries.len() {
+        for j in (i + 1)..entries.len() {
+            let score = jaccard_similarity(&entries[i].1, &entries[j].1);
+            if score >= threshold {
+                duplicates.push(json!({
+                    "pair_a":  entries[i].0,
+                    "pair_b":  entries[j].0,
+                    "jaccard": (score * 1000.0).round() / 1000.0,
+                    "suggestion": if score >= 0.9 {
+                        "高度重複，建議 kb_merge"
+                    } else if score >= 0.7 {
+                        "部分重疊，建議 kb_diff 確認後考慮 kb_merge"
+                    } else {
+                        "低重疊"
+                    }
+                }));
+            }
+        }
+    }
+
+    // Sort most-similar first.
+    duplicates.sort_by(|a, b| {
+        b["jaccard"].as_f64().partial_cmp(&a["jaccard"].as_f64())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    Ok(json!({
+        "project":         project,
+        "keys_checked":    entries.len(),
+        "threshold":       threshold,
+        "duplicate_pairs": duplicates.len(),
+        "duplicates":      duplicates,
+        "fetch_errors":    errors,
+    }))
+}
 
 /// Call agora-trading kbGet via HTTP and return the content string.
 async fn kb_get_via_http(topic_key: &str, project: &str) -> Result<String, String> {
