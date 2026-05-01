@@ -801,6 +801,41 @@ fn handle_tools_list() -> Result<Value, String> {
                 }
             },
             {
+                "name": "create_handoff",
+                "description": "#224 — 建立一個 session 交接記錄，存到 ~/.claude/handoff_history.json。\n\n比 kbWrite 更簡潔：不需要 domain/layer/tags/fileRefs 等樣板參數，專門為 session bridge 設計。\n內容自動 unescape，get_latest_handoff 直接回傳 markdown，不需要 Python unescape。\n同時寫入 KB（topicKey=sirin-handoff-latest）供 SessionStart hook 使用。",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["reason", "content"],
+                    "properties": {
+                        "reason":    { "type": "string", "description": "交接原因，例如「加了新 MCP 需重啟」" },
+                        "content":   { "type": "string", "description": "Markdown 格式的交接內容（接手 prompt + 完成事項等）" },
+                        "project":   { "type": "string", "description": "project slug，預設 sirin" },
+                        "file_refs": { "type": "string", "description": "動到的檔案（逗號分隔，選填）" }
+                    }
+                }
+            },
+            {
+                "name": "get_latest_handoff",
+                "description": "#224 — 讀取最新的 handoff 記錄，直接回傳 markdown 內容（已 unescape）。\n\n比 fetch-handoff.sh 更簡單：不需要 agora-trading auth，不需要 Python unescape，直接呼叫 Sirin MCP。\n可用於 SessionStart hook 的簡化版 fetch-handoff.sh。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "project": { "type": "string", "description": "project slug，預設 sirin" }
+                    }
+                }
+            },
+            {
+                "name": "list_handoff_history",
+                "description": "#224 — 列出最近 N 筆 handoff 記錄（最新在前）。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "project": { "type": "string", "description": "project slug，預設 sirin" },
+                        "limit":   { "type": "number",  "description": "筆數上限，預設 10" }
+                    }
+                }
+            },
+            {
                 "name": "config_diagnostics",
                 "description": "回傳 Sirin 當前配置診斷（LLM backend 連通、router 狀態、vision 可用性、Chrome/Claude CLI 等）。遇到測試全部失敗時用來自我檢查。",
                 "inputSchema": { "type": "object", "properties": {} }
@@ -1226,7 +1261,11 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         "create_task"    => return call_create_task(arguments).map(wrap_json),
         "list_tasks"     => return call_list_tasks(arguments).map(wrap_json),
         "mark_task_done" => return call_mark_task_done(arguments).map(wrap_json),
-        "link_task"      => return call_link_task(arguments).map(wrap_json),
+        "link_task"           => return call_link_task(arguments).map(wrap_json),
+        // #224 handoff-mcp
+        "create_handoff"      => return call_create_handoff(arguments).map(wrap_json),
+        "get_latest_handoff"  => return call_get_latest_handoff(arguments).map(wrap_json),
+        "list_handoff_history"=> return call_list_handoff_history(arguments).map(wrap_json),
         "config_diagnostics"   => return call_config_diagnostics().map(wrap_json),
         "diagnose"             => return Ok(wrap_json(crate::diagnose::snapshot())),
         "browser_exec"         => return call_browser_exec(arguments, user_agent).await.map(wrap_json),
@@ -2924,6 +2963,175 @@ fn call_link_task(args: Value) -> Result<Value, String> {
     let updated = tasks[idx].clone();
     persist_tasks(&tasks)?;
     Ok(updated)
+}
+
+// ── #224 Handoff MCP ─────────────────────────────────────────────────────────
+
+fn handoff_history_path() -> Option<std::path::PathBuf> {
+    home_dir().map(|h| h.join(".claude").join("handoff_history.json"))
+}
+
+fn load_handoffs() -> Vec<Value> {
+    handoff_history_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default()
+}
+
+fn save_handoffs(entries: &[Value]) -> Result<(), String> {
+    let path = handoff_history_path().ok_or("Cannot determine home directory")?;
+    let out = serde_json::to_string_pretty(&Value::Array(entries.to_vec()))
+        .map_err(|e| e.to_string())?;
+    std::fs::write(&path, out).map_err(|e| e.to_string())
+}
+
+fn call_create_handoff(args: Value) -> Result<Value, String> {
+    let reason    = args["reason"].as_str().ok_or("Missing reason")?.to_string();
+    let content   = args["content"].as_str().ok_or("Missing content")?.to_string();
+    let project   = args.get("project").and_then(Value::as_str).unwrap_or("sirin").to_string();
+    let file_refs = args.get("file_refs").and_then(Value::as_str).unwrap_or("").to_string();
+
+    let now = chrono::Local::now();
+    let saved_at = now.to_rfc3339();
+    let id = format!("{}-handoff", now.format("%Y%m%d-%H%M%S"));
+
+    let entry = json!({
+        "id":        id.clone(),
+        "reason":    reason.clone(),
+        "project":   project.clone(),
+        "file_refs": file_refs,
+        "saved_at":  saved_at.clone(),
+        "content":   content.clone(),
+    });
+
+    // Prepend (newest first) and keep last 50.
+    let mut history = load_handoffs();
+    history.insert(0, entry.clone());
+    history.truncate(50);
+    save_handoffs(&history)?;
+
+    // Best-effort write to KB (agora-trading) for SessionStart hook compatibility.
+    // Errors here are non-fatal — local file is the primary store.
+    let kb_status = try_kb_write_handoff(&content, &reason, &project, &file_refs);
+
+    Ok(json!({
+        "id":         id,
+        "saved_at":   saved_at,
+        "project":    project,
+        "history_len": history.len(),
+        "kb_write":   kb_status,
+        "tip":        "Retrieve with get_latest_handoff. SessionStart hook reads from KB.",
+    }))
+}
+
+/// Non-blocking best-effort call to agora-trading kbWrite for cross-session
+/// compatibility with the existing fetch-handoff.sh mechanism.
+fn try_kb_write_handoff(content: &str, reason: &str, project: &str, file_refs: &str) -> String {
+    // Read tokens from ~/.claude.json
+    let read_token = |server: &str| -> Option<String> {
+        let path = home_dir()?.join(".claude.json");
+        let src = std::fs::read_to_string(&path).ok()?;
+        let v: Value = serde_json::from_str(&src).ok()?;
+        v["mcpServers"][server]["headers"]["Authorization"]
+            .as_str()
+            .map(String::from)
+    };
+
+    let trading_tok = match read_token("agora-trading") {
+        Some(t) => t,
+        None => return "skipped (no agora-trading token)".to_string(),
+    };
+    let ops_tok = match read_token("agora-ops") {
+        Some(t) => t,
+        None => return "skipped (no agora-ops token)".to_string(),
+    };
+
+    let payload = json!({
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+            "name": "kbWrite",
+            "arguments": {
+                "topicKey":   "sirin-handoff-latest",
+                "title":      format!("Mid-session Handoff — {reason}"),
+                "content":    content,
+                "domain":     "ops",
+                "layer":      "raw",
+                "tags":       "handoff,session-bridge",
+                "status":     "confirmed",
+                "confidence": 0.95,
+                "fileRefs":   file_refs,
+                "source":     "claude-session",
+                "project":    project,
+            }
+        },
+        "id": 1
+    });
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+        .unwrap_or_default();
+
+    match client.post("https://agoramarketapi.purrtechllc.com/api/mcp")
+        .header("Authorization", &trading_tok)
+        .header("X-OPS-Authorization", &ops_tok)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .json(&payload)
+        .send()
+    {
+        Ok(resp) if resp.status().is_success() => "ok".to_string(),
+        Ok(resp) => format!("http {}", resp.status()),
+        Err(e)   => format!("err: {e}"),
+    }
+}
+
+fn call_get_latest_handoff(args: Value) -> Result<Value, String> {
+    let project = args.get("project").and_then(Value::as_str).unwrap_or("sirin");
+
+    let history = load_handoffs();
+    let latest = history.iter()
+        .find(|e| e["project"].as_str().unwrap_or("sirin") == project)
+        .ok_or_else(|| format!("No handoff found for project={project}"))?;
+
+    Ok(json!({
+        "id":       latest["id"],
+        "reason":   latest["reason"],
+        "saved_at": latest["saved_at"],
+        "project":  latest["project"],
+        "content":  latest["content"],   // raw markdown, already unescaped
+    }))
+}
+
+fn call_list_handoff_history(args: Value) -> Result<Value, String> {
+    let project = args.get("project").and_then(Value::as_str).unwrap_or("sirin");
+    let limit   = args.get("limit").and_then(Value::as_u64).unwrap_or(10) as usize;
+
+    let history = load_handoffs();
+    let entries: Vec<Value> = history.iter()
+        .filter(|e| e["project"].as_str().unwrap_or("sirin") == project)
+        .take(limit)
+        .map(|e| {
+            // Return summary (first 120 chars of content) instead of full content.
+            let preview: String = e["content"].as_str().unwrap_or("")
+                .lines().next().unwrap_or("")
+                .chars().take(120).collect();
+            json!({
+                "id":       e["id"],
+                "reason":   e["reason"],
+                "saved_at": e["saved_at"],
+                "preview":  preview,
+            })
+        })
+        .collect();
+
+    Ok(json!({
+        "project": project,
+        "count":   entries.len(),
+        "history": entries,
+    }))
 }
 
 // ── Saved Scripts (deterministic replay) ─────────────────────────────────────
