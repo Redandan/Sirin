@@ -461,6 +461,8 @@ pub fn spawn_adhoc_run(req: AdhocRunRequest) -> Result<String, String> {
             // Persist the goal too so persist_adhoc_run can recover after
             // the in-memory run state is pruned (1 hour TTL).
             let goal_json = serde_json::to_string(&test_clone).ok();
+            // Issue #220: capture console log before persisting.
+            let console_json_adhoc = crate::browser::console_messages(500).ok();
             let _ = store::record_run(store::NewRun {
                 test_id: &test_clone.id,
                 started_at: &started,
@@ -476,8 +478,8 @@ pub fn spawn_adhoc_run(req: AdhocRunRequest) -> Result<String, String> {
                 dispute_reason: result.dispute.as_ref().map(|d| d.reason.as_str()),
                 dispute_suspected_step: result.dispute.as_ref().and_then(|d| d.suspected_step),
                 dispute_suggested_fix: result.dispute.as_ref().and_then(|d| d.suggested_fix.as_deref()),
-        is_replay: false,
-        console_log: None,
+                is_replay: false,
+                console_log: console_json_adhoc.as_deref(),
             });
 
             runs::set_phase(&run_id_clone, runs::RunPhase::Complete(result));
@@ -644,6 +646,8 @@ pub fn spawn_batch_run(
                     TestStatus::Disputed => "disputed",
                 };
                 let goal_json = serde_json::to_string(&test).ok();
+                // Issue #220: capture console log (batch path).
+                let console_json_batch = crate::browser::console_messages(500).ok();
                 let _ = store::record_run(store::NewRun {
                     test_id: &test.id,
                     started_at: &started,
@@ -659,8 +663,8 @@ pub fn spawn_batch_run(
                     dispute_reason: result.dispute.as_ref().map(|d| d.reason.as_str()),
                     dispute_suspected_step: result.dispute.as_ref().and_then(|d| d.suspected_step),
                     dispute_suggested_fix: result.dispute.as_ref().and_then(|d| d.suggested_fix.as_deref()),
-        is_replay: false,
-        console_log: None,
+                    is_replay: false,
+                    console_log: console_json_batch.as_deref(),
                 });
 
                 let passed = matches!(result.status, TestStatus::Passed);
@@ -833,6 +837,8 @@ pub fn spawn_pipeline_run(
                 let goal_json = serde_json::to_string(
                     &parser::find(stage_id).unwrap()
                 ).ok();
+                // Issue #220: capture console log (pipeline stage path).
+                let console_json_stage = crate::browser::console_messages(500).ok();
                 let _ = store::record_run(store::NewRun {
                     test_id: stage_id,
                     started_at: &chrono::Local::now().to_rfc3339(),
@@ -849,7 +855,7 @@ pub fn spawn_pipeline_run(
                     dispute_suspected_step: result.dispute.as_ref().and_then(|d| d.suspected_step),
                     dispute_suggested_fix: result.dispute.as_ref().and_then(|d| d.suggested_fix.as_deref()),
                     is_replay: false,
-                    console_log: None,
+                    console_log: console_json_stage.as_deref(),
                 });
 
                 runs::set_phase(run_id, runs::RunPhase::Complete(result));
