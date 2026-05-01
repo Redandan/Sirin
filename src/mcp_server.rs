@@ -565,6 +565,28 @@ fn handle_tools_list() -> Result<Value, String> {
                 }
             },
             {
+                "name": "list_flaky_tests",
+                "description": "列出歷史上不穩定（flaky）的測試，依 pass rate 升序（最差優先）。\n\n等同 test_analytics 但只回傳 flaky 條目，方便快速定位需要重點關注的測試。\n\nflaky 定義：近 10 次中 pass rate < threshold（預設 70%）且至少 3 次 runs。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "threshold": { "type": "number", "description": "flaky 閾值，0.0-1.0，預設 0.70" },
+                        "limit":     { "type": "number", "description": "回傳上限，預設 20" }
+                    }
+                }
+            },
+            {
+                "name": "explain_failure",
+                "description": "用 LLM 解釋某次測試失敗的根因。整合截圖分析、console errors、歷史步驟、AI analysis，產生人類可讀的診斷報告。\n\n適合 debug 時快速理解失敗原因，不需要手動翻 history_json。",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["run_id"],
+                    "properties": {
+                        "run_id": { "type": "string", "description": "要解釋的測試 run_id" }
+                    }
+                }
+            },
+            {
                 "name": "list_fixes",
                 "description": "查詢 auto-fix 歷史（claude_session spawn 記錄）。能看到哪些 test 觸發過自動修復、結果如何。",
                 "inputSchema": {
@@ -973,6 +995,8 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         "list_recent_runs"     => return call_list_recent_runs(arguments).map(wrap_json),
         "test_analytics"       => return call_test_analytics(arguments).map(wrap_json),
         "test_summary"         => return call_test_summary(arguments).map(wrap_json),
+        "list_flaky_tests"     => return call_list_flaky_tests(arguments).map(wrap_json),
+        "explain_failure"      => return call_explain_failure(arguments).await.map(wrap_json),
         "list_saved_scripts"   => return call_list_saved_scripts().map(wrap_json),
         "delete_saved_script"  => return call_delete_saved_script(arguments).map(wrap_json),
         "list_fixes"           => return call_list_fixes(arguments).map(wrap_json),
@@ -1553,6 +1577,127 @@ fn call_test_summary(args: Value) -> Result<Value, String> {
         "console_warnings_total": console_warnings_total,
         "recommendation":         recommendation,
         "results":                results,
+    }))
+}
+
+/// #230 — list_flaky_tests: tests with pass_rate < threshold over recent runs.
+fn call_list_flaky_tests(args: Value) -> Result<Value, String> {
+    let threshold = args.get("threshold").and_then(Value::as_f64).unwrap_or(0.70);
+    let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize;
+
+    let all_stats = crate::test_runner::store::all_test_stats();
+    let mut flaky: Vec<Value> = all_stats.iter()
+        .filter(|s| s.total_runs >= 3 && (s.pass_rate_7d as f64) < threshold)
+        .map(|s| json!({
+            "test_id":              s.test_id,
+            "pass_rate_7d":         s.pass_rate_7d,
+            "pass_rate_30d":        s.pass_rate_30d,
+            "total_runs":           s.total_runs,
+            "avg_iterations":       s.avg_iterations,
+            "avg_duration_ms":      s.avg_duration_ms,
+            "top_failure_category": s.top_failure_category,
+            "has_script":           crate::test_runner::store::script_info(&s.test_id).is_some(),
+        }))
+        .take(limit)
+        .collect();
+    // Worst first
+    flaky.sort_by(|a, b| a["pass_rate_7d"].as_f64().partial_cmp(&b["pass_rate_7d"].as_f64())
+        .unwrap_or(std::cmp::Ordering::Equal));
+
+    Ok(json!({
+        "count":     flaky.len(),
+        "threshold": threshold,
+        "tests":     flaky,
+    }))
+}
+
+/// #230 — explain_failure: LLM-generated root-cause explanation for a test run.
+/// Combines console_log, history, ai_analysis, and failure_category into a
+/// human-readable diagnostic report.
+async fn call_explain_failure(args: Value) -> Result<Value, String> {
+    let run_id = args["run_id"].as_str().ok_or("Missing run_id")?;
+
+    // Gather all context from in-memory state + SQLite.
+    let mem_state = crate::test_runner::runs::get(run_id);
+    let console_log = crate::test_runner::store::get_console_log(run_id);
+
+    // Pull history + analysis from in-memory run state.
+    let (status, ai_analysis, error_msg, history_summary) = match &mem_state {
+        Some(s) => {
+            let json = crate::test_runner::runs::to_json(s);
+            let status = json["status"].as_str().unwrap_or("unknown").to_string();
+            let details = &json["details"];
+            let ai = details["analysis"].as_str().map(String::from);
+            let err = details["error"].as_str().map(String::from);
+            // Build a compact history summary from the last few steps.
+            let hist = match &s.phase {
+                crate::test_runner::runs::RunPhase::Complete(r) => {
+                    r.history.iter().rev().take(5).rev().enumerate()
+                        .map(|(i, step)| format!("  {}: {} → {}", i+1,
+                            &step.action.to_string()[..step.action.to_string().len().min(60)],
+                            &step.observation[..step.observation.len().min(120)]))
+                        .collect::<Vec<_>>().join("\n")
+                }
+                _ => String::new(),
+            };
+            (status, ai, err, hist)
+        }
+        None => ("unknown".into(), None, None, String::new()),
+    };
+
+    if status == "passed" {
+        return Ok(json!({
+            "run_id": run_id,
+            "status": "passed",
+            "explanation": "Test passed — no failure to explain.",
+        }));
+    }
+
+    // Parse console errors.
+    let console_section = console_log.as_deref().map(|log| {
+        let msgs: Vec<String> = serde_json::from_str::<Value>(log).ok()
+            .and_then(|v| v.as_array().cloned()).unwrap_or_default()
+            .into_iter()
+            .filter(|m| m.get("level").and_then(|l| l.as_str()) == Some("error"))
+            .take(5)
+            .filter_map(|m| m["text"].as_str().map(|t| format!("  [error] {}", &t[..t.len().min(200)])))
+            .collect();
+        if msgs.is_empty() { String::new() }
+        else { format!("\nBrowser Console Errors:\n{}", msgs.join("\n")) }
+    }).unwrap_or_default();
+
+    // Build the prompt for LLM explanation.
+    let prompt = format!(
+        "You are a test failure analyst. Explain the ROOT CAUSE of this browser E2E test failure in 3-5 sentences. \
+         Be specific about WHAT failed and WHY. Output only the explanation, no JSON.\n\n\
+         Test ID: {run_id}\n\
+         Status: {status}\n\
+         Error: {err}\n\
+         Existing AI analysis: {ai}\n\
+         Last steps:\n{hist}{console}\n\n\
+         Root cause explanation:",
+        run_id = run_id,
+        status = status,
+        err = error_msg.as_deref().unwrap_or("(none)"),
+        ai = ai_analysis.as_deref().unwrap_or("(none)"),
+        hist = if history_summary.is_empty() { "  (not available)".into() } else { history_summary.clone() },
+        console = console_section,
+    );
+
+    // Use the main LLM (fallback to simple summary if unavailable).
+    let ctx = crate::adk::context::AgentContext::new("explain_failure",
+        crate::adk::tool::ToolRegistry::new());
+    let explanation = match crate::llm::call_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), prompt).await {
+        Ok(s) => s.trim().to_string(),
+        Err(e) => format!("LLM unavailable: {e}. Raw info: status={status}, error={:?}", error_msg),
+    };
+
+    Ok(json!({
+        "run_id":           run_id,
+        "status":           status,
+        "explanation":      explanation,
+        "console_errors":   console_log.as_deref().map(parse_console_counts).map(|(e,_)| e).unwrap_or(0),
+        "ai_analysis":      ai_analysis,
     }))
 }
 
