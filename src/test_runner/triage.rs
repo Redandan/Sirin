@@ -59,6 +59,8 @@ pub async fn triage(
     ctx: &crate::adk::context::AgentContext,
     test: &TestGoal,
     result: &TestResult,
+    // In-memory run_id — fetches console_log from SQLite for richer context (#221).
+    run_id: Option<&str>,
 ) -> TriageOutcome {
     // Only triage non-passed results
     if matches!(result.status, TestStatus::Passed) {
@@ -117,12 +119,39 @@ pub async fn triage(
     // 4. LLM classification
     let locale = crate::test_runner::i18n::Locale::from_yaml(&test.locale);
     let context = collect_failure_context(test, result);
+
+    // Issue #221: enrich triage context with console errors from SQLite.
+    // Even a handful of error messages dramatically improves category accuracy
+    // (e.g. "404 /api/products" → api_bug instead of ui_bug).
+    let console_section = run_id
+        .and_then(|rid| crate::test_runner::store::get_console_log(rid))
+        .map(|log_json| {
+            // Parse and extract error-level messages only (warnings less useful for classification).
+            let msgs: Vec<String> = serde_json::from_str::<serde_json::Value>(&log_json)
+                .ok()
+                .and_then(|v| v.as_array().cloned())
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|m| m.get("level").and_then(|l| l.as_str()) == Some("error"))
+                .take(10)  // cap at 10 to avoid prompt bloat
+                .filter_map(|m| m.get("text").and_then(|t| t.as_str()).map(|t| {
+                    format!("  [console.error] {}", &t[..t.len().min(200)])
+                }))
+                .collect();
+            if msgs.is_empty() {
+                String::new()
+            } else {
+                format!("\n\nBrowser Console Errors ({} captured):\n{}", msgs.len(), msgs.join("\n"))
+            }
+        })
+        .unwrap_or_default();
+
     let prompt = format!(r#"{header}
 
 Categories:
 {cats}
 
-{context}
+{context}{console_section}
 
 Output strictly valid JSON (no markdown fence):
 {{
@@ -134,6 +163,7 @@ Output strictly valid JSON (no markdown fence):
         header = locale.triage_prompt_header(),
         cats = locale.triage_categories_doc(),
         context = context,
+        console_section = console_section,
         lang = locale.reasoning_language(),
         reason_hint = locale.triage_reason_hint(),
     );

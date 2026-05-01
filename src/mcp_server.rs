@@ -2566,10 +2566,12 @@ async fn call_run_regression_suite(args: Value) -> Result<Value, String> {
         }
     }
 
-    // Build results list
+    // Build results list — include console stats from SQLite (#223)
     let mut passed = 0usize;
     let mut failed = 0usize;
     let mut timed_out = 0usize;
+    let mut console_errors_total = 0u64;
+    let mut console_warnings_total = 0u64;
     for (test_id, run_id) in &run_ids {
         let result = done_map.get(run_id).cloned().unwrap_or(json!({ "status": "unknown" }));
         let status = result["status"].as_str().unwrap_or("unknown");
@@ -2578,26 +2580,55 @@ async fn call_run_regression_suite(args: Value) -> Result<Value, String> {
             "timeout" => timed_out += 1,
             _ => failed += 1,
         }
+        // Pull console stats from SQLite (written at test completion).
+        let (ce, cw) = crate::test_runner::store::get_console_log(run_id)
+            .as_deref()
+            .map(parse_console_counts)
+            .unwrap_or((0, 0));
+        console_errors_total  += ce as u64;
+        console_warnings_total += cw as u64;
+        let flag = if ce > 0 { "error" } else if cw > 0 { "warning" } else { "ok" };
         results.push(json!({
-            "test_id": test_id,
-            "run_id": run_id,
-            "status": status,
-            "duration_ms": result["details"]["duration_ms"],
-            "error": result["details"]["error"],
-            "replay_mode": result.get("replay_mode")
+            "test_id":          test_id,
+            "run_id":           run_id,
+            "status":           status,
+            "duration_ms":      result["details"]["duration_ms"],
+            "error":            result["details"]["error"],
+            "replay_mode":      result.get("replay_mode"),
+            "console_errors":   ce,
+            "console_warnings": cw,
+            "console_flag":     flag,
         }));
     }
 
+    // Sort: failures first, then console errors
+    results.sort_by(|a, b| {
+        let a_bad = (a["status"] != "passed") as u8;
+        let b_bad = (b["status"] != "passed") as u8;
+        b_bad.cmp(&a_bad)
+            .then(b["console_errors"].as_u64().cmp(&a["console_errors"].as_u64()))
+    });
+
     let summary = format!("{passed}/{total} PASS — failed: {failed}, timeout: {timed_out}");
+    let recommendation = if failed > 0 || timed_out > 0 {
+        format!("{} tests failed/timed out — check 'status' and 'error' fields", failed + timed_out)
+    } else if console_errors_total > 0 {
+        format!("All passed but {} console errors detected — review with get_test_result", console_errors_total)
+    } else {
+        format!("All {total} tests passed with clean console ✓")
+    };
     tracing::info!("[run_regression_suite] {}", summary);
 
     Ok(json!({
-        "total": total,
-        "passed": passed,
-        "failed": failed,
-        "timeout": timed_out,
-        "results": results,
-        "summary": summary
+        "total":                  total,
+        "passed":                 passed,
+        "failed":                 failed,
+        "timeout":                timed_out,
+        "console_errors_total":   console_errors_total,
+        "console_warnings_total": console_warnings_total,
+        "recommendation":         recommendation,
+        "results":                results,
+        "summary":                summary,
     }))
 }
 

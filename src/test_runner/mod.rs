@@ -128,7 +128,7 @@ async fn run_test_with_run_id(
     } else {
         let outcome = tokio::time::timeout(
             std::time::Duration::from_secs(60),
-            triage::triage(ctx, &test, &result),
+            triage::triage(ctx, &test, &result, run_id),
         )
         .await
         .unwrap_or_else(|_| {
