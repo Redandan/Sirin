@@ -836,6 +836,32 @@ fn handle_tools_list() -> Result<Value, String> {
                 }
             },
             {
+                "name": "generate_daily_brief",
+                "description": "#231 — 自動聚合 agora-trading 多個工具生成每日 ops 摘要（markdown）。\n\n一次呼叫取代手動跑 getMarketSnapshot + getOpenPositions + getShadowSignalStats 等。\n`sections`：逗號分隔，預設 market,portfolio,ml,ops。\n結果同時寫入 KB（topicKey=agora-daily-brief-YYYYMMDD）供下次 session 參考。\n\n需要 agora-trading + agora-ops token 設定。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "sections": { "type": "string", "description": "逗號分隔：market,portfolio,ml,ops（預設全部）" },
+                        "date":     { "type": "string", "description": "YYYY-MM-DD，預設今天" }
+                    }
+                }
+            },
+            {
+                "name": "kb_merge",
+                "description": "#226 — 合併多個 KB 條目到一個目標 key。\n\n`strategy`：\n- concat：直接合併所有 src 內容（預設）\n- llm：呼叫 LLM 智慧整合，去重複，保留精華\n合併後將 src 條目標為 stale。",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["src_keys", "dst_key"],
+                    "properties": {
+                        "src_keys":  { "type": "string",  "description": "逗號分隔的來源 topicKey 列表" },
+                        "dst_key":   { "type": "string",  "description": "目標 topicKey（若已存在則追加）" },
+                        "project":   { "type": "string",  "description": "project slug，預設 sirin" },
+                        "strategy":  { "type": "string",  "description": "concat（預設）| llm" },
+                        "dry_run":   { "type": "boolean", "description": "true=只預覽不寫入，預設 false" }
+                    }
+                }
+            },
+            {
                 "name": "route_query",
                 "description": "#233 — 依 intent registry 自動選擇 LLM 並呼叫。\n\n查 ~/.claude/llm_intents.json 找到 intent 對應的 backend+model，呼叫並回傳結果。\nintent 例：indicator-design(→deepseek), code-review(→claude), vision(→gemini)。\n找不到 intent → 使用 primary LLM（Gemini/Claude）。",
                 "inputSchema": {
@@ -1362,6 +1388,10 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         // #226 kb-lifecycle (non-embedding subset)
         "kb_stats"            => return call_kb_stats(arguments).await.map(wrap_json),
         "kb_diff"             => return call_kb_diff(arguments).await.map(wrap_json),
+        // #231 agora-daily-brief
+        "generate_daily_brief"=> return call_generate_daily_brief(arguments).await.map(wrap_json),
+        // #226 kb-merge
+        "kb_merge"            => return call_kb_merge(arguments).await.map(wrap_json),
         // #233 cross-ai-router-mcp
         "route_query"         => return call_route_query(arguments).await.map(wrap_json),
         "query_llm"           => return call_query_llm(arguments).await.map(wrap_json),
@@ -3660,6 +3690,228 @@ async fn call_benchmark_llms(args: Value) -> Result<Value, String> {
         "prompt_preview": prompt.chars().take(80).collect::<String>(),
         "backends_tested": results.len(),
         "results":         results,
+    }))
+}
+
+// ── #231 Daily Brief ─────────────────────────────────────────────────────────
+
+/// Call any agora-trading tool via HTTP and return raw text response.
+async fn call_agora_tool(name: &str, arguments: Value) -> Result<String, String> {
+    let read_tok = |server: &str| -> Option<String> {
+        let path = home_dir()?.join(".claude.json");
+        let src = std::fs::read_to_string(path).ok()?;
+        let v: Value = serde_json::from_str(&src).ok()?;
+        v["mcpServers"][server]["headers"]["Authorization"].as_str().map(String::from)
+    };
+    let trading_tok = read_tok("agora-trading").ok_or("Missing agora-trading token")?;
+    let ops_tok     = read_tok("agora-ops").ok_or("Missing agora-ops token")?;
+
+    let payload = json!({
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": { "name": name, "arguments": arguments },
+        "id": 1
+    });
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build().map_err(|e| e.to_string())?;
+    let resp = client.post("https://agoramarketapi.purrtechllc.com/api/mcp")
+        .header("Authorization", &trading_tok)
+        .header("X-OPS-Authorization", &ops_tok)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .json(&payload)
+        .send().await.map_err(|e| e.to_string())?
+        .text().await.map_err(|e| e.to_string())?;
+
+    for line in resp.lines() {
+        let line = line.trim().trim_start_matches("data: ");
+        if !line.starts_with('{') { continue; }
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        if let Some(text) = v["result"]["content"][0]["text"].as_str() {
+            return Ok(text.to_string());
+        }
+    }
+    Err(format!("{name}: no content returned"))
+}
+
+async fn call_generate_daily_brief(args: Value) -> Result<Value, String> {
+    let sections_str = args.get("sections").and_then(Value::as_str)
+        .unwrap_or("market,portfolio,ml,ops");
+    let sections: Vec<&str> = sections_str.split(',').map(str::trim).collect();
+    let date = args.get("date").and_then(Value::as_str)
+        .map(String::from)
+        .unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%d").to_string());
+
+    let mut brief_parts: Vec<String> = Vec::new();
+    brief_parts.push(format!("# Daily Ops Brief — {date}\n"));
+    let mut errors: Vec<String> = Vec::new();
+
+    // Fetch sections concurrently.
+    let mut tasks: Vec<(&str, tokio::task::JoinHandle<Result<String, String>>)> = Vec::new();
+
+    if sections.contains(&"market") {
+        tasks.push(("market", tokio::spawn(async {
+            call_agora_tool("getMarketSnapshot", json!({})).await
+        })));
+    }
+    if sections.contains(&"portfolio") {
+        tasks.push(("portfolio", tokio::spawn(async {
+            let pos = call_agora_tool("getOpenPositions", json!({})).await?;
+            Ok(pos)
+        })));
+    }
+    if sections.contains(&"ml") {
+        tasks.push(("ml", tokio::spawn(async {
+            call_agora_tool("getMlShadowStats", json!({})).await
+        })));
+    }
+    if sections.contains(&"ops") {
+        tasks.push(("ops", tokio::spawn(async {
+            call_agora_tool("getSystemHealth", json!({})).await
+        })));
+    }
+
+    for (section, handle) in tasks {
+        match handle.await {
+            Ok(Ok(text)) => {
+                brief_parts.push(format!("## {}\n\n{}\n", section_title(section), text));
+            }
+            Ok(Err(e)) => errors.push(format!("{section}: {e}")),
+            Err(e)     => errors.push(format!("{section}: join error: {e}")),
+        }
+    }
+
+    if !errors.is_empty() {
+        brief_parts.push(format!("\n---\n⚠️ Errors: {}", errors.join("; ")));
+    }
+
+    let content = brief_parts.join("\n");
+
+    // Write to KB.
+    let topic_key = format!("agora-daily-brief-{date}");
+    let kb_status = try_kb_write_handoff(&content, &format!("daily-brief-{date}"), "sirin", "");
+
+    Ok(json!({
+        "date":       date,
+        "sections":   sections,
+        "topic_key":  topic_key,
+        "kb_write":   kb_status,
+        "errors":     errors,
+        "brief":      content,
+    }))
+}
+
+fn section_title(section: &str) -> &str {
+    match section {
+        "market"    => "Market Snapshot",
+        "portfolio" => "Open Positions",
+        "ml"        => "ML Shadow Stats",
+        "ops"       => "System Health",
+        other       => other,
+    }
+}
+
+// ── #226 KB Merge ─────────────────────────────────────────────────────────────
+
+async fn call_kb_merge(args: Value) -> Result<Value, String> {
+    let src_keys_str = args["src_keys"].as_str().ok_or("Missing src_keys")?;
+    let dst_key      = args["dst_key"].as_str().ok_or("Missing dst_key")?;
+    let project      = args.get("project").and_then(Value::as_str).unwrap_or("sirin");
+    let strategy     = args.get("strategy").and_then(Value::as_str).unwrap_or("concat");
+    let dry_run      = args.get("dry_run").and_then(Value::as_bool).unwrap_or(false);
+
+    let src_keys: Vec<&str> = src_keys_str.split(',').map(str::trim).collect();
+
+    // Fetch all source entries concurrently.
+    let mut fetch_handles = Vec::new();
+    for key in &src_keys {
+        let k = key.to_string();
+        let p = project.to_string();
+        fetch_handles.push(tokio::spawn(async move {
+            kb_get_via_http(&k, &p).await.map(|c| (k, c))
+        }));
+    }
+
+    let mut src_contents: Vec<(String, String)> = Vec::new();
+    let mut fetch_errors: Vec<String> = Vec::new();
+    for handle in fetch_handles {
+        match handle.await {
+            Ok(Ok((k, c)))  => src_contents.push((k, c)),
+            Ok(Err(e))      => fetch_errors.push(e),
+            Err(e)          => fetch_errors.push(e.to_string()),
+        }
+    }
+
+    if src_contents.is_empty() {
+        return Err(format!("No source entries fetched. Errors: {}", fetch_errors.join("; ")));
+    }
+
+    // Merge content.
+    let merged_content = match strategy {
+        "llm" => {
+            // Ask LLM to intelligently merge.
+            let combined: String = src_contents.iter()
+                .map(|(k, c)| format!("### [{k}]\n{c}"))
+                .collect::<Vec<_>>().join("\n\n---\n\n");
+            let merge_prompt = format!(
+                "Merge these KB entries into one coherent, deduplicated entry. \
+                 Preserve all unique information. Use markdown. Be concise (< 2000 chars):\n\n{combined}"
+            );
+            let ctx = crate::adk::context::AgentContext::new("kb_merge", crate::adk::tool::ToolRegistry::new());
+            crate::llm::call_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), merge_prompt)
+                .await
+                .map_err(|e| e.to_string())?
+        }
+        _ => {
+            // concat: join with separators.
+            src_contents.iter()
+                .map(|(k, c)| format!("<!-- merged from {k} -->\n{c}"))
+                .collect::<Vec<_>>().join("\n\n---\n\n")
+        }
+    };
+
+    if dry_run {
+        return Ok(json!({
+            "dry_run":    true,
+            "dst_key":    dst_key,
+            "project":    project,
+            "strategy":   strategy,
+            "src_count":  src_contents.len(),
+            "merged_len": merged_content.len(),
+            "preview":    merged_content.chars().take(500).collect::<String>(),
+        }));
+    }
+
+    // Get existing dst content (for append) or start fresh.
+    let final_content = match kb_get_via_http(dst_key, project).await {
+        Ok(existing) if !existing.is_empty() => {
+            format!("{existing}\n\n---\n\n<!-- appended merge -->\n{merged_content}")
+        }
+        _ => merged_content.clone(),
+    };
+
+    // Write merged content to dst.
+    let write_status = try_kb_write_handoff(&final_content, &format!("merge:{}", src_keys_str), project, "");
+
+    // Mark sources as stale via best-effort HTTP calls.
+    let mut stale_results: Vec<String> = Vec::new();
+    for (key, _) in &src_contents {
+        let k = key.clone();
+        let p = project.to_string();
+        let r = call_agora_tool("kbMarkStale", json!({ "topicKey": k, "project": p })).await;
+        stale_results.push(format!("{k}: {}", if r.is_ok() { "stale" } else { "stale-failed" }));
+    }
+
+    Ok(json!({
+        "dst_key":       dst_key,
+        "project":       project,
+        "strategy":      strategy,
+        "src_count":     src_contents.len(),
+        "merged_len":    final_content.len(),
+        "kb_write":      write_status,
+        "stale_results": stale_results,
+        "fetch_errors":  fetch_errors,
     }))
 }
 
