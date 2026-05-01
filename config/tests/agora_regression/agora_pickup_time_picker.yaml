@@ -21,47 +21,43 @@ goal: |
   ax_click 無法到達 off-screen 元素！必須使用 ax_focus 讓 Flutter 自動捲動。
 
   正確操作流程：
-  步驟 1-23：準備工作（goto → wait → enable_a11y → scroll → 展開平台配送設定 → 等動畫 → 啟用 switch）
-  步驟 24：ax_find role=textbox name_regex="取貨結束時間"
-  步驟 25：ax_focus backend_id=<從 ax_find 拿到的值>  ← Flutter 自動 scroll + 聚焦
-  步驟 27：flutter_type text="14:00"
-  步驟 28：ax_value backend_id=<同上>  ← 確認欄位值是 14:00
-  步驟 29：screenshot_analyze "取貨結束時間是 14:00 嗎？"
-  步驟 30：done=true
+  步驟 1-20：準備工作（goto → wait 10s → enable_a11y × 2 → shadow_click 直接展開平台配送設定，不用 scroll）
+  步驟 21：ax_find role=textbox name_regex="取貨結束時間"
+  步驟 22：ax_focus backend_id=<從 ax_find 拿到的值>  ← Flutter 自動 scroll + 聚焦
+  步驟 24：flutter_type text="14:00"
+  步驟 25：ax_value backend_id=<同上>  ← 確認欄位值是 14:00
+  步驟 26：screenshot_analyze "取貨結束時間是 14:00 嗎？"
+  步驟 27：done=true
 
   詳細步驟：
 
-  1. goto target="https://redandan.github.io/?__test_role=seller#/seller/product"（確保在新增商品頁，清除前一測試 session 影響）
-  2. wait 8000（等 auto-login + Flutter 新增商品 form 完整載入）
+  1. goto target="https://redandan.github.io/?__test_role=seller#/seller/product"（確保在新增商品頁）
+  2. wait 10000（等 auto-login + Flutter 新增商品 form【完整】渲染，包含底部欄位）
   3. enable_a11y
-  4. wait 2000
-  5. enable_a11y
-  6. shadow_dump — 確認在新增商品 form（應看到商品名稱、價格等欄位）
-  7. flutter_scroll y=1500
-     （大幅捲動越過商品分類區，到達表單底部出貨設定/平台配送設定）
-  8. wait 1500（等 Flutter 重新渲染）
-  9. enable_a11y（重新初始化 AX tree — 必須在 scroll 後再次呼叫）
-  10. wait 1500（確保 AX tree 完全穩定）
-  11. shadow_click role=group name="平台配送設定"（展開 ExpansionTile）
-  12. wait 1500（等展開動畫完成）
-  13. enable_a11y（展開後重新初始化 AX tree）
-  14. wait 800
-  15. install_capture
-  16. wait 1000
-  17. enable_a11y
-  18. wait 500
-  19. shadow_dump（確認展開成功，看到「啟用平台配送」switch）
-  20. shadow_click role=switch name="啟用平台配送"
-  21. wait 2000
-  22. enable_a11y
-  23. wait 1000
-  24. ax_find role=textbox name_regex="取貨結束時間"  [取得 backend_id]
-  25. ax_focus backend_id=<id>  [⭐ scroll-to + focus]
-  26. wait 500  [等 flt-text-editing 建立]
-  27. flutter_type text="14:00"
-  28. ax_value backend_id=<id>  [驗證：應該是 "14:00"]
-  29. screenshot_analyze "取貨結束時間是 14:00 嗎？"
-  30. done=true
+  4. wait 3000（Flutter form 有大量欄位，AX tree 建構需時）
+  5. enable_a11y（二次確保，不用 scroll — AX tree 已包含 off-screen 元素）
+  6. wait 2000
+  7. shadow_dump（確認 AX tree 已有「平台配送設定」group — 若找不到，表示 form 未完整載入）
+  8. shadow_click role=group name="平台配送設定"（直接點擊，不需先 scroll；Flutter shadow DOM 支援 off-screen click）
+  9. wait 1500（等展開動畫完成）
+  10. enable_a11y（展開後重新初始化 AX tree）
+  11. wait 800
+  12. install_capture
+  13. wait 1000
+  14. enable_a11y
+  15. wait 500
+  16. shadow_dump（確認展開成功，看到「啟用平台配送」switch）
+  17. shadow_click role=switch name="啟用平台配送"
+  18. wait 2000
+  19. enable_a11y
+  20. wait 1000
+  21. ax_find role=textbox name_regex="取貨結束時間"  [取得 backend_id]
+  22. ax_focus backend_id=<id>  [⭐ scroll-to + focus]
+  23. wait 500  [等 flt-text-editing 建立]
+  24. flutter_type text="14:00"
+  25. ax_value backend_id=<id>  [驗證：應該是 "14:00"]
+  26. screenshot_analyze "取貨結束時間是 14:00 嗎？"
+  27. done=true
 
 success_criteria:
   - "展開平台配送設定（ExpansionTile，role=group）"
