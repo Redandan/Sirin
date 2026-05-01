@@ -239,10 +239,12 @@ src/updater.rs               Auto-update via GitHub Releases (self_update crate)
 src/claude_session.rs        Spawn `claude` CLI for cross-repo bug fixing
 src/config_check.rs          Diagnostics + AI fix proposal (dual-stage confirm)
 src/mcp_client.rs            External MCP server proxy
-src/mcp_server.rs            MCP HTTP server (:7700/mcp) — 18 tools exposed
-                             (run_test_batch added v0.4.0 — parallel YAML
-                             test fan-out via tokio Semaphore + per-test
-                             session_id; max 8 concurrent tabs)
+src/mcp_server.rs            MCP HTTP server (:7700/mcp) — 65+ tools exposed
+                             (run_test_batch added v0.4.0; v0.4.6 added 22 new
+                             tools: coverage, replay_last_failure, shadow_dump_diff,
+                             suggest_allowlist, list/add/remove_allow, save_point,
+                             create/list/mark_done task, session_cost,
+                             create_handoff, get_latest_handoff, kb_stats, kb_diff…)
 src/multi_agent/             PM/Engineer/Tester squad — persistent sessions via
                              `claude --continue`; SQLite task queue (JSONL);
                              multi-worker pool (spawn_n); GitHub issue loop-closure;
@@ -275,7 +277,7 @@ src/followup/                mod (worker loop) + candidates (self-assign)
 
 ```bash
 cargo check          # 0 errors
-cargo test --bin sirin   # 398+ passed, 17 ignored
+cargo test --bin sirin   # 632+ passed, 17 ignored
 cargo clippy             # warnings (false positives + architectural)
 cargo build --release
 ./target/release/sirin.exe --headless        # no-GUI mode (server / CI / SSH)

@@ -836,6 +836,30 @@ fn handle_tools_list() -> Result<Value, String> {
                 }
             },
             {
+                "name": "kb_stats",
+                "description": "#226 — KB 深度統計（補強 kbHealth）。透過 agora-trading MCP 取得指定 project 的條目分布：by domain / by status / by layer / draft ratio / stale ratio / oldest+newest confirmed。\n\n需要 agora-trading + agora-ops token 在 ~/.claude.json 中設定。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "project": { "type": "string", "description": "project slug：sirin / agora-backend / flutter，預設 sirin" }
+                    }
+                }
+            },
+            {
+                "name": "kb_diff",
+                "description": "#226 — 對比兩個 KB 條目的內容差異（行級 unified diff）。適合追蹤同一 topicKey 在不同版本的演進，或對比兩個相關條目的內容重疊度。\n\n需要 agora-trading token 在 ~/.claude.json 中設定。",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["topic_a", "topic_b"],
+                    "properties": {
+                        "topic_a":  { "type": "string", "description": "第一個 topicKey" },
+                        "topic_b":  { "type": "string", "description": "第二個 topicKey" },
+                        "project_a": { "type": "string", "description": "topic_a 的 project，預設 sirin" },
+                        "project_b": { "type": "string", "description": "topic_b 的 project，預設同 project_a" }
+                    }
+                }
+            },
+            {
                 "name": "config_diagnostics",
                 "description": "回傳 Sirin 當前配置診斷（LLM backend 連通、router 狀態、vision 可用性、Chrome/Claude CLI 等）。遇到測試全部失敗時用來自我檢查。",
                 "inputSchema": { "type": "object", "properties": {} }
@@ -1266,6 +1290,9 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         "create_handoff"      => return call_create_handoff(arguments).map(wrap_json),
         "get_latest_handoff"  => return call_get_latest_handoff(arguments).map(wrap_json),
         "list_handoff_history"=> return call_list_handoff_history(arguments).map(wrap_json),
+        // #226 kb-lifecycle (non-embedding subset)
+        "kb_stats"            => return call_kb_stats(arguments).await.map(wrap_json),
+        "kb_diff"             => return call_kb_diff(arguments).await.map(wrap_json),
         "config_diagnostics"   => return call_config_diagnostics().map(wrap_json),
         "diagnose"             => return Ok(wrap_json(crate::diagnose::snapshot())),
         "browser_exec"         => return call_browser_exec(arguments, user_agent).await.map(wrap_json),
@@ -3131,6 +3158,221 @@ fn call_list_handoff_history(args: Value) -> Result<Value, String> {
         "project": project,
         "count":   entries.len(),
         "history": entries,
+    }))
+}
+
+// ── #226 KB Lifecycle (non-embedding subset) ─────────────────────────────────
+
+/// Call agora-trading kbGet via HTTP and return the content string.
+async fn kb_get_via_http(topic_key: &str, project: &str) -> Result<String, String> {
+    let (trading_tok, ops_tok) = {
+        let read_tok = |server: &str| -> Option<String> {
+            let path = home_dir()?.join(".claude.json");
+            let src = std::fs::read_to_string(path).ok()?;
+            let v: Value = serde_json::from_str(&src).ok()?;
+            v["mcpServers"][server]["headers"]["Authorization"]
+                .as_str().map(String::from)
+        };
+        (
+            read_tok("agora-trading").ok_or("Missing agora-trading token")?,
+            read_tok("agora-ops").ok_or("Missing agora-ops token")?,
+        )
+    };
+
+    let payload = json!({
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+            "name": "kbGet",
+            "arguments": { "topicKey": topic_key, "project": project }
+        },
+        "id": 1
+    });
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let resp = client
+        .post("https://agoramarketapi.purrtechllc.com/api/mcp")
+        .header("Authorization", &trading_tok)
+        .header("X-OPS-Authorization", &ops_tok)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .text()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Parse SSE / JSON response, extract text content.
+    for line in resp.lines() {
+        let line = line.trim().trim_start_matches("data: ");
+        if !line.starts_with('{') { continue; }
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        if v["result"]["isError"].as_bool() == Some(true) {
+            return Err(format!("kbGet error: {}", v["result"]["content"][0]["text"]));
+        }
+        if let Some(text) = v["result"]["content"][0]["text"].as_str() {
+            return Ok(text.to_string());
+        }
+    }
+    Err(format!("kbGet: no content returned for {topic_key}@{project}"))
+}
+
+/// Same pattern but for kbHealth.
+async fn kb_health_via_http(project: &str) -> Result<String, String> {
+    let read_tok = |server: &str| -> Option<String> {
+        let path = home_dir()?.join(".claude.json");
+        let src = std::fs::read_to_string(path).ok()?;
+        let v: Value = serde_json::from_str(&src).ok()?;
+        v["mcpServers"][server]["headers"]["Authorization"]
+            .as_str().map(String::from)
+    };
+    let trading_tok = read_tok("agora-trading").ok_or("Missing agora-trading token")?;
+    let ops_tok     = read_tok("agora-ops").ok_or("Missing agora-ops token")?;
+
+    let payload = json!({
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": { "name": "kbHealth", "arguments": { "project": project } },
+        "id": 1
+    });
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client
+        .post("https://agoramarketapi.purrtechllc.com/api/mcp")
+        .header("Authorization", &trading_tok)
+        .header("X-OPS-Authorization", &ops_tok)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .json(&payload)
+        .send().await.map_err(|e| e.to_string())?
+        .text().await.map_err(|e| e.to_string())?;
+
+    for line in resp.lines() {
+        let line = line.trim().trim_start_matches("data: ");
+        if !line.starts_with('{') { continue; }
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        if let Some(text) = v["result"]["content"][0]["text"].as_str() {
+            return Ok(text.to_string());
+        }
+    }
+    Err("kbHealth: no content returned".to_string())
+}
+
+async fn call_kb_stats(args: Value) -> Result<Value, String> {
+    let project = args.get("project").and_then(Value::as_str).unwrap_or("sirin").to_string();
+
+    // Get health text and parse the structured sections.
+    let health_raw = kb_health_via_http(&project).await
+        .unwrap_or_else(|e| format!("kbHealth error: {e}"));
+
+    // Parse counts from the health text (format: "  key   N").
+    let mut by_status: std::collections::HashMap<String, u64> = Default::default();
+    let mut by_layer:  std::collections::HashMap<String, u64> = Default::default();
+    let mut by_domain: std::collections::HashMap<String, u64> = Default::default();
+    let mut total = 0u64;
+    let mut section = "";
+    for line in health_raw.lines() {
+        let t = line.trim();
+        if t.starts_with("total:") {
+            total = t.split_whitespace().last().and_then(|s| s.parse().ok()).unwrap_or(0);
+        } else if t == "by status:" { section = "status"; }
+        else if t == "by layer:"  { section = "layer"; }
+        else if t == "by domain:" { section = "domain"; }
+        else if !t.is_empty() && section != "" {
+            let parts: Vec<&str> = t.split_whitespace().collect();
+            if parts.len() >= 2 {
+                let key = parts[0].to_string();
+                let val: u64 = parts[1].parse().unwrap_or(0);
+                match section {
+                    "status" => { by_status.insert(key, val); }
+                    "layer"  => { by_layer.insert(key, val); }
+                    "domain" => { by_domain.insert(key, val); }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    let confirmed  = *by_status.get("confirmed").unwrap_or(&0);
+    let stale      = *by_status.get("stale").unwrap_or(&0);
+    let draft      = *by_status.get("draft").unwrap_or(&0);
+    let stale_pct  = if total > 0 { stale * 100 / total } else { 0 };
+    let draft_pct  = if total > 0 { draft * 100 / total } else { 0 };
+
+    Ok(json!({
+        "project":    project,
+        "total":      total,
+        "by_status":  by_status,
+        "by_layer":   by_layer,
+        "by_domain":  by_domain,
+        "ratios": {
+            "stale_pct":     stale_pct,
+            "draft_pct":     draft_pct,
+            "confirmed_pct": if total > 0 { confirmed * 100 / total } else { 0 },
+        },
+        "health_flag": if stale_pct > 10 { "⚠️ stale > 10%" } else { "✅ healthy" },
+        "raw_health":  health_raw,
+    }))
+}
+
+async fn call_kb_diff(args: Value) -> Result<Value, String> {
+    let topic_a   = args["topic_a"].as_str().ok_or("Missing topic_a")?;
+    let topic_b   = args["topic_b"].as_str().ok_or("Missing topic_b")?;
+    let project_a = args.get("project_a").and_then(Value::as_str).unwrap_or("sirin");
+    let project_b = args.get("project_b").and_then(Value::as_str).unwrap_or(project_a);
+
+    // Fetch both entries concurrently.
+    let (res_a, res_b) = tokio::join!(
+        kb_get_via_http(topic_a, project_a),
+        kb_get_via_http(topic_b, project_b),
+    );
+    let content_a = res_a?;
+    let content_b = res_b?;
+
+    let lines_a: Vec<&str> = content_a.lines().collect();
+    let lines_b: Vec<&str> = content_b.lines().collect();
+
+    let removed: Vec<String> = lines_a.iter()
+        .filter(|l| !lines_b.contains(l))
+        .map(|l| format!("- {l}"))
+        .collect();
+    let added: Vec<String> = lines_b.iter()
+        .filter(|l| !lines_a.contains(l))
+        .map(|l| format!("+ {l}"))
+        .collect();
+    let unchanged = lines_a.iter().filter(|l| lines_b.contains(l)).count();
+
+    let diff = if removed.is_empty() && added.is_empty() {
+        "  (identical content)".to_string()
+    } else {
+        format!("{}\n{}", removed.join("\n"), added.join("\n"))
+    };
+
+    // Rough overlap ratio.
+    let overlap_pct = if lines_a.len() + lines_b.len() > 0 {
+        unchanged * 200 / (lines_a.len() + lines_b.len())
+    } else { 0 };
+
+    Ok(json!({
+        "topic_a":      topic_a,
+        "topic_b":      topic_b,
+        "project_a":    project_a,
+        "project_b":    project_b,
+        "lines_a":      lines_a.len(),
+        "lines_b":      lines_b.len(),
+        "unchanged":    unchanged,
+        "removed":      removed.len(),
+        "added":        added.len(),
+        "overlap_pct":  overlap_pct,
+        "diff":         diff,
     }))
 }
 
