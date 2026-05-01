@@ -309,6 +309,42 @@ pub fn recent_runs_all(limit: usize) -> Vec<RunRecord> {
 ///
 /// Returns `(test_id, started_at, status, history_json)` or `None`
 /// when no row matches.
+/// Full context for `explain_failure` — status, ai_analysis, failure_category,
+/// history (last 5 steps extracted from history_json), and console_log.
+pub fn find_full_context_by_run_id(
+    run_id: &str,
+) -> Option<(String, Option<String>, Option<String>, Option<String>, Option<String>)> {
+    // Returns (status, failure_category, ai_analysis, last_steps_summary, console_log)
+    let conn = db().lock().unwrap_or_else(|e| e.into_inner());
+    conn.query_row(
+        "SELECT status, failure_category, ai_analysis, history_json, console_log \
+         FROM test_runs WHERE run_id = ?1 ORDER BY id DESC LIMIT 1",
+        rusqlite::params![run_id],
+        |row| {
+            let status: String = row.get(0)?;
+            let cat: Option<String> = row.get(1)?;
+            let ai: Option<String> = row.get(2)?;
+            let history: Option<String> = row.get(3)?;
+            let console: Option<String> = row.get(4)?;
+            // Extract last 5 steps from history_json for context.
+            let steps_summary: Option<String> = history.as_deref().and_then(|h| {
+                let arr = serde_json::from_str::<serde_json::Value>(h).ok()
+                    .and_then(|v| v.as_array().cloned())?;
+                let lines: Vec<String> = arr.iter().rev().take(5).rev().enumerate()
+                    .map(|(i, s)| {
+                        let action = s.get("action").and_then(|a| a.as_str()).unwrap_or("?");
+                        let obs = s.get("observation").and_then(|o| o.as_str()).unwrap_or("");
+                        let obs_trunc: String = obs.chars().take(120).collect();
+                        format!("  {}: {} → {}", i + 1, action, obs_trunc)
+                    })
+                    .collect();
+                Some(lines.join("\n"))
+            });
+            Ok((status, cat, ai, steps_summary, console))
+        },
+    ).ok()
+}
+
 pub fn find_history_by_run_id(
     run_id: &str,
 ) -> Option<(String, String, String, Option<String>)> {

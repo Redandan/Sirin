@@ -1617,32 +1617,37 @@ fn call_list_flaky_tests(args: Value) -> Result<Value, String> {
 async fn call_explain_failure(args: Value) -> Result<Value, String> {
     let run_id = args["run_id"].as_str().ok_or("Missing run_id")?;
 
-    // Gather all context from in-memory state + SQLite.
+    // Try in-memory state first, fall back to SQLite (handles pruned runs).
     let mem_state = crate::test_runner::runs::get(run_id);
-    let console_log = crate::test_runner::store::get_console_log(run_id);
 
-    // Pull history + analysis from in-memory run state.
-    let (status, ai_analysis, error_msg, history_summary) = match &mem_state {
-        Some(s) => {
-            let json = crate::test_runner::runs::to_json(s);
-            let status = json["status"].as_str().unwrap_or("unknown").to_string();
-            let details = &json["details"];
-            let ai = details["analysis"].as_str().map(String::from);
-            let err = details["error"].as_str().map(String::from);
-            // Build a compact history summary from the last few steps.
-            let hist = match &s.phase {
-                crate::test_runner::runs::RunPhase::Complete(r) => {
-                    r.history.iter().rev().take(5).rev().enumerate()
-                        .map(|(i, step)| format!("  {}: {} → {}", i+1,
-                            &step.action.to_string()[..step.action.to_string().len().min(60)],
-                            &step.observation[..step.observation.len().min(120)]))
-                        .collect::<Vec<_>>().join("\n")
-                }
-                _ => String::new(),
-            };
-            (status, ai, err, hist)
+    let (status, ai_analysis, error_msg, history_summary, console_log) = if let Some(ref s) = mem_state {
+        let json = crate::test_runner::runs::to_json(s);
+        let status = json["status"].as_str().unwrap_or("unknown").to_string();
+        let details = &json["details"];
+        let ai = details["analysis"].as_str().map(String::from);
+        let err = details["error"].as_str().map(String::from);
+        let hist = match &s.phase {
+            crate::test_runner::runs::RunPhase::Complete(r) => {
+                r.history.iter().rev().take(5).rev().enumerate()
+                    .map(|(i, step)| format!("  {}: {} → {}", i+1,
+                        &step.action.to_string()[..step.action.to_string().len().min(60)],
+                        &step.observation[..step.observation.len().min(120)]))
+                    .collect::<Vec<_>>().join("\n")
+            }
+            _ => String::new(),
+        };
+        let console = crate::test_runner::store::get_console_log(run_id);
+        (status, ai, err, hist, console)
+    } else {
+        // In-memory pruned — pull from SQLite.
+        match crate::test_runner::store::find_full_context_by_run_id(run_id) {
+            Some((status, cat, ai, steps, console)) => {
+                let hist: String = steps.unwrap_or_default();
+                let err: Option<String> = cat.map(|c| format!("failure_category: {c}"));
+                (status, ai, err, hist, console)
+            }
+            None => return Err(format!("run_id '{run_id}' not found (not in memory or SQLite)")),
         }
-        None => ("unknown".into(), None, None, String::new()),
     };
 
     if status == "passed" {
@@ -1654,7 +1659,7 @@ async fn call_explain_failure(args: Value) -> Result<Value, String> {
     }
 
     // Parse console errors.
-    let console_section = console_log.as_deref().map(|log| {
+    let console_section: String = console_log.as_deref().map(|log| {
         let msgs: Vec<String> = serde_json::from_str::<Value>(log).ok()
             .and_then(|v| v.as_array().cloned()).unwrap_or_default()
             .into_iter()
@@ -1678,9 +1683,9 @@ async fn call_explain_failure(args: Value) -> Result<Value, String> {
          Root cause explanation:",
         run_id = run_id,
         status = status,
-        err = error_msg.as_deref().unwrap_or("(none)"),
-        ai = ai_analysis.as_deref().unwrap_or("(none)"),
-        hist = if history_summary.is_empty() { "  (not available)".into() } else { history_summary.clone() },
+        err = error_msg.as_deref().unwrap_or("(none)").to_string(),
+        ai = ai_analysis.as_deref().unwrap_or("(none)").to_string(),
+        hist = if history_summary.is_empty() { "  (not available)".to_string() } else { history_summary.clone() },
         console = console_section,
     );
 
