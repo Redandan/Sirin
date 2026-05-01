@@ -22,6 +22,26 @@
 use std::io::Read;
 
 fn main() {
+    // On Windows/Git-Bash, broken-pipe (downstream exits before sirin-call
+    // finishes writing) does not send SIGPIPE but makes the write() syscall
+    // fail with ERROR_BROKEN_PIPE.  Rust's default handler panics on broken-
+    // pipe writes to stdout; instead we want to exit(0) silently so the
+    // process does not linger as a zombie in ps.
+    //
+    // The idiomatic fix is to use `std::io::ErrorKind::BrokenPipe` on every
+    // println!/writeln! failure, but the simplest cross-platform workaround
+    // is to reset SIGPIPE to SIG_DFL on Unix and handle ERROR_BROKEN_PIPE on
+    // Windows via the `signal-hook` / `ctrlc` approach.  For our lightweight
+    // wrapper we just suppress the broken-pipe panic via a custom panic hook.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let msg = info.to_string();
+        if msg.contains("BrokenPipe") || msg.contains("broken pipe") {
+            std::process::exit(0);
+        }
+        default_hook(info);
+    }));
+
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     if args.is_empty() || args[0] == "-h" || args[0] == "--help" {
