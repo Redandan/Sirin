@@ -119,6 +119,12 @@ fn db() -> &'static Mutex<rusqlite::Connection> {
             "ALTER TABLE test_runs ADD COLUMN is_replay INTEGER DEFAULT 0",
             [],
         );
+        // Migration: Issue #220 — save browser console log per test run.
+        // Stores JSON array of {level, text} objects captured by install_capture.
+        let _ = conn.execute(
+            "ALTER TABLE test_runs ADD COLUMN console_log TEXT",
+            [],
+        );
 
         Mutex::new(conn)
     })
@@ -170,6 +176,10 @@ pub struct NewRun<'a> {
     /// true when this run was a deterministic replay (0 LLM calls).
     /// false (default) for normal LLM ReAct runs.
     pub is_replay: bool,
+    /// Browser console log captured during the run (JSON array of {level, text}).
+    /// Set by executor at test completion via `browser::console_messages()`.
+    /// None if capture was not installed or the browser was unreachable.
+    pub console_log: Option<&'a str>,
 }
 
 pub fn record_run(r: NewRun<'_>) -> Result<i64, String> {
@@ -178,14 +188,14 @@ pub fn record_run(r: NewRun<'_>) -> Result<i64, String> {
         "INSERT INTO test_runs(test_id, started_at, duration_ms, status, failure_category, \
                                ai_analysis, screenshot_path, history_json, goal_json, run_id, \
                                iterations, dispute_reason, dispute_suspected_step, \
-                               dispute_suggested_fix, is_replay) \
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+                               dispute_suggested_fix, is_replay, console_log) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
         rusqlite::params![
             r.test_id, r.started_at, r.duration_ms, r.status,
             r.failure_category, r.ai_analysis, r.screenshot_path, r.history_json,
             r.goal_json, r.run_id, r.iterations,
             r.dispute_reason, r.dispute_suspected_step, r.dispute_suggested_fix,
-            r.is_replay as i32,
+            r.is_replay as i32, r.console_log,
         ],
     ).map_err(|e| format!("insert run: {e}"))?;
     let row_id = conn.last_insert_rowid();
@@ -217,6 +227,20 @@ pub fn find_run_by_run_id(run_id: &str) -> Option<(String, String, u32)> {
     )
     .ok()
     .and_then(|(g, s, i)| g.map(|gj| (gj, s, i)))
+}
+
+/// Return the browser console log stored for a given run_id (Issue #220).
+/// Returns `None` if the run is not found, not yet complete, or was recorded
+/// before the console_log column was added (pre-v0.4.5 rows).
+pub fn get_console_log(run_id: &str) -> Option<String> {
+    let conn = db().lock().unwrap_or_else(|e| e.into_inner());
+    conn.query_row(
+        "SELECT console_log FROM test_runs WHERE run_id = ?1 ORDER BY id DESC LIMIT 1",
+        rusqlite::params![run_id],
+        |row| row.get::<_, Option<String>>(0),
+    )
+    .ok()
+    .flatten()
 }
 
 /// Return the most recent test runs across ALL tests.  Used by the
@@ -777,6 +801,7 @@ mod tests {
                 dispute_suspected_step: None,
                 dispute_suggested_fix: None,
                 is_replay: false,
+                console_log: None,
             }).unwrap();
             // Small delay so started_at ordering is deterministic
             std::thread::sleep(std::time::Duration::from_millis(2));
@@ -806,6 +831,7 @@ mod tests {
             dispute_suspected_step: None,
             dispute_suggested_fix: None,
                 is_replay: false,
+                console_log: None,
         }).unwrap();
         let recovered = find_run_by_run_id(&rid).expect("must find by run_id");
         assert_eq!(recovered.0, goal_json);

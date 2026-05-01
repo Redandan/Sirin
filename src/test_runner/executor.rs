@@ -821,6 +821,7 @@ pub async fn execute_test_tracked(
             dispute_suspected_step: None,
             dispute_suggested_fix: None,
             is_replay: true,
+            console_log: None,
         });
         return result;
     }

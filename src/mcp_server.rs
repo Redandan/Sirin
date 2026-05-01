@@ -1292,10 +1292,51 @@ fn call_run_test_pipeline(args: Value) -> Result<Value, String> {
 
 fn call_get_test_result(args: Value) -> Result<Value, String> {
     let run_id = args["run_id"].as_str().ok_or("Missing run_id")?;
-    match crate::test_runner::runs::get(run_id) {
-        Some(state) => Ok(crate::test_runner::runs::to_json(&state)),
-        None => Err(format!("run_id '{run_id}' not found (may have been pruned)")),
+    let mut result = match crate::test_runner::runs::get(run_id) {
+        Some(state) => crate::test_runner::runs::to_json(&state),
+        None => return Err(format!("run_id '{run_id}' not found (may have been pruned)")),
+    };
+
+    // Issue #220: attach console log from SQLite (written at test completion).
+    // Only available once the test has finished; returns null while running.
+    let console_log = crate::test_runner::store::get_console_log(run_id);
+    if let Some(ref log_json) = console_log {
+        // Parse to compute a quick summary (error + warn counts) without
+        // requiring callers to parse the raw JSON themselves.
+        let (errors, warnings) = parse_console_counts(log_json);
+        if let Some(obj) = result.as_object_mut() {
+            obj.insert("console_log".into(), serde_json::Value::String(log_json.clone()));
+            obj.insert("console_errors".into(), serde_json::Value::Number(errors.into()));
+            obj.insert("console_warnings".into(), serde_json::Value::Number(warnings.into()));
+        }
+    } else {
+        if let Some(obj) = result.as_object_mut() {
+            obj.insert("console_log".into(), serde_json::Value::Null);
+            obj.insert("console_errors".into(), serde_json::Value::Number(0.into()));
+            obj.insert("console_warnings".into(), serde_json::Value::Number(0.into()));
+        }
     }
+
+    Ok(result)
+}
+
+/// Parse a console_log JSON string (array of {level, text}) and return
+/// (error_count, warning_count).  Gracefully returns (0, 0) on any parse error.
+fn parse_console_counts(log_json: &str) -> (u32, u32) {
+    let Ok(arr) = serde_json::from_str::<serde_json::Value>(log_json) else {
+        return (0, 0);
+    };
+    let Some(msgs) = arr.as_array() else { return (0, 0) };
+    let mut errors = 0u32;
+    let mut warnings = 0u32;
+    for msg in msgs {
+        match msg.get("level").and_then(|l| l.as_str()) {
+            Some("error")   => errors   += 1,
+            Some("warning") => warnings += 1,
+            _ => {}
+        }
+    }
+    (errors, warnings)
 }
 
 fn call_kill_run(args: Value) -> Result<Value, String> {

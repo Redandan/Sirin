@@ -174,6 +174,13 @@ async fn run_test_with_run_id(
     // can recover after the in-memory state is pruned.
     let history_json = serde_json::to_string(&result.history).ok();
     let goal_json = serde_json::to_string(&test).ok();
+
+    // Issue #220: capture browser console log after test completes.
+    // install_capture() was called at test start (executor.rs) so __sirin_console
+    // is populated. We call console_messages() here (sync, blocking) rather than
+    // in the async executor to keep executor.rs change-free for this patch.
+    let console_json = crate::browser::console_messages(500).ok();
+
     let _ = store::record_run(store::NewRun {
         test_id: &test.id,
         started_at: &started,
@@ -196,6 +203,7 @@ async fn run_test_with_run_id(
         dispute_suspected_step: result.dispute.as_ref().and_then(|d| d.suspected_step),
         dispute_suggested_fix: result.dispute.as_ref().and_then(|d| d.suggested_fix.as_deref()),
         is_replay: false,
+        console_log: console_json.as_deref(),
     });
 
     if fix_triggered {
@@ -469,6 +477,7 @@ pub fn spawn_adhoc_run(req: AdhocRunRequest) -> Result<String, String> {
                 dispute_suspected_step: result.dispute.as_ref().and_then(|d| d.suspected_step),
                 dispute_suggested_fix: result.dispute.as_ref().and_then(|d| d.suggested_fix.as_deref()),
         is_replay: false,
+        console_log: None,
             });
 
             runs::set_phase(&run_id_clone, runs::RunPhase::Complete(result));
@@ -651,6 +660,7 @@ pub fn spawn_batch_run(
                     dispute_suspected_step: result.dispute.as_ref().and_then(|d| d.suspected_step),
                     dispute_suggested_fix: result.dispute.as_ref().and_then(|d| d.suggested_fix.as_deref()),
         is_replay: false,
+        console_log: None,
                 });
 
                 let passed = matches!(result.status, TestStatus::Passed);
@@ -839,6 +849,7 @@ pub fn spawn_pipeline_run(
                     dispute_suspected_step: result.dispute.as_ref().and_then(|d| d.suspected_step),
                     dispute_suggested_fix: result.dispute.as_ref().and_then(|d| d.suggested_fix.as_deref()),
                     is_replay: false,
+                    console_log: None,
                 });
 
                 runs::set_phase(run_id, runs::RunPhase::Complete(result));
@@ -1336,6 +1347,7 @@ mod persist_tests {
             dispute_suspected_step: None,
             dispute_suggested_fix: None,
             is_replay: false,
+            console_log: None,
         }).unwrap();
 
         // NOTE: we deliberately do NOT call runs::new_run() — the in-memory
