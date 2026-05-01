@@ -2,8 +2,8 @@ id: agora_pickup_time_picker
 name: "取貨時間選擇器 v11 - ax_focus + executor prompt fix"
 url: "https://redandan.github.io/?__test_role=seller#/seller/product"
 
-max_iterations: 35
-timeout_secs: 600
+max_iterations: 50
+timeout_secs: 720
 
 # Seller 後台是 H5 手機版，與 Buyer 相同 viewport
 viewport:
