@@ -613,6 +613,17 @@ fn handle_tools_list() -> Result<Value, String> {
                 }
             },
             {
+                "name": "compare_with_replay",
+                "description": "#230 — 對比同一 test_id 的最近一次 script replay run 和最近一次 LLM run 的結果差異。\n\n用於評估 replay 模式是否可靠：比較兩者的 status / duration / iterations / failure_category。\n若只有其中一種 run 存在，也會回傳現有資料並標注缺少哪一種。",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["test_id"],
+                    "properties": {
+                        "test_id": { "type": "string", "description": "YAML test_id" }
+                    }
+                }
+            },
+            {
                 "name": "explain_failure",
                 "description": "用 LLM 解釋某次測試失敗的根因。整合截圖分析、console errors、歷史步驟、AI analysis，產生人類可讀的診斷報告。\n\n適合 debug 時快速理解失敗原因，不需要手動翻 history_json。",
                 "inputSchema": {
@@ -1369,6 +1380,7 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         "test_coverage"           => return call_test_coverage(arguments).map(wrap_json),
         "replay_last_failure"     => return call_replay_last_failure(arguments).map(wrap_json),
         "shadow_dump_diff"        => return call_shadow_dump_diff(arguments).map(wrap_json),
+        "compare_with_replay"     => return call_compare_with_replay(arguments).map(wrap_json),
         "explain_failure"         => return call_explain_failure(arguments).await.map(wrap_json),
         "list_saved_scripts"   => return call_list_saved_scripts().map(wrap_json),
         "delete_saved_script"  => return call_delete_saved_script(arguments).map(wrap_json),
@@ -2394,6 +2406,79 @@ fn call_shadow_dump_diff(args: Value) -> Result<Value, String> {
         "diff":            diff,
         "obs_a":           obs_a,
         "obs_b":           obs_b,
+    }))
+}
+
+/// #230 compareWithReplay — diff most recent script run vs most recent LLM run.
+fn call_compare_with_replay(args: Value) -> Result<Value, String> {
+    let test_id = args["test_id"].as_str().ok_or("Missing test_id")?;
+
+    // Fetch recent runs for this test_id (up to 20, enough to find both kinds).
+    let runs = crate::test_runner::store::recent_runs(test_id, 20);
+    if runs.is_empty() {
+        return Err(format!("No runs found for test_id={test_id}"));
+    }
+
+    // Split into replay (is_replay=true) and LLM (is_replay=false) runs.
+    let latest_replay = runs.iter().find(|r| r.is_replay);
+    let latest_llm    = runs.iter().find(|r| !r.is_replay);
+
+    let to_summary = |r: &crate::test_runner::store::RunRecord| json!({
+        "mode":             if r.is_replay { "script" } else { "llm" },
+        "status":          r.status,
+        "started_at":      r.started_at,
+        "duration_ms":     r.duration_ms,
+        "failure_category": r.failure_category,
+        "console_errors":  r.console_errors,
+        "console_warnings": r.console_warnings,
+    });
+
+    let replay_summary = latest_replay.map(to_summary);
+    let llm_summary    = latest_llm.map(to_summary);
+
+    // Compute comparison if both exist.
+    let comparison: Option<Value> = match (latest_replay, latest_llm) {
+        (Some(r), Some(l)) => {
+            let both_passed  = r.status == "passed" && l.status == "passed";
+            let both_failed  = r.status != "passed" && l.status != "passed";
+            let same_outcome = r.status == l.status;
+            let duration_delta_ms: i64 = match (r.duration_ms, l.duration_ms) {
+                (Some(rd), Some(ld)) => rd - ld,
+                _ => 0,
+            };
+            let verdict = if both_passed {
+                "✅ 兩者都 PASS — replay 可靠"
+            } else if both_failed {
+                "⚠️ 兩者都 FAIL — 可能是真實 bug，不是 replay 問題"
+            } else if r.status == "passed" && l.status != "passed" {
+                "⚡ replay PASS 但 LLM FAIL — LLM 行為不一致，replay 更穩定"
+            } else {
+                "🔴 LLM PASS 但 replay FAIL — script 可能過期，需重新錄製"
+            };
+            Some(json!({
+                "same_outcome":     same_outcome,
+                "verdict":          verdict,
+                "duration_delta_ms": duration_delta_ms,
+                "replay_faster":    duration_delta_ms < 0,
+            }))
+        }
+        _ => None,
+    };
+
+    // Has a script at all?
+    let has_script = crate::test_runner::store::script_info(test_id).is_some();
+
+    Ok(json!({
+        "test_id":        test_id,
+        "has_script":     has_script,
+        "replay_run":     replay_summary,
+        "llm_run":        llm_summary,
+        "comparison":     comparison,
+        "note": if !has_script {
+            "no saved script — run a test first to record a script"
+        } else if latest_replay.is_none() {
+            "no replay run found yet — trigger a replay to compare"
+        } else { "" },
     }))
 }
 

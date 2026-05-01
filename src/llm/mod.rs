@@ -1259,7 +1259,7 @@ mod tests {
         let err_str = result.unwrap_err().to_string();
         let err_box: Box<dyn std::error::Error + Send + Sync> = err_str.clone().into();
         assert!(
-            super::is_rate_limit_err(&err_box),
+            super::is_rate_limit_err(err_box.as_ref()),
             "error should indicate rate limit; got: {err_str}"
         );
     }

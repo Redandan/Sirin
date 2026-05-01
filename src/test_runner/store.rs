@@ -147,6 +147,9 @@ pub struct RunRecord {
     pub console_errors: u32,
     /// Number of console warnings captured. 0 = none or not captured.
     pub console_warnings: u32,
+    /// True when this run was executed in deterministic script-replay mode.
+    /// False (default) for normal LLM ReAct runs.  Maps to `is_replay` DB column.
+    pub is_replay: bool,
 }
 
 // ── API ──────────────────────────────────────────────────────────────────────
@@ -271,7 +274,7 @@ pub fn recent_runs_all(limit: usize) -> Vec<RunRecord> {
     let conn = db().lock().unwrap_or_else(|e| e.into_inner());
     let mut stmt = match conn.prepare(
         "SELECT id, test_id, started_at, duration_ms, status, failure_category, ai_analysis, \
-         screenshot_path, console_log \
+         screenshot_path, console_log, COALESCE(is_replay, 0) \
          FROM test_runs ORDER BY started_at DESC LIMIT ?1",
     ) {
         Ok(s) => s,
@@ -293,6 +296,7 @@ pub fn recent_runs_all(limit: usize) -> Vec<RunRecord> {
                 screenshot_path: row.get(7)?,
                 console_errors: ce,
                 console_warnings: cw,
+                is_replay: row.get::<_, i64>(9).unwrap_or(0) != 0,
             })
         },
     );
@@ -409,7 +413,7 @@ pub fn recent_runs(test_id: &str, limit: usize) -> Vec<RunRecord> {
     let conn = db().lock().unwrap_or_else(|e| e.into_inner());
     let mut stmt = match conn.prepare(
         "SELECT id, test_id, started_at, duration_ms, status, failure_category, ai_analysis, \
-         screenshot_path, console_log \
+         screenshot_path, console_log, COALESCE(is_replay, 0) \
          FROM test_runs WHERE test_id = ?1 ORDER BY started_at DESC LIMIT ?2",
     ) {
         Ok(s) => s,
@@ -431,6 +435,7 @@ pub fn recent_runs(test_id: &str, limit: usize) -> Vec<RunRecord> {
                 screenshot_path: row.get(7)?,
                 console_errors: ce,
                 console_warnings: cw,
+                is_replay: row.get::<_, i64>(9).unwrap_or(0) != 0,
             })
         },
     );
