@@ -187,6 +187,18 @@ pub struct TestGoal {
     /// differ between mobile and desktop).
     #[serde(default)]
     pub viewport: Option<TestViewport>,
+    /// When `true`, the test is automatically marked **failed** if any
+    /// browser console `error`-level messages were captured during the run
+    /// (regardless of `success_criteria`).
+    ///
+    /// Default `false` — console errors are recorded and visible in
+    /// `get_test_result` but do not auto-fail.  Set to `true` on tests
+    /// where a clean console is part of the acceptance criteria.
+    ///
+    /// Useful for catching silent regressions (unhandled promise rejections,
+    /// missing API responses, Flutter framework warnings, etc.)
+    #[serde(default)]
+    pub fail_on_console_errors: bool,
 }
 
 /// Viewport configuration for a test.

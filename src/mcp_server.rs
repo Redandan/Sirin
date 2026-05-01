@@ -544,6 +544,17 @@ fn handle_tools_list() -> Result<Value, String> {
                 }
             },
             {
+                "name": "test_summary",
+                "description": "一次呼叫取得最近一批測試的完整摘要：pass/fail counts + console_errors 統計 + 建議動作。適合每次 regression suite 跑完後立刻查看結果。\n\n回傳: { passed, failed, console_errors_total, console_warnings_total, results: [{test_id, status, console_errors, console_warnings, flag}] }",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "since":  { "type": "string", "description": "只看此時間（HH:MM）之後的 runs，預設最近 1 小時" },
+                        "limit":  { "type": "number", "description": "最多看幾個不重複的 test，預設 31" }
+                    }
+                }
+            },
+            {
                 "name": "test_analytics",
                 "description": "聚合測試健康指標：pass rate (近 10 / 30 runs)、flaky 標記、avg iterations、avg duration、最常見 failure_category。不指定 test_id 時返回全部測試（依 pass_rate_7d 升序，最差優先）+ summary 區塊。",
                 "inputSchema": {
@@ -961,6 +972,7 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         "get_run_trace"        => return call_get_run_trace(arguments).map(wrap_json),
         "list_recent_runs"     => return call_list_recent_runs(arguments).map(wrap_json),
         "test_analytics"       => return call_test_analytics(arguments).map(wrap_json),
+        "test_summary"         => return call_test_summary(arguments).map(wrap_json),
         "list_saved_scripts"   => return call_list_saved_scripts().map(wrap_json),
         "delete_saved_script"  => return call_delete_saved_script(arguments).map(wrap_json),
         "list_fixes"           => return call_list_fixes(arguments).map(wrap_json),
@@ -1446,17 +1458,102 @@ fn call_list_recent_runs(args: Value) -> Result<Value, String> {
         Some(tid) => crate::test_runner::store::recent_runs(tid, limit),
         None      => crate::test_runner::store::recent_runs_all(limit),
     };
-    let items: Vec<Value> = runs.into_iter().map(|r| json!({
-        "id":               r.id,
-        "test_id":          r.test_id,
-        "started_at":       r.started_at,
-        "duration_ms":      r.duration_ms,
-        "status":           r.status,
-        "failure_category": r.failure_category,
-        "ai_analysis":      r.ai_analysis,
-        "screenshot_path":  r.screenshot_path,
-    })).collect();
+    let items: Vec<Value> = runs.into_iter().map(|r| {
+        let mut obj = json!({
+            "id":               r.id,
+            "test_id":          r.test_id,
+            "started_at":       r.started_at,
+            "duration_ms":      r.duration_ms,
+            "status":           r.status,
+            "failure_category": r.failure_category,
+            "ai_analysis":      r.ai_analysis,
+            "screenshot_path":  r.screenshot_path,
+            "console_errors":   r.console_errors,
+            "console_warnings": r.console_warnings,
+        });
+        // Surface a quick ⚠️ flag for tests with console errors so callers
+        // don't need to parse counts themselves.
+        if r.console_errors > 0 {
+            obj["console_flag"] = serde_json::Value::String("error".into());
+        } else if r.console_warnings > 0 {
+            obj["console_flag"] = serde_json::Value::String("warning".into());
+        }
+        obj
+    }).collect();
     Ok(json!({ "count": items.len(), "runs": items }))
+}
+
+/// `test_summary` — one-shot summary of the most recent batch / regression run.
+/// Groups results by test_id (most recent win), computes console stats, and
+/// flags tests with errors so callers see a clean pass/fail + console report.
+fn call_test_summary(args: Value) -> Result<Value, String> {
+    let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(31).min(100) as usize;
+
+    // Default: runs from the last hour.
+    let since_str = args.get("since").and_then(Value::as_str);
+    let cutoff = since_str.map(String::from).unwrap_or_else(|| {
+        let t = chrono::Local::now() - chrono::Duration::hours(1);
+        t.format("%H:%M").to_string()
+    });
+
+    let all_runs = crate::test_runner::store::recent_runs_all(limit * 4);
+
+    // Deduplicate by test_id, keep most recent per test.
+    let mut seen: std::collections::HashMap<String, crate::test_runner::store::RunRecord> =
+        std::collections::HashMap::new();
+    for r in all_runs {
+        if r.started_at.len() >= 16 && &r.started_at[11..16] >= cutoff.as_str() {
+            seen.entry(r.test_id.clone()).or_insert(r);
+        }
+    }
+
+    let mut results: Vec<Value> = seen.values().map(|r| {
+        let flag = if r.console_errors > 0 { "error" }
+                   else if r.console_warnings > 0 { "warning" }
+                   else { "ok" };
+        json!({
+            "test_id":          r.test_id,
+            "status":           r.status,
+            "duration_ms":      r.duration_ms,
+            "console_errors":   r.console_errors,
+            "console_warnings": r.console_warnings,
+            "flag":             flag,
+        })
+    }).collect();
+    results.sort_by(|a, b| {
+        // Sort: failures first, then console-error, then by test_id
+        let a_bad = a["status"].as_str().map(|s| s != "passed").unwrap_or(false) as u8;
+        let b_bad = b["status"].as_str().map(|s| s != "passed").unwrap_or(false) as u8;
+        b_bad.cmp(&a_bad)
+            .then(b["console_errors"].as_u64().cmp(&a["console_errors"].as_u64()))
+            .then(a["test_id"].as_str().cmp(&b["test_id"].as_str()))
+    });
+
+    let total = results.len();
+    let passed = results.iter().filter(|r| r["status"] == "passed").count();
+    let failed = total - passed;
+    let console_errors_total: u64 = results.iter()
+        .filter_map(|r| r["console_errors"].as_u64()).sum();
+    let console_warnings_total: u64 = results.iter()
+        .filter_map(|r| r["console_warnings"].as_u64()).sum();
+
+    let recommendation = if failed > 0 {
+        format!("{} tests failed — check 'flag' and 'status' fields", failed)
+    } else if console_errors_total > 0 {
+        format!("All passed but {} console errors detected — review with get_test_result", console_errors_total)
+    } else {
+        format!("All {} tests passed with clean console ✓", total)
+    };
+
+    Ok(json!({
+        "total":                  total,
+        "passed":                 passed,
+        "failed":                 failed,
+        "console_errors_total":   console_errors_total,
+        "console_warnings_total": console_warnings_total,
+        "recommendation":         recommendation,
+        "results":                results,
+    }))
 }
 
 fn call_test_analytics(args: Value) -> Result<Value, String> {

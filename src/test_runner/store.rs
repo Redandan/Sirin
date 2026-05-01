@@ -142,6 +142,11 @@ pub struct RunRecord {
     pub failure_category: Option<String>,
     pub ai_analysis: Option<String>,
     pub screenshot_path: Option<String>,
+    /// Number of console errors (level="error") captured during the run.
+    /// Derived from console_log at query time. 0 = no errors or not captured.
+    pub console_errors: u32,
+    /// Number of console warnings captured. 0 = none or not captured.
+    pub console_warnings: u32,
 }
 
 // ── API ──────────────────────────────────────────────────────────────────────
@@ -243,12 +248,30 @@ pub fn get_console_log(run_id: &str) -> Option<String> {
     .flatten()
 }
 
+/// Parse console_log JSON and return (error_count, warning_count).
+fn console_counts(log_json: Option<&str>) -> (u32, u32) {
+    let Some(json) = log_json else { return (0, 0) };
+    let Ok(arr) = serde_json::from_str::<serde_json::Value>(json) else { return (0, 0) };
+    let Some(msgs) = arr.as_array() else { return (0, 0) };
+    let mut errors = 0u32;
+    let mut warnings = 0u32;
+    for m in msgs {
+        match m.get("level").and_then(|l| l.as_str()) {
+            Some("error")   => errors   += 1,
+            Some("warning") => warnings += 1,
+            _ => {}
+        }
+    }
+    (errors, warnings)
+}
+
 /// Return the most recent test runs across ALL tests.  Used by the
 /// `list_recent_runs` MCP endpoint when no test_id is specified.
 pub fn recent_runs_all(limit: usize) -> Vec<RunRecord> {
     let conn = db().lock().unwrap_or_else(|e| e.into_inner());
     let mut stmt = match conn.prepare(
-        "SELECT id, test_id, started_at, duration_ms, status, failure_category, ai_analysis, screenshot_path \
+        "SELECT id, test_id, started_at, duration_ms, status, failure_category, ai_analysis, \
+         screenshot_path, console_log \
          FROM test_runs ORDER BY started_at DESC LIMIT ?1",
     ) {
         Ok(s) => s,
@@ -256,16 +279,22 @@ pub fn recent_runs_all(limit: usize) -> Vec<RunRecord> {
     };
     let rows = stmt.query_map(
         rusqlite::params![limit as i64],
-        |row| Ok(RunRecord {
-            id: row.get(0)?,
-            test_id: row.get(1)?,
-            started_at: row.get(2)?,
-            duration_ms: row.get(3)?,
-            status: row.get(4)?,
-            failure_category: row.get(5)?,
-            ai_analysis: row.get(6)?,
-            screenshot_path: row.get(7)?,
-        }),
+        |row| {
+            let log: Option<String> = row.get(8)?;
+            let (ce, cw) = console_counts(log.as_deref());
+            Ok(RunRecord {
+                id: row.get(0)?,
+                test_id: row.get(1)?,
+                started_at: row.get(2)?,
+                duration_ms: row.get(3)?,
+                status: row.get(4)?,
+                failure_category: row.get(5)?,
+                ai_analysis: row.get(6)?,
+                screenshot_path: row.get(7)?,
+                console_errors: ce,
+                console_warnings: cw,
+            })
+        },
     );
     match rows {
         Ok(iter) => iter.filter_map(Result::ok).collect(),
@@ -301,7 +330,8 @@ pub fn find_history_by_run_id(
 pub fn recent_runs(test_id: &str, limit: usize) -> Vec<RunRecord> {
     let conn = db().lock().unwrap_or_else(|e| e.into_inner());
     let mut stmt = match conn.prepare(
-        "SELECT id, test_id, started_at, duration_ms, status, failure_category, ai_analysis, screenshot_path \
+        "SELECT id, test_id, started_at, duration_ms, status, failure_category, ai_analysis, \
+         screenshot_path, console_log \
          FROM test_runs WHERE test_id = ?1 ORDER BY started_at DESC LIMIT ?2",
     ) {
         Ok(s) => s,
@@ -309,16 +339,22 @@ pub fn recent_runs(test_id: &str, limit: usize) -> Vec<RunRecord> {
     };
     let rows = stmt.query_map(
         rusqlite::params![test_id, limit as i64],
-        |row| Ok(RunRecord {
-            id: row.get(0)?,
-            test_id: row.get(1)?,
-            started_at: row.get(2)?,
-            duration_ms: row.get(3)?,
-            status: row.get(4)?,
-            failure_category: row.get(5)?,
-            ai_analysis: row.get(6)?,
-            screenshot_path: row.get(7)?,
-        }),
+        |row| {
+            let log: Option<String> = row.get(8)?;
+            let (ce, cw) = console_counts(log.as_deref());
+            Ok(RunRecord {
+                id: row.get(0)?,
+                test_id: row.get(1)?,
+                started_at: row.get(2)?,
+                duration_ms: row.get(3)?,
+                status: row.get(4)?,
+                failure_category: row.get(5)?,
+                ai_analysis: row.get(6)?,
+                screenshot_path: row.get(7)?,
+                console_errors: ce,
+                console_warnings: cw,
+            })
+        },
     );
     match rows {
         Ok(iter) => iter.filter_map(Result::ok).collect(),

@@ -181,11 +181,35 @@ async fn run_test_with_run_id(
     // in the async executor to keep executor.rs change-free for this patch.
     let console_json = crate::browser::console_messages(500).ok();
 
+    // Issue #220: fail_on_console_errors — if the YAML requests it and the
+    // console captured error-level messages, override a passing result to failed.
+    let effective_result_status = if test.fail_on_console_errors
+        && matches!(result.status, TestStatus::Passed)
+    {
+        if let Some(ref log) = console_json {
+            let has_error = serde_json::from_str::<serde_json::Value>(log)
+                .ok()
+                .and_then(|v| v.as_array().cloned())
+                .map(|msgs| msgs.iter().any(|m| m.get("level").and_then(|l| l.as_str()) == Some("error")))
+                .unwrap_or(false);
+            if has_error {
+                tracing::warn!("[test_runner] '{}' overridden to failed: console errors found (fail_on_console_errors=true)", test.id);
+                TestStatus::Failed
+            } else {
+                result.status.clone()
+            }
+        } else {
+            result.status.clone()
+        }
+    } else {
+        result.status.clone()
+    };
+
     let _ = store::record_run(store::NewRun {
         test_id: &test.id,
         started_at: &started,
         duration_ms: Some(result.duration_ms as i64),
-        status: match result.status {
+        status: match effective_result_status {
             TestStatus::Passed   => "passed",
             TestStatus::Failed   => "failed",
             TestStatus::Timeout  => "timeout",
@@ -413,6 +437,7 @@ pub fn spawn_adhoc_run(req: AdhocRunRequest) -> Result<String, String> {
         show_action_indicator: false,  // Issue #75: opt-in only; ad-hoc keeps clean DOM
         max_retries: 0,  // ad-hoc runs don't retry by default
         viewport: None,  // ad-hoc uses process default viewport
+        fail_on_console_errors: false,  // ad-hoc runs never auto-fail on console errors
     };
 
     let run_id = runs::new_run(&test_id);
@@ -1088,6 +1113,7 @@ pub fn persist_adhoc_run(p: PersistAdhocParams) -> Result<PersistAdhocResult, St
         show_action_indicator: goal.show_action_indicator,
         max_retries: goal.max_retries,
         viewport: goal.viewport.clone(),
+        fail_on_console_errors: goal.fail_on_console_errors,
     };
 
     // Serialize and write.  serde_yaml uses 2-space indent and never
