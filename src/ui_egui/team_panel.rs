@@ -137,8 +137,8 @@ fn show_header(
             }
 
             // Start worker
-            if !dash.worker_running {
-                if ui.add(
+            if !dash.worker_running
+                && ui.add(
                     egui::Button::new(
                         RichText::new("▶ 啟動 Worker")
                             .size(theme::FONT_SMALL)
@@ -153,7 +153,6 @@ fn show_header(
                     svc.team_start_worker();
                     state.last_refresh = None;
                 }
-            }
         });
     });
 }

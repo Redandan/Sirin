@@ -99,6 +99,13 @@ pub fn thin_separator(ui: &mut egui::Ui) {
     ui.add_space(SP_XS);
 }
 
+/// Lightweight section header — smaller than `section()`, no separator below.
+/// Used inside panels that already have their own structure.
+pub fn section_header(ui: &mut egui::Ui, title: &str) {
+    ui.colored_label(TEXT_DIM, RichText::new(title).size(FONT_SMALL).strong().monospace());
+    ui.add_space(SP_XS);
+}
+
 /// Card — NO border. Just slightly lighter bg. Claude Desktop style.
 pub fn card(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new()

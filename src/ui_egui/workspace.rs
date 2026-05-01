@@ -95,12 +95,11 @@ fn show_chat(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, agent_id: &str, state
     ui.add_space(theme::SP_SM);
     ui.horizontal(|ui| {
         // 清空按鈕（僅在有歷史時顯示）
-        if !state.chat_history.is_empty() {
-            if ui.add(egui::Button::new(RichText::new("清空").size(theme::FONT_SMALL).color(theme::DANGER.linear_multiply(0.7)))
+        if !state.chat_history.is_empty()
+            && ui.add(egui::Button::new(RichText::new("清空").size(theme::FONT_SMALL).color(theme::DANGER.linear_multiply(0.7)))
                 .fill(theme::DANGER.linear_multiply(0.08)).corner_radius(4.0)).clicked() {
                 state.chat_history.clear();
             }
-        }
         let send_btn_width = 60.0;
         let clear_btn_width = if state.chat_history.is_empty() { 0.0 } else { 46.0 };
         let input_width = (ui.available_width() - send_btn_width - clear_btn_width).min(540.0);

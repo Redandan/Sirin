@@ -161,19 +161,26 @@ fn draw_gear(painter: &egui::Painter, c: egui::Pos2, col: egui::Color32) {
 /// `expanded`=false → icon-only narrow strip (default, like the reference image).
 /// `expanded`=true  → labelled accordion mode.
 pub struct SidebarState {
-    pub expanded: bool,
-    pub agents_open: bool,
-    pub system_open: bool,
-    pub tools_open: bool,
+    pub expanded:       bool,
+    pub agents_open:    bool,
+    pub testing_open:   bool,
+    pub automation_open: bool,
+    pub ops_open:       bool,
+    pub system_open:    bool,
+    // legacy — kept for ensure_view_visible compat
+    pub tools_open:     bool,
 }
 
 impl Default for SidebarState {
     fn default() -> Self {
         Self {
-            expanded: false,        // start in icon mode (like the reference)
-            agents_open: true,
-            system_open: false,
-            tools_open: false,
+            expanded:        false,
+            agents_open:     true,
+            testing_open:    true,
+            automation_open: false,
+            ops_open:        false,
+            system_open:     false,
+            tools_open:      false,
         }
     }
 }
@@ -183,7 +190,9 @@ impl SidebarState {
         match view {
             View::Workspace(_) => self.agents_open = true,
             View::Settings | View::Log => self.system_open = true,
-            View::Browser | View::Monitor | View::Team | View::TestRuns => self.tools_open = true,
+            View::TestRuns | View::Coverage | View::BrowserMonitor => self.testing_open = true,
+            View::Team | View::McpPlayground => self.automation_open = true,
+            View::AiRouter | View::SessionTasks | View::CostKb => self.ops_open = true,
         }
     }
 }
@@ -254,12 +263,35 @@ fn show_icon_nav(
     thin_strip(ui);
     ui.add_space(theme::SP_XS);
 
-    // ── System / tool nav icons ───────────────────────────────────────
-    nav_icon(ui, Icon::Gear,    "系統設定",  View::Settings, view);
-    nav_icon(ui, Icon::Lines,   "Log",       View::Log,      view);
-    nav_icon(ui, Icon::Globe,   "Browser",   View::Browser,  view);
-    nav_icon(ui, Icon::Monitor, "Monitor",   View::Monitor,  view);
-    nav_icon(ui, Icon::People,  "開發小隊",  View::Team,     view);
+    // ── TESTING ──────────────────────────────────────────────────────────
+    nav_icon(ui, Icon::Lines,   "Test Runs",      View::TestRuns,       view);
+    nav_icon(ui, Icon::Glyph("▦"), "Coverage",   View::Coverage,       view);
+    nav_icon(ui, Icon::Globe,   "Browser",        View::BrowserMonitor, view);
+
+    ui.add_space(theme::SP_XS);
+    thin_strip(ui);
+    ui.add_space(theme::SP_XS);
+
+    // ── AUTOMATION ───────────────────────────────────────────────────────
+    nav_icon(ui, Icon::People,  "Dev Squad",      View::Team,          view);
+    nav_icon(ui, Icon::Glyph("⚙"), "MCP",        View::McpPlayground, view);
+
+    ui.add_space(theme::SP_XS);
+    thin_strip(ui);
+    ui.add_space(theme::SP_XS);
+
+    // ── OPS ──────────────────────────────────────────────────────────────
+    nav_icon(ui, Icon::Glyph("⚡"), "AI Router",  View::AiRouter,     view);
+    nav_icon(ui, Icon::Glyph("📋"), "Tasks",      View::SessionTasks, view);
+    nav_icon(ui, Icon::Glyph("$"),  "Cost & KB",  View::CostKb,       view);
+
+    ui.add_space(theme::SP_XS);
+    thin_strip(ui);
+    ui.add_space(theme::SP_XS);
+
+    // ── SYSTEM ───────────────────────────────────────────────────────────
+    nav_icon(ui, Icon::Gear,    "Settings",       View::Settings, view);
+    nav_icon(ui, Icon::Monitor, "Log",            View::Log,      view);
 
     // ── Bottom: expand button + status dots ──────────────────────────
     ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
@@ -303,7 +335,7 @@ fn draw_logo_badge(ui: &mut egui::Ui) {
     ui.painter().rect_filled(badge_rect, 6.0, theme::ACCENT);
     ui.painter().text(
         badge_rect.center(), egui::Align2::CENTER_CENTER, "S",
-        egui::FontId::proportional(18.0).into(),
+        egui::FontId::proportional(18.0),
         theme::BG,
     );
 }
@@ -362,7 +394,7 @@ fn icon_button(
         ui.painter().circle_filled(pos, 5.5, theme::ACCENT);
         ui.painter().text(
             pos, egui::Align2::CENTER_CENTER, format!("{badge_n}"),
-            egui::FontId::proportional(8.5).into(), theme::BG,
+            egui::FontId::proportional(8.5), theme::BG,
         );
     }
 
@@ -489,25 +521,51 @@ fn show_expanded(
     ui.add_space(theme::SP_SM);
     theme::thin_separator(ui);
 
-    if group_header(ui, "SYSTEM", state.system_open) {
-        state.system_open = !state.system_open;
+    // ── TESTING ──────────────────────────────────────────────────────────
+    if group_header(ui, "TESTING", state.testing_open) {
+        state.testing_open = !state.testing_open;
     }
-    if state.system_open {
-        nav_item(ui, "系統設定", View::Settings, view);
-        nav_item(ui, "Log", View::Log, view);
+    if state.testing_open {
+        nav_item(ui, "Test Runs",    View::TestRuns,       view);
+        nav_item(ui, "Coverage",     View::Coverage,       view);
+        nav_item(ui, "Browser",      View::BrowserMonitor, view);
     }
 
     ui.add_space(theme::SP_XS);
     theme::thin_separator(ui);
 
-    if group_header(ui, "TOOLS", state.tools_open) {
-        state.tools_open = !state.tools_open;
+    // ── AUTOMATION ───────────────────────────────────────────────────────
+    if group_header(ui, "AUTOMATION", state.automation_open) {
+        state.automation_open = !state.automation_open;
     }
-    if state.tools_open {
-        nav_item(ui, "Browser", View::Browser, view);
-        nav_item(ui, "Monitor", View::Monitor, view);
-        nav_item(ui, "開發小隊", View::Team, view);
-        nav_item(ui, "測試儀表板", View::TestRuns, view);
+    if state.automation_open {
+        nav_item(ui, "Dev Squad",      View::Team,          view);
+        nav_item(ui, "MCP Playground", View::McpPlayground, view);
+    }
+
+    ui.add_space(theme::SP_XS);
+    theme::thin_separator(ui);
+
+    // ── OPS ──────────────────────────────────────────────────────────────
+    if group_header(ui, "OPS", state.ops_open) {
+        state.ops_open = !state.ops_open;
+    }
+    if state.ops_open {
+        nav_item(ui, "AI Router",        View::AiRouter,     view);
+        nav_item(ui, "Session & Tasks",  View::SessionTasks, view);
+        nav_item(ui, "Cost & KB",        View::CostKb,       view);
+    }
+
+    ui.add_space(theme::SP_XS);
+    theme::thin_separator(ui);
+
+    // ── SYSTEM ───────────────────────────────────────────────────────────
+    if group_header(ui, "SYSTEM", state.system_open) {
+        state.system_open = !state.system_open;
+    }
+    if state.system_open {
+        nav_item(ui, "Settings", View::Settings, view);
+        nav_item(ui, "Log",      View::Log,      view);
     }
 
     ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {

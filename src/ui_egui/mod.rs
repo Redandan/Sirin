@@ -10,6 +10,10 @@ mod browser;
 mod monitor;
 mod team_panel;
 mod test_dashboard;
+mod coverage_panel;
+mod browser_monitor;
+mod mcp_playground;
+mod ops_panel;
 
 use std::sync::Arc;
 use std::collections::VecDeque;
@@ -21,7 +25,23 @@ use crate::ui_service::*;
 // ── View ─────────────────────────────────────────────────────────────────────
 
 #[derive(PartialEq, Clone)]
-enum View { Workspace(usize), Settings, Log, Browser, Monitor, Team, TestRuns }
+enum View {
+    Workspace(usize),
+    // TESTING
+    TestRuns,
+    Coverage,
+    BrowserMonitor,
+    // AUTOMATION
+    Team,
+    McpPlayground,
+    // OPS
+    AiRouter,
+    SessionTasks,
+    CostKb,
+    // SYSTEM
+    Settings,
+    Log,
+}
 
 // ── Toast ────────────────────────────────────────────────────────────────────
 
@@ -54,10 +74,13 @@ pub struct SirinApp {
     log_state: log_view::LogState,
     workspace_state: workspace::WorkspaceState,
     settings_state: settings::SettingsState,
-    browser_state: browser::BrowserUiState,
-    monitor_state: monitor::MonitorViewState,
     team_state: team_panel::TeamPanelState,
     test_dash_state: test_dashboard::TestDashState,
+    // New panels (v0.4.7 UI redesign)
+    coverage_state:     coverage_panel::CoveragePanelState,
+    browser_mon_state:  browser_monitor::BrowserMonitorState,
+    mcp_play_state:     mcp_playground::McpPlaygroundState,
+    ops_state:          ops_panel::OpsPanelState,
 
     /// Dismissed once per session so the banner doesn't reappear after dismiss
     update_banner_dismissed: bool,
@@ -82,9 +105,12 @@ impl SirinApp {
             renaming: None,
             sidebar_state: Default::default(),
             log_state: Default::default(), workspace_state: Default::default(),
-            settings_state: Default::default(), browser_state: Default::default(),
-            monitor_state: Default::default(), team_state: Default::default(),
+            settings_state: Default::default(), team_state: Default::default(),
             test_dash_state: Default::default(),
+            coverage_state:    Default::default(),
+            browser_mon_state: Default::default(),
+            mcp_play_state:    Default::default(),
+            ops_state:         Default::default(),
             update_banner_dismissed: false,
             prev_view: View::Workspace(0),
             // Far in the past so initial frame doesn't show a spurious loading.
@@ -106,8 +132,8 @@ impl eframe::App for SirinApp {
         if self.last_refresh.elapsed() > std::time::Duration::from_secs(5) { self.refresh(); }
         ctx.request_repaint_after(std::time::Duration::from_secs(5));
 
-        // Deactivate screenshot pump when Monitor view is not open
-        if !matches!(self.view, View::Monitor) {
+        // Deactivate screenshot pump when BrowserMonitor view is not open
+        if !matches!(self.view, View::BrowserMonitor) {
             if let Some(ms) = crate::monitor::state() {
                 ms.set_view_active(false);
             }
@@ -145,12 +171,26 @@ impl eframe::App for SirinApp {
                 } else {
                     match self.view.clone() {
                         View::Workspace(idx) => workspace::show(ui, &self.svc, &self.agents, idx, &self.tasks, &self.pending_counts, &mut self.workspace_state),
+                        // TESTING
+                        View::TestRuns      => test_dashboard::show(ui, &self.svc, &mut self.test_dash_state),
+                        View::Coverage      => coverage_panel::show(ui, &self.svc, &mut self.coverage_state),
+                        View::BrowserMonitor => browser_monitor::show(ui, &self.svc, &mut self.browser_mon_state),
+                        // AUTOMATION
+                        View::Team          => team_panel::show(ui, &self.svc, &mut self.team_state),
+                        View::McpPlayground => mcp_playground::show(ui, &self.svc, &mut self.mcp_play_state),
+                        // OPS
+                        View::AiRouter | View::SessionTasks | View::CostKb => {
+                            // Sync tab before rendering.
+                            self.ops_state.tab = match self.view {
+                                View::AiRouter      => ops_panel::OpsTab::AiRouter,
+                                View::SessionTasks  => ops_panel::OpsTab::SessionTasks,
+                                _                   => ops_panel::OpsTab::CostKb,
+                            };
+                            ops_panel::show(ui, &self.svc, &mut self.ops_state);
+                        }
+                        // SYSTEM
                         View::Settings => settings::show(ui, &self.svc, &self.agents, &mut self.settings_state),
-                        View::Log => log_view::show(ui, &self.svc, &mut self.log_state),
-                        View::Browser => browser::show(ui, &self.svc, &mut self.browser_state),
-                        View::Monitor => monitor::show(ui, &mut self.monitor_state),
-                        View::Team => team_panel::show(ui, &self.svc, &mut self.team_state),
-                        View::TestRuns => test_dashboard::show(ui, &self.svc, &mut self.test_dash_state),
+                        View::Log      => log_view::show(ui, &self.svc, &mut self.log_state),
                     }
                 }
             });

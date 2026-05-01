@@ -18,18 +18,13 @@
 
 use std::sync::Arc;
 use eframe::egui::{self, RichText, ScrollArea};
-use crate::ui_service::{AppService, CoverageData, TestRunView};
+use crate::ui_service::{AppService, TestRunView};
 use super::theme;
 
 // ── State ────────────────────────────────────────────────────────────────────
 
-/// Top-level tab for this panel.
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
-enum DashTab {
-    #[default]
-    Runs,
-    Coverage,
-}
+// Coverage tab removed — Coverage is now its own sidebar view (coverage_panel.rs).
+// test_dashboard shows only TestRuns content.
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 enum StatusFilter {
@@ -43,22 +38,12 @@ pub struct TestDashState {
     last_refresh:    std::time::Instant,
     recent:          Vec<TestRunView>,
     active:          Vec<TestRunView>,
-    /// Cached YAML test_ids for the launcher dropdown — refreshed on demand.
     test_ids:        Vec<String>,
     test_ids_loaded: bool,
-    /// Currently selected test_id in the launcher dropdown.
     selected_test:   String,
-    /// Toast message shown after launch attempt — "✓ launched run_… " or
-    /// "✗ <error>".  Auto-clears after ~5 seconds.
     last_launch_msg: Option<(String, std::time::Instant)>,
-    /// Filter UI state.
     status_filter:   StatusFilter,
     text_filter:     String,
-    /// Which top-level tab is active.
-    active_tab:      DashTab,
-    /// Cached coverage data (refreshed every 30s on the Coverage tab).
-    coverage_data:   Option<Result<CoverageData, String>>,
-    coverage_refresh: std::time::Instant,
 }
 
 impl Default for TestDashState {
@@ -74,9 +59,6 @@ impl Default for TestDashState {
             last_launch_msg: None,
             status_filter:   StatusFilter::default(),
             text_filter:     String::new(),
-            active_tab:      DashTab::default(),
-            coverage_data:   None,
-            coverage_refresh: epoch,
         }
     }
 }
@@ -91,7 +73,7 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, state: &mut TestDashSt
         state.last_refresh = std::time::Instant::now();
     }
 
-    // Lazy-load test_ids once — file scan is cheap but no need every frame.
+    // Lazy-load test_ids once.
     if !state.test_ids_loaded {
         state.test_ids = svc.list_test_ids();
         state.test_ids_loaded = true;
@@ -100,19 +82,6 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, state: &mut TestDashSt
                 state.selected_test = first.clone();
             }
         }
-    }
-
-    // Coverage data — refresh every 30 s on the Coverage tab.
-    if state.active_tab == DashTab::Coverage
-        && state.coverage_refresh.elapsed() > std::time::Duration::from_secs(30)
-    {
-        state.coverage_data    = Some(svc.test_coverage_data());
-        state.coverage_refresh = std::time::Instant::now();
-    }
-    // Eager-load when the tab is first clicked (coverage_data is None).
-    if state.active_tab == DashTab::Coverage && state.coverage_data.is_none() {
-        state.coverage_data    = Some(svc.test_coverage_data());
-        state.coverage_refresh = std::time::Instant::now();
     }
 
     // Keep the UI live while there are active runs OR a launch toast is showing.
@@ -128,56 +97,28 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, state: &mut TestDashSt
     }
 
     ScrollArea::vertical().id_salt("test_dash").show(ui, |ui| {
-        // ── Tab bar ───────────────────────────────────────────────────────
-        ui.horizontal(|ui| {
-            let tab_btn = |ui: &mut egui::Ui, label: &str, tab: DashTab, active: &mut DashTab| {
-                let selected = *active == tab;
-                let text = RichText::new(label).size(theme::FONT_SMALL).strong();
-                let text = if selected { text.color(theme::ACCENT) } else { text.color(theme::TEXT_DIM) };
-                if ui.add(egui::Button::new(text).frame(false)).clicked() {
-                    *active = tab;
-                }
-                if selected {
-                    // Underline accent bar below selected tab.
-                    let r = ui.min_rect();
-                    ui.painter().hline(
-                        r.x_range(),
-                        r.bottom() - 1.0,
-                        egui::Stroke::new(2.0, theme::ACCENT),
-                    );
-                }
-            };
-            tab_btn(ui, "TEST RUNS", DashTab::Runs, &mut state.active_tab);
-            ui.add_space(theme::SP_MD);
-            tab_btn(ui, "COVERAGE", DashTab::Coverage, &mut state.active_tab);
-        });
-        ui.add_space(theme::SP_XS);
-        theme::thin_separator(ui);
-        ui.add_space(theme::SP_SM);
-
-        // ── Route to active tab ───────────────────────────────────────────
-        match state.active_tab {
-            DashTab::Runs     => show_runs_tab(ui, svc, state),
-            DashTab::Coverage => show_coverage_tab(ui, state),
-        }
+        show_runs_tab(ui, svc, state);
     });
 }
 
 // ── Runs tab (previously the whole show() body) ───────────────────────────────
 
 fn show_runs_tab(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, state: &mut TestDashState) {
-    // ── Header + sparkline ────────────────────────────────────────────────
+    // ── Header ────────────────────────────────────────────────────────────
     ui.horizontal(|ui| {
+        ui.colored_label(theme::TEXT,
+            RichText::new("TEST RUNS").size(theme::FONT_TITLE).strong());
+        ui.add_space(theme::SP_SM);
         let total  = state.recent.len();
         let passed = state.recent.iter().filter(|r| r.status == "passed").count();
-        ui.colored_label(
-            theme::TEXT_DIM,
-            RichText::new(format!("{passed}/{total} passed")).size(theme::FONT_SMALL).monospace(),
-        );
+        ui.colored_label(theme::TEXT_DIM,
+            RichText::new(format!("{passed}/{total} passed")).size(theme::FONT_SMALL).monospace());
         ui.add_space(theme::SP_SM);
         draw_sparkline(ui, &state.recent);
     });
     ui.add_space(theme::SP_XS);
+    theme::thin_separator(ui);
+    ui.add_space(theme::SP_SM);
 
         // ── Launcher row ──────────────────────────────────────────────────
         show_launcher(ui, svc, state);
@@ -247,208 +188,9 @@ fn show_runs_tab(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, state: &mut TestD
         }
 }
 
-// ── Coverage tab ─────────────────────────────────────────────────────────────
+// (Coverage panel is now coverage_panel.rs — own sidebar entry under TESTING)
 
-fn show_coverage_tab(ui: &mut egui::Ui, state: &TestDashState) {
-    match &state.coverage_data {
-        None => {
-            ui.add_space(theme::SP_LG);
-            ui.centered_and_justified(|ui| {
-                ui.colored_label(theme::TEXT_DIM, "Loading coverage map…");
-            });
-        }
-        Some(Err(e)) => {
-            ui.add_space(theme::SP_XS);
-            ui.colored_label(
-                theme::DANGER,
-                RichText::new(format!("⚠ {e}")).size(theme::FONT_SMALL),
-            );
-        }
-        Some(Ok(data)) => {
-            show_coverage_data(ui, data);
-        }
-    }
-}
-
-fn show_coverage_data(ui: &mut egui::Ui, data: &CoverageData) {
-    // ── Overall summary row ───────────────────────────────────────────────
-    let pct = if data.total_features > 0 {
-        data.total_covered as f32 / data.total_features as f32
-    } else {
-        0.0
-    };
-    ui.horizontal(|ui| {
-        ui.colored_label(
-            theme::TEXT,
-            RichText::new(format!(
-                "{} v{}  ·  {}/{} features covered",
-                data.product, data.version, data.total_covered, data.total_features
-            ))
-            .size(theme::FONT_SMALL)
-            .strong(),
-        );
-        ui.add_space(theme::SP_SM);
-        // Overall progress bar.
-        let bar_w = 120.0;
-        let bar_h = 8.0;
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(bar_w, bar_h), egui::Sense::hover());
-        let p = ui.painter_at(rect);
-        // Background track.
-        p.rect_filled(rect, 3.0, theme::BORDER);
-        // Filled portion.
-        let fill_w = (rect.width() * pct).max(0.0);
-        let fill_rect = egui::Rect::from_min_size(rect.min, egui::vec2(fill_w, bar_h));
-        let bar_col = coverage_color(pct);
-        p.rect_filled(fill_rect, 3.0, bar_col);
-        // Label.
-        ui.add_space(theme::SP_XS);
-        ui.colored_label(
-            bar_col,
-            RichText::new(format!("{:.0}%", pct * 100.0))
-                .size(theme::FONT_SMALL)
-                .strong()
-                .monospace(),
-        );
-    });
-    ui.add_space(theme::SP_SM);
-    theme::thin_separator(ui);
-    ui.add_space(theme::SP_SM);
-
-    // ── Feature groups ────────────────────────────────────────────────────
-    let mut gaps: Vec<(&str, &str, &str)> = Vec::new(); // (group, feat_id, feat_name)
-
-    for group in &data.groups {
-        let gpct = if group.total > 0 {
-            group.covered as f32 / group.total as f32
-        } else {
-            0.0
-        };
-        let gcol = coverage_color(gpct);
-
-        egui::Frame::new()
-            .fill(theme::CARD)
-            .corner_radius(4.0)
-            .inner_margin(egui::vec2(theme::SP_MD, theme::SP_SM))
-            .show(ui, |ui| {
-                // Group header row.
-                ui.horizontal(|ui| {
-                    // Colored dot.
-                    ui.colored_label(gcol, RichText::new("●").size(9.0));
-                    // Group name.
-                    ui.colored_label(
-                        theme::TEXT,
-                        RichText::new(&group.name).size(theme::FONT_SMALL).strong(),
-                    );
-                    // Role badge.
-                    if !group.role.is_empty() {
-                        ui.colored_label(
-                            theme::TEXT_DIM,
-                            RichText::new(format!("[{role}]", role = group.role))
-                                .size(theme::FONT_CAPTION)
-                                .monospace(),
-                        );
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.colored_label(
-                            gcol,
-                            RichText::new(format!("{}/{}", group.covered, group.total))
-                                .size(theme::FONT_CAPTION)
-                                .monospace(),
-                        );
-                        // Mini progress bar right-aligned.
-                        let bar_w = 60.0;
-                        let bar_h = 6.0;
-                        let (rect, _) = ui.allocate_exact_size(
-                            egui::vec2(bar_w, bar_h), egui::Sense::hover(),
-                        );
-                        let p = ui.painter_at(rect);
-                        p.rect_filled(rect, 2.0, theme::BORDER);
-                        let fw = (rect.width() * gpct).max(0.0);
-                        p.rect_filled(
-                            egui::Rect::from_min_size(rect.min, egui::vec2(fw, bar_h)),
-                            2.0, gcol,
-                        );
-                    });
-                });
-
-                // Feature rows.
-                ui.add_space(theme::SP_XS);
-                for feat in &group.features {
-                    let (dot, col) = match feat.status.as_str() {
-                        "confirmed" => ("✓", theme::ACCENT),
-                        "partial"   => ("◐", theme::YELLOW),
-                        _           => ("○", theme::DANGER),
-                    };
-                    ui.horizontal(|ui| {
-                        ui.add_space(theme::SP_MD); // indent
-                        ui.colored_label(col, RichText::new(dot).size(theme::FONT_CAPTION));
-                        ui.colored_label(
-                            if feat.status == "missing" { theme::TEXT_DIM } else { theme::TEXT },
-                            RichText::new(&feat.name).size(theme::FONT_CAPTION),
-                        );
-                        if !feat.test_ids.is_empty() {
-                            let ids_str = feat.test_ids.join(", ");
-                            ui.colored_label(
-                                theme::TEXT_DIM,
-                                RichText::new(format!("← {ids_str}"))
-                                    .size(theme::FONT_CAPTION)
-                                    .monospace(),
-                            );
-                        }
-                    });
-
-                    if feat.status == "missing" {
-                        gaps.push((&group.name, &feat.id, &feat.name));
-                    }
-                }
-            });
-        ui.add_space(theme::SP_XS);
-    }
-
-    // ── Gaps section ──────────────────────────────────────────────────────
-    if !gaps.is_empty() {
-        ui.add_space(theme::SP_SM);
-        theme::thin_separator(ui);
-        ui.add_space(theme::SP_SM);
-        ui.colored_label(
-            theme::DANGER,
-            RichText::new(format!("GAPS  {} missing features", gaps.len()))
-                .size(theme::FONT_SMALL)
-                .strong(),
-        );
-        ui.add_space(theme::SP_XS);
-        for (group_name, feat_id, feat_name) in &gaps {
-            ui.horizontal(|ui| {
-                ui.add_space(theme::SP_SM);
-                ui.colored_label(theme::DANGER, RichText::new("○").size(theme::FONT_CAPTION));
-                ui.colored_label(
-                    theme::TEXT_DIM,
-                    RichText::new(feat_name.to_string()).size(theme::FONT_CAPTION),
-                );
-                ui.colored_label(
-                    theme::TEXT_DIM,
-                    RichText::new(format!("— {group_name}")).size(theme::FONT_CAPTION),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.colored_label(
-                        theme::INFO,
-                        RichText::new(format!("agora_{feat_id}"))
-                            .size(theme::FONT_CAPTION)
-                            .monospace(),
-                    )
-                    .on_hover_text("suggested YAML test name");
-                });
-            });
-        }
-    }
-}
-
-/// Map a coverage fraction to the appropriate colour.
-fn coverage_color(pct: f32) -> egui::Color32 {
-    if pct >= 0.80 { theme::ACCENT }
-    else if pct >= 0.50 { theme::YELLOW }
-    else { theme::DANGER }
-}
+// Coverage functions moved to coverage_panel.rs
 
 // ── Launcher row (dropdown + Run button + last-launch toast) ─────────────────
 

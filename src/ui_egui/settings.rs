@@ -107,55 +107,15 @@ pub fn show(ui: &mut egui::Ui, svc: &Arc<dyn AppService>, _agents: &[AgentSummar
             theme::info_row(ui, "遠端", if s.llm.is_remote { "是" } else { "否（本地）" });
         });
 
-        // ── MCP ──────────────────────────────────────────────────────────
-        let mcp_tools = svc.mcp_tools();
-        theme::section(ui, &format!("MCP 工具 ({})", mcp_tools.len()), |ui| {
-            if mcp_tools.is_empty() {
-                ui.colored_label(theme::TEXT_DIM, RichText::new("未連接 — 編輯 config/mcp_servers.yaml").size(theme::FONT_SMALL));
-                return;
-            }
-            for tool in &mcp_tools {
-                let is_expanded = state.mcp_expanded.as_deref() == Some(&tool.registry_name);
-                ui.horizontal(|ui| {
-                    let arrow = if is_expanded { "▼" } else { "▶" };
-                    if ui.add(egui::Button::new(RichText::new(arrow).size(theme::FONT_CAPTION).color(theme::TEXT_DIM))
-                        .fill(egui::Color32::TRANSPARENT)).clicked() {
-                        state.mcp_expanded = if is_expanded { None } else {
-                            state.mcp_args = "{}".to_string();
-                            state.mcp_result.clear();
-                            Some(tool.registry_name.clone())
-                        };
-                    }
-                    ui.colored_label(theme::INFO, RichText::new(&tool.tool_name).size(theme::FONT_BODY));
-                    ui.colored_label(theme::TEXT_DIM, RichText::new(&tool.description).size(theme::FONT_CAPTION));
-                });
-                if is_expanded {
-                    ui.indent("mcp_detail", |ui| {
-                        if !tool.params.is_empty() {
-                            ui.horizontal(|ui| {
-                                for (name, typ) in &tool.params {
-                                    theme::badge(ui, &format!("{name}: {typ}"), theme::INFO);
-                                }
-                            });
-                        }
-                        ui.horizontal(|ui| {
-                            ui.add_sized([ui.available_width() - 56.0, 24.0],
-                                egui::TextEdit::singleline(&mut state.mcp_args).font(egui::TextStyle::Monospace));
-                            if ui.add(egui::Button::new(RichText::new("▶ 執行").size(theme::FONT_SMALL).color(theme::BG))
-                                .fill(theme::INFO).corner_radius(4.0)).clicked() {
-                                state.mcp_result = svc.mcp_call(&tool.registry_name, &state.mcp_args).unwrap_or_else(|e| format!("❌ {e}"));
-                            }
-                        });
-                        if !state.mcp_result.is_empty() {
-                            ui.add_space(theme::SP_XS);
-                            egui::Frame::new().fill(theme::BG).corner_radius(4.0).inner_margin(theme::SP_SM).show(ui, |ui| {
-                                ui.colored_label(theme::ACCENT, RichText::new(&state.mcp_result).size(theme::FONT_SMALL).monospace());
-                            });
-                        }
-                    });
-                    ui.add_space(theme::SP_SM);
-                }
-            }
+        // MCP Playground moved to its own sidebar view (AUTOMATION → MCP Playground).
+        theme::section(ui, "MCP Playground", |ui| {
+            ui.colored_label(theme::TEXT_DIM,
+                RichText::new("MCP 工具已移至側欄「AUTOMATION → MCP Playground」")
+                    .size(theme::FONT_SMALL));
+            ui.add_space(theme::SP_XS);
+            ui.colored_label(theme::INFO,
+                RichText::new(format!("{} tools available", svc.mcp_tools().len()))
+                    .size(theme::FONT_SMALL).monospace());
         });
 
         // ── Skills ───────────────────────────────────────────────────────
