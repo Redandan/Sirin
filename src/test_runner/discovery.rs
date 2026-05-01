@@ -188,6 +188,12 @@ pub fn crawl_app(seed_url: &str, max_depth: u32, run_id: &str) -> Result<u32, St
     // by future "wait for DOM stable" follow-up).
     std::thread::sleep(std::time::Duration::from_millis(2000));
 
+    // Always nudge Flutter into building its semantics tree — idempotent
+    // for non-Flutter sites, essential for Flutter sites where the regular
+    // DOM is just a canvas + the "Enable accessibility" placeholder.
+    let _ = crate::browser_ax::enable_flutter_semantics();
+    std::thread::sleep(std::time::Duration::from_millis(800));
+
     let snap = crate::browser::dom_snapshot(200)?;
     let url = snap["url"].as_str().unwrap_or(seed_url).to_string();
     let route = extract_route(&url);
@@ -226,6 +232,43 @@ pub fn crawl_app(seed_url: &str, max_depth: u32, run_id: &str) -> Result<u32, St
         };
         if record_feature(&feat).is_ok() {
             count += 1;
+        }
+    }
+
+    // ── Flutter shadow DOM enumeration ──────────────────────────────────
+    // After enable_flutter_semantics, flt-semantics-host populates with
+    // [role]-tagged nodes that dom_snapshot can't see (open shadow root).
+    // Walk those separately and merge into discovered features.
+    if let Ok(shadow_entries) = crate::browser::shadow_dump() {
+        for entry in shadow_entries {
+            // shadow_dump format: "role:label"
+            let (role, label) = match entry.split_once(':') {
+                Some((r, l)) => (r.trim().to_string(), l.trim().to_string()),
+                None => continue,
+            };
+            if label.is_empty() || role.starts_with("ERROR") || role.starts_with("EMPTY") {
+                continue;
+            }
+            // Map Flutter ARIA roles → discovery kinds.
+            let kind = match role.as_str() {
+                "button"                       => "button",
+                "link"                         => "link",
+                "tab" | "menuitem"             => role.as_str(),
+                "textbox" | "combobox"         => "form_input",
+                "checkbox" | "radio"           => "form_input",
+                _                              => continue, // skip generic/text
+            };
+            let feat = DiscoveredFeature {
+                route: route.clone(),
+                label,
+                kind: kind.to_string(),
+                selector: None, // shadow DOM nodes don't get data-sirin-ref
+                last_seen: now.clone(),
+                run_id: Some(run_id.to_string()),
+            };
+            if record_feature(&feat).is_ok() {
+                count += 1;
+            }
         }
     }
 
