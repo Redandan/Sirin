@@ -32,11 +32,9 @@ goal: |
   詳細步驟：
 
   1. goto target="https://redandan.github.io/?__test_role=seller#/seller/product"（確保在新增商品頁）
-  2. wait 10000（等 auto-login + Flutter 新增商品 form【完整】渲染，包含底部欄位）
+  2. wait 12000（等 auto-login + Flutter 新增商品 form 完整渲染，包含底部欄位）
   3. enable_a11y
-  4. wait 3000（Flutter form 有大量欄位，AX tree 建構需時）
-  5. enable_a11y（二次確保，不用 scroll — AX tree 已包含 off-screen 元素）
-  6. wait 2000
+  4. wait 3000
   7. flutter_scroll_until_visible role=button name_regex="平台配送設定"
      （⚠️ 使用正確 role=button；此動作自動捲動直到元素進入 viewport，避免固定 scroll 的座標漂移問題）
   8. wait 1500（等捲動完成）
