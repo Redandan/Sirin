@@ -239,6 +239,9 @@ impl TestRunnerService for RealService {
                 analysis:         r.ai_analysis,
                 step:             None,
                 failure_category: r.failure_category,
+                // Issue #222: populate console stats from RunRecord (#220 field)
+                console_errors:   Some(r.console_errors),
+                console_warnings: Some(r.console_warnings),
             })
             .collect()
     }
@@ -264,6 +267,8 @@ impl TestRunnerService for RealService {
                     step,
                     failure_category: None,
                     pass_rate:        None,
+                    console_errors:   None,  // not available for active runs
+                    console_warnings: None,
                 }
             })
             .collect()

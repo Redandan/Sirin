@@ -257,6 +257,11 @@ pub struct TestRunView {
     /// can flag flaky tests (< 70%).  None for active rows or single-run
     /// histories.
     pub pass_rate:         Option<f32>,
+    /// Number of browser console error-level messages captured during the run.
+    /// Zero means clean console.  None for active/queued runs.  (#222)
+    pub console_errors:    Option<u32>,
+    /// Number of browser console warnings captured.  (#222)
+    pub console_warnings:  Option<u32>,
 }
 
 // ── Service traits ───────────────────────────────────────────────────────────

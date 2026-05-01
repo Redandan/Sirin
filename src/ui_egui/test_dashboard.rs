@@ -416,6 +416,28 @@ fn show_run_row(ui: &mut egui::Ui, run: &TestRunView) {
                     }
                 }
 
+                // Issue #222: console error / warning badge.
+                if let Some(ce) = run.console_errors {
+                    if ce > 0 {
+                        ui.colored_label(
+                            theme::DANGER,
+                            RichText::new(format!("⚠ {ce}err"))
+                                .size(theme::FONT_CAPTION)
+                                .monospace(),
+                        )
+                        .on_hover_text(format!("{ce} browser console error(s) — check get_test_result"));
+                    } else if run.console_warnings.unwrap_or(0) > 0 {
+                        let cw = run.console_warnings.unwrap_or(0);
+                        ui.colored_label(
+                            theme::YELLOW,
+                            RichText::new(format!("⚠ {cw}warn"))
+                                .size(theme::FONT_CAPTION)
+                                .monospace(),
+                        )
+                        .on_hover_text(format!("{cw} browser console warning(s)"));
+                    }
+                }
+
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if let Some(ms) = run.duration_ms {
                         let s = ms / 1000;
