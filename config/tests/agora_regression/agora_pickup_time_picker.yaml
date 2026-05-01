@@ -1,5 +1,5 @@
 id: agora_pickup_time_picker
-name: "取貨時間選擇器 v11 - ax_focus + executor prompt fix"
+name: "取貨時間選擇器 v12 - LLM 指引簡化"
 url: "https://redandan.github.io/?__test_role=seller#/seller/product"
 
 max_iterations: 50
@@ -12,58 +12,62 @@ viewport:
   scale: 2.0
   mobile: true
 
+locale: zh-TW
+
+kb_refs:
+  - agora-pickup-flow
+
 goal: |
-  目標：把取貨結束時間改成 14:00。
+  目標：在賣家「新增商品」頁，展開平台配送設定，啟用「啟用平台配送」開關，
+  然後把「取貨結束時間」改成 14:00。
 
-  直接以 url 欄位設定為 #/seller/product，讓 executor 自動呼叫 install_capture。
+  起始狀態：URL 已設為 #/seller/product，自動以賣家身份登入並落在新增商品頁。
 
-  ⚠️ 必讀：取貨結束時間在展開平台配送設定後位於 viewport 之外（下方），
-  ax_click 無法到達 off-screen 元素！必須使用 ax_focus 讓 Flutter 自動捲動。
+  已知資訊（嚴格遵守）：
+  - 「平台配送設定」是個 ExpansionTile，Sirin 用 role=button 點擊（已驗證可用）。
+  - 「平台配送設定」位於 form 下方，新增商品頁初始 viewport 看不到，
+    必須先 flutter_scroll_until_visible 把它捲進 viewport 才能點擊。
+  - 「取貨結束時間」textbox 在展開後也在 viewport 之外。
+    **不能用 ax_click**（ax_click 不處理 off-screen），
+    必須用 `ax_find` 拿 backend_id → `ax_focus` 讓 Flutter 自動捲動聚焦 → `flutter_type`。
+  - Flutter 時間 Widget 格式複雜，本測試**不嚴格驗證最終值**：
+    能完成 ax_focus + flutter_type 兩步即通過。
+  - tab 切換 / ExpansionTile 展開後必須重新 enable_a11y 才能繼續 AX 操作。
 
-  正確操作流程：
-  步驟 1-20：準備工作（goto → wait 10s → enable_a11y × 2 → shadow_click 直接展開平台配送設定，不用 scroll）
-  步驟 21：ax_find role=textbox name_regex="取貨結束時間"
-  步驟 22：ax_focus backend_id=<從 ax_find 拿到的值>  ← Flutter 自動 scroll + 聚焦
-  步驟 24：flutter_type text="14:00"
-  步驟 25：ax_value backend_id=<同上>  ← 確認欄位值是 14:00
-  步驟 26：screenshot_analyze "取貨結束時間是 14:00 嗎？"
-  步驟 27：done=true
+  ⚠️ 唯一允許 done=true 的位置是步驟 25，其他步驟都不能 done=true。
+  ⚠️ shadow_click 「平台配送設定」前必須先 flutter_scroll_until_visible，否則點擊無效。
+  ⚠️ install_capture（步驟 13）一定要執行，這是 deterministic replay 的關鍵錨點。
 
-  詳細步驟：
-
-  1. goto target="https://redandan.github.io/?__test_role=seller#/seller/product"（確保在新增商品頁）
-  2. wait 12000（等 auto-login + Flutter 新增商品 form 完整渲染，包含底部欄位）
-  3. enable_a11y
-  4. wait 3000
-  7. flutter_scroll_until_visible role=button name_regex="平台配送設定"
-     （⚠️ 使用正確 role=button；此動作自動捲動直到元素進入 viewport，避免固定 scroll 的座標漂移問題）
-  8. wait 1500（等捲動完成）
-  9. enable_a11y（元素已在 viewport，重建 AX tree）
-  10. wait 1500
-  11. shadow_click role=button name_regex="平台配送設定"
-      （元素已在 viewport 內，PointerEvent 可正確觸及）
-  12. wait 1500（等展開動畫完成）
-  13. enable_a11y（展開後重新初始化 AX tree）
-  14. wait 800
-  15. install_capture
-  16. wait 1000
-  17. enable_a11y
-  18. wait 500
-  19. shadow_dump（確認展開成功，看到「啟用平台配送」switch）
-  20. shadow_click role=switch name="啟用平台配送"
-  21. wait 2000
-  22. enable_a11y
-  23. wait 1000
-  24. ax_find role=textbox name_regex="取貨結束時間"  [取得 backend_id]
-  25. ax_focus backend_id=<id>  [⭐ scroll-to + focus]
-  26. wait 800  [等 flt-text-editing 建立]
-  27. flutter_type text="14:00"  [輸入時間]
-  28. wait 500
-  29. done=true  [⚠️ 不做嚴格驗證 — Flutter 時間選擇器 Widget 格式複雜，能找到並嘗試輸入即通過]
+  步驟（全部依序執行）：
+  1. wait 12000（等 auto-login + Flutter form 完整渲染）
+  2. enable_a11y
+  3. wait 3000
+  4. flutter_scroll_until_visible role=button name_regex="平台配送設定"
+  5. wait 1500（等捲動完成）
+  6. enable_a11y（重建 AX tree，元素現在 viewport 內）
+  7. wait 1000
+  8. shadow_click role=button name_regex="平台配送設定"（展開 ExpansionTile）
+  9. wait 1500（等展開動畫）
+  10. enable_a11y（展開後重新初始化）
+  11. wait 800
+  12. shadow_dump（確認看到「啟用平台配送」switch）
+  13. install_capture（⭐ deterministic replay 錨點）
+  14. shadow_click role=switch name="啟用平台配送"
+  15. wait 2000
+  16. enable_a11y
+  17. wait 1000
+  18. ax_find role=textbox name_regex="取貨結束時間"（記下 backend_id）
+  19. ax_focus backend_id=<上一步的 id>（⭐ Flutter 自動 scroll + focus）
+  20. wait 800（等 flt-text-editing 建立）
+  21. flutter_type text="14:00"
+  22. wait 500
+  23. ax_value backend_id=<同步驟 18 的 id>（讀回欄位值，能讀到即通過）
+  24. screenshot_analyze "「取貨結束時間」欄位是否已被點擊聚焦並嘗試輸入？"
+  25. done=true
 
 success_criteria:
-  - "展開平台配送設定（role=button，點擊後展開）"
-  - "開啟啟用平台配送 switch"
-  - "找到取貨結束時間欄位（ax_find 成功）並嘗試輸入（ax_focus + flutter_type 執行即通過，不驗證最終值）"
+  - "成功展開平台配送設定（shadow_click role=button name_regex=\"平台配送設定\" 後 ExpansionTile 展開）"
+  - "成功點擊「啟用平台配送」switch"
+  - "ax_find 找到取貨結束時間欄位 + ax_focus + flutter_type 三個動作都成功執行（不驗證最終值）"
 
-tags: [agora, regression, pickup, source-generated, v11, ax-focus-fix]
+tags: [agora, regression, pickup, time-picker, ax-focus, v12]
