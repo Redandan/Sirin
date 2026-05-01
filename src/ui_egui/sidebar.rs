@@ -242,35 +242,10 @@ fn show_icon_nav(
         }
     });
 
-    ui.add_space(theme::SP_XS);
-    thin_strip(ui);
-    ui.add_space(theme::SP_XS);
-
-    // ── 4 functional groups ───────────────────────────────────────────────
-    nav_icon(ui, Icon::Lines,  "Testing\n(Runs|Coverage|Browser)", View::Testing,    view);
-    nav_icon(ui, Icon::People, "Automation\n(Squad|MCP)",          View::Automation, view);
-    nav_icon(ui, Icon::Globe,  "OPS\n(AI|Tasks|Cost/KB)",          View::Ops,        view);
-    nav_icon(ui, Icon::Gear,   "System\n(Settings|Log)",           View::System,     view);
-
-    // ── Bottom: expand button + status dots ──────────────────────────
+    // ── Bottom: Dashboard button + Testing button + expand arrow ─────
+    // (System status now lives in the top bar — no dots here.)
     ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
         ui.add_space(theme::SP_SM);
-
-        let s = svc.system_status();
-        // RPC dot
-        let (r, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 14.0), egui::Sense::hover());
-        ui.painter().circle_filled(r.center(), 3.5, if s.rpc_running { theme::ACCENT } else { theme::DANGER });
-        resp.on_hover_text(if s.rpc_running { "RPC: running" } else { "RPC: stopped" });
-        ui.add_space(5.0);
-
-        // Telegram dot
-        let (r, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 14.0), egui::Sense::hover());
-        ui.painter().circle_filled(r.center(), 3.5, if s.telegram_connected { theme::ACCENT } else { theme::DANGER });
-        resp.on_hover_text(if s.telegram_connected { "Telegram: connected" } else { "Telegram: offline" });
-
-        ui.add_space(theme::SP_SM);
-        thin_strip(ui);
-        ui.add_space(theme::SP_XS);
 
         // Expand button (›)
         let cw = ui.available_width();
@@ -281,7 +256,18 @@ fn show_icon_nav(
             egui::FontId::proportional(18.0), col);
         if resp.clicked() { state.expanded = true; }
         resp.on_hover_text("Expand sidebar");
+
+        ui.add_space(theme::SP_XS);
+        thin_strip(ui);
+        ui.add_space(theme::SP_SM);
+
+        // Testing entry (one-click into the testing panel)
+        nav_icon(ui, Icon::Lines, "Testing", View::Testing, view);
+        // Dashboard entry
+        nav_icon(ui, Icon::Monitor, "Dashboard", View::Dashboard, view);
     });
+    // Suppress unused-arg warning when the bottom helpers don't need svc.
+    let _ = svc;
 }
 
 /// Sirin "S" badge — accent-colored rounded square at the very top.
@@ -480,45 +466,21 @@ fn show_expanded(
     ui.add_space(theme::SP_SM);
     theme::thin_separator(ui);
 
-    // ── 4 unified sections ────────────────────────────────────────────────
-    nav_item(ui, "Testing",    View::Testing,    view);
-    nav_item(ui, "Automation", View::Automation, view);
-    nav_item(ui, "OPS",        View::Ops,        view);
-    nav_item(ui, "System",     View::System,     view);
+    // ── 2 nav items (was 4 buckets) ──────────────────────────────────────
+    nav_item(ui, "Dashboard", View::Dashboard, view);
+    nav_item(ui, "Testing",   View::Testing,   view);
 
     ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
         ui.add_space(theme::SP_SM);
-        let status = svc.system_status();
-        ui.horizontal(|ui| {
-            ui.add_space(theme::SP_MD);
-            status_indicator(ui, "TG", status.telegram_connected);
-            ui.add_space(theme::SP_MD);
-            status_indicator(ui, "RPC", status.rpc_running);
-        });
+        ui.colored_label(
+            theme::TEXT_DIM,
+            eframe::egui::RichText::new("v0.4.7  ⌘K = palette")
+                .size(theme::FONT_CAPTION).monospace(),
+        );
         ui.add_space(theme::SP_XS);
         theme::thin_separator(ui);
     });
-}
-
-fn group_header(ui: &mut egui::Ui, text: &str, open: bool) -> bool {
-    let caret = if open { "▼" } else { "▶" };
-    let mut clicked = false;
-    ui.horizontal(|ui| {
-        ui.add_space(theme::SP_MD);
-        let resp = ui.add(
-            egui::Label::new(
-                RichText::new(format!("{caret}  {text}"))
-                    .size(theme::FONT_CAPTION)
-                    .strong()
-                    .color(theme::TEXT_DIM),
-            )
-            .selectable(false)
-            .sense(egui::Sense::click()),
-        );
-        clicked = resp.clicked();
-    });
-    ui.add_space(theme::SP_XS);
-    clicked
+    let _ = svc;
 }
 
 fn group_header_inline(ui: &mut egui::Ui, text: &str, open: &mut bool) {
@@ -557,10 +519,4 @@ fn nav_item(ui: &mut egui::Ui, label: &str, target: View, current: &mut View) {
         egui::FontId::proportional(theme::FONT_BODY), text_color);
 
     if response.clicked() { *current = target; }
-}
-
-fn status_indicator(ui: &mut egui::Ui, label: &str, ok: bool) {
-    let color = if ok { theme::ACCENT } else { theme::DANGER };
-    ui.colored_label(color, RichText::new("●").size(theme::FONT_CAPTION));
-    ui.colored_label(theme::TEXT_DIM, RichText::new(label).size(theme::FONT_CAPTION));
 }

@@ -17,6 +17,9 @@ mod ops_panel;
 mod testing_panel;
 mod automation_panel;
 mod system_panel;
+mod top_bar;
+mod dashboard;
+mod command_palette;
 
 use std::sync::Arc;
 use std::collections::VecDeque;
@@ -29,11 +32,20 @@ use crate::ui_service::*;
 
 #[derive(PartialEq, Clone)]
 enum View {
-    Workspace(usize),
-    Testing,      // Runs | Coverage | Browser  (tab bar inside)
-    Automation,   // Dev Squad | MCP            (tab bar inside)
-    Ops,          // AI Router | Tasks | Cost   (tab bar inside)
-    System,       // Settings | Log             (tab bar inside)
+    Dashboard,             // Default landing — summary + Coverage card + Browser preview
+    Testing,               // Runs | Coverage | Browser (legacy sub-tabs; commit 5 split)
+    Workspace(usize),      // Per-agent detail
+}
+
+/// Modal overlay opened from the palette / gear menu. Renders the existing
+/// panel inside an `egui::Window` over the central panel.
+#[derive(PartialEq, Clone, Copy, Default)]
+enum Modal {
+    #[default]
+    None,
+    Automation,   // Dev Squad + MCP (automation_panel::show)
+    Ops,          // AI Router | Tasks | Cost (ops_panel::show)
+    System,       // Settings | Logs (system_panel::show)
 }
 
 // ── Toast ────────────────────────────────────────────────────────────────────
@@ -65,11 +77,22 @@ pub struct SirinApp {
 
     sidebar_state:    sidebar::SidebarState,
     workspace_state:  workspace::WorkspaceState,
-    // Consolidated panels (v0.4.7)
+    dashboard_state:  dashboard::DashboardState,
     testing_state:    testing_panel::TestingPanelState,
+    // Wired via command palette / gear menu (Modal overlay).
     automation_state: automation_panel::AutomationPanelState,
     ops_state:        ops_panel::OpsPanelState,
     system_state:     system_panel::SystemPanelState,
+    palette_state:    command_palette::PaletteState,
+    modal:            Modal,
+    gear_menu_open:   bool,
+
+    /// Has the first-run config_check been performed this session?
+    /// On `false`, we run `config_check()` once and force-open the System
+    /// modal (Settings tab) if any Error-severity issue is reported —
+    /// covers the "missing LLM API key" case so first-time users aren't
+    /// stuck with a broken dashboard.
+    first_run_check_done: bool,
 
     /// Dismissed once per session so the banner doesn't reappear after dismiss
     update_banner_dismissed: bool,
@@ -86,7 +109,7 @@ impl SirinApp {
         theme::apply(&cc.egui_ctx);
         let agents = svc.list_agents();
         Self {
-            svc, view: View::Workspace(0), agents,
+            svc, view: View::Dashboard, agents,
             tasks: Vec::new(),
             pending_counts: std::collections::HashMap::new(),
             last_refresh: std::time::Instant::now() - std::time::Duration::from_secs(60),
@@ -94,12 +117,17 @@ impl SirinApp {
             renaming: None,
             sidebar_state:    Default::default(),
             workspace_state:  Default::default(),
+            dashboard_state:  Default::default(),
             testing_state:    Default::default(),
             automation_state: Default::default(),
             ops_state:        Default::default(),
             system_state:     Default::default(),
+            palette_state:    Default::default(),
+            modal:            Modal::None,
+            gear_menu_open:   false,
+            first_run_check_done: false,
             update_banner_dismissed: false,
-            prev_view: View::Workspace(0),
+            prev_view: View::Dashboard,
             // Far in the past so initial frame doesn't show a spurious loading.
             view_changed_at: std::time::Instant::now() - std::time::Duration::from_secs(60),
         }
@@ -112,12 +140,200 @@ impl SirinApp {
         for a in &self.agents { self.pending_counts.insert(a.id.clone(), self.svc.pending_count(&a.id)); }
         self.last_refresh = std::time::Instant::now();
     }
+
+    /// Map a palette selection to a view switch / modal open.
+    fn handle_palette_choice(&mut self, entry: command_palette::PaletteEntry) {
+        use command_palette::PaletteEntry as E;
+        match entry {
+            E::Coverage => {
+                self.view = View::Testing;
+                self.testing_state.tab = testing_panel::TestingTab::Coverage;
+            }
+            E::Browser => {
+                self.view = View::Testing;
+                self.testing_state.tab = testing_panel::TestingTab::Browser;
+            }
+            E::DevSquad => {
+                self.modal = Modal::Automation;
+                self.automation_state.tab = automation_panel::AutoTab::Squad;
+            }
+            E::McpPlayground => {
+                self.modal = Modal::Automation;
+                self.automation_state.tab = automation_panel::AutoTab::Mcp;
+            }
+            E::AiRouter => {
+                self.modal = Modal::Ops;
+                self.ops_state.tab = ops_panel::OpsTab::AiRouter;
+            }
+            E::SessionTasks => {
+                self.modal = Modal::Ops;
+                self.ops_state.tab = ops_panel::OpsTab::SessionTasks;
+            }
+            E::CostKb => {
+                self.modal = Modal::Ops;
+                self.ops_state.tab = ops_panel::OpsTab::CostKb;
+            }
+            E::Settings => {
+                self.modal = Modal::System;
+                self.system_state.tab = system_panel::SysTab::Settings;
+            }
+            E::Logs => {
+                self.modal = Modal::System;
+                self.system_state.tab = system_panel::SysTab::Log;
+            }
+            E::GoDashboard => {
+                self.view = View::Dashboard;
+                self.modal = Modal::None;
+            }
+        }
+    }
+
+    /// Render the active modal as a centered Window over the central panel.
+    fn show_modal(&mut self, ctx: &egui::Context) {
+        let title = match self.modal {
+            Modal::Automation => "Automation",
+            Modal::Ops        => "OPS",
+            Modal::System     => "System",
+            Modal::None       => return,
+        };
+
+        let mut close_requested = false;
+        let screen = ctx.screen_rect();
+        let win_size = egui::vec2(
+            (screen.width()  * 0.78).clamp(640.0, 1100.0),
+            (screen.height() * 0.78).clamp(420.0,  820.0),
+        );
+
+        egui::Window::new(title)
+            .collapsible(false)
+            .resizable(true)
+            .default_size(win_size)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .frame(
+                egui::Frame::new()
+                    .fill(theme::BG)
+                    .inner_margin(theme::SP_MD)
+                    .stroke(egui::Stroke::new(1.0, theme::BORDER))
+                    .corner_radius(4.0),
+            )
+            .show(ctx, |ui| {
+                // Header with close button
+                ui.horizontal(|ui| {
+                    ui.colored_label(theme::TEXT_DIM,
+                        RichText::new(title).size(theme::FONT_SMALL).strong().monospace());
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            if ui.add(egui::Button::new(
+                                RichText::new("✕ Close").size(theme::FONT_CAPTION)
+                                    .color(theme::TEXT_DIM),
+                            ).frame(false)).clicked() {
+                                close_requested = true;
+                            }
+                        },
+                    );
+                });
+                ui.add_space(theme::SP_XS);
+                theme::thin_separator(ui);
+                ui.add_space(theme::SP_SM);
+
+                match self.modal {
+                    Modal::Automation => automation_panel::show(ui, &self.svc, &mut self.automation_state),
+                    Modal::Ops        => ops_panel::show(ui, &self.svc, &mut self.ops_state),
+                    Modal::System     => system_panel::show(ui, &self.svc, &self.agents, &mut self.system_state),
+                    Modal::None       => {}
+                }
+            });
+
+        // Esc closes too.
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            close_requested = true;
+        }
+        if close_requested {
+            self.modal = Modal::None;
+        }
+    }
+
+    /// Gear dropdown — small menu anchored top-right with quick links.
+    fn show_gear_menu(&mut self, ctx: &egui::Context) {
+        let mut close = false;
+        egui::Area::new(egui::Id::new("gear_menu"))
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, 36.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style())
+                    .fill(theme::CARD)
+                    .corner_radius(4.0)
+                    .inner_margin(theme::SP_SM)
+                    .stroke(egui::Stroke::new(1.0, theme::BORDER))
+                    .show(ui, |ui| {
+                        ui.set_min_width(180.0);
+                        if menu_item(ui, "Settings").clicked() {
+                            self.modal = Modal::System;
+                            self.system_state.tab = system_panel::SysTab::Settings;
+                            close = true;
+                        }
+                        if menu_item(ui, "System Logs").clicked() {
+                            self.modal = Modal::System;
+                            self.system_state.tab = system_panel::SysTab::Log;
+                            close = true;
+                        }
+                        if menu_item(ui, "Open Command Palette  ⌘K").clicked() {
+                            self.palette_state.open();
+                            close = true;
+                        }
+                        ui.add_space(theme::SP_XS);
+                        theme::thin_separator(ui);
+                        ui.colored_label(theme::TEXT_DIM,
+                            RichText::new(concat!("Sirin v", env!("CARGO_PKG_VERSION")))
+                                .size(theme::FONT_CAPTION).monospace());
+                    });
+            });
+        // Click outside closes the menu.
+        if ctx.input(|i| i.pointer.any_click())
+            && !ctx.is_pointer_over_area()
+        {
+            close = true;
+        }
+        if close { self.gear_menu_open = false; }
+    }
+}
+
+fn menu_item(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), 24.0),
+        egui::Sense::click(),
+    );
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, 3.0, theme::HOVER);
+    }
+    ui.painter().text(
+        egui::pos2(rect.left() + theme::SP_SM, rect.center().y),
+        egui::Align2::LEFT_CENTER, label,
+        egui::FontId::proportional(theme::FONT_SMALL), theme::TEXT,
+    );
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 impl eframe::App for SirinApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if self.last_refresh.elapsed() > std::time::Duration::from_secs(5) { self.refresh(); }
         ctx.request_repaint_after(std::time::Duration::from_secs(5));
+
+        // ── First-run config check: force Settings modal on missing LLM key ─
+        if !self.first_run_check_done {
+            self.first_run_check_done = true;
+            let issues = self.svc.config_check();
+            let has_error = issues.iter().any(|i| i.severity == ConfigSeverity::Error);
+            if has_error {
+                self.modal = Modal::System;
+                self.system_state.tab = system_panel::SysTab::Settings;
+                self.toasts.push_back(Toast::from_event(ToastEvent {
+                    level: ToastLevel::Error,
+                    text: "設定有錯誤 — 請先在 Settings 修正".into(),
+                }));
+            }
+        }
 
         // Deactivate screenshot pump when Testing panel is not on Browser tab
         if !matches!(self.view, View::Testing) {
@@ -129,6 +345,26 @@ impl eframe::App for SirinApp {
         for te in self.svc.poll_toasts() { self.toasts.push_back(Toast::from_event(te)); }
         let now = std::time::Instant::now();
         self.toasts.retain(|t| t.expires > now);
+
+        // ── Global Ctrl/Cmd+K shortcut ──────────────────────────────────
+        // Listen on the *first* update of each frame so the palette opens
+        // even when focus is in another widget. We avoid consuming events
+        // because TextEdit may also need them — we just observe.
+        let palette_shortcut = ctx.input(|i| {
+            (i.modifiers.ctrl || i.modifiers.command || i.modifiers.mac_cmd)
+                && i.key_pressed(egui::Key::K)
+        });
+        if palette_shortcut && !self.palette_state.open {
+            self.palette_state.open();
+        }
+
+        // ── Top status bar (32pt, always visible above sidebar/central) ──
+        let top_action = top_bar::show(ctx, &self.svc);
+        match top_action {
+            top_bar::TopBarAction::OpenPalette => self.palette_state.open(),
+            top_bar::TopBarAction::OpenGearMenu => self.gear_menu_open = !self.gear_menu_open,
+            top_bar::TopBarAction::None => {}
+        }
 
         sidebar::show(ctx, &self.svc, &self.agents, &self.pending_counts, &mut self.view, &mut self.renaming, &mut self.sidebar_state);
 
@@ -157,14 +393,44 @@ impl eframe::App for SirinApp {
                     show_loading(ui);
                 } else {
                     match self.view.clone() {
+                        View::Dashboard => {
+                            let act = dashboard::show(ui, &self.svc, &mut self.dashboard_state);
+                            match act {
+                                dashboard::DashboardAction::OpenTesting => {
+                                    self.view = View::Testing;
+                                }
+                                dashboard::DashboardAction::OpenTestingCoverage => {
+                                    self.view = View::Testing;
+                                    self.testing_state.tab = testing_panel::TestingTab::Coverage;
+                                }
+                                dashboard::DashboardAction::OpenTestingBrowser => {
+                                    self.view = View::Testing;
+                                    self.testing_state.tab = testing_panel::TestingTab::Browser;
+                                }
+                                dashboard::DashboardAction::None => {}
+                            }
+                        }
+                        View::Testing        => testing_panel::show(ui, &self.svc, &mut self.testing_state),
                         View::Workspace(idx) => workspace::show(ui, &self.svc, &self.agents, idx, &self.tasks, &self.pending_counts, &mut self.workspace_state),
-                        View::Testing    => testing_panel::show(ui, &self.svc, &mut self.testing_state),
-                        View::Automation => automation_panel::show(ui, &self.svc, &mut self.automation_state),
-                        View::Ops        => ops_panel::show(ui, &self.svc, &mut self.ops_state),
-                        View::System     => system_panel::show(ui, &self.svc, &self.agents, &mut self.system_state),
                     }
                 }
             });
+
+        // ── Modal overlay (shown above central panel, below palette) ─────
+        if self.modal != Modal::None {
+            self.show_modal(ctx);
+        }
+
+        // ── Gear menu (anchored under the gear icon in the top bar) ──────
+        if self.gear_menu_open {
+            self.show_gear_menu(ctx);
+        }
+
+        // ── Command palette (top-most overlay) ───────────────────────────
+        if let Some(entry) = command_palette::show(ctx, &mut self.palette_state) {
+            self.handle_palette_choice(entry);
+            self.palette_state.close();
+        }
 
         // Toast overlay
         if !self.toasts.is_empty() {
