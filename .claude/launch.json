@@ -3,8 +3,8 @@
   "configurations": [
     {
       "name": "sirin-web",
-      "runtimeExecutable": "dx",
-      "runtimeArgs": ["serve", "--features", "server,web"],
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "8080", "--directory", "web"],
       "port": 8080
     },
     {

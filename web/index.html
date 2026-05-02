@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sirin</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!--
+  Sirin web UI — single-file HTML.
+  Architecture:
+    • Alpine.js (CDN) gives us x-data / x-show / x-text reactive bindings.
+    • All state lives in `sirin()` factory in app.js (one root x-data scope).
+    • Backend calls go through fetch() to /api/snapshot (poll) and /mcp
+      (action). No build step, no transpilation — F5 reloads the whole UI.
+  Why Alpine + vanilla over React:
+    • One file = whole UI. AI can edit one place to change behavior + DOM.
+    • Reactive bindings live next to the markup (`x-text="state.foo"`),
+      so the data flow is visually obvious without jumping between files.
+    • Zero npm / vite / tsc — instant edit-refresh cycle.
+  Design tokens come from style.css (mirrors Sirin's egui theme.rs).
+-->
+
+<div x-data="sirin()" x-init="init()" class="app">
+
+  <!-- ── Top status bar (32pt, always visible) ───────────────────────── -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <span class="brand" x-text="'Sirin v' + state.version"></span>
+      <span class="dot-group">
+        <span class="dot" :class="state.browser_open ? 'dot-ok' : 'dot-bad'"
+              :title="'Browser: ' + (state.browser_open ? 'running' : 'stopped')"></span>
+        <span class="dot-label">Browser</span>
+        <span class="dot" :class="state.rpc_running ? 'dot-ok' : 'dot-bad'"
+              :title="'RPC: ' + (state.rpc_running ? 'running' : 'stopped')"></span>
+        <span class="dot-label">RPC</span>
+        <span class="dot" :class="state.tg_connected ? 'dot-ok' : 'dot-bad'"
+              :title="'Telegram: ' + (state.tg_connected ? 'connected' : 'offline')"></span>
+        <span class="dot-label">TG</span>
+      </span>
+      <!-- Last verdict — colored by status -->
+      <span class="verdict" x-show="state.last_verdict" :class="'verdict-' + state.last_verdict?.status">
+        <span x-text="verdictGlyph(state.last_verdict?.status)"></span>
+        <span x-text="state.last_verdict?.status?.toUpperCase()"></span>
+        <span class="verdict-name" x-text="state.last_verdict?.test_id"></span>
+      </span>
+    </div>
+    <div class="topbar-right">
+      <span class="url" x-text="truncateUrl(state.browser_url, 38)" :title="state.browser_url"></span>
+      <button class="iconbtn" @click="gearOpen = !gearOpen" title="Settings · Logs · About">⚙</button>
+      <button class="iconbtn iconbtn-mono" @click="paletteOpen = true" title="Command palette (Ctrl+K)">⌘K</button>
+    </div>
+  </header>
+
+  <!-- ── Main split: sidebar + content ───────────────────────────────── -->
+  <div class="main">
+
+    <!-- Sidebar — agent list + view nav -->
+    <aside class="sidebar">
+      <div class="logo-badge">S</div>
+      <nav class="nav-section">
+        <template x-for="(agent, i) in state.agents" :key="agent.id">
+          <button class="nav-agent" :class="view === 'workspace:' + i ? 'active' : ''"
+                  @click="view = 'workspace:' + i" :title="agent.name">
+            <span class="nav-agent-letter" x-text="agent.name.charAt(0)"></span>
+            <span class="nav-agent-status"
+                  :class="'agent-' + agent.live_status"></span>
+            <span class="nav-agent-badge" x-show="state.pending_counts[agent.id] > 0"
+                  x-text="state.pending_counts[agent.id]"></span>
+          </button>
+        </template>
+      </nav>
+      <div class="strip"></div>
+      <nav class="nav-section">
+        <button class="nav-icon" :class="view === 'dashboard' ? 'active' : ''"
+                @click="view = 'dashboard'" title="Dashboard">▦</button>
+        <button class="nav-icon" :class="view === 'testing' ? 'active' : ''"
+                @click="view = 'testing'" title="Testing">≡</button>
+      </nav>
+    </aside>
+
+    <!-- Central content -->
+    <main class="content">
+
+      <!-- ── Dashboard ─────────────────────────────────────────────── -->
+      <section x-show="view === 'dashboard'" class="view">
+        <div class="view-header">
+          <h1>DASHBOARD</h1>
+          <button class="btn-primary" @click="view = 'testing'">▶ Run Test</button>
+        </div>
+        <hr class="thin-sep">
+
+        <div class="section-label" x-text="'ACTIVE  (' + state.active_runs.length + ')'"></div>
+        <template x-if="state.active_runs.length === 0">
+          <div class="card card-empty">目前沒有正在執行的測試</div>
+        </template>
+        <template x-for="run in state.active_runs" :key="run.test_id">
+          <div class="card card-clickable" @click="view = 'testing'">
+            <div class="row">
+              <span class="badge badge-info">▶</span>
+              <span class="mono" x-text="run.test_id"></span>
+              <span class="dim mono" x-show="run.step !== null"
+                    x-text="'· step ' + run.step"></span>
+            </div>
+            <div class="dim small" x-show="run.analysis"
+                 x-text="truncate(run.analysis, 110)"></div>
+          </div>
+        </template>
+
+        <div class="section-label"
+             x-text="'RECENT  (' + state.recent_runs.length + ' of last 8)'"></div>
+        <template x-if="state.recent_runs.length === 0">
+          <div class="card card-empty">尚無歷史紀錄</div>
+        </template>
+        <template x-for="run in state.recent_runs" :key="run.started_at + run.test_id">
+          <div class="card card-row card-clickable" @click="view = 'testing'">
+            <span :class="'badge badge-' + run.status">
+              <span x-text="verdictGlyph(run.status)"></span>
+              <span x-text="run.status.toUpperCase()"></span>
+            </span>
+            <span class="mono" x-text="run.test_id"></span>
+            <span class="row-spacer"></span>
+            <span class="dim mono small" x-show="run.duration_ms"
+                  x-text="(run.duration_ms / 1000).toFixed(1) + 's'"></span>
+          </div>
+        </template>
+
+        <div class="section-label">COVERAGE</div>
+        <div class="card card-clickable" @click="view = 'testing'; testTab = 'coverage'">
+          <template x-if="state.coverage">
+            <div>
+              <div class="row">
+                <strong x-text="state.coverage.product"></strong>
+                <span class="dim mono small" x-text="'v' + state.coverage.version"></span>
+                <span class="row-spacer"></span>
+                <span class="link">Open full →</span>
+              </div>
+              <div class="funnel-row">
+                <span class="funnel-label">探索 Discovered</span>
+                <span class="funnel-num mono" x-text="state.coverage.discovered"></span>
+                <div class="bar"><div class="bar-fill bar-dim"
+                     :style="'width:' + funnelPct(state.coverage, 'discovered') + '%'"></div></div>
+                <span class="dim mono small" x-text="funnelPct(state.coverage, 'discovered') + '%'"></span>
+              </div>
+              <template x-if="state.coverage.discovery_status === 'NotRun'">
+                <div class="indent dim small italic">(mock — discovery 模組待實作)</div>
+              </template>
+              <div class="funnel-row">
+                <span class="funnel-label">覆蓋 Covered</span>
+                <span class="funnel-num mono" x-text="state.coverage.total_covered"></span>
+                <div class="bar"><div class="bar-fill bar-accent"
+                     :style="'width:' + funnelPct(state.coverage, 'covered') + '%'"></div></div>
+                <span class="dim mono small" x-text="funnelPct(state.coverage, 'covered') + '%'"></span>
+              </div>
+              <div class="funnel-row">
+                <span class="funnel-label">有腳本 Scripted</span>
+                <span class="funnel-num mono" x-text="state.coverage.scripted"></span>
+                <div class="bar"><div class="bar-fill bar-info"
+                     :style="'width:' + funnelPct(state.coverage, 'scripted') + '%'"></div></div>
+                <span class="dim mono small" x-text="funnelPct(state.coverage, 'scripted') + '%'"></span>
+              </div>
+            </div>
+          </template>
+          <template x-if="!state.coverage">
+            <div class="dim">Loading coverage…</div>
+          </template>
+        </div>
+
+        <div class="section-label">BROWSER</div>
+        <div class="card card-clickable" @click="view = 'testing'; testTab = 'browser'">
+          <div class="row">
+            <span :class="state.browser_open ? 'badge badge-passed' : 'badge badge-dim'"
+                  x-text="state.browser_open ? '● LIVE' : '○ OFF'"></span>
+            <span class="dim small" x-text="state.browser_title"></span>
+            <span class="row-spacer"></span>
+            <span class="link">Open monitor →</span>
+          </div>
+          <div class="dim mono small" x-show="state.browser_url" x-text="state.browser_url"></div>
+        </div>
+      </section>
+
+      <!-- ── Testing (placeholder for Phase 4) ─────────────────────── -->
+      <section x-show="view === 'testing'" class="view">
+        <div class="view-header">
+          <h1>TESTING</h1>
+          <span class="dim small">tab: <span x-text="testTab"></span></span>
+        </div>
+        <hr class="thin-sep">
+        <div class="dim">Phase 4 將遷移 Test Runs / Coverage / Browser monitor 三個 sub-tab。</div>
+      </section>
+
+      <!-- ── Workspace (placeholder for Phase 6) ─────────────────────── -->
+      <section x-show="view.startsWith('workspace:')" class="view">
+        <div class="view-header">
+          <h1>WORKSPACE</h1>
+          <span class="dim small" x-text="'agent index ' + view.split(':')[1]"></span>
+        </div>
+        <hr class="thin-sep">
+        <div class="dim">Phase 6 將遷移 agent 對話 / 概覽 / 待確認 / 設定。</div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- ── Gear dropdown ─────────────────────────────────────────────── -->
+  <div class="gear-menu" x-show="gearOpen" @click.outside="gearOpen = false">
+    <button class="menu-item" @click="modal = 'settings'; gearOpen = false">Settings</button>
+    <button class="menu-item" @click="modal = 'logs'; gearOpen = false">System Logs</button>
+    <button class="menu-item" @click="paletteOpen = true; gearOpen = false">
+      Open Command Palette <span class="dim mono">⌘K</span>
+    </button>
+    <hr class="thin-sep">
+    <div class="dim mono small" x-text="'Sirin v' + state.version"></div>
+  </div>
+
+  <!-- ── Command Palette ⌘K ───────────────────────────────────────── -->
+  <div class="palette-backdrop" x-show="paletteOpen" @click="paletteOpen = false"></div>
+  <div class="palette" x-show="paletteOpen" x-transition.opacity.duration.150ms>
+    <div class="palette-header">
+      <span class="dim mono small">⌘K</span>
+      <span class="dim small">Command Palette</span>
+      <span class="row-spacer"></span>
+      <span class="dim mono small">Esc</span>
+    </div>
+    <input type="text" class="palette-input" x-ref="paletteInput"
+           x-model="paletteQuery"
+           @keydown.escape="paletteOpen = false"
+           @keydown.arrow-down.prevent="paletteIdx = Math.min(paletteIdx + 1, filteredEntries.length - 1)"
+           @keydown.arrow-up.prevent="paletteIdx = Math.max(paletteIdx - 1, 0)"
+           @keydown.enter.prevent="runPaletteEntry(filteredEntries[paletteIdx])"
+           placeholder="Type to filter…">
+    <hr class="thin-sep">
+    <template x-for="(entry, i) in filteredEntries" :key="entry.label">
+      <button class="palette-entry" :class="i === paletteIdx ? 'active' : ''"
+              @click="runPaletteEntry(entry)">
+        <span class="dim mono small palette-group" x-text="entry.group"></span>
+        <span x-text="entry.label"></span>
+      </button>
+    </template>
+    <div class="dim small" x-show="filteredEntries.length === 0">No matches</div>
+  </div>
+
+  <!-- ── Modal overlays (Settings / Logs / etc — Phase 5) ──────────── -->
+  <div class="modal-backdrop" x-show="modal" @click="modal = null"></div>
+  <div class="modal" x-show="modal" @click.stop>
+    <div class="modal-header">
+      <span class="dim mono small" x-text="modal?.toUpperCase()"></span>
+      <span class="row-spacer"></span>
+      <button class="closebtn" @click="modal = null">✕ Close</button>
+    </div>
+    <hr class="thin-sep">
+    <div class="modal-body">
+      <div class="dim">Phase 5 將遷移 <span x-text="modal"></span> 內容。</div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Alpine.js — bundled at /ui/alpine.min.js so the binary is self-contained -->
+<script src="alpine.min.js" defer></script>
+<script src="app.js"></script>
+
+</body>
+</html>

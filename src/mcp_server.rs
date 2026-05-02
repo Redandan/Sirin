@@ -41,18 +41,42 @@
 //! | `browser_exec` | 即席操作瀏覽器（click/type/read/...），不需完整 test goal |
 
 use axum::{
-    extract::Json,
-    http::{HeaderMap, Method, StatusCode},
-    response::IntoResponse,
+    extract::{Json, Path},
+    http::{header, HeaderMap, Method, StatusCode},
+    response::{IntoResponse, Redirect},
     routing::{get, post},
     Router,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tower_http::timeout::TimeoutLayer;
+
+use crate::ui_service::AppService;
+
+// ── Global AppService registry (Phase 2 / web UI) ────────────────────────────
+//
+// The web UI's /api/snapshot endpoint needs to query agents / runs / coverage,
+// all of which live behind the AppService trait. We can't pass the Arc through
+// axum State easily since the existing `mcp_router()` is a free function and
+// the existing handlers (call_test_coverage / call_run_test_async / …) all
+// reach into module-level functions, not handler-local state.
+//
+// Solution: a `OnceLock<Arc<dyn AppService>>` set by `main.rs` once the
+// service is built. Idempotent and lock-free at read time.
+
+static APP_SVC: OnceLock<Arc<dyn AppService>> = OnceLock::new();
+
+/// Called from `main.rs` immediately after `RealService::new()`.
+pub fn register_app_service(svc: Arc<dyn AppService>) {
+    let _ = APP_SVC.set(svc);
+}
+
+fn app_service() -> Option<Arc<dyn AppService>> {
+    APP_SVC.get().cloned()
+}
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -153,11 +177,133 @@ pub fn mcp_router() -> Router {
     Router::new()
         .route("/gateway", get(crate::mcp_gateway::gateway_handler))
         .route("/mcp", post(mcp_handler))
+        // ── Web UI (Phase 2) ────────────────────────────────────────────
+        // Static UI files — bundled into the binary via include_bytes! so
+        // the single-binary distribution story holds. /ui (no trailing
+        // slash) redirects to /ui/ so relative paths in index.html resolve.
+        .route("/ui",        get(|| async { Redirect::permanent("/ui/") }))
+        .route("/ui/",       get(ui_index))
+        .route("/ui/{file}", get(ui_static))
+        // /api/snapshot — single combined JSON read for the dashboard. Polled
+        // every ~5s by the web UI; cheap aggregate of read-only AppService calls.
+        .route("/api/snapshot", get(api_snapshot))
         .layer(cors_layer())
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             MCP_REQUEST_TIMEOUT,
         ))
+}
+
+// ── Web UI handlers ──────────────────────────────────────────────────────────
+
+async fn ui_index() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        include_str!("../web/index.html"),
+    )
+}
+
+async fn ui_static(Path(file): Path<String>) -> impl IntoResponse {
+    // Each branch returns include_bytes! at compile time — no filesystem I/O,
+    // no path-traversal risk. Adding a new file is a one-line patch here.
+    let (mime, body): (&'static str, &'static [u8]) = match file.as_str() {
+        "index.html"    => ("text/html; charset=utf-8",    include_bytes!("../web/index.html")),
+        "style.css"     => ("text/css; charset=utf-8",     include_bytes!("../web/style.css")),
+        "app.js"        => ("application/javascript",      include_bytes!("../web/app.js")),
+        "alpine.min.js" => ("application/javascript",      include_bytes!("../web/alpine.min.js")),
+        _ => return (StatusCode::NOT_FOUND, "not found").into_response(),
+    };
+    ([(header::CONTENT_TYPE, mime)], body).into_response()
+}
+
+/// Single combined snapshot for the dashboard's 5-second poll. Aggregates
+/// read-only AppService calls; failures degrade to default values rather
+/// than 500 so the UI keeps rendering with a partial state.
+async fn api_snapshot() -> impl IntoResponse {
+    let svc = match app_service() {
+        Some(s) => s,
+        None => return axum::Json(json!({
+            "error": "AppService not registered (sirin still booting?)"
+        })).into_response(),
+    };
+
+    // Run inside spawn_blocking — most AppService methods do synchronous
+    // SQLite reads + parser work; we don't want to block the async runtime.
+    let snap = tokio::task::spawn_blocking(move || build_snapshot(&svc)).await;
+    match snap {
+        Ok(v)  => axum::Json(v).into_response(),
+        Err(e) => axum::Json(json!({
+            "error": format!("snapshot task failed: {e}")
+        })).into_response(),
+    }
+}
+
+fn build_snapshot(svc: &Arc<dyn AppService>) -> Value {
+    let s = svc.system_status();
+
+    let agents: Vec<Value> = svc.list_agents().into_iter().map(|a| json!({
+        "id":          a.id,
+        "name":        a.name,
+        "platform":    a.platform,
+        "live_status": a.live_status,
+        "enabled":     a.enabled,
+    })).collect();
+
+    let mut pending = serde_json::Map::new();
+    for a in svc.list_agents() {
+        pending.insert(a.id.clone(), json!(svc.pending_count(&a.id)));
+    }
+
+    let active_runs: Vec<Value> = svc.active_test_runs().into_iter().map(|r| json!({
+        "test_id":  r.test_id,
+        "status":   r.status,
+        "step":     r.step,
+        "analysis": r.analysis,
+        "started_at": r.started_at,
+    })).collect();
+
+    let recent_runs: Vec<Value> = svc.recent_test_runs(8).into_iter().map(|r| json!({
+        "test_id":     r.test_id,
+        "status":      r.status,
+        "duration_ms": r.duration_ms,
+        "started_at":  r.started_at,
+        "pass_rate":   r.pass_rate,
+        "failure_category": r.failure_category,
+    })).collect();
+
+    let last_verdict = svc.recent_test_runs(1).into_iter().next().map(|r| json!({
+        "test_id":   r.test_id,
+        "status":    r.status,
+    }));
+
+    let coverage = svc.test_coverage_data().ok().map(|c| json!({
+        "product":        c.product,
+        "version":        c.version,
+        "total_features": c.total_features,
+        "total_covered":  c.total_covered,
+        "scripted":       c.scripted,
+        "discovered":     c.discovered,
+        "discovery_status": match c.discovery_status {
+            crate::ui_service::DiscoveryStatus::NotRun     => "NotRun",
+            crate::ui_service::DiscoveryStatus::Crawling { .. } => "Crawling",
+            crate::ui_service::DiscoveryStatus::Done { .. }     => "Done",
+        },
+    }));
+
+    json!({
+        "version":        env!("CARGO_PKG_VERSION"),
+        "browser_open":   svc.browser_is_open(),
+        "browser_url":    svc.browser_url(),
+        "browser_title":  svc.browser_title(),
+        "rpc_running":    s.rpc_running,
+        "tg_connected":   s.telegram_connected,
+        "last_verdict":   last_verdict,
+        "agents":         agents,
+        "pending_counts": pending,
+        "active_runs":    active_runs,
+        "recent_runs":    recent_runs,
+        "coverage":       coverage,
+    })
 }
 
 /// Build the CorsLayer governing `/mcp`.

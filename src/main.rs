@@ -362,5 +362,9 @@ fn main() {
     }
 
     let svc = StdArc::new(ui_service_impl::RealService::new(tracker, tg_auth));
+    // Web UI (`/ui/*` + `/api/snapshot`) needs read access to AppService.
+    // Register before launching the egui shell so the HTTP server, which is
+    // already up by this point, can serve snapshots immediately.
+    mcp_server::register_app_service(svc.clone() as StdArc<dyn ui_service::AppService>);
     ui_egui::launch(svc);
 }
