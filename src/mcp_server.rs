@@ -187,6 +187,10 @@ pub fn mcp_router() -> Router {
         // /api/snapshot — single combined JSON read for the dashboard. Polled
         // every ~5s by the web UI; cheap aggregate of read-only AppService calls.
         .route("/api/snapshot", get(api_snapshot))
+        // /api/browser_screenshot — raw PNG bytes of the controlled Chrome
+        // session. Used by the Browser tab + Dashboard browser card to show
+        // a live preview. Returns 503 when no Chrome is open.
+        .route("/api/browser_screenshot", get(api_browser_screenshot))
         .layer(cors_layer())
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
@@ -214,6 +218,28 @@ async fn ui_static(Path(file): Path<String>) -> impl IntoResponse {
         _ => return (StatusCode::NOT_FOUND, "not found").into_response(),
     };
     ([(header::CONTENT_TYPE, mime)], body).into_response()
+}
+
+/// PNG bytes of the controlled Chrome session. Used by the Browser tab
+/// and Dashboard browser card. Returns 503 (with image/png placeholder
+/// arguably nicer, but plain text is fine) when no browser is open.
+async fn api_browser_screenshot() -> impl IntoResponse {
+    let svc = match app_service() {
+        Some(s) => s,
+        None => return (StatusCode::SERVICE_UNAVAILABLE, "AppService not registered").into_response(),
+    };
+    let png = tokio::task::spawn_blocking(move || svc.browser_screenshot()).await;
+    match png {
+        Ok(Some(bytes)) => (
+            [
+                (header::CONTENT_TYPE, "image/png"),
+                (header::CACHE_CONTROL, "no-cache, max-age=0"),
+            ],
+            bytes,
+        ).into_response(),
+        Ok(None)  => (StatusCode::SERVICE_UNAVAILABLE, "browser not open").into_response(),
+        Err(e)    => (StatusCode::INTERNAL_SERVER_ERROR, format!("screenshot task: {e}")).into_response(),
+    }
 }
 
 /// Single combined snapshot for the dashboard's 5-second poll. Aggregates
@@ -288,7 +314,80 @@ fn build_snapshot(svc: &Arc<dyn AppService>) -> Value {
             crate::ui_service::DiscoveryStatus::Crawling { .. } => "Crawling",
             crate::ui_service::DiscoveryStatus::Done { .. }     => "Done",
         },
+        "groups":         c.groups.into_iter().map(|g| json!({
+            "id":       g.id,
+            "name":     g.name,
+            "role":     g.role,
+            "covered":  g.covered,
+            "total":    g.total,
+            "features": g.features.into_iter().map(|f| json!({
+                "id":       f.id,
+                "name":     f.name,
+                "status":   f.status,
+                "test_ids": f.test_ids,
+            })).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
     }));
+
+    // ── config_check (Settings modal) ──────────────────────────────────
+    let config_issues_raw = svc.config_check();
+    let config_ok_count = config_issues_raw.iter()
+        .filter(|i| matches!(i.severity, crate::ui_service::ConfigSeverity::Ok))
+        .count();
+    let config_issues: Vec<Value> = config_issues_raw.into_iter()
+        .filter(|i| !matches!(i.severity, crate::ui_service::ConfigSeverity::Ok))
+        .map(|i| json!({
+            "severity":   match i.severity {
+                crate::ui_service::ConfigSeverity::Error   => "error",
+                crate::ui_service::ConfigSeverity::Warning => "warning",
+                crate::ui_service::ConfigSeverity::Info    => "info",
+                crate::ui_service::ConfigSeverity::Ok      => "ok",
+            },
+            "category":   i.category,
+            "message":    i.message,
+            "suggestion": i.suggestion,
+        }))
+        .collect();
+
+    // ── log_recent (Logs modal) ────────────────────────────────────────
+    let log_lines: Vec<Value> = svc.log_recent(50).into_iter().map(|l| {
+        let level = match l.level {
+            crate::ui_service::LogLevel::Error    => "error",
+            crate::ui_service::LogLevel::Warn     => "warn",
+            crate::ui_service::LogLevel::Telegram => "info",
+            crate::ui_service::LogLevel::Research |
+            crate::ui_service::LogLevel::Followup |
+            crate::ui_service::LogLevel::Coding   |
+            crate::ui_service::LogLevel::Teams    |
+            crate::ui_service::LogLevel::Info     |
+            crate::ui_service::LogLevel::Normal   => "info",
+        };
+        // log_recent doesn't carry timestamps in LogLine; the UI displays
+        // empty ts when it's missing. Existing log_buffer formatting puts
+        // [HH:MM:SS] at the start of each line, so we'll keep that inline.
+        json!({ "level": level, "text": l.text, "ts": "" })
+    }).collect();
+
+    // ── team_dashboard (Dev Squad modal) ───────────────────────────────
+    let team_dash_raw = svc.team_dashboard();
+    let team_dashboard = json!({
+        "worker_running": team_dash_raw.worker_running,
+        "queued":  team_dash_raw.queued,
+        "running": team_dash_raw.running,
+        "done":    team_dash_raw.done,
+        "failed":  team_dash_raw.failed,
+        "pm":        member_view(&team_dash_raw.pm),
+        "engineer":  member_view(&team_dash_raw.engineer),
+        "tester":    member_view(&team_dash_raw.tester),
+    });
+    let usage = svc.team_token_usage(300);
+    let token_usage = json!({
+        "window_secs":     usage.window_secs,
+        "api_calls":       usage.api_calls,
+        "tokens_per_min":  usage.tokens_per_min,
+        "cost_per_hour":   usage.cost_per_hour,
+        "cache_hit_pct":   usage.cache_hit_pct,
+    });
 
     json!({
         "version":        env!("CARGO_PKG_VERSION"),
@@ -303,6 +402,26 @@ fn build_snapshot(svc: &Arc<dyn AppService>) -> Value {
         "active_runs":    active_runs,
         "recent_runs":    recent_runs,
         "coverage":       coverage,
+        // New fields (v0.5.1) — replace web/app.js mock data:
+        "persona_name":   svc.persona_name(),
+        "llm_main":       s.llm.main_model,
+        "llm_router":     s.llm.router_model,
+        "config_issues":  config_issues,
+        "config_ok_count": config_ok_count,
+        "log_lines":      log_lines,
+        "team_dashboard": team_dashboard,
+        "token_usage":    token_usage,
+    })
+}
+
+/// Flatten a `TeamMemberView` for snapshot JSON. Web UI's Dev Squad modal
+/// expects { role, session_id, turns } — we drop `resume_cmd` since the
+/// browser shouldn't expose CLI session commands.
+fn member_view(m: &crate::ui_service::TeamMemberView) -> Value {
+    json!({
+        "role":       m.role,
+        "session_id": m.session_id,
+        "turns":      m.turns,
     })
 }
 

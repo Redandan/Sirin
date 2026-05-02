@@ -195,7 +195,14 @@ window.sirin = function () {
         const r = await fetch('/api/snapshot', { cache: 'no-store' });
         if (!r.ok) return;            // backend not ready — keep mock
         const data = await r.json();
-        this.state = { ...this.state, ...data };
+        // snapshot_tick increments every successful fetch — used as the
+        // cache-buster for /api/browser_screenshot so <img> refreshes in
+        // sync with the JSON poll without becoming a flicker storm.
+        this.state = {
+          ...this.state,
+          ...data,
+          snapshot_tick: (this.state.snapshot_tick || 0) + 1,
+        };
       } catch (_e) {
         // Network error → keep current state (probably running standalone).
       }

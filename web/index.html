@@ -233,8 +233,17 @@
             <span class="link small mt-xs">Open monitor →</span>
           </div>
           <div class="card-browser-thumb">
-            <!-- Phase 4 will swap to <img src="/api/browser_screenshot"> -->
-            <span class="dim mono small">screenshot</span>
+            <!-- Live screenshot — img reloads every 5 s via the Alpine
+                 cache-busting key (state.snapshot_tick increments on each
+                 fetch). 1px transparent fallback when the browser is OFF.
+                 -->
+            <img class="browser-thumb-img" alt="browser preview"
+                 :src="state.browser_open
+                       ? '/api/browser_screenshot?t=' + (state.snapshot_tick || 0)
+                       : ''"
+                 x-show="state.browser_open"
+                 onerror="this.style.opacity=0.15">
+            <span class="dim mono small" x-show="!state.browser_open">browser offline</span>
           </div>
         </div>
       </section>
@@ -407,8 +416,17 @@
           </div>
 
           <div class="browser-screenshot-frame">
-            <!-- Phase 7+ will swap to <img src="/api/browser_screenshot"> -->
-            <span class="dim mono">screenshot stream — wire /api/browser_screenshot in Phase 7</span>
+            <!-- Live PNG from the controlled Chrome — refreshes via the
+                 same snapshot_tick cache-buster as the Dashboard preview. -->
+            <img class="browser-fullshot-img" alt="browser screenshot"
+                 :src="state.browser_open
+                       ? '/api/browser_screenshot?t=' + (state.snapshot_tick || 0)
+                       : ''"
+                 x-show="state.browser_open"
+                 onerror="this.style.opacity=0.15">
+            <span class="dim mono" x-show="!state.browser_open">
+              browser is offline — open it via test_run or browser_exec
+            </span>
           </div>
         </div>
       </section>
