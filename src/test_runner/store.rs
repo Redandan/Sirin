@@ -16,10 +16,10 @@ fn db_path() -> PathBuf {
     crate::platform::app_data_dir().join("memory").join("test_memory.db")
 }
 
-/// Shared DB accessor for the discovery module — Issue #247 keeps its
-/// `discovered_features` / `discovery_runs` tables in the same SQLite file
-/// so the schema migrations and OnceLock init stay centralized here.
-pub(crate) fn __db_for_discovery() -> &'static Mutex<rusqlite::Connection> {
+/// Shared DB accessor used by sibling modules (discovery, chat_history,
+/// future per-agent stores). Keeps the OnceLock init + schema migrations
+/// centralized here so all tables live in `<app_data_dir>/memory/test_memory.db`.
+pub(crate) fn __shared_db() -> &'static Mutex<rusqlite::Connection> {
     db()
 }
 
@@ -131,6 +131,21 @@ fn db() -> &'static Mutex<rusqlite::Connection> {
         let _ = conn.execute(
             "ALTER TABLE test_runs ADD COLUMN console_log TEXT",
             [],
+        );
+
+        // v0.5.3 — chat history persistence (Workspace 對話 tab).
+        // One row per message; agent_id + ordered by created_at gives the
+        // thread for any agent. No retention policy yet — we trim in
+        // user-space when listing if the table grows unwieldy.
+        let _ = conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS chat_messages ( \
+                id INTEGER PRIMARY KEY AUTOINCREMENT, \
+                agent_id TEXT NOT NULL, \
+                role TEXT NOT NULL, \
+                text TEXT NOT NULL, \
+                created_at TEXT NOT NULL \
+            ); \
+            CREATE INDEX IF NOT EXISTS idx_chat_agent ON chat_messages(agent_id, created_at);",
         );
 
         // Issue #247 — discovery crawler tables.

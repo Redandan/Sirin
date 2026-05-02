@@ -192,8 +192,11 @@ pub fn mcp_router() -> Router {
         // a live preview. Returns 503 when no Chrome is open.
         .route("/api/browser_screenshot", get(api_browser_screenshot))
         // /api/chat — Workspace 對話 tab → svc.chat_send(agent_id, message).
-        // Body: { agent_id, message }, Response: { reply }
-        .route("/api/chat", post(api_chat))
+        // POST persists user msg + agent reply to chat_history (v0.5.3).
+        // GET /api/chat/{agent_id} returns the persisted thread for hydration
+        // when the user re-opens the workspace.
+        .route("/api/chat",            post(api_chat))
+        .route("/api/chat/{agent_id}", get(api_chat_history))
         // ── v0.5.2 mutating endpoints (Workspace 設定 / 待確認 / Settings) ─
         // /api/persona/name — POST { name } updates persona display name.
         .route("/api/persona/name", post(api_persona_set_name))
@@ -234,8 +237,8 @@ async fn ui_static(Path(file): Path<String>) -> impl IntoResponse {
     ([(header::CONTENT_TYPE, mime)], body).into_response()
 }
 
-/// Workspace 對話 tab → `chat_send` proxy. Synchronous (chat_send blocks
-/// while the LLM completes). 503 when service not registered.
+/// Workspace 對話 tab → `chat_send` proxy + persists both user message
+/// and agent reply to chat_history. Synchronous wait while LLM responds.
 async fn api_chat(Json(body): Json<Value>) -> impl IntoResponse {
     let svc = match app_service() {
         Some(s) => s,
@@ -248,11 +251,36 @@ async fn api_chat(Json(body): Json<Value>) -> impl IntoResponse {
         return (StatusCode::BAD_REQUEST,
             axum::Json(json!({"error": "agent_id and message required"}))).into_response();
     }
-    let reply = tokio::task::spawn_blocking(move || svc.chat_send(&agent_id, &message)).await;
+
+    // Persist the user message immediately so it survives even if chat_send
+    // panics or the daemon dies mid-LLM-call.
+    let _ = crate::chat_history::append(&agent_id, "user", &message);
+
+    let agent_id_for_task = agent_id.clone();
+    let message_for_task  = message.clone();
+    let reply = tokio::task::spawn_blocking(move || {
+        svc.chat_send(&agent_id_for_task, &message_for_task)
+    }).await;
     match reply {
-        Ok(r)  => axum::Json(json!({ "reply": r })).into_response(),
+        Ok(r) => {
+            let _ = crate::chat_history::append(&agent_id, "agent", &r);
+            axum::Json(json!({ "reply": r })).into_response()
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR,
             axum::Json(json!({"error": format!("chat task: {e}")}))).into_response(),
+    }
+}
+
+/// GET /api/chat/{agent_id} → array of {role, text, created_at} oldest first.
+async fn api_chat_history(Path(agent_id): Path<String>) -> impl IntoResponse {
+    match crate::chat_history::history(&agent_id, 200) {
+        Ok(msgs) => axum::Json(msgs.into_iter().map(|m| json!({
+            "role":       m.role,
+            "text":       m.text,
+            "created_at": m.created_at,
+        })).collect::<Vec<_>>()).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({"error": e}))).into_response(),
     }
 }
 

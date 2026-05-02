@@ -227,6 +227,8 @@ window.sirin = function () {
         if (!agent) return;
         if (!this.agent_detail[agent.id]) this.loadAgentDetail(agent.id);
         if (!this.pending[agent.id])      this.loadPending(agent.id);
+        // v0.5.3: hydrate persisted chat thread (if not already cached)
+        if (!this.chat_history[agent.id]) this.loadChatHistory(agent.id);
       });
     },
 
@@ -365,6 +367,23 @@ window.sirin = function () {
     },
 
     // ── Workspace chat ──────────────────────────────────────────────
+    // v0.5.3: hydrate persisted thread from SQLite. Empty array on first
+    // visit means "no history yet" — keep it as [] (truthy length check).
+    async loadChatHistory(agent_id) {
+      try {
+        const r = await fetch(`/api/chat/${encodeURIComponent(agent_id)}`);
+        if (!r.ok) return;
+        const msgs = await r.json();
+        // Map the API shape {role, text, created_at} into our existing
+        // {role, text} bubble shape; created_at is preserved for tooltips.
+        this.chat_history[agent_id] = msgs.map(m => ({
+          role: m.role, text: m.text, created_at: m.created_at,
+        }));
+      } catch (_) {
+        this.chat_history[agent_id] = [];
+      }
+    },
+
     async sendChat() {
       const ag = this.currentAgent;
       const msg = this.chat_input.trim();

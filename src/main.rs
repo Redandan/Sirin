@@ -49,6 +49,7 @@ mod telegram;
 mod telegram_auth;
 pub mod ui_service;
 mod ui_service_impl;
+pub mod chat_history;
 // (egui shell + ui_test_bus removed in Phase 7 — UI is now a web app
 //  served by mcp_server at http://127.0.0.1:7700/ui/)
 

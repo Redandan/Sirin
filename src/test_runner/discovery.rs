@@ -46,7 +46,7 @@ pub struct DiscoveryRun {
 
 fn db() -> &'static std::sync::Mutex<rusqlite::Connection> {
     // Reuse the test_runner::store DB connection (shared schema location).
-    crate::test_runner::store::__db_for_discovery()
+    crate::test_runner::store::__shared_db()
 }
 
 /// Begin a new discovery run. Returns the row id.
