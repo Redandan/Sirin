@@ -13,8 +13,7 @@ name = "sirin-call"
 path = "src/bin/sirin_call.rs"
 
 [dependencies]
-eframe = "0.31"
-egui = "0.31"
+# eframe / egui dropped in v0.5.0 — UI is now a web app served by mcp_server.
 thiserror = "2"
 tokio = { version = "1", features = [
     "rt-multi-thread", "macros",

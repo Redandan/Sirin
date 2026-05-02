@@ -49,8 +49,8 @@ mod telegram;
 mod telegram_auth;
 pub mod ui_service;
 mod ui_service_impl;
-mod ui_egui;
-pub mod ui_test_bus;
+// (egui shell + ui_test_bus removed in Phase 7 — UI is now a web app
+//  served by mcp_server at http://127.0.0.1:7700/ui/)
 
 use std::path::PathBuf;
 use std::sync::Arc as StdArc;
@@ -362,9 +362,41 @@ fn main() {
     }
 
     let svc = StdArc::new(ui_service_impl::RealService::new(tracker, tg_auth));
-    // Web UI (`/ui/*` + `/api/snapshot`) needs read access to AppService.
-    // Register before launching the egui shell so the HTTP server, which is
-    // already up by this point, can serve snapshots immediately.
+    // Web UI (`/ui/*` + `/api/snapshot`) lives at port 7700 in the same
+    // process as the MCP server. Register the service so /api/snapshot can
+    // read agents / runs / coverage.
     mcp_server::register_app_service(svc.clone() as StdArc<dyn ui_service::AppService>);
-    ui_egui::launch(svc);
+
+    // Auto-open the user's default browser to the UI page. Best-effort —
+    // failure (no display, no browser registered) is fine; the user can
+    // open the URL themselves.
+    let port = std::env::var("SIRIN_RPC_PORT").unwrap_or_else(|_| "7700".into());
+    let url = format!("http://127.0.0.1:{port}/ui/");
+    open_browser(&url);
+    tracing::info!(target: "sirin",
+        "[main] Web UI: {url}  —  daemon will keep running with the browser tab closed.");
+
+    // Park the main thread forever — RPC/MCP server, telegram listener,
+    // followup worker, screenshot pump, etc. all keep working.  Closing the
+    // browser tab no longer shuts the daemon down (this is the killer
+    // feature of the daemon-style UX over the old egui window).
+    loop {
+        std::thread::park();
+    }
+}
+
+/// Open `url` in the user's default browser. Cross-platform best-effort.
+fn open_browser(url: &str) {
+    #[cfg(target_os = "windows")]
+    {
+        use crate::platform::NoWindow;
+        let _ = std::process::Command::new("cmd")
+            .no_window()
+            .args(["/C", "start", "", url])
+            .spawn();
+    }
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(url).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
 }

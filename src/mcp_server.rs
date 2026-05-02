@@ -721,22 +721,8 @@ fn handle_tools_list() -> Result<Value, String> {
                     }
                 }
             },
-            {
-                "name": "ui_navigate",
-                "description": "TEST/DEV — drive Sirin's egui UI to a specific view/modal/palette state without keyboard or mouse input.\n\nBypasses winit's input filter that blocks SendKeys/keybd_event from reaching the app. Used by automated UI smoke tests.\n\n`target` values:\n- `dashboard` — main landing\n- `testing` / `testing:runs` / `testing:coverage` / `testing:browser`\n- `workspace:N` — agent detail at index N\n- `palette` / `palette:<query>` — open ⌘K palette, optionally pre-fill query\n- `settings` / `logs` — open System modal at given tab\n- `devsquad` / `mcp` — open Automation modal\n- `ai-router` / `tasks` / `cost-kb` — open Ops modal\n- `close` — close palette + modal + gear menu",
-                "inputSchema": {
-                    "type": "object",
-                    "required": ["target"],
-                    "properties": {
-                        "target": { "type": "string" }
-                    }
-                }
-            },
-            {
-                "name": "ui_state",
-                "description": "TEST/DEV — read current Sirin UI state (view, modal, palette, agent count, recent runs). Returns the most recent end-of-frame snapshot. Pair with ui_navigate to verify state transitions.",
-                "inputSchema": { "type": "object", "properties": {} }
-            },
+            // (ui_navigate / ui_state removed in Phase 7 — UI is now a web
+            //  app; AI drives it via /mcp + browser_exec on the same Chrome.)
             {
                 "name": "discover_app",
                 "description": "Issue #247 — 啟動自動探索爬蟲。Sirin 開瀏覽器到 seed_url，用 dom_snapshot 列舉可互動元件（button/link/input/tab），存到 SQLite discovered_features 表。\n\n用於 Coverage 3-tier funnel 的「探索」層 — 補 YAML coverage map 沒列到的功能。\n\n回傳 run_id（立即返回，crawl 在背景跑）。用 discovery_status 查狀態。",
@@ -1571,8 +1557,7 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         "discover_app"            => return call_discover_app(arguments).map(wrap_json),
         "discovery_status"        => return call_discovery_status().map(wrap_json),
         "discovery_features"      => return call_discovery_features(arguments).map(wrap_json),
-        "ui_navigate"             => return call_ui_navigate(arguments).map(wrap_json),
-        "ui_state"                => return call_ui_state().map(wrap_json),
+        // ui_navigate / ui_state — removed with the egui shell in Phase 7.
         "replay_last_failure"     => return call_replay_last_failure(arguments).map(wrap_json),
         "shadow_dump_diff"        => return call_shadow_dump_diff(arguments).map(wrap_json),
         "compare_with_replay"     => return call_compare_with_replay(arguments).map(wrap_json),
@@ -2435,98 +2420,9 @@ fn call_discovery_features(args: Value) -> Result<Value, String> {
     }))
 }
 
-/// TEST/DEV — drive UI from MCP. Translates `target` strings into UiCommand
-/// enums and pushes them onto the test bus. Sleeps briefly so the egui
-/// frame can pick up the command before the caller queries `ui_state`.
-fn call_ui_navigate(args: Value) -> Result<Value, String> {
-    use crate::ui_test_bus::{push, UiCommand};
-
-    let target = args.get("target").and_then(Value::as_str)
-        .ok_or("target required")?.to_string();
-    let lower  = target.to_lowercase();
-
-    // Helper for "prefix:rest" parsing.
-    let split_once = |s: &str, p: char| -> Option<(String, String)> {
-        s.split_once(p).map(|(a, b)| (a.to_string(), b.to_string()))
-    };
-
-    let cmd = if lower == "dashboard" || lower == "home" {
-        UiCommand::GoDashboard
-    } else if lower == "testing" || lower == "testing:runs" {
-        UiCommand::GoTesting { tab: "runs".into() }
-    } else if lower == "testing:coverage" || lower == "coverage" {
-        UiCommand::GoTesting { tab: "coverage".into() }
-    } else if lower == "testing:browser" || lower == "browser" {
-        UiCommand::GoTesting { tab: "browser".into() }
-    } else if let Some((p, r)) = split_once(&lower, ':')
-        .filter(|(p, _)| p == "workspace")
-    {
-        let _ = p;
-        let idx: usize = r.parse().map_err(|e| format!("workspace:N — bad N: {e}"))?;
-        UiCommand::GoWorkspace { idx }
-    } else if lower == "palette" {
-        UiCommand::OpenPalette { query: None }
-    } else if let Some((p, q)) = split_once(&target, ':')
-        .filter(|(p, _)| p.eq_ignore_ascii_case("palette"))
-    {
-        let _ = p;
-        UiCommand::OpenPalette { query: Some(q) }
-    } else if lower == "settings" {
-        UiCommand::OpenModal { kind: "system".into(), tab: Some("settings".into()) }
-    } else if lower == "logs" || lower == "log" {
-        UiCommand::OpenModal { kind: "system".into(), tab: Some("log".into()) }
-    } else if lower == "devsquad" || lower == "squad" {
-        UiCommand::OpenModal { kind: "automation".into(), tab: Some("squad".into()) }
-    } else if lower == "mcp" || lower == "mcp-playground" {
-        UiCommand::OpenModal { kind: "automation".into(), tab: Some("mcp".into()) }
-    } else if lower == "ai-router" || lower == "airouter" {
-        UiCommand::OpenModal { kind: "ops".into(), tab: Some("airouter".into()) }
-    } else if lower == "tasks" || lower == "session-tasks" {
-        UiCommand::OpenModal { kind: "ops".into(), tab: Some("sessiontasks".into()) }
-    } else if lower == "cost-kb" || lower == "costkb" || lower == "cost" {
-        UiCommand::OpenModal { kind: "ops".into(), tab: Some("costkb".into()) }
-    } else if lower == "close" || lower == "esc" {
-        UiCommand::CloseModal
-    } else if lower == "close-palette" {
-        UiCommand::ClosePalette
-    } else if lower == "gear" || lower == "gear-menu" {
-        UiCommand::OpenGearMenu
-    } else if lower == "close-gear" {
-        UiCommand::CloseGearMenu
-    } else {
-        return Err(format!("unknown target '{target}'"));
-    };
-
-    push(cmd);
-    // Give the egui frame ~80ms to drain + apply the command before the
-    // caller calls ui_state. Tunable; 80ms covers slow first-frame layout.
-    std::thread::sleep(std::time::Duration::from_millis(80));
-
-    Ok(json!({
-        "target":    target,
-        "applied":   true,
-        "note":      "next ui_state call reflects the new view",
-    }))
-}
-
-/// TEST/DEV — read current UI snapshot.
-fn call_ui_state() -> Result<Value, String> {
-    let snap = crate::ui_test_bus::get_state()
-        .ok_or("UI not yet rendered (no snapshot)")?;
-    Ok(json!({
-        "view":           snap.view,
-        "workspace_idx":  snap.workspace_idx,
-        "testing_tab":    snap.testing_tab,
-        "modal":          snap.modal,
-        "modal_tab":      snap.modal_tab,
-        "palette_open":   snap.palette_open,
-        "palette_query":  snap.palette_query,
-        "gear_menu_open": snap.gear_menu_open,
-        "agent_count":    snap.agent_count,
-        "active_runs":    snap.active_runs,
-        "recent_runs":    snap.recent_runs,
-    }))
-}
+// (call_ui_navigate / call_ui_state removed in Phase 7 — UI is now a web
+//  app at :7700/ui/, driven by browser-side fetch() not by an external bus.
+//  AI testing of the UI uses /mcp + browser_exec on the same Chrome.)
 
 /// #230 — list_flaky_tests: tests with pass_rate < threshold over recent runs.
 fn call_list_flaky_tests(args: Value) -> Result<Value, String> {
