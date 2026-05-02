@@ -555,41 +555,116 @@
               </div>
             </div>
 
-            <!-- 待確認 / Pending (GitHub PR review queue inspired) -->
+            <!-- 待確認 / Pending — real /api/pending list w/ approve/edit/reject -->
             <div x-show="wsTab === 'pending'">
-              <template x-if="(state.pending_counts[currentAgent.id] || 0) === 0">
+              <template x-if="!(pending[currentAgent.id]?.length)">
                 <div class="card-empty">沒有待確認的回覆</div>
               </template>
-              <template x-if="(state.pending_counts[currentAgent.id] || 0) > 0">
-                <div class="dim small">Phase 7 接 /api/pending 後，這裡會列出待人類審核的 LLM 草稿回覆。</div>
+              <template x-for="(p, pi) in (pending[currentAgent.id] || [])" :key="p.id">
+                <div class="card pending-card">
+                  <div class="row">
+                    <strong x-text="p.peer_name"></strong>
+                    <span class="row-spacer"></span>
+                    <span class="dim mono small" x-text="p.created_at"></span>
+                  </div>
+                  <div class="pending-original">
+                    <span class="dim mono small">收到</span>
+                    <div class="pending-text" x-text="p.original_message"></div>
+                  </div>
+                  <div class="pending-draft">
+                    <span class="dim mono small">AI 草稿</span>
+                    <textarea class="pending-textarea" x-model="p.draft_reply"
+                              rows="3" spellcheck="false"></textarea>
+                  </div>
+                  <div class="row gap-md mt-xs">
+                    <button class="btn-primary"
+                            @click="pendingAction(currentAgent.id, p.id, 'edit', p.draft_reply).then(() => pendingAction(currentAgent.id, p.id, 'approve'))">
+                      ✓ 送出（已確認）
+                    </button>
+                    <button class="btn-secondary"
+                            @click="pendingAction(currentAgent.id, p.id, 'edit', p.draft_reply)">
+                      💾 暫存
+                    </button>
+                    <button class="btn-secondary"
+                            @click="pendingAction(currentAgent.id, p.id, 'reject')">
+                      ✗ 拒絕
+                    </button>
+                  </div>
+                </div>
               </template>
             </div>
 
-            <!-- 設定 / Config -->
+            <!-- 設定 / Config — editable agent behavior + objectives -->
             <div x-show="wsTab === 'config'">
-              <div class="card">
-                <h2 class="modal-section-title">人類化行為</h2>
-                <div class="kv-row">
-                  <span class="kv-label">最小回覆延遲</span>
-                  <span class="mono">3s</span>
+              <template x-if="agent_detail[currentAgent.id]">
+                <div>
+                  <div class="card">
+                    <div class="row">
+                      <h2 class="modal-section-title" style="margin-bottom:0">啟用</h2>
+                      <span class="row-spacer"></span>
+                      <button class="filter-pill"
+                              :class="agent_detail[currentAgent.id].enabled ? 'active' : ''"
+                              @click="toggleAgent(currentAgent.id, !agent_detail[currentAgent.id].enabled)"
+                              x-text="agent_detail[currentAgent.id].enabled ? '◉ Enabled' : '○ Disabled'"></button>
+                    </div>
+                  </div>
+
+                  <div class="card mt-md">
+                    <h2 class="modal-section-title">人類化行為</h2>
+                    <div class="kv-row">
+                      <span class="kv-label">最小回覆延遲 (秒)</span>
+                      <input class="kv-input" type="number" min="0"
+                             x-model.number="agent_detail[currentAgent.id].min_reply_delay">
+                    </div>
+                    <div class="kv-row">
+                      <span class="kv-label">最大回覆延遲 (秒)</span>
+                      <input class="kv-input" type="number" min="0"
+                             x-model.number="agent_detail[currentAgent.id].max_reply_delay">
+                    </div>
+                    <div class="kv-row">
+                      <span class="kv-label">每小時上限</span>
+                      <input class="kv-input" type="number" min="0"
+                             x-model.number="agent_detail[currentAgent.id].max_per_hour">
+                    </div>
+                    <div class="kv-row">
+                      <span class="kv-label">每天上限</span>
+                      <input class="kv-input" type="number" min="0"
+                             x-model.number="agent_detail[currentAgent.id].max_per_day">
+                    </div>
+                    <div class="row gap-md mt-md">
+                      <button class="btn-primary"
+                              @click="saveBehavior(agent_detail[currentAgent.id])">儲存行為設定</button>
+                      <span class="dim small" x-text="save_status"></span>
+                    </div>
+                  </div>
+
+                  <div class="card mt-md">
+                    <h2 class="modal-section-title">Objectives</h2>
+                    <template x-if="!agent_detail[currentAgent.id].objectives?.length">
+                      <div class="dim small">尚未設定目標</div>
+                    </template>
+                    <template x-for="(obj, oi) in agent_detail[currentAgent.id].objectives" :key="oi">
+                      <div class="row obj-row">
+                        <span class="dim mono small" x-text="oi + 1 + '.'"></span>
+                        <span x-text="obj"></span>
+                        <span class="row-spacer"></span>
+                        <button class="iconbtn" title="移除"
+                                @click="removeObjective(currentAgent.id, oi)">✕</button>
+                      </div>
+                    </template>
+                    <div class="row gap-md mt-md">
+                      <input class="kv-input" type="text" x-model="new_obj_text"
+                             @keydown.enter="addObjective(currentAgent.id)"
+                             placeholder="新增 objective…" style="flex:1">
+                      <button class="btn-secondary"
+                              @click="addObjective(currentAgent.id)">+ 新增</button>
+                    </div>
+                  </div>
                 </div>
-                <div class="kv-row">
-                  <span class="kv-label">最大回覆延遲</span>
-                  <span class="mono">15s</span>
-                </div>
-                <div class="kv-row">
-                  <span class="kv-label">每小時上限</span>
-                  <span class="mono">30</span>
-                </div>
-                <div class="kv-row">
-                  <span class="kv-label">每天上限</span>
-                  <span class="mono">200</span>
-                </div>
-              </div>
-              <div class="card mt-md">
-                <h2 class="modal-section-title">Objectives</h2>
-                <div class="dim small">Phase 7 接 /api/agent/{id} 後可編輯。</div>
-              </div>
+              </template>
+              <template x-if="!agent_detail[currentAgent.id]">
+                <div class="dim">Loading agent detail…</div>
+              </template>
             </div>
           </div>
         </template>
@@ -690,7 +765,12 @@
         <h2 class="modal-section-title">Persona</h2>
         <div class="kv-row">
           <span class="kv-label">Name</span>
-          <input class="kv-input" type="text" x-model="state.persona_name">
+          <input class="kv-input" type="text" x-model="state.persona_name"
+                 @keydown.enter="savePersonaName()">
+        </div>
+        <div class="row gap-md mt-md">
+          <button class="btn-primary" @click="savePersonaName()">儲存</button>
+          <span class="dim small" x-text="save_status"></span>
         </div>
       </div>
 

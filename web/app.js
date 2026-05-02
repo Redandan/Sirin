@@ -43,6 +43,12 @@ window.sirin = function () {
     chat_input:   '',
     chat_sending: false,
 
+    // Workspace 待確認 / 設定 cache
+    pending:      {},     // { [agent_id]: PendingReplyView[] }
+    agent_detail: {},     // { [agent_id]: AgentDetailView }
+    new_obj_text: '',     // input for "+ Add objective"
+    save_status:  null,   // last persona / behavior save toast
+
     // ── Backend snapshot ────────────────────────────────────────────
     state: {
       version:        '0.4.6',
@@ -209,6 +215,19 @@ window.sirin = function () {
       this.$watch('modal', (v) => {
         if (v === 'mcp' && this.mcp_tools.length === 0) this.loadMcpTools();
       });
+
+      // When user navigates to a workspace, fetch the agent's full detail
+      // (objectives + behavior settings) and pending replies. Cached per
+      // agent so toggling between them is instant on subsequent visits.
+      this.$watch('view', (v) => {
+        const m = v.match(/^workspace:(\d+)$/);
+        if (!m) return;
+        const idx = parseInt(m[1], 10);
+        const agent = this.state.agents[idx];
+        if (!agent) return;
+        if (!this.agent_detail[agent.id]) this.loadAgentDetail(agent.id);
+        if (!this.pending[agent.id])      this.loadPending(agent.id);
+      });
     },
 
     // ── MCP Playground ──────────────────────────────────────────────
@@ -243,6 +262,106 @@ window.sirin = function () {
       this.mcp_selected = t;
       this.mcp_args     = '{}';
       this.mcp_result   = null;
+    },
+
+    // ── Workspace 設定 (agent detail + behavior + objectives) ────────
+    async loadAgentDetail(agent_id) {
+      try {
+        const r = await fetch(`/api/agent/${encodeURIComponent(agent_id)}`);
+        if (!r.ok) return;
+        this.agent_detail[agent_id] = await r.json();
+      } catch (_) {}
+    },
+
+    async agentAction(agent_id, payload) {
+      const r = await fetch(`/api/agent/${encodeURIComponent(agent_id)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await r.json();
+      if (data.error) throw new Error(data.error);
+      // Refresh detail + parent snapshot so any list (sidebar / dashboard) reflects.
+      await this.loadAgentDetail(agent_id);
+      this.fetchSnapshot();
+      return data;
+    },
+
+    async saveBehavior(detail) {
+      this.save_status = '⏳ 儲存中…';
+      try {
+        await this.agentAction(detail.id, {
+          action:    'behavior',
+          enabled:   detail.human_behavior_enabled,
+          min_delay: Number(detail.min_reply_delay),
+          max_delay: Number(detail.max_reply_delay),
+          max_hour:  Number(detail.max_per_hour),
+          max_day:   Number(detail.max_per_day),
+        });
+        this.save_status = '✓ 已儲存';
+      } catch (e) { this.save_status = '✗ ' + e.message; }
+      setTimeout(() => { this.save_status = null; }, 3500);
+    },
+
+    async addObjective(agent_id) {
+      const text = this.new_obj_text.trim();
+      if (!text) return;
+      try {
+        await this.agentAction(agent_id, { action: 'objective_add', text });
+        this.new_obj_text = '';
+      } catch (e) { this.save_status = '✗ ' + e.message; }
+    },
+
+    async removeObjective(agent_id, index) {
+      try { await this.agentAction(agent_id, { action: 'objective_remove', index }); }
+      catch (e) { this.save_status = '✗ ' + e.message; }
+    },
+
+    async toggleAgent(agent_id, enabled) {
+      try { await this.agentAction(agent_id, { action: 'toggle', enabled }); }
+      catch (e) { this.save_status = '✗ ' + e.message; }
+    },
+
+    // ── Settings modal: persona save ────────────────────────────────
+    async savePersonaName() {
+      this.save_status = '⏳ 儲存中…';
+      try {
+        const r = await fetch('/api/persona/name', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: this.state.persona_name }),
+        });
+        const data = await r.json();
+        if (data.error) throw new Error(data.error);
+        this.save_status = '✓ 已儲存';
+      } catch (e) { this.save_status = '✗ ' + e.message; }
+      setTimeout(() => { this.save_status = null; }, 3500);
+    },
+
+    // ── Workspace 待確認 ────────────────────────────────────────────
+    async loadPending(agent_id) {
+      try {
+        const r = await fetch(`/api/pending/${encodeURIComponent(agent_id)}`);
+        if (!r.ok) return;
+        this.pending[agent_id] = await r.json();
+      } catch (_) {}
+    },
+
+    async pendingAction(agent_id, reply_id, action, text) {
+      try {
+        const body = { reply_id, action };
+        if (text !== undefined) body.text = text;
+        const r = await fetch(`/api/pending/${encodeURIComponent(agent_id)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await r.json();
+        if (data.error) throw new Error(data.error);
+        // Refresh list + snapshot (pending_count badge)
+        await this.loadPending(agent_id);
+        this.fetchSnapshot();
+      } catch (e) { this.save_status = '✗ ' + e.message; }
     },
 
     // ── Workspace chat ──────────────────────────────────────────────

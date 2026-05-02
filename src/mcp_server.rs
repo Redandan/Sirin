@@ -194,6 +194,17 @@ pub fn mcp_router() -> Router {
         // /api/chat — Workspace 對話 tab → svc.chat_send(agent_id, message).
         // Body: { agent_id, message }, Response: { reply }
         .route("/api/chat", post(api_chat))
+        // ── v0.5.2 mutating endpoints (Workspace 設定 / 待確認 / Settings) ─
+        // /api/persona/name — POST { name } updates persona display name.
+        .route("/api/persona/name", post(api_persona_set_name))
+        // /api/agent/{id} — GET full AgentDetailView; POST dispatches an
+        // action via { action, ...args }: toggle / behavior / objective_add
+        // / objective_remove. Single endpoint instead of 4 keeps wiring
+        // tidy — match in Rust is cheaper than 4 axum routes.
+        .route("/api/agent/{id}", get(api_agent_get).post(api_agent_action))
+        // /api/pending/{agent_id} — GET list of draft replies waiting on
+        // human review. POST { reply_id, action: approve|reject|edit, text? }.
+        .route("/api/pending/{agent_id}", get(api_pending_list).post(api_pending_action))
         .layer(cors_layer())
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
@@ -242,6 +253,147 @@ async fn api_chat(Json(body): Json<Value>) -> impl IntoResponse {
         Ok(r)  => axum::Json(json!({ "reply": r })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR,
             axum::Json(json!({"error": format!("chat task: {e}")}))).into_response(),
+    }
+}
+
+/// POST /api/persona/name { name } → 200 OK.
+async fn api_persona_set_name(Json(body): Json<Value>) -> impl IntoResponse {
+    let svc = match app_service() {
+        Some(s) => s,
+        None => return (StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(json!({"error":"service unavailable"}))).into_response(),
+    };
+    let name = body.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+    if name.is_empty() {
+        return (StatusCode::BAD_REQUEST,
+            axum::Json(json!({"error":"name required"}))).into_response();
+    }
+    tokio::task::spawn_blocking(move || svc.set_persona_name(&name)).await.ok();
+    axum::Json(json!({"ok": true})).into_response()
+}
+
+/// GET /api/agent/{id} → AgentDetailView JSON.
+async fn api_agent_get(Path(id): Path<String>) -> impl IntoResponse {
+    let svc = match app_service() {
+        Some(s) => s,
+        None => return (StatusCode::SERVICE_UNAVAILABLE, "service unavailable").into_response(),
+    };
+    let id_owned = id.clone();
+    let detail = tokio::task::spawn_blocking(move || svc.agent_detail(&id_owned)).await.ok().flatten();
+    match detail {
+        Some(d) => axum::Json(d).into_response(),
+        None    => (StatusCode::NOT_FOUND,
+            axum::Json(json!({"error": format!("agent {id} not found")}))).into_response(),
+    }
+}
+
+/// POST /api/agent/{id} { action, ... } — dispatches:
+///   • toggle           { enabled: bool }
+///   • behavior         { enabled, min_delay, max_delay, max_hour, max_day }
+///   • objective_add    { text }
+///   • objective_remove { index }
+///   • set_remote_ai    { allowed: bool }
+async fn api_agent_action(Path(id): Path<String>, Json(body): Json<Value>) -> impl IntoResponse {
+    let svc = match app_service() {
+        Some(s) => s,
+        None => return (StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(json!({"error":"service unavailable"}))).into_response(),
+    };
+    let action = body.get("action").and_then(Value::as_str).unwrap_or("").to_string();
+    let id_owned = id.clone();
+    let body_owned = body.clone();
+
+    let res: Result<(), String> = tokio::task::spawn_blocking(move || -> Result<(), String> {
+        match action.as_str() {
+            "toggle" => {
+                let enabled = body_owned.get("enabled").and_then(Value::as_bool)
+                    .ok_or("enabled required")?;
+                svc.toggle_agent(&id_owned, enabled);
+                Ok(())
+            }
+            "behavior" => {
+                let enabled    = body_owned.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+                let min_delay  = body_owned.get("min_delay").and_then(Value::as_u64).unwrap_or(3);
+                let max_delay  = body_owned.get("max_delay").and_then(Value::as_u64).unwrap_or(15);
+                let max_hour   = body_owned.get("max_hour").and_then(Value::as_u64).unwrap_or(30) as u32;
+                let max_day    = body_owned.get("max_day").and_then(Value::as_u64).unwrap_or(200) as u32;
+                svc.set_behavior(&id_owned, enabled, min_delay, max_delay, max_hour, max_day);
+                Ok(())
+            }
+            "objective_add" => {
+                let text = body_owned.get("text").and_then(Value::as_str)
+                    .ok_or("text required")?.to_string();
+                svc.add_objective(&id_owned, &text);
+                Ok(())
+            }
+            "objective_remove" => {
+                let index = body_owned.get("index").and_then(Value::as_u64)
+                    .ok_or("index required")? as usize;
+                svc.remove_objective(&id_owned, index);
+                Ok(())
+            }
+            "set_remote_ai" => {
+                let allowed = body_owned.get("allowed").and_then(Value::as_bool)
+                    .ok_or("allowed required")?;
+                svc.set_remote_ai(&id_owned, allowed);
+                Ok(())
+            }
+            other => Err(format!("unknown action '{other}'")),
+        }
+    }).await.unwrap_or_else(|e| Err(format!("task: {e}")));
+
+    match res {
+        Ok(())  => axum::Json(json!({"ok": true})).into_response(),
+        Err(e)  => (StatusCode::BAD_REQUEST,
+            axum::Json(json!({"error": e}))).into_response(),
+    }
+}
+
+/// GET /api/pending/{agent_id} → Vec<PendingReplyView>.
+async fn api_pending_list(Path(agent_id): Path<String>) -> impl IntoResponse {
+    let svc = match app_service() {
+        Some(s) => s,
+        None => return (StatusCode::SERVICE_UNAVAILABLE, "service unavailable").into_response(),
+    };
+    let pending = tokio::task::spawn_blocking(move || svc.load_pending(&agent_id))
+        .await.unwrap_or_default();
+    axum::Json(pending).into_response()
+}
+
+/// POST /api/pending/{agent_id} { reply_id, action: approve|reject|edit, text? }.
+async fn api_pending_action(
+    Path(agent_id): Path<String>,
+    Json(body): Json<Value>,
+) -> impl IntoResponse {
+    let svc = match app_service() {
+        Some(s) => s,
+        None => return (StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(json!({"error":"service unavailable"}))).into_response(),
+    };
+    let reply_id = body.get("reply_id").and_then(Value::as_str).unwrap_or("").to_string();
+    let action   = body.get("action").and_then(Value::as_str).unwrap_or("").to_string();
+    let text     = body.get("text").and_then(Value::as_str).map(String::from);
+    if reply_id.is_empty() || action.is_empty() {
+        return (StatusCode::BAD_REQUEST,
+            axum::Json(json!({"error":"reply_id and action required"}))).into_response();
+    }
+    let res: Result<(), String> = tokio::task::spawn_blocking(move || -> Result<(), String> {
+        match action.as_str() {
+            "approve" => { svc.approve_reply(&agent_id, &reply_id); Ok(()) }
+            "reject"  => { svc.reject_reply(&agent_id, &reply_id);  Ok(()) }
+            "edit"    => {
+                let t = text.ok_or("text required for edit")?;
+                svc.edit_draft(&agent_id, &reply_id, &t);
+                Ok(())
+            }
+            other => Err(format!("unknown action '{other}'")),
+        }
+    }).await.unwrap_or_else(|e| Err(format!("task: {e}")));
+
+    match res {
+        Ok(())  => axum::Json(json!({"ok": true})).into_response(),
+        Err(e)  => (StatusCode::BAD_REQUEST,
+            axum::Json(json!({"error": e}))).into_response(),
     }
 }
 

@@ -852,6 +852,48 @@ button { font-family: inherit; cursor: pointer; }
 .mt-md { margin-top: var(--sp-md); }
 .mt-lg { margin-top: var(--sp-lg); }
 
+/* ── Workspace 待確認 cards ──────────────────────────────────── */
+
+.pending-card {
+  margin-bottom: var(--sp-md);
+}
+.pending-original,
+.pending-draft {
+  margin-top: var(--sp-sm);
+  padding: var(--sp-sm) var(--sp-md);
+  background: var(--bg);
+  border-left: 2px solid var(--border);
+  border-radius: 3px;
+}
+.pending-original { border-left-color: var(--text-dim); }
+.pending-draft    { border-left-color: var(--info); }
+.pending-text {
+  margin-top: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: var(--font-body);
+}
+.pending-textarea {
+  width: 100%;
+  margin-top: 4px;
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: var(--sp-sm);
+  font-family: var(--font-sans);
+  font-size: var(--font-body);
+  resize: vertical;
+}
+.pending-textarea:focus { outline: none; border-color: var(--accent); }
+
+/* Objective row inside Workspace 設定 */
+.obj-row {
+  padding: 6px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+}
+.obj-row:last-child { border-bottom: none; }
+
 /* ── MCP Playground modal ─────────────────────────────────────── */
 
 .mcp-grid {
