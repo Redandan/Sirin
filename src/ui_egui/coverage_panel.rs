@@ -237,9 +237,10 @@ fn short_time(rfc3339: &str) -> &str {
 // ── 3-tier funnel (top of page) ──────────────────────────────────────────────
 
 fn show_funnel(ui: &mut egui::Ui, d: &CoverageData) {
-    let total = d.discovered.max(1);
+    let total = d.discovered.max(d.total_features).max(d.total_covered).max(d.scripted).max(1);
+    let dis_pct = d.discovered    as f32 / total as f32;
     let cov_pct = d.total_covered as f32 / total as f32;
-    let scr_pct = d.scripted as f32 / total as f32;
+    let scr_pct = d.scripted      as f32 / total as f32;
     let bar_w = 300.0;
 
     egui::Frame::new()
@@ -261,7 +262,7 @@ fn show_funnel(ui: &mut egui::Ui, d: &CoverageData) {
             ui.add_space(theme::SP_SM);
 
             funnel_row(ui, "探索 Discovered",
-                d.discovered, total, 1.0, theme::TEXT_DIM, bar_w);
+                d.discovered, total, dis_pct, theme::TEXT_DIM, bar_w);
             if matches!(d.discovery_status, DiscoveryStatus::NotRun) {
                 ui.horizontal(|ui| {
                     ui.add_space(160.0);
