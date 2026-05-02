@@ -333,6 +333,137 @@ button { font-family: inherit; cursor: pointer; }
 .badge-info   { color: var(--info); }
 .badge-dim    { color: var(--text-dim); }
 
+/* ── Sub-tab bar (Linear underline indicator) ────────────────────── */
+
+.subtab-bar {
+  display: flex;
+  gap: var(--sp-lg);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: var(--sp-md);
+}
+.subtab {
+  background: transparent; border: none;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: var(--font-small);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 8px 2px;
+  position: relative;
+}
+.subtab:hover { color: var(--text); }
+.subtab.active {
+  color: var(--text);
+}
+.subtab.active::after {
+  content: '';
+  position: absolute; left: 0; right: 0; bottom: -1px;
+  height: 2px;
+  background: var(--accent);
+}
+
+/* ── Launcher row + filter row (Testing > Runs) ──────────────────── */
+
+.launcher-row {
+  display: flex; align-items: center; gap: var(--sp-sm);
+  padding: var(--sp-md);
+}
+.select {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 5px var(--sp-sm);
+  font-family: var(--font-mono);
+  font-size: var(--font-small);
+  min-width: 280px;
+}
+.select:focus { outline: none; border-color: var(--accent); }
+
+.btn-secondary {
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  border-radius: 3px;
+  font-size: var(--font-caption);
+}
+.btn-secondary:hover { background: var(--hover); border-color: var(--text-dim); }
+
+.filter-row {
+  display: flex; align-items: center; gap: var(--sp-sm);
+  margin: var(--sp-sm) 0;
+}
+.filter-pill {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid transparent;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: var(--font-caption);
+}
+.filter-pill:hover { color: var(--text); }
+.filter-pill.active {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.filter-input {
+  flex: 1;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 4px var(--sp-sm);
+  font-family: var(--font-mono);
+  font-size: var(--font-caption);
+}
+.filter-input:focus { outline: none; border-color: var(--accent); }
+
+/* ── Coverage per-group card (Codecov inspired) ──────────────────── */
+
+.group-card { padding: var(--sp-md) var(--sp-md) var(--sp-sm); }
+
+.bar-mini { width: 60px; height: 6px; }
+.bar-warn   { background: var(--yellow); }
+.bar-danger { background: var(--danger); }
+
+.legend {
+  margin-top: var(--sp-sm);
+  text-align: center;
+  letter-spacing: 0.06em;
+}
+
+.feature-list {
+  display: flex; flex-direction: column;
+  margin-top: var(--sp-sm);
+  gap: 2px;
+}
+.feature-row {
+  display: flex; align-items: center; gap: var(--sp-sm);
+  padding: 3px var(--sp-md);
+  font-family: var(--font-sans);
+}
+.feat-glyph {
+  width: 16px; flex-shrink: 0;
+  font-size: var(--font-body);
+  text-align: center;
+}
+.feat-confirmed { color: var(--info); }
+.feat-partial   { color: var(--yellow); }
+.feat-missing   { color: var(--danger); }
+
+/* ── Browser screenshot frame ────────────────────────────────────── */
+
+.browser-screenshot-frame {
+  margin-top: var(--sp-sm);
+  background: var(--bg);
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  height: 480px;
+  display: grid; place-items: center;
+}
+
 /* ── Active run card (Playwright Test UI inspired) ───────────────── */
 
 .card-active {

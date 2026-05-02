@@ -23,6 +23,11 @@ window.sirin = function () {
     paletteQuery: '',
     paletteIdx: 0,
 
+    // Testing → Runs filter state
+    runFilter:     'all',  // 'all' | 'passed' | 'failed'
+    runTextFilter: '',
+    lastLaunch:    null,   // status string after launch attempt
+
     // ── Backend snapshot ────────────────────────────────────────────
     state: {
       version:        '0.4.6',
@@ -56,7 +61,65 @@ window.sirin = function () {
         scripted:          30,
         discovered:        16,
         discovery_status:  'NotRun',
+        groups: [
+          {
+            id: 'buyer_browse', name: 'Buyer：商品瀏覽 & 搜尋', role: 'buyer',
+            covered: 4, total: 4,
+            features: [
+              { id: 'list',   name: '商品列表頁', status: 'partial',   test_ids: ['agora_market_smoke'] },
+              { id: 'search', name: '關鍵字搜尋', status: 'confirmed', test_ids: ['agora_search_keyword'] },
+              { id: 'detail', name: '商品詳情頁（名稱/價格/SKU）', status: 'confirmed', test_ids: ['agora_order_checkout_e2e'] },
+              { id: 'cart',   name: '加入購物車 & 購物車頁', status: 'confirmed', test_ids: ['agora_cart_add_remove'] },
+            ],
+          },
+          {
+            id: 'buyer_checkout', name: 'Buyer：結帳 & 訂單', role: 'buyer',
+            covered: 4, total: 4,
+            features: [
+              { id: 'place',    name: '下單確認頁 → 真實下單', status: 'confirmed', test_ids: ['agora_c2c_place_order'] },
+              { id: 'flow',     name: '購買確認流程（SKU 選擇 → 確認）', status: 'confirmed', test_ids: ['agora_checkout_dry'] },
+              { id: 'orders',   name: '訂單管理頁', status: 'confirmed', test_ids: ['agora_buyer_order_view'] },
+              { id: 'receipt',  name: '確認收貨流程', status: 'confirmed', test_ids: ['agora_c2c_buyer_confirm_receipt'] },
+            ],
+          },
+          {
+            id: 'buyer_wallet', name: 'Buyer：錢包 & 儲值', role: 'buyer',
+            covered: 3, total: 4,
+            features: [
+              { id: 'balance', name: '錢包餘額顯示',   status: 'confirmed', test_ids: ['agora_buyer_wallet'] },
+              { id: 'topup',   name: '儲值 UI（金額選擇/創建儲值按鈕）', status: 'confirmed', test_ids: ['agora_c2c_wallet_deposit'] },
+              { id: 'history', name: '錢包交易記錄',   status: 'confirmed', test_ids: ['agora_c2c_wallet_transactions'] },
+              { id: 'withdraw',name: '提現流程',       status: 'missing',   test_ids: [] },
+            ],
+          },
+          {
+            id: 'seller_orders', name: 'Seller：訂單管理', role: 'seller',
+            covered: 0, total: 3,
+            features: [
+              { id: 'pending',  name: '待出貨訂單',   status: 'missing', test_ids: [] },
+              { id: 'shipping', name: '出貨流程',     status: 'missing', test_ids: [] },
+              { id: 'history',  name: '已完成訂單',   status: 'missing', test_ids: [] },
+            ],
+          },
+        ],
       },
+
+      // Available test files (test_ids) for the launcher dropdown.
+      test_ids: [
+        'agora_market_smoke',
+        'agora_search_keyword',
+        'agora_order_checkout_e2e',
+        'agora_cart_add_remove',
+        'agora_c2c_place_order',
+        'agora_checkout_dry',
+        'agora_buyer_order_view',
+        'agora_c2c_buyer_confirm_receipt',
+        'agora_buyer_wallet',
+        'agora_c2c_wallet_deposit',
+        'agora_pickup_time_picker',
+        'agora_webrtc_permission',
+      ],
+      selected_test_id: 'agora_market_smoke',
     },
 
     // ── Lifecycle ──────────────────────────────────────────────────
@@ -152,6 +215,42 @@ window.sirin = function () {
               : tier === 'scripted'   ? cov.scripted
               : 0;
       return Math.round((n / max) * 100);
+    },
+
+    // ── Testing → Runs derived state + actions ────────────────────
+    get filteredRuns() {
+      const f = this.runFilter;
+      const q = this.runTextFilter.trim().toLowerCase();
+      return this.state.recent_runs.filter((r) => {
+        if (f === 'passed' && r.status !== 'passed') return false;
+        if (f === 'failed' && !['failed', 'error', 'timeout'].includes(r.status)) return false;
+        if (q && !r.test_id.toLowerCase().includes(q)) return false;
+        return true;
+      });
+    },
+
+    async launchTest(id) {
+      if (!id) return;
+      this.lastLaunch = '⏳ launching…';
+      try {
+        const body = JSON.stringify({
+          jsonrpc: '2.0', id: 1, method: 'tools/call',
+          params: { name: 'run_test_async', arguments: { test_id: id } },
+        });
+        const r = await fetch('/mcp', { method: 'POST', headers: {'Content-Type':'application/json'}, body });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const data = await r.json();
+        if (data.error) throw new Error(data.error.message);
+        const text = data.result?.content?.[0]?.text || '';
+        const m = text.match(/run_id["\s:]+([\w_]+)/);
+        this.lastLaunch = '✓ launched ' + (m ? m[1] : id);
+        // Force quick refresh so the active-runs section picks up the new run.
+        this.fetchSnapshot();
+      } catch (e) {
+        this.lastLaunch = '✗ ' + (e.message || e);
+      }
+      // Auto-clear after 6 s.
+      setTimeout(() => { this.lastLaunch = null; }, 6000);
     },
 
     // ── Command palette entries ────────────────────────────────────

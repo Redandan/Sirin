@@ -239,14 +239,178 @@
         </div>
       </section>
 
-      <!-- ── Testing (placeholder for Phase 4) ─────────────────────── -->
+      <!--
+        Testing view — Playwright Test UI inspired layout with our 3 sub-tabs:
+          Runs     — launcher + full history list
+          Coverage — 3-tier funnel + per-group feature breakdown
+          Browser  — live screenshot + url + console
+        Sub-tab nav uses Linear-style underline indicator.
+      -->
       <section x-show="view === 'testing'" class="view">
         <div class="view-header">
           <h1>TESTING</h1>
-          <span class="dim small">tab: <span x-text="testTab"></span></span>
         </div>
-        <hr class="thin-sep">
-        <div class="dim">Phase 4 將遷移 Test Runs / Coverage / Browser monitor 三個 sub-tab。</div>
+
+        <!-- Sub-tab nav -->
+        <div class="subtab-bar">
+          <button class="subtab" :class="testTab === 'runs' ? 'active' : ''"
+                  @click="testTab = 'runs'">RUNS</button>
+          <button class="subtab" :class="testTab === 'coverage' ? 'active' : ''"
+                  @click="testTab = 'coverage'">COVERAGE</button>
+          <button class="subtab" :class="testTab === 'browser' ? 'active' : ''"
+                  @click="testTab = 'browser'">BROWSER</button>
+        </div>
+
+        <!-- ── Runs sub-tab ──────────────────────────────────────── -->
+        <div x-show="testTab === 'runs'">
+          <!-- Launcher row (test_id dropdown + ▶ Run) -->
+          <div class="card launcher-row">
+            <span class="dim mono small">RUN</span>
+            <select class="select" x-model="state.selected_test_id">
+              <template x-for="id in state.test_ids" :key="id">
+                <option :value="id" x-text="id"></option>
+              </template>
+            </select>
+            <button class="btn-primary"
+                    @click="launchTest(state.selected_test_id)">▶ Run</button>
+            <span class="row-spacer"></span>
+            <span class="dim small" x-show="lastLaunch"
+                  x-text="lastLaunch"></span>
+          </div>
+
+          <!-- Filter row -->
+          <div class="filter-row">
+            <span class="dim mono small">FILTER</span>
+            <button class="filter-pill" :class="runFilter === 'all' ? 'active' : ''"
+                    @click="runFilter = 'all'">All</button>
+            <button class="filter-pill" :class="runFilter === 'passed' ? 'active' : ''"
+                    @click="runFilter = 'passed'">Passed</button>
+            <button class="filter-pill" :class="runFilter === 'failed' ? 'active' : ''"
+                    @click="runFilter = 'failed'">Failed</button>
+            <input type="text" class="filter-input" x-model="runTextFilter"
+                   placeholder="filter by test_id…">
+          </div>
+
+          <!-- History list -->
+          <div class="run-list">
+            <template x-for="run in filteredRuns" :key="run.started_at + run.test_id">
+              <button class="run-row">
+                <span :class="'run-status run-status-' + run.status"
+                      x-text="verdictGlyph(run.status)"></span>
+                <span :class="'run-status-text run-status-' + run.status"
+                      x-text="run.status.toUpperCase()"></span>
+                <span class="run-name mono" x-text="run.test_id"></span>
+                <span x-show="run.failure_category"
+                      class="badge-soft badge-soft-danger"
+                      x-text="run.failure_category"></span>
+                <span x-show="run.pass_rate !== null && run.pass_rate < 0.7"
+                      class="badge-soft badge-soft-warn"
+                      x-text="'flaky ' + Math.round(run.pass_rate * 100) + '%'"></span>
+                <span class="row-spacer"></span>
+                <span class="dim mono small" x-show="run.duration_ms"
+                      x-text="(run.duration_ms / 1000).toFixed(1) + 's'"></span>
+                <span class="dim small ml-md" x-text="timeAgo(run.started_at)"></span>
+              </button>
+            </template>
+            <template x-if="filteredRuns.length === 0">
+              <div class="card-empty">No runs match the current filter.</div>
+            </template>
+          </div>
+        </div>
+
+        <!-- ── Coverage sub-tab ─────────────────────────────────── -->
+        <div x-show="testTab === 'coverage'">
+          <!-- 3-tier funnel (same as Dashboard card but full-page) -->
+          <div class="card" x-show="state.coverage">
+            <div class="row">
+              <strong x-text="state.coverage?.product"></strong>
+              <span class="dim mono small" x-text="'v' + state.coverage?.version"></span>
+            </div>
+            <div class="funnel-row">
+              <span class="funnel-label">探索 Discovered</span>
+              <span class="funnel-num mono" x-text="state.coverage?.discovered"></span>
+              <div class="bar"><div class="bar-fill bar-dim"
+                   :style="'width:' + funnelPct(state.coverage, 'discovered') + '%'"></div></div>
+              <span class="dim mono small" x-text="funnelPct(state.coverage, 'discovered') + '%'"></span>
+            </div>
+            <template x-if="state.coverage?.discovery_status === 'NotRun'">
+              <div class="indent dim small italic">(mock — discovery 模組待實作)</div>
+            </template>
+            <div class="funnel-row">
+              <span class="funnel-label">覆蓋 Covered</span>
+              <span class="funnel-num mono" x-text="state.coverage?.total_covered"></span>
+              <div class="bar"><div class="bar-fill bar-accent"
+                   :style="'width:' + funnelPct(state.coverage, 'covered') + '%'"></div></div>
+              <span class="dim mono small" x-text="funnelPct(state.coverage, 'covered') + '%'"></span>
+            </div>
+            <div class="funnel-row">
+              <span class="funnel-label">有腳本 Scripted</span>
+              <span class="funnel-num mono" x-text="state.coverage?.scripted"></span>
+              <div class="bar"><div class="bar-fill bar-info"
+                   :style="'width:' + funnelPct(state.coverage, 'scripted') + '%'"></div></div>
+              <span class="dim mono small" x-text="funnelPct(state.coverage, 'scripted') + '%'"></span>
+            </div>
+            <div class="legend dim mono small">⚡ scripted   🤖 LLM-only   ○ missing</div>
+          </div>
+
+          <!-- Per-group feature breakdown (Codecov-inspired) -->
+          <template x-for="group in (state.coverage?.groups || [])" :key="group.id">
+            <div class="card group-card">
+              <div class="row">
+                <span class="agent-dot"
+                      :class="group.covered === group.total ? 'agent-connected' :
+                              group.covered > 0 ? 'agent-waiting' : 'agent-error'"></span>
+                <strong x-text="group.name"></strong>
+                <span class="badge-soft" x-text="'[' + group.role + ']'"></span>
+                <span class="row-spacer"></span>
+                <span class="dim mono small"
+                      x-text="group.covered + '/' + group.total"></span>
+                <div class="bar bar-mini">
+                  <div class="bar-fill"
+                       :class="group.covered === group.total ? 'bar-accent' :
+                               group.covered > 0 ? 'bar-warn' : 'bar-danger'"
+                       :style="'width:' + (group.total ? Math.round(group.covered/group.total*100) : 0) + '%'"></div>
+                </div>
+              </div>
+              <div class="feature-list">
+                <template x-for="feat in group.features" :key="feat.id">
+                  <div class="feature-row">
+                    <span class="feat-glyph"
+                          :class="'feat-' + feat.status"
+                          x-text="feat.status === 'confirmed' ? '⚡' :
+                                  feat.status === 'partial'   ? '🤖' : '○'"></span>
+                    <span :class="feat.status === 'missing' ? 'dim small' : 'small'"
+                          x-text="feat.name"></span>
+                    <span class="row-spacer"></span>
+                    <span class="dim mono small" x-show="feat.test_ids.length"
+                          x-text="'← ' + feat.test_ids.join(', ')"></span>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </template>
+        </div>
+
+        <!-- ── Browser sub-tab ──────────────────────────────────── -->
+        <div x-show="testTab === 'browser'">
+          <div class="card">
+            <div class="row">
+              <span :class="state.browser_open ? 'pulse-dot' : 'agent-error'"></span>
+              <span class="mono small" :class="state.browser_open ? '' : 'dim'"
+                    x-text="state.browser_open ? 'LIVE' : 'OFFLINE'"></span>
+              <span class="dim small" x-text="state.browser_title"></span>
+              <span class="row-spacer"></span>
+              <button class="btn-secondary">⟳ Refresh</button>
+            </div>
+            <div class="dim mono small mt-xs"
+                 x-text="state.browser_url"></div>
+          </div>
+
+          <div class="browser-screenshot-frame">
+            <!-- Phase 7+ will swap to <img src="/api/browser_screenshot"> -->
+            <span class="dim mono">screenshot stream — wire /api/browser_screenshot in Phase 7</span>
+          </div>
+        </div>
       </section>
 
       <!-- ── Workspace (placeholder for Phase 6) ─────────────────────── -->
