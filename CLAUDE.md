@@ -2,53 +2,81 @@
 
 ## Architecture decisions (DO NOT revisit)
 
-- **GUI**: egui 0.31 immediate mode — AI reads code to "see" UI
+- **GUI**: plain HTML/CSS/JS web app served by `mcp_server` at
+  `http://127.0.0.1:7700/ui/`. Single-file Alpine.js. Bundled into
+  the binary via `include_bytes!` so single-binary distribution still
+  holds. **Migrated from egui in v0.5.0 (2026-05-02)** — egui's
+  immediate-mode + child↔parent layout negotiation was hostile to
+  AI-driven development. See `web/DESIGN.md` for the full story.
 - **Theme**: 極簡硬核風（加密終端/系統監控器風格）— 不要用 Catppuccin
-- **Backend access**: ALL UI goes through `AppService` trait — zero backend imports in `src/ui_egui/`
-- **Desktop only**: No WASM, no web mode, no Dioxus, no Tauri
+- **Backend access**: ALL UI goes through `AppService` trait. The web
+  UI talks to it via `GET /api/snapshot` (read) and `POST /mcp` (write,
+  via existing tool-call protocol). A global
+  `OnceLock<Arc<dyn AppService>>` in `mcp_server.rs` is set by
+  `main.rs` at startup; `register_app_service()` is the entry point.
+- **Daemon-style**: Closing the browser tab does NOT kill sirin. RPC
+  server, Telegram listener, scheduler, screenshot pump all keep
+  running. Re-open `http://127.0.0.1:7700/ui/` any time. Killing the
+  daemon needs Ctrl-C in the terminal or `taskkill /F /IM sirin.exe`.
+- **No WASM, no Tauri, no Electron**: Just a real browser tab. The
+  user already has Chrome (Sirin tests Chrome apps), so no extra
+  runtime to ship.
 - **Persona**: Use `Persona::cached()` not `Persona::load()` in hot paths
 - **Mutex**: Always `unwrap_or_else(|e| e.into_inner())`, never `.unwrap()`
 
 ## UI/UX 規範 (嚴格遵守)
 
+**Source of truth**: [`web/DESIGN.md`](web/DESIGN.md) documents
+competitor inspiration (Linear / Playwright Test UI / GitHub Actions
+/ Vercel / Sentry / Codecov / Datadog), color semantics, font
+hierarchy, and "do not adopt" anti-patterns. Read it before designing
+new panels.
+
 ### 視覺語調
-- 風格：極簡、硬核、高性能感（加密貨幣終端 / 系統內核監控器）
-- **不要使用 egui 預設配色**
+- 風格：極簡、硬核、高性能感（Linear / Vercel dashboard 風）
+- 配色固定，意義穩定（accent=running，danger=failed，info=link/scripted）
 
-### 配色方案
+### 配色方案 (CSS variables in `web/style.css`)
 ```
-背景:       #1A1A1A (深灰)
-卡片/面板:  #222222
-Hover:      #2A2A2A
-邊框:       #333333
-主文字:     #E0E0E0
-副文字:     #808080
-強調(運行): #00FFA3 (Spring Green)
-警告(停用): #FF4B4B (Red)
-資訊/連結:  #4DA6FF (Blue)
-數值:       #FFFFFF (White, monospace)
+--bg:        #1A1A1A
+--card:      #222222
+--hover:     #2A2A2A
+--border:    #333333
+--text:      #E0E0E0
+--text-dim:  #808080
+--accent:    #00FFA3   (running / passed / 主要 CTA)
+--danger:    #FF4B4B   (failed / stopped)
+--yellow:    #FFD93D   (partial / timeout / warning)
+--info:      #4DA6FF   (scripted / link / neutral status)
+--value:     #FFFFFF   (numbers, monospace)
 ```
 
-### 佈局規則
+### 字型階層
 ```
-Top Panel:      高度 32pt, 項目名稱 + 版本 + 全局狀態指標
-Side Panel:     寬度 200pt, 導航按鈕
-Central Panel:  ScrollArea 包裹, 內邊距 12pt
-組件間距:       8pt
-內部邊距:       12pt
+24px → H1 (DASHBOARD / TESTING / WORKSPACE)
+15px → modal section title
+13px → body / button text
+11.5px MONO 大寫 → section label
+10px  → caption / timestamp
 ```
+數字一律 `var(--font-mono)` + `font-variant-numeric: tabular-nums`.
 
 ### 組件規範
-- **Card**: `egui::Frame` + `Rounding(4.0)` + `Stroke(1.0, #333333)`
-- **Status**: `[圓點] + 文字` 格式，#00FFA3=運行 #FF4B4B=停用
-- **Button hover**: 邊框變亮的視覺反饋
-- **數值**: 等寬字體 `egui::TextStyle::Monospace`
-- **對齊**: 所有數據左對齊
+- **Card**: `background: var(--card); border-radius: 4px; padding: 12px`
+- **Status dot**: 7-8px `<span class="dot dot-ok|dot-bad">`
+- **Pulse dot**: live indicator with CSS keyframe animation
+- **Button hover**: bg → `var(--hover)`, do NOT animate transform/scale
+- **Active row**: 2px `var(--accent)` left bar (Linear convention)
+- **Section label**: `text-transform: uppercase`, mono, 0.04em letter-spacing
 
 ### AI 新頁面流程
-1. State Mapping — 列出 UiState 字段
-2. Mockup Outline — Markdown 樹狀結構描述層級
-3. Code Gen — egui 代碼 + 關鍵佈局註釋
+1. **Read web/DESIGN.md** — pick competitor reference for the new view
+2. **Add HTML to `web/index.html`** — single-file UI, all views in there
+3. **Add state to `web/app.js`** — extend `sirin()` factory
+4. **Add CSS classes to `web/style.css`** — reuse existing tokens
+5. **Verify in browser** — no rebuild needed for UI-only changes;
+   F5 refresh is the entire iteration loop. Backend changes still
+   need `cargo build --release` + restart.
 
 ## Efficiency rules
 
@@ -152,8 +180,13 @@ KB: [`sirin/trap-parallel-agent-worktree-contention`](https://github.com/Redanda
 ## Project layout
 
 ```
-src/ui_egui/                 egui UI (9 modules + theme — incl. browser panel,
-                             test_dashboard added 3908b2d, team_panel)
+web/                         Web UI (v0.5.0+) — single-binary embedded via
+                             include_bytes! in mcp_server.rs:
+                             • index.html  — Alpine.js x-data root, ~6 views
+                             • style.css   — design tokens + components
+                             • app.js      — sirin() factory: state + fetch
+                             • alpine.min.js — bundled v3 runtime
+                             • DESIGN.md   — competitor inspiration map
 src/ui_service.rs            AppService trait — UI↔backend boundary (8 sub-traits:
                              AgentService, PendingReplyService, WorkflowService,
                              IntegrationService, SystemService, MultiAgentService,
