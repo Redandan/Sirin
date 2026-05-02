@@ -477,15 +477,32 @@
 
             <!-- 對話 / Chat (Slack thread inspired) -->
             <div x-show="wsTab === 'chat'" class="chat-area">
-              <div class="card chat-empty">
-                <div class="chat-icon">💬</div>
-                <strong>與 Agent 對話</strong>
-                <span class="dim small">輸入訊息開始對話，Agent 會使用 AI 回覆</span>
+              <div class="chat-thread">
+                <template x-if="!(chat_history[currentAgent.id]?.length)">
+                  <div class="chat-empty">
+                    <div class="chat-icon">💬</div>
+                    <strong>與 Agent 對話</strong>
+                    <span class="dim small">輸入訊息開始對話，Agent 會使用 AI 回覆</span>
+                  </div>
+                </template>
+                <template x-for="(m, i) in (chat_history[currentAgent.id] || [])" :key="i">
+                  <div class="chat-msg" :class="'chat-msg-' + m.role">
+                    <span class="dim mono small chat-role"
+                          x-text="m.role === 'user' ? 'YOU' : 'AGENT'"></span>
+                    <span class="chat-text" x-text="m.text"></span>
+                  </div>
+                </template>
+                <div x-show="chat_sending" class="dim small chat-typing">⏳ Agent 思考中…</div>
               </div>
               <div class="chat-input-row">
-                <input type="text" class="chat-input"
+                <input type="text" class="chat-input" x-model="chat_input"
+                       @keydown.enter="sendChat()"
+                       :disabled="chat_sending"
                        placeholder="輸入訊息給 Agent…">
-                <button class="btn-primary">送出</button>
+                <button class="btn-primary" @click="sendChat()"
+                        :disabled="chat_sending || !chat_input.trim()">
+                  <span x-text="chat_sending ? '⏳' : '送出'"></span>
+                </button>
               </div>
             </div>
 
@@ -767,12 +784,76 @@
       </div>
     </div>
 
-    <!-- ── Other modals (placeholder until backend endpoints land) ──── -->
-    <div class="modal-body" x-show="['mcp', 'ai-router', 'tasks', 'cost-kb'].includes(modal)">
+    <!-- ── MCP Playground modal ──────────────────────────────────── -->
+    <div class="modal-body" x-show="modal === 'mcp'">
+      <div class="mcp-grid">
+        <!-- Left pane: tool browser -->
+        <div class="mcp-list-pane">
+          <input type="text" class="filter-input" x-model="mcp_query"
+                 placeholder="search tools…">
+          <div class="dim small mt-xs"
+               x-text="mcp_loading
+                       ? 'loading…'
+                       : (mcpFilteredTools.length + ' / ' + mcp_tools.length + ' tools')"></div>
+          <div class="mcp-tool-list mt-xs">
+            <template x-for="t in mcpFilteredTools" :key="t.name">
+              <button class="mcp-tool-row"
+                      :class="mcp_selected?.name === t.name ? 'active' : ''"
+                      @click="selectMcpTool(t)">
+                <div class="mono small" x-text="t.name"></div>
+                <div class="dim small mcp-tool-desc"
+                     x-text="(t.description || '').replace(/\n/g, ' ').slice(0, 80)"></div>
+              </button>
+            </template>
+          </div>
+        </div>
+
+        <!-- Right pane: selected tool detail + run -->
+        <div class="mcp-detail-pane">
+          <template x-if="mcp_selected">
+            <div>
+              <div class="row">
+                <strong class="mono" x-text="mcp_selected.name"></strong>
+              </div>
+              <div class="dim small mt-xs"
+                   x-text="mcp_selected.description"
+                   style="white-space: pre-line"></div>
+              <h3 class="mcp-h3 mt-md">SCHEMA</h3>
+              <pre class="mcp-pre"
+                   x-text="JSON.stringify(mcp_selected.inputSchema, null, 2)"></pre>
+              <h3 class="mcp-h3 mt-md">ARGS</h3>
+              <textarea class="mcp-args" x-model="mcp_args" rows="5"
+                        spellcheck="false"></textarea>
+              <div class="row gap-md mt-xs">
+                <button class="btn-primary" :disabled="mcp_running"
+                        @click="runMcpTool">
+                  <span x-text="mcp_running ? '⏳ running…' : '▶ Run'"></span>
+                </button>
+              </div>
+              <h3 class="mcp-h3 mt-md" x-show="mcp_result !== null">RESULT</h3>
+              <pre class="mcp-pre mcp-result"
+                   x-show="mcp_result !== null"
+                   x-text="mcp_result"></pre>
+            </div>
+          </template>
+          <template x-if="!mcp_selected">
+            <div class="dim mt-md">← 從左側選一個 tool</div>
+          </template>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Other placeholder modals ──────────────────────────────── -->
+    <div class="modal-body" x-show="['ai-router', 'tasks', 'cost-kb'].includes(modal)">
       <div class="card-empty">
         <div class="dim">
-          <strong x-text="modalLabel(modal)"></strong> 內容會在 Phase 7 接 `/api/*` 之後填入。<br>
-          現在 MCP server 端的相關 tools 都已存在，UI 只是還沒 fetch。
+          <strong x-text="modalLabel(modal)"></strong> — call the corresponding
+          MCP tool via the <strong>MCP Playground</strong> modal:
+          <ul style="margin-top: 8px; padding-left: 20px">
+            <li class="mono small">route_query / benchmark_llms / list_intents</li>
+            <li class="mono small">list_tasks / save_point / list_points</li>
+            <li class="mono small">session_cost / list_expensive_sessions / kb_stats</li>
+          </ul>
         </div>
       </div>
     </div>

@@ -28,6 +28,21 @@ window.sirin = function () {
     runTextFilter: '',
     lastLaunch:    null,   // status string after launch attempt
 
+    // MCP Playground modal state
+    mcp_tools:    [],     // [{name, description, inputSchema}, …]
+    mcp_loading:  false,
+    mcp_query:    '',
+    mcp_selected: null,
+    mcp_args:     '{}',
+    mcp_result:   null,
+    mcp_running:  false,
+
+    // Workspace chat state — keyed by agent.id so per-agent histories persist
+    // while the user navigates between agents.
+    chat_history: {},     // { [agent_id]: [{role:'user'|'agent', text:string}, …] }
+    chat_input:   '',
+    chat_sending: false,
+
     // ── Backend snapshot ────────────────────────────────────────────
     state: {
       version:        '0.4.6',
@@ -188,6 +203,101 @@ window.sirin = function () {
       // Live data polling. Falls back silently to mock if endpoint missing.
       this.fetchSnapshot();
       setInterval(() => this.fetchSnapshot(), 5000);
+
+      // Lazy-load MCP tools list when the modal first opens; cached
+      // afterward so re-opens are instant.
+      this.$watch('modal', (v) => {
+        if (v === 'mcp' && this.mcp_tools.length === 0) this.loadMcpTools();
+      });
+    },
+
+    // ── MCP Playground ──────────────────────────────────────────────
+    async loadMcpTools() {
+      this.mcp_loading = true;
+      try {
+        const r = await fetch('/mcp', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+        });
+        const data = await r.json();
+        this.mcp_tools = data.result?.tools || [];
+      } catch (_) {
+        this.mcp_tools = [];
+      } finally {
+        this.mcp_loading = false;
+      }
+    },
+
+    get mcpFilteredTools() {
+      const q = this.mcp_query.trim().toLowerCase();
+      const all = this.mcp_tools;
+      const list = !q ? all
+        : all.filter(t =>
+            t.name.toLowerCase().includes(q)
+            || (t.description || '').toLowerCase().includes(q));
+      return list.slice(0, 80);  // virtualize if grows past
+    },
+
+    selectMcpTool(t) {
+      this.mcp_selected = t;
+      this.mcp_args     = '{}';
+      this.mcp_result   = null;
+    },
+
+    // ── Workspace chat ──────────────────────────────────────────────
+    async sendChat() {
+      const ag = this.currentAgent;
+      const msg = this.chat_input.trim();
+      if (!ag || !msg || this.chat_sending) return;
+      const history = this.chat_history[ag.id] = this.chat_history[ag.id] || [];
+      history.push({ role: 'user', text: msg });
+      this.chat_input  = '';
+      this.chat_sending = true;
+      try {
+        const r = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ agent_id: ag.id, message: msg }),
+        });
+        const data = await r.json();
+        if (data.error) throw new Error(data.error);
+        history.push({ role: 'agent', text: data.reply || '(empty reply)' });
+      } catch (e) {
+        history.push({ role: 'agent', text: '✗ ' + (e.message || e) });
+      } finally {
+        this.chat_sending = false;
+      }
+    },
+
+    async runMcpTool() {
+      if (!this.mcp_selected || this.mcp_running) return;
+      this.mcp_running = true;
+      this.mcp_result  = null;
+      try {
+        let args;
+        try { args = JSON.parse(this.mcp_args || '{}'); }
+        catch (e) { throw new Error('args JSON 解析失敗: ' + e.message); }
+        const r = await fetch('/mcp', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jsonrpc: '2.0', id: 2, method: 'tools/call',
+            params: { name: this.mcp_selected.name, arguments: args },
+          }),
+        });
+        const data = await r.json();
+        if (data.error) {
+          this.mcp_result = '✗ ' + data.error.message;
+        } else {
+          this.mcp_result = data.result?.content?.[0]?.text
+            || JSON.stringify(data.result, null, 2);
+        }
+      } catch (e) {
+        this.mcp_result = '✗ ' + (e.message || e);
+      } finally {
+        this.mcp_running = false;
+      }
     },
 
     async fetchSnapshot() {

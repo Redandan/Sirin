@@ -191,6 +191,9 @@ pub fn mcp_router() -> Router {
         // session. Used by the Browser tab + Dashboard browser card to show
         // a live preview. Returns 503 when no Chrome is open.
         .route("/api/browser_screenshot", get(api_browser_screenshot))
+        // /api/chat — Workspace 對話 tab → svc.chat_send(agent_id, message).
+        // Body: { agent_id, message }, Response: { reply }
+        .route("/api/chat", post(api_chat))
         .layer(cors_layer())
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
@@ -218,6 +221,28 @@ async fn ui_static(Path(file): Path<String>) -> impl IntoResponse {
         _ => return (StatusCode::NOT_FOUND, "not found").into_response(),
     };
     ([(header::CONTENT_TYPE, mime)], body).into_response()
+}
+
+/// Workspace 對話 tab → `chat_send` proxy. Synchronous (chat_send blocks
+/// while the LLM completes). 503 when service not registered.
+async fn api_chat(Json(body): Json<Value>) -> impl IntoResponse {
+    let svc = match app_service() {
+        Some(s) => s,
+        None => return (StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(json!({"error": "service unavailable"}))).into_response(),
+    };
+    let agent_id = body.get("agent_id").and_then(Value::as_str).unwrap_or("").to_string();
+    let message  = body.get("message").and_then(Value::as_str).unwrap_or("").to_string();
+    if agent_id.is_empty() || message.is_empty() {
+        return (StatusCode::BAD_REQUEST,
+            axum::Json(json!({"error": "agent_id and message required"}))).into_response();
+    }
+    let reply = tokio::task::spawn_blocking(move || svc.chat_send(&agent_id, &message)).await;
+    match reply {
+        Ok(r)  => axum::Json(json!({ "reply": r })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({"error": format!("chat task: {e}")}))).into_response(),
+    }
 }
 
 /// PNG bytes of the controlled Chrome session. Used by the Browser tab
