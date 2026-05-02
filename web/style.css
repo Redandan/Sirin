@@ -143,51 +143,81 @@ button { font-family: inherit; cursor: pointer; }
 
 .main {
   display: grid;
-  grid-template-columns: 52px 1fr;
+  grid-template-columns: 220px 1fr;        /* Linear-style labelled sidebar */
   height: 100%;
   overflow: hidden;
 }
+
+/* ── Sidebar (Linear-inspired) ───────────────────────────────────── */
 
 .sidebar {
   background: var(--bg);
   display: flex;
   flex-direction: column;
-  align-items: center;
-  padding: var(--sp-sm) 0;
-  gap: var(--sp-xs);
+  padding: var(--sp-sm) var(--sp-sm);
+  gap: 2px;
+  border-right: 1px solid var(--border);
 }
 
+.sidebar-header {
+  display: flex; align-items: center; gap: var(--sp-sm);
+  padding: var(--sp-xs) var(--sp-sm);
+  margin-bottom: var(--sp-sm);
+}
+.sidebar-brand {
+  font-weight: 600;
+  font-size: var(--font-body);
+}
 .logo-badge {
-  width: 32px; height: 32px;
+  width: 26px; height: 26px;
   background: var(--accent);
   color: var(--bg);
   border-radius: 6px;
   display: grid; place-items: center;
-  font-weight: 700; font-size: 16px;
-  margin-bottom: var(--sp-sm);
+  font-weight: 700; font-size: 14px;
 }
 
-.nav-section { display: flex; flex-direction: column; gap: 4px; align-items: center; width: 100%; }
-
-.nav-agent, .nav-icon {
-  position: relative;
-  width: 36px; height: 36px;
-  background: transparent; border: none;
+.sidebar-section-label {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  font-weight: 700;
   color: var(--text-dim);
-  border-radius: 6px;
-  display: grid; place-items: center;
-  font-size: 18px;
-}
-.nav-agent:hover, .nav-icon:hover { background: var(--card); color: var(--text); }
-.nav-agent.active, .nav-icon.active {
-  background: var(--hover); color: var(--text);
-  box-shadow: -3px 0 0 0 var(--accent);
+  padding: var(--sp-md) var(--sp-sm) var(--sp-xs);
+  font-family: var(--font-mono);
 }
 
-.nav-agent-letter { font-size: var(--font-body); }
-.nav-agent-status {
-  position: absolute; top: 4px; right: 4px;
-  width: 6px; height: 6px; border-radius: 50%;
+.nav-row {
+  display: flex; align-items: center; gap: var(--sp-sm);
+  width: 100%;
+  background: transparent; border: none; text-align: left;
+  color: var(--text-dim);
+  padding: 5px var(--sp-sm);
+  font-size: var(--font-body);
+  border-radius: 4px;
+  position: relative;
+}
+.nav-row:hover { background: var(--card); color: var(--text); }
+.nav-row.active {
+  background: var(--hover); color: var(--text);
+}
+.nav-row.active::before {
+  content: '';
+  position: absolute; left: -8px; top: 4px; bottom: 4px;
+  width: 2px;
+  background: var(--accent);
+  border-radius: 2px;
+}
+
+.nav-icon-svg {
+  width: 16px; height: 16px;
+  flex-shrink: 0;
+}
+
+/* small green/red dot for agent status (re-used by browser LIVE indicator) */
+.agent-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
   background: var(--text-dim);
 }
 .agent-connected   { background: var(--accent); }
@@ -195,20 +225,16 @@ button { font-family: inherit; cursor: pointer; }
 .agent-waiting     { background: var(--yellow); }
 .agent-error       { background: var(--danger); }
 
-.nav-agent-badge {
-  position: absolute; bottom: 2px; right: 2px;
+.badge-count {
   background: var(--accent);
   color: var(--bg);
-  font-size: 8px; font-weight: 700;
-  width: 12px; height: 12px;
-  border-radius: 50%;
-  display: grid; place-items: center;
-}
-
-.strip {
-  height: 1px; width: 70%;
-  background: var(--border);
-  margin: var(--sp-xs) 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 9px;
+  min-width: 16px;
+  text-align: center;
 }
 
 /* ── Content area ────────────────────────────────────────────────── */
@@ -306,6 +332,146 @@ button { font-family: inherit; cursor: pointer; }
 .badge-running,
 .badge-info   { color: var(--info); }
 .badge-dim    { color: var(--text-dim); }
+
+/* ── Active run card (Playwright Test UI inspired) ───────────────── */
+
+.card-active {
+  display: grid;
+  grid-template-columns: 1fr 200px;
+  gap: var(--sp-md);
+  background: var(--card);
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent);
+  border-radius: 4px;
+  padding: var(--sp-md);
+  margin-bottom: var(--sp-xs);
+  cursor: pointer;
+  transition: background 80ms;
+}
+.card-active:hover { background: var(--hover); }
+.card-active-body  { display: flex; flex-direction: column; min-width: 0; }
+.card-active-title { font-size: var(--font-heading); font-weight: 600; }
+.card-active-thumb {
+  background: var(--bg);
+  border: 1px dashed var(--border);
+  border-radius: 3px;
+  display: grid; place-items: center;
+  height: 100px;
+}
+
+/* Live status pulse dot — used in Active card + Browser card */
+.pulse-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+  animation: pulse 1.4s ease-in-out infinite;
+  box-shadow: 0 0 0 0 var(--accent);
+}
+@keyframes pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 60%, transparent); }
+  50%      { box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 0%, transparent); }
+}
+
+/* ── Recent runs list (GitHub Actions row inspired) ──────────────── */
+
+.run-list {
+  display: flex;
+  flex-direction: column;
+  background: var(--card);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: var(--sp-sm);
+}
+.run-row {
+  display: flex; align-items: center; gap: var(--sp-sm);
+  padding: 8px var(--sp-md);
+  border: none;
+  background: transparent;
+  text-align: left;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  transition: background 80ms;
+  font-size: var(--font-body);
+  color: var(--text);
+}
+.run-row:last-child { border-bottom: none; }
+.run-row:hover { background: var(--hover); }
+
+.run-status {
+  width: 16px; flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: var(--font-body);
+  text-align: center;
+}
+.run-status-text {
+  width: 60px; flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.run-status-passed,
+.run-status-text.run-status-passed   { color: var(--accent); }
+.run-status-failed,
+.run-status-text.run-status-failed,
+.run-status-error,
+.run-status-text.run-status-error    { color: var(--danger); }
+.run-status-timeout,
+.run-status-text.run-status-timeout  { color: var(--yellow); }
+.run-status-running,
+.run-status-text.run-status-running  { color: var(--info); }
+
+.run-name {
+  font-size: var(--font-body);
+  color: var(--text);
+}
+
+/* Soft tint badge — for inline metadata like flaky %, failure category */
+.badge-soft {
+  display: inline-flex;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--text-dim) 20%, transparent);
+  color: var(--text-dim);
+}
+.badge-soft-warn {
+  background: color-mix(in srgb, var(--yellow) 18%, transparent);
+  color: var(--yellow);
+}
+.badge-soft-danger {
+  background: color-mix(in srgb, var(--danger) 18%, transparent);
+  color: var(--danger);
+}
+
+/* ── Browser card (Playwright trace viewer inspired) ─────────────── */
+
+.card-browser {
+  display: grid;
+  grid-template-columns: 1fr 240px;
+  gap: var(--sp-md);
+  background: var(--card);
+  border-radius: 4px;
+  padding: var(--sp-md);
+  margin-bottom: var(--sp-sm);
+  cursor: pointer;
+  transition: background 80ms;
+}
+.card-browser:hover { background: var(--hover); }
+.card-browser-meta { display: flex; flex-direction: column; min-width: 0; }
+.card-browser-thumb {
+  background: var(--bg);
+  border: 1px dashed var(--border);
+  border-radius: 3px;
+  display: grid; place-items: center;
+  height: 140px;
+}
+
+/* ── Spacing utilities ──────────────────────────────────────────── */
+.gap-md { gap: var(--sp-md); }
+.mt-xs  { margin-top: var(--sp-xs); }
+.ml-md  { margin-left: var(--sp-md); }
 
 /* ── Funnel bars (Coverage card) ─────────────────────────────────── */
 

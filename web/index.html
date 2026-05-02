@@ -57,28 +57,48 @@
   <!-- ── Main split: sidebar + content ───────────────────────────────── -->
   <div class="main">
 
-    <!-- Sidebar — agent list + view nav -->
+    <!--
+      Sidebar — Linear-inspired labelled nav (default expanded).
+      Sections:
+        VIEWS    — Dashboard / Testing
+        AGENTS   — per-agent workspaces (badges = pending replies)
+      Hover on labels reveals subtle bg highlight; active gets accent bar.
+    -->
     <aside class="sidebar">
-      <div class="logo-badge">S</div>
-      <nav class="nav-section">
-        <template x-for="(agent, i) in state.agents" :key="agent.id">
-          <button class="nav-agent" :class="view === 'workspace:' + i ? 'active' : ''"
-                  @click="view = 'workspace:' + i" :title="agent.name">
-            <span class="nav-agent-letter" x-text="agent.name.charAt(0)"></span>
-            <span class="nav-agent-status"
-                  :class="'agent-' + agent.live_status"></span>
-            <span class="nav-agent-badge" x-show="state.pending_counts[agent.id] > 0"
-                  x-text="state.pending_counts[agent.id]"></span>
-          </button>
-        </template>
-      </nav>
-      <div class="strip"></div>
-      <nav class="nav-section">
-        <button class="nav-icon" :class="view === 'dashboard' ? 'active' : ''"
-                @click="view = 'dashboard'" title="Dashboard">▦</button>
-        <button class="nav-icon" :class="view === 'testing' ? 'active' : ''"
-                @click="view = 'testing'" title="Testing">≡</button>
-      </nav>
+      <div class="sidebar-header">
+        <div class="logo-badge">S</div>
+        <span class="sidebar-brand">Sirin</span>
+      </div>
+
+      <div class="sidebar-section-label">VIEWS</div>
+      <button class="nav-row" :class="view === 'dashboard' ? 'active' : ''"
+              @click="view = 'dashboard'">
+        <svg class="nav-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
+          <rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
+        </svg>
+        <span>Dashboard</span>
+      </button>
+      <button class="nav-row" :class="view === 'testing' ? 'active' : ''"
+              @click="view = 'testing'">
+        <svg class="nav-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <polyline points="9 11 12 14 22 4"/>
+          <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
+        </svg>
+        <span>Testing</span>
+      </button>
+
+      <div class="sidebar-section-label">AGENTS</div>
+      <template x-for="(agent, i) in state.agents" :key="agent.id">
+        <button class="nav-row" :class="view === 'workspace:' + i ? 'active' : ''"
+                @click="view = 'workspace:' + i">
+          <span class="agent-dot" :class="'agent-' + agent.live_status"></span>
+          <span x-text="agent.name"></span>
+          <span class="row-spacer"></span>
+          <span class="badge-count" x-show="state.pending_counts[agent.id] > 0"
+                x-text="state.pending_counts[agent.id]"></span>
+        </button>
+      </template>
     </aside>
 
     <!-- Central content -->
@@ -92,40 +112,66 @@
         </div>
         <hr class="thin-sep">
 
+        <!--
+          ACTIVE — Playwright Test UI inspired live run card.
+          When a run is in flight: pulsing ▶, big test_id, current step,
+          live analysis line, screenshot thumbnail placeholder.
+        -->
         <div class="section-label" x-text="'ACTIVE  (' + state.active_runs.length + ')'"></div>
         <template x-if="state.active_runs.length === 0">
           <div class="card card-empty">目前沒有正在執行的測試</div>
         </template>
         <template x-for="run in state.active_runs" :key="run.test_id">
-          <div class="card card-clickable" @click="view = 'testing'">
-            <div class="row">
-              <span class="badge badge-info">▶</span>
-              <span class="mono" x-text="run.test_id"></span>
-              <span class="dim mono" x-show="run.step !== null"
-                    x-text="'· step ' + run.step"></span>
+          <div class="card-active card-clickable" @click="view = 'testing'">
+            <div class="card-active-body">
+              <div class="row gap-md">
+                <span class="pulse-dot"></span>
+                <span class="card-active-title mono" x-text="run.test_id"></span>
+                <span class="badge-soft" x-show="run.step !== null"
+                      x-text="'step ' + run.step"></span>
+                <span class="row-spacer"></span>
+                <span class="dim small">▶ Open trace</span>
+              </div>
+              <div class="dim small mt-xs" x-show="run.analysis"
+                   x-text="truncate(run.analysis, 140)"></div>
             </div>
-            <div class="dim small" x-show="run.analysis"
-                 x-text="truncate(run.analysis, 110)"></div>
+            <div class="card-active-thumb">
+              <span class="dim mono small">live</span>
+            </div>
           </div>
         </template>
 
+        <!--
+          RECENT — GitHub Actions runs row layout.
+          icon · test_id · spacer · duration · time-ago.
+          Hover bg + cursor pointer, full row clickable.
+        -->
         <div class="section-label"
              x-text="'RECENT  (' + state.recent_runs.length + ' of last 8)'"></div>
         <template x-if="state.recent_runs.length === 0">
           <div class="card card-empty">尚無歷史紀錄</div>
         </template>
-        <template x-for="run in state.recent_runs" :key="run.started_at + run.test_id">
-          <div class="card card-row card-clickable" @click="view = 'testing'">
-            <span :class="'badge badge-' + run.status">
-              <span x-text="verdictGlyph(run.status)"></span>
-              <span x-text="run.status.toUpperCase()"></span>
-            </span>
-            <span class="mono" x-text="run.test_id"></span>
-            <span class="row-spacer"></span>
-            <span class="dim mono small" x-show="run.duration_ms"
-                  x-text="(run.duration_ms / 1000).toFixed(1) + 's'"></span>
-          </div>
-        </template>
+        <div class="run-list">
+          <template x-for="run in state.recent_runs" :key="run.started_at + run.test_id">
+            <button class="run-row" @click="view = 'testing'">
+              <span :class="'run-status run-status-' + run.status"
+                    x-text="verdictGlyph(run.status)"></span>
+              <span :class="'run-status-text run-status-' + run.status"
+                    x-text="run.status.toUpperCase()"></span>
+              <span class="run-name mono" x-text="run.test_id"></span>
+              <span x-show="run.failure_category"
+                    class="badge-soft badge-soft-danger"
+                    x-text="run.failure_category"></span>
+              <span x-show="run.pass_rate !== null && run.pass_rate < 0.7"
+                    class="badge-soft badge-soft-warn"
+                    x-text="'flaky ' + Math.round(run.pass_rate * 100) + '%'"></span>
+              <span class="row-spacer"></span>
+              <span class="dim mono small" x-show="run.duration_ms"
+                    x-text="(run.duration_ms / 1000).toFixed(1) + 's'"></span>
+              <span class="dim small ml-md" x-text="timeAgo(run.started_at)"></span>
+            </button>
+          </template>
+        </div>
 
         <div class="section-label">COVERAGE</div>
         <div class="card card-clickable" @click="view = 'testing'; testTab = 'coverage'">
@@ -168,16 +214,28 @@
           </template>
         </div>
 
+        <!--
+          BROWSER — Playwright trace viewer inspired card.
+          LIVE pulse + url + title + screenshot thumbnail (when /api/browser_screenshot
+          is wired in Phase 4 the placeholder swaps to <img>).
+        -->
         <div class="section-label">BROWSER</div>
-        <div class="card card-clickable" @click="view = 'testing'; testTab = 'browser'">
-          <div class="row">
-            <span :class="state.browser_open ? 'badge badge-passed' : 'badge badge-dim'"
-                  x-text="state.browser_open ? '● LIVE' : '○ OFF'"></span>
-            <span class="dim small" x-text="state.browser_title"></span>
-            <span class="row-spacer"></span>
-            <span class="link">Open monitor →</span>
+        <div class="card-browser card-clickable" @click="view = 'testing'; testTab = 'browser'">
+          <div class="card-browser-meta">
+            <div class="row">
+              <span :class="state.browser_open ? 'pulse-dot' : 'agent-error'"></span>
+              <span class="mono small" :class="state.browser_open ? '' : 'dim'"
+                    x-text="state.browser_open ? 'LIVE' : 'OFFLINE'"></span>
+              <span class="dim small" x-text="state.browser_title"></span>
+            </div>
+            <div class="dim mono small mt-xs"
+                 x-show="state.browser_url" x-text="state.browser_url"></div>
+            <span class="link small mt-xs">Open monitor →</span>
           </div>
-          <div class="dim mono small" x-show="state.browser_url" x-text="state.browser_url"></div>
+          <div class="card-browser-thumb">
+            <!-- Phase 4 will swap to <img src="/api/browser_screenshot"> -->
+            <span class="dim mono small">screenshot</span>
+          </div>
         </div>
       </section>
 
