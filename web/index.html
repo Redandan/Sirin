@@ -413,14 +413,151 @@
         </div>
       </section>
 
-      <!-- ── Workspace (placeholder for Phase 6) ─────────────────────── -->
-      <section x-show="view.startsWith('workspace:')" class="view">
-        <div class="view-header">
-          <h1>WORKSPACE</h1>
-          <span class="dim small" x-text="'agent index ' + view.split(':')[1]"></span>
-        </div>
-        <hr class="thin-sep">
-        <div class="dim">Phase 6 將遷移 agent 對話 / 概覽 / 待確認 / 設定。</div>
+      <!--
+        Workspace — per-agent detail view (4 sub-tabs).
+        References:
+          對話   = Slack thread / Linear comment
+          概覽   = Linear issue side panel (key/value summary)
+          待確認 = GitHub PR review queue
+          設定   = macOS Settings sub-pane
+      -->
+      <section x-show="view.startsWith('workspace:')" class="view"
+               x-data="{ wsTab: 'chat' }">
+        <template x-if="currentAgent">
+          <div>
+            <div class="view-header">
+              <div class="row">
+                <span class="agent-dot"
+                      :class="'agent-' + currentAgent.live_status"></span>
+                <h1 x-text="currentAgent.name"></h1>
+                <span class="badge-soft mono small"
+                      x-text="'[' + currentAgent.platform + ']'"></span>
+              </div>
+              <div class="row gap-md">
+                <span class="dim small" x-text="currentAgent.live_status"></span>
+                <button class="btn-secondary"
+                        :class="currentAgent.enabled ? '' : ''"
+                        x-text="currentAgent.enabled ? '◉ Enabled' : '○ Disabled'"></button>
+              </div>
+            </div>
+
+            <div class="subtab-bar">
+              <button class="subtab" :class="wsTab === 'chat' ? 'active' : ''"
+                      @click="wsTab = 'chat'">對話</button>
+              <button class="subtab" :class="wsTab === 'overview' ? 'active' : ''"
+                      @click="wsTab = 'overview'">概覽</button>
+              <button class="subtab" :class="wsTab === 'pending' ? 'active' : ''"
+                      @click="wsTab = 'pending'">
+                待確認
+                <span x-show="state.pending_counts[currentAgent.id] > 0"
+                      class="badge-count" style="margin-left:6px"
+                      x-text="state.pending_counts[currentAgent.id]"></span>
+              </button>
+              <button class="subtab" :class="wsTab === 'config' ? 'active' : ''"
+                      @click="wsTab = 'config'">設定</button>
+            </div>
+
+            <!-- 對話 / Chat (Slack thread inspired) -->
+            <div x-show="wsTab === 'chat'" class="chat-area">
+              <div class="card chat-empty">
+                <div class="chat-icon">💬</div>
+                <strong>與 Agent 對話</strong>
+                <span class="dim small">輸入訊息開始對話，Agent 會使用 AI 回覆</span>
+              </div>
+              <div class="chat-input-row">
+                <input type="text" class="chat-input"
+                       placeholder="輸入訊息給 Agent…">
+                <button class="btn-primary">送出</button>
+              </div>
+            </div>
+
+            <!-- 概覽 / Overview (Linear side panel inspired) -->
+            <div x-show="wsTab === 'overview'">
+              <div class="card">
+                <h2 class="modal-section-title">Agent 資訊</h2>
+                <div class="kv-row">
+                  <span class="kv-label">ID</span>
+                  <span class="mono" x-text="currentAgent.id"></span>
+                </div>
+                <div class="kv-row">
+                  <span class="kv-label">Platform</span>
+                  <span x-text="currentAgent.platform"></span>
+                </div>
+                <div class="kv-row">
+                  <span class="kv-label">Status</span>
+                  <span class="row gap-md">
+                    <span class="agent-dot"
+                          :class="'agent-' + currentAgent.live_status"></span>
+                    <span x-text="currentAgent.live_status"></span>
+                  </span>
+                </div>
+                <div class="kv-row">
+                  <span class="kv-label">Enabled</span>
+                  <span x-text="currentAgent.enabled ? '是' : '否'"></span>
+                </div>
+              </div>
+
+              <div class="card mt-md">
+                <h2 class="modal-section-title">KPIs (24h)</h2>
+                <div class="kpi-grid">
+                  <div class="kpi-cell">
+                    <div class="kpi-num mono">0</div>
+                    <div class="kpi-label dim small">收到訊息</div>
+                  </div>
+                  <div class="kpi-cell">
+                    <div class="kpi-num mono">0</div>
+                    <div class="kpi-label dim small">已回覆</div>
+                  </div>
+                  <div class="kpi-cell">
+                    <div class="kpi-num mono">0</div>
+                    <div class="kpi-label dim small">平均回覆時間</div>
+                  </div>
+                  <div class="kpi-cell">
+                    <div class="kpi-num mono">0</div>
+                    <div class="kpi-label dim small">人類介入</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 待確認 / Pending (GitHub PR review queue inspired) -->
+            <div x-show="wsTab === 'pending'">
+              <template x-if="(state.pending_counts[currentAgent.id] || 0) === 0">
+                <div class="card-empty">沒有待確認的回覆</div>
+              </template>
+              <template x-if="(state.pending_counts[currentAgent.id] || 0) > 0">
+                <div class="dim small">Phase 7 接 /api/pending 後，這裡會列出待人類審核的 LLM 草稿回覆。</div>
+              </template>
+            </div>
+
+            <!-- 設定 / Config -->
+            <div x-show="wsTab === 'config'">
+              <div class="card">
+                <h2 class="modal-section-title">人類化行為</h2>
+                <div class="kv-row">
+                  <span class="kv-label">最小回覆延遲</span>
+                  <span class="mono">3s</span>
+                </div>
+                <div class="kv-row">
+                  <span class="kv-label">最大回覆延遲</span>
+                  <span class="mono">15s</span>
+                </div>
+                <div class="kv-row">
+                  <span class="kv-label">每小時上限</span>
+                  <span class="mono">30</span>
+                </div>
+                <div class="kv-row">
+                  <span class="kv-label">每天上限</span>
+                  <span class="mono">200</span>
+                </div>
+              </div>
+              <div class="card mt-md">
+                <h2 class="modal-section-title">Objectives</h2>
+                <div class="dim small">Phase 7 接 /api/agent/{id} 後可編輯。</div>
+              </div>
+            </div>
+          </div>
+        </template>
       </section>
 
     </main>

@@ -839,6 +839,61 @@ button { font-family: inherit; cursor: pointer; }
 .mt-md { margin-top: var(--sp-md); }
 .mt-lg { margin-top: var(--sp-lg); }
 
+/* ── Workspace (per-agent detail) ────────────────────────────────── */
+
+.chat-area {
+  display: flex; flex-direction: column;
+  min-height: 480px;
+}
+.chat-empty {
+  flex: 1;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: var(--sp-sm);
+  text-align: center;
+  padding: var(--sp-xl);
+}
+.chat-icon { font-size: 32px; opacity: 0.5; }
+
+.chat-input-row {
+  display: flex; gap: var(--sp-sm);
+  margin-top: var(--sp-sm);
+}
+.chat-input {
+  flex: 1;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px var(--sp-md);
+  font-family: var(--font-sans);
+  font-size: var(--font-body);
+}
+.chat-input:focus { outline: none; border-color: var(--accent); }
+
+/* KPI grid (Workspace > Overview) */
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--sp-md);
+}
+.kpi-cell {
+  text-align: center;
+  padding: var(--sp-md) var(--sp-sm);
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  border-radius: 4px;
+  background: var(--bg);
+}
+.kpi-num {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--accent);
+  line-height: 1;
+  margin-bottom: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.kpi-label { letter-spacing: 0.04em; }
+
 /* ── Scrollbar (subtle) ──────────────────────────────────────────── */
 
 ::-webkit-scrollbar           { width: 8px; height: 8px; }

@@ -274,6 +274,13 @@ window.sirin = function () {
       return Math.round((n / max) * 100);
     },
 
+    // ── Workspace derived state ────────────────────────────────────
+    get currentAgent() {
+      const m = this.view.match(/^workspace:(\d+)$/);
+      if (!m) return null;
+      return this.state.agents[parseInt(m[1], 10)] || null;
+    },
+
     // ── Testing → Runs derived state + actions ────────────────────
     get filteredRuns() {
       const f = this.runFilter;
