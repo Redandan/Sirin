@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# ─── Reference copy of ~/.claude/scripts/fetch-handoff.sh ───────────────────
+#
+# This is the script every new Claude Code session runs as part of its
+# SessionStart hook to inject the latest mid-session handoff (KB topic
+# `sirin-handoff-latest`) into the new session's context. See CLAUDE.md
+# (root) for the broader handoff workflow.
+#
+# Install:
+#   mkdir -p ~/.claude/scripts
+#   cp scripts/fetch-handoff.sh.example ~/.claude/scripts/fetch-handoff.sh
+#   chmod +x ~/.claude/scripts/fetch-handoff.sh
+#
+# Wire into ~/.claude/settings.json under hooks.SessionStart so the script
+# emits the handoff to stdout — the harness injects it into the new session.
+#
+# Fetch latest handoff — tries Sirin MCP first (local, fast, no auth needed),
+# falls back to agora-trading KB (original method).
+#
+# Usage: fetch-handoff.sh [project]
+#   defaults: project=sirin
+#
+# Designed for SessionStart hook — fail-safe (silent exit on any error,
+# never blocks session startup).
+#
+# Security (Sirin #253):
+# - umask 077 — any temp files we create are mode 600
+# - Bearer tokens from ~/.claude.json never enter shell vars or process args
+# - Tokens are written to a 600 tempfile and consumed via `curl -K <file>`
+#   (curl reads -H lines from the config file, so tokens never appear in
+#   `ps aux` / cmdline / /proc/$PID/environ)
+# - tempfile is shredded + removed via trap on EXIT
+
+set +e
+umask 077
+
+PROJECT="${1:-sirin}"
+SIRIN_URL="http://127.0.0.1:7700/mcp"
+KB_URL="https://agoramarketapi.purrtechllc.com/api/mcp"
+TIMEOUT=5
+
+# ── Path 1: Sirin MCP (local, no auth, instant) ──────────────────────────────
+RESP=$(curl -sL -X POST "$SIRIN_URL" \
+    -H "Content-Type: application/json" \
+    -H "Accept: application/json, text/event-stream" \
+    --max-time "$TIMEOUT" \
+    -d "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"get_latest_handoff\",\"arguments\":{\"project\":\"$PROJECT\"}},\"id\":1}" 2>/dev/null)
+
+if [ -n "$RESP" ]; then
+    # Extract content field from JSON response (already unescaped, plain markdown)
+    CONTENT=$(echo "$RESP" | python -c "
+import sys, json
+raw = sys.stdin.read().strip()
+try:
+    for line in raw.split('\n'):
+        line = line.strip()
+        if line.startswith('data: '): line = line[6:]
+        if not line.startswith('{'): continue
+        d = json.loads(line)
+        r = d.get('result', {})
+        if r.get('isError'): continue
+        for item in r.get('content', []):
+            text = item.get('text', '')
+            try:
+                obj = json.loads(text)
+                c = obj.get('content', '')
+                if c:
+                    sys.stdout.write('=== KB handoff: sirin-handoff-latest ===\n')
+                    sys.stdout.write(c)
+                    sys.stdout.write('\n\n')
+                    sys.exit(0)
+            except: pass
+except: pass
+" 2>/dev/null)
+    if [ -n "$CONTENT" ]; then
+        echo "$CONTENT"
+        exit 0
+    fi
+fi
+
+# ── Path 2: agora-trading KB (fallback, needs dual bearer + unescape) ────────
+#
+# Token security (Sirin #253):
+# Instead of:
+#     TRADING_TOKEN=$(read_tok ...); curl -H "Authorization: $TRADING_TOKEN" ...
+# we write headers to a 600-mode tempfile and use `curl -K <file>` so tokens
+# never appear in argv. The python helper writes directly to the tempfile;
+# stdout never carries the token.
+
+CFG=""
+cleanup() {
+    if [ -n "$CFG" ] && [ -f "$CFG" ]; then
+        # Best-effort overwrite then remove. Not all systems have shred; ignore err.
+        command -v shred >/dev/null 2>&1 && shred -u "$CFG" 2>/dev/null
+        rm -f "$CFG" 2>/dev/null
+    fi
+}
+trap cleanup EXIT INT TERM
+
+CFG=$(mktemp 2>/dev/null) || exit 0
+chmod 600 "$CFG" 2>/dev/null
+
+# Write curl config (header lines) — python reads ~/.claude.json and writes
+# directly to $CFG, so tokens never traverse shell vars or stdout pipes.
+CLAUDE_JSON="$HOME/.claude.json" CFG_PATH="$CFG" python -c "
+import json, os, sys
+cfg_path = os.environ['CFG_PATH']
+try:
+    with open(os.path.expanduser(os.environ['CLAUDE_JSON']), encoding='utf-8') as f:
+        d = json.load(f)
+    trading = d['mcpServers']['agora-trading']['headers']['Authorization']
+    ops = d['mcpServers']['agora-ops']['headers']['Authorization']
+except Exception:
+    sys.exit(1)
+# curl -K config format: 'header = \"Name: value\"'
+with open(cfg_path, 'w', encoding='utf-8') as f:
+    f.write('header = \"Authorization: ' + trading + '\"\n')
+    f.write('header = \"X-OPS-Authorization: ' + ops + '\"\n')
+" 2>/dev/null
+
+# If the python step failed, the config file is empty — bail out silently.
+[ -s "$CFG" ] || exit 0
+
+RESP=$(curl -sL -X POST "$KB_URL" \
+    -K "$CFG" \
+    -H "Accept: application/json, text/event-stream" \
+    -H "Content-Type: application/json" \
+    --max-time "$TIMEOUT" \
+    -d "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"kbGet\",\"arguments\":{\"topicKey\":\"sirin-handoff-latest\",\"project\":\"$PROJECT\"}},\"id\":1}" 2>/dev/null)
+
+[ -z "$RESP" ] && exit 0
+
+echo "$RESP" | TOPIC="sirin-handoff-latest" python -c "
+import sys, json, os
+topic = os.environ.get('TOPIC', '?')
+raw = sys.stdin.buffer.read().decode('utf-8', errors='replace').strip()
+try:
+    for line in raw.split('\n'):
+        line = line.strip()
+        if line.startswith('data: '): line = line[6:]
+        if not line.startswith('{'): continue
+        d = json.loads(line)
+        r = d.get('result', {})
+        if r.get('isError'): continue
+        for item in r.get('content', []):
+            text = item.get('text', '')
+            if len(text) >= 2 and text.startswith('\"') and text.endswith('\"'):
+                text = text[1:-1]
+            text = text.replace('\\\\\\\\', '\x00').replace('\\\\n', '\n').replace('\\\\\"', '\"').replace('\x00', '\\\\')
+            sys.stdout.buffer.write(f'=== KB handoff: {topic} ===\n'.encode('utf-8'))
+            sys.stdout.buffer.write(text.encode('utf-8', errors='replace'))
+            sys.stdout.buffer.write(b'\n\n')
+        break
+except Exception:
+    pass
+" 2>/dev/null
+
+exit 0
