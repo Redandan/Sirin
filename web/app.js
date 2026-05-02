@@ -12,6 +12,29 @@
 //     to live data automatically.
 //   • No build step. Edit + F5.
 
+// ── Dashboard widget catalog (v0.5.5) ────────────────────────────
+//
+// Each entry describes one composable widget the user can drop into the
+// dashboard via edit mode. `cols` is span-on-a-4-column-grid:
+//   • 4 = full-width (run lists, busy live cards)
+//   • 2 = half-width (visual cards: coverage funnel, browser preview)
+//   • 1 = quarter-width (single-number KPI cells)
+// AI-friendly: the catalog is a flat array — adding a widget = one entry
+// here + one <template x-if="wid === 'X'"> block in index.html. No build,
+// no separate component file.
+const WIDGET_CATALOG = [
+  { id: 'active_runs',     label: 'Active runs',          cols: 4 },
+  { id: 'recent_runs',     label: 'Recent runs (8)',      cols: 4 },
+  { id: 'coverage',        label: 'Coverage 3-tier',      cols: 2 },
+  { id: 'browser',         label: 'Browser preview',      cols: 2 },
+  { id: 'kpi_pass_rate',   label: 'KPI: Pass rate',       cols: 1 },
+  { id: 'kpi_runs_today',  label: 'KPI: Runs today',      cols: 1 },
+  { id: 'kpi_avg_duration',label: 'KPI: Avg duration',    cols: 1 },
+  { id: 'kpi_cost_hour',   label: 'KPI: Cost / hour',     cols: 1 },
+  { id: 'kpi_active_agents',label:'KPI: Active agents',   cols: 1 },
+  { id: 'kpi_running_tests',label:'KPI: Running tests',   cols: 1 },
+];
+
 window.sirin = function () {
   return {
     // ── View state (UI shell) ────────────────────────────────────────
@@ -48,6 +71,15 @@ window.sirin = function () {
     agent_detail: {},     // { [agent_id]: AgentDetailView }
     new_obj_text: '',     // input for "+ Add objective"
     save_status:  null,   // last persona / behavior save toast
+
+    // ── Dashboard widget layout (v0.5.5) ────────────────────────────
+    // dashboard_layout: ordered list of widget IDs the user has chosen.
+    // Persisted to localStorage as `sirin_dashboard_layout_v1`. The
+    // backing widget catalog is `WIDGET_CATALOG` (declared below the
+    // factory). Use addWidget / removeWidget / moveWidget to mutate.
+    dashboard_layout:    ['active_runs', 'recent_runs', 'coverage', 'browser'],
+    dashboard_edit_mode: false,
+    new_widget_id:       '',
 
     // ── Backend snapshot ────────────────────────────────────────────
     state: {
@@ -184,6 +216,23 @@ window.sirin = function () {
 
     // ── Lifecycle ──────────────────────────────────────────────────
     async init() {
+      // Restore saved Dashboard layout (v0.5.5). Falls back to default
+      // 4-widget layout when localStorage is empty or contains a value
+      // our catalog no longer recognizes (e.g. a removed widget id).
+      try {
+        const raw = localStorage.getItem('sirin_dashboard_layout_v1');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            const valid_ids = WIDGET_CATALOG.map(w => w.id);
+            this.dashboard_layout = parsed.filter(id => valid_ids.includes(id));
+            if (this.dashboard_layout.length === 0) {
+              this.dashboard_layout = ['active_runs','recent_runs','coverage','browser'];
+            }
+          }
+        }
+      } catch (_) {}
+
       // Global keyboard shortcuts.
       window.addEventListener('keydown', (e) => {
         const isMeta = e.ctrlKey || e.metaKey;
@@ -238,6 +287,104 @@ window.sirin = function () {
         // v0.5.3: hydrate persisted chat thread (if not already cached)
         if (!this.chat_history[agent.id]) this.loadChatHistory(agent.id);
       });
+    },
+
+    // ── Dashboard widget layout actions (v0.5.5) ───────────────────
+    get widgetCatalog() { return WIDGET_CATALOG; },
+
+    /// Catalog entries the user hasn't already added — feeds the picker.
+    get availableWidgets() {
+      return WIDGET_CATALOG.filter(w => !this.dashboard_layout.includes(w.id));
+    },
+
+    widgetCols(id) {
+      return WIDGET_CATALOG.find(w => w.id === id)?.cols || 4;
+    },
+
+    widgetLabel(id) {
+      return WIDGET_CATALOG.find(w => w.id === id)?.label || id;
+    },
+
+    addWidget(id) {
+      if (!id) return;
+      if (this.dashboard_layout.includes(id)) return;
+      this.dashboard_layout = [...this.dashboard_layout, id];
+      this.new_widget_id = '';
+      this.persistDashboardLayout();
+    },
+
+    removeWidget(id) {
+      this.dashboard_layout = this.dashboard_layout.filter(w => w !== id);
+      this.persistDashboardLayout();
+    },
+
+    moveWidget(id, delta) {
+      const i = this.dashboard_layout.indexOf(id);
+      if (i < 0) return;
+      const j = i + delta;
+      if (j < 0 || j >= this.dashboard_layout.length) return;
+      const next = [...this.dashboard_layout];
+      [next[i], next[j]] = [next[j], next[i]];
+      this.dashboard_layout = next;
+      this.persistDashboardLayout();
+    },
+
+    resetDashboardLayout() {
+      this.dashboard_layout = ['active_runs','recent_runs','coverage','browser'];
+      this.persistDashboardLayout();
+    },
+
+    persistDashboardLayout() {
+      try {
+        localStorage.setItem('sirin_dashboard_layout_v1',
+          JSON.stringify(this.dashboard_layout));
+      } catch (_) {}
+    },
+
+    // ── KPI computations (pure, derive from snapshot state) ────────
+    // All getters tolerate missing fields so they render safely even
+    // before the first /api/snapshot fetch lands.
+
+    /// Pass rate over the visible recent_runs window (8 by default).
+    /// 0 when no completed runs in the window.
+    get kpi_pass_rate() {
+      const runs = (this.state.recent_runs || [])
+        .filter(r => ['passed','failed','timeout','error'].includes(r.status));
+      if (runs.length === 0) return 0;
+      const passed = runs.filter(r => r.status === 'passed').length;
+      return passed / runs.length;
+    },
+
+    /// Tests started today (UTC date prefix match — coarse but cheap).
+    get kpi_runs_today() {
+      const today = new Date().toISOString().slice(0, 10);
+      return (this.state.recent_runs || [])
+        .filter(r => (r.started_at || '').startsWith(today)).length;
+    },
+
+    /// Average duration in seconds over recent completed runs.
+    get kpi_avg_duration() {
+      const runs = (this.state.recent_runs || [])
+        .filter(r => r.duration_ms != null);
+      if (runs.length === 0) return 0;
+      const total = runs.reduce((s, r) => s + r.duration_ms, 0);
+      return (total / runs.length) / 1000;
+    },
+
+    /// Cost burn rate ($/hr) — pulled from team_dashboard if present.
+    get kpi_cost_per_hour() {
+      return this.state.token_usage?.cost_per_hour || 0;
+    },
+
+    /// Agents currently in 'connected' state.
+    get kpi_active_agents() {
+      return (this.state.agents || [])
+        .filter(a => a.live_status === 'connected').length;
+    },
+
+    /// Currently running test count (sometimes > 1 with run_test_batch).
+    get kpi_running_tests() {
+      return (this.state.active_runs || []).length;
     },
 
     // ── On-demand modal loaders (v0.5.4) ────────────────────────────

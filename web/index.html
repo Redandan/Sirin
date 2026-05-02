@@ -104,147 +104,252 @@
     <!-- Central content -->
     <main class="content">
 
-      <!-- ── Dashboard ─────────────────────────────────────────────── -->
+      <!--
+        Dashboard — composable widget grid (v0.5.5).
+        4-column grid; each widget declares its `cols` span (1/2/4) in
+        WIDGET_CATALOG (app.js). Layout is persisted to localStorage,
+        edit mode adds per-widget ↑↓✕ toolbar + "+ Add widget" picker
+        at the bottom.
+      -->
       <section x-show="view === 'dashboard'" class="view">
         <div class="view-header">
           <h1>DASHBOARD</h1>
-          <button class="btn-primary" @click="view = 'testing'">▶ Run Test</button>
+          <div class="row gap-md">
+            <button class="iconbtn" title="Edit layout"
+                    :class="dashboard_edit_mode ? 'active' : ''"
+                    @click="dashboard_edit_mode = !dashboard_edit_mode">✎</button>
+            <button class="btn-primary" @click="view = 'testing'">▶ Run Test</button>
+          </div>
         </div>
         <hr class="thin-sep">
 
-        <!--
-          ACTIVE — Playwright Test UI inspired live run card.
-          When a run is in flight: pulsing ▶, big test_id, current step,
-          live analysis line, screenshot thumbnail placeholder.
-        -->
-        <div class="section-label" x-text="'ACTIVE  (' + state.active_runs.length + ')'"></div>
-        <template x-if="state.active_runs.length === 0">
-          <div class="card card-empty">目前沒有正在執行的測試</div>
-        </template>
-        <template x-for="run in state.active_runs" :key="run.test_id">
-          <div class="card-active card-clickable" @click="view = 'testing'">
-            <div class="card-active-body">
-              <div class="row gap-md">
-                <span class="pulse-dot"></span>
-                <span class="card-active-title mono" x-text="run.test_id"></span>
-                <span class="badge-soft" x-show="run.step !== null"
-                      x-text="'step ' + run.step"></span>
+        <div class="widget-grid">
+          <template x-for="wid in dashboard_layout" :key="wid">
+            <div class="widget" :class="'widget-cols-' + widgetCols(wid)">
+              <!-- Edit-mode toolbar — appears above each widget when ✎ is on -->
+              <div class="widget-toolbar" x-show="dashboard_edit_mode">
+                <span class="dim mono small" x-text="widgetLabel(wid)"></span>
                 <span class="row-spacer"></span>
-                <span class="dim small">▶ Open trace</span>
+                <button class="iconbtn" title="Move up"
+                        @click="moveWidget(wid, -1)">↑</button>
+                <button class="iconbtn" title="Move down"
+                        @click="moveWidget(wid, 1)">↓</button>
+                <button class="iconbtn" title="Remove"
+                        @click="removeWidget(wid)">✕</button>
               </div>
-              <div class="dim small mt-xs" x-show="run.analysis"
-                   x-text="truncate(run.analysis, 140)"></div>
-            </div>
-            <div class="card-active-thumb">
-              <span class="dim mono small">live</span>
-            </div>
-          </div>
-        </template>
 
-        <!--
-          RECENT — GitHub Actions runs row layout.
-          icon · test_id · spacer · duration · time-ago.
-          Hover bg + cursor pointer, full row clickable.
-        -->
-        <div class="section-label"
-             x-text="'RECENT  (' + state.recent_runs.length + ' of last 8)'"></div>
-        <template x-if="state.recent_runs.length === 0">
-          <div class="card card-empty">尚無歷史紀錄</div>
-        </template>
-        <div class="run-list">
-          <template x-for="run in state.recent_runs" :key="run.started_at + run.test_id">
-            <button class="run-row" @click="view = 'testing'">
-              <span :class="'run-status run-status-' + run.status"
-                    x-text="verdictGlyph(run.status)"></span>
-              <span :class="'run-status-text run-status-' + run.status"
-                    x-text="run.status.toUpperCase()"></span>
-              <span class="run-name mono" x-text="run.test_id"></span>
-              <span x-show="run.failure_category"
-                    class="badge-soft badge-soft-danger"
-                    x-text="run.failure_category"></span>
-              <span x-show="run.pass_rate !== null && run.pass_rate < 0.7"
-                    class="badge-soft badge-soft-warn"
-                    x-text="'flaky ' + Math.round(run.pass_rate * 100) + '%'"></span>
-              <span class="row-spacer"></span>
-              <span class="dim mono small" x-show="run.duration_ms"
-                    x-text="(run.duration_ms / 1000).toFixed(1) + 's'"></span>
-              <span class="dim small ml-md" x-text="timeAgo(run.started_at)"></span>
-            </button>
-          </template>
-        </div>
-
-        <div class="section-label">COVERAGE</div>
-        <div class="card card-clickable" @click="view = 'testing'; testTab = 'coverage'">
-          <template x-if="state.coverage">
-            <div>
-              <div class="row">
-                <strong x-text="state.coverage.product"></strong>
-                <span class="dim mono small" x-text="'v' + state.coverage.version"></span>
-                <span class="row-spacer"></span>
-                <span class="link">Open full →</span>
-              </div>
-              <div class="funnel-row">
-                <span class="funnel-label">探索 Discovered</span>
-                <span class="funnel-num mono" x-text="state.coverage.discovered"></span>
-                <div class="bar"><div class="bar-fill bar-dim"
-                     :style="'width:' + funnelPct(state.coverage, 'discovered') + '%'"></div></div>
-                <span class="dim mono small" x-text="funnelPct(state.coverage, 'discovered') + '%'"></span>
-              </div>
-              <template x-if="state.coverage.discovery_status === 'NotRun'">
-                <div class="indent dim small italic">(mock — discovery 模組待實作)</div>
+              <!-- ACTIVE runs widget -->
+              <template x-if="wid === 'active_runs'">
+                <div>
+                  <div class="section-label" x-text="'ACTIVE  (' + state.active_runs.length + ')'"></div>
+                  <template x-if="state.active_runs.length === 0">
+                    <div class="card card-empty">目前沒有正在執行的測試</div>
+                  </template>
+                  <template x-for="run in state.active_runs" :key="run.test_id">
+                    <div class="card-active card-clickable" @click="view = 'testing'">
+                      <div class="card-active-body">
+                        <div class="row gap-md">
+                          <span class="pulse-dot"></span>
+                          <span class="card-active-title mono" x-text="run.test_id"></span>
+                          <span class="badge-soft" x-show="run.step !== null"
+                                x-text="'step ' + run.step"></span>
+                          <span class="row-spacer"></span>
+                          <span class="dim small">▶ Open trace</span>
+                        </div>
+                        <div class="dim small mt-xs" x-show="run.analysis"
+                             x-text="truncate(run.analysis, 140)"></div>
+                      </div>
+                      <div class="card-active-thumb">
+                        <span class="dim mono small">live</span>
+                      </div>
+                    </div>
+                  </template>
+                </div>
               </template>
-              <div class="funnel-row">
-                <span class="funnel-label">覆蓋 Covered</span>
-                <span class="funnel-num mono" x-text="state.coverage.total_covered"></span>
-                <div class="bar"><div class="bar-fill bar-accent"
-                     :style="'width:' + funnelPct(state.coverage, 'covered') + '%'"></div></div>
-                <span class="dim mono small" x-text="funnelPct(state.coverage, 'covered') + '%'"></span>
-              </div>
-              <div class="funnel-row">
-                <span class="funnel-label">有腳本 Scripted</span>
-                <span class="funnel-num mono" x-text="state.coverage.scripted"></span>
-                <div class="bar"><div class="bar-fill bar-info"
-                     :style="'width:' + funnelPct(state.coverage, 'scripted') + '%'"></div></div>
-                <span class="dim mono small" x-text="funnelPct(state.coverage, 'scripted') + '%'"></span>
-              </div>
+
+              <!-- RECENT runs widget -->
+              <template x-if="wid === 'recent_runs'">
+                <div>
+                  <div class="section-label"
+                       x-text="'RECENT  (' + state.recent_runs.length + ' of last 8)'"></div>
+                  <template x-if="state.recent_runs.length === 0">
+                    <div class="card card-empty">尚無歷史紀錄</div>
+                  </template>
+                  <div class="run-list">
+                    <template x-for="run in state.recent_runs" :key="run.started_at + run.test_id">
+                      <button class="run-row" @click="view = 'testing'">
+                        <span :class="'run-status run-status-' + run.status"
+                              x-text="verdictGlyph(run.status)"></span>
+                        <span :class="'run-status-text run-status-' + run.status"
+                              x-text="run.status.toUpperCase()"></span>
+                        <span class="run-name mono" x-text="run.test_id"></span>
+                        <span x-show="run.failure_category"
+                              class="badge-soft badge-soft-danger"
+                              x-text="run.failure_category"></span>
+                        <span x-show="run.pass_rate !== null && run.pass_rate < 0.7"
+                              class="badge-soft badge-soft-warn"
+                              x-text="'flaky ' + Math.round(run.pass_rate * 100) + '%'"></span>
+                        <span class="row-spacer"></span>
+                        <span class="dim mono small" x-show="run.duration_ms"
+                              x-text="(run.duration_ms / 1000).toFixed(1) + 's'"></span>
+                        <span class="dim small ml-md" x-text="timeAgo(run.started_at)"></span>
+                      </button>
+                    </template>
+                  </div>
+                </div>
+              </template>
+
+              <!-- COVERAGE widget -->
+              <template x-if="wid === 'coverage'">
+                <div>
+                  <div class="section-label">COVERAGE</div>
+                  <div class="card card-clickable" @click="view = 'testing'; testTab = 'coverage'">
+                    <template x-if="state.coverage">
+                      <div>
+                        <div class="row">
+                          <strong x-text="state.coverage.product"></strong>
+                          <span class="dim mono small" x-text="'v' + state.coverage.version"></span>
+                          <span class="row-spacer"></span>
+                          <span class="link">Open full →</span>
+                        </div>
+                        <div class="funnel-row">
+                          <span class="funnel-label">探索 Discovered</span>
+                          <span class="funnel-num mono" x-text="state.coverage.discovered"></span>
+                          <div class="bar"><div class="bar-fill bar-dim"
+                               :style="'width:' + funnelPct(state.coverage, 'discovered') + '%'"></div></div>
+                          <span class="dim mono small" x-text="funnelPct(state.coverage, 'discovered') + '%'"></span>
+                        </div>
+                        <template x-if="state.coverage.discovery_status === 'NotRun'">
+                          <div class="indent dim small italic">(mock — discovery 模組待實作)</div>
+                        </template>
+                        <div class="funnel-row">
+                          <span class="funnel-label">覆蓋 Covered</span>
+                          <span class="funnel-num mono" x-text="state.coverage.total_covered"></span>
+                          <div class="bar"><div class="bar-fill bar-accent"
+                               :style="'width:' + funnelPct(state.coverage, 'covered') + '%'"></div></div>
+                          <span class="dim mono small" x-text="funnelPct(state.coverage, 'covered') + '%'"></span>
+                        </div>
+                        <div class="funnel-row">
+                          <span class="funnel-label">有腳本 Scripted</span>
+                          <span class="funnel-num mono" x-text="state.coverage.scripted"></span>
+                          <div class="bar"><div class="bar-fill bar-info"
+                               :style="'width:' + funnelPct(state.coverage, 'scripted') + '%'"></div></div>
+                          <span class="dim mono small" x-text="funnelPct(state.coverage, 'scripted') + '%'"></span>
+                        </div>
+                      </div>
+                    </template>
+                    <template x-if="!state.coverage">
+                      <div class="dim">Loading coverage…</div>
+                    </template>
+                  </div>
+                </div>
+              </template>
+
+              <!-- BROWSER preview widget -->
+              <template x-if="wid === 'browser'">
+                <div>
+                  <div class="section-label">BROWSER</div>
+                  <div class="card-browser card-clickable" @click="view = 'testing'; testTab = 'browser'">
+                    <div class="card-browser-meta">
+                      <div class="row">
+                        <span :class="state.browser_open ? 'pulse-dot' : 'agent-error'"></span>
+                        <span class="mono small" :class="state.browser_open ? '' : 'dim'"
+                              x-text="state.browser_open ? 'LIVE' : 'OFFLINE'"></span>
+                        <span class="dim small" x-text="state.browser_title"></span>
+                      </div>
+                      <div class="dim mono small mt-xs"
+                           x-show="state.browser_url" x-text="state.browser_url"></div>
+                      <span class="link small mt-xs">Open monitor →</span>
+                    </div>
+                    <div class="card-browser-thumb">
+                      <img class="browser-thumb-img" alt="browser preview"
+                           :src="state.browser_open
+                                 ? '/api/browser_screenshot?t=' + (state.snapshot_tick || 0)
+                                 : ''"
+                           x-show="state.browser_open"
+                           onerror="this.style.opacity=0.15">
+                      <span class="dim mono small" x-show="!state.browser_open">browser offline</span>
+                    </div>
+                  </div>
+                </div>
+              </template>
+
+              <!-- KPI: Pass rate -->
+              <template x-if="wid === 'kpi_pass_rate'">
+                <div class="kpi-widget">
+                  <div class="kpi-num mono"
+                       x-text="(kpi_pass_rate * 100).toFixed(0) + '%'"></div>
+                  <div class="kpi-widget-label">PASS RATE</div>
+                  <div class="kpi-widget-sub dim small"
+                       x-text="state.recent_runs.length + ' recent'"></div>
+                </div>
+              </template>
+
+              <!-- KPI: Runs today -->
+              <template x-if="wid === 'kpi_runs_today'">
+                <div class="kpi-widget">
+                  <div class="kpi-num mono" x-text="kpi_runs_today"></div>
+                  <div class="kpi-widget-label">RUNS TODAY</div>
+                  <div class="kpi-widget-sub dim small">UTC</div>
+                </div>
+              </template>
+
+              <!-- KPI: Avg duration -->
+              <template x-if="wid === 'kpi_avg_duration'">
+                <div class="kpi-widget">
+                  <div class="kpi-num mono" x-text="kpi_avg_duration.toFixed(1) + 's'"></div>
+                  <div class="kpi-widget-label">AVG DURATION</div>
+                  <div class="kpi-widget-sub dim small">recent runs</div>
+                </div>
+              </template>
+
+              <!-- KPI: Cost / hour -->
+              <template x-if="wid === 'kpi_cost_hour'">
+                <div class="kpi-widget">
+                  <div class="kpi-num mono"
+                       x-text="'$' + kpi_cost_per_hour.toFixed(2)"></div>
+                  <div class="kpi-widget-label">COST / HOUR</div>
+                  <div class="kpi-widget-sub dim small">5-min window</div>
+                </div>
+              </template>
+
+              <!-- KPI: Active agents -->
+              <template x-if="wid === 'kpi_active_agents'">
+                <div class="kpi-widget">
+                  <div class="kpi-num mono" x-text="kpi_active_agents"></div>
+                  <div class="kpi-widget-label">ACTIVE AGENTS</div>
+                  <div class="kpi-widget-sub dim small"
+                       x-text="state.agents.length + ' total'"></div>
+                </div>
+              </template>
+
+              <!-- KPI: Running tests -->
+              <template x-if="wid === 'kpi_running_tests'">
+                <div class="kpi-widget">
+                  <div class="kpi-num mono" x-text="kpi_running_tests"></div>
+                  <div class="kpi-widget-label">RUNNING NOW</div>
+                  <div class="kpi-widget-sub dim small">live tests</div>
+                </div>
+              </template>
             </div>
-          </template>
-          <template x-if="!state.coverage">
-            <div class="dim">Loading coverage…</div>
           </template>
         </div>
 
-        <!--
-          BROWSER — Playwright trace viewer inspired card.
-          LIVE pulse + url + title + screenshot thumbnail (when /api/browser_screenshot
-          is wired in Phase 4 the placeholder swaps to <img>).
-        -->
-        <div class="section-label">BROWSER</div>
-        <div class="card-browser card-clickable" @click="view = 'testing'; testTab = 'browser'">
-          <div class="card-browser-meta">
-            <div class="row">
-              <span :class="state.browser_open ? 'pulse-dot' : 'agent-error'"></span>
-              <span class="mono small" :class="state.browser_open ? '' : 'dim'"
-                    x-text="state.browser_open ? 'LIVE' : 'OFFLINE'"></span>
-              <span class="dim small" x-text="state.browser_title"></span>
-            </div>
-            <div class="dim mono small mt-xs"
-                 x-show="state.browser_url" x-text="state.browser_url"></div>
-            <span class="link small mt-xs">Open monitor →</span>
-          </div>
-          <div class="card-browser-thumb">
-            <!-- Live screenshot — img reloads every 5 s via the Alpine
-                 cache-busting key (state.snapshot_tick increments on each
-                 fetch). 1px transparent fallback when the browser is OFF.
-                 -->
-            <img class="browser-thumb-img" alt="browser preview"
-                 :src="state.browser_open
-                       ? '/api/browser_screenshot?t=' + (state.snapshot_tick || 0)
-                       : ''"
-                 x-show="state.browser_open"
-                 onerror="this.style.opacity=0.15">
-            <span class="dim mono small" x-show="!state.browser_open">browser offline</span>
-          </div>
+        <!-- Add widget picker (only in edit mode) -->
+        <div class="add-widget-bar" x-show="dashboard_edit_mode">
+          <span class="dim small">+ Add widget</span>
+          <select class="select" x-model="new_widget_id">
+            <option value="">— pick a widget —</option>
+            <template x-for="w in availableWidgets" :key="w.id">
+              <option :value="w.id"
+                      x-text="w.label + ' (' + w.cols + '/4 cols)'"></option>
+            </template>
+          </select>
+          <button class="btn-secondary" @click="addWidget(new_widget_id)"
+                  :disabled="!new_widget_id">+ Add</button>
+          <span class="row-spacer"></span>
+          <button class="btn-secondary" @click="resetDashboardLayout()"
+                  title="重設為預設 4 個 widget">↻ Reset</button>
         </div>
       </section>
 
