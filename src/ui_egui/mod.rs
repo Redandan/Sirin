@@ -334,10 +334,14 @@ impl SirinApp {
             (screen.height() * 0.78).clamp(420.0,  820.0),
         );
 
+        // Suppress egui::Window's built-in title bar (we render our own
+        // header inside) — avoids the duplicate "Automation" title we
+        // saw in early screenshots and frees up the area for ✕ Close.
         egui::Window::new(title)
+            .title_bar(false)
             .collapsible(false)
-            .resizable(true)
-            .default_size(win_size)
+            .resizable(false)
+            .fixed_size(win_size)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .frame(
                 egui::Frame::new()
@@ -347,6 +351,10 @@ impl SirinApp {
                     .corner_radius(4.0),
             )
             .show(ctx, |ui| {
+                // Force inner content to respect the modal's width — without
+                // this, wide rows (e.g., team_panel's 4 horizontal member
+                // cards) push the Window past its fixed_size and overflow.
+                ui.set_max_width(win_size.x - theme::SP_MD * 2.0);
                 // Header with close button
                 ui.horizontal(|ui| {
                     ui.colored_label(theme::TEXT_DIM,
@@ -397,7 +405,9 @@ impl SirinApp {
                     .inner_margin(theme::SP_SM)
                     .stroke(egui::Stroke::new(1.0, theme::BORDER))
                     .show(ui, |ui| {
-                        ui.set_min_width(180.0);
+                        // 240 fits the longest entry "Open Command Palette ⌘K"
+                        // — was 180 which cut the trailing "⌘K".
+                        ui.set_min_width(240.0);
                         if menu_item(ui, "Settings").clicked() {
                             self.modal = Modal::System;
                             self.system_state.tab = system_panel::SysTab::Settings;
