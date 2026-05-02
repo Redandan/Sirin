@@ -41,7 +41,10 @@
 //! | `browser_exec` | 即席操作瀏覽器（click/type/read/...），不需完整 test goal |
 
 use axum::{
-    extract::{Json, Path},
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        Json, Path,
+    },
     http::{header, HeaderMap, Method, StatusCode},
     response::{IntoResponse, Redirect},
     routing::{get, post},
@@ -208,6 +211,17 @@ pub fn mcp_router() -> Router {
         // /api/pending/{agent_id} — GET list of draft replies waiting on
         // human review. POST { reply_id, action: approve|reject|edit, text? }.
         .route("/api/pending/{agent_id}", get(api_pending_list).post(api_pending_action))
+        // ── v0.5.4: WebSocket push channel ──────────────────────────────
+        // /ws — long-lived connection that streams snapshot JSON every 2s.
+        // Replaces the 5s HTTP poll for connected clients (each open tab
+        // gets its own ticker). UI silently falls back to polling on close.
+        .route("/ws", get(ws_handler))
+        // On-demand modal endpoints (split out from /api/snapshot in
+        // v0.5.4 — these block on slow ops like config_check probing
+        // lmstudio over the network).
+        .route("/api/health",         get(api_health))
+        .route("/api/logs",           get(api_logs))
+        .route("/api/team_dashboard", get(api_team_dashboard))
         .layer(cors_layer())
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
@@ -425,6 +439,168 @@ async fn api_pending_action(
     }
 }
 
+// ── v0.5.4 on-demand modal endpoints ────────────────────────────────
+// These are slower operations (network probes, log buffer scan, worker
+// state aggregation) that we don't want in the 2s WebSocket push tick.
+// UI fetches them once when the corresponding modal opens.
+
+/// GET /api/health — config_check + persona + LLM info for Settings modal.
+async fn api_health() -> impl IntoResponse {
+    let svc = match app_service() {
+        Some(s) => s,
+        None => return (StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(json!({"error":"service unavailable"}))).into_response(),
+    };
+    let res = tokio::task::spawn_blocking(move || -> Value {
+        let issues_raw = svc.config_check();
+        let ok_count = issues_raw.iter()
+            .filter(|i| matches!(i.severity, crate::ui_service::ConfigSeverity::Ok))
+            .count();
+        let issues: Vec<Value> = issues_raw.into_iter()
+            .filter(|i| !matches!(i.severity, crate::ui_service::ConfigSeverity::Ok))
+            .map(|i| json!({
+                "severity":   match i.severity {
+                    crate::ui_service::ConfigSeverity::Error   => "error",
+                    crate::ui_service::ConfigSeverity::Warning => "warning",
+                    crate::ui_service::ConfigSeverity::Info    => "info",
+                    crate::ui_service::ConfigSeverity::Ok      => "ok",
+                },
+                "category":   i.category,
+                "message":    i.message,
+                "suggestion": i.suggestion,
+            })).collect();
+        json!({
+            "config_issues":   issues,
+            "config_ok_count": ok_count,
+        })
+    }).await;
+    match res {
+        Ok(v)  => axum::Json(v).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({"error": format!("health task: {e}")}))).into_response(),
+    }
+}
+
+/// GET /api/logs — last 50 log lines for Logs modal.
+async fn api_logs() -> impl IntoResponse {
+    let svc = match app_service() {
+        Some(s) => s,
+        None => return (StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(json!({"error":"service unavailable"}))).into_response(),
+    };
+    let res = tokio::task::spawn_blocking(move || -> Vec<Value> {
+        svc.log_recent(50).into_iter().map(|l| {
+            let level = match l.level {
+                crate::ui_service::LogLevel::Error    => "error",
+                crate::ui_service::LogLevel::Warn     => "warn",
+                _                                     => "info",
+            };
+            json!({ "level": level, "text": l.text, "ts": "" })
+        }).collect()
+    }).await;
+    match res {
+        Ok(v)  => axum::Json(v).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({"error": format!("logs task: {e}")}))).into_response(),
+    }
+}
+
+/// GET /api/team_dashboard — Dev Squad live state + token burn.
+async fn api_team_dashboard() -> impl IntoResponse {
+    let svc = match app_service() {
+        Some(s) => s,
+        None => return (StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(json!({"error":"service unavailable"}))).into_response(),
+    };
+    let res = tokio::task::spawn_blocking(move || -> Value {
+        let dash = svc.team_dashboard();
+        let usage = svc.team_token_usage(300);
+        json!({
+            "team_dashboard": {
+                "worker_running": dash.worker_running,
+                "queued":  dash.queued,
+                "running": dash.running,
+                "done":    dash.done,
+                "failed":  dash.failed,
+                "pm":        member_view(&dash.pm),
+                "engineer":  member_view(&dash.engineer),
+                "tester":    member_view(&dash.tester),
+            },
+            "token_usage": {
+                "window_secs":    usage.window_secs,
+                "api_calls":      usage.api_calls,
+                "tokens_per_min": usage.tokens_per_min,
+                "cost_per_hour":  usage.cost_per_hour,
+                "cache_hit_pct":  usage.cache_hit_pct,
+            },
+        })
+    }).await;
+    match res {
+        Ok(v)  => axum::Json(v).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({"error": format!("team task: {e}")}))).into_response(),
+    }
+}
+
+// ── WebSocket push (v0.5.4) ──────────────────────────────────────────
+//
+// Each connected client gets its own task with a 2-second ticker. We push
+// the same JSON the /api/snapshot endpoint returns — the web UI parses it
+// and replaces its state, identical to the HTTP fallback path.
+//
+// Tradeoffs vs server-sent events / diffs:
+//   • Bidirectional WS lets the client send acks / requests later (e.g.
+//     subscribe to a specific log severity) — future-proof.
+//   • Pushing the full snapshot is wasteful (~30 KB JSON) but trivial to
+//     reason about and totally fine for a single-machine localhost daemon.
+//   • Diff'ing against last sent state is a follow-up if bandwidth ever
+//     matters (it doesn't, here).
+
+async fn ws_handler(upgrade: WebSocketUpgrade) -> impl IntoResponse {
+    upgrade.on_upgrade(handle_ws)
+}
+
+async fn handle_ws(mut socket: WebSocket) {
+    use std::time::Duration;
+    let mut tick = tokio::time::interval(Duration::from_secs(2));
+    // Skip the first immediate tick — we send a snapshot inline below to
+    // hydrate the UI as fast as possible after connect.
+    tick.tick().await;
+
+    // Initial push.
+    if !push_snapshot(&mut socket).await { return; }
+
+    loop {
+        tokio::select! {
+            _ = tick.tick() => {
+                if !push_snapshot(&mut socket).await { return; }
+            }
+            msg = socket.recv() => match msg {
+                Some(Ok(Message::Close(_))) | None      => return,
+                Some(Ok(Message::Ping(p)))              => {
+                    let _ = socket.send(Message::Pong(p)).await;
+                }
+                _ => {} // ignore other message types
+            },
+        }
+    }
+}
+
+/// Build a snapshot off the runtime + send as a text frame. Returns true
+/// when the send succeeded; false ends the loop.
+async fn push_snapshot(socket: &mut WebSocket) -> bool {
+    let svc = match app_service() {
+        Some(s) => s,
+        None    => return true, // service not yet registered — keep waiting
+    };
+    let snap = tokio::task::spawn_blocking(move || build_snapshot(&svc)).await;
+    let body = match snap {
+        Ok(v)  => v.to_string(),
+        Err(_) => return true, // task join error — skip this tick
+    };
+    socket.send(Message::Text(body.into())).await.is_ok()
+}
+
 /// PNG bytes of the controlled Chrome session. Used by the Browser tab
 /// and Dashboard browser card. Returns 503 (with image/png placeholder
 /// arguably nicer, but plain text is fine) when no browser is open.
@@ -534,66 +710,6 @@ fn build_snapshot(svc: &Arc<dyn AppService>) -> Value {
         })).collect::<Vec<_>>(),
     }));
 
-    // ── config_check (Settings modal) ──────────────────────────────────
-    let config_issues_raw = svc.config_check();
-    let config_ok_count = config_issues_raw.iter()
-        .filter(|i| matches!(i.severity, crate::ui_service::ConfigSeverity::Ok))
-        .count();
-    let config_issues: Vec<Value> = config_issues_raw.into_iter()
-        .filter(|i| !matches!(i.severity, crate::ui_service::ConfigSeverity::Ok))
-        .map(|i| json!({
-            "severity":   match i.severity {
-                crate::ui_service::ConfigSeverity::Error   => "error",
-                crate::ui_service::ConfigSeverity::Warning => "warning",
-                crate::ui_service::ConfigSeverity::Info    => "info",
-                crate::ui_service::ConfigSeverity::Ok      => "ok",
-            },
-            "category":   i.category,
-            "message":    i.message,
-            "suggestion": i.suggestion,
-        }))
-        .collect();
-
-    // ── log_recent (Logs modal) ────────────────────────────────────────
-    let log_lines: Vec<Value> = svc.log_recent(50).into_iter().map(|l| {
-        let level = match l.level {
-            crate::ui_service::LogLevel::Error    => "error",
-            crate::ui_service::LogLevel::Warn     => "warn",
-            crate::ui_service::LogLevel::Telegram => "info",
-            crate::ui_service::LogLevel::Research |
-            crate::ui_service::LogLevel::Followup |
-            crate::ui_service::LogLevel::Coding   |
-            crate::ui_service::LogLevel::Teams    |
-            crate::ui_service::LogLevel::Info     |
-            crate::ui_service::LogLevel::Normal   => "info",
-        };
-        // log_recent doesn't carry timestamps in LogLine; the UI displays
-        // empty ts when it's missing. Existing log_buffer formatting puts
-        // [HH:MM:SS] at the start of each line, so we'll keep that inline.
-        json!({ "level": level, "text": l.text, "ts": "" })
-    }).collect();
-
-    // ── team_dashboard (Dev Squad modal) ───────────────────────────────
-    let team_dash_raw = svc.team_dashboard();
-    let team_dashboard = json!({
-        "worker_running": team_dash_raw.worker_running,
-        "queued":  team_dash_raw.queued,
-        "running": team_dash_raw.running,
-        "done":    team_dash_raw.done,
-        "failed":  team_dash_raw.failed,
-        "pm":        member_view(&team_dash_raw.pm),
-        "engineer":  member_view(&team_dash_raw.engineer),
-        "tester":    member_view(&team_dash_raw.tester),
-    });
-    let usage = svc.team_token_usage(300);
-    let token_usage = json!({
-        "window_secs":     usage.window_secs,
-        "api_calls":       usage.api_calls,
-        "tokens_per_min":  usage.tokens_per_min,
-        "cost_per_hour":   usage.cost_per_hour,
-        "cache_hit_pct":   usage.cache_hit_pct,
-    });
-
     json!({
         "version":        env!("CARGO_PKG_VERSION"),
         "browser_open":   svc.browser_is_open(),
@@ -607,15 +723,15 @@ fn build_snapshot(svc: &Arc<dyn AppService>) -> Value {
         "active_runs":    active_runs,
         "recent_runs":    recent_runs,
         "coverage":       coverage,
-        // New fields (v0.5.1) — replace web/app.js mock data:
+        // Cheap fields kept inline:
         "persona_name":   svc.persona_name(),
         "llm_main":       s.llm.main_model,
         "llm_router":     s.llm.router_model,
-        "config_issues":  config_issues,
-        "config_ok_count": config_ok_count,
-        "log_lines":      log_lines,
-        "team_dashboard": team_dashboard,
-        "token_usage":    token_usage,
+        // v0.5.4: heavyweight fields (config_check probes lmstudio over the
+        // network; team_token_usage scans worker logs) moved to dedicated
+        // /api/health, /api/logs, /api/team_dashboard endpoints fetched
+        // only when the corresponding modal opens. Snapshot stays fast
+        // (~50 ms) so 2 s WebSocket push is sustainable.
     })
 }
 

@@ -206,14 +206,22 @@ window.sirin = function () {
         }
       });
 
-      // Live data polling. Falls back silently to mock if endpoint missing.
-      this.fetchSnapshot();
-      setInterval(() => this.fetchSnapshot(), 5000);
+      // v0.5.4: prefer WebSocket push (2s tick from /ws). Falls back
+      // automatically to 5s HTTP polling if the WS handshake fails or
+      // the connection drops, so static-server previews still work.
+      this.fetchSnapshot();   // initial hydrate (also lets UI render
+                              // even if WS takes a sec to connect)
+      this.connectWs();
 
-      // Lazy-load MCP tools list when the modal first opens; cached
-      // afterward so re-opens are instant.
+      // Lazy-load slow modal data when each modal first opens.
+      // (Settings / Logs / Dev Squad each have their own dedicated
+      //  endpoints since v0.5.4 — config_check probes lmstudio over the
+      //  network, etc., too slow for the 2s WebSocket push tick.)
       this.$watch('modal', (v) => {
         if (v === 'mcp' && this.mcp_tools.length === 0) this.loadMcpTools();
+        if (v === 'settings') this.loadHealth();
+        if (v === 'logs')     this.loadLogs();
+        if (v === 'devsquad') this.loadTeamDashboard();
       });
 
       // When user navigates to a workspace, fetch the agent's full detail
@@ -230,6 +238,30 @@ window.sirin = function () {
         // v0.5.3: hydrate persisted chat thread (if not already cached)
         if (!this.chat_history[agent.id]) this.loadChatHistory(agent.id);
       });
+    },
+
+    // ── On-demand modal loaders (v0.5.4) ────────────────────────────
+    async loadHealth() {
+      try {
+        const r = await fetch('/api/health'); if (!r.ok) return;
+        const d = await r.json();
+        this.state.config_issues   = d.config_issues   || [];
+        this.state.config_ok_count = d.config_ok_count || 0;
+      } catch (_) {}
+    },
+    async loadLogs() {
+      try {
+        const r = await fetch('/api/logs'); if (!r.ok) return;
+        this.state.log_lines = await r.json();
+      } catch (_) {}
+    },
+    async loadTeamDashboard() {
+      try {
+        const r = await fetch('/api/team_dashboard'); if (!r.ok) return;
+        const d = await r.json();
+        this.state.team_dashboard = d.team_dashboard;
+        this.state.token_usage    = d.token_usage;
+      } catch (_) {}
     },
 
     // ── MCP Playground ──────────────────────────────────────────────
@@ -443,16 +475,61 @@ window.sirin = function () {
         const r = await fetch('/api/snapshot', { cache: 'no-store' });
         if (!r.ok) return;            // backend not ready — keep mock
         const data = await r.json();
-        // snapshot_tick increments every successful fetch — used as the
-        // cache-buster for /api/browser_screenshot so <img> refreshes in
-        // sync with the JSON poll without becoming a flicker storm.
-        this.state = {
-          ...this.state,
-          ...data,
-          snapshot_tick: (this.state.snapshot_tick || 0) + 1,
-        };
+        this.applySnapshot(data);
       } catch (_e) {
         // Network error → keep current state (probably running standalone).
+      }
+    },
+
+    // Apply a snapshot from EITHER /api/snapshot fetch OR /ws message —
+    // unifies state update so both paths look identical to the UI.
+    applySnapshot(data) {
+      this.state = {
+        ...this.state,
+        ...data,
+        snapshot_tick: (this.state.snapshot_tick || 0) + 1,
+      };
+    },
+
+    // ── WebSocket push channel (v0.5.4) ────────────────────────────
+    // Connects to /ws, applies each pushed snapshot. On close (network
+    // glitch or server restart) silently switches to 5s HTTP polling and
+    // tries to reconnect every 5s — so the UI degrades gracefully and
+    // recovers automatically without user action.
+    _ws:           null,
+    _ws_connected: false,
+    _poll_timer:   null,
+    connectWs() {
+      try {
+        const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+        const ws = new WebSocket(`${proto}://${location.host}/ws`);
+        this._ws = ws;
+        ws.addEventListener('open', () => {
+          this._ws_connected = true;
+          if (this._poll_timer) {
+            clearInterval(this._poll_timer);
+            this._poll_timer = null;
+          }
+        });
+        ws.addEventListener('message', (ev) => {
+          try { this.applySnapshot(JSON.parse(ev.data)); }
+          catch (_) { /* ignore malformed frames */ }
+        });
+        ws.addEventListener('close', () => {
+          this._ws_connected = false;
+          this._ws = null;
+          // Fallback: poll while disconnected, retry WS in 5 s.
+          if (!this._poll_timer) {
+            this._poll_timer = setInterval(() => this.fetchSnapshot(), 5000);
+          }
+          setTimeout(() => this.connectWs(), 5000);
+        });
+        ws.addEventListener('error', () => { /* close fires next */ });
+      } catch (_) {
+        // WebSocket constructor threw (very rare). Just poll.
+        if (!this._poll_timer) {
+          this._poll_timer = setInterval(() => this.fetchSnapshot(), 5000);
+        }
       }
     },
 
