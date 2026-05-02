@@ -50,6 +50,7 @@ mod telegram_auth;
 pub mod ui_service;
 mod ui_service_impl;
 mod ui_egui;
+pub mod ui_test_bus;
 
 use std::path::PathBuf;
 use std::sync::Arc as StdArc;

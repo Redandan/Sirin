@@ -107,6 +107,9 @@ impl SirinApp {
     pub fn new(svc: Arc<dyn AppService>, cc: &eframe::CreationContext) -> Self {
         setup_fonts(&cc.egui_ctx);
         theme::apply(&cc.egui_ctx);
+        // Register the egui context with the test bus so MCP-side commands
+        // can request_repaint() and have their effects render promptly.
+        crate::ui_test_bus::register_ctx(cc.egui_ctx.clone());
         let agents = svc.list_agents();
         Self {
             svc, view: View::Dashboard, agents,
@@ -185,6 +188,133 @@ impl SirinApp {
                 self.view = View::Dashboard;
                 self.modal = Modal::None;
             }
+        }
+    }
+
+    /// Apply a single command from the test bus (MCP `ui_navigate` / friends).
+    /// Mirrors the keyboard / click flow but driven externally — used for
+    /// automated UI smoke tests.
+    fn apply_test_command(&mut self, cmd: crate::ui_test_bus::UiCommand) {
+        use crate::ui_test_bus::UiCommand as U;
+        match cmd {
+            U::GoDashboard => {
+                self.view = View::Dashboard;
+                self.modal = Modal::None;
+                self.palette_state.close();
+                self.gear_menu_open = false;
+            }
+            U::GoTesting { tab } => {
+                self.view = View::Testing;
+                self.testing_state.tab = match tab.to_lowercase().as_str() {
+                    "coverage" => testing_panel::TestingTab::Coverage,
+                    "browser"  => testing_panel::TestingTab::Browser,
+                    _          => testing_panel::TestingTab::Runs,
+                };
+                self.modal = Modal::None;
+                self.palette_state.close();
+            }
+            U::GoWorkspace { idx } => {
+                self.view = View::Workspace(idx);
+                self.modal = Modal::None;
+                self.palette_state.close();
+            }
+            U::OpenPalette { query } => {
+                self.palette_state.open();
+                if let Some(q) = query { self.palette_state.query = q; }
+            }
+            U::ClosePalette => self.palette_state.close(),
+            U::OpenModal { kind, tab } => {
+                let k = kind.to_lowercase();
+                self.modal = match k.as_str() {
+                    "automation" => Modal::Automation,
+                    "ops"        => Modal::Ops,
+                    "system"     => Modal::System,
+                    _            => return,
+                };
+                if let Some(tab) = tab.as_deref() {
+                    let t = tab.to_lowercase();
+                    match self.modal {
+                        Modal::Automation => {
+                            self.automation_state.tab = match t.as_str() {
+                                "mcp" => automation_panel::AutoTab::Mcp,
+                                _     => automation_panel::AutoTab::Squad,
+                            };
+                        }
+                        Modal::Ops => {
+                            self.ops_state.tab = match t.as_str() {
+                                "sessiontasks" | "tasks" => ops_panel::OpsTab::SessionTasks,
+                                "costkb" | "cost"        => ops_panel::OpsTab::CostKb,
+                                _                        => ops_panel::OpsTab::AiRouter,
+                            };
+                        }
+                        Modal::System => {
+                            self.system_state.tab = match t.as_str() {
+                                "log" | "logs" => system_panel::SysTab::Log,
+                                _              => system_panel::SysTab::Settings,
+                            };
+                        }
+                        Modal::None => {}
+                    }
+                }
+            }
+            U::CloseModal => self.modal = Modal::None,
+            U::OpenGearMenu  => self.gear_menu_open = true,
+            U::CloseGearMenu => self.gear_menu_open = false,
+        }
+    }
+
+    /// Build a state snapshot reflecting current UI for the test bus.
+    fn current_snapshot(&self) -> crate::ui_test_bus::UiSnapshot {
+        let (view_name, ws_idx, testing_tab) = match &self.view {
+            View::Dashboard      => ("Dashboard".to_string(), None, None),
+            View::Workspace(i)   => ("Workspace".to_string(), Some(*i), None),
+            View::Testing        => {
+                let t = match self.testing_state.tab {
+                    testing_panel::TestingTab::Runs     => "Runs",
+                    testing_panel::TestingTab::Coverage => "Coverage",
+                    testing_panel::TestingTab::Browser  => "Browser",
+                };
+                ("Testing".to_string(), None, Some(t.to_string()))
+            }
+        };
+        let (modal_name, modal_tab) = match self.modal {
+            Modal::None       => ("None".to_string(),       None),
+            Modal::Automation => {
+                let t = match self.automation_state.tab {
+                    automation_panel::AutoTab::Squad => "Squad",
+                    automation_panel::AutoTab::Mcp   => "Mcp",
+                };
+                ("Automation".to_string(), Some(t.to_string()))
+            }
+            Modal::Ops => {
+                let t = match self.ops_state.tab {
+                    ops_panel::OpsTab::AiRouter     => "AiRouter",
+                    ops_panel::OpsTab::SessionTasks => "SessionTasks",
+                    ops_panel::OpsTab::CostKb       => "CostKb",
+                };
+                ("Ops".to_string(), Some(t.to_string()))
+            }
+            Modal::System => {
+                let t = match self.system_state.tab {
+                    system_panel::SysTab::Settings => "Settings",
+                    system_panel::SysTab::Log      => "Log",
+                };
+                ("System".to_string(), Some(t.to_string()))
+            }
+        };
+
+        crate::ui_test_bus::UiSnapshot {
+            view:           view_name,
+            workspace_idx:  ws_idx,
+            testing_tab,
+            modal:          modal_name,
+            modal_tab,
+            palette_open:   self.palette_state.open,
+            palette_query:  self.palette_state.query.clone(),
+            gear_menu_open: self.gear_menu_open,
+            agent_count:    self.agents.len(),
+            active_runs:    0,  // not tracked locally; ui_state reader can call MCP if needed
+            recent_runs:    self.tasks.len().min(8),
         }
     }
 
@@ -346,6 +476,11 @@ impl eframe::App for SirinApp {
         let now = std::time::Instant::now();
         self.toasts.retain(|t| t.expires > now);
 
+        // ── Drain test bus commands from MCP ────────────────────────────
+        for cmd in crate::ui_test_bus::drain() {
+            self.apply_test_command(cmd);
+        }
+
         // ── Global Ctrl/Cmd+K shortcut ──────────────────────────────────
         // Listen on the *first* update of each frame so the palette opens
         // even when focus is in another widget. We avoid consuming events
@@ -455,6 +590,9 @@ impl eframe::App for SirinApp {
                     }
                 });
         }
+
+        // ── Write current state to test bus (end of frame) ──────────────
+        crate::ui_test_bus::set_state(self.current_snapshot());
     }
 }
 
