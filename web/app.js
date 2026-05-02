@@ -120,6 +120,45 @@ window.sirin = function () {
         'agora_webrtc_permission',
       ],
       selected_test_id: 'agora_market_smoke',
+
+      // ── Modal mock data ─────────────────────────────────────────────
+      // config_check output — Settings modal lists these cards.
+      config_issues: [
+        { severity: 'error',   category: 'Router',      message: "Router backend 'lmstudio' not reachable at http://localhost:1234/v1", suggestion: 'Start lmstudio or remove ROUTER_LLM_PROVIDER from .env to use cloud model for routing.' },
+        { severity: 'info',    category: 'Roles',       message: 'No dedicated coding model — using main model for code tasks',         suggestion: 'Set CODING_MODEL in .env or coding_model in llm.yaml for better cost control.' },
+      ],
+      config_ok_count: 8,
+
+      persona_name: '助手 A',
+      llm_main:     'gemini-2.5-flash',
+      llm_router:   'deepseek-chat (fallback gemini)',
+
+      // System logs (Datadog explorer mock)
+      log_lines: [
+        { level: 'info',   ts: '12:34:01', text: '[mcp] tools/list responded with 90 tools' },
+        { level: 'info',   ts: '12:34:03', text: '[telegram] connection lost, reconnecting in 5s' },
+        { level: 'warn',   ts: '12:34:08', text: '[browser] CDP transport latency 1240ms (>800ms threshold)' },
+        { level: 'info',   ts: '12:34:15', text: '[test_runner] agora_pickup_time_picker queued' },
+        { level: 'info',   ts: '12:34:18', text: '[test_runner] agora_pickup_time_picker step 1/7 — goto target' },
+        { level: 'error',  ts: '12:34:42', text: '[browser] enable_a11y timeout, retrying' },
+        { level: 'info',   ts: '12:34:45', text: '[test_runner] agora_pickup_time_picker step 2/7 — wait 3000ms' },
+        { level: 'info',   ts: '12:34:51', text: '[test_runner] agora_pickup_time_picker PASSED in 12.3s' },
+      ],
+
+      // Dev Squad (multi_agent::team_dashboard) mock
+      team_dashboard: {
+        worker_running: false,
+        queued: 0, running: 0, done: 12, failed: 1,
+        pm:        { role: 'pm',       session_id: '540231e5-a0d1', turns: 3 },
+        engineer:  { role: 'engineer', session_id: '5f3382b8-26b9', turns: 2 },
+        tester:    { role: 'tester',   session_id: null,            turns: 0 },
+      },
+      token_usage: {
+        cost_per_hour: 0.00,
+        api_calls: 0,
+        tokens_per_min: 0,
+        cache_hit_pct: 0,
+      },
     },
 
     // ── Lifecycle ──────────────────────────────────────────────────
@@ -199,6 +238,24 @@ window.sirin = function () {
         case 'running': return '▶';
         default:        return '·';
       }
+    },
+
+    modalLabel(m) {
+      if (!m) return '';
+      const map = {
+        settings:    'SETTINGS',
+        logs:        'LOGS',
+        devsquad:    'DEV SQUAD',
+        mcp:         'MCP PLAYGROUND',
+        'ai-router': 'AI ROUTER',
+        tasks:       'SESSION & TASKS',
+        'cost-kb':   'COST & KB',
+      };
+      return map[m] || m.toUpperCase();
+    },
+
+    memberRoleName(role) {
+      return ({ pm: 'PM', engineer: 'Engineer', tester: 'Tester' })[role] || role;
     },
 
     funnelPct(cov, tier) {

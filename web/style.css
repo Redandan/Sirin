@@ -737,6 +737,108 @@ button { font-family: inherit; cursor: pointer; }
 }
 .closebtn:hover { color: var(--text); }
 
+/* ── Modal sections (Settings / Dev Squad / Logs) ────────────────── */
+
+.modal-section { margin-bottom: var(--sp-lg); }
+.modal-section-title {
+  font-size: var(--font-heading);
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: var(--sp-sm);
+}
+
+/* Settings — config_check issue cards */
+.config-issue { margin-bottom: var(--sp-xs); padding: var(--sp-sm) var(--sp-md); }
+.issue-error  { border-left: 2px solid var(--danger); }
+.issue-warning{ border-left: 2px solid var(--yellow); }
+.issue-info   { border-left: 2px solid var(--info); }
+
+.issue-icon {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  width: 16px;
+  text-align: center;
+}
+.issue-error.issue-icon   { color: var(--danger); }
+.issue-warning.issue-icon { color: var(--yellow); }
+.issue-info.issue-icon    { color: var(--info); }
+
+/* Settings — key/value form rows */
+.kv-row {
+  display: flex; align-items: center; gap: var(--sp-md);
+  padding: 6px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+}
+.kv-row:last-child { border-bottom: none; }
+.kv-label {
+  width: 130px; flex-shrink: 0;
+  color: var(--text-dim);
+  font-size: var(--font-small);
+}
+.kv-input {
+  flex: 1;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 4px var(--sp-sm);
+  font-family: var(--font-sans);
+  font-size: var(--font-body);
+}
+.kv-input:focus { outline: none; border-color: var(--accent); }
+
+/* Logs — Datadog-style monospaced log viewer */
+.log-list {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  max-height: 480px;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: var(--font-caption);
+}
+.log-line {
+  display: grid;
+  grid-template-columns: 70px 50px 1fr;
+  gap: var(--sp-sm);
+  padding: 3px var(--sp-md);
+  align-items: baseline;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 30%, transparent);
+}
+.log-line:last-child { border-bottom: none; }
+.log-line:hover      { background: var(--card); }
+.log-level {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.log-level-info  { color: var(--info); }
+.log-level-warn  { color: var(--yellow); }
+.log-level-error { color: var(--danger); }
+
+/* Dev Squad — member grid + token burn */
+.member-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--sp-md);
+}
+.member-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: var(--sp-md);
+}
+.member-active { border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
+
+.token-burn-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--sp-md) var(--sp-lg);
+}
+.token-burn-grid .kv-row { border-bottom: none; }
+
+.mt-md { margin-top: var(--sp-md); }
+.mt-lg { margin-top: var(--sp-lg); }
+
 /* ── Scrollbar (subtle) ──────────────────────────────────────────── */
 
 ::-webkit-scrollbar           { width: 8px; height: 8px; }
