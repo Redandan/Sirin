@@ -25,6 +25,8 @@ pub mod action_verify;
 pub mod gif_recorder;
 pub mod discovery;
 pub mod retry_policy;
+pub mod lint;
+pub mod scaffold;
 
 pub use parser::{TestGoal, Fixture};
 pub use executor::{TestResult, TestStatus};

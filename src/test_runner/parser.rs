@@ -309,52 +309,16 @@ pub fn load_file(path: &std::path::Path) -> Result<TestGoal, String> {
 pub fn find(test_id: &str) -> Option<TestGoal> {
     let goal = load_all().into_iter().find(|g| g.id == test_id);
     if let Some(ref g) = goal {
-        lint_clear_state_reauth(g);
+        // Issue #239 — run all five lint rules at log level.
+        let issues = super::lint::lint(g);
+        super::lint::log_issues(g, &issues);
     }
     goal
 }
 
-/// Issue #189 — lint: warn if `clear_state` is used without a subsequent
-/// `goto target=...?__test_role=` within 5 steps.
-///
-/// Root cause: clear_state wipes localStorage → Flutter re-routes to #/login,
-/// dropping the ?__test_role= query param → auto-login doesn't trigger →
-/// wrong role / wrong page.  Fix: always `goto target="URL?__test_role=X"`
-/// after clear_state to re-inject the param.
-pub fn lint_clear_state_reauth(goal: &TestGoal) {
-    // Only lint tests that rely on __test_role auto-login (#189)
-    if !goal.url.contains("__test_role=") {
-        return;
-    }
-    // Extract ordered steps from goal text (lines "  N. action...")
-    let steps: Vec<&str> = goal.goal.lines()
-        .filter(|l| {
-            let t = l.trim_start();
-            t.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false)
-                && t.contains(". ")
-        })
-        .collect();
-
-    for (i, step) in steps.iter().enumerate() {
-        let action = step.trim_start().to_lowercase();
-        if action.contains("clear_state") {
-            // Check next 5 steps for a goto with __test_role=
-            let next_5 = &steps[i.saturating_add(1)..steps.len().min(i + 6)];
-            let has_reauth = next_5.iter().any(|s| {
-                let lower = s.to_lowercase();
-                lower.contains("goto") && lower.contains("__test_role=")
-            });
-            if !has_reauth {
-                tracing::warn!(
-                    "[yaml_lint] '{}' step {} uses clear_state but no `goto ?__test_role=` \
-                     in next 5 steps — auto-login will NOT trigger after clear_state. \
-                     Fix: add `goto target=\"URL?__test_role=X\"` after the wait. (#189)",
-                    goal.id, i + 1
-                );
-            }
-        }
-    }
-}
+// Issue #189 lint rule moved to `super::lint::lint_clear_state_reauth` and
+// is now part of the unified `super::lint::lint(goal)` entry point called
+// from `find()` above.
 
 #[cfg(test)]
 mod tests {

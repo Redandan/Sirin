@@ -1209,6 +1209,30 @@ fn handle_tools_list() -> Result<Value, String> {
                 }
             },
             {
+                "name": "scaffold_test",
+                "description": "產生一份新的 AgoraMarket 測試 YAML 樣板（Issue #239）。\n\n根據 role（buyer / seller / delivery / admin）自動填入正確的 viewport、init 序列、role-pinning goto 跟 success_criteria placeholder。輸出可直接寫入 config/tests/agora_regression/<id>.yaml，確保跑 lint 全部通過（不會踩到常見的 5 個 trap）。\n\n回傳 yaml string + 建議的檔案路徑；不會自動寫檔（避免覆蓋）。",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["role", "id"],
+                    "properties": {
+                        "role": { "type": "string", "enum": ["buyer", "seller", "delivery", "admin"], "description": "測試角色" },
+                        "id":   { "type": "string", "description": "test_id（同檔名，不含 .yaml），慣例：agora_<role>_<feature>" },
+                        "name": { "type": "string", "description": "可讀的測試名稱（預設用 placeholder）" }
+                    }
+                }
+            },
+            {
+                "name": "lint_test",
+                "description": "對單一 test_id 跑全部 5 條 YAML lint 規則 (Issue #239)，回傳所有 issues。\n\n規則：clear_state_reauth / h5_viewport_missing / double_enable_a11y / success_criteria_positive / iterations_ratio。\n\n所有規則都是 warn-level — 不會阻擋測試執行；用來定位常見的 5 個 trap。",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["test_id"],
+                    "properties": {
+                        "test_id": { "type": "string", "description": "要 lint 的 test_id（YAML 檔名不含 .yaml）" }
+                    }
+                }
+            },
+            {
                 "name": "replay_last_failure",
                 "description": "讀取某個測試最近一次失敗 run 的逐步執行記錄（step-by-step inspection）。\n\n不重新執行測試 — 直接從 SQLite history_json 取出每一個 action 和 LLM observation，讓你像翻日誌一樣審查失敗過程。\n\n`break_at` 可限制只看前 N 步，適合定位哪一步開始出錯。",
                 "inputSchema": {
@@ -1999,6 +2023,8 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         "test_analytics"       => return call_test_analytics(arguments).map(wrap_json),
         "test_summary"         => return call_test_summary(arguments).map(wrap_json),
         "list_flaky_tests"        => return call_list_flaky_tests(arguments).map(wrap_json),
+        "scaffold_test"           => return call_scaffold_test(arguments).map(wrap_json),
+        "lint_test"               => return call_lint_test(arguments).map(wrap_json),
         "test_coverage"           => return call_test_coverage(arguments).map(wrap_json),
         "discover_app"            => return call_discover_app(arguments).map(wrap_json),
         "discovery_status"        => return call_discovery_status().map(wrap_json),
@@ -2871,6 +2897,73 @@ fn call_discovery_features(args: Value) -> Result<Value, String> {
 //  AI testing of the UI uses /mcp + browser_exec on the same Chrome.)
 
 /// #230 — list_flaky_tests: tests with pass_rate < threshold over recent runs.
+/// Issue #239 — scaffold_test: generate a baseline regression YAML for the
+/// given role + test_id.  Caller writes the returned YAML to disk; we do
+/// NOT auto-write to avoid overwriting an existing test.
+fn call_scaffold_test(args: Value) -> Result<Value, String> {
+    use crate::test_runner::scaffold::{scaffold_yaml, TestRole};
+
+    let role_str = args.get("role").and_then(Value::as_str)
+        .ok_or("missing required `role` (buyer / seller / delivery / admin)")?;
+    let role = TestRole::from_str(role_str)
+        .ok_or_else(|| format!(
+            "invalid role `{role_str}` — expected buyer / seller / delivery / admin"
+        ))?;
+    let test_id = args.get("id").and_then(Value::as_str)
+        .ok_or("missing required `id` (test_id, same as YAML file basename)")?;
+    if test_id.is_empty() || test_id.contains('/') || test_id.contains('\\') {
+        return Err(format!("invalid test_id `{test_id}` — must be a plain identifier"));
+    }
+    let name = args.get("name").and_then(Value::as_str);
+
+    let yaml = scaffold_yaml(role, test_id, name);
+    // Suggested write location.  We compose the path with `platform::config_path`
+    // so the suggestion always matches where the runner would actually look.
+    let suggested_path = crate::platform::config_path(
+        std::path::Path::new("tests")
+            .join("agora_regression")
+            .join(format!("{test_id}.yaml"))
+    );
+
+    Ok(json!({
+        "role":            role_str,
+        "id":              test_id,
+        "yaml":            yaml,
+        "suggested_path":  suggested_path.to_string_lossy(),
+        "next_steps": [
+            "Save the YAML to suggested_path (or wherever you keep tests)",
+            "Replace TODO placeholders in the goal block with real action steps",
+            "Replace TODO placeholders in success_criteria with positive-presence assertions",
+            "Run `lint_test` on the test_id to verify it passes all 5 lint rules",
+        ],
+    }))
+}
+
+/// Issue #239 — lint_test: run all 5 YAML lint rules on a single test by id.
+/// Returns issues as structured JSON; empty array = clean.
+fn call_lint_test(args: Value) -> Result<Value, String> {
+    let test_id = args.get("test_id").and_then(Value::as_str)
+        .ok_or("missing required `test_id`")?;
+    let goal = crate::test_runner::parser::find(test_id)
+        .ok_or_else(|| format!("test `{test_id}` not found in config/tests/"))?;
+    let issues = crate::test_runner::lint::lint(&goal);
+    let issues_json: Vec<Value> = issues.iter().map(|i| json!({
+        "rule":     i.rule,
+        "severity": match i.severity {
+            crate::test_runner::lint::Severity::Warn  => "warn",
+            crate::test_runner::lint::Severity::Error => "error",
+        },
+        "step":     i.step,
+        "message":  i.message,
+    })).collect();
+    Ok(json!({
+        "test_id":     test_id,
+        "clean":       issues.is_empty(),
+        "issue_count": issues.len(),
+        "issues":      issues_json,
+    }))
+}
+
 fn call_list_flaky_tests(args: Value) -> Result<Value, String> {
     let threshold = args.get("threshold").and_then(Value::as_f64).unwrap_or(0.70);
     let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize;
