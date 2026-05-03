@@ -24,6 +24,7 @@ pub mod som_renderer;
 pub mod action_verify;
 pub mod gif_recorder;
 pub mod discovery;
+pub mod retry_policy;
 
 pub use parser::{TestGoal, Fixture};
 pub use executor::{TestResult, TestStatus};
@@ -318,67 +319,110 @@ pub fn spawn_run_async(test_id: String, auto_fix: bool) -> Result<String, String
             let ctx = crate::adk::context::AgentContext::new("mcp_async", tools)
                 .with_metadata("run_id", &run_id_clone);
 
-            // Run the test, retrying on transient failures (timeout / error)
-            // up to `test.max_retries` extra times.  Logic failures (failed,
-            // disputed) are never retried — they need a human/auto-fix.
-            let max_retries = parser::find(&test_id_clone)
+            // Run the test with the flakiness-aware retry policy (Issue #241).
+            // The YAML's `max_retries` is the ceiling — the policy can lower it
+            // for historically-flaky tests but never raises above it.  Failure
+            // classification (BackendDown / LlmEmpty / ConvergenceGuard /
+            // pass-rate tier) decides sleep_ms + browser recovery per attempt.
+            let yaml_max_retries = parser::find(&test_id_clone)
                 .map(|t| t.max_retries)
                 .unwrap_or(0);
 
             let mut attempt = 0u32;
             loop {
-                if attempt > 0 {
-                    tracing::warn!(
-                        "[test_runner] '{}' attempt {}/{} — previous run was transient \
-                         failure, retrying after 3s",
-                        test_id_clone, attempt + 1, max_retries + 1
-                    );
-                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                }
-
                 match run_test_with_run_id(&ctx, &test_id_clone, auto_fix, Some(&run_id_clone)).await {
                     Ok(r) => {
-                        // Transient = infrastructure issue, not test logic failure.
-                        // Retryable:
-                        //   - timeout / error (always infra)
-                        //   - failed with category=rendering_failure (Chrome all-black, infra)
-                        // Not retryable:
-                        //   - failed with logic categories (ui_bug, obsolete, etc.)
-                        //   - disputed (LLM thinks YAML is wrong)
-                        // screenshot all-black → error_message contains "all-black" or "rendering"
-                        let is_rendering_failure = r.status == TestStatus::Failed
-                            && r.error_message.as_deref()
-                                .map(|e| e.contains("all-black") || e.contains("rendering_failure"))
-                                .unwrap_or(false);
-                        let is_transient = matches!(r.status, TestStatus::Timeout | TestStatus::Error)
-                            || is_rendering_failure;
-                        let should_retry = is_transient && attempt < max_retries;
+                        // Look up failure classification from SQLite if it was
+                        // already triaged (run row recorded by run_test_with_run_id).
+                        let last_category = store::recent_runs(&test_id_clone, 1)
+                            .first()
+                            .and_then(|row| row.failure_category.clone());
 
-                        if should_retry {
+                        let decision = retry_policy::decide(
+                            &test_id_clone,
+                            attempt,
+                            yaml_max_retries,
+                            r.status,
+                            r.error_message.as_deref(),
+                            last_category.as_deref(),
+                        );
+
+                        // Successful runs: just complete, don't bother decoding policy.
+                        if matches!(r.status, TestStatus::Passed) {
+                            if attempt > 0 {
+                                tracing::info!(
+                                    "[test_runner] '{}' recovered on attempt {}/{}",
+                                    test_id_clone, attempt + 1, yaml_max_retries + 1
+                                );
+                            }
+                            runs::set_phase(&run_id_clone, runs::RunPhase::Complete(r));
+                            break;
+                        }
+
+                        // Quarantine: log + complete with the failed result.
+                        // Test stays failed but the dashboard shows the flaky
+                        // badge (via pass_rate < threshold) instead of looping.
+                        if decision.quarantined {
                             tracing::warn!(
-                                "[test_runner] '{}' status={:?} (attempt {}/{}) — \
-                                 transient, will retry",
-                                test_id_clone, r.status, attempt + 1, max_retries + 1
+                                "[test_runner] '{}' QUARANTINED — {} (no retry)",
+                                test_id_clone, decision.reason
                             );
+                            runs::set_phase(&run_id_clone, runs::RunPhase::Complete(r));
+                            break;
+                        }
+
+                        if decision.should_retry {
+                            tracing::warn!(
+                                "[test_runner] '{}' status={:?} — {} — retrying",
+                                test_id_clone, r.status, decision.reason
+                            );
+                            if decision.sleep_ms > 0 {
+                                tokio::time::sleep(
+                                    std::time::Duration::from_millis(decision.sleep_ms)
+                                ).await;
+                            }
+                            if decision.recover_browser {
+                                let _ = tokio::task::spawn_blocking(|| {
+                                    if let Err(e) = crate::browser::clear_browser_state() {
+                                        tracing::warn!(
+                                            "[test_runner] clear_browser_state failed: {e}"
+                                        );
+                                    }
+                                }).await;
+                            }
                             attempt += 1;
                             continue;
                         }
 
-                        if attempt > 0 && !is_transient {
-                            tracing::info!(
-                                "[test_runner] '{}' recovered on attempt {}/{}: {:?}",
-                                test_id_clone, attempt + 1, max_retries + 1, r.status
-                            );
-                        }
                         runs::set_phase(&run_id_clone, runs::RunPhase::Complete(r));
                         break;
                     }
                     Err(e) => {
-                        if attempt < max_retries {
+                        // Hard error from the runner — treat as TestStatus::Error
+                        // for policy purposes.  No category available.
+                        let decision = retry_policy::decide(
+                            &test_id_clone,
+                            attempt,
+                            yaml_max_retries,
+                            TestStatus::Error,
+                            Some(&e),
+                            None,
+                        );
+                        if decision.should_retry {
                             tracing::warn!(
-                                "[test_runner] '{}' Err (attempt {}/{}) — retrying: {e}",
-                                test_id_clone, attempt + 1, max_retries + 1
+                                "[test_runner] '{}' Err — {} — retrying: {e}",
+                                test_id_clone, decision.reason
                             );
+                            if decision.sleep_ms > 0 {
+                                tokio::time::sleep(
+                                    std::time::Duration::from_millis(decision.sleep_ms)
+                                ).await;
+                            }
+                            if decision.recover_browser {
+                                let _ = tokio::task::spawn_blocking(|| {
+                                    let _ = crate::browser::clear_browser_state();
+                                }).await;
+                            }
                             attempt += 1;
                             continue;
                         }

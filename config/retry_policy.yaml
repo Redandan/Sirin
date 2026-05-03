@@ -1,0 +1,90 @@
+# Sirin test retry policy (Issue #241).
+#
+# Loaded at first use from <app_data_dir>/config/retry_policy.yaml.
+# In dev (cargo test) the loader uses ./config/retry_policy.yaml from the
+# repo. If the file is missing or malformed, sane defaults are baked in
+# at src/test_runner/retry_policy.rs::default_policy() — this YAML just
+# mirrors them so the tunables are visible.
+#
+# How retries get decided after a failed attempt:
+#
+#   1. Quarantine — if pass_rate < quarantine_threshold AND total_runs >=
+#      quarantine_min_runs, the test is auto-quarantined: no retry, badge
+#      surfaced in dashboard. Recording 3+ passes lifts is_flaky() and
+#      unblocks (no manual flag to clear).
+#
+#   2. Classification overrides — if the last failure matches one of
+#      `classifications` (e.g. HTTP 500 substring => backend_down), that
+#      rule's max_retries / sleep_ms / recover_browser apply, ignoring
+#      pass_rate.
+#
+#   3. Pass-rate tier — falling through to here, the test's pass_rate over
+#      the last 10 runs picks a `tiers` row.
+#
+# `max_retries` from the test YAML is the ceiling — policy never raises
+# above it. So a yaml `max_retries: 0` test will never retry regardless
+# of policy.
+
+quarantine_threshold: 0.70
+quarantine_min_runs:  3
+
+tiers:
+  # Stable tests: ≥95% pass rate. One fast retry — assume real failures
+  # are real, don't keep guessing.
+  - min_pass_rate:   0.95
+    max_retries:     1
+    sleep_ms:        3000
+    recover_browser: false
+    label:           stable
+
+  # Moderate: 70-95% pass rate. Two retries with longer sleep + browser
+  # state recovery (timed-out tests can poison Chrome state, see #180).
+  - min_pass_rate:   0.70
+    max_retries:     2
+    sleep_ms:        5000
+    recover_browser: true
+    label:           moderate
+
+  # Below 0.70 with insufficient run history (else quarantine kicks in).
+  # Safety net.
+  - min_pass_rate:   0.0
+    max_retries:     0
+    sleep_ms:        0
+    recover_browser: false
+    label:           flaky
+
+classifications:
+  # KB: agora-trap-deploy-timing-race — API restart causes a 500 mid-test;
+  # the test should wait for the deploy to finish, not just rerun.
+  - match_status:       [failed, error]
+    match_error_substr:
+      - "HTTP 500"
+      - "HTTP 503"
+      - "JpaQueryTransformerSupport"
+      - "Internal Server Error"
+    max_retries:     1
+    sleep_ms:        30000
+    recover_browser: true
+    label:           backend_down
+
+  # Gemini's silent 200 + empty content bug. Two quick retries usually
+  # catch a working response.
+  - match_status:       [error]
+    match_error_substr:
+      - "empty content"
+      - "too many invalid LLM responses"
+    max_retries:     2
+    sleep_ms:        500
+    recover_browser: false
+    label:           llm_empty
+
+  # Convergence guard tripped — same action / state for too many turns.
+  # Deterministic, no point retrying. Fix the YAML.
+  - match_status:       [failed, error]
+    match_error_substr:
+      - "convergence_guard"
+      - "no progress"
+    max_retries:     0
+    sleep_ms:        0
+    recover_browser: false
+    label:           convergence_guard
