@@ -617,6 +617,50 @@ pub struct TestStats {
     pub top_failure_category: Option<String>,
 }
 
+/// Issue #267 — return the last `n` runs' `is_replay` flag for a test,
+/// most-recent first.  Used by the batch scheduler to predict whether
+/// upcoming runs will hit LLM (is_replay=false → LLM ReAct) and pick a
+/// safe concurrency cap.
+///
+/// Empty Vec for tests with no history.  Caller should assume `needs_llm`
+/// (conservative) when this returns empty.
+pub fn recent_replay_modes(test_id: &str, n: usize) -> Vec<bool> {
+    if n == 0 {
+        return Vec::new();
+    }
+    let conn = db().lock().unwrap_or_else(|e| e.into_inner());
+    let mut stmt = match conn.prepare(
+        "SELECT COALESCE(is_replay, 0) FROM test_runs \
+         WHERE test_id = ?1 \
+         ORDER BY started_at DESC \
+         LIMIT ?2",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    stmt.query_map(
+        rusqlite::params![test_id, n as i64],
+        |row| row.get::<_, i64>(0).map(|v| v != 0),
+    )
+    .map(|rows| rows.filter_map(Result::ok).collect())
+    .unwrap_or_default()
+}
+
+/// Issue #267 — classify a test's likely LLM usage from its recent
+/// replay history.  Returns:
+///   - `false` (replay-only) when ALL of the last `n` runs used a saved
+///     script (is_replay=true).  Safe to schedule at full concurrency.
+///   - `true` (needs-llm) when any recent run used LLM ReAct (script
+///     missing/stale) OR there's no history at all.  Should be throttled
+///     to the LLM provider's safe concurrency.
+pub fn test_needs_llm_predictively(test_id: &str, window: usize) -> bool {
+    let history = recent_replay_modes(test_id, window);
+    if history.is_empty() {
+        return true; // conservative: no history → assume LLM
+    }
+    history.iter().any(|&is_replay| !is_replay)
+}
+
 /// Compute aggregate health metrics for `test_id` from `test_runs`.
 pub fn test_stats(test_id: &str) -> TestStats {
     let last30 = recent_runs(test_id, 30);
@@ -1060,6 +1104,32 @@ mod tests {
         }
     }
 
+    /// Helper for #267 tests — insert N runs with explicit is_replay flags.
+    fn insert_runs_with_replay(test_id: &str, replay_flags: &[bool]) {
+        for &is_replay in replay_flags {
+            let now = chrono::Local::now().to_rfc3339();
+            record_run(NewRun {
+                test_id,
+                started_at: &now,
+                duration_ms: Some(100),
+                status: "passed",
+                failure_category: None,
+                ai_analysis: None,
+                screenshot_path: None,
+                history_json: None,
+                goal_json: None,
+                run_id: None,
+                iterations: None,
+                dispute_reason: None,
+                dispute_suspected_step: None,
+                dispute_suggested_fix: None,
+                is_replay,
+                console_log: None,
+            }).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
     #[test]
     fn find_run_by_run_id_recovers_goal() {
         let unique = chrono::Local::now().timestamp_nanos_opt().unwrap_or(0);
@@ -1253,6 +1323,68 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(5));
         // 60 min window: should find it
         assert!(has_pending_fix(&tid, 60));
+    }
+
+    #[test]
+    fn recent_replay_modes_returns_most_recent_first() {
+        let tid = format!("test_rrm_{}", chrono::Local::now().timestamp_nanos_opt().unwrap_or(0));
+        // 5 runs: [false, true, true, false, true]  (most recent last when inserted,
+        // most recent first in result).
+        insert_runs_with_replay(&tid, &[false, true, true, false, true]);
+
+        let modes = recent_replay_modes(&tid, 3);
+        assert_eq!(modes.len(), 3);
+        // Result is DESC by started_at — last 3 inserts: true, false, true
+        // (most recent first).
+        assert_eq!(modes, vec![true, false, true]);
+    }
+
+    #[test]
+    fn recent_replay_modes_empty_for_unknown_test() {
+        let modes = recent_replay_modes("nonexistent_test_xyz", 5);
+        assert!(modes.is_empty());
+    }
+
+    #[test]
+    fn recent_replay_modes_zero_window_returns_empty() {
+        let tid = format!("test_rrm_zw_{}", chrono::Local::now().timestamp_nanos_opt().unwrap_or(0));
+        insert_runs_with_replay(&tid, &[true]);
+        assert!(recent_replay_modes(&tid, 0).is_empty());
+    }
+
+    #[test]
+    fn test_needs_llm_predictively_classifies_correctly() {
+        let suffix = chrono::Local::now().timestamp_nanos_opt().unwrap_or(0);
+
+        // (a) No history → conservative, needs LLM
+        let tid_new = format!("test_nllm_new_{suffix}");
+        assert!(test_needs_llm_predictively(&tid_new, 3),
+            "no history must classify as needs-LLM (conservative)");
+
+        // (b) All recent runs were replay → safe, replay-only
+        let tid_replay = format!("test_nllm_replay_{suffix}");
+        insert_runs_with_replay(&tid_replay, &[true, true, true]);
+        assert!(!test_needs_llm_predictively(&tid_replay, 3),
+            "all-replay history must classify as replay-only");
+
+        // (c) Any recent run used LLM → needs LLM
+        let tid_mixed = format!("test_nllm_mixed_{suffix}");
+        insert_runs_with_replay(&tid_mixed, &[true, true, false]); // most recent = LLM
+        assert!(test_needs_llm_predictively(&tid_mixed, 3),
+            "any LLM run in window must classify as needs-LLM");
+
+        // (d) All-LLM → needs LLM
+        let tid_llm = format!("test_nllm_llm_{suffix}");
+        insert_runs_with_replay(&tid_llm, &[false, false]);
+        assert!(test_needs_llm_predictively(&tid_llm, 3),
+            "all-LLM history must classify as needs-LLM");
+
+        // (e) Old LLM run outside window doesn't poison classification
+        let tid_old = format!("test_nllm_old_{suffix}");
+        // Insert old LLM run, then 5 replay runs — only last 3 matter
+        insert_runs_with_replay(&tid_old, &[false, true, true, true, true, true]);
+        assert!(!test_needs_llm_predictively(&tid_old, 3),
+            "old LLM run outside last-3 window must not affect classification");
     }
 
     #[test]

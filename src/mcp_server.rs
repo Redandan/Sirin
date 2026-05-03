@@ -2262,17 +2262,6 @@ fn call_run_test_async(args: Value) -> Result<Value, String> {
     Ok(resp)
 }
 
-/// Average LLM calls per minute per test, used for RPM-aware batch sizing.
-fn calls_per_min_per_test_avg(test_ids: &[String]) -> f64 {
-    if test_ids.is_empty() { return 10.0; }
-    test_ids.iter().map(|tid| {
-        let stats = crate::test_runner::store::test_stats(tid);
-        if stats.avg_iterations > 0.0 && stats.avg_duration_ms > 0 {
-            stats.avg_iterations / (stats.avg_duration_ms as f64 / 60_000.0)
-        } else { 10.0 }
-    }).sum::<f64>() / test_ids.len() as f64
-}
-
 /// Spawn N tests in parallel, each on its own dedicated chrome tab.
 ///
 /// `max_concurrency` clamped to [1, 8].  CDP isn't designed for hundreds
@@ -2287,49 +2276,85 @@ fn call_run_test_batch(args: Value) -> Result<Value, String> {
         return Err("test_ids is empty".into());
     }
 
-    // ── RPM-aware concurrency cap ─────────────────────────────────────────────
+    // ── Provider + replay-history aware concurrency cap (#267) ──────────────
     //
-    // Running more tests in parallel than the LLM's RPM can support causes
-    // every test to stall at the token-bucket gate — total wall time increases
-    // but no individual test runs any faster.  Better to serialise: each test
-    // gets the full RPM budget and finishes in its natural time.
+    // Two failure modes this guards against:
     //
-    // Formula:
-    //   rpm                  = GEMINI_RPM (default 8 for Gemini free tier)
-    //   avg_calls_per_min    = avg_iterations / (avg_duration_ms / 60000)
-    //   safe_concurrency     = max(1, floor(rpm / avg_calls_per_min))
+    //   1. Gemini RPM stalls — running more parallel tests than the free-tier
+    //      RPM can support causes every test to queue at the token-bucket gate.
+    //      Total wall time goes UP, no test runs faster.
     //
-    // We use the analytics of each requested test and average across them.
-    // For tests with no history, assume 10 calls/minute (conservative default).
+    //   2. Local LLM (LM Studio) serialisation — single GPU model handles ONE
+    //      decode at a time. concurrency=2 doubles per-iter latency, often
+    //      pushing tests past their timeout (observed 2026-05-03: 3/5 tests
+    //      timed out at concurrency=2 on Gemma 4 e4b).
+    //
+    // Predictive classification (#267 acceptance criteria):
+    //   - replay_only test = last 3 runs ALL used saved scripts (no LLM expected
+    //     this run either, barring script drift). Safe to schedule at full
+    //     hardware cap, doesn't count against LLM safe_concurrency.
+    //   - needs_llm test  = any of last 3 runs used LLM ReAct, OR no history.
+    //     Counted against the LLM-provider safe_concurrency.
+    //
+    // Final cap = min(user requested, max(needs_llm safe count, replay_only count))
+    //   — but we keep batch-wide concurrency simple: throttle to LLM safe if
+    //     ANY needs_llm test is present, since they'll be the long pole anyway.
+    //     Pure-replay batches still go full speed.
     let rpm = std::env::var("GEMINI_RPM")
         .ok()
         .and_then(|v| v.parse::<f64>().ok())
         .filter(|&r| r > 0.0)
         .unwrap_or(8.0);
 
-    let provider = std::env::var("LLM_PROVIDER").unwrap_or_default();
-    let is_gemini = provider.to_lowercase().contains("gemini");
+    let provider = std::env::var("LLM_PROVIDER").unwrap_or_default().to_lowercase();
+    let is_gemini = provider.contains("gemini");
+    let is_local_lm = provider.contains("lmstudio") || provider.contains("ollama");
 
-    let safe_concurrency: usize = if is_gemini {
-        // Average calls/minute across all requested tests using their analytics.
+    // Classify each test (#267 acceptance: log per-test class).
+    let needs_llm_count = test_ids
+        .iter()
+        .filter(|tid| {
+            let needs_llm = crate::test_runner::store::test_needs_llm_predictively(tid, 3);
+            tracing::info!(
+                "[batch] scheduling {} ({})",
+                tid,
+                if needs_llm { "llm-fallback expected, throttled" } else { "replay-only" }
+            );
+            needs_llm
+        })
+        .count();
+    let replay_only_count = test_ids.len() - needs_llm_count;
+
+    // LLM safe concurrency derivation per provider.
+    //   - Gemini cloud: existing RPM math
+    //   - Local LM Studio / Ollama: hard cap at 1 (model serialises decode)
+    //   - Other cloud: hardware cap (8)
+    let llm_safe: usize = if is_gemini {
         let calls_per_min_per_test: f64 = test_ids
             .iter()
             .map(|tid| {
                 let stats = crate::test_runner::store::test_stats(tid);
                 if stats.avg_iterations > 0.0 && stats.avg_duration_ms > 0 {
-                    // calls/min = iterations / (duration in minutes)
                     stats.avg_iterations / (stats.avg_duration_ms as f64 / 60_000.0)
                 } else {
-                    10.0 // conservative default for tests with no history
+                    10.0
                 }
             })
             .sum::<f64>()
             / test_ids.len() as f64;
-
-        let safe = (rpm / calls_per_min_per_test).floor() as usize;
-        safe.max(1)
+        ((rpm / calls_per_min_per_test).floor() as usize).max(1)
+    } else if is_local_lm {
+        1
     } else {
-        8 // non-Gemini providers have no RPM concern; use hardware cap
+        8
+    };
+
+    // Batch-wide safe concurrency: if any needs_llm tests, throttle to llm_safe;
+    // otherwise (pure replay batch) allow hardware cap.
+    let safe_concurrency = if needs_llm_count > 0 {
+        llm_safe
+    } else {
+        8
     };
 
     let raw_cap = args.get("max_concurrency")
@@ -2337,13 +2362,19 @@ fn call_run_test_batch(args: Value) -> Result<Value, String> {
         .unwrap_or(safe_concurrency as u64) as usize;
 
     let mut warn: Option<String> = None;
-    let cap = if raw_cap > safe_concurrency && is_gemini {
+    let cap = if raw_cap > safe_concurrency && needs_llm_count > 0 {
+        let provider_note = if is_gemini {
+            format!("GEMINI_RPM={rpm:.0}")
+        } else if is_local_lm {
+            "local LLM serialises decode".to_string()
+        } else {
+            "non-Gemini cloud".to_string()
+        };
         warn = Some(format!(
-            "max_concurrency={raw_cap} exceeds RPM-safe limit={safe_concurrency} \
-             (GEMINI_RPM={rpm:.0}, avg ~{:.1} LLM calls/min/test). \
-             Clamping to {safe_concurrency} to prevent 429 stalls. \
-             Increase GEMINI_RPM or use a paid tier for higher parallelism.",
-            calls_per_min_per_test_avg(&test_ids)
+            "max_concurrency={raw_cap} exceeds LLM-safe limit={safe_concurrency} \
+             ({needs_llm_count}/{} tests classified as llm-fallback expected; {provider_note}). \
+             Clamping to {safe_concurrency} to prevent 429/timeout cascade.",
+            test_ids.len()
         ));
         safe_concurrency
     } else {
@@ -2351,8 +2382,8 @@ fn call_run_test_batch(args: Value) -> Result<Value, String> {
     };
 
     tracing::info!(
-        "[batch] {} tests, concurrency={}/{} (RPM={:.0}, safe={})",
-        test_ids.len(), cap, raw_cap, rpm, safe_concurrency
+        "[batch] {} tests (needs_llm={}, replay_only={}), concurrency={}/{} (llm_safe={}, provider={})",
+        test_ids.len(), needs_llm_count, replay_only_count, cap, raw_cap, llm_safe, provider
     );
 
     let run_ids = crate::test_runner::spawn_batch_run(test_ids.clone(), cap)?;
