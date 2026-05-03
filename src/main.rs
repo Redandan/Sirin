@@ -15,6 +15,7 @@ mod platform;
 #[allow(dead_code)] mod multi_agent;
 #[allow(dead_code)] mod config_check;
 mod diagnose;
+mod doctor;
 mod ext_server;
 #[allow(dead_code)] mod test_runner;
 #[allow(dead_code)] mod agents;
@@ -213,6 +214,24 @@ fn is_headless() -> bool {
 }
 
 fn main() {
+    // ── Subcommand handling (Issue #261 — sirin doctor) ────────────────────────
+    // Must run BEFORE init_tracing / process_group / dotenvy so the diagnostic
+    // is fast and side-effect-free.  We do load .env here (silent) so the
+    // checks see the same env as a real run.
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "doctor" || a == "--check") {
+        let env_file = platform::app_data_dir().join(".env");
+        if env_file.exists() { let _ = dotenvy::from_path(&env_file); }
+        else { let _ = dotenvy::dotenv(); }
+        let report = doctor::run();
+        if args.iter().any(|a| a == "--format=json") {
+            doctor::print_json(&report);
+        } else {
+            doctor::print_text(&report);
+        }
+        std::process::exit(report.exit_code());
+    }
+
     init_tracing();
 
     // Install the process-tree kill switch BEFORE any subprocess spawns.

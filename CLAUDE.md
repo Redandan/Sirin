@@ -350,6 +350,10 @@ src/persona/                 mod (config types) + behavior (decision engine) +
                              task_tracker (event log)
 src/researcher/              mod + fetch + persistence + pipeline
 src/followup/                mod (worker loop) + candidates (self-assign)
+src/doctor.rs                `sirin doctor` subcommand (Issue #261) — pure-Rust
+                             6-section preflight (LLM keys / gateway / vision /
+                             YAML sync / Chrome stability / action registry).
+                             Text + JSON outputs.  Exits non-zero on FAIL.
 ```
 
 ## Build
@@ -361,6 +365,12 @@ cargo clippy             # warnings (false positives + architectural)
 cargo build --release
 ./target/release/sirin.exe --headless        # no-GUI mode (server / CI / SSH)
 SIRIN_HEADLESS=1 ./target/release/sirin.exe  # equivalent env-var form
+
+# Diagnostics — run before regression / batch sweeps to catch config drift
+./target/release/sirin.exe doctor              # 6-section human-readable report
+./target/release/sirin.exe doctor --format=json  # CI-friendly JSON
+# Exits 0 when all sections pass, 1 if any FAIL.  Pure Rust — no bash needed
+# (preferred over scripts/preflight.sh on Windows / bare cmd / pwsh).
 
 # Windows installer (requires Inno Setup 6 installed)
 & 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' /DMyAppVersion=X.Y.Z sirin.iss
