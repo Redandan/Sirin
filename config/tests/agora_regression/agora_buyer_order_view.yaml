@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=../../test-schema.json
 id: agora_buyer_order_view
 name: "AgoraMarket 買家訂單管理頁驗證"
 url: "https://redandan.github.io/?__test_role=buyer"

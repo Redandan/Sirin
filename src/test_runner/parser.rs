@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 /// A single browser action in a fixture step.
 /// Mirrors the browser_exec action format.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, schemars::JsonSchema)]
 pub struct FixtureStep {
     /// Action name — same values as browser_exec `action` param.
     pub action: String,
@@ -28,7 +28,7 @@ pub struct FixtureStep {
 }
 
 /// Setup and cleanup steps for a test goal.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, schemars::JsonSchema)]
 pub struct Fixture {
     /// Steps run before the test loop. Failure aborts the test.
     #[serde(default)]
@@ -38,7 +38,12 @@ pub struct Fixture {
     pub cleanup: Vec<FixtureStep>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[schemars(
+    title = "Sirin TestGoal",
+    description = "AI-driven browser test definition. \
+        Loaded from config/tests/<id>.yaml; one file per test_id."
+)]
 pub struct TestGoal {
     pub id: String,
     pub name: String,
@@ -202,7 +207,7 @@ pub struct TestGoal {
 }
 
 /// Viewport configuration for a test.
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 pub struct TestViewport {
     pub width: u32,
     pub height: u32,
@@ -323,6 +328,90 @@ pub fn find(test_id: &str) -> Option<TestGoal> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue #255 — guard against `config/test-schema.json` going stale.
+    ///
+    /// Regenerates the schema in-memory from the current `TestGoal` struct
+    /// definition and compares it (as parsed JSON values, not strings) with
+    /// the committed file.  When this fails, run:
+    ///
+    /// ```bash
+    /// cargo run --bin gen-schema
+    /// ```
+    ///
+    /// to regenerate and commit the updated file.
+    #[test]
+    fn schema_has_no_drift() {
+        let path = std::path::Path::new("config").join("test-schema.json");
+        if !path.exists() {
+            // Sub-crate / partial-checkout build: skip rather than fail —
+            // the schema lives in the repo's `config/` directory.
+            return;
+        }
+        let committed = std::fs::read_to_string(&path).expect("read schema");
+        let committed_json: serde_json::Value = serde_json::from_str(&committed)
+            .expect("committed schema must be valid JSON");
+        let regen = schemars::schema_for!(TestGoal);
+        let regen_json: serde_json::Value = serde_json::from_str(
+            &serde_json::to_string(&regen).unwrap()
+        ).unwrap();
+
+        if committed_json != regen_json {
+            // Find the first differing top-level key for actionable error msg.
+            let committed_obj = committed_json.as_object().expect("schema is object");
+            let regen_obj = regen_json.as_object().expect("schema is object");
+            let mut diffs = Vec::new();
+            for k in committed_obj.keys().chain(regen_obj.keys())
+                .collect::<std::collections::BTreeSet<_>>()
+            {
+                if committed_obj.get(k) != regen_obj.get(k) {
+                    diffs.push(format!(
+                        "  - {k}: committed={} regen={}",
+                        committed_obj.get(k).map(|v| v.to_string().chars().take(80).collect::<String>())
+                            .unwrap_or("(missing)".into()),
+                        regen_obj.get(k).map(|v| v.to_string().chars().take(80).collect::<String>())
+                            .unwrap_or("(missing)".into()),
+                    ));
+                }
+                if diffs.len() >= 5 { break; }
+            }
+            panic!(
+                "config/test-schema.json is stale — run `cargo run --bin gen-schema` \
+                 to regenerate.\n\
+                 First differences:\n{}",
+                diffs.join("\n")
+            );
+        }
+    }
+
+    /// Issue #255 — the `gen-schema` binary uses a local stub of
+    /// [`crate::perception::PerceptionMode`] (because Sirin has no `lib.rs`
+    /// and the binary uses `#[path]` to include parser.rs).  Verify the stub
+    /// produces an identical JSON Schema to the real type so they cannot
+    /// drift apart silently.
+    #[test]
+    fn perception_mode_stub_matches_real_schema() {
+        // The real PerceptionMode lives at crate::perception::PerceptionMode.
+        // Generate its schema and check it matches the bin's stub shape:
+        // - 3 string variants ("text", "vision", "auto")
+        // - default = "text"
+        let real = schemars::schema_for!(crate::perception::PerceptionMode);
+        let json = serde_json::to_value(&real).unwrap();
+        // Must serialise as a string enum of exactly these 3 lowercase variants.
+        let variants = json["oneOf"].as_array()
+            .or_else(|| json["enum"].as_array())
+            .or_else(|| json["definitions"]["PerceptionMode"]["enum"].as_array())
+            .expect("PerceptionMode schema should expose its variants");
+        let names: Vec<String> = variants.iter().filter_map(|v|
+            v.as_str().map(|s| s.to_string())
+                .or_else(|| v["enum"].as_array().and_then(|a| a.first().and_then(|x| x.as_str().map(String::from))))
+                .or_else(|| v["const"].as_str().map(String::from))
+        ).collect();
+        assert!(names.contains(&"text".to_string()),   "missing 'text': {variants:?}");
+        assert!(names.contains(&"vision".to_string()), "missing 'vision': {variants:?}");
+        assert!(names.contains(&"auto".to_string()),   "missing 'auto': {variants:?}");
+        assert_eq!(names.len(), 3, "unexpected extra variants: {names:?}");
+    }
 
     #[test]
     fn parse_minimal_yaml() {

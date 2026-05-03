@@ -561,12 +561,16 @@ fn looks_like_file_token(token: &str) -> bool {
 
     let has_known_extension = [
         ".rs", ".toml", ".md", ".yaml", ".yml", ".json", ".ts", ".tsx", ".js", ".jsx",
+        // v0.5.0+ web UI tree under web/ — index.html / style.css / app.js
+        ".html", ".css",
     ]
     .iter()
     .any(|suffix| normalized.ends_with(suffix));
 
     let has_known_prefix = [
         "src/", "app/", "config/", "data/", "docs/", "tests/", ".cargo/", ".claude/", "icons/",
+        // v0.5.0+ web UI lives in `web/`
+        "web/",
     ]
     .iter()
     .any(|prefix| normalized.starts_with(prefix));

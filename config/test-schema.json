@@ -1,0 +1,290 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Sirin TestGoal",
+  "description": "AI-driven browser test definition. Loaded from config/tests/<id>.yaml; one file per test_id.",
+  "type": "object",
+  "required": [
+    "goal",
+    "id",
+    "name",
+    "url"
+  ],
+  "properties": {
+    "blocked_url_patterns": {
+      "description": "Per-test glob patterns appended to the process-wide URL blocklist (see [`crate::authz::check_blocked_url`] / Issue #81).\n\nUse this to declare \"this test must NEVER navigate to X\" — e.g. `*/payment/confirm` to prevent a dry-run test from completing a real purchase.  Matching is glob-based (same syntax as `deny[].url_pattern`).",
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "browser_headless": {
+      "description": "Override Chrome headless mode for this test. Flutter CanvasKit / WebGL content does NOT paint correctly in headless mode — set to `false` for such tests.  Default: honours `SIRIN_BROWSER_HEADLESS` env var (which itself defaults to true).",
+      "default": null,
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "docs_refs": {
+      "description": "Documents that MUST be read before running or interpreting this test.\n\nShown in `list_tests` output and included in the `run_test_async` MCP response as a `docs_refs` field + warning so callers cannot miss them. Typical entries: test-account docs, acceptance-criteria files, E2E skill.\n\nPaths are relative to the repo root (or absolute).  `docs_refs` accepts MIXED entries — bare kebab-case identifiers (e.g. `sirin-test-authoring`) are auto-treated as KB topicKeys.  For *unambiguous* KB-only references use [`Self::kb_refs`] instead.",
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "fail_on_console_errors": {
+      "description": "When `true`, the test is automatically marked **failed** if any browser console `error`-level messages were captured during the run (regardless of `success_criteria`).\n\nDefault `false` — console errors are recorded and visible in `get_test_result` but do not auto-fail.  Set to `true` on tests where a clean console is part of the acceptance criteria.\n\nUseful for catching silent regressions (unhandled promise rejections, missing API responses, Flutter framework warnings, etc.)",
+      "default": false,
+      "type": "boolean"
+    },
+    "fixture": {
+      "description": "Optional fixture: setup steps (before test) and cleanup steps (after).",
+      "default": null,
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Fixture"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "goal": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "kb_refs": {
+      "description": "Knowledge base topicKeys (no path heuristic) auto-fetched from the agora-trading KB at run start and spliced into the LLM prompt under \"Required reading\".  Use this when you want explicit KB-only references — `docs_refs` works for the mixed case but a separate field makes intent clearer and avoids the path-vs-key heuristic edge cases.\n\nFormat: kebab-case slugs matching KB `topicKey`, e.g. `[\"sirin-test-authoring\", \"sirin-browser-automation\"]`.\n\nResolved via [`crate::kb_client::get`] using project from `KB_PROJECT` env (default `sirin`).  Failures degrade to \"[unavailable: …]\" in the prompt — never aborts a run.  Resolution short-circuits when `KB_ENABLED` is unset.",
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "llm_backend": {
+      "description": "Override the LLM backend used by the ReAct executor for this test. Recognized values: - `\"claude_cli\"` / `\"claude\"` — spawn `claude -p` subprocess (Max plan, no API key, much higher JSON-output reliability, ~3-5s per call overhead) - any other value or `None` — use Sirin's main LLM config (Gemini / LM Studio / Ollama / Anthropic HTTP API)\n\nResolution order: this field → `TEST_RUNNER_LLM_BACKEND` env var → main LLM config.",
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "locale": {
+      "description": "Locale for LLM prompts and responses.  Supported: \"zh-TW\" (default), \"en\", \"zh-CN\".",
+      "default": "zh-TW",
+      "type": "string"
+    },
+    "mask_sensitive": {
+      "description": "Whether to inject a CSS privacy mask before every screenshot taken during this test (password / credit-card / OTP / SSN inputs are blurred + colour-stripped so plaintext cannot leak into `test_failures/`, vision LLM uploads, or GitHub bug reports).\n\nDefault `true` (fail-secure — Issue #80).  Set to `false` only when you are deliberately verifying that an input renders a secret value (e.g. testing the masking itself), or when the mask interferes with the assertion (rare).  The process-wide default is also overridable via `SIRIN_PRIVACY_MASK=0` env var.",
+      "default": null,
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "max_iterations": {
+      "default": 20,
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "max_retries": {
+      "description": "Number of automatic retries when the test ends with `timeout` or `error` (transient failures due to Chrome instability, network blips, etc.).  Does NOT retry on `failed` (logic failure) or `disputed`.\n\nDefault 0 (no retry).  Set to 1-2 for Flutter H5 tests where Chrome initialization can occasionally stall on the first run.\n\nEach retry gets a fresh run_id; the last attempt's result is what `spawn_run_async` reports to callers.",
+      "default": 0,
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "name": {
+      "type": "string"
+    },
+    "perception": {
+      "description": "How the ReAct loop should observe the page before each LLM turn. - `text`   — legacy: no screenshot, truncated text observations only - `vision` — always screenshot + vision LLM call - `auto`   — screenshot only when Flutter / canvas is detected at runtime\n\nDefault `text` → zero behavioural change for existing tests.  Opt-in explicitly on Flutter / canvas pages where the AX tree is unreliable.",
+      "default": "text",
+      "allOf": [
+        {
+          "$ref": "#/definitions/PerceptionMode"
+        }
+      ]
+    },
+    "record_timeline_gif": {
+      "description": "Capture an action-annotated GIF timeline of the run (Issue #78). When `true` (default), every ReAct iteration captures a frame and on failure the frames are encoded into `test_failures/<run_id>/timeline.gif` (the single failure-screenshot path stays for back-compat). Set to `false` to disable for tests where the extra screenshot per step is too expensive (slow Flutter pages).",
+      "default": true,
+      "type": "boolean"
+    },
+    "retry_on_parse_error": {
+      "description": "Number of JSON-parse retries before giving up.  Default 3.",
+      "default": 5,
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "show_action_indicator": {
+      "description": "Inject an in-page action indicator (right-bottom badge + faint border) during this run so the user can SEE that Sirin is driving the page (Issue #75 —对标 CiC's agent-visual-indicator).  The badge text updates to the current ReAct action label on every iteration; the indicator is hidden automatically before each screenshot / AX-tree observation so it never pollutes failure captures or the LLM's view of the page.\n\nDefault `false` — headless CI and parallel batch runs need a clean DOM.  Opt in only for interactive demos / supervised runs where the extra DOM nodes are wanted.  Note: the indicator is **UX, not a security boundary** — page JS can read its existence trivially.",
+      "default": false,
+      "type": "boolean"
+    },
+    "success_criteria": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "tags": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "timeout_secs": {
+      "default": 120,
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0.0
+    },
+    "url": {
+      "type": "string"
+    },
+    "url_query": {
+      "description": "Extra query parameters merged into `url` before navigation. Primary use: Flutter Canvas apps need `flutter-web-renderer: html` to have a real DOM that selectors can work against.",
+      "default": {},
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "viewport": {
+      "description": "Override the browser viewport for this test.\n\nUse this to match the intended device profile: - Buyer H5 (mobile web): `{width: 390, height: 844, scale: 2.0, mobile: true}` - Seller PC dashboard:   `{width: 1280, height: 900, scale: 1.0, mobile: false}`\n\nWhen omitted, Sirin uses the process-wide default viewport from `SIRIN_DEFAULT_VIEWPORT` (typically 1440×1600). ⚠️  Saved scripts embed the viewport used at recording time — running a script at a different viewport may fail (layout and element positions differ between mobile and desktop).",
+      "default": null,
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TestViewport"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "definitions": {
+    "Fixture": {
+      "description": "Setup and cleanup steps for a test goal.",
+      "type": "object",
+      "properties": {
+        "cleanup": {
+          "description": "Steps run after the test (pass or fail). Failures are logged but do not affect test result.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/FixtureStep"
+          }
+        },
+        "setup": {
+          "description": "Steps run before the test loop. Failure aborts the test.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/FixtureStep"
+          }
+        }
+      }
+    },
+    "FixtureStep": {
+      "description": "A single browser action in a fixture step. Mirrors the browser_exec action format.",
+      "type": "object",
+      "required": [
+        "action"
+      ],
+      "properties": {
+        "action": {
+          "description": "Action name — same values as browser_exec `action` param.",
+          "type": "string"
+        },
+        "target": {
+          "description": "Primary target (CSS selector, URL, JS expression, etc).",
+          "default": "",
+          "type": "string"
+        },
+        "text": {
+          "description": "Text to type (for `type` action).",
+          "default": "",
+          "type": "string"
+        },
+        "timeout_ms": {
+          "description": "Timeout in ms (for `wait`, `wait_new_tab`, etc).",
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": true
+    },
+    "PerceptionMode": {
+      "description": "How the executor should observe the page before each LLM turn.",
+      "oneOf": [
+        {
+          "description": "Legacy text-only observation.  No screenshot, no vision LLM call.",
+          "type": "string",
+          "enum": [
+            "text"
+          ]
+        },
+        {
+          "description": "Always attach a screenshot to the prompt and call the vision LLM.",
+          "type": "string",
+          "enum": [
+            "vision"
+          ]
+        },
+        {
+          "description": "Detect canvas (Flutter / WebGL) at runtime; use Vision if detected, otherwise Text.",
+          "type": "string",
+          "enum": [
+            "auto"
+          ]
+        }
+      ]
+    },
+    "TestViewport": {
+      "description": "Viewport configuration for a test.",
+      "type": "object",
+      "required": [
+        "height",
+        "width"
+      ],
+      "properties": {
+        "height": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "mobile": {
+          "description": "Whether to emulate a mobile device (touch events, mobile UA, etc).",
+          "default": false,
+          "type": "boolean"
+        },
+        "scale": {
+          "description": "Device pixel ratio (CSS pixels → physical pixels).  Default 1.0.",
+          "default": 1.0,
+          "type": "number",
+          "format": "double"
+        },
+        "width": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        }
+      }
+    }
+  }
+}

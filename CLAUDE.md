@@ -97,6 +97,31 @@ new panels.
 - **Deadlock signal:** if a cargo output file stays at 0 bytes for >30s, the
   process is waiting for the lock — kill it and retry.
 
+## YAML 測試 — IDE 自動補全 / Schema 驗證 (Issue #255)
+
+每個 `config/tests/*.yaml` 第一行加：
+
+```yaml
+# yaml-language-server: $schema=../test-schema.json
+```
+
+VS Code 裝 [`redhat.vscode-yaml`](https://marketplace.visualstudio.com/items?itemName=redhat.vscode-yaml) 後就有：
+- 全部欄位的 auto-complete（max_iterations / viewport / perception / 等）
+- enum 限定（`perception: text|vision|auto`、`viewport.mobile: bool`）
+- 拼錯欄位即時紅線
+
+**Schema 怎麼更新**：
+
+```bash
+# 改完 src/test_runner/parser.rs 的 #[derive(JsonSchema)] struct 後
+cargo run --bin gen-schema
+# 把更新後的 config/test-schema.json 一起 commit
+```
+
+`cargo test schema_has_no_drift` 會在 CI / 本機自動擋住忘記重生的情況。
+
+`scaffold_test` MCP tool 產生的新 YAML 自動帶 schema header。
+
 ## AgoraMarket 網頁架構（必讀，開測試前先確認）
 
 | 端 | 類型 | 正確 viewport | URL 特徵 |

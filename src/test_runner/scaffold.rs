@@ -97,8 +97,12 @@ pub fn scaffold_yaml(role: TestRole, test_id: &str, name: Option<&str>) -> Strin
         9. done=true",
     );
 
+    // yaml-language-server header (Issue #255) — IDE auto-complete + validation.
+    // The relative path mirrors the layout under config/tests/agora_regression/<id>.yaml,
+    // pointing two levels up to config/test-schema.json.
     format!(
-        "id: {test_id}\n\
+        "# yaml-language-server: $schema=../../test-schema.json\n\
+         id: {test_id}\n\
          name: \"{display_name}\"\n\
          url: \"https://redandan.github.io/?__test_role={role_str}\"\n\
          \n\

@@ -12,6 +12,13 @@ path = "src/main.rs"
 name = "sirin-call"
 path = "src/bin/sirin_call.rs"
 
+[[bin]]
+# Issue #255 — generate config/test-schema.json from parser.rs structs.
+# Run: `cargo run --bin gen-schema`. Output goes to repo-relative
+# `config/test-schema.json`. CI / unit test guard against drift.
+name = "gen-schema"
+path = "src/bin/gen_schema.rs"
+
 [dependencies]
 # eframe / egui dropped in v0.5.0 — UI is now a web app served by mcp_server.
 thiserror = "2"
@@ -42,6 +49,10 @@ regex = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 sha2 = "0.10"
+# Issue #255 — JSON Schema generation for config/tests/*.yaml. Used by
+# `gen-schema` binary to derive the schema from parser.rs structs so AI
+# authors and IDE YAML extensions get auto-complete + validation.
+schemars = "0.8"
 
 # Windows Job Object — KILL_ON_JOB_CLOSE so all child processes (claude, node,
 # git, ...) are auto-terminated when sirin.exe exits.  Prevents the orphan
