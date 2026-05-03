@@ -133,6 +133,21 @@ fn db() -> &'static Mutex<rusqlite::Connection> {
             [],
         );
 
+        // Migration: Issue #240 — per-run LLM token + cost telemetry.
+        // Populated by `record_run_usage()` after the runner drains its
+        // task-local TokenUsage collector; defaults to 0 for old rows and
+        // for runs that don't traverse any LLM call (script replays, etc.).
+        let _ = conn.execute("ALTER TABLE test_runs ADD COLUMN prompt_tokens INTEGER DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE test_runs ADD COLUMN completion_tokens INTEGER DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE test_runs ADD COLUMN cached_tokens INTEGER DEFAULT 0", []);
+        // Stored as USD * 1_000_000 (microcents-ish) so we keep precision in
+        // an INTEGER column without floating-point round-trips.  ~0.000001 USD
+        // resolution; can represent up to ~$2k per run before INT overflow.
+        let _ = conn.execute("ALTER TABLE test_runs ADD COLUMN cost_micro_usd INTEGER DEFAULT 0", []);
+        // Resolved model name(s) — may be a comma-joined list when fallback
+        // kicked in mid-run.  Optional; null for rows without LLM calls.
+        let _ = conn.execute("ALTER TABLE test_runs ADD COLUMN llm_model TEXT", []);
+
         // v0.5.3 — chat history persistence (Workspace 對話 tab).
         // One row per message; agent_id + ordered by created_at gives the
         // thread for any agent. No retention policy yet — we trim in
@@ -205,6 +220,14 @@ pub struct RunRecord {
     /// True when this run was executed in deterministic script-replay mode.
     /// False (default) for normal LLM ReAct runs.  Maps to `is_replay` DB column.
     pub is_replay: bool,
+    /// Aggregate prompt tokens charged for this run's LLM calls (Issue #240).
+    /// 0 for old rows, replays, or runs that never called an LLM that
+    /// emits `usage`.
+    pub prompt_tokens:     u32,
+    pub completion_tokens: u32,
+    pub cached_tokens:     u32,
+    /// Cost in micro-USD (USD * 1_000_000).  See `cost_micro_usd` column.
+    pub cost_micro_usd:    i64,
 }
 
 // ── API ──────────────────────────────────────────────────────────────────────
@@ -269,6 +292,49 @@ pub fn record_run(r: NewRun<'_>) -> Result<i64, String> {
     Ok(row_id)
 }
 
+/// Update an existing test_runs row with the aggregated LLM token usage
+/// + cost (Issue #240).  Called once at the end of `spawn_run_async`,
+/// after `record_run` has inserted the row.
+///
+/// `cost_micro_usd` = USD * 1_000_000 (preserves ~$0.000001 resolution
+/// without a floating-point column).
+///
+/// Idempotent — calling twice with the same values overwrites; calling
+/// with zeros leaves the row at zero (no LLM calls happened).  Errors
+/// are logged but never propagated; missing telemetry shouldn't fail
+/// the run.
+pub fn record_run_usage(
+    run_id:            &str,
+    prompt_tokens:     u32,
+    completion_tokens: u32,
+    cached_tokens:     u32,
+    cost_micro_usd:    i64,
+    llm_model:         Option<&str>,
+) {
+    let conn = db().lock().unwrap_or_else(|e| e.into_inner());
+    if let Err(e) = conn.execute(
+        "UPDATE test_runs \
+         SET prompt_tokens = ?1, completion_tokens = ?2, cached_tokens = ?3, \
+             cost_micro_usd = ?4, llm_model = ?5 \
+         WHERE run_id = ?6",
+        rusqlite::params![
+            prompt_tokens as i64,
+            completion_tokens as i64,
+            cached_tokens as i64,
+            cost_micro_usd,
+            llm_model,
+            run_id,
+        ],
+    ) {
+        tracing::warn!("[store] record_run_usage({run_id}) failed: {e}");
+    }
+}
+
+/// Convenience: convert a `TokenUsage` aggregate to `(p, c, cached, micro_usd)`.
+pub fn tokens_to_micro_usd(usage: &crate::llm::usage::TokenUsage) -> i64 {
+    (usage.cost_usd() * 1_000_000.0).round() as i64
+}
+
 /// Fallback recovery for `persist_adhoc_run`: when the in-memory run
 /// state has been pruned (>1 hour old), look up the goal + iteration
 /// count by `run_id` from SQLite.
@@ -329,7 +395,9 @@ pub fn recent_runs_all(limit: usize) -> Vec<RunRecord> {
     let conn = db().lock().unwrap_or_else(|e| e.into_inner());
     let mut stmt = match conn.prepare(
         "SELECT id, test_id, started_at, duration_ms, status, failure_category, ai_analysis, \
-         screenshot_path, console_log, COALESCE(is_replay, 0) \
+         screenshot_path, console_log, COALESCE(is_replay, 0), \
+         COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), \
+         COALESCE(cached_tokens, 0), COALESCE(cost_micro_usd, 0) \
          FROM test_runs ORDER BY started_at DESC LIMIT ?1",
     ) {
         Ok(s) => s,
@@ -352,6 +420,10 @@ pub fn recent_runs_all(limit: usize) -> Vec<RunRecord> {
                 console_errors: ce,
                 console_warnings: cw,
                 is_replay: row.get::<_, i64>(9).unwrap_or(0) != 0,
+                prompt_tokens:     row.get::<_, i64>(10).unwrap_or(0).max(0) as u32,
+                completion_tokens: row.get::<_, i64>(11).unwrap_or(0).max(0) as u32,
+                cached_tokens:     row.get::<_, i64>(12).unwrap_or(0).max(0) as u32,
+                cost_micro_usd:    row.get::<_, i64>(13).unwrap_or(0),
             })
         },
     );
@@ -468,7 +540,9 @@ pub fn recent_runs(test_id: &str, limit: usize) -> Vec<RunRecord> {
     let conn = db().lock().unwrap_or_else(|e| e.into_inner());
     let mut stmt = match conn.prepare(
         "SELECT id, test_id, started_at, duration_ms, status, failure_category, ai_analysis, \
-         screenshot_path, console_log, COALESCE(is_replay, 0) \
+         screenshot_path, console_log, COALESCE(is_replay, 0), \
+         COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), \
+         COALESCE(cached_tokens, 0), COALESCE(cost_micro_usd, 0) \
          FROM test_runs WHERE test_id = ?1 ORDER BY started_at DESC LIMIT ?2",
     ) {
         Ok(s) => s,
@@ -491,6 +565,10 @@ pub fn recent_runs(test_id: &str, limit: usize) -> Vec<RunRecord> {
                 console_errors: ce,
                 console_warnings: cw,
                 is_replay: row.get::<_, i64>(9).unwrap_or(0) != 0,
+                prompt_tokens:     row.get::<_, i64>(10).unwrap_or(0).max(0) as u32,
+                completion_tokens: row.get::<_, i64>(11).unwrap_or(0).max(0) as u32,
+                cached_tokens:     row.get::<_, i64>(12).unwrap_or(0).max(0) as u32,
+                cost_micro_usd:    row.get::<_, i64>(13).unwrap_or(0),
             })
         },
     );

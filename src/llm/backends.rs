@@ -243,11 +243,60 @@ impl OpenAiMessage {
 #[derive(Deserialize)]
 struct OpenAiResponse {
     choices: Vec<OpenAiChoice>,
+    /// Token usage — present for OpenAI / Anthropic / Gemini OpenAI-compat
+    /// endpoints.  Missing on some local backends; we treat absence as
+    /// "no telemetry available" rather than zero.
+    #[serde(default)]
+    usage: Option<OpenAiUsage>,
 }
 
 #[derive(Deserialize)]
 struct OpenAiChoice {
     message: OpenAiMessage,
+}
+
+/// Token usage block from an OpenAI-compat `/chat/completions` response.
+///
+/// Different providers populate different sub-fields:
+/// - OpenAI: `prompt_tokens_details.cached_tokens` for cache hits
+/// - Anthropic: `cache_read_input_tokens` (top-level)
+/// - Gemini: only the basic three counts
+///
+/// We normalise into [`crate::llm::usage::TokenUsage`] at the call site.
+#[derive(Deserialize, Default)]
+struct OpenAiUsage {
+    #[serde(default)]
+    prompt_tokens:           u32,
+    #[serde(default)]
+    completion_tokens:       u32,
+    /// Anthropic-specific.
+    #[serde(default)]
+    cache_read_input_tokens: u32,
+    /// OpenAI-specific.  `prompt_tokens_details.cached_tokens`.
+    #[serde(default)]
+    prompt_tokens_details:   Option<PromptTokensDetails>,
+}
+
+#[derive(Deserialize, Default)]
+struct PromptTokensDetails {
+    #[serde(default)]
+    cached_tokens: u32,
+}
+
+impl OpenAiUsage {
+    fn into_normalized(self, model: &str) -> crate::llm::usage::TokenUsage {
+        let cached = if self.cache_read_input_tokens > 0 {
+            self.cache_read_input_tokens
+        } else {
+            self.prompt_tokens_details.unwrap_or_default().cached_tokens
+        };
+        crate::llm::usage::TokenUsage {
+            prompt_tokens:     self.prompt_tokens,
+            completion_tokens: self.completion_tokens,
+            cached_tokens:     cached,
+            model:             model.to_string(),
+        }
+    }
 }
 
 // ── Non-streaming transport ──────────────────────────────────────────────────
@@ -457,6 +506,13 @@ pub(super) async fn call_openai_messages(
             .first()
             .map(|c| c.message.text_content().trim().to_string())
             .unwrap_or_default();
+
+        // Emit token usage telemetry into the task-local collector if we're
+        // inside a `usage::with_recording` scope (test_runner runs are; UI
+        // calls and ad-hoc agent calls are not).  No-op outside scope.
+        if let Some(u) = parsed.usage {
+            crate::llm::usage::record(u.into_normalized(model));
+        }
 
         // Empty-response retry — only applies to Gemini, where this is a
         // known concurrent-request failure mode (returns 200 + empty content

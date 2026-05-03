@@ -39,6 +39,7 @@
 
 mod backends;
 mod probe;
+pub mod usage;
 
 pub use probe::probe_and_build_fleet;
 #[allow(unused_imports)]

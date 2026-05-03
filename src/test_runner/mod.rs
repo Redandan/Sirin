@@ -328,6 +328,15 @@ pub fn spawn_run_async(test_id: String, auto_fix: bool) -> Result<String, String
                 .map(|t| t.max_retries)
                 .unwrap_or(0);
 
+            // Wrap the retry loop in a usage-recording scope (Issue #240) so
+            // every LLM call across every retry attempt accumulates into one
+            // tally for this run_id.  Empty tally for replays / errors with
+            // zero LLM traffic — that's fine, the SQLite columns default to 0.
+            let run_id_for_loop = run_id_clone.clone();
+            let test_id_for_loop = test_id_clone.clone();
+            let (_, usage_records) = crate::llm::usage::with_recording(async move {
+            let test_id_clone = test_id_for_loop;
+            let run_id_clone  = run_id_for_loop;
             let mut attempt = 0u32;
             loop {
                 match run_test_with_run_id(&ctx, &test_id_clone, auto_fix, Some(&run_id_clone)).await {
@@ -430,6 +439,29 @@ pub fn spawn_run_async(test_id: String, auto_fix: bool) -> Result<String, String
                         break;
                     }
                 }
+            }
+            }).await;
+
+            // Drain the per-run usage tally and persist to SQLite.  No-op when
+            // no LLM calls were made (script replays, runs that error before
+            // the first turn, local-only Ollama backends without `usage` field).
+            if !usage_records.is_empty() {
+                let agg = crate::llm::usage::aggregate(&usage_records);
+                let micro_usd = store::tokens_to_micro_usd(&agg);
+                tracing::info!(
+                    "[test_runner] '{}' run_id={} tokens p={} c={} cached={} cost=${:.4} model={}",
+                    test_id_clone, run_id_clone,
+                    agg.prompt_tokens, agg.completion_tokens, agg.cached_tokens,
+                    agg.cost_usd(), agg.model,
+                );
+                store::record_run_usage(
+                    &run_id_clone,
+                    agg.prompt_tokens,
+                    agg.completion_tokens,
+                    agg.cached_tokens,
+                    micro_usd,
+                    if agg.model.is_empty() { None } else { Some(&agg.model) },
+                );
             }
 
             // Navigate to about:blank after test finishes (pass or fail) so the

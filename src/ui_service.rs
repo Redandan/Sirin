@@ -262,6 +262,21 @@ pub struct TestRunView {
     pub console_errors:    Option<u32>,
     /// Number of browser console warnings captured.  (#222)
     pub console_warnings:  Option<u32>,
+    /// Aggregate prompt-input tokens charged for this run's LLM calls (#240).
+    /// `None` for active/queued runs and for old rows recorded before token
+    /// telemetry shipped. `Some(0)` for runs that did not call any LLM
+    /// (script replays, errors before iteration 0, local Ollama backends
+    /// that don't emit `usage`).
+    pub prompt_tokens:     Option<u32>,
+    /// Aggregate completion / output tokens for this run.
+    pub completion_tokens: Option<u32>,
+    /// Cached input tokens — billed at a discounted rate by the provider.
+    /// Anthropic emits these as `cache_read_input_tokens`; OpenAI as
+    /// `prompt_tokens_details.cached_tokens`.
+    pub cached_tokens:     Option<u32>,
+    /// Estimated USD cost using the per-model rate table in
+    /// `crate::llm::usage::price_per_million`.  `None` rules same as above.
+    pub cost_usd:          Option<f32>,
 }
 
 // ── Service traits ───────────────────────────────────────────────────────────

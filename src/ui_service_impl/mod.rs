@@ -231,18 +231,34 @@ impl TestRunnerService for RealService {
         };
 
         rows.into_iter()
-            .map(|r| TestRunView {
-                pass_rate:        pass_rate_for(&r.test_id),
-                test_id:          r.test_id,
-                status:           r.status,
-                started_at:       r.started_at,
-                duration_ms:      r.duration_ms.map(|d| d as u64),
-                analysis:         r.ai_analysis,
-                step:             None,
-                failure_category: r.failure_category,
-                // Issue #222: populate console stats from RunRecord (#220 field)
-                console_errors:   Some(r.console_errors),
-                console_warnings: Some(r.console_warnings),
+            .map(|r| {
+                // Issue #240: cost_micro_usd → USD f32 (cents-precision is fine
+                // for dashboard display; raw integer is preserved in SQLite).
+                let cost_usd = if r.cost_micro_usd > 0 {
+                    Some(r.cost_micro_usd as f32 / 1_000_000.0)
+                } else { None };
+                let prompt_tokens     = if r.prompt_tokens > 0 { Some(r.prompt_tokens) } else { None };
+                let completion_tokens = if r.completion_tokens > 0 { Some(r.completion_tokens) } else { None };
+                let cached_tokens     = if r.cached_tokens > 0 { Some(r.cached_tokens) } else { None };
+
+                TestRunView {
+                    pass_rate:        pass_rate_for(&r.test_id),
+                    test_id:          r.test_id,
+                    status:           r.status,
+                    started_at:       r.started_at,
+                    duration_ms:      r.duration_ms.map(|d| d as u64),
+                    analysis:         r.ai_analysis,
+                    step:             None,
+                    failure_category: r.failure_category,
+                    // Issue #222: populate console stats from RunRecord (#220 field)
+                    console_errors:   Some(r.console_errors),
+                    console_warnings: Some(r.console_warnings),
+                    // Issue #240: token + cost telemetry
+                    prompt_tokens,
+                    completion_tokens,
+                    cached_tokens,
+                    cost_usd,
+                }
             })
             .collect()
     }
@@ -270,6 +286,11 @@ impl TestRunnerService for RealService {
                     pass_rate:        None,
                     console_errors:   None,  // not available for active runs
                     console_warnings: None,
+                    // Token telemetry only flushed on completion (Issue #240).
+                    prompt_tokens:     None,
+                    completion_tokens: None,
+                    cached_tokens:     None,
+                    cost_usd:          None,
                 }
             })
             .collect()

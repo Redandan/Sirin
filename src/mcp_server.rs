@@ -676,6 +676,12 @@ fn build_snapshot(svc: &Arc<dyn AppService>) -> Value {
         "started_at":  r.started_at,
         "pass_rate":   r.pass_rate,
         "failure_category": r.failure_category,
+        // Issue #240: token + cost telemetry surfaced to the dashboard.
+        // null for old rows / replays / runs with no LLM traffic.
+        "prompt_tokens":     r.prompt_tokens,
+        "completion_tokens": r.completion_tokens,
+        "cached_tokens":     r.cached_tokens,
+        "cost_usd":          r.cost_usd,
     })).collect();
 
     let last_verdict = svc.recent_test_runs(1).into_iter().next().map(|r| json!({
