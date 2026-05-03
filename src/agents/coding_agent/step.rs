@@ -88,3 +88,88 @@ pub(super) fn extract_modified_paths(action: &str, v: &Value) -> Vec<String> {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // Issue #263 Phase 3: tests for extract_modified_paths.
+    // Pure JSON shape parser — covers each action class the function knows.
+
+    #[test]
+    fn extract_paths_from_file_write() {
+        let v = json!({"path": "src/main.rs", "bytes_written": 1234});
+        assert_eq!(extract_modified_paths("file_write", &v), vec!["src/main.rs"]);
+    }
+
+    #[test]
+    fn extract_paths_from_file_patch() {
+        let v = json!({"path": "Cargo.toml", "patched": true});
+        assert_eq!(extract_modified_paths("file_patch", &v), vec!["Cargo.toml"]);
+    }
+
+    #[test]
+    fn extract_paths_from_plan_execute_collects_all_steps() {
+        let v = json!({
+            "results": [
+                {"step": 1, "result": {"path": "src/a.rs"}},
+                {"step": 2, "result": {"path": "src/b.rs"}},
+                {"step": 3, "result": {"unrelated": "x"}},     // no path → skipped
+                {"step": 4, "result": {"path": "tests/c.rs"}},
+            ]
+        });
+        let paths = extract_modified_paths("plan_execute", &v);
+        assert_eq!(paths, vec!["src/a.rs", "src/b.rs", "tests/c.rs"]);
+    }
+
+    #[test]
+    fn extract_paths_returns_empty_for_unknown_action() {
+        let v = json!({"path": "src/main.rs"});
+        // file_read / browser_exec / etc. — should NOT report writes
+        assert!(extract_modified_paths("file_read", &v).is_empty());
+        assert!(extract_modified_paths("browser_exec", &v).is_empty());
+        assert!(extract_modified_paths("unknown_action", &v).is_empty());
+    }
+
+    #[test]
+    fn extract_paths_safe_when_path_field_missing() {
+        let v = json!({"bytes_written": 99});
+        assert!(extract_modified_paths("file_write", &v).is_empty());
+        assert!(extract_modified_paths("file_patch", &v).is_empty());
+    }
+
+    #[test]
+    fn extract_paths_safe_when_path_field_wrong_type() {
+        // path as number / array / null instead of string — must not panic.
+        let v = json!({"path": 42});
+        assert!(extract_modified_paths("file_write", &v).is_empty());
+        let v = json!({"path": null});
+        assert!(extract_modified_paths("file_write", &v).is_empty());
+        let v = json!({"path": ["a","b"]});
+        assert!(extract_modified_paths("file_write", &v).is_empty());
+    }
+
+    #[test]
+    fn extract_paths_plan_execute_handles_missing_results_array() {
+        let v = json!({"unrelated": true});
+        assert!(extract_modified_paths("plan_execute", &v).is_empty());
+        let v = json!({"results": "not an array"});
+        assert!(extract_modified_paths("plan_execute", &v).is_empty());
+        let v = json!({"results": []});
+        assert!(extract_modified_paths("plan_execute", &v).is_empty());
+    }
+
+    #[test]
+    fn extract_paths_plan_execute_handles_step_without_result_object() {
+        let v = json!({
+            "results": [
+                {"step": 1},                                  // no result key
+                {"step": 2, "result": null},                  // result null
+                {"step": 3, "result": {"path": "src/ok.rs"}}, // valid
+            ]
+        });
+        // Only step 3's path should be collected.
+        assert_eq!(extract_modified_paths("plan_execute", &v), vec!["src/ok.rs"]);
+    }
+}
