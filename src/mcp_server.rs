@@ -6576,6 +6576,112 @@ mod test_runner_mcp_tests {
         let result = base64_decode("SGVsbG8@");
         assert!(result.is_none(), "should return None for invalid base64 chars");
     }
+
+    // ── #257 Option B end-to-end tests ──────────────────────────────────────
+    //
+    // The unit tests in `mcp_registry::tests` verify the registry data
+    // structure; the parity test in `mcp_parity_tests` verifies source-text
+    // consistency.  These tests exercise the actual `handle_tools_list` and
+    // `handle_tools_call` entry points so we know the merge + dispatch
+    // wiring works end-to-end, not just the data layer.
+
+    #[test]
+    fn tools_list_includes_registry_tools() {
+        let response = handle_tools_list().expect("handle_tools_list must succeed");
+        let tools = response["tools"].as_array().expect("tools array");
+        let names: Vec<&str> = tools.iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+
+        // Registry tools must be present (3 currently migrated).
+        assert!(names.contains(&"skill_list"),       "skill_list missing: {names:?}");
+        assert!(names.contains(&"teams_pending"),    "teams_pending missing: {names:?}");
+        assert!(names.contains(&"discovery_status"), "discovery_status missing: {names:?}");
+
+        // Some legacy tools must also still be present (we didn't accidentally
+        // delete the literal block).
+        assert!(names.contains(&"memory_search"),    "legacy memory_search missing");
+        assert!(names.contains(&"run_test_async"),   "legacy run_test_async missing");
+
+        // No tool name is duplicated (registry tools must not also live in
+        // the literal block).
+        let mut seen = std::collections::HashSet::new();
+        for n in &names {
+            assert!(seen.insert(n.to_string()), "duplicate tool name: {n}");
+        }
+    }
+
+    #[tokio::test]
+    async fn tools_call_routes_skill_list_through_registry() {
+        let envelope = handle_tools_call(
+            json!({ "name": "skill_list", "arguments": {} }),
+            "test-user-agent",
+        ).await.expect("skill_list dispatch must succeed");
+
+        // skill_list is a SyncText handler — envelope shape:
+        //   {"content":[{"type":"text","text":"..."}]}
+        assert_eq!(envelope["content"][0]["type"], "text",
+            "skill_list envelope: {envelope:?}");
+        assert!(envelope["content"][0]["text"].is_string());
+    }
+
+    #[tokio::test]
+    async fn tools_call_routes_discovery_status_through_registry() {
+        let envelope = handle_tools_call(
+            json!({ "name": "discovery_status", "arguments": {} }),
+            "test-user-agent",
+        ).await.expect("discovery_status dispatch must succeed");
+
+        // discovery_status is a SyncJson handler — wrap_json renders the
+        // structured payload as pretty-printed JSON inside the text field.
+        let text = envelope["content"][0]["text"].as_str()
+            .expect("envelope text");
+        let inner: Value = serde_json::from_str(text)
+            .expect("inner payload must be valid JSON");
+        // discovery_status returns at minimum a "status" field.
+        assert!(inner.get("status").is_some(),
+            "discovery_status payload missing status: {inner}");
+    }
+
+    #[tokio::test]
+    async fn tools_call_legacy_path_still_works_for_unmigrated_tool() {
+        // run_test_async is NOT in the registry — must dispatch via the
+        // legacy match arm.  Pass an invalid arg so the handler errors
+        // cleanly without actually running a test (we just want to verify
+        // the dispatch path reaches the handler at all).
+        let result = handle_tools_call(
+            json!({ "name": "run_test_async", "arguments": {} }),
+            "test-user-agent",
+        ).await;
+        // Either Ok(envelope-with-error-content) or Err — both prove the
+        // dispatch path reached the handler.  The key signal we want to
+        // rule out is "Unknown tool: run_test_async".
+        match result {
+            Ok(env) => {
+                let text = env["content"][0]["text"].as_str().unwrap_or("");
+                assert!(!text.contains("Unknown tool"),
+                    "legacy dispatch path broken for run_test_async: {env}");
+            }
+            Err(e) => {
+                assert!(!e.contains("Unknown tool"),
+                    "legacy dispatch path broken for run_test_async: {e}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn tools_call_returns_unknown_for_truly_unknown_tool() {
+        // Sanity: a totally-bogus name still gets the "Unknown tool" error
+        // (the fallback isn't accidentally swallowing every unknown).
+        let result = handle_tools_call(
+            json!({ "name": "this_tool_definitely_does_not_exist_xyz", "arguments": {} }),
+            "test-user-agent",
+        ).await;
+        match result {
+            Err(e)  => assert!(e.contains("Unknown tool"), "want Unknown tool error, got: {e}"),
+            Ok(env) => panic!("expected error for bogus tool, got envelope: {env}"),
+        }
+    }
 }
 
 /// Minimal base64 decoder (no external dep). Returns None on invalid input.
