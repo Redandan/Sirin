@@ -61,15 +61,29 @@ pub(super) async fn gather_project_context(ctx: &AgentContext, task: &str) -> St
 
 // ── Planning ─────────────────────────────────────────────────────────────────
 
-pub(super) async fn make_plan(ctx: &AgentContext, task: &str, project_ctx: &str) -> String {
-    let prompt = format!(
-        "You are an expert software engineer. \
+// Issue #256 — typed prompt args for plan generation.
+pub(super) struct PlanPromptArgs<'a> {
+    pub(super) task:        &'a str,
+    pub(super) project_ctx: &'a str,
+}
+
+impl<'a> PlanPromptArgs<'a> {
+    pub(super) fn render(&self) -> String {
+        format!(
+            "You are an expert software engineer. \
 Plan the minimal steps to complete this coding task.\n\n\
 Task: {task}\n\n\
 {project_ctx}\n\n\
 List 3-6 numbered steps. Be specific about which files to read or modify. \
 Return only the numbered list, no extra prose.",
-    );
+            task = self.task,
+            project_ctx = self.project_ctx,
+        )
+    }
+}
+
+pub(super) async fn make_plan(ctx: &AgentContext, task: &str, project_ctx: &str) -> String {
+    let prompt = PlanPromptArgs { task, project_ctx }.render();
     // Plan generation is a lightweight step-list task — use the router (local)
     // LLM to save remote quota for the actual ReAct coding iterations.
     crate::llm::call_prompt(ctx.http.as_ref(), &crate::llm::shared_router_llm(), prompt)
@@ -77,57 +91,72 @@ Return only the numbered list, no extra prose.",
         .unwrap_or_else(|_| "1. Read relevant files\n2. Make changes\n3. Verify".to_string())
 }
 
-// ── ReAct prompt ─────────────────────────────────────────────────────────────
+// ── ReAct prompt (typed, Issue #256) ─────────────────────────────────────────
+//
+// Issue #256 — typed prompt args. Adding/renaming a field is a compile-time
+// failure at every call site instead of a silent `{var}` literal in the
+// rendered prompt.  `format!` itself rejects unknown named args at compile
+// time — so missing fields in the template OR missing args in the struct
+// surface immediately.  See `tests::react_prompt_snapshot_*` for behavioural
+// pinning.
 
-pub(super) fn build_react_prompt(
-    task: &str,
-    project_ctx: &str,
-    plan: &str,
-    history: &[&HistoryEntry],
-    tool_list: &str,
-    dry_run: bool,
-) -> String {
-    let dry_run_note = if dry_run {
-        "\nNOTE: Running in DRY-RUN mode. For file_write, file_patch, and plan_execute actions \
+pub(super) struct ReactPromptArgs<'a> {
+    pub(super) task:        &'a str,
+    pub(super) project_ctx: &'a str,
+    pub(super) plan:        &'a str,
+    pub(super) history:     &'a [&'a HistoryEntry],
+    pub(super) tool_list:   &'a str,
+    pub(super) dry_run:     bool,
+}
+
+impl<'a> ReactPromptArgs<'a> {
+    pub(super) fn render(&self) -> String {
+        let dry_run_note = if self.dry_run {
+            "\nNOTE: Running in DRY-RUN mode. For file_write, file_patch, and plan_execute actions \
 pass `\"dry_run\": true` in action_input. Files will NOT be written to disk; the agent will \
 report what would change.\n"
-    } else {
-        ""
-    };
-    let analysis_mode_note = if is_read_only_analysis_task(task) {
-        "\nREAD-ONLY ANALYSIS MODE: inspect the most relevant 2-4 files, then return `DONE` with a concise evidence-based summary that cites the file paths you used. Avoid repeating the same reads/searches once the answer is clear.\n"
-    } else {
-        ""
-    };
+        } else {
+            ""
+        };
+        let analysis_mode_note = if is_read_only_analysis_task(self.task) {
+            "\nREAD-ONLY ANALYSIS MODE: inspect the most relevant 2-4 files, then return `DONE` with a concise evidence-based summary that cites the file paths you used. Avoid repeating the same reads/searches once the answer is clear.\n"
+        } else {
+            ""
+        };
 
-    let history_block = if history.is_empty() {
-        String::new()
-    } else {
-        let entries: Vec<String> = history
-            .iter()
-            .map(|h| {
-                format!(
-                    "Thought: {}\nAction: {}\nAction Input: {}\nObservation: {}",
-                    h.thought,
-                    h.action,
-                    serde_json::to_string(&h.action_input).unwrap_or_default(),
-                    h.observation
-                )
-            })
-            .collect();
-        format!("\n## Previous steps\n{}\n", entries.join("\n---\n"))
-    };
+        let history_block = if self.history.is_empty() {
+            String::new()
+        } else {
+            let entries: Vec<String> = self.history
+                .iter()
+                .map(|h| {
+                    format!(
+                        "Thought: {thought}\nAction: {action}\n\
+                         Action Input: {action_input}\nObservation: {observation}",
+                        thought = h.thought,
+                        action = h.action,
+                        action_input =
+                            serde_json::to_string(&h.action_input).unwrap_or_default(),
+                        observation = h.observation,
+                    )
+                })
+                .collect();
+            format!("\n## Previous steps\n{}\n", entries.join("\n---\n"))
+        };
 
-    // Token budget: estimate static sections and trim project_ctx if necessary
-    // so the full prompt stays under MAX_PROMPT_CHARS.  Keeps the LLM from
-    // receiving a truncated prompt silently when context is large.
-    let static_budget = task.len() + plan.len() + tool_list.len()
-        + history_block.len() + 800 /* boilerplate */;
-    let ctx_budget = MAX_PROMPT_CHARS.saturating_sub(static_budget);
-    let project_ctx_trimmed: String = project_ctx.chars().take(ctx_budget.max(400)).collect();
+        // Token budget: estimate static sections and trim project_ctx if necessary
+        // so the full prompt stays under MAX_PROMPT_CHARS.
+        let static_budget = self.task.len() + self.plan.len() + self.tool_list.len()
+            + history_block.len() + 800 /* boilerplate */;
+        let ctx_budget = MAX_PROMPT_CHARS.saturating_sub(static_budget);
+        let project_ctx_trimmed: String =
+            self.project_ctx.chars().take(ctx_budget.max(400)).collect();
 
-    format!(
-        r#"You are Sirin, a local AI Coding Agent.
+        // Named format args — adding a new {field} requires adding the
+        // matching = clause below, and removing a field flags every {field}
+        // reference at compile time.
+        format!(
+            r#"You are Sirin, a local AI Coding Agent.
 {dry_run_note}
 ## Task
 {task}
@@ -162,8 +191,31 @@ Respond with ONLY valid JSON in this exact format (no markdown fences):
 }}
 
 If you have finished ALL steps in the plan and the task is complete, set action to "DONE".
-"#
-    )
+"#,
+            dry_run_note       = dry_run_note,
+            task               = self.task,
+            plan               = self.plan,
+            project_ctx_trimmed = project_ctx_trimmed,
+            history_block      = history_block,
+            tool_list          = self.tool_list,
+            analysis_mode_note = analysis_mode_note,
+        )
+    }
+}
+
+/// Backwards-compatible thin wrapper — existing callers stay unchanged.
+/// Prefer constructing [`ReactPromptArgs`] directly in new code.
+pub(super) fn build_react_prompt(
+    task: &str,
+    project_ctx: &str,
+    plan: &str,
+    history: &[&HistoryEntry],
+    tool_list: &str,
+    dry_run: bool,
+) -> String {
+    ReactPromptArgs {
+        task, project_ctx, plan, history, tool_list, dry_run,
+    }.render()
 }
 
 // ── Step parsing ─────────────────────────────────────────────────────────────
@@ -216,5 +268,112 @@ pub(super) fn parse_react_step(raw: &str) -> ReactStep {
         action_input: json!({}),
         final_answer: None,
         parse_error: true,
+    }
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+//
+// Issue #256 — snapshot tests for the typed prompts.  The goal is to pin
+// behavioural invariants (markers / sections present, correct branching on
+// flags) rather than byte-for-byte equality, so a doc-comment tweak doesn't
+// fail CI but a lost field reference does.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn plan_prompt_includes_task_and_project_ctx() {
+        let p = PlanPromptArgs {
+            task:        "fix the auth bug",
+            project_ctx: "axum + tower-http stack",
+        }.render();
+        assert!(p.contains("Task: fix the auth bug"));
+        assert!(p.contains("axum + tower-http stack"));
+        assert!(p.contains("3-6 numbered steps"));
+        // No accidental unsubstituted {var} markers leaking through.
+        assert!(!p.contains("{task}"));
+        assert!(!p.contains("{project_ctx}"));
+    }
+
+    #[test]
+    fn react_prompt_dry_run_branches_correctly() {
+        let dry = ReactPromptArgs {
+            task: "t", project_ctx: "ctx", plan: "p",
+            history: &[], tool_list: "tl",
+            dry_run: true,
+        }.render();
+        assert!(dry.contains("DRY-RUN mode"));
+
+        let live = ReactPromptArgs {
+            task: "t", project_ctx: "ctx", plan: "p",
+            history: &[], tool_list: "tl",
+            dry_run: false,
+        }.render();
+        assert!(!live.contains("DRY-RUN mode"));
+    }
+
+    #[test]
+    fn react_prompt_renders_history_block_only_when_nonempty() {
+        let empty = ReactPromptArgs {
+            task: "t", project_ctx: "ctx", plan: "p",
+            history: &[], tool_list: "tl", dry_run: false,
+        }.render();
+        assert!(!empty.contains("Previous steps"));
+
+        let h = HistoryEntry {
+            thought:      "looking around".into(),
+            action:       "local_file_read".into(),
+            action_input: json!({ "path": "src/main.rs" }),
+            observation:  "// fn main()".into(),
+            pinned:       false,
+        };
+        let entries: Vec<&HistoryEntry> = vec![&h];
+        let with_history = ReactPromptArgs {
+            task: "t", project_ctx: "ctx", plan: "p",
+            history: &entries, tool_list: "tl", dry_run: false,
+        }.render();
+        assert!(with_history.contains("## Previous steps"));
+        assert!(with_history.contains("looking around"));
+        assert!(with_history.contains("local_file_read"));
+        assert!(with_history.contains("src/main.rs"));
+    }
+
+    #[test]
+    fn react_prompt_trims_project_ctx_when_static_budget_large() {
+        // A massive task pushes the static budget close to MAX_PROMPT_CHARS,
+        // forcing project_ctx to be trimmed (but never below 400 chars).
+        let huge_task = "x".repeat(MAX_PROMPT_CHARS - 500);
+        let huge_ctx = "y".repeat(50_000);
+        let rendered = ReactPromptArgs {
+            task: &huge_task, project_ctx: &huge_ctx, plan: "p",
+            history: &[], tool_list: "tl", dry_run: false,
+        }.render();
+        // project_ctx was trimmed — should not contain the full 50k 'y's.
+        let y_count = rendered.matches('y').count();
+        assert!(y_count < 50_000, "got {y_count} y's — project_ctx not trimmed");
+        // But trimmed to ≥ 400 (the floor).
+        assert!(y_count >= 400, "got {y_count} y's — trimmed below floor");
+    }
+
+    #[test]
+    fn react_prompt_analysis_mode_for_read_only_tasks() {
+        // is_read_only_analysis_task triggers on Chinese 「分析」 / 「說明」
+        // and English "explain" / "summar" / "inspect" / "review" / "read ".
+        let analysis = ReactPromptArgs {
+            task: "分析 src/llm/mod.rs 的設計",
+            project_ctx: "ctx", plan: "p",
+            history: &[], tool_list: "tl", dry_run: false,
+        }.render();
+        assert!(analysis.contains("READ-ONLY ANALYSIS MODE"));
+
+        // A modify-task does not trigger analysis mode.
+        let modify = ReactPromptArgs {
+            task: "修改 src/main.rs 加 hello world",
+            project_ctx: "ctx", plan: "p",
+            history: &[], tool_list: "tl", dry_run: false,
+        }.render();
+        assert!(!modify.contains("READ-ONLY ANALYSIS MODE"));
     }
 }

@@ -464,35 +464,12 @@ pub(super) async fn understand_message(
         target_files: Vec::new(),
     };
 
-    let context_section = context_block
-        .map(|c| {
-            let preview: String = c.chars().take(600).collect();
-            format!("\nRecent conversation (for context only):\n{preview}\n")
-        })
-        .unwrap_or_default();
-
-    let prompt = format!(
-        "You are a message intent classifier. Read the user message and output ONLY a JSON object — no markdown, no explanation.\n\
-\n\
-Fields:\n\
-- intent: one of \"local_file\" | \"project_overview\" | \"code_analysis\" | \"capability_query\" | \"correction\" | \"web_search\" | \"general\"\n\
-- is_correction: true if the user says the previous reply was wrong, outdated, or inaccurate\n\
-- target_files: array of file paths explicitly mentioned (empty array if none)\n\
-- summary: one short sentence describing what the user wants\n\
-\n\
-Intent rules:\n\
-- \"correction\": user indicates the previous reply was wrong/outdated/inaccurate — e.g. \"不是這樣\", \"應該不對\", \"你說錯了\", \"wrong\", \"not accurate\", \"that's outdated\", \"應該更新了\"\n\
-- \"local_file\": user names a specific file or asks to read/show/explain a particular file\n\
-- \"project_overview\": user asks about project structure, modules, architecture, or what files exist\n\
-- \"code_analysis\": user asks to analyze, explain, debug, trace, or understand code behaviour\n\
-- \"capability_query\": user asks what you can do, what skills or features you have\n\
-- \"web_search\": user asks about external information not found in the codebase\n\
-- \"general\": everything else\n\
-{context_section}\n\
-User message: {user_text}\n\
-\n\
-Output ONLY valid JSON."
-    );
+    // Issue #256 — typed prompt args.  See `IntentClassifierPromptArgs::render`
+    // (defined below this fn body for code-locality).
+    let prompt = IntentClassifierPromptArgs {
+        user_text,
+        context_block,
+    }.render();
 
     // Intent classification is a simple JSON categorisation task — use the
     // router (local) LLM to avoid burning remote API quota on every message.
@@ -649,6 +626,49 @@ pub(super) fn related_research_snippet(user_text: &str) -> Option<String> {
         .filter_map(|task| task.final_report)
         .map(|report| report.chars().take(600).collect::<String>())
         .next()
+}
+
+// ── Typed prompt args (Issue #256) ──────────────────────────────────────────
+
+pub(super) struct IntentClassifierPromptArgs<'a> {
+    pub(super) user_text:     &'a str,
+    pub(super) context_block: Option<&'a str>,
+}
+
+impl<'a> IntentClassifierPromptArgs<'a> {
+    pub(super) fn render(&self) -> String {
+        let context_section = self.context_block
+            .map(|c| {
+                let preview: String = c.chars().take(600).collect();
+                format!("\nRecent conversation (for context only):\n{preview}\n")
+            })
+            .unwrap_or_default();
+
+        format!(
+            "You are a message intent classifier. Read the user message and output ONLY a JSON object — no markdown, no explanation.\n\
+\n\
+Fields:\n\
+- intent: one of \"local_file\" | \"project_overview\" | \"code_analysis\" | \"capability_query\" | \"correction\" | \"web_search\" | \"general\"\n\
+- is_correction: true if the user says the previous reply was wrong, outdated, or inaccurate\n\
+- target_files: array of file paths explicitly mentioned (empty array if none)\n\
+- summary: one short sentence describing what the user wants\n\
+\n\
+Intent rules:\n\
+- \"correction\": user indicates the previous reply was wrong/outdated/inaccurate — e.g. \"不是這樣\", \"應該不對\", \"你說錯了\", \"wrong\", \"not accurate\", \"that's outdated\", \"應該更新了\"\n\
+- \"local_file\": user names a specific file or asks to read/show/explain a particular file\n\
+- \"project_overview\": user asks about project structure, modules, architecture, or what files exist\n\
+- \"code_analysis\": user asks to analyze, explain, debug, trace, or understand code behaviour\n\
+- \"capability_query\": user asks what you can do, what skills or features you have\n\
+- \"web_search\": user asks about external information not found in the codebase\n\
+- \"general\": everything else\n\
+{context_section}\n\
+User message: {user_text}\n\
+\n\
+Output ONLY valid JSON.",
+            context_section = context_section,
+            user_text       = self.user_text,
+        )
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -813,5 +833,53 @@ mod tests {
         // Negatives — bare words without ext or known prefix.
         assert!(!looks_like_file_token("hello"));
         assert!(!looks_like_file_token("分析"));
+    }
+
+    // Issue #256 — snapshot tests for the typed intent classifier prompt.
+
+    #[test]
+    fn intent_classifier_prompt_includes_user_text_and_intent_list() {
+        let p = super::IntentClassifierPromptArgs {
+            user_text:     "解釋 src/main.rs",
+            context_block: None,
+        }.render();
+        assert!(p.contains("User message: 解釋 src/main.rs"));
+        // The intent enum values are documented in quotes within the prompt.
+        assert!(p.contains("- intent:"));
+        assert!(p.contains("\"local_file\""));
+        assert!(p.contains("\"correction\""));
+        assert!(p.contains("Output ONLY valid JSON"));
+        // No leaked markers.
+        assert!(!p.contains("{user_text}"));
+        assert!(!p.contains("{context_section}"));
+    }
+
+    #[test]
+    fn intent_classifier_prompt_includes_context_when_provided() {
+        let p = super::IntentClassifierPromptArgs {
+            user_text:     "繼續",
+            context_block: Some("AI: previous response\nUser: ok"),
+        }.render();
+        assert!(p.contains("Recent conversation"));
+        assert!(p.contains("AI: previous response"));
+    }
+
+    #[test]
+    fn intent_classifier_prompt_truncates_long_context() {
+        let huge = "x".repeat(2000);
+        let p = super::IntentClassifierPromptArgs {
+            user_text:     "?",
+            context_block: Some(&huge),
+        }.render();
+        // 600-char preview cap on context_block; allow up to ~50 extra
+        // 'x' chars from the static prompt body ("explicitly", etc.).
+        let x_count = p.matches('x').count();
+        assert!(
+            x_count <= 650,
+            "got {x_count} x's — context_block preview not truncated to 600"
+        );
+        // Must be substantially less than the original 2000 — the cap is
+        // working, not skipped.
+        assert!(x_count < 1000);
     }
 }

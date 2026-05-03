@@ -327,44 +327,12 @@ async fn llm_plan(
     request: &PlannerRequest,
     recommended_skills: &[String],
 ) -> Option<WorkflowPlan> {
-    let context_hint = request
-        .context_block
-        .as_deref()
-        .map(|c| format!("\nRecent context:\n{c}"))
-        .unwrap_or_default();
-    let skill_hint = if recommended_skills.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "\nRelevant local capabilities for this request: {}",
-            recommended_skills.join(", ")
-        )
-    };
-
-    let prompt = format!(
-        r#"You are a planning assistant. Classify the user's message and output ONLY valid JSON.
-
-User message: "{msg}"{context_hint}{skill_hint}
-
-JSON schema (fill every field):
-{{
-  "intent": "answer" | "research",
-  "should_start_research": true | false,
-  "steps": ["step 1", "step 2", ...],
-  "summary": "one-sentence description of the workflow"
-}}
-
-Rules:
-- Use "research" when the user wants an investigation, analysis, or information about a URL/topic.
-- Use "answer" for greetings, simple questions, direct instructions, identity questions, or questions about whether you can inspect the local code/project files.
-- If the relevant local capabilities include `project_overview`, `local_file_read`, `codebase_search`, `grounded_fix`, `symbol_trace`, or `test_selector`, prefer "answer" because the request can be handled locally inside this repo.
-- Never classify `你是誰` or `能看到當前代碼嗎` style questions as research.
-- steps must be an ordered list of 2-5 concrete actions.
-
-Output only the JSON object, no explanation."#,
-        msg = request.user_text,
-        context_hint = context_hint,
-    );
+    // Issue #256 — typed prompt args.  See `PlannerClassifierPromptArgs::render`.
+    let prompt = PlannerClassifierPromptArgs {
+        user_text:          &request.user_text,
+        context_block:      request.context_block.as_deref(),
+        recommended_skills,
+    }.render();
 
     // Use the router-specific LLM (local backend when ROUTER_LLM_PROVIDER is
     // set) so intent classification never consumes remote API quota.
@@ -439,6 +407,56 @@ pub async fn run_planner_via_adk(
         .run(&PlannerAgent, ctx, json!(request))
         .await
         .and_then(|output| serde_json::from_value(output).map_err(|e| e.to_string()))
+}
+
+// ── Typed prompt args (Issue #256) ──────────────────────────────────────────
+
+pub(super) struct PlannerClassifierPromptArgs<'a> {
+    pub(super) user_text:          &'a str,
+    pub(super) context_block:      Option<&'a str>,
+    pub(super) recommended_skills: &'a [String],
+}
+
+impl<'a> PlannerClassifierPromptArgs<'a> {
+    pub(super) fn render(&self) -> String {
+        let context_hint = self.context_block
+            .map(|c| format!("\nRecent context:\n{c}"))
+            .unwrap_or_default();
+        let skill_hint = if self.recommended_skills.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\nRelevant local capabilities for this request: {}",
+                self.recommended_skills.join(", ")
+            )
+        };
+
+        format!(
+            r#"You are a planning assistant. Classify the user's message and output ONLY valid JSON.
+
+User message: "{msg}"{context_hint}{skill_hint}
+
+JSON schema (fill every field):
+{{
+  "intent": "answer" | "research",
+  "should_start_research": true | false,
+  "steps": ["step 1", "step 2", ...],
+  "summary": "one-sentence description of the workflow"
+}}
+
+Rules:
+- Use "research" when the user wants an investigation, analysis, or information about a URL/topic.
+- Use "answer" for greetings, simple questions, direct instructions, identity questions, or questions about whether you can inspect the local code/project files.
+- If the relevant local capabilities include `project_overview`, `local_file_read`, `codebase_search`, `grounded_fix`, `symbol_trace`, or `test_selector`, prefer "answer" because the request can be handled locally inside this repo.
+- Never classify `你是誰` or `能看到當前代碼嗎` style questions as research.
+- steps must be an ordered list of 2-5 concrete actions.
+
+Output only the JSON object, no explanation."#,
+            msg          = self.user_text,
+            context_hint = context_hint,
+            skill_hint   = skill_hint,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -540,5 +558,58 @@ mod tests {
             .steps
             .iter()
             .any(|step| step.contains("inspect core project files")));
+    }
+
+    // Issue #256 — snapshot tests for the typed planner classifier prompt.
+
+    #[test]
+    fn planner_classifier_prompt_contains_user_text_and_schema() {
+        let p = super::PlannerClassifierPromptArgs {
+            user_text:          "分析這個 module",
+            context_block:      None,
+            recommended_skills: &[],
+        }.render();
+        assert!(p.contains("\"分析這個 module\""));
+        assert!(p.contains("\"intent\": \"answer\" | \"research\""));
+        assert!(p.contains("should_start_research"));
+        // No accidental {var} leaks.
+        assert!(!p.contains("{msg}"));
+        assert!(!p.contains("{context_hint}"));
+        assert!(!p.contains("{skill_hint}"));
+    }
+
+    #[test]
+    fn planner_classifier_prompt_includes_recent_context_when_provided() {
+        let p = super::PlannerClassifierPromptArgs {
+            user_text:          "繼續",
+            context_block:      Some("earlier turn"),
+            recommended_skills: &[],
+        }.render();
+        assert!(p.contains("Recent context:"));
+        assert!(p.contains("earlier turn"));
+    }
+
+    #[test]
+    fn planner_classifier_prompt_includes_skills_when_provided() {
+        let skills = vec!["grounded_fix".to_string(), "symbol_trace".into()];
+        let p = super::PlannerClassifierPromptArgs {
+            user_text:          "fix it",
+            context_block:      None,
+            recommended_skills: &skills,
+        }.render();
+        assert!(p.contains("Relevant local capabilities"));
+        assert!(p.contains("grounded_fix"));
+        assert!(p.contains("symbol_trace"));
+    }
+
+    #[test]
+    fn planner_classifier_prompt_omits_optional_sections_when_empty() {
+        let p = super::PlannerClassifierPromptArgs {
+            user_text:          "hi",
+            context_block:      None,
+            recommended_skills: &[],
+        }.render();
+        assert!(!p.contains("Recent context:"));
+        assert!(!p.contains("Relevant local capabilities"));
     }
 }

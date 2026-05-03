@@ -29,6 +29,53 @@ use super::ChatRequest;
 /// Maximum number of tool-call iterations before forcing a final answer.
 const REACT_MAX_TURNS: usize = 3;
 
+// ── Typed prompt args (Issue #256) ──────────────────────────────────────────
+//
+// Adding/renaming a field surfaces at every call site as a compile error
+// instead of a silent `{var}` literal in the rendered prompt.  Snapshot
+// tests in `tests` mod pin the rendered shape so an accidental whitespace
+// drift fails CI.
+
+pub(super) struct ChatReactPromptArgs<'a> {
+    pub(super) persona_name:     &'a str,
+    pub(super) user_text:        &'a str,
+    pub(super) initial_context:  Option<&'a str>,
+    pub(super) has_meeting_auth: bool,
+}
+
+impl<'a> ChatReactPromptArgs<'a> {
+    pub(super) fn render(&self) -> String {
+        let handoff_line = if self.has_meeting_auth {
+            "  [HANDOFF] <to_agent>::<payload>  — pass confidential info to another agent\n"
+        } else {
+            ""
+        };
+        let tool_instructions = format!(
+            "You are an AI assistant. You can use these tools before answering:\n\
+              [SEARCH] <query>  — search the web\n\
+              [MEMORY] <query>  — recall past knowledge\n\
+              [CODE]   <query>  — search this project's source code\n\
+            {handoff_line}\n\
+            When you have enough information, reply with:\n\
+              [ANSWER] <your response to the user>\n\
+            \n\
+            Use at most one tool per turn. If no tool is needed, go straight to [ANSWER].\n\
+            These bracket tags are internal only; never mention them in the final user-facing reply.",
+            handoff_line = handoff_line,
+        );
+        let context_block = self.initial_context
+            .map(|c| format!("\nContext:\n{c}\n"))
+            .unwrap_or_default();
+        format!(
+            "System: You are {persona_name}. {tool_instructions}{context_block}\n\nUser: {user_text}\n",
+            persona_name = self.persona_name,
+            tool_instructions = tool_instructions,
+            context_block = context_block,
+            user_text = self.user_text,
+        )
+    }
+}
+
 /// Run a ReAct loop: the LLM decides which tools to call, we execute them and
 /// feed results back until it produces a `[ANSWER]` tag or `REACT_MAX_TURNS`
 /// is reached.
@@ -48,31 +95,13 @@ pub async fn react_loop(
     initial_context: Option<&str>,
     has_meeting_auth: bool,
 ) -> String {
-    let handoff_line = if has_meeting_auth {
-        "  [HANDOFF] <to_agent>::<payload>  — pass confidential info to another agent\n"
-    } else {
-        ""
-    };
-    let tool_instructions = format!(
-        "You are an AI assistant. You can use these tools before answering:\n\
-          [SEARCH] <query>  — search the web\n\
-          [MEMORY] <query>  — recall past knowledge\n\
-          [CODE]   <query>  — search this project's source code\n\
-        {handoff_line}\n\
-        When you have enough information, reply with:\n\
-          [ANSWER] <your response to the user>\n\
-        \n\
-        Use at most one tool per turn. If no tool is needed, go straight to [ANSWER].\n\
-        These bracket tags are internal only; never mention them in the final user-facing reply."
-    );
-
-    let context_block = initial_context
-        .map(|c| format!("\nContext:\n{c}\n"))
-        .unwrap_or_default();
-
-    let mut history = format!(
-        "System: You are {persona_name}. {tool_instructions}{context_block}\n\nUser: {user_text}\n"
-    );
+    // Issue #256 — typed prompt args for chat ReAct system prompt.
+    let mut history = ChatReactPromptArgs {
+        persona_name,
+        user_text,
+        initial_context,
+        has_meeting_auth,
+    }.render();
 
     for _turn in 0..REACT_MAX_TURNS {
         let raw = match call_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), history.clone()).await {
@@ -582,3 +611,53 @@ pub(super) async fn dispatch_by_understanding(
     }
 }
 
+// ── Tests ────────────────────────────────────────────────────────────────────
+//
+// Issue #256 — snapshot tests for the typed prompt args.
+
+#[cfg(test)]
+mod prompt_tests {
+    use super::ChatReactPromptArgs;
+
+    #[test]
+    fn chat_react_prompt_includes_all_fields() {
+        let rendered = ChatReactPromptArgs {
+            persona_name:     "Sirin",
+            user_text:        "你好",
+            initial_context:  Some("earlier session note"),
+            has_meeting_auth: false,
+        }.render();
+        assert!(rendered.contains("System: You are Sirin"));
+        assert!(rendered.contains("User: 你好"));
+        assert!(rendered.contains("[SEARCH]"));
+        assert!(rendered.contains("[ANSWER]"));
+        assert!(rendered.contains("earlier session note"));
+        // No HANDOFF without meeting auth.
+        assert!(!rendered.contains("[HANDOFF]"));
+        // No leaked {var} markers.
+        assert!(!rendered.contains("{persona_name}"));
+        assert!(!rendered.contains("{user_text}"));
+    }
+
+    #[test]
+    fn chat_react_prompt_handoff_only_with_meeting_auth() {
+        let with_auth = ChatReactPromptArgs {
+            persona_name: "Sirin",
+            user_text:    "hi",
+            initial_context: None,
+            has_meeting_auth: true,
+        }.render();
+        assert!(with_auth.contains("[HANDOFF]"));
+    }
+
+    #[test]
+    fn chat_react_prompt_omits_context_section_when_none() {
+        let rendered = ChatReactPromptArgs {
+            persona_name: "Sirin",
+            user_text:    "hi",
+            initial_context: None,
+            has_meeting_auth: false,
+        }.render();
+        assert!(!rendered.contains("Context:"));
+    }
+}
