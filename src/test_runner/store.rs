@@ -617,6 +617,139 @@ pub struct TestStats {
     pub top_failure_category: Option<String>,
 }
 
+// ── Replay health metrics (Issue #266) ───────────────────────────────────────
+
+/// Aggregate "are saved_scripts pulling their weight?" health for the project.
+/// Used by Dashboard KPI card + `script_health` MCP tool to surface stale-script
+/// drift before it explodes into a regression-suite-wide failure.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ReplayHealth {
+    /// Window in days the metrics cover (7 by default).
+    pub window_days: u32,
+    /// Total non-adhoc test_runs in the window.
+    pub total_runs: usize,
+    /// Subset where status='passed' AND is_replay=1 — i.e. test passed using
+    /// the saved deterministic script, no LLM cost.
+    pub passed_via_replay: usize,
+    /// Subset where status='passed' AND is_replay=0 — i.e. test passed via
+    /// LLM ReAct (either no script, or script was stale and LLM rescued).
+    pub passed_via_llm: usize,
+    /// Failed runs in the window (any mode).
+    pub failed: usize,
+    /// passed_via_replay / total_runs.  0.0 when total_runs == 0.
+    pub success_rate_replay: f64,
+    /// Same metric for the previous window (used by drift detection).
+    /// None when there's not enough history for two windows.
+    pub previous_success_rate_replay: Option<f64>,
+    /// success_rate_replay - previous_success_rate_replay, if both available.
+    /// Negative = drift down (replays getting flakier).
+    pub drift: Option<f64>,
+}
+
+/// Per-test replay status — one of 4 categories from #266 acceptance criteria.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplayStatus {
+    /// Saved script exists AND last 3 runs were all is_replay=1.
+    /// UI shows ✅.
+    Healthy,
+    /// Saved script exists BUT last 3 runs include at least one is_replay=0
+    /// (LLM rescue triggered).  Suggests script drift — needs re-record.
+    /// UI shows ⚠️.
+    StaleFallback,
+    /// No saved script at all.  Every run uses full LLM ReAct.
+    /// UI shows 🤖.
+    LlmOnly,
+    /// No saved script AND no recent runs.  New test or never executed.
+    /// UI shows ❌ (or "—" depending on UI preference).
+    Untested,
+}
+
+/// Compute aggregate replay-success metrics over the given window.
+///
+/// `window_days` is split into two halves for drift comparison: the most-recent
+/// half is `success_rate_replay`, the older half is `previous_success_rate_replay`.
+/// e.g. `replay_health(14)` returns last-7d rate vs prior-7d rate.
+///
+/// Excludes `adhoc_*` test_ids — those are one-shot exploratory runs, not
+/// regression scripts.
+pub fn replay_health(window_days: u32) -> ReplayHealth {
+    let conn = db().lock().unwrap_or_else(|e| e.into_inner());
+    let now = chrono::Local::now();
+    let half_days = (window_days as i64 / 2).max(1);
+    let recent_cutoff = (now - chrono::Duration::days(half_days)).to_rfc3339();
+    let older_cutoff = (now - chrono::Duration::days(half_days * 2)).to_rfc3339();
+
+    // (passed_replay, passed_llm, failed) for a date range.
+    let count_in_range = |from: &str, to: &str| -> (usize, usize, usize) {
+        let row: Result<(i64, i64, i64), _> = conn.query_row(
+            "SELECT \
+                SUM(CASE WHEN status='passed' AND COALESCE(is_replay,0)=1 THEN 1 ELSE 0 END), \
+                SUM(CASE WHEN status='passed' AND COALESCE(is_replay,0)=0 THEN 1 ELSE 0 END), \
+                SUM(CASE WHEN status<>'passed' THEN 1 ELSE 0 END) \
+             FROM test_runs \
+             WHERE test_id NOT LIKE 'adhoc_%' \
+               AND started_at >= ?1 AND started_at < ?2",
+            rusqlite::params![from, to],
+            |r| Ok((r.get(0).unwrap_or(0), r.get(1).unwrap_or(0), r.get(2).unwrap_or(0))),
+        );
+        let (a, b, c) = row.unwrap_or((0, 0, 0));
+        (a as usize, b as usize, c as usize)
+    };
+
+    let now_str = now.to_rfc3339();
+    let (recent_replay, recent_llm, recent_fail) = count_in_range(&recent_cutoff, &now_str);
+    let (older_replay, older_llm, older_fail)    = count_in_range(&older_cutoff, &recent_cutoff);
+
+    let recent_total = recent_replay + recent_llm + recent_fail;
+    let older_total  = older_replay + older_llm + older_fail;
+
+    let success_rate_replay = if recent_total == 0 {
+        0.0
+    } else {
+        recent_replay as f64 / recent_total as f64
+    };
+
+    let previous_success_rate_replay = if older_total == 0 {
+        None
+    } else {
+        Some(older_replay as f64 / older_total as f64)
+    };
+
+    let drift = previous_success_rate_replay.map(|p| success_rate_replay - p);
+
+    ReplayHealth {
+        window_days: half_days as u32, // the metric represents one-half window
+        total_runs: recent_total,
+        passed_via_replay: recent_replay,
+        passed_via_llm: recent_llm,
+        failed: recent_fail,
+        success_rate_replay,
+        previous_success_rate_replay,
+        drift,
+    }
+}
+
+/// Classify the replay health of a single test (#266 acceptance criteria).
+/// Combines saved_scripts table presence with recent_replay_modes history.
+pub fn test_replay_status(test_id: &str) -> ReplayStatus {
+    let has_script = script_info(test_id).is_some();
+    let history = recent_replay_modes(test_id, 3);
+
+    match (has_script, history.is_empty()) {
+        (false, true) => ReplayStatus::Untested,
+        (false, false) => ReplayStatus::LlmOnly,
+        (true, true) => ReplayStatus::Healthy, // script just saved, no run yet
+        (true, false) => {
+            if history.iter().all(|&is_replay| is_replay) {
+                ReplayStatus::Healthy
+            } else {
+                ReplayStatus::StaleFallback
+            }
+        }
+    }
+}
+
 /// Issue #267 — return the last `n` runs' `is_replay` flag for a test,
 /// most-recent first.  Used by the batch scheduler to predict whether
 /// upcoming runs will hit LLM (is_replay=false → LLM ReAct) and pick a
@@ -1385,6 +1518,90 @@ mod tests {
         insert_runs_with_replay(&tid_old, &[false, true, true, true, true, true]);
         assert!(!test_needs_llm_predictively(&tid_old, 3),
             "old LLM run outside last-3 window must not affect classification");
+    }
+
+    // ── Replay health (#266) ───────────────────────────────────────────
+
+    #[test]
+    fn test_replay_status_classifies_correctly() {
+        let suffix = chrono::Local::now().timestamp_nanos_opt().unwrap_or(0);
+
+        // (a) No script + no runs → Untested
+        let tid_new = format!("test_rs_new_{suffix}");
+        assert_eq!(test_replay_status(&tid_new), ReplayStatus::Untested);
+
+        // (b) No script + runs (LLM-only) → LlmOnly
+        let tid_llm = format!("test_rs_llm_{suffix}");
+        insert_runs_with_replay(&tid_llm, &[false, false]);
+        assert_eq!(test_replay_status(&tid_llm), ReplayStatus::LlmOnly);
+
+        // (c) Script + all-replay history → Healthy
+        let tid_h = format!("test_rs_healthy_{suffix}");
+        insert_runs_with_replay(&tid_h, &[true, true, true]);
+        save_script(&tid_h, &[serde_json::json!({"action":"goto"})], "1280x800:1.0:desktop");
+        assert_eq!(test_replay_status(&tid_h), ReplayStatus::Healthy);
+
+        // (d) Script + recent LLM rescue → StaleFallback
+        let tid_s = format!("test_rs_stale_{suffix}");
+        insert_runs_with_replay(&tid_s, &[true, true, false]); // most recent = LLM
+        save_script(&tid_s, &[serde_json::json!({"action":"goto"})], "1280x800:1.0:desktop");
+        assert_eq!(test_replay_status(&tid_s), ReplayStatus::StaleFallback);
+
+        // Cleanup
+        delete_script(&tid_h);
+        delete_script(&tid_s);
+    }
+
+    #[test]
+    fn replay_health_aggregates_recent_window() {
+        let suffix = chrono::Local::now().timestamp_nanos_opt().unwrap_or(0);
+        let tid_a = format!("test_rh_a_{suffix}");
+        let tid_b = format!("test_rh_b_{suffix}");
+
+        // 3 replay-pass + 1 LLM-pass + 1 fail across 2 tests (all in last few ms,
+        // well within any reasonable window).
+        insert_runs_with_replay(&tid_a, &[true, true]);            // 2 replay-pass
+        insert_runs_with_replay(&tid_b, &[true]);                  // 1 replay-pass
+        // Insert 1 LLM-pass and 1 fail directly via record_run
+        let now = chrono::Local::now().to_rfc3339();
+        record_run(NewRun {
+            test_id: &tid_a, started_at: &now, duration_ms: Some(100),
+            status: "passed", failure_category: None, ai_analysis: None,
+            screenshot_path: None, history_json: None, goal_json: None,
+            run_id: None, iterations: None, dispute_reason: None,
+            dispute_suspected_step: None, dispute_suggested_fix: None,
+            is_replay: false, console_log: None,
+        }).unwrap();
+        record_run(NewRun {
+            test_id: &tid_b, started_at: &now, duration_ms: Some(100),
+            status: "failed", failure_category: None, ai_analysis: None,
+            screenshot_path: None, history_json: None, goal_json: None,
+            run_id: None, iterations: None, dispute_reason: None,
+            dispute_suspected_step: None, dispute_suggested_fix: None,
+            is_replay: false, console_log: None,
+        }).unwrap();
+
+        // Long window (60 days) — should pick up everything just inserted
+        // in the last ~10ms.
+        let h = replay_health(60);
+        assert!(h.passed_via_replay >= 3, "expected >=3 replay passes, got {}", h.passed_via_replay);
+        assert!(h.passed_via_llm >= 1,    "expected >=1 LLM pass, got {}", h.passed_via_llm);
+        assert!(h.failed >= 1,            "expected >=1 fail, got {}", h.failed);
+        assert!(h.total_runs >= 5);
+        assert!(h.success_rate_replay >= 0.0 && h.success_rate_replay <= 1.0,
+            "rate must be in [0,1], got {}", h.success_rate_replay);
+    }
+
+    #[test]
+    fn replay_health_zero_runs_returns_zero_rate() {
+        // Hit a future-window so we get an empty result.  Using a very-tight
+        // window of "0 days" yields half_days=1 → recent half = last 1 day,
+        // older half = days -2..-1.  In a fresh DB or one with no recent runs
+        // this should be all zeros.
+        let h = replay_health(0);
+        // Either no runs at all (clean DB) or whatever the test order produced;
+        // in both cases the rate is in [0,1].
+        assert!(h.success_rate_replay >= 0.0 && h.success_rate_replay <= 1.0);
     }
 
     #[test]

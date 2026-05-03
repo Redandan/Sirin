@@ -716,6 +716,26 @@ fn build_snapshot(svc: &Arc<dyn AppService>) -> Value {
         })).collect::<Vec<_>>(),
     }));
 
+    // #266: replay-success-rate KPI for Dashboard + per-test status for Coverage.
+    // Window=14d so the metric splits into "last 7d" + "prior 7d" for drift.
+    let replay_health = svc.replay_health(14);
+    let replay_health_json = json!({
+        "window_days":              replay_health.window_days,
+        "total_runs":               replay_health.total_runs,
+        "passed_via_replay":        replay_health.passed_via_replay,
+        "passed_via_llm":           replay_health.passed_via_llm,
+        "failed":                   replay_health.failed,
+        "success_rate_replay":      replay_health.success_rate_replay,
+        "previous_success_rate_replay": replay_health.previous_success_rate_replay,
+        "drift":                    replay_health.drift,
+    });
+    let test_replay_statuses: Vec<Value> = svc.test_replay_statuses().into_iter().map(|t| json!({
+        "test_id":     t.test_id,
+        "status":      t.status,
+        "has_script":  t.has_script,
+        "recent_modes": t.recent_modes,
+    })).collect();
+
     json!({
         "version":        env!("CARGO_PKG_VERSION"),
         "browser_open":   svc.browser_is_open(),
@@ -729,6 +749,8 @@ fn build_snapshot(svc: &Arc<dyn AppService>) -> Value {
         "active_runs":    active_runs,
         "recent_runs":    recent_runs,
         "coverage":       coverage,
+        "replay_health":         replay_health_json,
+        "test_replay_statuses":  test_replay_statuses,
         // Cheap fields kept inline:
         "persona_name":   svc.persona_name(),
         "llm_main":       s.llm.main_model,
@@ -1227,6 +1249,19 @@ fn handle_tools_list_legacy() -> Result<Value, String> {
                     "required": ["test_id"],
                     "properties": {
                         "test_id": { "type": "string", "description": "要 lint 的 test_id（YAML 檔名不含 .yaml）" }
+                    }
+                }
+            },
+            {
+                "name": "script_health",
+                "description": "#266 — 回傳 saved_scripts 健康度指標，用於 Dashboard KPI / Coverage column / cron 偵測 stale-script drift。\n\n回傳兩部份：\n- `aggregate`: window 內 total_runs / passed_via_replay / passed_via_llm / failed / success_rate_replay + 上一週期比較 + drift\n- `per_test`: 每個 test 的 status (healthy|stale_fallback|llm_only|untested) + 最近 3 次 is_replay 歷史\n\n預設 window=14 天（前 7 天 vs 後 7 天比較）。若 drift < -0.10（10 個百分點），代表 replay 成功率明顯下滑，建議 audit。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "window_days": {
+                            "type": "number",
+                            "description": "比較窗（會被切兩半做 week-over-week drift），預設 14"
+                        }
                     }
                 }
             },
@@ -2036,6 +2071,7 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         // discovery_status — migrated to mcp_registry (#257 Option B).
         "discovery_features"      => return call_discovery_features(arguments).map(wrap_json),
         // ui_navigate / ui_state — removed with the egui shell in Phase 7.
+        "script_health"           => return call_script_health(arguments).map(wrap_json),
         "replay_last_failure"     => return call_replay_last_failure(arguments).map(wrap_json),
         "shadow_dump_diff"        => return call_shadow_dump_diff(arguments).map(wrap_json),
         "compare_with_replay"     => return call_compare_with_replay(arguments).map(wrap_json),
@@ -3125,6 +3161,45 @@ async fn call_explain_failure(args: Value) -> Result<Value, String> {
         "explanation":      explanation,
         "console_errors":   console_log.as_deref().map(parse_console_counts).map(|(e,_)| e).unwrap_or(0),
         "ai_analysis":      ai_analysis,
+    }))
+}
+
+/// #266 — script_health: project-wide replay metrics + per-test classification.
+fn call_script_health(args: Value) -> Result<Value, String> {
+    let window_days = args.get("window_days")
+        .and_then(Value::as_u64)
+        .map(|v| v as u32)
+        .unwrap_or(14);
+
+    let aggregate = crate::test_runner::store::replay_health(window_days);
+
+    // Per-test breakdown — same shape the UI uses, exposed via MCP for cron /
+    // CI consumers that want to flag specific stale tests.
+    let per_test: Vec<Value> = crate::test_runner::list_tests()
+        .into_iter()
+        .map(|t| {
+            let status = crate::test_runner::store::test_replay_status(&t.id);
+            let recent = crate::test_runner::store::recent_replay_modes(&t.id, 3);
+            let has_script = crate::test_runner::store::script_info(&t.id).is_some();
+            let status_str = match status {
+                crate::test_runner::store::ReplayStatus::Healthy        => "healthy",
+                crate::test_runner::store::ReplayStatus::StaleFallback  => "stale_fallback",
+                crate::test_runner::store::ReplayStatus::LlmOnly        => "llm_only",
+                crate::test_runner::store::ReplayStatus::Untested       => "untested",
+            };
+            json!({
+                "test_id":     t.id,
+                "status":      status_str,
+                "has_script":  has_script,
+                "recent_modes": recent,
+            })
+        })
+        .collect();
+
+    Ok(json!({
+        "aggregate": aggregate,
+        "per_test":  per_test,
+        "drift_warning_threshold": -0.10,
     }))
 }
 

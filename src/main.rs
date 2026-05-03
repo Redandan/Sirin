@@ -360,13 +360,21 @@ fn main() {
 
     std::mem::forget(rt);
 
+    // Build + register the AppService BEFORE the headless park loop.
+    // Previously this was below the `if is_headless()` block which `loop {}`s
+    // forever — meaning headless instances never registered, so /api/snapshot
+    // always returned "AppService not registered".  Headless mode still
+    // shouldn't open a browser, but the web UI endpoint at :7700/ui/ is
+    // reachable and benefits from a working snapshot (e.g. for cron
+    // dashboards or remote inspection).
+    let svc = StdArc::new(ui_service_impl::RealService::new(tracker, tg_auth));
+    mcp_server::register_app_service(svc.clone() as StdArc<dyn ui_service::AppService>);
+
     if is_headless() {
         tracing::info!(target: "sirin",
             "[main] Headless mode — RPC/MCP server on :{}, no GUI. Press Ctrl-C to exit.",
             std::env::var("SIRIN_RPC_PORT").unwrap_or_else(|_| "7700".into())
         );
-        // Drop the unused service builder so we don't allocate UI state.
-        drop((tracker, tg_auth));
         // Park forever — background threads (RPC server, telegram listener,
         // followup worker, screenshot pump) keep working.  Ctrl-C / taskkill
         // brings the process down cleanly.
@@ -374,12 +382,6 @@ fn main() {
             std::thread::park();
         }
     }
-
-    let svc = StdArc::new(ui_service_impl::RealService::new(tracker, tg_auth));
-    // Web UI (`/ui/*` + `/api/snapshot`) lives at port 7700 in the same
-    // process as the MCP server. Register the service so /api/snapshot can
-    // read agents / runs / coverage.
-    mcp_server::register_app_service(svc.clone() as StdArc<dyn ui_service::AppService>);
 
     // Auto-open the user's default browser to the UI page. Best-effort —
     // failure (no display, no browser registered) is fine; the user can

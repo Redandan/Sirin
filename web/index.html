@@ -335,6 +335,23 @@
                   <div class="kpi-widget-sub dim small">live tests</div>
                 </div>
               </template>
+
+              <!-- KPI: Replay rate (#266) — % of recent runs that passed via
+                   saved-script replay (no LLM cost).  Drops > 10pp week-over-week
+                   trigger a yellow warning border. -->
+              <template x-if="wid === 'kpi_replay_rate'">
+                <div class="kpi-widget"
+                     :class="kpi_replay_drift_warning ? 'kpi-warn' : ''">
+                  <div class="kpi-num mono"
+                       x-text="(kpi_replay_rate * 100).toFixed(0) + '%'"></div>
+                  <div class="kpi-widget-label">REPLAY RATE</div>
+                  <div class="kpi-widget-sub dim small">
+                    <span x-show="kpi_replay_drift_pp == null">7d window</span>
+                    <span x-show="kpi_replay_drift_pp != null"
+                          x-text="(kpi_replay_drift_pp >= 0 ? '+' : '') + kpi_replay_drift_pp.toFixed(0) + 'pp vs prior 7d'"></span>
+                  </div>
+                </div>
+              </template>
             </div>
           </template>
         </div>
@@ -473,6 +490,10 @@
               <span class="dim mono small" x-text="funnelPct(state.coverage, 'scripted') + '%'"></span>
             </div>
             <div class="legend dim mono small">⚡ scripted   🤖 LLM-only   ○ missing</div>
+            <!-- #266 per-test legend (different concept from feature scripted/missing above) -->
+            <div class="legend dim mono small">
+              Per-test replay: ✅ healthy &nbsp; ⚠️ stale-fallback &nbsp; 🤖 LLM-only &nbsp; ○ untested
+            </div>
           </div>
 
           <!-- Per-group feature breakdown (Codecov-inspired) -->
@@ -504,8 +525,19 @@
                     <span :class="feat.status === 'missing' ? 'dim small' : 'small'"
                           x-text="feat.name"></span>
                     <span class="row-spacer"></span>
-                    <span class="dim mono small" x-show="feat.test_ids.length"
-                          x-text="'← ' + feat.test_ids.join(', ')"></span>
+                    <!-- #266: per-test_id replay-status chips (emoji + id) so
+                         users can spot stale_fallback / llm_only / untested
+                         tests at the Coverage row level.  Hover for status
+                         label — see replayStatusFor() / replayStatusGlyph(). -->
+                    <span class="dim mono small" x-show="feat.test_ids.length">
+                      ←
+                      <template x-for="(tid, i) in feat.test_ids" :key="tid">
+                        <span class="replay-chip"
+                              :class="'replay-' + (replayStatusFor(tid) || 'untested')"
+                              :title="replayStatusFor(tid) || 'no status'"
+                              x-text="replayStatusGlyph(replayStatusFor(tid)) + ' ' + tid + (i < feat.test_ids.length - 1 ? ',' : '')"></span>
+                      </template>
+                    </span>
                   </div>
                 </template>
               </div>

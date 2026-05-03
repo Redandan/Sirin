@@ -926,6 +926,20 @@ button { font-family: inherit; cursor: pointer; }
   margin-top: 2px;
 }
 .kpi-widget-sub { margin-top: 2px; }
+/* #266: yellow warning border + tinted background when replay rate drops > 10pp WoW */
+.kpi-widget.kpi-warn {
+  border: 1px solid var(--yellow);
+  background: color-mix(in srgb, var(--yellow) 8%, var(--card));
+}
+.kpi-widget.kpi-warn .kpi-num { color: var(--yellow); }
+
+/* #266: per-test replay-status chips in Coverage view's test_ids list.
+   Compact, no extra padding — colour just the emoji+id text via class. */
+.replay-chip { padding: 0 2px; }
+.replay-chip.replay-healthy        { color: var(--accent); }
+.replay-chip.replay-stale_fallback { color: var(--yellow); }
+.replay-chip.replay-llm_only       { color: var(--info); }
+.replay-chip.replay-untested       { color: var(--text-dim); }
 
 /* iconbtn active state for ✎ edit mode toggle */
 .iconbtn.active {

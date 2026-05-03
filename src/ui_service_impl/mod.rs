@@ -478,6 +478,44 @@ impl TestRunnerService for RealService {
 
         Ok(run_id)
     }
+
+    fn replay_health(&self, window_days: u32) -> crate::ui_service::ReplayHealthView {
+        let h = crate::test_runner::store::replay_health(window_days);
+        crate::ui_service::ReplayHealthView {
+            window_days: h.window_days,
+            total_runs: h.total_runs,
+            passed_via_replay: h.passed_via_replay,
+            passed_via_llm: h.passed_via_llm,
+            failed: h.failed,
+            success_rate_replay: h.success_rate_replay,
+            previous_success_rate_replay: h.previous_success_rate_replay,
+            drift: h.drift,
+        }
+    }
+
+    fn test_replay_statuses(&self) -> Vec<crate::ui_service::TestReplayStatusView> {
+        use crate::test_runner::store::ReplayStatus;
+        crate::test_runner::list_tests()
+            .into_iter()
+            .map(|t| {
+                let has_script  = crate::test_runner::store::script_info(&t.id).is_some();
+                let recent_modes = crate::test_runner::store::recent_replay_modes(&t.id, 3);
+                let status      = crate::test_runner::store::test_replay_status(&t.id);
+                let status_str  = match status {
+                    ReplayStatus::Healthy        => "healthy",
+                    ReplayStatus::StaleFallback  => "stale_fallback",
+                    ReplayStatus::LlmOnly        => "llm_only",
+                    ReplayStatus::Untested       => "untested",
+                };
+                crate::ui_service::TestReplayStatusView {
+                    test_id: t.id,
+                    status: status_str.to_string(),
+                    has_script,
+                    recent_modes,
+                }
+            })
+            .collect()
+    }
 }
 
 // `impl AppService for RealService` is satisfied automatically by the blanket

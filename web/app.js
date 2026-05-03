@@ -33,6 +33,7 @@ const WIDGET_CATALOG = [
   { id: 'kpi_cost_hour',   label: 'KPI: Cost / hour',     cols: 1 },
   { id: 'kpi_active_agents',label:'KPI: Active agents',   cols: 1 },
   { id: 'kpi_running_tests',label:'KPI: Running tests',   cols: 1 },
+  { id: 'kpi_replay_rate',  label: 'KPI: Replay rate',    cols: 1 },
 ];
 
 window.sirin = function () {
@@ -385,6 +386,48 @@ window.sirin = function () {
     /// Currently running test count (sometimes > 1 with run_test_batch).
     get kpi_running_tests() {
       return (this.state.active_runs || []).length;
+    },
+
+    /// #266: Replay-success rate over the last 7d (numerator =
+    /// passed-via-replay; denominator = all non-adhoc runs).  0–1 ratio.
+    get kpi_replay_rate() {
+      return this.state.replay_health?.success_rate_replay || 0;
+    },
+
+    /// #266: Drift in percentage points (last 7d minus prior 7d).  Returns
+    /// null when there isn't enough history for the comparison window —
+    /// callers render "—" or hide the sub-line in that case.
+    get kpi_replay_drift_pp() {
+      const d = this.state.replay_health?.drift;
+      return (d == null) ? null : d * 100;
+    },
+
+    /// #266: True when drift dropped > 10 percentage points week-over-week.
+    /// Used to flip the KPI card border to yellow (warning).
+    get kpi_replay_drift_warning() {
+      const pp = this.kpi_replay_drift_pp;
+      return pp != null && pp <= -10;
+    },
+
+    /// #266: Map test_id → ReplayStatus for fast lookup from Coverage view.
+    /// Returns one of "healthy" | "stale_fallback" | "llm_only" | "untested"
+    /// (or null if the snapshot hasn't loaded the array yet).
+    replayStatusFor(testId) {
+      const arr = this.state.test_replay_statuses || [];
+      const hit = arr.find(t => t.test_id === testId);
+      return hit ? hit.status : null;
+    },
+
+    /// #266: Emoji glyph for a replay status, used as a chip prefix in the
+    /// Coverage view's test_ids list.
+    replayStatusGlyph(status) {
+      switch (status) {
+        case 'healthy':         return '✅';
+        case 'stale_fallback':  return '⚠️';
+        case 'llm_only':        return '🤖';
+        case 'untested':        return '○';
+        default:                return '·';
+      }
     },
 
     // ── On-demand modal loaders (v0.5.4) ────────────────────────────

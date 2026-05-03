@@ -122,6 +122,27 @@ cargo run --bin gen-schema
 
 `scaffold_test` MCP tool 產生的新 YAML 自動帶 schema header。
 
+## Test runner — replay health metrics (Issue #266)
+
+Saved-script replay 是 Sirin 主要的 cost-saving 機制 — script PASS = 0 LLM 成本。
+但 UI 改版會讓 saved_scripts 過時，悄悄退回到 LLM ReAct（成本 + 延遲都漲）。
+
+維護者要主動監控的 metric：
+
+| 來源 | 指標 |
+|------|------|
+| Dashboard KPI card「REPLAY RATE」 | 7-day window：passed_via_replay / total_runs；< prior 7d -10pp 會變黃警告框 |
+| Coverage 頁 per-test chips | ✅ healthy / ⚠️ stale_fallback / 🤖 llm_only / ○ untested（每個 test_id 旁顯示） |
+| MCP tool `script_health` | 同上資料的 cron / CI 友善 JSON 介面（`window_days` 預設 14） |
+
+**該行動的訊號**：
+- KPI 卡變黃 → 跑 `script_health` 看是哪些 test 退化，跑一輪 LLM 重錄
+- Coverage 看到 ⚠️ stale_fallback → 該 test_id 的 saved_script 已過時
+- Coverage 看到 🤖 llm_only → 該 test 從未保存 script（或 PASS 失敗了）
+
+寫 test 時：YAML 設計越 deterministic（fixture.setup 多用、screenshot_analyze 少用），
+script auto-record 越穩定。參考 #265 收尾經驗（commit fa83edf：1× screenshot_analyze 比 4× 健康）。
+
 ## AgoraMarket 網頁架構（必讀，開測試前先確認）
 
 | 端 | 類型 | 正確 viewport | URL 特徵 |

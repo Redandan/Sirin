@@ -568,6 +568,37 @@ pub trait TestRunnerService: Send + Sync + 'static {
     /// Kick off a discovery crawl asynchronously. Returns the run_id.
     /// `max_depth` caps recursion (clickable elements within clickables).
     fn launch_discovery(&self, seed_url: &str, max_depth: u32) -> Result<String, String>;
+    /// Issue #266 — replay-success metric: how many runs in the window passed
+    /// via deterministic script (no LLM cost).  `window_days` is split in half
+    /// for week-over-week drift comparison.
+    fn replay_health(&self, window_days: u32) -> ReplayHealthView;
+    /// Issue #266 — per-test classification (Healthy / StaleFallback / LlmOnly /
+    /// Untested) for the Coverage page status column.
+    fn test_replay_statuses(&self) -> Vec<TestReplayStatusView>;
+}
+
+/// Snapshot of project-wide replay health (#266).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ReplayHealthView {
+    pub window_days: u32,
+    pub total_runs: usize,
+    pub passed_via_replay: usize,
+    pub passed_via_llm: usize,
+    pub failed: usize,
+    pub success_rate_replay: f64,
+    pub previous_success_rate_replay: Option<f64>,
+    pub drift: Option<f64>,
+}
+
+/// Per-test replay classification (#266).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TestReplayStatusView {
+    pub test_id: String,
+    /// One of: "healthy" | "stale_fallback" | "llm_only" | "untested"
+    pub status: String,
+    pub has_script: bool,
+    /// Last 3 runs' is_replay flags, most-recent first.
+    pub recent_modes: Vec<bool>,
 }
 
 /// Aggregate trait the UI consumes as `Arc<dyn AppService>`.
