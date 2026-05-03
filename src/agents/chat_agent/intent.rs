@@ -650,3 +650,168 @@ pub(super) fn related_research_snippet(user_text: &str) -> Option<String> {
         .map(|report| report.chars().take(600).collect::<String>())
         .next()
 }
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+//
+// Issue #252 — coverage for the chat-agent intent classifiers. All pure
+// functions; the heuristics are deliberately broad (substring matching), so
+// these tests pin the current behaviour to catch silent regressions when a
+// new keyword lands.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── is_file_view_request ────────────────────────────────────────────────
+
+    #[test]
+    fn file_view_request_matches_show_read_open() {
+        assert!(is_file_view_request("幫我看這個檔案"));
+        assert!(is_file_view_request("看一下 config"));
+        assert!(is_file_view_request("讀取設定檔"));
+        assert!(is_file_view_request("read it"));
+        assert!(is_file_view_request("cat foo"));
+        assert!(is_file_view_request("open settings"));
+        // ⚠️ Known false-negative: any "show ..." phrase trips the
+        // question-word short-circuit because the literal "how" substring
+        // appears inside "show".  Documented here so the next person
+        // tightening the matcher doesn't accidentally remove this guard.
+        assert!(!is_file_view_request("show the file"));
+    }
+
+    #[test]
+    fn file_view_request_silent_when_question_words_present() {
+        // "看" + "怎麼" → analysis question, not a file-view request.
+        assert!(!is_file_view_request("看一下這個怎麼運作"));
+        assert!(!is_file_view_request("為什麼看不到"));
+        assert!(!is_file_view_request("how to read this"));
+        // Pure question without view verbs.
+        assert!(!is_file_view_request("這是什麼"));
+    }
+
+    // ── is_simple_meta_request ──────────────────────────────────────────────
+
+    #[test]
+    fn simple_meta_request_matches_short_identity_questions() {
+        // "你是誰" / "你叫什麼" — identity questions handled by
+        // telegram::language::is_identity_question.
+        assert!(is_simple_meta_request("你是誰"));
+        assert!(is_simple_meta_request("你叫什麼名字"));
+    }
+
+    #[test]
+    fn simple_meta_request_rejects_overly_long_input() {
+        // > 64 chars short-circuits regardless of intent — reflects the
+        // "this is a real query, not a quick meta probe" heuristic.
+        let long = "你是誰".repeat(30); // ≥ 90 chars
+        assert!(!is_simple_meta_request(&long));
+    }
+
+    // ── extract_file_reference / extract_file_references_from_text ─────────
+
+    #[test]
+    fn extract_single_file_reference_strips_punctuation() {
+        assert_eq!(
+            extract_file_reference("看 `src/llm/mod.rs` 那段").as_deref(),
+            Some("src/llm/mod.rs")
+        );
+        // Trailing whitespace + question mark — separator must be whitespace
+        // for split_whitespace to isolate the path token.  Punctuation glued
+        // directly to the path (e.g. "src/main.rs，好嗎") survives the trim
+        // because trim_matches only strips the outermost matching chars and
+        // stops at non-matching CJK glyphs.  This test pins the
+        // whitespace-separated case which is the supported usage.
+        assert_eq!(
+            extract_file_reference("解釋 src/main.rs ?").as_deref(),
+            Some("src/main.rs")
+        );
+    }
+
+    #[test]
+    fn extract_file_references_dedupes_and_normalises_separators() {
+        let txt = "改 `src/foo.rs` 跟 src/foo.rs 一樣，再看 src\\bar.rs";
+        let refs = extract_file_references_from_text(txt);
+        assert!(refs.contains(&"src/foo.rs".to_string()));
+        assert!(refs.contains(&"src/bar.rs".to_string()));
+        // src/foo.rs appears twice in input but once in output.
+        let foo_count = refs.iter().filter(|r| *r == "src/foo.rs").count();
+        assert_eq!(foo_count, 1);
+    }
+
+    // ── looks_like_project_overview_query ──────────────────────────────────
+
+    #[test]
+    fn project_overview_query_accepts_zh_en_keywords() {
+        assert!(looks_like_project_overview_query("這個專案怎麼運作"));
+        assert!(looks_like_project_overview_query("解釋 codebase"));
+        assert!(looks_like_project_overview_query("show me the architecture"));
+        assert!(looks_like_project_overview_query("這是什麼"));
+        // Negatives.
+        assert!(!looks_like_project_overview_query("修這個 bug"));
+        assert!(!looks_like_project_overview_query("hello"));
+    }
+
+    // ── looks_like_skill_query ──────────────────────────────────────────────
+
+    #[test]
+    fn skill_query_recognises_skill_keyword() {
+        assert!(looks_like_skill_query("Sirin 有哪些 skill"));
+        assert!(looks_like_skill_query("技能怎麼用"));
+        assert!(looks_like_skill_query("能力目錄在哪"));
+        assert!(looks_like_skill_query("skills.rs 裡面寫了什麼"));
+        assert!(!looks_like_skill_query("修 bug"));
+    }
+
+    // ── looks_like_capability_query ─────────────────────────────────────────
+
+    #[test]
+    fn capability_query_matches_what_can_you_do() {
+        assert!(looks_like_capability_query("你能做什麼"));
+        assert!(looks_like_capability_query("你會什麼"));
+        assert!(looks_like_capability_query("有什麼能力"));
+        assert!(looks_like_capability_query("能幹嘛"));
+        // Composite trigger: asks_what + skills mention via
+        // is_skill_inventory_request.
+        assert!(looks_like_capability_query("你有哪些 skills"));
+        assert!(!looks_like_capability_query("天氣如何"));
+    }
+
+    // ── looks_like_analysis_request ─────────────────────────────────────────
+
+    #[test]
+    fn analysis_request_recognises_explain_analyze_etc() {
+        assert!(looks_like_analysis_request("分析這段"));
+        assert!(looks_like_analysis_request("這個是什麼"));
+        assert!(looks_like_analysis_request("如何修這個"));
+        assert!(looks_like_analysis_request("how does this work"));
+        assert!(looks_like_analysis_request("why is X failing"));
+        assert!(!looks_like_analysis_request("hello world"));
+    }
+
+    // ── is_skill_inventory_request ──────────────────────────────────────────
+
+    #[test]
+    fn skill_inventory_combines_what_and_skill() {
+        // Needs BOTH an asks-what token AND a skill mention.
+        assert!(is_skill_inventory_request("有哪些 skill"));
+        assert!(is_skill_inventory_request("list skills"));
+        assert!(is_skill_inventory_request("有什麼技能"));
+        // Just one of the two — silent.
+        assert!(!is_skill_inventory_request("有哪些 bug"));
+        assert!(!is_skill_inventory_request("skill 這個概念"));
+    }
+
+    // ── looks_like_file_token (private helper, exercised via re-export) ────
+
+    #[test]
+    fn file_token_recognises_known_extensions_and_prefixes() {
+        assert!(looks_like_file_token("src/llm/mod.rs"));
+        assert!(looks_like_file_token("Cargo.toml"));
+        assert!(looks_like_file_token("docs/architecture.md"));
+        assert!(looks_like_file_token("web/index.html"));
+        assert!(looks_like_file_token("web/app.js"));
+        // Negatives — bare words without ext or known prefix.
+        assert!(!looks_like_file_token("hello"));
+        assert!(!looks_like_file_token("分析"));
+    }
+}

@@ -158,3 +158,132 @@ pub(super) fn classify_intent_family(
 
     IntentFamily::GeneralChat
 }
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+//
+// Issue #252 — coverage for the intent-classification heuristics. All pure
+// functions; table-driven where the rule is plain substring matching.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repo_file_reference_picks_up_src_paths() {
+        assert!(looks_like_repo_file_reference("看看 src/llm/mod.rs 那段"));
+        assert!(looks_like_repo_file_reference("docs/architecture.md 提到的 X"));
+        assert!(looks_like_repo_file_reference("解釋 `Cargo.toml`"));
+        // Path-like string with backslashes is normalised.
+        assert!(looks_like_repo_file_reference("C:\\Users\\Redan\\src\\foo.rs"));
+    }
+
+    #[test]
+    fn repo_file_reference_extension_only_match() {
+        assert!(looks_like_repo_file_reference("foo.rs"));
+        assert!(looks_like_repo_file_reference("config.yaml"));
+        assert!(looks_like_repo_file_reference("App.tsx"));
+        // No extension and no known prefix → not a file ref.
+        assert!(!looks_like_repo_file_reference("這是一段純文字描述"));
+        assert!(!looks_like_repo_file_reference("hello world"));
+    }
+
+    #[test]
+    fn project_overview_query_matches_zh_cn_zh_tw_en() {
+        assert!(looks_like_project_overview_query("這個專案怎麼運作？"));
+        assert!(looks_like_project_overview_query("項目架構介紹一下"));
+        assert!(looks_like_project_overview_query("解釋 codebase"));
+        assert!(looks_like_project_overview_query("how is this Architecture organised"));
+        // Negatives — no overview keyword.
+        assert!(!looks_like_project_overview_query("修這個 bug"));
+    }
+
+    #[test]
+    fn skill_query_recognises_skill_keyword_variants() {
+        assert!(looks_like_skill_query("Sirin 有哪些 skill？"));
+        assert!(looks_like_skill_query("看 skills.rs"));
+        assert!(looks_like_skill_query("這個技能怎麼用"));
+        assert!(looks_like_skill_query("能力目錄"));
+        assert!(!looks_like_skill_query("修 bug"));
+    }
+
+    #[test]
+    fn capability_query_matches_chinese_phrasings() {
+        assert!(looks_like_capability_query("你能做什麼？"));
+        assert!(looks_like_capability_query("你會什麼"));
+        assert!(looks_like_capability_query("有什麼能力"));
+        assert!(looks_like_capability_query("能幹嘛"));
+        // English literal phrasings get normalised through the asks_what + skills path.
+        assert!(looks_like_capability_query("what can you do"));
+        assert!(looks_like_capability_query("list capabilities"));
+    }
+
+    #[test]
+    fn capability_query_silent_for_unrelated_questions() {
+        assert!(!looks_like_capability_query("天氣如何"));
+        assert!(!looks_like_capability_query("修這個 bug"));
+    }
+
+    #[test]
+    fn analysis_request_recognises_explain_analyze_etc() {
+        assert!(looks_like_analysis_request("分析這段程式"));
+        assert!(looks_like_analysis_request("解釋一下這個 function"));
+        assert!(looks_like_analysis_request("how does this work"));
+        assert!(looks_like_analysis_request("Why is the build failing"));
+        assert!(!looks_like_analysis_request("hello"));
+    }
+
+    // ── classify_intent_family — priority-order tests ───────────────────────
+
+    #[test]
+    fn classify_capability_wins_over_local_file() {
+        // A capability question that *also* mentions src/ would otherwise
+        // classify as LocalFile — but capability runs first.
+        let f = classify_intent_family("你能做什麼，特別是針對 src/ 那塊？", &[]);
+        assert_eq!(f, IntentFamily::Capability);
+    }
+
+    #[test]
+    fn classify_local_file_for_path_references() {
+        let f = classify_intent_family("解釋 src/llm/mod.rs 那段邏輯", &[]);
+        assert_eq!(f, IntentFamily::LocalFile);
+    }
+
+    #[test]
+    fn classify_skill_architecture_for_skill_query() {
+        // Priority: Research > Capability > LocalFile > SkillArchitecture.
+        // The phrasing must trigger `looks_like_skill_query` without also
+        // matching capability (no asks_what + skills combo) or LocalFile
+        // (no .rs / src/ token).  "技能系統" lands cleanly in SkillArchitecture.
+        let f = classify_intent_family("技能系統怎麼設計的", &[]);
+        assert_eq!(f, IntentFamily::SkillArchitecture);
+    }
+
+    #[test]
+    fn classify_project_overview_for_architecture_question() {
+        let f = classify_intent_family("這個專案怎麼運作？", &[]);
+        assert_eq!(f, IntentFamily::ProjectOverview);
+    }
+
+    #[test]
+    fn classify_code_analysis_via_analysis_keywords() {
+        let f = classify_intent_family("分析一下", &[]);
+        assert_eq!(f, IntentFamily::CodeAnalysis);
+    }
+
+    #[test]
+    fn classify_code_analysis_via_recommended_skill() {
+        // No analysis keyword in the prompt, but the skill recommender said
+        // "grounded_fix" — that's enough to route to CodeAnalysis.
+        let f = classify_intent_family(
+            "fix it",
+            &["grounded_fix".to_string()],
+        );
+        assert_eq!(f, IntentFamily::CodeAnalysis);
+    }
+
+    #[test]
+    fn classify_falls_back_to_general_chat() {
+        let f = classify_intent_family("你好嗎", &[]);
+        assert_eq!(f, IntentFamily::GeneralChat);
+    }
+}

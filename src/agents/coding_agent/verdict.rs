@@ -263,3 +263,223 @@ pub(super) fn build_change_summary(
 
     parts.join("｜")
 }
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+//
+// Issue #252 — coverage for the coding-agent verdict logic. Pure functions
+// throughout — no LLM, no FS, no async. Each test pins one truth-table row
+// of the decision matrix.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn read_entry(path: &str) -> HistoryEntry {
+        HistoryEntry {
+            thought:      String::new(),
+            action:       "local_file_read".into(),
+            action_input: json!({ "path": path }),
+            observation:  "// file contents".into(),
+            pinned:       false,
+        }
+    }
+
+    fn err_entry() -> HistoryEntry {
+        HistoryEntry {
+            thought:      String::new(),
+            action:       "local_file_read".into(),
+            action_input: json!({ "path": "x.rs" }),
+            observation:  "ERROR: not found".into(),
+            pinned:       false,
+        }
+    }
+
+    // ── has_sufficient_analysis_evidence ────────────────────────────────────
+
+    #[test]
+    fn evidence_requires_two_successful_reads() {
+        assert!(!has_sufficient_analysis_evidence(&[]));
+        assert!(!has_sufficient_analysis_evidence(&[read_entry("a.rs")]));
+        assert!(has_sufficient_analysis_evidence(&[
+            read_entry("a.rs"), read_entry("b.rs"),
+        ]));
+        // Errored reads don't count.
+        assert!(!has_sufficient_analysis_evidence(&[
+            read_entry("a.rs"), err_entry(),
+        ]));
+    }
+
+    #[test]
+    fn inspected_paths_dedupes_and_skips_empty() {
+        let h = vec![
+            read_entry("src/foo.rs"),
+            read_entry("src/foo.rs"), // duplicate
+            read_entry("src/bar.rs"),
+            read_entry(""),           // empty path skipped
+        ];
+        let paths = inspected_paths_from_history(&h);
+        assert_eq!(paths, vec!["src/foo.rs", "src/bar.rs"]);
+    }
+
+    // ── overall_verified — full truth table ────────────────────────────────
+
+    #[test]
+    fn overall_verified_blocks_dry_run() {
+        // dry_run always blocks the verified=true outcome.
+        assert!(!overall_verified(true,  true,  false, 0, false));
+        assert!(!overall_verified(true,  true,  true,  3, false));
+    }
+
+    #[test]
+    fn overall_verified_blocks_when_build_fails() {
+        // build_verified=false always blocks.
+        assert!(!overall_verified(false, false, true, 3, false));
+    }
+
+    #[test]
+    fn overall_verified_blocks_when_attempted_write_but_zero_files() {
+        // Agent tried to write but no file actually changed → not verified.
+        assert!(!overall_verified(false, true, true, 0, false));
+    }
+
+    #[test]
+    fn overall_verified_blocks_when_tool_errors_and_zero_files() {
+        // Tool errors with no successful writes → not verified.
+        assert!(!overall_verified(false, true, false, 0, true));
+    }
+
+    #[test]
+    fn overall_verified_passes_clean_run() {
+        // build OK, files modified, no tool errors → verified.
+        assert!(overall_verified(false, true, true, 2, false));
+        // build OK, no write attempted (read-only analysis) → verified.
+        assert!(overall_verified(false, true, false, 0, false));
+        // tool errors but files were actually written → still verified.
+        assert!(overall_verified(false, true, true, 2, true));
+    }
+
+    // ── followup_reason ─────────────────────────────────────────────────────
+
+    #[test]
+    fn followup_reason_silent_for_dry_run() {
+        // dry_run → never produces a followup reason regardless of state.
+        assert!(followup_reason(true, false, true, 0, true, Some("e")).is_none());
+    }
+
+    #[test]
+    fn followup_reason_when_build_fails() {
+        let r = followup_reason(false, false, false, 0, false, None);
+        assert!(r.unwrap().contains("cargo check"));
+    }
+
+    #[test]
+    fn followup_reason_when_attempted_write_but_zero_files_includes_last_error() {
+        let r = followup_reason(false, true, true, 0, false, Some("patch failed"));
+        let msg = r.unwrap();
+        assert!(msg.contains("沒有任何檔案真正寫入"));
+        assert!(msg.contains("patch failed"));
+    }
+
+    #[test]
+    fn followup_reason_silent_when_clean() {
+        let r = followup_reason(false, true, true, 2, false, None);
+        assert!(r.is_none());
+    }
+
+    // ── derive_result_status — status precedence ────────────────────────────
+
+    #[test]
+    fn status_verified_wins_when_verified_true() {
+        // verified=true short-circuits to Verified, ignoring everything else.
+        let s = derive_result_status(true, true, true, false, false, 0, true);
+        assert_eq!(s, super::super::CodingResultStatus::Verified);
+    }
+
+    #[test]
+    fn status_dry_run_done_for_completed_analysis_in_dry_run() {
+        let s = derive_result_status(true, true, false, true, false, 0, false);
+        assert_eq!(s, super::super::CodingResultStatus::DryRunDone);
+    }
+
+    #[test]
+    fn status_done_for_completed_analysis_outside_dry_run() {
+        let s = derive_result_status(false, true, false, true, false, 0, false);
+        assert_eq!(s, super::super::CodingResultStatus::Done);
+    }
+
+    #[test]
+    fn status_followup_when_build_fails() {
+        let s = derive_result_status(false, false, false, false, false, 0, false);
+        assert_eq!(s, super::super::CodingResultStatus::FollowupNeeded);
+    }
+
+    #[test]
+    fn status_followup_when_attempted_write_but_zero_files() {
+        let s = derive_result_status(false, false, false, true, true, 0, false);
+        assert_eq!(s, super::super::CodingResultStatus::FollowupNeeded);
+    }
+
+    // ── build_change_summary ────────────────────────────────────────────────
+
+    #[test]
+    fn change_summary_handles_no_files_dry_run() {
+        let s = build_change_summary(&[], false, true, false, "");
+        assert!(s.contains("僅分析"));
+        assert!(s.contains("dry-run"));
+    }
+
+    #[test]
+    fn change_summary_handles_no_files_real_run() {
+        let s = build_change_summary(&[], false, false, false, "");
+        assert!(s.contains("未偵測到檔案變更"));
+        assert!(s.contains("待人工確認"));
+    }
+
+    #[test]
+    fn change_summary_lists_first_three_files_and_truncates() {
+        let files = vec![
+            "a.rs".to_string(), "b.rs".into(), "c.rs".into(),
+            "d.rs".into(), "e.rs".into(),
+        ];
+        let s = build_change_summary(&files, true, false, false, "outcome text");
+        assert!(s.contains("已變更 5 個檔案"));
+        assert!(s.contains("a.rs"));
+        assert!(s.contains("c.rs"));
+        // 4th + 5th truncated
+        assert!(!s.contains("d.rs"));
+        assert!(s.contains("…"));
+        assert!(s.contains("cargo check 通過"));
+    }
+
+    #[test]
+    fn change_summary_marks_auto_committed() {
+        let s = build_change_summary(&["a.rs".into()], true, false, true, "");
+        assert!(s.contains("已自動 commit"));
+    }
+
+    // ── salvage / synthesize narratives ─────────────────────────────────────
+
+    #[test]
+    fn salvage_short_raw_falls_back_to_evidence_summary() {
+        // raw too short (< 40 chars) → use inspected_paths_from_history.
+        let h = vec![read_entry("src/a.rs"), read_entry("src/b.rs")];
+        let out = salvage_non_json_final_answer("ok", &h);
+        assert!(out.contains("src/a.rs"));
+        assert!(out.contains("src/b.rs"));
+    }
+
+    #[test]
+    fn salvage_long_raw_passes_through() {
+        let raw = "x".repeat(80);
+        let out = salvage_non_json_final_answer(&raw, &[]);
+        assert_eq!(out.trim(), raw);
+    }
+
+    #[test]
+    fn synthesize_read_only_handles_no_history() {
+        let out = synthesize_read_only_outcome(&[]);
+        assert!(out.contains("分析完成"));
+        assert!(out.contains("沒有寫入任何檔案"));
+    }
+}
