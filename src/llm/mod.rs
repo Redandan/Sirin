@@ -49,7 +49,10 @@ use std::sync::{Arc, OnceLock};
 
 use serde::{Deserialize, Serialize};
 
-use backends::{call_ollama, call_openai, call_openai_messages, stream_ollama, stream_openai, OpenAiMessage};
+use backends::{
+    anthropic_cache_enabled, call_anthropic_messages, call_ollama, call_openai,
+    call_openai_messages, stream_ollama, stream_openai, OpenAiMessage,
+};
 
 const OLLAMA_BASE_URL: &str = "http://localhost:11434";
 const LM_STUDIO_BASE_URL:  &str = "http://localhost:1234/v1";
@@ -833,6 +836,21 @@ pub async fn call_prompt_messages(
                 .iter()
                 .map(|m| OpenAiMessage::text(m.role.as_str(), &m.content))
                 .collect();
+            // Issue #260: route Anthropic to native /v1/messages when caching
+            // is opt-in via LLM_PROMPT_CACHE=1 + base_url targets anthropic.com.
+            // Other Anthropic deployments (proxies, OpenRouter) keep using the
+            // OpenAI-compat path because they may not honour cache_control.
+            if matches!(llm.backend, LlmBackend::Anthropic)
+                && anthropic_cache_enabled(&llm.base_url)
+            {
+                return call_anthropic_messages(
+                    client,
+                    &llm.base_url,
+                    &llm.model,
+                    llm.api_key.as_deref(),
+                    openai_msgs,
+                ).await;
+            }
             call_openai_messages(
                 client,
                 &llm.base_url,

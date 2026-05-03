@@ -541,6 +541,220 @@ pub(super) async fn call_openai_messages(
     }
 }
 
+// ── Anthropic native API (Issue #260) ────────────────────────────────────────
+//
+// OpenAI-compat /chat/completions strips `cache_control` markers; Anthropic's
+// native /v1/messages preserves them and returns cache_creation_input_tokens
+// + cache_read_input_tokens in usage.  This path is opt-in via env var
+// LLM_PROMPT_CACHE=1 + backend=Anthropic + base_url containing "anthropic.com".
+// All other Anthropic calls keep using call_openai_messages.
+
+#[derive(Serialize)]
+struct AnthropicSystemBlock<'a> {
+    #[serde(rename = "type")]
+    block_type: &'a str,           // always "text"
+    text: &'a str,
+    /// `Some({"type":"ephemeral"})` to mark cacheable; `None` skips marker.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<serde_json::Value>,
+}
+
+#[derive(Serialize)]
+struct AnthropicMessage<'a> {
+    role: &'a str,
+    /// Anthropic accepts string OR array-of-blocks; we always use string for
+    /// non-system messages here (multimodal content requires array form, which
+    /// is a follow-up).
+    content: &'a str,
+}
+
+#[derive(Serialize)]
+struct AnthropicRequest<'a> {
+    model: &'a str,
+    max_tokens: u32,
+    /// Either a plain string (no cache markers) or an array of blocks (each
+    /// block can carry `cache_control`).  We use the array form when caching
+    /// the system prompt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system: Option<Vec<AnthropicSystemBlock<'a>>>,
+    messages: Vec<AnthropicMessage<'a>>,
+}
+
+#[derive(Deserialize)]
+struct AnthropicTextBlock {
+    #[serde(default)]
+    text: String,
+}
+
+#[derive(Deserialize)]
+struct AnthropicResponse {
+    #[serde(default)]
+    content: Vec<AnthropicTextBlock>,
+    #[serde(default)]
+    usage: Option<AnthropicUsage>,
+}
+
+#[derive(Deserialize, Default)]
+struct AnthropicUsage {
+    #[serde(default)]
+    input_tokens: u32,
+    #[serde(default)]
+    output_tokens: u32,
+    /// Tokens written into the prompt cache on this request (paid at base rate
+    /// + 25% premium per Anthropic's pricing — but only on the FIRST request
+    /// that primes the cache).
+    #[serde(default)]
+    cache_creation_input_tokens: u32,
+    /// Tokens served from the prompt cache on this request (paid at 90%
+    /// discount).  This is the savings we want to maximise.
+    #[serde(default)]
+    cache_read_input_tokens: u32,
+}
+
+impl AnthropicUsage {
+    fn into_normalized(self, model: &str) -> crate::llm::usage::TokenUsage {
+        // Total prompt tokens (Anthropic billing): cache_read + cache_creation
+        // + input_tokens (regular).  We sum them so the dashboard's total
+        // matches what shows up on the Anthropic console.
+        let prompt = self.input_tokens
+            + self.cache_creation_input_tokens
+            + self.cache_read_input_tokens;
+        crate::llm::usage::TokenUsage {
+            prompt_tokens:     prompt,
+            completion_tokens: self.output_tokens,
+            cached_tokens:     self.cache_read_input_tokens,
+            model:             model.to_string(),
+        }
+    }
+}
+
+/// Default max_tokens for Anthropic — used when the caller doesn't override.
+/// Sirin's ReAct prompts produce JSON action_input objects that are typically
+/// < 500 tokens; 1024 is generous but not so big that errors stall on output.
+const ANTHROPIC_DEFAULT_MAX_TOKENS: u32 = 1024;
+
+/// Whether to use the native Anthropic /v1/messages endpoint (with prompt
+/// caching) instead of OpenAI-compat /chat/completions.  Returns true only
+/// when:
+///   1. LLM_PROMPT_CACHE=1 is set in env (default off — opt-in)
+///   2. base_url targets anthropic.com (we don't try caching on proxies that
+///      may not honour cache_control)
+pub(super) fn anthropic_cache_enabled(base_url: &str) -> bool {
+    let opt_in = std::env::var("LLM_PROMPT_CACHE")
+        .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes"))
+        .unwrap_or(false);
+    opt_in && base_url.contains("anthropic.com")
+}
+
+/// Send messages to Anthropic's native /v1/messages with cache_control on the
+/// system prompt.  See [`anthropic_cache_enabled`] for routing predicate.
+///
+/// Cache breakpoint scope (initial impl, per #260 conservative phase):
+/// - System prompt → 1 ephemeral marker.  Sirin's ReAct system block is the
+///   biggest static thing per call (~5-10K tokens) and is identical across
+///   iterations of the same test, so caching it nets the largest win for the
+///   smallest blast radius.
+///
+/// Future extensions (out of scope for this commit, see #260 follow-ups):
+/// - Mark first user message containing tool registry / docs
+/// - Mark history at length ≥ 4 to cache mid-conversation prefix
+pub(super) async fn call_anthropic_messages(
+    client: &reqwest::Client,
+    base_url: &str,
+    model: &str,
+    api_key: Option<&str>,
+    messages: Vec<OpenAiMessage>,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    crate::sirin_log!(
+        "[llm] call  backend=anthropic-native model={} msgs={} cache=on",
+        model, messages.len()
+    );
+    let api_key = api_key.ok_or("Anthropic native API requires ANTHROPIC_API_KEY")?;
+
+    // Split out the leading system message (Sirin's prompts always put system
+    // first).  If absent we send messages[] only — Anthropic permits that.
+    let mut system_text: Option<String> = None;
+    let mut chat: Vec<&OpenAiMessage> = Vec::with_capacity(messages.len());
+    for m in &messages {
+        if system_text.is_none() && m.role == "system" {
+            system_text = Some(m.text_content());
+        } else {
+            chat.push(m);
+        }
+    }
+    let chat_strings: Vec<String> = chat.iter().map(|m| m.text_content()).collect();
+    let chat_msgs: Vec<AnthropicMessage> = chat.iter().zip(chat_strings.iter())
+        .map(|(m, s)| AnthropicMessage { role: m.role.as_str(), content: s.as_str() })
+        .collect();
+
+    let system_blocks = system_text.as_ref().map(|t| vec![AnthropicSystemBlock {
+        block_type: "text",
+        text: t.as_str(),
+        cache_control: Some(serde_json::json!({"type": "ephemeral"})),
+    }]);
+
+    let req = AnthropicRequest {
+        model,
+        max_tokens: ANTHROPIC_DEFAULT_MAX_TOKENS,
+        system: system_blocks,
+        messages: chat_msgs,
+    };
+
+    let url = format!("{}/v1/messages", base_url.trim_end_matches('/'));
+
+    let mut rate_limit_attempt = 0u32;
+    loop {
+        let resp = client
+            .post(&url)
+            .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
+            // Beta header required for prompt caching as of Anthropic's
+            // 2024-08-14 GA — keeps us forward-compatible if they remove the
+            // beta gate later (header is silently ignored once GA).
+            .header("anthropic-beta", "prompt-caching-2024-07-31")
+            .json(&req)
+            .send()
+            .await?;
+
+        if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            if rate_limit_attempt >= 3 {
+                return Err(format!("429 rate-limited: max retries exceeded for model={model}").into());
+            }
+            let wait_secs = resp
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(5u64 << rate_limit_attempt);
+            crate::sirin_log!(
+                "[llm] anthropic 429 — waiting {}s (attempt {}/3) model={}",
+                wait_secs, rate_limit_attempt + 1, model
+            );
+            tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
+            rate_limit_attempt += 1;
+            continue;
+        }
+
+        let parsed: AnthropicResponse = resp.error_for_status()?.json().await?;
+        let reply = parsed.content.first().map(|b| b.text.trim().to_string()).unwrap_or_default();
+
+        if let Some(u) = parsed.usage {
+            crate::sirin_log!(
+                "[llm] anthropic usage  input={} cached_read={} cached_write={} output={}",
+                u.input_tokens, u.cache_read_input_tokens, u.cache_creation_input_tokens, u.output_tokens
+            );
+            crate::llm::usage::record(u.into_normalized(model));
+        }
+
+        crate::sirin_log!(
+            "[llm] resp  backend=anthropic-native model={} reply_chars={}",
+            model, reply.len()
+        );
+        return Ok(reply);
+    }
+}
+
 // ── Streaming transport ──────────────────────────────────────────────────────
 
 pub(super) async fn stream_ollama<F>(
@@ -773,5 +987,90 @@ mod tests {
         // Drop remaining and verify full restoration.
         drop(held);
         assert_eq!(sem.available_permits(), cap, "all permits should be returned");
+    }
+
+    // ── Issue #260: Anthropic prompt cache routing ─────────────────────
+
+    #[test]
+    fn anthropic_cache_disabled_by_default() {
+        let orig = std::env::var("LLM_PROMPT_CACHE").ok();
+        std::env::remove_var("LLM_PROMPT_CACHE");
+        // Even on anthropic.com, default OFF unless explicitly opted in.
+        assert!(!anthropic_cache_enabled("https://api.anthropic.com/v1"));
+        // Restore
+        if let Some(v) = orig { std::env::set_var("LLM_PROMPT_CACHE", v); }
+    }
+
+    #[test]
+    fn anthropic_cache_only_for_anthropic_domain() {
+        let orig = std::env::var("LLM_PROMPT_CACHE").ok();
+        std::env::set_var("LLM_PROMPT_CACHE", "1");
+
+        // anthropic.com → cache enabled
+        assert!(anthropic_cache_enabled("https://api.anthropic.com/v1"));
+        // OpenRouter or other proxy fronting Anthropic → cache disabled
+        // (proxy may not honour cache_control markers; safer to skip than
+        // pay the cache_creation premium for nothing).
+        assert!(!anthropic_cache_enabled("https://openrouter.ai/api/v1"));
+        // Local mock for tests → off
+        assert!(!anthropic_cache_enabled("http://localhost:8080"));
+
+        // Various truthy values
+        for v in ["1", "true", "TRUE", "yes"] {
+            std::env::set_var("LLM_PROMPT_CACHE", v);
+            assert!(anthropic_cache_enabled("https://api.anthropic.com/v1"),
+                "env={v} should enable cache");
+        }
+
+        // Falsy / missing values
+        for v in ["0", "false", "no", "garbage", ""] {
+            std::env::set_var("LLM_PROMPT_CACHE", v);
+            assert!(!anthropic_cache_enabled("https://api.anthropic.com/v1"),
+                "env={v} should NOT enable cache");
+        }
+
+        // Restore
+        match orig {
+            Some(v) => std::env::set_var("LLM_PROMPT_CACHE", v),
+            None    => std::env::remove_var("LLM_PROMPT_CACHE"),
+        }
+    }
+
+    #[test]
+    fn anthropic_usage_into_normalized_sums_correctly() {
+        // First-call shape: cache_creation populated, cache_read = 0
+        let u = AnthropicUsage {
+            input_tokens:                100,
+            output_tokens:               50,
+            cache_creation_input_tokens: 5000,
+            cache_read_input_tokens:     0,
+        };
+        let n = u.into_normalized("claude-3-5-sonnet-20240620");
+        assert_eq!(n.prompt_tokens, 5100, "prompt = input + cache_create + cache_read");
+        assert_eq!(n.completion_tokens, 50);
+        assert_eq!(n.cached_tokens, 0, "first call has no cache hits yet");
+
+        // Second-call shape: cache_read populated (cache hit)
+        let u = AnthropicUsage {
+            input_tokens:                100,
+            output_tokens:               40,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens:     5000,
+        };
+        let n = u.into_normalized("claude-3-5-sonnet-20240620");
+        assert_eq!(n.prompt_tokens, 5100);
+        assert_eq!(n.completion_tokens, 40);
+        assert_eq!(n.cached_tokens, 5000, "cache_read should populate cached_tokens");
+
+        // Plain call (no caching at all)
+        let u = AnthropicUsage {
+            input_tokens:                500,
+            output_tokens:               100,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens:     0,
+        };
+        let n = u.into_normalized("claude-3-haiku");
+        assert_eq!(n.prompt_tokens, 500);
+        assert_eq!(n.cached_tokens, 0);
     }
 }
