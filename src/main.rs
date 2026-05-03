@@ -36,6 +36,7 @@ mod log_buffer;
 #[allow(dead_code)] mod assistant;
 #[allow(dead_code)] mod perception;
 mod mcp_gateway;
+#[allow(dead_code)] mod mcp_registry;
 mod mcp_server;
 pub mod monitor;
 mod process_group;

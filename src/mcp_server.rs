@@ -865,6 +865,23 @@ fn handle_initialize(params: Value, user_agent: &str) -> Result<Value, String> {
 // ── tools/list ────────────────────────────────────────────────────────────────
 
 fn handle_tools_list() -> Result<Value, String> {
+    let mut response = handle_tools_list_legacy()?;
+    // Issue #257 Option B — append registry-defined tools.  Migrated tools
+    // live in `mcp_registry::seed_default`; un-migrated tools stay in the
+    // literal block below.  Both sets are guarded by the parity test in
+    // `mcp_parity_tests` to ensure neither path drifts out of sync.
+    if let Some(tools_arr) = response["tools"].as_array_mut() {
+        for def in crate::mcp_registry::iter() {
+            tools_arr.push(def.to_json());
+        }
+    }
+    Ok(response)
+}
+
+/// Legacy literal block — un-migrated tools.  Each entry here will be
+/// deleted as it gets a `register_tool` call in `mcp_registry::seed_default`.
+/// See #257 Option B migration tracker.
+fn handle_tools_list_legacy() -> Result<Value, String> {
     Ok(json!({
         "tools": [
             {
@@ -879,22 +896,7 @@ fn handle_tools_list() -> Result<Value, String> {
                     "required": ["query"]
                 }
             },
-            {
-                "name": "skill_list",
-                "description": "列出 Sirin 所有可用技能（含 YAML 動態技能）。",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {}
-                }
-            },
-            {
-                "name": "teams_pending",
-                "description": "取得 Teams 待確認回覆草稿列表。",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {}
-                }
-            },
+            // skill_list, teams_pending — migrated to mcp_registry (#257 Option B).
             {
                 "name": "teams_approve",
                 "description": "核准指定的 Teams 草稿，觸發送出。",
@@ -1181,11 +1183,7 @@ fn handle_tools_list() -> Result<Value, String> {
                     }
                 }
             },
-            {
-                "name": "discovery_status",
-                "description": "查最近一次 discovery 爬蟲狀態。回傳 status (running/done/failed)、started_at、finished_at、total_widgets、累計 distinct features 數。",
-                "inputSchema": { "type": "object", "properties": {} }
-            },
+            // discovery_status — migrated to mcp_registry (#257 Option B).
             {
                 "name": "discovery_features",
                 "description": "列出 discovery 爬蟲找到的所有 features（route/label/kind/selector/last_seen）。可用 limit + kind 過濾。",
@@ -2004,6 +2002,14 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
     let name      = params["name"].as_str().ok_or("Missing 'name'")?;
     let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
+    // Issue #257 Option B — registry path FIRST. Migrated tools are
+    // dispatched here; un-migrated tools fall through to the legacy
+    // match arms below.  See `crate::mcp_registry::seed_default` for the
+    // running list of migrated tools.
+    if let Some(def) = crate::mcp_registry::get(name) {
+        return def.handler.invoke(arguments).await;
+    }
+
     // Tools that return structured JSON (not just text) bypass the text wrapper.
     // Only `browser_exec` currently needs the caller's identity (for authz +
     // audit); other tools are read-only w.r.t. authz.
@@ -2027,7 +2033,7 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         "lint_test"               => return call_lint_test(arguments).map(wrap_json),
         "test_coverage"           => return call_test_coverage(arguments).map(wrap_json),
         "discover_app"            => return call_discover_app(arguments).map(wrap_json),
-        "discovery_status"        => return call_discovery_status().map(wrap_json),
+        // discovery_status — migrated to mcp_registry (#257 Option B).
         "discovery_features"      => return call_discovery_features(arguments).map(wrap_json),
         // ui_navigate / ui_state — removed with the egui shell in Phase 7.
         "replay_last_failure"     => return call_replay_last_failure(arguments).map(wrap_json),
@@ -2110,8 +2116,7 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
 
     let text = match name {
         "memory_search"    => call_memory_search(arguments).await?,
-        "skill_list"       => call_skill_list(),
-        "teams_pending"    => call_teams_pending(),
+        // skill_list, teams_pending — migrated to mcp_registry (#257 Option B).
         "teams_approve"    => call_teams_approve(arguments)?,
         "trigger_research" => call_trigger_research(arguments)?,
         other => return Err(format!("Unknown tool: {other}")),
@@ -2147,7 +2152,8 @@ async fn call_memory_search(args: Value) -> Result<String, String> {
     .await
 }
 
-fn call_skill_list() -> String {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_skill_list() -> String {
     let skills = crate::skills::list_skills();
     skills
         .iter()
@@ -2156,7 +2162,8 @@ fn call_skill_list() -> String {
         .join("\n")
 }
 
-fn call_teams_pending() -> String {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_teams_pending() -> String {
     let pending = crate::pending_reply::load_pending("teams")
         .into_iter()
         .filter(|r| r.status == crate::pending_reply::PendingStatus::Pending)
@@ -2843,7 +2850,8 @@ fn call_discover_app(args: Value) -> Result<Value, String> {
 }
 
 /// #247 — discovery_status: snapshot of latest run + counts.
-fn call_discovery_status() -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_discovery_status() -> Result<Value, String> {
     let latest = crate::test_runner::discovery::latest_run()?;
     let total  = crate::test_runner::discovery::feature_count().unwrap_or(0);
     match latest {

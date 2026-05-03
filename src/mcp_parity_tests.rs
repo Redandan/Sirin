@@ -46,6 +46,14 @@ fn read_mcp_server_source() -> Option<String> {
     std::fs::read_to_string(&path).ok()
 }
 
+/// Read the registry source — for #257 Option B coexistence.  Tools migrated
+/// to `mcp_registry::seed_default` are no longer in the legacy literals /
+/// match arms and must be counted separately.
+fn read_mcp_registry_source() -> Option<String> {
+    let path = Path::new("src").join("mcp_registry.rs");
+    std::fs::read_to_string(&path).ok()
+}
+
 /// Extract the slice of `mcp_server.rs` between `start_marker` and
 /// `end_marker` (exclusive).  Both markers must appear exactly once;
 /// returns `None` otherwise.
@@ -152,19 +160,52 @@ fn extract_dispatched_tool_names(src: &str) -> BTreeSet<String> {
     out
 }
 
+/// Pull tool names from `m.insert("X", ToolDef { ... })` lines inside
+/// `mcp_registry::seed_default`.  Migrated tools are not in the legacy
+/// literals or arms — they need to be counted from this third source.
+fn extract_registry_tool_names(src: &str) -> BTreeSet<String> {
+    let body = match slice_between(src, "fn seed_default", "// ── Tests") {
+        Some(b) => b,
+        None => return BTreeSet::new(),
+    };
+    let mut out = BTreeSet::new();
+    let pat = "m.insert(\"";
+    let mut rest = body;
+    while let Some(idx) = rest.find(pat) {
+        let after = &rest[idx + pat.len()..];
+        if let Some(end) = after.find('"') {
+            let name = &after[..end];
+            if !name.is_empty()
+                && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+            {
+                out.insert(name.to_string());
+            }
+            rest = &after[end + 1..];
+        } else {
+            break;
+        }
+    }
+    out
+}
+
 #[test]
 fn tools_list_and_dispatch_in_sync() {
-    let Some(src) = read_mcp_server_source() else {
+    let Some(server_src) = read_mcp_server_source() else {
         // Sub-crate build with no src/mcp_server.rs — skip.
         return;
     };
+    // Registry source is optional (e.g. before #257 Option B landed); empty
+    // set when not present.
+    let registry_src = read_mcp_registry_source().unwrap_or_default();
 
-    let listed     = extract_listed_tool_names(&src);
-    let dispatched = extract_dispatched_tool_names(&src);
+    let listed     = extract_listed_tool_names(&server_src);
+    let dispatched = extract_dispatched_tool_names(&server_src);
+    let registry   = extract_registry_tool_names(&registry_src);
 
     // Sanity: the extractors should find non-trivial counts.  If we hit 0
     // it means the landmark strings drifted and the test is silently
-    // useless.  Fail loud.
+    // useless.  Fail loud.  Registry can legitimately be empty until tools
+    // start migrating, so we only sanity-check the legacy extractors.
     assert!(
         listed.len()     >= 50,
         "extract_listed_tool_names found only {} tool(s) — landmark strings may have drifted",
@@ -176,26 +217,41 @@ fn tools_list_and_dispatch_in_sync() {
         dispatched.len(),
     );
 
-    let only_listed: Vec<_> = listed.difference(&dispatched).cloned().collect();
-    let only_dispatched: Vec<_> = dispatched.difference(&listed).cloned().collect();
+    // Issue #257 Option B invariants:
+    //   1. literal_listed ∪ registry == literal_dispatched ∪ registry
+    //      (every tool reachable via tools/list is reachable via tools/call
+    //      and vice versa, regardless of which path serves it).
+    //   2. literal_listed ∩ registry == ∅
+    //      (a migrated tool must not also appear in the literal block).
+    //   3. literal_dispatched ∩ registry == ∅
+    //      (a migrated tool must not also have a legacy dispatch arm).
+    let union_listed:     BTreeSet<String> = listed.union(&registry).cloned().collect();
+    let union_dispatched: BTreeSet<String> = dispatched.union(&registry).cloned().collect();
 
-    if !only_listed.is_empty() || !only_dispatched.is_empty() {
-        let listed_msg = if only_listed.is_empty() {
+    let only_listed:     Vec<_> = union_listed.difference(&union_dispatched).cloned().collect();
+    let only_dispatched: Vec<_> = union_dispatched.difference(&union_listed).cloned().collect();
+    let double_listed:   Vec<_> = listed.intersection(&registry).cloned().collect();
+    let double_disp:     Vec<_> = dispatched.intersection(&registry).cloned().collect();
+
+    if !only_listed.is_empty() || !only_dispatched.is_empty()
+        || !double_listed.is_empty() || !double_disp.is_empty()
+    {
+        let fmt = |v: &[String]| if v.is_empty() {
             "(none)".to_string()
         } else {
-            only_listed.iter().map(|n| format!("  - {n}")).collect::<Vec<_>>().join("\n")
-        };
-        let dispatched_msg = if only_dispatched.is_empty() {
-            "(none)".to_string()
-        } else {
-            only_dispatched.iter().map(|n| format!("  - {n}")).collect::<Vec<_>>().join("\n")
+            v.iter().map(|n| format!("  - {n}")).collect::<Vec<_>>().join("\n")
         };
         panic!(
             "tools/list ↔ tools/call out of sync (#257 silent-drop guard):\n\n\
-             Advertised in tools/list but no dispatch arm in tools/call:\n{listed_msg}\n\n\
-             Dispatched but not advertised:\n{dispatched_msg}\n\n\
-             Fix: add the missing entry to {}.",
-            if !only_listed.is_empty() { "handle_tools_call" } else { "handle_tools_list" },
+             Reachable via tools/list but no dispatch path:\n{}\n\n\
+             Dispatched but not advertised in tools/list:\n{}\n\n\
+             Double-registered (legacy literal + registry):\n{}\n\n\
+             Double-registered (legacy match arm + registry):\n{}\n\n\
+             Fix: add or remove the missing/extra entry as needed.",
+            fmt(&only_listed),
+            fmt(&only_dispatched),
+            fmt(&double_listed),
+            fmt(&double_disp),
         );
     }
 }
