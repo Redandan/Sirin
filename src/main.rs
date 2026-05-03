@@ -5,6 +5,7 @@ mod adk;
 #[allow(dead_code)] mod agent_config;
 mod authz;
 #[cfg(test)] mod devex;
+#[cfg(test)] mod mcp_parity_tests;
 pub mod error;
 mod platform;
 #[allow(dead_code)] mod browser;
