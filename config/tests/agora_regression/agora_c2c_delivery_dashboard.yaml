@@ -1,10 +1,21 @@
 id: agora_c2c_delivery_dashboard
 name: "C2C 核心流程：外送員儀表板 UI 驗證"
-url: "https://redandan.github.io/?__test_role=delivery#/delivery"
+# 兩階段 nav 修法（KB: sirin-trap-test-role-hash-lost-on-login-redirect）：
+# Stage 1（fixture.setup 第一個 goto）：?__test_role=delivery 觸發 auto-login，落 LoginPage
+# Stage 2（fixture.setup 第二個 goto）：cached JWT 跳過 LoginPage，落 #/delivery dashboard
+# top-level url 故意省 hash，避免初次 goto 帶 hash route 被 guard 擋進 LoginPage 後遺失
+url: "https://redandan.github.io/?__test_role=delivery"
 
-max_iterations: 25
-timeout_secs: 420
+max_iterations: 20
+timeout_secs: 360
 max_retries: 1
+
+# Fixture: 兩階段 deterministic goto，跑在 LLM ReAct 之前（top-level url 已是 stage 1）
+fixture:
+  setup:
+    - {action: "wait", target: "8000"}                                       # 等 stage 1 auto-login + redirect
+    - {action: "goto", target: "https://redandan.github.io/#/delivery"}      # stage 2：JWT 已 cached，落 dashboard
+    - {action: "wait", target: "3000"}                                       # 等 dashboard render
 
 # H5 mobile viewport — 外送員後台是手機版
 viewport:
@@ -16,35 +27,28 @@ viewport:
 locale: zh-TW
 
 goal: |
-  目標：驗證外送員儀表板可正常載入，顯示今日統計、工作狀態開關和訂單資訊。
+  目標：驗證外送員儀表板已正常載入並顯示核心資訊。
 
-  已知資訊：
-  - 外送員路由：#/delivery（直接導航可到達）
-  - 儀表板顯示：今日收入、完成訂單數、待接單/配送中/已完成統計
-  - 工作狀態開關（switch：正在接單中/停止接單）
-  - 底部 4 個 tab：首頁/訂單/收入/我的
-  - 快捷功能：歷史訂單、配送指南、訊息中心、個人設定
+  fixture.setup 已完成兩階段 navigation（auto-login + 落 #/delivery），
+  LLM 開始時頁面應該已經在 delivery dashboard。
 
-  ⚠️ 步驟 12 無條件 done=true。
-  ⚠️ 嚴禁 shadow_dump（容易在 AX tree 未就緒時回空，導致 LLM convergence guard 循環）。
+  Dashboard 預期元素（mobile 390x844 viewport）：
+  - 標題「外送首頁」
+  - 工作狀態 toggle（switch 顯示「正在接單中」或「停止接單」）
+  - 使用者卡片含「今日收入：X.XX USDT」「完成訂單：N 筆」
+  - 快捷功能 grid：歷史訂單 / 配送指南 / 訊息中心 / 個人設定
+  - 底部 4 個 tab：首頁 / 訂單 / 收入 / 我的（注意是 delivery 的 nav，不是 buyer 的 商品/訂單/錢包/我的）
 
-  ⚠️ 陷阱：clear_state 會刪除 __test_role JWT，URL 中的 ?__test_role=delivery 也會遺失。
-  ⚠️ 正確做法：直接 goto 帶有 __test_role 的 delivery URL，讓 auto-login 重新觸發。
+  ⚠️ 嚴禁 shadow_dump（AX tree 未就緒時回空 → convergence guard 循環）
+  ⚠️ 步驟 6 無條件 done=true，嚴禁提早終止
 
-  步驟（線性，步驟 12 done=true）：
-  1. goto target="https://redandan.github.io/?__test_role=delivery#/delivery"
-     （明確重新導航，確保 __test_role=delivery 在 URL 中）
-  2. wait 8000（等 auto-login 從前一 test 的 buyer session 切換到 delivery，需要 8s）
-  3. enable_a11y
-  4. wait 2000
-  5. enable_a11y（二次確保 AX tree 就緒）
-  6. wait 1000
-  7. screenshot_analyze "外送員儀表板截圖：有今日收入金額嗎？有待接單/配送中/已完成統計嗎？有工作狀態開關嗎？有底部 4 個 tab（首頁/訂單/收入/我的）嗎？"
-  8. shadow_click role=tab name_regex="^訂單$"（切換到訂單 tab）
-  9. wait 2000
-  10. enable_a11y
-  11. wait 1000
-  12. done=true
+  步驟（線性，步驟 6 done=true）：
+  1. enable_a11y
+  2. wait 2000
+  3. screenshot_analyze "外送首頁截圖：請確認是否有 (a) 工作狀態 toggle (b) 今日收入金額 (c) 完成訂單數量 (d) 底部 nav 包含「首頁/訂單/收入/我的」這 4 個分頁"
+  4. shadow_click role=tab name_regex="^訂單$"（切到訂單 tab，驗證 nav 切換正常）
+  5. wait 2000
+  6. done=true
 
 success_criteria:
   - "成功載入外送員儀表板（#/delivery）"
