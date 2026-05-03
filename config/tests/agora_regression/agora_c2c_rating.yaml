@@ -3,7 +3,7 @@ name: "C2C 後段流程：買家對賣家評價"
 url: "https://redandan.github.io/?__test_role=buyer"
 
 max_iterations: 25
-timeout_secs: 360
+timeout_secs: 600  # Local LLM (Qwen/Gemma 4) needs more wall-time per ReAct iter
 
 viewport:
   width: 390

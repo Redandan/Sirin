@@ -1298,7 +1298,11 @@ pub async fn execute_test_tracked(
                      The exact required shape is:\n\
                      {{\"thought\": \"<reasoning>\", \"action_input\": {{\"action\": \"<name>\", ...args}}, \"done\": false}}\n\
                      Do NOT write `thought: ...` or `action_input: ...` as plain text labels — \
-                     they MUST be JSON keys inside one outer {{...}} object."
+                     they MUST be JSON keys inside one outer {{...}} object.\n\
+                     ⚠️ Multi-parameter actions: expand each arg as its own JSON KEY.\n\
+                     ✅ {{\"action\":\"shadow_click\",\"role\":\"button\",\"name_regex\":\"^X$\"}}\n\
+                     ❌ {{\"action\":\"shadow_click\",\"target\":\"role=button name_regex=\\\"X\\\"\"}}\n\
+                     The wrong form embeds unescaped \" inside a string and produces invalid JSON."
                 ));
                 if let Some(rid) = run_id {
                     runs::push_observation(rid, format!("PARSE_RETRY ({parse_error_count}/{max_parse_errors}): {err}\nRaw: {raw}"));
@@ -1872,6 +1876,16 @@ Respond with STRICTLY valid JSON, no markdown fences, no prose:
   "done": false,
   "final_answer": "<only when done=true: summary of outcome in {lang}>"
 }}
+
+## ⚠️ Action argument format — CRITICAL
+
+Multi-parameter actions (shadow_click, ax_find, shadow_type_flutter, etc.)
+MUST expand each parameter as its own JSON key inside `action_input`.
+Never inline multiple parameters as one quoted string with `"` chars
+(produces invalid JSON because inner `"` are unescaped).
+
+✅ CORRECT:  {{"action":"shadow_click", "role":"button", "name_regex":"^評價$"}}
+❌ WRONG:    {{"action":"shadow_click", "target":"role=button name_regex=\"評價\""}}
 "##,
         goal = test.goal.trim(),
         summary = perception.summary,
@@ -2137,6 +2151,23 @@ dispute_yaml 不是失敗——是回報 spec 問題的標準動作。Sirin 會�
 Analyse the goal and history, decide the single next action.
 When the goal is clearly achieved (or definitively failed), set "done": true.
 
+## ⚠️ Error-recovery rule (CRITICAL — read every iteration)
+
+If the IMMEDIATELY PREVIOUS observation indicates failure (e.g. "no matching element",
+"not found", "tool error", empty result), you MUST change strategy on this turn:
+
+1. **Never retry the exact same action with the same parameters.**
+2. **First fallback after any shadow_*/ax_* miss**: call `shadow_dump` (no params) to
+   list real elements on the page; then pick a name from the actual list.
+3. **Second fallback**: call `flutter_scroll_until_visible role=<r> name_regex=<n>` to
+   bring an off-screen element into view.
+4. **Third fallback**: `screenshot_analyze prompt="locate <element>, return x/y or
+   describe what you see"` then `click_point coord_source=screenshot`.
+5. Only after a different action succeeds may you re-try the original click with the
+   refined name found in shadow_dump.
+
+Repeating the same action 4 times trips the convergence guard and aborts the test.
+
 Respond with STRICTLY valid JSON, no markdown fences, no prose:
 {{
   "thought": "<reasoning in {lang}>",
@@ -2144,6 +2175,28 @@ Respond with STRICTLY valid JSON, no markdown fences, no prose:
   "done": false,
   "final_answer": "<only when done=true: summary of outcome in {lang}>"
 }}
+
+## ⚠️ Action argument format — CRITICAL
+
+Each named parameter MUST be its own JSON key inside `action_input`.
+Do NOT inline multiple parameters as one quoted string with `"` chars
+(this produces invalid JSON because the inner `"` are not escaped).
+
+✅ CORRECT — parameters expanded as separate JSON keys:
+  {{"action":"shadow_click", "role":"button", "name_regex":"^評價$"}}
+  {{"action":"ax_find", "role":"textbox", "name_regex":"電話"}}
+  {{"action":"shadow_type_flutter", "role":"textbox", "name_regex":"地址", "text":"台北市"}}
+  {{"action":"goto", "target":"https://example.com"}}
+  {{"action":"wait", "target":"2000"}}
+
+❌ WRONG — inlined string with embedded `"` (will fail JSON parse):
+  {{"action":"shadow_click", "target":"role=button name_regex=\"評價\""}}
+  {{"action":"shadow_click", "target":"role=button, name=評價"}}
+
+When an action takes multiple named parameters (role, name_regex, text,
+backend_id, etc.), expand each as its own key in the action_input object.
+Only the simple actions (`goto`, `click`, `wait`, `read`, `eval`, `type`,
+`scroll_to`, `key`, `attr`) take a single `target` string.
 "##,
         goal = test.goal.trim(),
         url = test.url,
