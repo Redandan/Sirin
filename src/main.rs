@@ -246,6 +246,14 @@ fn main() {
     // Read SIRIN_PRIVACY_MASK once .env is loaded.  Default = on (fail-secure).
     browser::init_privacy_mask_from_env();
 
+    // ── Headless mode default (Issue #268) ───────────────────────────────────
+    // Seed TEST_DESIRED_HEADLESS from SIRIN_BROWSER_HEADLESS so crash-recovery
+    // paths (ensure_open_reusing) honour the env value even before the first
+    // test runs.  Without this, ad-hoc browser_exec / screenshot_analyze calls
+    // could cause Chrome to re-launch headless mid-Flutter test → all-black
+    // screenshots.
+    browser::init_headless_mode_from_env();
+
     // ── AuthZ engine init ────────────────────────────────────────────────────
     authz::init(Some(std::path::Path::new(".")));
     tracing::info!(target: "sirin", "[main] AuthZ engine initialized");

@@ -113,6 +113,23 @@ pub fn set_test_headless_mode(headless: bool) {
     TEST_DESIRED_HEADLESS.store(headless, Ordering::Relaxed);
 }
 
+/// Seed the desired-headless static from the `SIRIN_BROWSER_HEADLESS` env
+/// at process start.  Called once from `main.rs` after `.env` is loaded.
+///
+/// Without this, `TEST_DESIRED_HEADLESS` defaults to `true` regardless of env,
+/// and any browser path that calls `ensure_open_reusing()` BEFORE a test runs
+/// (e.g. ad-hoc `screenshot_analyze` MCP calls, scaffold flows) gets `headless=true`
+/// even though the user set `SIRIN_BROWSER_HEADLESS=false` for Flutter testing.
+/// Crash recovery during such pre-test calls then re-launches headless and
+/// produces all-black screenshots (Issue #268 / #259 trace for `agora_c2c_rating`).
+pub fn init_headless_mode_from_env() {
+    let h = default_headless();
+    TEST_DESIRED_HEADLESS.store(h, Ordering::Relaxed);
+    tracing::info!(
+        "[browser] TEST_DESIRED_HEADLESS seeded from SIRIN_BROWSER_HEADLESS env: {h}"
+    );
+}
+
 /// Initialise the global privacy-mask toggle from `SIRIN_PRIVACY_MASK`.
 /// Called once near process start.  `1`/`true`/`yes` → on (default),
 /// `0`/`false`/`no` → off.  Any other value also leaves it on (fail-secure).
@@ -3544,6 +3561,52 @@ mod tests {
         }
         // Leave global in fail-secure state for subsequent tests
         let _ = set_privacy_mask(true);
+    }
+
+    /// Issue #268: ensure init_headless_mode_from_env honours the env at
+    /// process start — without this seeding, TEST_DESIRED_HEADLESS keeps
+    /// its default `true` even when the user set
+    /// `SIRIN_BROWSER_HEADLESS=false` in `.env`, breaking Flutter CanvasKit
+    /// crash-recovery (which paints all-black in headless mode).
+    #[test]
+    fn init_headless_mode_from_env_seeds_static() {
+        let orig = std::env::var("SIRIN_BROWSER_HEADLESS").ok();
+
+        // false variants should set the static to false
+        for off in ["false", "0", "FALSE", "no", "NO"] {
+            std::env::set_var("SIRIN_BROWSER_HEADLESS", off);
+            // Reset static to default-true first, then init must flip it.
+            TEST_DESIRED_HEADLESS.store(true, Ordering::Relaxed);
+            init_headless_mode_from_env();
+            assert!(
+                !TEST_DESIRED_HEADLESS.load(Ordering::Relaxed),
+                "env={off} must seed TEST_DESIRED_HEADLESS=false"
+            );
+        }
+
+        // true / unset / unrecognised → defaults to true (fail-headless,
+        // matches current default_headless() contract)
+        for (env_val, label) in [(Some("true"), "true"), (Some("1"), "1"), (None, "unset"), (Some("garbage"), "garbage")] {
+            match env_val {
+                Some(v) => std::env::set_var("SIRIN_BROWSER_HEADLESS", v),
+                None    => std::env::remove_var("SIRIN_BROWSER_HEADLESS"),
+            }
+            TEST_DESIRED_HEADLESS.store(false, Ordering::Relaxed);
+            init_headless_mode_from_env();
+            assert!(
+                TEST_DESIRED_HEADLESS.load(Ordering::Relaxed),
+                "env={label} must seed TEST_DESIRED_HEADLESS=true"
+            );
+        }
+
+        // Restore env
+        match orig {
+            Some(v) => std::env::set_var("SIRIN_BROWSER_HEADLESS", v),
+            None    => std::env::remove_var("SIRIN_BROWSER_HEADLESS"),
+        }
+        // Re-seed from restored env so we leave the process in the user's
+        // intended state for any later tests in this binary.
+        init_headless_mode_from_env();
     }
 
     #[test]
