@@ -376,4 +376,83 @@ mod tests {
         }.render();
         assert!(!modify.contains("READ-ONLY ANALYSIS MODE"));
     }
+
+    // ── parse_react_step (#263) ───────────────────────────────────────
+
+    #[test]
+    fn parse_react_step_extracts_all_fields() {
+        let raw = r#"{"thought":"check the file","action":"file_read","action_input":{"path":"src/main.rs"},"final_answer":"all good"}"#;
+        let s = parse_react_step(raw);
+        assert_eq!(s.thought, "check the file");
+        assert_eq!(s.action, "file_read");
+        assert_eq!(s.action_input, json!({"path":"src/main.rs"}));
+        assert_eq!(s.final_answer, Some("all good".to_string()));
+        assert!(!s.parse_error);
+    }
+
+    #[test]
+    fn parse_react_step_strips_markdown_fences() {
+        let raw = "```json\n{\"thought\":\"x\",\"action\":\"DONE\"}\n```";
+        let s = parse_react_step(raw);
+        assert_eq!(s.thought, "x");
+        assert_eq!(s.action, "DONE");
+        assert!(!s.parse_error);
+    }
+
+    #[test]
+    fn parse_react_step_defaults_action_to_done_when_missing() {
+        let raw = r#"{"thought":"finished"}"#;
+        let s = parse_react_step(raw);
+        assert_eq!(s.action, "DONE",
+            "missing action defaults to DONE per source contract");
+    }
+
+    #[test]
+    fn parse_react_step_filters_empty_final_answer() {
+        let raw = r#"{"thought":"x","action":"file_read","final_answer":""}"#;
+        let s = parse_react_step(raw);
+        assert!(s.final_answer.is_none(),
+            "empty final_answer string filtered to None");
+    }
+
+    #[test]
+    fn parse_react_step_action_input_defaults_to_empty_object() {
+        let raw = r#"{"thought":"x","action":"DONE"}"#;
+        let s = parse_react_step(raw);
+        assert_eq!(s.action_input, json!({}));
+    }
+
+    #[test]
+    fn parse_react_step_handles_invalid_json_with_parse_error_flag() {
+        // Malformed JSON — the fallback path returns parse_error=true with
+        // action="INVALID_JSON" so the ReAct loop re-prompts instead of
+        // falsely DONE-ing.
+        let raw = "this is not JSON at all";
+        let s = parse_react_step(raw);
+        assert!(s.parse_error);
+        assert_eq!(s.action, "INVALID_JSON");
+        assert!(s.thought.contains("could not be parsed as JSON"));
+        assert!(s.thought.contains("this is not JSON"));
+        assert!(s.final_answer.is_none());
+    }
+
+    #[test]
+    fn parse_react_step_recovers_json_embedded_in_prose() {
+        // extract_json_body should pull the {...} window out of surrounding
+        // explanation text; parse_react_step then sees clean JSON.
+        let raw = "Sure, here you go:\n{\"thought\":\"y\",\"action\":\"DONE\"}\nLet me know if you want anything else.";
+        let s = parse_react_step(raw);
+        assert!(!s.parse_error);
+        assert_eq!(s.thought, "y");
+        assert_eq!(s.action, "DONE");
+    }
+
+    #[test]
+    fn parse_react_step_treats_partially_invalid_as_parse_error() {
+        // Half-truncated JSON like "{...}" without closing brace is still
+        // unparseable → parse_error path.
+        let raw = "{\"thought\":\"hi\",\"action\":\"DONE\"";
+        let s = parse_react_step(raw);
+        assert!(s.parse_error);
+    }
 }
