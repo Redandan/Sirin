@@ -3,7 +3,7 @@ name: "AgoraMarket Checkout DRY 驗證 (Issue #70 #45)"
 url: "https://redandan.github.io/?__test_role=buyer"
 
 max_iterations: 30
-timeout_secs: 360
+timeout_secs: 600  # Local LLM (Gemma 4) needs more wall-time per ReAct iter
 max_retries: 1  # H5 Flutter 偶發 Chrome 初始化延遲，自動重試一次
 
 # H5 mobile viewport — AgoraMarket 會員端是手機版 App，必須用手機 viewport 測試
