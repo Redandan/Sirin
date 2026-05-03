@@ -290,3 +290,348 @@ pub(super) fn maybe_enrich_tool_error(action_name: &str, observation: String) ->
         observation
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // Issue #263 Phase 3: helpers.rs pure-function tests.
+
+    // ── extract_json_body ────────────────────────────────────────────
+
+    #[test]
+    fn extract_json_body_strips_markdown_fence() {
+        assert_eq!(extract_json_body("```json\n{\"k\":1}\n```"), "{\"k\":1}");
+        assert_eq!(extract_json_body("```\n{\"k\":1}\n```"),     "{\"k\":1}");
+    }
+
+    #[test]
+    fn extract_json_body_finds_outer_braces() {
+        // Even with prose around, returns the {...} window.
+        let s = "Here is the answer: {\"action\":\"x\"} thanks!";
+        assert_eq!(extract_json_body(s), "{\"action\":\"x\"}");
+    }
+
+    #[test]
+    fn extract_json_body_returns_input_when_no_braces() {
+        assert_eq!(extract_json_body("plain text"), "plain text");
+        assert_eq!(extract_json_body(""),            "");
+    }
+
+    #[test]
+    fn extract_json_body_handles_nested_objects() {
+        let s = "```json\n{\"outer\":{\"inner\":42}}\n```";
+        assert_eq!(extract_json_body(s), "{\"outer\":{\"inner\":42}}");
+    }
+
+    // ── truncate_to_bytes ────────────────────────────────────────────
+
+    #[test]
+    fn truncate_to_bytes_no_change_when_under_limit() {
+        assert_eq!(truncate_to_bytes("hello", 10), "hello");
+        assert_eq!(truncate_to_bytes("",      10), "");
+    }
+
+    #[test]
+    fn truncate_to_bytes_respects_ascii_byte_limit() {
+        assert_eq!(truncate_to_bytes("abcdefghij", 5), "abcde");
+    }
+
+    #[test]
+    fn truncate_to_bytes_walks_back_to_char_boundary_for_cjk() {
+        // "你好世界" = 4 chars × 3 bytes = 12 bytes total.
+        // limit=5 cuts mid-char; helper must walk back to byte 3.
+        let s = "你好世界";
+        let out = truncate_to_bytes(s, 5);
+        assert_eq!(out, "你"); // exactly one char, 3 bytes
+        // limit=8 → still mid-char (3rd char starts at 6, 4th at 9 → can't end at 8)
+        assert_eq!(truncate_to_bytes(s, 8), "你好"); // 6 bytes
+    }
+
+    #[test]
+    fn truncate_to_bytes_zero_limit_returns_empty() {
+        assert_eq!(truncate_to_bytes("anything", 0), "");
+    }
+
+    // ── preview_tool_input / preview_text ────────────────────────────
+
+    #[test]
+    fn preview_tool_input_caps_at_60_chars() {
+        let v = json!({"long": "x".repeat(500)});
+        let out = preview_tool_input(&v);
+        assert!(out.chars().count() <= 60);
+    }
+
+    #[test]
+    fn preview_text_appends_ellipsis_when_over_120_chars() {
+        let s: String = "a".repeat(200);
+        let out = preview_text(&s);
+        // 120 chars + "…"
+        assert_eq!(out.chars().count(), 121);
+        assert!(out.ends_with('…'));
+    }
+
+    #[test]
+    fn preview_text_no_ellipsis_when_under_120_chars() {
+        let out = preview_text("short");
+        assert_eq!(out, "short");
+        assert!(!out.ends_with('…'));
+    }
+
+    #[test]
+    fn preview_text_handles_cjk_correctly() {
+        // 200 CJK chars — chars().take(120) is char-aware so should work.
+        let s: String = "中".repeat(200);
+        let out = preview_text(&s);
+        assert_eq!(out.chars().count(), 121); // 120 + "…"
+    }
+
+    // ── format_tool_output ───────────────────────────────────────────
+
+    #[test]
+    fn format_tool_output_string_truncates_to_800_chars() {
+        let v = Value::String("a".repeat(2000));
+        let out = format_tool_output(&v);
+        assert_eq!(out.chars().count(), 800);
+    }
+
+    #[test]
+    fn format_tool_output_array_caps_items_and_chars() {
+        let arr: Vec<Value> = (0..50).map(|i| json!(format!("item_{i}"))).collect();
+        let out = format_tool_output(&Value::Array(arr));
+        // First 10 items joined by '\n'
+        let line_count = out.lines().count();
+        assert_eq!(line_count, 10);
+    }
+
+    #[test]
+    fn format_tool_output_object_pretty_prints_then_truncates() {
+        let v = json!({"a": "x".repeat(2000)});
+        let out = format_tool_output(&v);
+        assert_eq!(out.chars().count(), 800);
+        assert!(out.starts_with("{"));
+    }
+
+    #[test]
+    fn format_tool_output_large_uses_2000_char_budget() {
+        let v = Value::String("a".repeat(5000));
+        let out = format_tool_output_large(&v);
+        assert_eq!(out.chars().count(), 2000);
+    }
+
+    // ── step_fingerprint ─────────────────────────────────────────────
+
+    #[test]
+    fn step_fingerprint_combines_action_input_observation() {
+        let fp = step_fingerprint("file_read", &json!({"path": "src/main.rs"}), "fn main() {}");
+        // Format: "action|input_preview|obs_preview"
+        assert!(fp.starts_with("file_read|"));
+        assert!(fp.contains("src/main.rs"));
+        assert!(fp.contains("fn main"));
+        // Two pipes split into 3 segments
+        assert_eq!(fp.matches('|').count(), 2);
+    }
+
+    #[test]
+    fn step_fingerprint_collapses_long_input_via_preview() {
+        let big = json!({"data": "x".repeat(500)});
+        let fp = step_fingerprint("write", &big, "ok");
+        // Whole fingerprint should still be small thanks to preview caps
+        assert!(fp.len() < 250);
+    }
+
+    // ── file_read_cache_key ──────────────────────────────────────────
+
+    #[test]
+    fn file_read_cache_key_uses_path_or_file_path() {
+        let k1 = file_read_cache_key(&json!({"path": "a.rs", "start_line": 10}));
+        assert_eq!(k1, "a.rs|10|0");
+        // file_path is the alt name (some tools use this)
+        let k2 = file_read_cache_key(&json!({"file_path": "b.rs", "end_line": 20}));
+        assert_eq!(k2, "b.rs|0|20");
+    }
+
+    #[test]
+    fn file_read_cache_key_defaults_to_zero_for_missing_lines() {
+        let k = file_read_cache_key(&json!({"path": "x.rs"}));
+        assert_eq!(k, "x.rs|0|0");
+    }
+
+    #[test]
+    fn file_read_cache_key_empty_when_no_path_field() {
+        let k = file_read_cache_key(&json!({"other": "field"}));
+        assert_eq!(k, "|0|0");
+    }
+
+    // ── extract_path_hints_from_task ─────────────────────────────────
+
+    #[test]
+    fn path_hints_extracts_explicit_paths() {
+        let hints = extract_path_hints_from_task("Please read src/main.rs and tests/lib.rs");
+        assert!(hints.contains(&"src/main.rs".to_string()));
+        assert!(hints.contains(&"tests/lib.rs".to_string()));
+    }
+
+    #[test]
+    fn path_hints_extracts_files_with_known_extensions() {
+        let hints = extract_path_hints_from_task("Update Cargo.toml");
+        assert!(hints.iter().any(|h| h.ends_with("Cargo.toml")));
+    }
+
+    #[test]
+    fn path_hints_caps_at_three_results() {
+        let hints = extract_path_hints_from_task(
+            "src/a.rs src/b.rs src/c.rs src/d.rs src/e.rs",
+        );
+        assert!(hints.len() <= 3);
+    }
+
+    #[test]
+    fn path_hints_strips_chinese_punctuation() {
+        let hints = extract_path_hints_from_task("看看 `src/main.rs`，再分析一下");
+        assert!(hints.contains(&"src/main.rs".to_string()),
+            "must strip Chinese comma and backticks; got {:?}", hints);
+    }
+
+    #[test]
+    fn path_hints_handles_backslash_to_slash_conversion() {
+        let hints = extract_path_hints_from_task(r"check src\main.rs");
+        assert!(hints.contains(&"src/main.rs".to_string()));
+    }
+
+    #[test]
+    fn path_hints_dedupes_repeated_paths() {
+        let hints = extract_path_hints_from_task("src/main.rs and src/main.rs again");
+        assert_eq!(hints.iter().filter(|h| *h == "src/main.rs").count(), 1);
+    }
+
+    #[test]
+    fn path_hints_empty_on_pure_prose() {
+        let hints = extract_path_hints_from_task("explain how the system works");
+        assert!(hints.is_empty());
+    }
+
+    // ── is_read_only_analysis_task ───────────────────────────────────
+
+    #[test]
+    fn read_only_when_explicit_forbid_phrase() {
+        assert!(is_read_only_analysis_task("read-only audit pls"));
+        assert!(is_read_only_analysis_task("don't modify the code"));
+        assert!(is_read_only_analysis_task("不要寫入任何檔案"));
+        assert!(is_read_only_analysis_task("dry-run mode only"));
+    }
+
+    #[test]
+    fn read_only_when_analysis_words_without_change_words() {
+        assert!(is_read_only_analysis_task("分析這個函數的行為"));
+        // Avoid words containing "patch" / "fix" / "write" as substrings —
+        // the source uses naive substring match, not tokenisation, so e.g.
+        // "dispatcher" contains "patch" and would falsely trigger the
+        // change-detector.  Stick to words known not to embed those needles.
+        assert!(is_read_only_analysis_task("explain the function logic"));
+        assert!(is_read_only_analysis_task("review the recent commit"));
+    }
+
+    #[test]
+    fn not_read_only_when_change_words_present() {
+        assert!(!is_read_only_analysis_task("分析然後修改 src/main.rs"));
+        assert!(!is_read_only_analysis_task("explain and then implement"));
+        assert!(!is_read_only_analysis_task("review and refactor"));
+    }
+
+    #[test]
+    fn read_only_substring_match_quirk() {
+        // Source uses substring containment, not tokenisation.  Document
+        // the known false-negative this causes — words like "dispatcher"
+        // contain "patch" and trigger asks_to_change → not classified as
+        // read-only despite "explain" being present.  Future #263 follow-up
+        // could switch to whole-word matching.
+        assert!(!is_read_only_analysis_task("explain how the dispatcher works"),
+            "'dispatcher' contains 'patch' → currently fails the read-only check");
+    }
+
+    #[test]
+    fn not_read_only_for_neutral_short_prompts() {
+        // No analysis word AND no change word → falsy.
+        assert!(!is_read_only_analysis_task("hello"));
+        assert!(!is_read_only_analysis_task(""));
+    }
+
+    #[test]
+    fn read_only_forbid_phrase_overrides_change_words() {
+        // Even if "fix" appears, "do not modify" should win.
+        assert!(is_read_only_analysis_task("do not modify, just suggest a fix"));
+    }
+
+    // ── describe_tools ───────────────────────────────────────────────
+
+    #[test]
+    fn describe_tools_renders_all_known_tools() {
+        let out = describe_tools();
+        // Spot-check: every tool name should appear in the output.
+        for name in [
+            "file_list", "local_file_read", "file_write", "file_patch", "file_diff",
+            "shell_exec", "codebase_search", "symbol_search", "call_graph_query",
+            "plan_execute", "git_status", "git_log", "memory_search",
+        ] {
+            assert!(out.contains(name), "missing tool: {name}");
+        }
+        // Format: each line starts with "- `name(...)`: description"
+        for line in out.lines() {
+            assert!(line.starts_with("- `"), "bad prefix on line: {line}");
+        }
+    }
+
+    // ── maybe_enrich_tool_error ──────────────────────────────────────
+
+    #[test]
+    fn enrich_passthrough_when_not_an_error() {
+        let obs = "OK".to_string();
+        assert_eq!(maybe_enrich_tool_error("file_patch", obs.clone()), obs);
+    }
+
+    #[test]
+    fn enrich_adds_path_hint_for_recognised_path_issue() {
+        let obs = "ERROR: could not resolve local project file 'foo.rs'".to_string();
+        let out = maybe_enrich_tool_error("local_file_read", obs);
+        assert!(out.contains("Hint: verify the real path"));
+        assert!(out.contains("foo/mod.rs"));
+    }
+
+    #[test]
+    fn enrich_only_for_path_relevant_actions() {
+        let obs = "ERROR: cannot read 'foo.rs'".to_string();
+        // shell_exec is NOT in the gated list — pass through unchanged.
+        assert_eq!(
+            maybe_enrich_tool_error("shell_exec", obs.clone()),
+            obs
+        );
+    }
+
+    #[test]
+    fn enrich_no_hint_for_unrelated_errors() {
+        let obs = "ERROR: timeout after 30s".to_string();
+        assert_eq!(
+            maybe_enrich_tool_error("file_patch", obs.clone()),
+            obs,
+            "non-path errors should be returned untouched"
+        );
+    }
+
+    #[test]
+    fn enrich_recognises_each_path_phrase_variant() {
+        let phrases = [
+            "ERROR: could not resolve local project file 'x'",
+            "ERROR: cannot read 'src/foo.rs'",
+            "ERROR: patch aborted: hunk 0 not found",
+            "ERROR: 'func' not found in 'src/lib.rs'",
+            "ERROR: directory not found at /tmp/x",
+        ];
+        for p in phrases {
+            let out = maybe_enrich_tool_error("file_patch", p.to_string());
+            assert!(out.contains("Hint: verify the real path"),
+                "phrase should trigger hint: {p}");
+        }
+    }
+}
