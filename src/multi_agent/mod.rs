@@ -535,63 +535,9 @@ mod tests {
         }
     }
 
-    /// GUI 優化任務 — 由 PM / Engineer / Tester 小隊執行
-    /// 任務：改善 workspace.rs 聊天 tab 的 UX
-    #[test]
-    #[ignore] // needs Claude CLI + Max plan; modifies real source files
-    fn gui_optimization_chat_tab() {
-        let cwd = claude_session::repo_path("sirin").expect("sirin path");
-        let mut team = AgentTeam::load(&cwd);
-        team.reset_role("pm");
-        team.reset_role("engineer");
-        team.reset_role("tester");
-
-        let task = r#"
-GUI 優化需求：改善 src/ui_egui/workspace.rs 的聊天 tab（show_chat 函數）
-
-== 背景 ==
-目前聊天 tab 存在以下問題：
-1. 輸入框是單行（TextEdit::singleline），長訊息不方便輸入
-2. 訊息沒有時間戳，看不出何時發送
-3. 沒有清空對話的方法
-
-== 具體修改（只改 src/ui_egui/workspace.rs）==
-
-**修改 1：多行輸入框**
-- 將 TextEdit::singleline 改為 TextEdit::multiline，高度設為 72px
-- 保持 Enter 鍵送出（檢測 Key::Enter 且 !modifiers.shift）
-- Shift+Enter 換行（egui multiline 預設行為，不需額外處理）
-
-**修改 2：訊息時間戳**
-- WorkspaceState.chat_history 的型別從 Vec<(String, String)>
-  改為 Vec<(String, String, String)>（role, text, timestamp）
-- 發送/接收訊息時 timestamp = chrono::Local::now().format("%H:%M").to_string()
-- 每條訊息 card 下方右對齊顯示時間戳：
-  RichText::new(&ts).size(theme::FONT_CAPTION).color(theme::TEXT_DIM)
-
-**修改 3：清空對話按鈕**
-- 輸入框左側加「清空」按鈕（只在 chat_history 非空時顯示）
-- 使用 theme::DANGER.linear_multiply(0.7) 顏色
-- 點擊後 state.chat_history.clear()
-
-== 限制 ==
-- 只修改 src/ui_egui/workspace.rs，不動其他檔案
-- 修改完後必須執行 cargo check 確認 0 errors
-- 保持現有 theme::* 常數不直接寫顏色數值
-        "#;
-
-        println!("=== 啟動 GUI 優化任務 ===\n");
-
-        // PM 分析 → Engineer 實作 → PM review
-        println!("--- PM 分析任務中 ---");
-        let review = team.assign_task(task).expect("assign_task");
-        println!("\n=== PM 最終 Review ===\n{review}");
-
-        // 執行完後讓 Tester 驗證（cargo check，不會有 lock 衝突）
-        println!("\n--- Tester 驗證 ---");
-        let test_result = team.test_cycle().expect("test_cycle");
-        println!("\n=== Tester 報告 ===\n{test_result}");
-
-        assert!(!review.is_empty(), "PM review should not be empty");
-    }
+    // (Removed in v0.5.6: `gui_optimization_chat_tab` integration test
+    // referenced src/ui_egui/workspace.rs — deleted in v0.5.0 migration
+    // to plain HTML web UI. The test was #[ignore] so it never ran in
+    // CI; safe to drop. If we need a similar multi-agent integration
+    // test against the new UI, the target should be web/index.html.)
 }

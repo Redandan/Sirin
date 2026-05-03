@@ -1,5 +1,15 @@
 # Design: Live GUI Monitor
 
+> ⚠️ **Partially superseded (v0.5.0+)** — this document was written when
+> Sirin's UI was egui (immediate-mode desktop). The Monitor's data layer
+> (`MonitorState`, ServerEvent stream, JPEG screenshot pump, NDJSON trace
+> file) is still live and unchanged. Only the **consumer** changed: the
+> egui Monitor view in `src/ui_egui/monitor/` is gone; the web UI's
+> Browser tab + Dashboard browser-preview card now consume the same
+> stream via `/api/browser_screenshot` + WebSocket. Treat the egui-side
+> sketches below (M5, "egui repaint 60 FPS", `ui_egui/monitor/*` paths)
+> as historical context.
+
 **Status:** Implemented — see `docs/MCP_API.md § Live Monitor` for the live reference
 **Target tier:** Tier 1 (observability / debuggability)
 **Depends on:** `DESIGN_AUTHZ.md`(AuthZ ask prompts 在此 UI 浮現,但可獨立先上)

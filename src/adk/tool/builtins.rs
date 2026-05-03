@@ -112,7 +112,7 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                 .map_err(|e| e.to_string())?;
 
             Ok(json!({
-                "summary": "Sirin 是一個用 Rust 建構的本地 AI 助手專案，包含 egui 桌面 UI、Telegram 整合、ADK 風格 agent 流程、記憶 / 程式碼索引，以及本地 LLM 支援。",
+                "summary": "Sirin 是一個用 Rust 建構的本地 AI 助手 + AI 瀏覽器測試工具，包含 plain HTML 網頁 UI（由 mcp_server 在 :7700/ui/ serve，daemon-style 不被視窗綁住）、Telegram 整合、ADK 風格 agent 流程、記憶 / 程式碼索引、本地 LLM 支援，以及 90+ MCP tools。",
                 "files": files,
             }))
         })

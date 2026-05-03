@@ -1,7 +1,7 @@
 //! Monitor event types — ServerEvent and ClientCommand.
 //!
 //! `ServerEvent` is the stream emitted by Sirin toward any observer
-//! (egui UI, WebSocket clients, NDJSON trace file).
+//! (web UI on :7700/ui/ via WebSocket, NDJSON trace file, etc.).
 //!
 //! `ClientCommand` is the inverse: messages from an observer back to
 //! the Sirin control plane (pause, resume, authz decisions, etc.).

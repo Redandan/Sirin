@@ -4,7 +4,17 @@
 
 ## 1. 系統總覽
 
-Sirin 是一個**單一 Rust binary**，整合 egui 0.31 immediate mode UI 與 Tokio 非同步後端。沒有 WebView、沒有 Node.js、沒有 IPC 序列化層。
+Sirin 是一個**單一 Rust binary** + **plain HTML 網頁 UI**：UI 由內建的
+axum HTTP server（`mcp_server.rs`）在 `:7700/ui/` serve，前端三個檔案
+（`index.html` / `app.js` / `style.css` + `alpine.min.js`）透過
+`include_bytes!` 編進 binary，所以仍然是單檔分發。沒有 WebView、沒有
+Node.js、沒有 IPC 序列化層；UI 跟後端在同一 process 透過 HTTP +
+WebSocket 溝通。
+
+> **v0.5.0 (2026-05-02) 之前** UI 是 `egui 0.31` immediate mode 桌面
+> 視窗。改成 web UI 的主因：egui 的 child↔parent layout 協商對 AI 開發
+> 不友善（每次改要 5 分鐘 cargo build），而 web 有 DevTools / hot reload
+> / 海量訓練資料。詳見 `web/DESIGN.md`。
 
 Agent layer 使用 ADK-RUST 風格：
 - `src/adk/`：`Agent` / `AgentContext` / `ToolRegistry` / `AgentRuntime`
@@ -15,11 +25,12 @@ Agent layer 使用 ADK-RUST 風格：
 │                    sirin.exe（單一進程）                  │
 │                                                          │
 │  ┌──────────────┐      ┌──────────────────────────────┐  │
-│  │ Dioxus UI    │      │ ADK Runtime                  │  │
-│  │ + Telegram   │ ───→ │ - AgentRuntime              │  │
-│  │ + Teams      │      │ - AgentContext              │  │
-│  │ + MCP Client │      │ - ToolRegistry（26+ 內建     │  │
-│  └──────────────┘      │   + 動態 MCP 外部工具）      │  │
+│  │ Web UI       │      │ ADK Runtime                  │  │
+│  │  (:7700/ui/) │ ───→ │ - AgentRuntime              │  │
+│  │ + Telegram   │      │ - AgentContext              │  │
+│  │ + Teams      │      │ - ToolRegistry（90+ 內建    │  │
+│  │ + MCP Client │      │   + 動態 MCP 外部工具）      │  │
+│  └──────────────┘      │                              │  │
 │                         └──────────────┬──────────────┘  │
 │                                        │                 │
 │                         ┌──────────────▼──────────────┐  │
@@ -39,25 +50,37 @@ Agent layer 使用 ADK-RUST 風格：
 └──────────────────────────────────────────────────────────┘
 ```
 
-## 2. UI 層（egui 0.31 immediate mode）
+## 2. UI 層（plain HTML / Alpine.js, served at :7700/ui/）
 
 ```
-src/ui_egui/
-├── mod.rs          App root + eframe context + view 切換邏輯
-├── sidebar.rs      Agent 列表 + 導航按鈕
-├── workspace.rs    Agent 工作區（概覽 + 待審核）
-├── settings.rs     Agent 設定 + 系統面板入口
-├── log_view.rs     日誌（filter + 版本快取）
-├── workflow.rs     Skill 開發 6 階段 pipeline
-├── meeting.rs      多 Agent 會議室
-└── theme.rs        配色方案（#1A1A1A + #00FFA3）
+web/
+├── index.html        Single-page Alpine.js root — Dashboard / Testing /
+│                     Workspace / 5 modals / ⌘K palette
+├── app.js            sirin() factory: state + fetch + WebSocket + actions
+├── style.css         Design tokens (#1A1A1A + #00FFA3) + widget grid
+├── alpine.min.js     Bundled Alpine.js v3 runtime (~46 KB)
+└── DESIGN.md         Competitor inspiration map (Linear / Playwright / GH Actions)
 ```
+
+**渲染流程**：
+- Browser opens `http://127.0.0.1:7700/ui/` (auto-launched by `main.rs`)
+- `mcp_server.rs` serves `web/*` via `include_bytes!` (single-binary distribution)
+- WebSocket connection to `/ws` pushes snapshot every 2 s (fallback to 5 s polling)
+- Slow data (config_check / log_recent / team_dashboard) lives in dedicated
+  on-demand endpoints fetched only when corresponding modal opens
 
 **狀態管理**：
-- 本地結構體狀態（無 Signal）
-- `AppService` trait 提供後端訪問
-- 事件監聽通過 tokio channels
-- 磁碟 I/O 在背景執行緒執行，不阻塞 UI
+- Frontend state lives in Alpine factory (`sirin()` in `app.js`)
+- `AppService` trait still provides backend access; web UI consumes via:
+    - `GET /api/snapshot` — combined dashboard JSON
+    - `POST /mcp` — existing MCP tool-call protocol (also drives the
+      MCP Playground modal that lists all 90+ tools)
+    - `GET /api/browser_screenshot` — live PNG of controlled Chrome
+    - 5 mutating endpoints for agent edit / pending review / chat / persona
+- Daemon-style: closing the browser tab does NOT kill sirin. Re-open
+  the URL anytime to see live state.
+- Dashboard layout customizable via Alpine `dashboard_layout` array
+  persisted in localStorage
 
 ## 3. Agent Pipeline
 

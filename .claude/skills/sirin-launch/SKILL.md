@@ -114,14 +114,18 @@ a one-off.
 > CanvasKit pixel-perfect.  POC documented in
 > `~/.claude/broadcasts/2026-04-25-sirin-dashboard-and-loop-closeout.md`.
 
-**Important:** Sirin opens an egui window. On systems without a display,
-the launch will fail silently. Warn the user if no display is available —
-or use **headless mode** (next section).
+**Important:** Since v0.5.0 Sirin auto-opens the user's default browser
+to `http://127.0.0.1:7700/ui/` instead of opening an egui window. On
+systems without a display or browser registered, the auto-open silently
+fails and the daemon keeps running fine — visit the URL manually.
+Use **headless mode** (next section) to suppress the auto-open entirely.
 
-### Headless mode (no GUI — for servers, SSH, CI)
+### Headless mode (no auto-launched browser — for servers, SSH, CI)
 
-Skip eframe entirely. RPC/MCP, browser singleton, telegram listeners,
-test_runner all start normally; only the desktop window is suppressed.
+Skip the `open_browser()` call only. RPC/MCP, browser singleton (the
+controlled Chrome that tests drive — separate from the user's browser),
+telegram listeners, test_runner all start normally; the web UI itself
+remains reachable at `:7700/ui/` if you navigate there.
 
 ```bash
 # CLI flag
@@ -135,9 +139,9 @@ SIRIN_RPC_PORT=7710 ./target/release/sirin.exe --headless > sirin.log 2>&1 &
 ```
 
 Headless mode is the right default when:
-- Running on a server / Docker / SSH session without an X display
-- CI is invoking Sirin via MCP only (no human ever needs the egui UI)
-- You're benchmarking the MCP API and want to remove UI overhead
+- Running on a server / Docker / SSH session without a desktop browser
+- CI is invoking Sirin via MCP only (no human ever needs the web UI)
+- You're benchmarking the MCP API and want to remove auto-open overhead
 
 To stop: same `taskkill` / `pkill` as GUI mode (the process parks the
 main thread on `std::thread::park()`; SIGINT/SIGTERM ends it cleanly).
@@ -191,16 +195,18 @@ curl -s -X POST http://127.0.0.1:7700/mcp \
 
 ## Restart Workflow
 
-Stop then launch. The GUI will close and reopen. Any in-progress test
-runs lose their in-memory registry (SQLite history persists).
+Stop then launch. The browser tab can stay open — it'll reconnect via
+WebSocket once the daemon is up again. Any in-progress test runs lose
+their in-memory registry (SQLite history persists).
 
 ## Anti-patterns
 
 ❌ **Don't launch with `cargo run` (non-release build)** — startup is
 slow and LLM calls may time out.
 
-❌ **Don't launch synchronously** — Sirin's eframe::run_native blocks
-until the window closes. Always detach (`start /b` / `nohup &`).
+❌ **Don't launch synchronously** — Sirin parks the main thread on
+`std::thread::park()` after starting all background workers. The process
+runs forever until SIGINT/SIGTERM. Always detach (`start /b` / `nohup &`).
 
 ❌ **Don't loop-poll faster than 1s** — MCP server binds to port 7700
 in one of the earlier startup phases; first successful response may

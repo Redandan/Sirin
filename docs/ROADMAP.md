@@ -184,7 +184,7 @@ Sirin 的所有自我優化能力必須在**本機模型（Ollama / LM Studio）
 | 規劃能力（Planning） | ❌ 無 |
 | 回覆品質評估 | ❌ 無 feedback 機制 |
 | persona 動態更新 | ❌ 靜態 YAML |
-| egui 系統托盤 | ❌ 只有最小化 |
+| 系統托盤 | ❌ 無（v0.5.0 改 web UI 後不再需要 — daemon-style，關 tab 不殺 daemon）|
 
 ---
 
@@ -394,42 +394,39 @@ Rust 解析後執行，再把結果餵回 LLM 生成最終回覆。
 
 ---
 
-## Phase 5 — GUI 完善
+## Phase 5 — UI 完善（已大幅推進，v0.5.0+ 為 web UI）
 
-> **目標**：補強 egui UI 使其與後端能力對稱。
+> **目標**：補強 web UI 使其與後端能力對稱。
+> **狀態**：v0.5.0 砍掉 egui shell 改 plain HTML web UI；v0.5.5 已支援
+> 自訂 widget 排版 + 6 個 KPI cards。下面三個 task 對 web UI 的對應實作。
 
-### T-10：系統托盤（System Tray）
+### T-10：System Tray（已不適用）
 
-**問題**：目前關閉視窗只能最小化，沒有系統托盤圖示。
-
-**方案**：加入 `tray-icon` crate，在主執行緒事件迴圈整合。
-
-**驗收條件**：
-- 系統托盤顯示 Sirin 圖示
-- 右鍵選單：Show / Quit
-- 關閉視窗 → 最小化到托盤（現有行為 + 托盤圖示）
-- 雙擊托盤圖示 → 還原視窗
+v0.5.0 之後 daemon-style：關 tab 不殺 daemon，UI 想看就開瀏覽器
+`http://127.0.0.1:7700/ui/`。System tray 的問題（關視窗 = 殺進程）已從根本解決。
 
 ---
 
-### T-11：Memory 瀏覽 Tab
+### T-11：Memory 瀏覽 view（待做）
 
 **依賴**：T-01
 
-新增第四個 tab「記憶庫」：
-- 顯示所有儲存的記憶條目（分頁）
-- 搜尋框：輸入關鍵字即時過濾
+加一個 view（在 sidebar VIEWS section 下方）：
+- 顯示所有儲存的記憶條目（虛擬列表）
+- 搜尋框 → POST `/api/memory_search`
 - 每筆顯示：來源（research / conversation）、時間、內容摘要
 - 「刪除」按鈕（單筆）
 
+實作上 backend 已有 `svc.search_memory`，UI 只需新 view + 一個 endpoint。
+
 ---
 
-### T-12：Feedback 瀏覽 Tab
+### T-12：Feedback 瀏覽 view（待做）
 
 **依賴**：T-07
 
-新增「品質追蹤」tab：
-- 近期回覆品質分數趨勢圖（egui plot）
+新增「品質追蹤」view：
+- 近期回覆品質分數趨勢圖（內嵌 SVG 或 chart.js）
 - 低分回覆列表（可點開看完整對話）
 - 自我優化任務清單
 
@@ -524,7 +521,7 @@ Sirin 除了原本的 self-optimizing agent 方向,也變成**外部 AI 透過 M
 |---|---|---|---|
 | **T-M01** | Windows zombie port wrapper(issue #14 自修復) | 1/2 day | — |
 | **T-M02 ★A** | **Pre-Authorization engine**(外部 AI gate,防幻覺 `eval document.cookie` 等) | 3–5 day | `docs/DESIGN_AUTHZ.md` |
-| **T-M03 ★B** | **Live GUI Monitor**(egui 內的即時 screenshot / action feed / authz ask + Pause/Step/Abort) | 5–7 day | `docs/DESIGN_MONITOR.md` |
+| **T-M03 ★B** | **Live web UI Monitor**(瀏覽器 :7700/ui/ Browser tab 內的即時 screenshot / action feed / authz ask + Pause/Step/Abort) | 5–7 day | `docs/DESIGN_MONITOR.md`(部分過時，v0.5.0 之後 consumer 換成 web UI) |
 | **T-M04** | Trace NDJSON + Replay mode(★B UI 重用) | 1–2 day(在 ★B 之上) | `DESIGN_MONITOR.md` §6 |
 
 ## Tier 2 — 擴能
@@ -566,5 +563,5 @@ Sirin 除了原本的 self-optimizing agent 方向,也變成**外部 AI 透過 M
 ## 跟原 T-01..T-15 Agent 方向的關係
 
 - **獨立**:MCP/Testing 方向不動 agent core(memory / persona / follow-up)
-- **共用**:同個 `sirin.exe` 進程、同個 egui UI、同個 tokio runtime
+- **共用**:同個 `sirin.exe` 進程、同個 web UI(`:7700/ui/`)、同個 tokio runtime
 - **互補**:Monitor 的 trace ndjson 之後也能給 agent 做 self-optimize 的 training data(T-07 品質評分的一個新 input source)

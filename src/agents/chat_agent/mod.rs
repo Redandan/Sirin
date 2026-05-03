@@ -556,8 +556,8 @@ mod tests {
             Some("src/main.rs".to_string())
         );
         assert_eq!(
-            extract_file_reference("請解釋 `src/ui.rs`"),
-            Some("src/ui.rs".to_string())
+            extract_file_reference("請解釋 `web/index.html`"),
+            Some("web/index.html".to_string())
         );
         assert_eq!(extract_file_reference("這個專案是什麼"), None);
     }
@@ -565,12 +565,11 @@ mod tests {
     #[test]
     fn extracts_file_references_from_assistant_reply() {
         let refs = extract_file_references_from_text(
-            "目前可直接查的關鍵檔案：\n- `src/main.rs`\n- `src/ui.rs`\n- `Cargo.toml`\nNative egui/eframe UI for Sirin."
+            "目前可直接查的關鍵檔案：\n- `src/main.rs`\n- `web/index.html`\n- `Cargo.toml`\nPlain HTML web UI for Sirin."
         );
         assert!(refs.contains(&"src/main.rs".to_string()));
-        assert!(refs.contains(&"src/ui.rs".to_string()));
+        assert!(refs.contains(&"web/index.html".to_string()));
         assert!(refs.contains(&"Cargo.toml".to_string()));
-        assert!(!refs.contains(&"egui/eframe".to_string()));
         assert!(!refs.contains(&"/".to_string()));
     }
 

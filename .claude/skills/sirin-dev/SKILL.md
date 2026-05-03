@@ -34,9 +34,9 @@ Sirin's MCP API to test other apps, see `sirin-test` instead.
 ## Read these FIRST (in order)
 
 1. **`CLAUDE.md`** at repo root — architecture decisions, project layout,
-   efficiency rules.  Contains DO-NOT-revisit decisions (egui, no WASM,
-   theme colors).  If you contradict it without explicit user request,
-   you are wrong.
+   efficiency rules.  Contains DO-NOT-revisit decisions (web UI on
+   :7700/ui/, no Tauri/Electron, theme colors).  If you contradict it
+   without explicit user request, you are wrong.
 2. **`docs/ARCHITECTURE.md`** — module relationships
 3. **`docs/test-runner-roadmap.md`** — what's done, what's planned, what
    has been explicitly rejected (e.g. Bayesian flakiness, Backend trait)
@@ -150,19 +150,19 @@ src/
 │                             • `browser_exec` — fire any single browser action
 ├── llm/                    Multi-backend LLM (Ollama/LMStudio/Gemini/
 │                           Claude) + vision multimodal
-├── ui_egui/                egui UI — sidebar, settings, browser panel,
-│                           workflow, meeting, test_dashboard (3908b2d),
-│                           team_panel; reads ONLY through AppService
+├── (no src/ui_egui anymore — UI moved to web/ in v0.5.0; see top-level
+│    web/ tree above)
 ├── ui_service.rs           AppService trait — UI ↔ backend boundary
 │                           (8 sub-traits: AgentService, PendingReplyService,
 │                           WorkflowService, IntegrationService, SystemService,
-│                           MultiAgentService, BrowserService,
-│                           TestRunnerService [3908b2d, 79eaf19] — 4 methods:
-│                           recent_test_runs, active_test_runs,
-│                           list_test_ids, launch_test_run).
-│                           Don't import backend modules directly from ui_egui.
+│                           MultiAgentService, BrowserService, TestRunnerService).
+│                           Web UI consumes via /api/snapshot + /mcp + WebSocket;
+│                           don't import backend modules directly from anything
+│                           that ends up serializing to the browser.
 ├── ui_service_impl/        RealService impl of AppService (7 submodules,
 │                           TestRunnerService implemented inline in mod.rs)
+├── chat_history.rs         v0.5.3 — persistent Workspace 對話 thread
+│                           (SQLite chat_messages table)
 └── persona/                Behavior engine + ROI thresholds + cached
                             persona (use Persona::cached() in hot paths,
                             never Persona::load())
@@ -193,12 +193,14 @@ SIRIN_BROWSER_HEADLESS=false ./target/release/... # for Flutter / WebGL
 SIRIN_HEADLESS=1 ./target/release/sirin.exe      # equivalent env-var form
 ```
 
-**Headless mode** (added v0.4.0): Skip `eframe::run_native()` entirely;
-keep RPC/MCP server, browser singleton, telegram listeners, and test_runner
-running. Triggered by either the `--headless` CLI flag or `SIRIN_HEADLESS=1`
-env var. Process parks the main thread until SIGINT/SIGTERM. Useful for:
-servers without a display, Docker containers, CI pipelines invoking via MCP
-only, and benchmarking the MCP API without UI overhead.
+**Headless mode** (v0.4.0+, semantics revised in v0.5.0): Skip the
+`open_browser()` call only; keep RPC/MCP server, controlled Chrome
+singleton, telegram listeners, and test_runner running. Triggered by
+either the `--headless` CLI flag or `SIRIN_HEADLESS=1` env var. Process
+parks the main thread until SIGINT/SIGTERM (it does that anyway after
+v0.5.0 — the `parking_lot` is the post-launch idle state regardless of
+headless flag). The web UI itself remains reachable at `:7700/ui/` if
+needed; headless just suppresses the auto-open.
 
 Avoid `cargo run` (debug build, slow startup, LLM calls may time out).
 
@@ -379,11 +381,13 @@ Users running old versions will see the update banner on next launch.
   never `.unwrap()` (poisoned locks should not crash; we keep going)
 - **Persona reads**: use `Persona::cached()` in hot paths, never
   `Persona::load()` (the latter hits disk every call)
-- **UI**: never import `crate::backend_module` from `ui_egui/*` —
-  go through `AppService` trait; if you need new data, add a sub-trait
-  method first
-- **Theme**: stick to constants from `ui_egui::theme` (BG, ACCENT,
-  TEXT_DIM, SP_SM, SP_MD, FONT_SMALL, etc).  No raw `Color32::from_rgb`.
+- **UI**: web UI in `web/` (Alpine.js single-file) talks to backend
+  ONLY via `GET /api/snapshot` (read) and `POST /mcp` (write) and `/ws`
+  (WebSocket push). Never add a new ad-hoc HTTP endpoint without first
+  adding the data to `AppService` trait so it surfaces through snapshot.
+- **Theme**: use CSS variables defined in `web/style.css`
+  (`var(--bg)`, `var(--accent)`, `var(--text-dim)`, etc).  No raw hex
+  in component CSS — extend the token set if a new color is needed.
 - **Error type**: `Result<T, String>` for browser/test_runner
   (Box<dyn Error> creates Send+Sync headaches with our async usage)
 - **Format strings in raw docs**: `{role}` → `{{role}}` to escape!
@@ -832,8 +836,9 @@ cargo test --bin sirin browser_lifecycle -- --ignored --nocapture
   70%/10-run threshold is sufficient — see roadmap)
 - ❌ Backend trait abstraction over headless_chrome (YAGNI; the crate
   is stable; no real backend swap need)
-- ❌ Switching from egui to anything (decided long ago; AI reads code
-  to "see" UI, this is the point)
+- ❌ Switching the web UI to Tauri/Electron/WebView2 (we already
+  switched egui→plain HTML in v0.5.0 for AI-friendliness; the user's
+  Chrome IS the runtime, no extra deps to ship)
 - ❌ Adding Node.js/Python sidecars (zero non-Rust deps in core; CDP
   goes direct)
 - ❌ HTML test report generator (CLI + SQLite is enough until proven

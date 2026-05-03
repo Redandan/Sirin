@@ -22,7 +22,7 @@ together.
 | **Test Runner** | `src/test_runner/` | [test_runner.md](./test_runner.md) | ReAct loop, triage, auto-fix, SQLite store |
 | **LLM** | `src/llm/` | [llm.md](./llm.md) | multi-backend, fleet probe, role slots, vision |
 | **Browser** | `src/browser.rs`, `src/browser_ax.rs` | [browser.md](./browser.md) | CDP singleton, 45+ actions, a11y tree, named sessions |
-| **UI (egui)** | `src/ui_egui/` | [ui_egui.md](./ui_egui.md) | immediate-mode, AppService trait, theme tokens |
+| **UI (web)** | `web/` | [`web/DESIGN.md`](../../web/DESIGN.md) | Plain HTML + Alpine.js served at `:7700/ui/`, design tokens mirror old `theme.rs`, AppService bridged via `/api/snapshot` + WebSocket |
 | **Multi-agent** | `src/multi_agent/` | [multi_agent.md](./multi_agent.md) | squad workers, task queue, priority lanes, roles |
 | **MCP Server** | `src/mcp_server.rs` | [mcp_server.md](./mcp_server.md) | HTTP `:7700/mcp`, 28 tools, browser_exec, squad API |
 | **MCP Client** | `src/mcp_client.rs` | [mcp_client.md](./mcp_client.md) | outbound MCP proxy, tool namespacing, `mcp_{server}_{tool}` |

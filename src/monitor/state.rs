@@ -42,7 +42,9 @@ pub struct MonitorStateInner {
     /// Recent screenshots `(captured_at, jpeg_bytes)` — newest at the back.
     pub screenshots: VecDeque<(DateTime<Utc>, Vec<u8>)>,
 
-    /// True while the Monitor egui view is open and visible.
+    /// True while a Monitor consumer is actively watching (web UI Browser
+    /// tab, NDJSON trace recorder, etc.). Used to gate the screenshot
+    /// pump — when no one is watching, we skip captures to save CPU.
     pub view_active: bool,
 
     /// True when the screenshot pump should skip taking frames

@@ -196,11 +196,13 @@ fn init_tracing() {
         .init();
 }
 
-/// Detect whether we should run without the egui UI.  Triggered by either
-/// the `--headless` CLI flag or `SIRIN_HEADLESS=1` env var.  In headless mode
-/// Sirin still launches the RPC/MCP server, browser singleton, Telegram
-/// listeners, etc. — only the desktop GUI is skipped so the binary can run
-/// on a server / over SSH / inside Docker.
+/// Detect whether we should run without auto-opening the browser to the
+/// web UI. Triggered by either the `--headless` CLI flag or
+/// `SIRIN_HEADLESS=1` env var. In headless mode Sirin still launches the
+/// RPC/MCP server, browser singleton, Telegram listeners, etc. — only
+/// the `open_browser()` call is skipped so the binary can run on a server
+/// / over SSH / inside Docker. The web UI itself remains reachable at
+/// `http://127.0.0.1:7700/ui/` if the user navigates there manually.
 fn is_headless() -> bool {
     std::env::args().any(|a| a == "--headless")
         || std::env::var("SIRIN_HEADLESS").map(|v| v == "1" || v.eq_ignore_ascii_case("true"))

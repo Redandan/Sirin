@@ -40,12 +40,14 @@ nested fields.
 
 ---
 
-## Headless mode (no GUI)
+## Headless mode (no auto-launched browser)
 
-Sirin can run without the egui desktop window — useful for servers, SSH
-sessions, CI runners, and Docker containers. Headless mode skips
-`eframe::run_native()` only; the RPC/MCP server, browser singleton,
-Telegram listeners, and test_runner all start normally.
+Sirin can run without auto-opening the browser to the web UI — useful for
+servers, SSH sessions, CI runners, and Docker containers. Headless mode
+skips the `open_browser()` call only; the RPC/MCP server, browser
+singleton (the controlled Chrome that tests drive), Telegram listeners,
+and test_runner all start normally. The web UI itself remains reachable
+at `http://127.0.0.1:7700/ui/` if you navigate there manually.
 
 ```bash
 # CLI flag

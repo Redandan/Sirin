@@ -5,6 +5,67 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.5.6] — 2026-05-03
+
+### Changed
+- **docs**: Final cleanup pass after v0.5.0 web UI migration — removed
+  stale `egui` / `eframe` / `ui_egui` / `winit` references from README,
+  ARCHITECTURE, ROADMAP, MCP_API, QUICKSTART, sirin-dev / sirin-launch
+  skills, and the `/status` + `/ui-map` slash commands.  `Cargo.toml`
+  description rewritten to reflect plain-HTML web UI on `:7700/ui/`.
+  `docs/architecture/ui_egui.md` deleted; `docs/DESIGN_MONITOR.md`
+  marked partially superseded.
+- **codebase**: `src/memory/codebase.rs` file descriptions updated for
+  `web/index.html` / `web/app.js` / `web/style.css`; chat_agent test
+  fixtures no longer reference deleted `ui_egui/*` paths.
+
+### Removed
+- Obsolete unit tests in `multi_agent::mod` and `multi_agent::queue`
+  that depended on `src/ui_egui/workspace.rs` (deleted in v0.5.0).
+
+No functional changes — docs / metadata only.  All 632+ tests still pass.
+
+---
+
+## [0.5.0–0.5.5] — 2026-05-02
+
+### Added
+- **web**: Plain HTML + Alpine.js web UI served at `:7700/ui/`,
+  bundled via `include_bytes!` for single-binary distribution.
+  Replaces egui (see migration notes in `web/DESIGN.md`).
+- **api**: `GET /api/snapshot` (read), `POST /mcp` (write — existing),
+  `GET /api/browser_screenshot`, `POST /api/chat`, `GET /api/agent/{id}`,
+  `POST /api/pending/{agent_id}`, `POST /api/persona/name`,
+  `GET /api/health`, `GET /api/logs`, `GET /api/team_dashboard`,
+  `WS /ws` (2 s push, replaces 5 s HTTP polling).
+- **chat**: Persistent chat history via SQLite `chat_messages` table
+  (shares the `__shared_db()` connection with `test_runner::store`).
+- **dashboard**: Composable widget grid — 4-col layout with localStorage
+  persistence, 10-widget catalog including 6 KPI cards (pass rate /
+  runs today / avg duration / cost-per-hour / active agents / running
+  tests).
+- **workspace**: Per-agent detail view with 4 sub-tabs (對話 / 概覽 /
+  待確認 / 設定).
+- **mcp playground**: Inline tool-call tester with JSON request/response
+  preview.
+
+### Changed
+- **bin**: Closing the browser tab no longer kills the daemon — RPC,
+  Telegram listener, scheduler, and screenshot pump keep running.
+  Re-open `:7700/ui/` any time; `taskkill /F /IM sirin.exe` (or Ctrl-C
+  in the terminal) is the only way to fully stop.
+- **headless**: `--headless` / `SIRIN_HEADLESS=1` now skips the
+  auto-open of the user's default browser only — RPC/MCP server,
+  browser singleton, telegram listeners, test_runner all start
+  normally; the web UI is still reachable at `:7700/ui/` if you
+  navigate there manually.
+
+### Removed
+- `src/ui_egui/` and the `eframe` / `egui` / `winit` dependency tree
+  (Phase 7 of the migration, commit 0690a77).
+
+---
+
 ## [0.4.4] — 2026-04-25
 
 ### Added

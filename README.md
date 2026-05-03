@@ -1,21 +1,21 @@
 # Sirin
 
-純 Rust 跨平台 AI Agent 平台。Tokio 非同步後端負責多平台訊息監聽、任務追蹤、LLM 自動回覆與多階段調研；前端使用 egui 0.31 immediate mode UI（Desktop 原生），零 WebView、零 Node.js、零外部 C 依賴（SQLite 靜態編入）。
+純 Rust 跨平台 AI Agent 平台 + AI 瀏覽器測試工具。Tokio 非同步後端負責多平台訊息監聽、任務追蹤、LLM 自動回覆、多階段調研，以及 AI 驅動的 Chrome 測試；前端是 plain HTML / Alpine.js 網頁 UI（v0.5.0+ 從 egui 遷移），由內建的 axum HTTP server 在 `http://127.0.0.1:7700/ui/` 提供，瀏覽器 tab 關了 daemon 不會死。零 Node.js、零外部 C 依賴（SQLite 靜態編入）。Web 資源透過 `include_bytes!` 編進 binary，仍是單檔分發。
 
 ---
 
 ## 架構總覽
 
 ```
-egui Immediate Mode UI (Desktop native)
+Plain HTML Web UI  (http://127.0.0.1:7700/ui/, single file w/ Alpine.js)
+   │   ↳ Composable Dashboard widgets (KPI cards / runs / coverage / browser)
    │
-   ├── Sidebar：助手清單 + 導航
-   ├── Agent Workspace（概覽 / 待確認 tabs）
-   ├── Settings（Agent 設定 + 系統診斷 + AI 修復）
-   ├── Log（即時日誌 + filter）
-   ├── Workflow（Skill 開發 pipeline）
-   ├── Meeting（多 Agent 會議室）
-   └── Browser（即席瀏覽器控制 + 截圖 + JS eval）
+   ├── Dashboard：可自訂 widget 排版（user 在 ✎ edit mode 加減 widget）
+   ├── Testing：Runs / Coverage 3-tier funnel / Browser monitor
+   ├── Workspace：per-agent 對話（持久化）/ 概覽 / 待確認 / 設定
+   ├── Modals：Settings / Logs / Dev Squad / MCP Playground (90+ tools)
+   ├── ⌘K Command Palette（fuzzy filter，10 個 entries）
+   └── Browser monitor：live screenshot + URL + console
 
 Tokio Background Tasks
    │
@@ -120,7 +120,7 @@ Tokio Background Tasks
 
 | 層 | 技術 |
 |---|---|
-| GUI | egui 0.31（immediate mode，Desktop 原生） |
+| GUI | Plain HTML + Alpine.js（v0.5.0+，由 axum 在 :7700/ui/ serve；用戶系統瀏覽器） |
 | 非同步 | Tokio 1.37（full features） |
 | LLM | Ollama / LM Studio / Gemini / Anthropic Claude |
 | Telegram | grammers-client 0.9（MTProto） |
@@ -232,8 +232,8 @@ servers:
 
 | 路徑 | 說明 |
 |------|------|
-| `src/main.rs` | 程式入口：Tokio runtime、egui 視窗、背景任務啟動 |
-| `src/ui_egui/` | egui UI：sidebar、workspace、settings、log、workflow、meeting、browser |
+| `src/main.rs` | 程式入口：Tokio runtime、auto-open browser、背景任務啟動、daemon park loop |
+| `web/` | Web UI：`index.html` + `app.js` + `style.css` + `alpine.min.js` + `DESIGN.md`（competitor reference）|
 | `src/agents/` | Planner / Router / Chat / Coding / Research agent |
 | `src/adk/` | ADK 核心：Agent trait、ToolRegistry、AgentRuntime |
 | `src/telegram/` | Telegram listener / handler / reply |
