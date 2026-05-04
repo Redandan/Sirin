@@ -11,7 +11,7 @@
 //! 2. **Keyword matching** — deterministic heuristics for common patterns.
 
 use crate::adk::AgentContext;
-use crate::llm::call_prompt;
+// #263 Phase 2 — direct call removed in favour of ctx.llm_caller.call_router.
 use crate::memory::{load_recent_context, looks_like_code_query};
 use crate::researcher;
 
@@ -473,7 +473,14 @@ pub(super) async fn understand_message(
 
     // Intent classification is a simple JSON categorisation task — use the
     // router (local) LLM to avoid burning remote API quota on every message.
-    let raw = match call_prompt(ctx.http.as_ref(), &crate::llm::shared_router_llm(), prompt).await {
+    //
+    // #263 Phase 2 — go through `ctx.llm_caller.call_router`.  In production,
+    // RealLlmCaller routes this to `shared_router_llm()` (preserving the
+    // existing cost-saving choice) AND now uses `call_router_prompt` semantics
+    // — on Ollama that means `keep_alive=-1` keeps the small router model
+    // resident in VRAM between intent calls, eliminating the model-load
+    // overhead that the old `call_prompt` path was paying.  Strict win.
+    let raw = match ctx.llm_caller.call_router(prompt).await {
         Ok(r) => r,
         Err(_) => return default,
     };
@@ -881,5 +888,110 @@ mod tests {
         // Must be substantially less than the original 2000 — the cap is
         // working, not skipped.
         assert!(x_count < 1000);
+    }
+
+    // ── understand_message tests via MockLlmCaller (#263 Phase 2) ────────────
+    //
+    // The function has 3 paths:
+    //   1. Planner already provided a non-general intent_family → trust it
+    //      (no LLM call).
+    //   2. Keyword classification matched a known pattern → return that
+    //      (no LLM call).
+    //   3. Fall through to LLM router for ambiguous General messages.
+    //
+    // The first two need 0 mock responses; the third path is the one
+    // worth covering here.
+
+    use std::sync::Arc;
+    use crate::adk::tool::ToolRegistry;
+    use crate::adk::AgentContext;
+    use crate::llm::{LlmKind, MockLlmCaller};
+
+    fn ctx_with_mock(mock: Arc<MockLlmCaller>) -> AgentContext {
+        AgentContext::new("test-intent", ToolRegistry::new()).with_llm_caller(mock)
+    }
+
+    #[tokio::test]
+    async fn understand_message_skips_llm_when_planner_provides_intent() {
+        // Planner already classified → no LLM call should fire.  Mock has
+        // zero responses; if any call happens the mock panics.
+        let mock = Arc::new(MockLlmCaller::with_responses(vec![]));
+        let ctx = ctx_with_mock(Arc::clone(&mock));
+
+        let understanding =
+            understand_message(&ctx, "research async runtimes", None, Some("research")).await;
+
+        assert_eq!(understanding.intent, Intent::WebSearch);
+        assert_eq!(mock.call_count(), 0, "no LLM call for planner-supplied intent");
+    }
+
+    #[tokio::test]
+    async fn understand_message_skips_llm_when_keyword_matches() {
+        // "src/main.rs" triggers extract_file_references → Intent::LocalFile.
+        let mock = Arc::new(MockLlmCaller::with_responses(vec![]));
+        let ctx = ctx_with_mock(Arc::clone(&mock));
+
+        let understanding =
+            understand_message(&ctx, "show me src/main.rs please", None, None).await;
+
+        assert_eq!(understanding.intent, Intent::LocalFile);
+        assert!(understanding.target_files.contains(&"src/main.rs".to_string()));
+        assert_eq!(mock.call_count(), 0, "no LLM call when keyword path matches");
+    }
+
+    #[tokio::test]
+    async fn understand_message_calls_router_llm_for_ambiguous_general_query() {
+        // No file refs, no keyword match → falls through to LLM router.
+        let mock = Arc::new(MockLlmCaller::with_responses(vec![Ok(
+            r#"{"intent":"local_file"}"#.to_string(),
+        )]));
+        let ctx = ctx_with_mock(Arc::clone(&mock));
+
+        let understanding =
+            understand_message(&ctx, "do the thing", None, None).await;
+
+        assert_eq!(understanding.intent, Intent::LocalFile);
+        assert_eq!(mock.call_count(), 1);
+        // Pin: this MUST go through the router endpoint, never the main one
+        // (intent classification on the main LLM would burn API quota).
+        assert_eq!(mock.captured.lock().unwrap()[0].0, LlmKind::Router);
+    }
+
+    #[tokio::test]
+    async fn understand_message_handles_llm_response_wrapped_in_code_fence() {
+        // Models often wrap JSON in ```json ... ``` fences — the function
+        // strips them before parsing.
+        let mock = Arc::new(MockLlmCaller::with_responses(vec![Ok(
+            "```json\n{\"intent\":\"web_search\"}\n```".to_string(),
+        )]));
+        let ctx = ctx_with_mock(Arc::clone(&mock));
+
+        let understanding = understand_message(&ctx, "do the thing", None, None).await;
+
+        assert_eq!(understanding.intent, Intent::WebSearch);
+    }
+
+    #[tokio::test]
+    async fn understand_message_falls_back_to_general_on_llm_error() {
+        let mock = Arc::new(MockLlmCaller::with_responses(vec![Err(
+            "simulated 500".to_string(),
+        )]));
+        let ctx = ctx_with_mock(Arc::clone(&mock));
+
+        let understanding = understand_message(&ctx, "do the thing", None, None).await;
+
+        assert_eq!(understanding.intent, Intent::General);
+        assert!(understanding.target_files.is_empty());
+    }
+
+    #[tokio::test]
+    async fn understand_message_falls_back_to_general_on_unparseable_json() {
+        let mock = Arc::new(MockLlmCaller::with_responses(vec![Ok(
+            "this is not JSON".to_string(),
+        )]));
+        let ctx = ctx_with_mock(Arc::clone(&mock));
+
+        let understanding = understand_message(&ctx, "do the thing", None, None).await;
+        assert_eq!(understanding.intent, Intent::General);
     }
 }
