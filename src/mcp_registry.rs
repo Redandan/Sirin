@@ -233,6 +233,59 @@ fn seed_default(m: &mut RegistryMap) {
         input_schema: json!({"type": "object", "properties": {}}),
         handler:      ToolHandler::SyncJson(|_args| crate::mcp_server::call_list_saved_scripts()),
     });
+
+    // Domain: ops + diagnostics + multi-agent queue (zero-arg SyncJson handlers).
+    // 7-tool batch migrated 2026-05-04 — see #257 follow-up commits.
+
+    m.insert("expire_points", ToolDef {
+        name:         "expire_points",
+        description: "#227 — 清除 ~/.claude/session_points.json 中已過期的 save points（saved_at + ttl_days < now）。",
+        input_schema: json!({"type": "object", "properties": {}}),
+        handler:      ToolHandler::SyncJson(|_args| crate::mcp_server::call_expire_points()),
+    });
+
+    m.insert("config_diagnostics", ToolDef {
+        name:         "config_diagnostics",
+        description: "回傳 Sirin 當前配置診斷（LLM backend 連通、router 狀態、vision 可用性、Chrome/Claude CLI 等）。遇到測試全部失敗時用來自我檢查。",
+        input_schema: json!({"type": "object", "properties": {}}),
+        handler:      ToolHandler::SyncJson(|_args| crate::mcp_server::call_config_diagnostics()),
+    });
+
+    m.insert("diagnose", ToolDef {
+        name:         "diagnose",
+        description: "Sirin 自我診斷快照 — 回傳 version / git commit / build date / platform / uptime / Chrome 狀態 / LLM provider+model / update 狀態 / 最近 ERROR/WARN log，外加一個預先填好環境資訊的 GitHub issue 模板（report_issue_template.body）。\n\n用法：外部 AI 在 Sirin MCP 操作遇到 bug 時，先呼叫 diagnose 拿快照，據此判斷：(1) 重試（transient）；(2) 提示用戶升級（你在 0.3.0 但 0.3.2 修了這個）；(3) 用 report_issue_template 開 issue（環境區塊已填好，用戶只要補 reproduction）。\n\n成本：~5–20 ms（一次 CDP getVersion + log tail）。安全在 caller 的 error path 每次呼叫。",
+        input_schema: json!({"type": "object", "properties": {}}),
+        // diagnose::snapshot returns Value (not Result) — wrap in Ok inside the closure.
+        handler:      ToolHandler::SyncJson(|_args| Ok(crate::diagnose::snapshot())),
+    });
+
+    m.insert("browser_status", ToolDef {
+        name:         "browser_status",
+        description: "查詢 Sirin 目前開啟的 Chrome 瀏覽器狀態。\n\n返回：\n- is_open: Chrome 是否已啟動\n- tab_count: 總 tab 數\n- active_tab: 目前 active tab 的 index + URL\n- tabs: 每個 tab 的 index、URL、session_id（若有 named session）\n- named_sessions: 所有 named session 的 id → tab_index → URL 清單\n\n用途：排查 batch 測試後殘留的 tab、確認 session 是否正確關閉、即時查看瀏覽器狀態。",
+        input_schema: json!({"type": "object", "properties": {}}),
+        handler:      ToolHandler::SyncJson(|_args| crate::mcp_server::call_browser_status()),
+    });
+
+    m.insert("sync_config", ToolDef {
+        name:         "sync_config",
+        description: "將 repo 的 config/tests/ 同步到 %LOCALAPPDATA%\\Sirin\\config\\tests/（Sirin 執行時讀取的位置）。\n\n每次修改 YAML 測試檔後必須呼叫，否則 Sirin 跑的是舊版 YAML。\n\n返回：synced=true, files_copied=N。\n\n關閉 #187。",
+        input_schema: json!({"type": "object", "properties": {}}),
+        handler:      ToolHandler::SyncJson(|_args| crate::mcp_server::call_sync_config()),
+    });
+
+    m.insert("agent_queue_status", ToolDef {
+        name:         "agent_queue_status",
+        description: "查看 AI 小隊任務佇列現況（所有任務的 id / status / 結果摘要）。",
+        input_schema: json!({"type": "object", "properties": {}}),
+        handler:      ToolHandler::SyncJson(|_args| crate::mcp_server::call_agent_queue_status()),
+    });
+
+    m.insert("agent_clear_completed", ToolDef {
+        name:         "agent_clear_completed",
+        description: "清除任務佇列中所有已完成（done / failed）的任務，保留 queued / running。",
+        input_schema: json!({"type": "object", "properties": {}}),
+        handler:      ToolHandler::SyncJson(|_args| crate::mcp_server::call_agent_clear_completed()),
+    });
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

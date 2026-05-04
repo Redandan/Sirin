@@ -1401,11 +1401,7 @@ fn handle_tools_list_legacy() -> Result<Value, String> {
                     }
                 }
             },
-            {
-                "name": "expire_points",
-                "description": "#227 — 清除 ~/.claude/session_points.json 中已過期的 save points（saved_at + ttl_days < now）。",
-                "inputSchema": { "type": "object", "properties": {} }
-            },
+            // #257 — expire_points moved to mcp_registry::seed_default
             {
                 "name": "session_cost",
                 "description": "#232 — 解析 ~/.claude/projects/**/*.jsonl 計算指定 session（或最新 session）的 token 使用量和 API 費用估算。\n\n包含：input/output/cache tokens、USD 費用估算（用 Anthropic 公定價）、cache hit rate、最高成本 tool 排行。",
@@ -1642,16 +1638,7 @@ fn handle_tools_list_legacy() -> Result<Value, String> {
                     }
                 }
             },
-            {
-                "name": "config_diagnostics",
-                "description": "回傳 Sirin 當前配置診斷（LLM backend 連通、router 狀態、vision 可用性、Chrome/Claude CLI 等）。遇到測試全部失敗時用來自我檢查。",
-                "inputSchema": { "type": "object", "properties": {} }
-            },
-            {
-                "name": "diagnose",
-                "description": "Sirin 自我診斷快照 — 回傳 version / git commit / build date / platform / uptime / Chrome 狀態 / LLM provider+model / update 狀態 / 最近 ERROR/WARN log，外加一個預先填好環境資訊的 GitHub issue 模板（report_issue_template.body）。\n\n用法：外部 AI 在 Sirin MCP 操作遇到 bug 時，先呼叫 diagnose 拿快照，據此判斷：(1) 重試（transient）；(2) 提示用戶升級（你在 0.3.0 但 0.3.2 修了這個）；(3) 用 report_issue_template 開 issue（環境區塊已填好，用戶只要補 reproduction）。\n\n成本：~5–20 ms（一次 CDP getVersion + log tail）。安全在 caller 的 error path 每次呼叫。",
-                "inputSchema": { "type": "object", "properties": {} }
-            },
+            // #257 — config_diagnostics / diagnose moved to mcp_registry::seed_default
             {
                 "name": "page_state",
                 "description": "一次回傳當前瀏覽器頁面的完整狀態 — URL、title、ax_tree 文字片段、JPEG 截圖（Base64）、console 錯誤、最近網路請求。比分別呼叫多個 browser_exec 動作更快，適合 AI agent 做 situational awareness。",
@@ -1790,11 +1777,7 @@ T2-2：傳入 yaml_test_id 後，Engineer 完成任務時 Sirin 會自動執行�
                     "required": ["task"]
                 }
             },
-            {
-                "name": "agent_queue_status",
-                "description": "查看 AI 小隊任務佇列現況（所有任務的 id / status / 結果摘要）。",
-                "inputSchema": { "type": "object", "properties": {} }
-            },
+            // #257 — agent_queue_status moved to mcp_registry::seed_default
             {
                 "name": "agent_start_worker",
                 "description": "啟動 AI 小隊的背景工作執行緒（若尚未啟動）。啟動後持續消費佇列直到進程結束。可選 n 啟動多個平行 worker（T1-1）。",
@@ -1806,11 +1789,7 @@ T2-2：傳入 yaml_test_id 後，Engineer 完成任務時 Sirin 會自動執行�
                     }
                 }
             },
-            {
-                "name": "agent_clear_completed",
-                "description": "清除任務佇列中所有已完成（done / failed）的任務，保留 queued / running。",
-                "inputSchema": { "type": "object", "properties": {} }
-            },
+            // #257 — agent_clear_completed moved to mcp_registry::seed_default
             {
                 "name": "squad_knowledge",
                 "description": "查看 Squad PM 積累的學習記錄（squad_knowledge.db）。\
@@ -1983,19 +1962,7 @@ Sirin 透過視覺驅動的 ReAct loop 操作瀏覽器完成任務，回傳結�
                     "required": ["topic_key", "title", "content", "domain"]
                 }
             },
-            {
-                "name": "browser_status",
-                "description": "查詢 Sirin 目前開啟的 Chrome 瀏覽器狀態。\n\n返回：\n- is_open: Chrome 是否已啟動\n- tab_count: 總 tab 數\n- active_tab: 目前 active tab 的 index + URL\n- tabs: 每個 tab 的 index、URL、session_id（若有 named session）\n- named_sessions: 所有 named session 的 id → tab_index → URL 清單\n\n用途：排查 batch 測試後殘留的 tab、確認 session 是否正確關閉、即時查看瀏覽器狀態。",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {}
-                }
-            },
-            {
-                "name": "sync_config",
-                "description": "將 repo 的 config/tests/ 同步到 %LOCALAPPDATA%\\Sirin\\config\\tests/（Sirin 執行時讀取的位置）。\n\n每次修改 YAML 測試檔後必須呼叫，否則 Sirin 跑的是舊版 YAML。\n\n返回：synced=true, files_copied=N。\n\n關閉 #187。",
-                "inputSchema": { "type": "object", "properties": {} }
-            },
+            // #257 — browser_status / sync_config moved to mcp_registry::seed_default
             {
                 "name": "run_regression_suite",
                 "description": "一鍵執行 config/tests/agora_regression/ 下所有（或指定 tag 的）regression tests，等全部完成後回傳摘要報告。\n\n返回：total/passed/failed/timeout/duration_secs + 每個測試的 status/duration_ms/error。\n\n可選參數：\n- tag: 只跑含此 tag 的測試（如 'c2c'）\n- timeout_secs: 整體 timeout（預設 3600）\n\n關閉 #188。",
@@ -2073,7 +2040,7 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         "save_point"           => return call_save_point(arguments).map(wrap_json),
         "list_points"          => return call_list_points(arguments).map(wrap_json),
         "restore_point"        => return call_restore_point(arguments).map(wrap_json),
-        "expire_points"        => return call_expire_points().map(wrap_json),
+        // #257 — expire_points moved to mcp_registry::seed_default
         // #232 session-cost-mcp
         "session_cost"            => return call_session_cost(arguments).map(wrap_json),
         "list_expensive_sessions" => return call_list_expensive_sessions(arguments).map(wrap_json),
@@ -2101,11 +2068,9 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         // #257 — list_intents moved to mcp_registry::seed_default
         "register_intent"     => return call_register_intent(arguments).map(wrap_json),
         "benchmark_llms"      => return call_benchmark_llms(arguments).await.map(wrap_json),
-        "config_diagnostics"   => return call_config_diagnostics().map(wrap_json),
-        "diagnose"             => return Ok(wrap_json(crate::diagnose::snapshot())),
+        // #257 — config_diagnostics / diagnose moved to mcp_registry::seed_default
         "browser_exec"         => return call_browser_exec(arguments, user_agent).await.map(wrap_json),
-        "browser_status"       => return call_browser_status().map(wrap_json),
-        "sync_config"          => return call_sync_config().map(wrap_json),
+        // #257 — browser_status / sync_config moved to mcp_registry::seed_default
         "run_regression_suite" => return call_run_regression_suite(arguments).await.map(wrap_json),
         "sirin_preflight"      => return call_sirin_preflight().await.map(wrap_json),
         "page_state"           => return call_page_state(arguments).await.map(wrap_json),
@@ -2118,9 +2083,9 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         "agent_send"           => return call_agent_send(arguments).map(wrap_json),
         "agent_reset"          => return call_agent_reset(arguments).map(wrap_json),
         "agent_enqueue"        => return call_agent_enqueue(arguments).map(wrap_json),
-        "agent_queue_status"   => return call_agent_queue_status().map(wrap_json),
+        // #257 — agent_queue_status moved to mcp_registry::seed_default
         "agent_start_worker"   => return call_agent_start_worker(arguments).map(wrap_json),
-        "agent_clear_completed"=> return call_agent_clear_completed().map(wrap_json),
+        // #257 — agent_clear_completed moved to mcp_registry::seed_default
         "squad_knowledge"      => return call_squad_knowledge(arguments).map(wrap_json),
         "dev_team_enqueue_issue"  => return call_dev_team_enqueue_issue(arguments).map(wrap_json),
         "dev_team_list_previews"  => return call_dev_team_list_previews(arguments).map(wrap_json),
@@ -3823,7 +3788,8 @@ fn call_restore_point(args: Value) -> Result<Value, String> {
     Ok(point.clone())
 }
 
-fn call_expire_points() -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_expire_points() -> Result<Value, String> {
     let now = chrono::Local::now().to_rfc3339();
     let all = load_points();
     let before = all.len();
@@ -5107,7 +5073,8 @@ fn call_list_fixes(args: Value) -> Result<Value, String> {
     Ok(json!({ "count": items.len(), "fixes": items }))
 }
 
-fn call_config_diagnostics() -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_config_diagnostics() -> Result<Value, String> {
     let issues = crate::config_check::run_diagnostics();
     let items: Vec<Value> = issues.iter().map(|i| json!({
         "severity":   match i.severity {
@@ -5283,7 +5250,8 @@ fn call_agent_enqueue(args: Value) -> Result<Value, String> {
     }))
 }
 
-fn call_agent_queue_status() -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_agent_queue_status() -> Result<Value, String> {
     let tasks = crate::multi_agent::queue::list_all();
 
     // 安全截斷輔助：找 max_bytes 內最後一個 char boundary
@@ -5332,7 +5300,8 @@ fn call_agent_start_worker(args: Value) -> Result<Value, String> {
     }
 }
 
-fn call_agent_clear_completed() -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_agent_clear_completed() -> Result<Value, String> {
     let before = crate::multi_agent::queue::list_all().len();
     crate::multi_agent::queue::clear_completed();
     let after = crate::multi_agent::queue::list_all().len();
@@ -5846,7 +5815,8 @@ async fn call_browser_exec(args: Value, user_agent: &str) -> Result<Value, Strin
 }
 
 /// MCP `browser_status` — 列出目前 Chrome 所有開啟的 tab 和 named session，方便排查。
-fn call_browser_status() -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_browser_status() -> Result<Value, String> {
     let status = crate::browser::browser_status();
     let is_open = status.is_open;
     let tab_count = status.tab_count;
@@ -5889,7 +5859,8 @@ fn call_browser_status() -> Result<Value, String> {
 
 // ── #187 sync_config ─────────────────────────────────────────────────────────
 
-fn call_sync_config() -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_sync_config() -> Result<Value, String> {
     let repo_config = std::env::current_dir()
         .map_err(|e| format!("cwd: {e}"))?
         .join("config");
