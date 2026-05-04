@@ -14,7 +14,6 @@
 use serde_json::{json, Value};
 
 use crate::adk::AgentContext;
-use crate::llm::call_coding_prompt;
 use crate::persona::CodingAgentConfig;
 use crate::sirin_log;
 
@@ -145,7 +144,8 @@ async fn run_fix_iterations(
             &fix_tool_list,
             false,
         );
-        let raw = match call_coding_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), prompt).await {
+        // #263 Phase 2 — go through ctx.llm_caller for testability.
+        let raw = match ctx.llm_caller.call_coding(prompt).await {
             Ok(r) => r,
             Err(e) => {
                 sirin_log!("[coding_agent] fix iter {fix_iter} LLM error: {e}");
@@ -234,5 +234,114 @@ async fn verify_build(ctx: &AgentContext) -> (bool, Option<String>) {
             (success, Some(output))
         }
         Err(e) => (false, Some(format!("shell_exec error: {e}"))),
+    }
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+//
+// Issue #263 Phase 2 — exercise `run_fix_iterations` with `MockLlmCaller` so we
+// can drive deterministic fix-loop behaviour without spinning up a real LLM
+// or running `cargo check`.  The other entry point — `run_verify_and_autofix`
+// — calls `verify_build()` first which shells out via the tool registry; that
+// path needs a tool-registry stub which is out of scope for this iteration.
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::adk::tool::ToolRegistry;
+    use crate::adk::AgentContext;
+    use crate::llm::{LlmKind, MockLlmCaller};
+
+    fn ctx_with_mock(mock: Arc<MockLlmCaller>) -> AgentContext {
+        AgentContext::new("test-verify", ToolRegistry::new()).with_llm_caller(mock)
+    }
+
+    #[tokio::test]
+    async fn fix_loop_breaks_on_done_action() {
+        // First response: DONE — fix loop should exit immediately, leaving
+        // state unchanged (no errors recorded).
+        let mock = Arc::new(MockLlmCaller::with_responses(vec![Ok(
+            r#"{"thought":"already fixed","action":"DONE"}"#.to_string(),
+        )]));
+        let ctx = ctx_with_mock(Arc::clone(&mock));
+        let mut state = RunState::default();
+
+        run_fix_iterations(&ctx, "ctx", "error[E0308]: mismatched types", &mut state).await;
+
+        assert!(!state.had_tool_errors, "DONE on first call → no errors");
+        assert_eq!(state.files_modified.len(), 0);
+        // Exactly one LLM call (the DONE), and on the coding endpoint.
+        assert_eq!(mock.call_count(), 1);
+        let captured = mock.captured.lock().unwrap();
+        assert_eq!(captured[0].0, LlmKind::Coding);
+        // The fix prompt must include the cargo error excerpt.
+        assert!(captured[0].1.contains("error[E0308]"), "prompt must surface cargo error");
+    }
+
+    #[tokio::test]
+    async fn fix_loop_records_invalid_json_error_and_continues() {
+        // First response invalid → state.had_tool_errors flips on, then DONE
+        // ends the loop.
+        let mock = Arc::new(MockLlmCaller::with_responses(vec![
+            Ok("not json at all".to_string()),
+            Ok(r#"{"thought":"ok","action":"DONE"}"#.to_string()),
+        ]));
+        let ctx = ctx_with_mock(Arc::clone(&mock));
+        let mut state = RunState::default();
+
+        run_fix_iterations(&ctx, "ctx", "build error", &mut state).await;
+
+        assert!(state.had_tool_errors, "invalid JSON must flip the error flag");
+        assert!(
+            state.last_tool_error.as_deref().unwrap_or("").contains("Invalid JSON"),
+            "last_tool_error should mention Invalid JSON, got: {:?}",
+            state.last_tool_error
+        );
+        assert_eq!(mock.call_count(), 2, "loop must continue past invalid JSON to DONE");
+    }
+
+    #[tokio::test]
+    async fn fix_loop_breaks_on_llm_error_without_panicking() {
+        let mock = Arc::new(MockLlmCaller::with_responses(vec![Err(
+            "simulated 500 from provider".to_string(),
+        )]));
+        let ctx = ctx_with_mock(Arc::clone(&mock));
+        let mut state = RunState::default();
+
+        // Should NOT panic and should NOT propagate (run_fix_iterations is
+        // void return — LLM errors mid-loop just break out cleanly).
+        run_fix_iterations(&ctx, "ctx", "build error", &mut state).await;
+
+        assert_eq!(mock.call_count(), 1);
+        // No state mutation happens on LLM error path (state machine just
+        // breaks out before recording anything to history).
+        assert_eq!(state.files_modified.len(), 0);
+        assert!(!state.had_tool_errors);
+    }
+
+    #[tokio::test]
+    async fn fix_loop_caps_at_fix_iterations_per_attempt() {
+        // 4 responses, all non-DONE non-tool actions that won't match any
+        // tool in our empty registry — the loop runs FIX_ITERATIONS_PER_ATTEMPT
+        // (4) iterations and exits cleanly without panicking.
+        let mock = Arc::new(MockLlmCaller::with_responses(vec![
+            // Use an action that isn't a write tool so the patch-error
+            // circuit breaker doesn't trip.
+            Ok(r#"{"thought":"step 1","action":"local_file_read","action_input":{"path":"foo"}}"#.into()),
+            Ok(r#"{"thought":"step 2","action":"local_file_read","action_input":{"path":"foo"}}"#.into()),
+            Ok(r#"{"thought":"step 3","action":"local_file_read","action_input":{"path":"foo"}}"#.into()),
+            Ok(r#"{"thought":"step 4","action":"local_file_read","action_input":{"path":"foo"}}"#.into()),
+        ]));
+        let ctx = ctx_with_mock(Arc::clone(&mock));
+        let mut state = RunState::default();
+
+        run_fix_iterations(&ctx, "ctx", "build error", &mut state).await;
+
+        // FIX_ITERATIONS_PER_ATTEMPT = 4; the loop must use exactly that
+        // many LLM calls when no DONE arrives (don't run forever, don't
+        // exit early).
+        assert_eq!(mock.call_count(), FIX_ITERATIONS_PER_ATTEMPT);
     }
 }
