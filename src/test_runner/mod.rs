@@ -247,14 +247,38 @@ async fn run_test_with_run_id(
 /// Used by the MCP `run_test_async` endpoint so external callers aren't
 /// blocked by the 2-minute test execution.
 pub fn spawn_run_async(test_id: String, auto_fix: bool) -> Result<String, String> {
+    spawn_run_async_with_override(test_id, auto_fix, None)
+}
+
+/// Issue #269 — variant of [`spawn_run_async`] that accepts a per-test
+/// LLM override.  When `llm_override` is `Some`, the spawned run uses the
+/// override-derived LlmConfig instead of the process-wide one.  When
+/// `None`, behaviour is identical to `spawn_run_async`.
+///
+/// Errors:
+/// - `Test '<id>' not found` — same as `spawn_run_async`
+/// - `LlmOverride: <reason>` — invalid provider / build error
+pub fn spawn_run_async_with_override(
+    test_id: String,
+    auto_fix: bool,
+    llm_override: Option<crate::llm::LlmOverride>,
+) -> Result<String, String> {
     // Validate test exists before spawning
     if parser::find(&test_id).is_none() {
         return Err(format!("Test '{test_id}' not found"));
     }
 
+    // Validate + materialise override eagerly so caller gets fast feedback
+    // on bad provider names (vs discovering it inside the spawned thread).
+    let resolved_llm: Option<std::sync::Arc<crate::llm::LlmConfig>> = match llm_override {
+        Some(o) => Some(std::sync::Arc::new(crate::llm::LlmConfig::from_override(&o)?)),
+        None => None,
+    };
+
     let run_id = runs::new_run(&test_id);
     let run_id_clone = run_id.clone();
     let test_id_clone = test_id.clone();
+    let llm_override_resolved = resolved_llm;
 
     // Spawn a dedicated tokio runtime so this survives the caller's scope
     std::thread::spawn(move || {
@@ -318,8 +342,16 @@ pub fn spawn_run_async(test_id: String, auto_fix: bool) -> Result<String, String
             }
 
             let tools = crate::adk::tool::default_tool_registry();
-            let ctx = crate::adk::context::AgentContext::new("mcp_async", tools)
+            let mut ctx = crate::adk::context::AgentContext::new("mcp_async", tools)
                 .with_metadata("run_id", &run_id_clone);
+            // Issue #269 — apply per-test LLM override when caller supplied one.
+            if let Some(llm) = llm_override_resolved.as_ref() {
+                ctx = ctx.with_llm(llm.clone());
+                tracing::info!(
+                    "[test_runner] '{}' using override LLM: provider={:?} model={}",
+                    test_id_clone, llm.backend, llm.model
+                );
+            }
 
             // Run the test with the flakiness-aware retry policy (Issue #241).
             // The YAML's `max_retries` is the ceiling — the policy can lower it

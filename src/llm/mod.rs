@@ -244,6 +244,33 @@ pub enum LlmBackend {
     Anthropic,
 }
 
+/// Issue #269 — opt-in per-test LLM override.
+///
+/// Pass through MCP `run_test_async` arguments to drive a single test on
+/// a different backend than the process-wide `LLM_PROVIDER`.  Useful for:
+///
+/// - Splitting a batch across cloud + local LLMs (no contention on either)
+/// - Forcing one test to use a specific model without restarting Sirin
+/// - Comparing prompt behaviour between backends side-by-side
+///
+/// All fields except `provider` + `model` fall back to the env-derived
+/// defaults for that provider when omitted (or empty string).
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct LlmOverride {
+    /// `lmstudio` | `gemini` | `anthropic` | `ollama` (case-insensitive).
+    pub provider: String,
+    /// Model id at the chosen provider (e.g. `gemma-4-e4b-it`,
+    /// `models/gemini-2.5-flash`, `claude-3-5-sonnet-20240620`).
+    pub model: String,
+    /// Override the provider's default base URL (e.g. for proxies).
+    /// Empty / missing → use the provider's env-default.
+    #[serde(default)]
+    pub base_url: Option<String>,
+    /// API key.  Empty / missing → use the provider's env-default key.
+    #[serde(default)]
+    pub api_key: Option<String>,
+}
+
 // ── Config ────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -340,6 +367,83 @@ impl LlmConfig {
                 large_model,
             },
         }
+    }
+
+    /// Build an [`LlmConfig`] from a per-test override (Issue #269).
+    ///
+    /// Inheritable defaults from the process-wide config (`from_env`) are
+    /// preserved when the override doesn't specify a value — so callers
+    /// only need to pass the fields they actually want to change.
+    ///
+    /// `provider` is required.  `base_url` and `api_key` fall back to
+    /// the env-derived defaults for that provider when omitted.
+    pub fn from_override(o: &LlmOverride) -> Result<Self, String> {
+        // Start from a fresh env-default for the requested provider so we
+        // pick up the correct base_url + api_key without touching the
+        // process-wide config.
+        let provider = o.provider.to_lowercase();
+        std::env::set_var("__SIRIN_OVERRIDE_PROVIDER_PROBE", &provider);
+        let mut cfg = match provider.as_str() {
+            "lmstudio" | "lm_studio" | "openai" => Self {
+                backend: LlmBackend::LmStudio,
+                base_url: std::env::var("LM_STUDIO_BASE_URL")
+                    .or_else(|_| std::env::var("OPENAI_BASE_URL"))
+                    .unwrap_or_else(|_| LM_STUDIO_BASE_URL.to_string()),
+                model: std::env::var("LM_STUDIO_MODEL")
+                    .or_else(|_| std::env::var("OPENAI_MODEL"))
+                    .unwrap_or_else(|_| DEFAULT_MODEL.to_string()),
+                api_key: std::env::var("LM_STUDIO_API_KEY")
+                    .or_else(|_| std::env::var("OPENAI_API_KEY"))
+                    .ok().filter(|v| !v.trim().is_empty()),
+                coding_model: None, router_model: None, large_model: None,
+            },
+            "gemini" | "google" => Self {
+                backend: LlmBackend::Gemini,
+                base_url: std::env::var("GEMINI_BASE_URL")
+                    .unwrap_or_else(|_| GEMINI_BASE_URL.to_string()),
+                model: std::env::var("GEMINI_MODEL")
+                    .unwrap_or_else(|_| DEFAULT_GEMINI_MODEL.to_string()),
+                api_key: std::env::var("GEMINI_API_KEY")
+                    .ok().filter(|v| !v.trim().is_empty()),
+                coding_model: None, router_model: None, large_model: None,
+            },
+            "anthropic" | "claude" => Self {
+                backend: LlmBackend::Anthropic,
+                base_url: std::env::var("ANTHROPIC_BASE_URL")
+                    .unwrap_or_else(|_| ANTHROPIC_BASE_URL.to_string()),
+                model: std::env::var("ANTHROPIC_MODEL")
+                    .unwrap_or_else(|_| DEFAULT_CLAUDE_MODEL.to_string()),
+                api_key: std::env::var("ANTHROPIC_API_KEY")
+                    .ok().filter(|v| !v.trim().is_empty()),
+                coding_model: None, router_model: None, large_model: None,
+            },
+            "ollama" => Self {
+                backend: LlmBackend::Ollama,
+                base_url: std::env::var("OLLAMA_BASE_URL")
+                    .unwrap_or_else(|_| OLLAMA_BASE_URL.to_string()),
+                model: std::env::var("OLLAMA_MODEL")
+                    .unwrap_or_else(|_| DEFAULT_MODEL.to_string()),
+                api_key: None,
+                coding_model: None, router_model: None, large_model: None,
+            },
+            other => return Err(format!(
+                "LlmOverride: unknown provider '{other}' \
+                 (expected one of: lmstudio, gemini, anthropic, ollama)"
+            )),
+        };
+        std::env::remove_var("__SIRIN_OVERRIDE_PROVIDER_PROBE");
+
+        // Apply non-empty fields from the override on top of provider defaults.
+        if let Some(url) = o.base_url.as_ref().filter(|s| !s.trim().is_empty()) {
+            cfg.base_url = url.clone();
+        }
+        if !o.model.trim().is_empty() {
+            cfg.model = o.model.clone();
+        }
+        if let Some(key) = o.api_key.as_ref().filter(|s| !s.trim().is_empty()) {
+            cfg.api_key = Some(key.clone());
+        }
+        Ok(cfg)
     }
 
     /// Apply non-empty overrides from `config/llm.yaml` (saved by the settings UI).
@@ -1281,5 +1385,84 @@ mod tests {
             super::is_rate_limit_err(err_box.as_ref()),
             "error should indicate rate limit; got: {err_str}"
         );
+    }
+
+    // ── Issue #269: per-test LLM override ──────────────────────────────────
+
+    #[test]
+    fn override_unknown_provider_returns_err() {
+        let o = super::LlmOverride {
+            provider: "made-up-provider".into(),
+            model:    "x".into(),
+            base_url: None,
+            api_key:  None,
+        };
+        let r = super::LlmConfig::from_override(&o);
+        assert!(r.is_err());
+        assert!(r.unwrap_err().contains("unknown provider"));
+    }
+
+    #[test]
+    fn override_lmstudio_uses_provider_defaults_when_optional_fields_empty() {
+        let o = super::LlmOverride {
+            provider: "lmstudio".into(),
+            model:    "gemma-4-e4b-it".into(),
+            base_url: None,
+            api_key:  None,
+        };
+        let cfg = super::LlmConfig::from_override(&o).expect("build");
+        assert!(matches!(cfg.backend, super::LlmBackend::LmStudio));
+        assert_eq!(cfg.model, "gemma-4-e4b-it");
+        // base_url should fall back to LM_STUDIO_BASE_URL or the default
+        // constant — not empty
+        assert!(!cfg.base_url.is_empty());
+    }
+
+    #[test]
+    fn override_explicit_base_url_overrides_provider_default() {
+        let o = super::LlmOverride {
+            provider: "anthropic".into(),
+            model:    "claude-3-5-sonnet".into(),
+            base_url: Some("https://my-proxy.example.com/v1".into()),
+            api_key:  Some("fake-test-key".into()),
+        };
+        let cfg = super::LlmConfig::from_override(&o).expect("build");
+        assert!(matches!(cfg.backend, super::LlmBackend::Anthropic));
+        assert_eq!(cfg.base_url, "https://my-proxy.example.com/v1");
+        assert_eq!(cfg.api_key.as_deref(), Some("fake-test-key"));
+        assert_eq!(cfg.model, "claude-3-5-sonnet");
+    }
+
+    #[test]
+    fn override_blank_strings_treated_as_omitted() {
+        // Empty-string base_url / api_key should be ignored, falling back
+        // to provider env defaults — matches the "non-empty wins" rule
+        // documented on LlmOverride.
+        let o = super::LlmOverride {
+            provider: "gemini".into(),
+            model:    "models/gemini-2.5-flash".into(),
+            base_url: Some("   ".into()),  // whitespace = omitted
+            api_key:  Some("".into()),       // empty = omitted
+        };
+        let cfg = super::LlmConfig::from_override(&o).expect("build");
+        assert!(matches!(cfg.backend, super::LlmBackend::Gemini));
+        // base_url falls back to default — definitely not whitespace
+        assert!(!cfg.base_url.trim().is_empty());
+    }
+
+    #[test]
+    fn override_provider_name_is_case_insensitive() {
+        for variant in ["LMSTUDIO", "LmStudio", "lmstudio", "lm_studio"] {
+            let o = super::LlmOverride {
+                provider: variant.into(),
+                model:    "any".into(),
+                base_url: None,
+                api_key:  None,
+            };
+            let cfg = super::LlmConfig::from_override(&o).unwrap_or_else(|e|
+                panic!("variant {variant} should parse: {e}")
+            );
+            assert!(matches!(cfg.backend, super::LlmBackend::LmStudio));
+        }
     }
 }

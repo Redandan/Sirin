@@ -954,12 +954,23 @@ fn handle_tools_list_legacy() -> Result<Value, String> {
             },
             {
                 "name": "run_test_async",
-                "description": "非同步啟動測試；立即返回 run_id。用 get_test_result 輪詢狀態。",
+                "description": "非同步啟動測試；立即返回 run_id。用 get_test_result 輪詢狀態。\n\n#269 — 可選 llm_override 跑單個 test 在 process-wide LLM_PROVIDER 之外的後端（split parallel cloud + local，避免 contention；compare backends 並排）。",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "test_id":  { "type": "string", "description": "測試 id（config/tests/*.yaml 中的 id 欄位）" },
-                        "auto_fix": { "type": "boolean", "description": "失敗時自動 spawn claude_session 修 bug（預設 false）" }
+                        "auto_fix": { "type": "boolean", "description": "失敗時自動 spawn claude_session 修 bug（預設 false）" },
+                        "llm_override": {
+                            "type": "object",
+                            "description": "#269 per-test LLM override；空 → 用 process-wide config",
+                            "properties": {
+                                "provider": { "type": "string", "description": "lmstudio | gemini | anthropic | ollama" },
+                                "model":    { "type": "string", "description": "model id at the chosen provider" },
+                                "base_url": { "type": "string", "description": "可選；空 → provider 預設 base_url" },
+                                "api_key":  { "type": "string", "description": "可選；空 → provider env API key" }
+                            },
+                            "required": ["provider", "model"]
+                        }
                     },
                     "required": ["test_id"]
                 }
@@ -2268,6 +2279,15 @@ fn call_run_test_async(args: Value) -> Result<Value, String> {
     let test_id = args["test_id"].as_str().ok_or("Missing test_id")?.to_string();
     let auto_fix = args.get("auto_fix").and_then(Value::as_bool).unwrap_or(false);
 
+    // Issue #269 — optional per-test LLM override. Parsed from the `llm_override`
+    // arg as `{provider, model, base_url?, api_key?}`. Bad provider name returns
+    // an error here (before spawn) so the caller learns immediately.
+    let llm_override: Option<crate::llm::LlmOverride> = match args.get("llm_override") {
+        Some(v) if !v.is_null() => Some(serde_json::from_value(v.clone())
+            .map_err(|e| format!("invalid llm_override: {e}"))?),
+        _ => None,
+    };
+
     // Look up the test goal before spawning so we can surface docs_refs.
     // spawn_run_async will also look it up internally; this double-read is
     // cheap (small YAML dir) and lets us surface the warning before the run.
@@ -2275,7 +2295,9 @@ fn call_run_test_async(args: Value) -> Result<Value, String> {
         .map(|g| g.docs_refs)
         .unwrap_or_default();
 
-    let run_id = crate::test_runner::spawn_run_async(test_id.clone(), auto_fix)?;
+    let run_id = crate::test_runner::spawn_run_async_with_override(
+        test_id.clone(), auto_fix, llm_override.clone()
+    )?;
 
     let mut resp = json!({
         "run_id": run_id,
@@ -2284,6 +2306,12 @@ fn call_run_test_async(args: Value) -> Result<Value, String> {
         "status": "queued",
         "poll_with": "get_test_result",
     });
+    if let Some(o) = llm_override.as_ref() {
+        resp["llm_override"] = json!({
+            "provider": o.provider,
+            "model":    o.model,
+        });
+    }
 
     // Surface docs_refs as a hard-to-miss field so callers cannot skip
     // reading required documentation before interpreting results.

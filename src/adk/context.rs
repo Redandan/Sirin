@@ -66,6 +66,15 @@ impl AgentContext {
         self
     }
 
+    /// Issue #269 — replace the process-wide LLM with a per-context override.
+    /// Used by the test_runner when `run_test_async`'s `llm_override` field
+    /// is set, so a single test can drive a different backend without
+    /// touching the global config.
+    pub fn with_llm(mut self, llm: Arc<LlmConfig>) -> Self {
+        self.llm = llm;
+        self
+    }
+
     pub fn with_context_hint(mut self, hint: Option<String>) -> Self {
         self.context_hint = hint;
         self
