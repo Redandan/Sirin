@@ -14,7 +14,6 @@
 use serde_json::{json, Value};
 
 use crate::adk::AgentContext;
-use crate::llm::call_coding_prompt;
 use crate::persona::CodingAgentConfig;
 use crate::sirin_log;
 
@@ -94,7 +93,9 @@ pub(super) async fn run_react_iterations(
             dry_run,
         );
 
-        let raw = match call_coding_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), prompt).await {
+        // #263 Phase 2 — go through the ctx.llm_caller trait so tests can
+        // inject MockLlmCaller with a deterministic response queue.
+        let raw = match ctx.llm_caller.call_coding(prompt).await {
             Ok(raw) => raw,
             Err(e) => {
                 let err_msg = format!("LLM error on iteration {iteration}: {e}");
@@ -350,4 +351,144 @@ pub(super) async fn run_react_iterations(
     }
 
     Ok(())
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+//
+// Issue #263 Phase 2 — exercise the ReAct loop with `MockLlmCaller` so we can
+// drive deterministic LLM responses without spinning up a real backend.  The
+// mock is wired in via `AgentContext::with_llm_caller`; tests here cover the
+// loop's terminating branches (DONE / parse-error fail-fast / max-iter exit)
+// without touching any tools.
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::adk::tool::ToolRegistry;
+    use crate::adk::AgentContext;
+    use crate::llm::{LlmKind, MockLlmCaller};
+    use crate::persona::CodingAgentConfig;
+
+    /// Build a minimal `AgentContext` with the given mock caller wired in.
+    /// Empty tool registry — tests in this file shouldn't drive tools, only
+    /// terminate via DONE / fail-fast / max_iter.
+    fn ctx_with_mock(mock: Arc<MockLlmCaller>) -> AgentContext {
+        AgentContext::new("test-react", ToolRegistry::new()).with_llm_caller(mock)
+    }
+
+    fn empty_request() -> CodingRequest {
+        CodingRequest {
+            task:           "trivial test task".to_string(),
+            max_iterations: Some(1),
+            dry_run:        false,
+            context_block:  None,
+        }
+    }
+
+    #[tokio::test]
+    async fn react_loop_terminates_on_done_action() {
+        let mock = Arc::new(MockLlmCaller::with_responses(vec![Ok(
+            r#"{"thought":"task is trivially done","action":"DONE","final_answer":"hello world"}"#
+                .to_string(),
+        )]));
+        let ctx = ctx_with_mock(Arc::clone(&mock));
+        let request = empty_request();
+        let config = CodingAgentConfig::default();
+        let mut state = RunState::default();
+
+        let result = run_react_iterations(
+            &ctx, &request, &config, "project context", "plan", false, false, 5, &mut state,
+        )
+        .await;
+
+        assert!(result.is_ok(), "loop should succeed: {result:?}");
+        assert_eq!(state.final_answer, "hello world");
+        assert_eq!(state.history.len(), 1, "exactly one iteration recorded");
+        assert_eq!(state.history[0].action, "DONE");
+        assert!(!state.had_tool_errors);
+
+        // Mock invariants — only one call, on the coding-tier endpoint.
+        let captured = mock.captured.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].0, LlmKind::Coding);
+        // The prompt must include the task and the project context block.
+        let prompt = &captured[0].1;
+        assert!(prompt.contains("trivial test task"), "prompt must include task");
+        assert!(prompt.contains("project context"), "prompt must include project ctx");
+    }
+
+    #[tokio::test]
+    async fn react_loop_falls_back_to_thought_when_final_answer_missing() {
+        let mock = Arc::new(MockLlmCaller::with_responses(vec![Ok(
+            r#"{"thought":"answer-from-thought","action":"DONE"}"#.to_string(),
+        )]));
+        let ctx = ctx_with_mock(Arc::clone(&mock));
+        let request = empty_request();
+        let config = CodingAgentConfig::default();
+        let mut state = RunState::default();
+
+        run_react_iterations(
+            &ctx, &request, &config, "ctx", "plan", false, false, 5, &mut state,
+        )
+        .await
+        .unwrap();
+
+        // When `final_answer` is absent, the loop falls back to the thought
+        // text (see line 177 in this file).  Pinning that contract here so a
+        // future refactor doesn't silently drop it.
+        assert_eq!(state.final_answer, "answer-from-thought");
+    }
+
+    #[tokio::test]
+    async fn react_loop_fails_fast_after_three_invalid_json_responses() {
+        // Three consecutive non-JSON outputs trip MAX_TOTAL_TOOL_ERRORS.
+        let mock = Arc::new(MockLlmCaller::with_responses(vec![
+            Ok("not json at all".to_string()),
+            Ok("still garbage".to_string()),
+            Ok("third strike".to_string()),
+        ]));
+        let ctx = ctx_with_mock(Arc::clone(&mock));
+        let request = empty_request();
+        let config = CodingAgentConfig::default();
+        let mut state = RunState::default();
+
+        let result = run_react_iterations(
+            &ctx, &request, &config, "ctx", "plan", false, false, 10, &mut state,
+        )
+        .await;
+
+        assert!(result.is_ok(), "fail-fast is a clean break, not an Err");
+        assert!(state.had_tool_errors, "errors must be recorded");
+        assert!(
+            state.final_answer.contains("fail-fast")
+                || state.final_answer.contains("無效"),
+            "final_answer should mention fail-fast: {}",
+            state.final_answer
+        );
+        // Exactly 3 LLM calls — one per parse error before the threshold trips.
+        assert_eq!(mock.call_count(), 3);
+    }
+
+    #[tokio::test]
+    async fn react_loop_propagates_llm_error() {
+        let mock = Arc::new(MockLlmCaller::with_responses(vec![Err(
+            "simulated 429 rate-limit".to_string(),
+        )]));
+        let ctx = ctx_with_mock(Arc::clone(&mock));
+        let request = empty_request();
+        let config = CodingAgentConfig::default();
+        let mut state = RunState::default();
+
+        let result = run_react_iterations(
+            &ctx, &request, &config, "ctx", "plan", false, false, 5, &mut state,
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("LLM error on iteration 0"), "got: {err}");
+        assert!(err.contains("simulated 429 rate-limit"), "got: {err}");
+    }
 }

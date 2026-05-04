@@ -7,7 +7,7 @@ use chrono::Utc;
 use serde_json::Value;
 
 use crate::adk::tool::ToolRegistry;
-use crate::llm::LlmConfig;
+use crate::llm::{LlmCaller, LlmConfig, RealLlmCaller};
 use crate::persona::{TaskEntry, TaskTracker};
 use crate::sirin_log;
 
@@ -29,6 +29,18 @@ pub struct AgentContext {
     pub http: Arc<reqwest::Client>,
     /// Process-wide LLM configuration read once from environment.
     pub llm: Arc<LlmConfig>,
+    /// Pluggable LLM call surface — abstracts `crate::llm::call_*_prompt`
+    /// so tests can inject a [`crate::llm::MockLlmCaller`] with a
+    /// deterministic response queue (#263 Phase 2).  Defaults to
+    /// `RealLlmCaller::new(http.clone(), llm.clone())`; replace via
+    /// [`AgentContext::with_llm_caller`].
+    ///
+    /// Agent code should prefer `ctx.llm_caller.call_coding(prompt)` over
+    /// reaching for `ctx.http` + `ctx.llm` + `crate::llm::call_*_prompt`
+    /// directly.  The legacy fields stay populated so non-LLM HTTP code
+    /// paths and the few sites that still call the bare functions keep
+    /// working during the gradual migration.
+    pub llm_caller: Arc<dyn LlmCaller>,
     tracker: Option<TaskTracker>,
     trace: Arc<Mutex<ExecutionTrace>>,
     /// Optional recent-conversation snippet injected by the caller so agents
@@ -38,13 +50,18 @@ pub struct AgentContext {
 
 impl AgentContext {
     pub fn new(source: impl Into<String>, tools: ToolRegistry) -> Self {
+        let http = shared_http();
+        let llm  = shared_llm();
+        let llm_caller: Arc<dyn LlmCaller> =
+            Arc::new(RealLlmCaller::new(Arc::clone(&http), Arc::clone(&llm)));
         Self {
             request_id: format!("adk-{}", Utc::now().timestamp_millis()),
             source: source.into(),
             tools,
             metadata: HashMap::new(),
-            http: shared_http(),
-            llm: shared_llm(),
+            http,
+            llm,
+            llm_caller,
             tracker: None,
             trace: Arc::new(Mutex::new(ExecutionTrace::default())),
             context_hint: None,
@@ -70,8 +87,20 @@ impl AgentContext {
     /// Used by the test_runner when `run_test_async`'s `llm_override` field
     /// is set, so a single test can drive a different backend without
     /// touching the global config.
+    ///
+    /// Also rebuilds `llm_caller` to wrap the new config, so agents
+    /// going through the `ctx.llm_caller` path see the override too.
     pub fn with_llm(mut self, llm: Arc<LlmConfig>) -> Self {
+        self.llm_caller = Arc::new(RealLlmCaller::new(Arc::clone(&self.http), Arc::clone(&llm)));
         self.llm = llm;
+        self
+    }
+
+    /// #263 Phase 2 — swap in a custom [`LlmCaller`] (typically a
+    /// [`crate::llm::MockLlmCaller`] in tests).  Leaves `http` and `llm`
+    /// alone so any non-agent code that still reads them keeps working.
+    pub fn with_llm_caller(mut self, caller: Arc<dyn LlmCaller>) -> Self {
+        self.llm_caller = caller;
         self
     }
 

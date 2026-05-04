@@ -38,8 +38,11 @@
 //! | `LLM_FALLBACK_MODEL`    | *(none)*                   | Model name for fallback (e.g. `deepseek-chat`) |
 
 mod backends;
+pub mod caller;
 mod probe;
 pub mod usage;
+
+pub use caller::{LlmCaller, LlmKind, MockLlmCaller, RealLlmCaller};
 
 pub use probe::probe_and_build_fleet;
 #[allow(unused_imports)]
