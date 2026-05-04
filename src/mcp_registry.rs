@@ -286,6 +286,157 @@ fn seed_default(m: &mut RegistryMap) {
         input_schema: json!({"type": "object", "properties": {}}),
         handler:      ToolHandler::SyncJson(|_args| crate::mcp_server::call_agent_clear_completed()),
     });
+
+    // Domain: session-memory + task-tracker + handoff (sync arg-taking handlers).
+    // 10-tool batch migrated 2026-05-04 — same pattern as zero-arg, but the
+    // handler's `fn(Value) -> Result<Value, String>` signature already matches
+    // SyncJson directly, so no closure wrapper needed.
+
+    // ── #227 session-memory (3 of 4 — expire_points already in this file) ──
+
+    m.insert("save_point", ToolDef {
+        name:         "save_point",
+        description: "#227 — 在 ~/.claude/session_points.json 儲存一個進度記錄點（save point）。可在 session 內或跨 session 快速恢復上下文，比 handoff 更輕量。\n\nttl_days 預設 7 天後自動過期。",
+        input_schema: json!({
+            "type": "object",
+            "required": ["label"],
+            "properties": {
+                "label":    { "type": "string", "description": "唯一識別名稱，例如 debug-issue-230" },
+                "summary":  { "type": "string", "description": "進度摘要（自由文字）" },
+                "ttl_days": { "type": "number", "description": "存活天數，預設 7" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_save_point),
+    });
+
+    m.insert("list_points", ToolDef {
+        name:         "list_points",
+        description: "#227 — 列出所有未過期的 save points（最新在前）。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "label_contains": { "type": "string", "description": "過濾：label 包含此字串（選填）" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_list_points),
+    });
+
+    m.insert("restore_point", ToolDef {
+        name:         "restore_point",
+        description: "#227 — 讀取指定 save point 的 summary，用於恢復上下文。",
+        input_schema: json!({
+            "type": "object",
+            "required": ["label"],
+            "properties": {
+                "label": { "type": "string", "description": "要恢復的 save point label" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_restore_point),
+    });
+
+    // ── #228 task-tracker (4 tools, full domain) ──
+
+    m.insert("create_task", ToolDef {
+        name:         "create_task",
+        description: "#228 — 在 ~/.claude/tasks.json 建立一個 task 追蹤項目，取代 MEMORY.md 手動維護的 backlog。\n\n`priority`: P0=緊急 / P1=重要 / P2=一般。回傳 task_id（格式 T-YYYYMMDD-NNNN）。",
+        input_schema: json!({
+            "type": "object",
+            "required": ["project", "description"],
+            "properties": {
+                "project":     { "type": "string", "description": "project 識別碼，例如 sirin / agora-backend / flutter" },
+                "description": { "type": "string", "description": "任務描述" },
+                "priority":    { "type": "string", "description": "P0 / P1 / P2，預設 P1" },
+                "kb_refs":     { "type": "string", "description": "相關 KB topicKey（逗號分隔，選填）" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_create_task),
+    });
+
+    m.insert("list_tasks", ToolDef {
+        name:         "list_tasks",
+        description: "#228 — 列出 ~/.claude/tasks.json 中的 tasks（預設只列 open）。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "project":  { "type": "string",  "description": "過濾 project（選填）" },
+                "status":   { "type": "string",  "description": "open / done / all，預設 open" },
+                "priority": { "type": "string",  "description": "過濾 priority（P0/P1/P2，選填）" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_list_tasks),
+    });
+
+    m.insert("mark_task_done", ToolDef {
+        name:         "mark_task_done",
+        description: "#228 — 將 task 標為 done，附帶 resolution 說明。",
+        input_schema: json!({
+            "type": "object",
+            "required": ["task_id", "resolution"],
+            "properties": {
+                "task_id":    { "type": "string", "description": "T-YYYYMMDD-NNNN 格式的 task ID" },
+                "resolution": { "type": "string", "description": "完成說明或 commit hash" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_mark_task_done),
+    });
+
+    m.insert("link_task", ToolDef {
+        name:         "link_task",
+        description: "#228 — 把 task 和 GitHub issue URL 或 KB topicKey 連結。",
+        input_schema: json!({
+            "type": "object",
+            "required": ["task_id"],
+            "properties": {
+                "task_id":     { "type": "string", "description": "T-YYYYMMDD-NNNN" },
+                "github_url":  { "type": "string", "description": "GitHub issue URL（選填）" },
+                "kb_topickey": { "type": "string", "description": "KB topicKey（選填）" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_link_task),
+    });
+
+    // ── #224 handoff (3 tools, full domain) ──
+
+    m.insert("create_handoff", ToolDef {
+        name:         "create_handoff",
+        description: "#224 — 建立一個 session 交接記錄，存到 ~/.claude/handoff_history.json。\n\n比 kbWrite 更簡潔：不需要 domain/layer/tags/fileRefs 等樣板參數，專門為 session bridge 設計。\n內容自動 unescape，get_latest_handoff 直接回傳 markdown，不需要 Python unescape。\n同時寫入 KB（topicKey=sirin-handoff-latest）供 SessionStart hook 使用。",
+        input_schema: json!({
+            "type": "object",
+            "required": ["reason", "content"],
+            "properties": {
+                "reason":    { "type": "string", "description": "交接原因，例如「加了新 MCP 需重啟」" },
+                "content":   { "type": "string", "description": "Markdown 格式的交接內容（接手 prompt + 完成事項等）" },
+                "project":   { "type": "string", "description": "project slug，預設 sirin" },
+                "file_refs": { "type": "string", "description": "動到的檔案（逗號分隔，選填）" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_create_handoff),
+    });
+
+    m.insert("get_latest_handoff", ToolDef {
+        name:         "get_latest_handoff",
+        description: "#224 — 讀取最新的 handoff 記錄，直接回傳 markdown 內容（已 unescape）。\n\n比 fetch-handoff.sh 更簡單：不需要 agora-trading auth，不需要 Python unescape，直接呼叫 Sirin MCP。\n可用於 SessionStart hook 的簡化版 fetch-handoff.sh。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "project": { "type": "string", "description": "project slug，預設 sirin" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_get_latest_handoff),
+    });
+
+    m.insert("list_handoff_history", ToolDef {
+        name:         "list_handoff_history",
+        description: "#224 — 列出最近 N 筆 handoff 記錄（最新在前）。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "project": { "type": "string", "description": "project slug，預設 sirin" },
+                "limit":   { "type": "number",  "description": "筆數上限，預設 10" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_list_handoff_history),
+    });
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

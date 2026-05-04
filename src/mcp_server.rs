@@ -1366,42 +1366,7 @@ fn handle_tools_list_legacy() -> Result<Value, String> {
                     }
                 }
             },
-            // #257 list_slash_commands + list_hooks → registry
-            {
-                "name": "save_point",
-                "description": "#227 — 在 ~/.claude/session_points.json 儲存一個進度記錄點（save point）。可在 session 內或跨 session 快速恢復上下文，比 handoff 更輕量。\n\nttl_days 預設 7 天後自動過期。",
-                "inputSchema": {
-                    "type": "object",
-                    "required": ["label"],
-                    "properties": {
-                        "label":    { "type": "string", "description": "唯一識別名稱，例如 debug-issue-230" },
-                        "summary":  { "type": "string", "description": "進度摘要（自由文字）" },
-                        "ttl_days": { "type": "number", "description": "存活天數，預設 7" }
-                    }
-                }
-            },
-            {
-                "name": "list_points",
-                "description": "#227 — 列出所有未過期的 save points（最新在前）。",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "label_contains": { "type": "string", "description": "過濾：label 包含此字串（選填）" }
-                    }
-                }
-            },
-            {
-                "name": "restore_point",
-                "description": "#227 — 讀取指定 save point 的 summary，用於恢復上下文。",
-                "inputSchema": {
-                    "type": "object",
-                    "required": ["label"],
-                    "properties": {
-                        "label": { "type": "string", "description": "要恢復的 save point label" }
-                    }
-                }
-            },
-            // #257 — expire_points moved to mcp_registry::seed_default
+            // #257 — #227 session-memory-mcp (save_point/list_points/restore_point/expire_points) all in mcp_registry::seed_default
             {
                 "name": "session_cost",
                 "description": "#232 — 解析 ~/.claude/projects/**/*.jsonl 計算指定 session（或最新 session）的 token 使用量和 API 費用估算。\n\n包含：input/output/cache tokens、USD 費用估算（用 Anthropic 公定價）、cache hit rate、最高成本 tool 排行。",
@@ -1424,92 +1389,8 @@ fn handle_tools_list_legacy() -> Result<Value, String> {
                     }
                 }
             },
-            {
-                "name": "create_task",
-                "description": "#228 — 在 ~/.claude/tasks.json 建立一個 task 追蹤項目，取代 MEMORY.md 手動維護的 backlog。\n\n`priority`: P0=緊急 / P1=重要 / P2=一般。回傳 task_id（格式 T-YYYYMMDD-NNNN）。",
-                "inputSchema": {
-                    "type": "object",
-                    "required": ["project", "description"],
-                    "properties": {
-                        "project":     { "type": "string", "description": "project 識別碼，例如 sirin / agora-backend / flutter" },
-                        "description": { "type": "string", "description": "任務描述" },
-                        "priority":    { "type": "string", "description": "P0 / P1 / P2，預設 P1" },
-                        "kb_refs":     { "type": "string", "description": "相關 KB topicKey（逗號分隔，選填）" }
-                    }
-                }
-            },
-            {
-                "name": "list_tasks",
-                "description": "#228 — 列出 ~/.claude/tasks.json 中的 tasks（預設只列 open）。",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "project":  { "type": "string",  "description": "過濾 project（選填）" },
-                        "status":   { "type": "string",  "description": "open / done / all，預設 open" },
-                        "priority": { "type": "string",  "description": "過濾 priority（P0/P1/P2，選填）" }
-                    }
-                }
-            },
-            {
-                "name": "mark_task_done",
-                "description": "#228 — 將 task 標為 done，附帶 resolution 說明。",
-                "inputSchema": {
-                    "type": "object",
-                    "required": ["task_id", "resolution"],
-                    "properties": {
-                        "task_id":    { "type": "string", "description": "T-YYYYMMDD-NNNN 格式的 task ID" },
-                        "resolution": { "type": "string", "description": "完成說明或 commit hash" }
-                    }
-                }
-            },
-            {
-                "name": "link_task",
-                "description": "#228 — 把 task 和 GitHub issue URL 或 KB topicKey 連結。",
-                "inputSchema": {
-                    "type": "object",
-                    "required": ["task_id"],
-                    "properties": {
-                        "task_id":     { "type": "string", "description": "T-YYYYMMDD-NNNN" },
-                        "github_url":  { "type": "string", "description": "GitHub issue URL（選填）" },
-                        "kb_topickey": { "type": "string", "description": "KB topicKey（選填）" }
-                    }
-                }
-            },
-            {
-                "name": "create_handoff",
-                "description": "#224 — 建立一個 session 交接記錄，存到 ~/.claude/handoff_history.json。\n\n比 kbWrite 更簡潔：不需要 domain/layer/tags/fileRefs 等樣板參數，專門為 session bridge 設計。\n內容自動 unescape，get_latest_handoff 直接回傳 markdown，不需要 Python unescape。\n同時寫入 KB（topicKey=sirin-handoff-latest）供 SessionStart hook 使用。",
-                "inputSchema": {
-                    "type": "object",
-                    "required": ["reason", "content"],
-                    "properties": {
-                        "reason":    { "type": "string", "description": "交接原因，例如「加了新 MCP 需重啟」" },
-                        "content":   { "type": "string", "description": "Markdown 格式的交接內容（接手 prompt + 完成事項等）" },
-                        "project":   { "type": "string", "description": "project slug，預設 sirin" },
-                        "file_refs": { "type": "string", "description": "動到的檔案（逗號分隔，選填）" }
-                    }
-                }
-            },
-            {
-                "name": "get_latest_handoff",
-                "description": "#224 — 讀取最新的 handoff 記錄，直接回傳 markdown 內容（已 unescape）。\n\n比 fetch-handoff.sh 更簡單：不需要 agora-trading auth，不需要 Python unescape，直接呼叫 Sirin MCP。\n可用於 SessionStart hook 的簡化版 fetch-handoff.sh。",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "project": { "type": "string", "description": "project slug，預設 sirin" }
-                    }
-                }
-            },
-            {
-                "name": "list_handoff_history",
-                "description": "#224 — 列出最近 N 筆 handoff 記錄（最新在前）。",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "project": { "type": "string", "description": "project slug，預設 sirin" },
-                        "limit":   { "type": "number",  "description": "筆數上限，預設 10" }
-                    }
-                }
-            },
+            // #257 — #228 task-tracker-mcp (create_task/list_tasks/mark_task_done/link_task) all in mcp_registry::seed_default
+            // #257 — #224 handoff-mcp (create/get_latest/list_handoff_history) all in mcp_registry::seed_default
             {
                 "name": "generate_daily_brief",
                 "description": "#231 — 自動聚合 agora-trading 多個工具生成每日 ops 摘要（markdown）。\n\n一次呼叫取代手動跑 getMarketSnapshot + getOpenPositions + getShadowSignalStats 等。\n`sections`：逗號分隔，預設 market,portfolio,ml,ops。\n結果同時寫入 KB（topicKey=agora-daily-brief-YYYYMMDD）供下次 session 參考。\n\n需要 agora-trading + agora-ops token 設定。",
@@ -2036,23 +1917,12 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         // #225 claude-config-mcp
         "add_allow"            => return call_add_allow(arguments).map(wrap_json),
         "remove_allow"         => return call_remove_allow(arguments).map(wrap_json),
-        // #227 session-memory-mcp
-        "save_point"           => return call_save_point(arguments).map(wrap_json),
-        "list_points"          => return call_list_points(arguments).map(wrap_json),
-        "restore_point"        => return call_restore_point(arguments).map(wrap_json),
-        // #257 — expire_points moved to mcp_registry::seed_default
+        // #257 — #227 session-memory-mcp (save/list/restore/expire_point) all in mcp_registry::seed_default
         // #232 session-cost-mcp
         "session_cost"            => return call_session_cost(arguments).map(wrap_json),
         "list_expensive_sessions" => return call_list_expensive_sessions(arguments).map(wrap_json),
-        // #228 task-tracker-mcp
-        "create_task"    => return call_create_task(arguments).map(wrap_json),
-        "list_tasks"     => return call_list_tasks(arguments).map(wrap_json),
-        "mark_task_done" => return call_mark_task_done(arguments).map(wrap_json),
-        "link_task"           => return call_link_task(arguments).map(wrap_json),
-        // #224 handoff-mcp
-        "create_handoff"      => return call_create_handoff(arguments).map(wrap_json),
-        "get_latest_handoff"  => return call_get_latest_handoff(arguments).map(wrap_json),
-        "list_handoff_history"=> return call_list_handoff_history(arguments).map(wrap_json),
+        // #257 — #228 task-tracker-mcp (create_task/list_tasks/mark_task_done/link_task) all in mcp_registry::seed_default
+        // #257 — #224 handoff-mcp (create/get_latest/list_handoff_history) all in mcp_registry::seed_default
         // #226 kb-lifecycle (non-embedding subset)
         "kb_stats"             => return call_kb_stats(arguments).await.map(wrap_json),
         "kb_diff"              => return call_kb_diff(arguments).await.map(wrap_json),
@@ -3729,7 +3599,8 @@ fn save_points(points: &[Value]) -> Result<(), String> {
     std::fs::write(&path, out).map_err(|e| e.to_string())
 }
 
-fn call_save_point(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_save_point(args: Value) -> Result<Value, String> {
     let label    = args["label"].as_str().ok_or("Missing label")?.to_string();
     let summary  = args.get("summary").and_then(Value::as_str).unwrap_or("").to_string();
     let ttl_days = args.get("ttl_days").and_then(Value::as_f64).unwrap_or(7.0) as u64;
@@ -3757,7 +3628,8 @@ fn call_save_point(args: Value) -> Result<Value, String> {
     Ok(json!({ "saved": entry, "total_points": points.len() }))
 }
 
-fn call_list_points(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_list_points(args: Value) -> Result<Value, String> {
     let filter = args.get("label_contains").and_then(Value::as_str).map(String::from);
     let now = chrono::Local::now().to_rfc3339();
 
@@ -3779,7 +3651,8 @@ fn call_list_points(args: Value) -> Result<Value, String> {
     }))
 }
 
-fn call_restore_point(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_restore_point(args: Value) -> Result<Value, String> {
     let label = args["label"].as_str().ok_or("Missing label")?;
     let points = load_points();
     let point = points.iter()
@@ -3984,7 +3857,8 @@ fn persist_tasks(tasks: &[Value]) -> Result<(), String> {
     std::fs::write(&path, out).map_err(|e| e.to_string())
 }
 
-fn call_create_task(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_create_task(args: Value) -> Result<Value, String> {
     let project  = args["project"].as_str().ok_or("Missing project")?.to_string();
     let desc     = args["description"].as_str().ok_or("Missing description")?.to_string();
     let priority = args.get("priority").and_then(Value::as_str).unwrap_or("P1").to_string();
@@ -4015,7 +3889,8 @@ fn call_create_task(args: Value) -> Result<Value, String> {
     Ok(json!({ "task_id": id, "task": task }))
 }
 
-fn call_list_tasks(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_list_tasks(args: Value) -> Result<Value, String> {
     let project_filter  = args.get("project").and_then(Value::as_str).map(String::from);
     let status_filter   = args.get("status").and_then(Value::as_str).unwrap_or("open");
     let priority_filter = args.get("priority").and_then(Value::as_str).map(String::from);
@@ -4050,7 +3925,8 @@ fn call_list_tasks(args: Value) -> Result<Value, String> {
     }))
 }
 
-fn call_mark_task_done(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_mark_task_done(args: Value) -> Result<Value, String> {
     let task_id    = args["task_id"].as_str().ok_or("Missing task_id")?;
     let resolution = args["resolution"].as_str().ok_or("Missing resolution")?.to_string();
     let now = chrono::Local::now().to_rfc3339();
@@ -4068,7 +3944,8 @@ fn call_mark_task_done(args: Value) -> Result<Value, String> {
     Ok(updated)
 }
 
-fn call_link_task(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_link_task(args: Value) -> Result<Value, String> {
     let task_id     = args["task_id"].as_str().ok_or("Missing task_id")?;
     let github_url  = args.get("github_url").and_then(Value::as_str).map(String::from);
     let kb_topickey = args.get("kb_topickey").and_then(Value::as_str).map(String::from);
@@ -4110,7 +3987,8 @@ fn save_handoffs(entries: &[Value]) -> Result<(), String> {
     std::fs::write(&path, out).map_err(|e| e.to_string())
 }
 
-fn call_create_handoff(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_create_handoff(args: Value) -> Result<Value, String> {
     let reason    = args["reason"].as_str().ok_or("Missing reason")?.to_string();
     let content   = args["content"].as_str().ok_or("Missing content")?.to_string();
     let project   = args.get("project").and_then(Value::as_str).unwrap_or("sirin").to_string();
@@ -4212,7 +4090,8 @@ fn try_kb_write_handoff(content: &str, reason: &str, project: &str, file_refs: &
     }
 }
 
-fn call_get_latest_handoff(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_get_latest_handoff(args: Value) -> Result<Value, String> {
     let project = args.get("project").and_then(Value::as_str).unwrap_or("sirin");
 
     let history = load_handoffs();
@@ -4229,7 +4108,8 @@ fn call_get_latest_handoff(args: Value) -> Result<Value, String> {
     }))
 }
 
-fn call_list_handoff_history(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_list_handoff_history(args: Value) -> Result<Value, String> {
     let project = args.get("project").and_then(Value::as_str).unwrap_or("sirin");
     let limit   = args.get("limit").and_then(Value::as_u64).unwrap_or(10) as usize;
 
