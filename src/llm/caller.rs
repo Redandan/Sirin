@@ -57,23 +57,55 @@ pub trait LlmCaller: Send + Sync {
 
 // ── Real implementation ─────────────────────────────────────────────────────
 
-/// Production [`LlmCaller`] — bundles an HTTP client + an LLM config and
-/// delegates each call to the corresponding `crate::llm::call_*_prompt`
-/// function.
+/// Production [`LlmCaller`] — bundles an HTTP client + the three LLM configs
+/// (main / router / large) and delegates each call to the corresponding
+/// `crate::llm::call_*_prompt` function.
+///
+/// ## Why three configs, not one
+///
+/// Sirin keeps three process-wide LLM singletons:
+/// - [`crate::llm::shared_llm`] — main / coding / plain model
+/// - [`crate::llm::shared_router_llm`] — small fast model for routing
+/// - [`crate::llm::shared_large_llm`] — beefy model for deep reasoning
+///
+/// Production code (e.g. `planner_agent::llm_plan`) historically reaches
+/// for `shared_router_llm()` directly to keep router calls off the
+/// expensive main provider.  To preserve that behaviour through the
+/// trait, [`RealLlmCaller::from_globals`] grabs all three and the trait
+/// methods route to the right one.
+///
+/// For test / per-test-override use ([`new`]), the same `LlmConfig` is
+/// applied to all four methods — that's what `#269 llm_override` wants
+/// (one config drives every agent call in that test).
 pub struct RealLlmCaller {
-    pub http: Arc<reqwest::Client>,
-    pub llm:  Arc<LlmConfig>,
+    pub http:       Arc<reqwest::Client>,
+    pub llm:        Arc<LlmConfig>,
+    pub router_llm: Arc<LlmConfig>,
+    pub large_llm:  Arc<LlmConfig>,
 }
 
 impl RealLlmCaller {
+    /// Single-config constructor — used for #269 per-test overrides where
+    /// every agent call should hit the override backend.  All four trait
+    /// methods route to the same `LlmConfig`.
     pub fn new(http: Arc<reqwest::Client>, llm: Arc<LlmConfig>) -> Self {
-        Self { http, llm }
+        Self {
+            http,
+            llm:        Arc::clone(&llm),
+            router_llm: Arc::clone(&llm),
+            large_llm:  llm,
+        }
     }
 
-    /// Convenience constructor that pulls both halves from the
-    /// process-wide singletons.
+    /// Production constructor — honours the dedicated router / large
+    /// singletons so call_router doesn't accidentally use the main LLM.
     pub fn from_globals() -> Self {
-        Self::new(super::shared_http(), super::shared_llm())
+        Self {
+            http:       super::shared_http(),
+            llm:        super::shared_llm(),
+            router_llm: super::shared_router_llm(),
+            large_llm:  super::shared_large_llm(),
+        }
     }
 }
 
@@ -88,7 +120,7 @@ impl LlmCaller for RealLlmCaller {
 
     fn call_router<'a>(&'a self, prompt: String) -> BoxLlmFuture<'a> {
         Box::pin(async move {
-            call_router_prompt(&self.http, &self.llm, prompt)
+            call_router_prompt(&self.http, &self.router_llm, prompt)
                 .await
                 .map_err(|e| e.to_string())
         })
@@ -96,7 +128,7 @@ impl LlmCaller for RealLlmCaller {
 
     fn call_large<'a>(&'a self, prompt: String) -> BoxLlmFuture<'a> {
         Box::pin(async move {
-            call_large_prompt(&self.http, &self.llm, prompt)
+            call_large_prompt(&self.http, &self.large_llm, prompt)
                 .await
                 .map_err(|e| e.to_string())
         })

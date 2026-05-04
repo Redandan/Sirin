@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::adk::{Agent, AgentContext, AgentRuntime};
-use crate::llm::call_router_prompt;
+// #263 Phase 2 — direct call removed in favour of ctx.llm_caller.call_router.
 use crate::persona::TaskTracker;
 
 use super::planner_intent::classify_intent_family;
@@ -334,12 +334,11 @@ async fn llm_plan(
         recommended_skills,
     }.render();
 
-    // Use the router-specific LLM (local backend when ROUTER_LLM_PROVIDER is
-    // set) so intent classification never consumes remote API quota.
-    let router_llm = crate::llm::shared_router_llm();
-    let raw = call_router_prompt(ctx.http.as_ref(), &router_llm, prompt)
-        .await
-        .ok()?;
+    // #263 Phase 2 — go through ctx.llm_caller.call_router so tests can inject
+    // a deterministic responder.  In production, RealLlmCaller::from_globals
+    // wires this to the dedicated `shared_router_llm()` singleton — so router
+    // calls keep using the local/cheap backend rather than the main LLM.
+    let raw = ctx.llm_caller.call_router(prompt).await.ok()?;
 
     // Extract JSON object from the response (model may wrap it in prose).
     let json_start = raw.find('{')?;
@@ -611,5 +610,122 @@ mod tests {
         }.render();
         assert!(!p.contains("Recent context:"));
         assert!(!p.contains("Relevant local capabilities"));
+    }
+
+    // ── llm_plan tests via MockLlmCaller (#263 Phase 2) ──────────────────────
+    //
+    // Drives the LLM-backed classifier with deterministic responses so we can
+    // pin its happy path + fallback behaviour without hitting a real provider.
+
+    use std::sync::Arc;
+    use crate::adk::tool::ToolRegistry;
+    use crate::adk::AgentContext;
+    use crate::llm::{LlmKind, MockLlmCaller};
+
+    fn ctx_with_mock(mock: Arc<MockLlmCaller>) -> AgentContext {
+        AgentContext::new("test-planner", ToolRegistry::new()).with_llm_caller(mock)
+    }
+
+    fn req(user_text: &str) -> PlannerRequest {
+        PlannerRequest {
+            user_text:        user_text.to_string(),
+            context_block:    None,
+            peer_id:          None,
+            fallback_reply:   None,
+            execution_result: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn llm_plan_returns_research_plan_for_research_intent() {
+        let mock = Arc::new(MockLlmCaller::with_responses(vec![Ok(r#"{
+            "intent": "research",
+            "should_start_research": true,
+            "steps": ["search", "summarise"],
+            "summary": "research the topic"
+        }"#.to_string())]));
+        let ctx = ctx_with_mock(Arc::clone(&mock));
+
+        let plan = llm_plan(&ctx, &req("research async runtimes"), &[]).await
+            .expect("llm_plan should succeed on valid JSON");
+
+        assert_eq!(plan.intent, PlanIntent::Research);
+        assert!(plan.should_start_research);
+        assert_eq!(plan.steps, vec!["search", "summarise"]);
+        assert_eq!(plan.summary, "research the topic");
+        // llm_plan must use the router endpoint (not coding/large/plain).
+        let captured = mock.captured.lock().unwrap();
+        assert_eq!(captured[0].0, LlmKind::Router);
+    }
+
+    #[tokio::test]
+    async fn llm_plan_handles_intent_alias_unknown_as_answer() {
+        // Any intent value other than "research" maps to PlanIntent::Answer.
+        let mock = Arc::new(MockLlmCaller::with_responses(vec![Ok(r#"{
+            "intent": "anything-else",
+            "should_start_research": false,
+            "steps": ["one", "two"],
+            "summary": "answer"
+        }"#.to_string())]));
+        let ctx = ctx_with_mock(Arc::clone(&mock));
+
+        let plan = llm_plan(&ctx, &req("ping"), &[]).await
+            .expect("llm_plan should succeed");
+
+        assert_eq!(plan.intent, PlanIntent::Answer);
+    }
+
+    #[tokio::test]
+    async fn llm_plan_extracts_json_when_wrapped_in_prose() {
+        // Models often emit a "Sure, here's the plan: { ... }" prefix.  The
+        // function must locate the JSON object and parse it.
+        let mock = Arc::new(MockLlmCaller::with_responses(vec![Ok(
+            "Sure, here you go: {\"intent\":\"answer\",\"steps\":[\"x\"],\"summary\":\"s\"} -- end".to_string(),
+        )]));
+        let ctx = ctx_with_mock(Arc::clone(&mock));
+
+        let plan = llm_plan(&ctx, &req("hi"), &[]).await
+            .expect("must extract JSON from prose-wrapped response");
+
+        assert_eq!(plan.summary, "s");
+        assert_eq!(plan.steps, vec!["x"]);
+    }
+
+    #[tokio::test]
+    async fn llm_plan_returns_none_on_unparseable_response() {
+        let mock = Arc::new(MockLlmCaller::with_responses(vec![Ok(
+            "no JSON anywhere in this string".to_string(),
+        )]));
+        let ctx = ctx_with_mock(Arc::clone(&mock));
+
+        let plan = llm_plan(&ctx, &req("hi"), &[]).await;
+        assert!(plan.is_none(), "must return None on unparseable response");
+    }
+
+    #[tokio::test]
+    async fn llm_plan_returns_none_on_llm_error() {
+        let mock = Arc::new(MockLlmCaller::with_responses(vec![Err(
+            "simulated 429".to_string(),
+        )]));
+        let ctx = ctx_with_mock(Arc::clone(&mock));
+
+        let plan = llm_plan(&ctx, &req("hi"), &[]).await;
+        assert!(plan.is_none(), "LLM error path must return None for caller fallback");
+    }
+
+    #[tokio::test]
+    async fn llm_plan_falls_back_to_default_steps_when_steps_missing() {
+        let mock = Arc::new(MockLlmCaller::with_responses(vec![Ok(r#"{
+            "intent": "answer",
+            "summary": "minimal"
+        }"#.to_string())]));
+        let ctx = ctx_with_mock(Arc::clone(&mock));
+
+        let plan = llm_plan(&ctx, &req("hi"), &[]).await
+            .expect("missing steps + summary should still produce a plan");
+
+        assert_eq!(plan.intent, PlanIntent::Answer);
+        // Default fallback steps when LLM omits them.
+        assert_eq!(plan.steps, vec!["route request", "run chat response"]);
     }
 }

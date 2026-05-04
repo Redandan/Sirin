@@ -50,17 +50,17 @@ pub struct AgentContext {
 
 impl AgentContext {
     pub fn new(source: impl Into<String>, tools: ToolRegistry) -> Self {
-        let http = shared_http();
-        let llm  = shared_llm();
-        let llm_caller: Arc<dyn LlmCaller> =
-            Arc::new(RealLlmCaller::new(Arc::clone(&http), Arc::clone(&llm)));
+        // Use `from_globals` so call_router / call_large honour the dedicated
+        // router / large singletons (not just the main shared_llm).  See
+        // RealLlmCaller doc comment for the why.
+        let llm_caller: Arc<dyn LlmCaller> = Arc::new(RealLlmCaller::from_globals());
         Self {
             request_id: format!("adk-{}", Utc::now().timestamp_millis()),
             source: source.into(),
             tools,
             metadata: HashMap::new(),
-            http,
-            llm,
+            http: shared_http(),
+            llm:  shared_llm(),
             llm_caller,
             tracker: None,
             trace: Arc::new(Mutex::new(ExecutionTrace::default())),
