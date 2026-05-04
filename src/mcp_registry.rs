@@ -437,6 +437,127 @@ fn seed_default(m: &mut RegistryMap) {
         }),
         handler:      ToolHandler::SyncJson(crate::mcp_server::call_list_handoff_history),
     });
+
+    // Domain: replay scripts + auto-fix history + #225 claude-config + #232
+    // session-cost + #233 register_intent (sync arg-taking handlers).
+    // 8-tool batch migrated 2026-05-04 — closes #225 and #232 sync subsets.
+
+    m.insert("delete_saved_script", ToolDef {
+        name:         "delete_saved_script",
+        description: "刪除指定測試的已儲存腳本，迫使下次跑 LLM ReAct loop 重新生成。當 UI 改版導致腳本失效時使用。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "test_id": { "type": "string", "description": "要刪除腳本的 test_id" }
+            },
+            "required": ["test_id"]
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_delete_saved_script),
+    });
+
+    m.insert("list_fixes", ToolDef {
+        name:         "list_fixes",
+        description: "查詢 auto-fix 歷史（claude_session spawn 記錄）。能看到哪些 test 觸發過自動修復、結果如何。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "test_id": { "type": "string", "description": "選填" },
+                "limit":   { "type": "number", "description": "預設 20" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_list_fixes),
+    });
+
+    // ── #225 claude-config (3 final tools — joins list_allowlist /
+    //    list_slash_commands / list_hooks / list_redundant_allow already
+    //    in this file → full sync subset of #225 now in registry) ──
+
+    m.insert("suggest_allowlist", ToolDef {
+        name:         "suggest_allowlist",
+        description: "#229 — 掃描 ~/.claude/projects/**/*.jsonl 找出高頻 tool-call pattern，建議加到 Claude Code allowlist。\n\n`threshold`：同一 pattern 出現 N 次以上才建議（預設 2）。\n`sessions`：掃最近 N 個 session（預設 10）。\n`project_key`：限制掃指定 project 目錄名稱（例如 C--Users-Redan-IdeaProjects-Sirin），不指定則掃全部。\n\n回傳結果排除已在 allow list 中的 pattern，只顯示新增建議。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "threshold":   { "type": "number", "description": "出現次數閾值，預設 2" },
+                "sessions":    { "type": "number", "description": "掃最近 N 個 session，預設 10" },
+                "project_key": { "type": "string", "description": "限定 project 目錄名稱（可選）" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_suggest_allowlist),
+    });
+
+    m.insert("add_allow", ToolDef {
+        name:         "add_allow",
+        description: "#225 — 向 ~/.claude/settings.json permissions.allow 新增一條 pattern。\n\n原子寫入：讀取 → 修改 → 寫回（JSON 格式化，4-space indent）。重複 pattern 自動去重。",
+        input_schema: json!({
+            "type": "object",
+            "required": ["pattern"],
+            "properties": {
+                "pattern": { "type": "string", "description": "例如 Bash(cargo:*) 或 Read" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_add_allow),
+    });
+
+    m.insert("remove_allow", ToolDef {
+        name:         "remove_allow",
+        description: "#225 — 從 ~/.claude/settings.json permissions.allow 刪除指定 pattern（精確匹配）。",
+        input_schema: json!({
+            "type": "object",
+            "required": ["pattern"],
+            "properties": {
+                "pattern": { "type": "string", "description": "要刪除的 pattern（完整字串匹配）" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_remove_allow),
+    });
+
+    // ── #232 session-cost (2 tools, full domain) ──
+
+    m.insert("session_cost", ToolDef {
+        name:         "session_cost",
+        description: "#232 — 解析 ~/.claude/projects/**/*.jsonl 計算指定 session（或最新 session）的 token 使用量和 API 費用估算。\n\n包含：input/output/cache tokens、USD 費用估算（用 Anthropic 公定價）、cache hit rate、最高成本 tool 排行。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "session_id":  { "type": "string", "description": "JSONL 檔案名稱（不含 .jsonl），選填，預設最新" },
+                "project_key": { "type": "string", "description": "限定 project 目錄，選填" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_session_cost),
+    });
+
+    m.insert("list_expensive_sessions", ToolDef {
+        name:         "list_expensive_sessions",
+        description: "#232 — 列出最貴的 N 個 sessions（依 USD 成本降序）。\n\n`top` 預設 10。`project_key` 可限定 project 目錄。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "top":         { "type": "number", "description": "回傳數量，預設 10" },
+                "project_key": { "type": "string", "description": "限定 project 目錄，選填" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_list_expensive_sessions),
+    });
+
+    // ── #233 cross-ai-router-mcp (sync subset — register_intent joins
+    //    already-migrated list_intents) ──
+
+    m.insert("register_intent", ToolDef {
+        name:         "register_intent",
+        description: "#233 — 在 ~/.claude/llm_intents.json 新增或更新一條 intent → LLM 路由規則。",
+        input_schema: json!({
+            "type": "object",
+            "required": ["name", "backend"],
+            "properties": {
+                "name":    { "type": "string", "description": "intent 名稱，例如 indicator-design" },
+                "backend": { "type": "string", "description": "LLM backend：gemini / deepseek / claude / ollama" },
+                "model":   { "type": "string", "description": "指定 model（選填）" },
+                "reason":  { "type": "string", "description": "路由原因備注（選填）" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_register_intent),
+    });
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

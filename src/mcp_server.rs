@@ -1154,18 +1154,7 @@ fn handle_tools_list_legacy() -> Result<Value, String> {
                     }
                 }
             },
-            // #257 list_saved_scripts → registry
-            {
-                "name": "delete_saved_script",
-                "description": "刪除指定測試的已儲存腳本，迫使下次跑 LLM ReAct loop 重新生成。當 UI 改版導致腳本失效時使用。",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "test_id": { "type": "string", "description": "要刪除腳本的 test_id" }
-                    },
-                    "required": ["test_id"]
-                }
-            },
+            // #257 — replay scripts (list_saved_scripts, delete_saved_script) → mcp_registry::seed_default
             {
                 "name": "test_summary",
                 "description": "一次呼叫取得最近一批測試的完整摘要：pass/fail counts + console_errors 統計 + 建議動作。適合每次 regression suite 跑完後立刻查看結果。\n\n回傳: { passed, failed, console_errors_total, console_warnings_total, results: [{test_id, status, console_errors, console_warnings, flag}] }",
@@ -1320,75 +1309,12 @@ fn handle_tools_list_legacy() -> Result<Value, String> {
                     }
                 }
             },
-            {
-                "name": "list_fixes",
-                "description": "查詢 auto-fix 歷史（claude_session spawn 記錄）。能看到哪些 test 觸發過自動修復、結果如何。",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "test_id": { "type": "string", "description": "選填" },
-                        "limit":   { "type": "number", "description": "預設 20" }
-                    }
-                }
-            },
-            {
-                "name": "suggest_allowlist",
-                "description": "#229 — 掃描 ~/.claude/projects/**/*.jsonl 找出高頻 tool-call pattern，建議加到 Claude Code allowlist。\n\n`threshold`：同一 pattern 出現 N 次以上才建議（預設 2）。\n`sessions`：掃最近 N 個 session（預設 10）。\n`project_key`：限制掃指定 project 目錄名稱（例如 C--Users-Redan-IdeaProjects-Sirin），不指定則掃全部。\n\n回傳結果排除已在 allow list 中的 pattern，只顯示新增建議。",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "threshold":   { "type": "number", "description": "出現次數閾值，預設 2" },
-                        "sessions":    { "type": "number", "description": "掃最近 N 個 session，預設 10" },
-                        "project_key": { "type": "string", "description": "限定 project 目錄名稱（可選）" }
-                    }
-                }
-            },
-            // #257 list_redundant_allow + list_allowlist → registry
-            {
-                "name": "add_allow",
-                "description": "#225 — 向 ~/.claude/settings.json permissions.allow 新增一條 pattern。\n\n原子寫入：讀取 → 修改 → 寫回（JSON 格式化，4-space indent）。重複 pattern 自動去重。",
-                "inputSchema": {
-                    "type": "object",
-                    "required": ["pattern"],
-                    "properties": {
-                        "pattern": { "type": "string", "description": "例如 Bash(cargo:*) 或 Read" }
-                    }
-                }
-            },
-            {
-                "name": "remove_allow",
-                "description": "#225 — 從 ~/.claude/settings.json permissions.allow 刪除指定 pattern（精確匹配）。",
-                "inputSchema": {
-                    "type": "object",
-                    "required": ["pattern"],
-                    "properties": {
-                        "pattern": { "type": "string", "description": "要刪除的 pattern（完整字串匹配）" }
-                    }
-                }
-            },
-            // #257 — #227 session-memory-mcp (save_point/list_points/restore_point/expire_points) all in mcp_registry::seed_default
-            {
-                "name": "session_cost",
-                "description": "#232 — 解析 ~/.claude/projects/**/*.jsonl 計算指定 session（或最新 session）的 token 使用量和 API 費用估算。\n\n包含：input/output/cache tokens、USD 費用估算（用 Anthropic 公定價）、cache hit rate、最高成本 tool 排行。",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "session_id":  { "type": "string", "description": "JSONL 檔案名稱（不含 .jsonl），選填，預設最新" },
-                        "project_key": { "type": "string", "description": "限定 project 目錄，選填" }
-                    }
-                }
-            },
-            {
-                "name": "list_expensive_sessions",
-                "description": "#232 — 列出最貴的 N 個 sessions（依 USD 成本降序）。\n\n`top` 預設 10。`project_key` 可限定 project 目錄。",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "top":         { "type": "number", "description": "回傳數量，預設 10" },
-                        "project_key": { "type": "string", "description": "限定 project 目錄，選填" }
-                    }
-                }
-            },
+            // #257 — auto-fix history (list_fixes) → mcp_registry::seed_default
+            // #257 — #225 claude-config-mcp full sync subset → mcp_registry::seed_default
+            //         (list_allowlist, list_slash_commands, list_hooks, list_redundant_allow,
+            //          suggest_allowlist, add_allow, remove_allow)
+            // #257 — #227 session-memory-mcp (save/list/restore/expire_point) all in mcp_registry::seed_default
+            // #257 — #232 session-cost-mcp (session_cost, list_expensive_sessions) → mcp_registry::seed_default
             // #257 — #228 task-tracker-mcp (create_task/list_tasks/mark_task_done/link_task) all in mcp_registry::seed_default
             // #257 — #224 handoff-mcp (create/get_latest/list_handoff_history) all in mcp_registry::seed_default
             {
@@ -1455,21 +1381,7 @@ fn handle_tools_list_legacy() -> Result<Value, String> {
                     }
                 }
             },
-            // #257 list_intents → registry
-            {
-                "name": "register_intent",
-                "description": "#233 — 在 ~/.claude/llm_intents.json 新增或更新一條 intent → LLM 路由規則。",
-                "inputSchema": {
-                    "type": "object",
-                    "required": ["name", "backend"],
-                    "properties": {
-                        "name":    { "type": "string", "description": "intent 名稱，例如 indicator-design" },
-                        "backend": { "type": "string", "description": "LLM backend：gemini / deepseek / claude / ollama" },
-                        "model":   { "type": "string", "description": "指定 model（選填）" },
-                        "reason":  { "type": "string", "description": "路由原因備注（選填）" }
-                    }
-                }
-            },
+            // #257 — #233 sync subset (list_intents, register_intent) → mcp_registry::seed_default
             {
                 "name": "benchmark_llms",
                 "description": "#233 — 同一 prompt 同時發給多個 LLM，比較回應速度和內容。\n\n`backends`：逗號分隔，預設 \"gemini,deepseek\"。結果含每個 backend 的耗時 ms 和前 200 字回應。",
@@ -1909,18 +1821,13 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         "shadow_dump_diff"        => return call_shadow_dump_diff(arguments).map(wrap_json),
         "compare_with_replay"     => return call_compare_with_replay(arguments).map(wrap_json),
         "explain_failure"         => return call_explain_failure(arguments).await.map(wrap_json),
-        // #257 — list_saved_scripts / list_redundant_allow / list_allowlist /
-        // list_slash_commands / list_hooks moved to mcp_registry::seed_default
-        "delete_saved_script"  => return call_delete_saved_script(arguments).map(wrap_json),
-        "list_fixes"           => return call_list_fixes(arguments).map(wrap_json),
-        "suggest_allowlist"    => return call_suggest_allowlist(arguments).map(wrap_json),
-        // #225 claude-config-mcp
-        "add_allow"            => return call_add_allow(arguments).map(wrap_json),
-        "remove_allow"         => return call_remove_allow(arguments).map(wrap_json),
-        // #257 — #227 session-memory-mcp (save/list/restore/expire_point) all in mcp_registry::seed_default
-        // #232 session-cost-mcp
-        "session_cost"            => return call_session_cost(arguments).map(wrap_json),
-        "list_expensive_sessions" => return call_list_expensive_sessions(arguments).map(wrap_json),
+        // #257 — replay scripts (list_saved_scripts, delete_saved_script) → mcp_registry
+        // #257 — auto-fix history (list_fixes) → mcp_registry
+        // #257 — #225 claude-config-mcp full sync subset → mcp_registry
+        //         (list_allowlist, list_slash_commands, list_hooks, list_redundant_allow,
+        //          suggest_allowlist, add_allow, remove_allow)
+        // #257 — #227 session-memory-mcp (save/list/restore/expire_point) all in mcp_registry
+        // #257 — #232 session-cost-mcp (session_cost, list_expensive_sessions) → mcp_registry
         // #257 — #228 task-tracker-mcp (create_task/list_tasks/mark_task_done/link_task) all in mcp_registry::seed_default
         // #257 — #224 handoff-mcp (create/get_latest/list_handoff_history) all in mcp_registry::seed_default
         // #226 kb-lifecycle (non-embedding subset)
@@ -1935,8 +1842,7 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         "route_query"         => return call_route_query(arguments).await.map(wrap_json),
         "query_llm"           => return call_query_llm(arguments).await.map(wrap_json),
         "fallback_chain"      => return call_fallback_chain(arguments).await.map(wrap_json),
-        // #257 — list_intents moved to mcp_registry::seed_default
-        "register_intent"     => return call_register_intent(arguments).map(wrap_json),
+        // #257 — #233 sync subset (list_intents, register_intent) → mcp_registry
         "benchmark_llms"      => return call_benchmark_llms(arguments).await.map(wrap_json),
         // #257 — config_diagnostics / diagnose moved to mcp_registry::seed_default
         "browser_exec"         => return call_browser_exec(arguments, user_agent).await.map(wrap_json),
@@ -3280,7 +3186,8 @@ fn call_test_analytics(args: Value) -> Result<Value, String> {
 // ── #229 Permission Allowlist ─────────────────────────────────────────────────
 
 /// Scan ~/.claude/projects/**/*.jsonl and suggest allowlist patterns.
-fn call_suggest_allowlist(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_suggest_allowlist(args: Value) -> Result<Value, String> {
     use std::collections::HashMap;
 
     let threshold   = args.get("threshold").and_then(Value::as_u64).unwrap_or(2) as usize;
@@ -3502,7 +3409,8 @@ pub(crate) fn call_list_allowlist() -> Result<Value, String> {
     }))
 }
 
-fn call_add_allow(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_add_allow(args: Value) -> Result<Value, String> {
     let pattern = args["pattern"].as_str().ok_or("Missing pattern")?.to_string();
     let mut already_existed = false;
     mutate_settings(|v| {
@@ -3524,7 +3432,8 @@ fn call_add_allow(args: Value) -> Result<Value, String> {
     }))
 }
 
-fn call_remove_allow(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_remove_allow(args: Value) -> Result<Value, String> {
     let pattern = args["pattern"].as_str().ok_or("Missing pattern")?.to_string();
     let mut removed = false;
     mutate_settings(|v| {
@@ -3757,7 +3666,8 @@ fn collect_jsonl_files(project_key: Option<&str>) -> Vec<std::path::PathBuf> {
     files
 }
 
-fn call_session_cost(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_session_cost(args: Value) -> Result<Value, String> {
     let session_id = args.get("session_id").and_then(Value::as_str).map(String::from);
     let proj_key   = args.get("project_key").and_then(Value::as_str).map(String::from);
 
@@ -3800,7 +3710,8 @@ fn call_session_cost(args: Value) -> Result<Value, String> {
     }))
 }
 
-fn call_list_expensive_sessions(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_list_expensive_sessions(args: Value) -> Result<Value, String> {
     let top      = args.get("top").and_then(Value::as_u64).unwrap_or(10) as usize;
     let proj_key = args.get("project_key").and_then(Value::as_str).map(String::from);
 
@@ -4580,7 +4491,8 @@ pub(crate) fn call_list_intents() -> Result<Value, String> {
     Ok(json!({ "count": list.len(), "intents": list }))
 }
 
-fn call_register_intent(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_register_intent(args: Value) -> Result<Value, String> {
     let name    = args["name"].as_str().ok_or("Missing name")?.to_string();
     let backend = args["backend"].as_str().ok_or("Missing backend")?.to_string();
     let model   = args.get("model").and_then(Value::as_str).map(String::from);
@@ -4918,7 +4830,8 @@ pub(crate) fn call_list_saved_scripts() -> Result<Value, String> {
     }))
 }
 
-fn call_delete_saved_script(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_delete_saved_script(args: Value) -> Result<Value, String> {
     let test_id = args.get("test_id").and_then(Value::as_str)
         .ok_or("'delete_saved_script' requires 'test_id'")?;
     crate::test_runner::store::delete_script(test_id);
@@ -4929,7 +4842,8 @@ fn call_delete_saved_script(args: Value) -> Result<Value, String> {
     }))
 }
 
-fn call_list_fixes(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_list_fixes(args: Value) -> Result<Value, String> {
     let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(20).min(100) as usize;
     let test_id = args.get("test_id").and_then(Value::as_str);
 
