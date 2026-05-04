@@ -906,42 +906,9 @@ fn handle_tools_list() -> Result<Value, String> {
 fn handle_tools_list_legacy() -> Result<Value, String> {
     Ok(json!({
         "tools": [
-            {
-                "name": "memory_search",
-                "description": "搜尋 Sirin 的記憶庫與對話歷史。",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "query": { "type": "string", "description": "搜尋關鍵字" },
-                        "limit": { "type": "number", "description": "最多返回幾筆（預設 5）" }
-                    },
-                    "required": ["query"]
-                }
-            },
-            // skill_list, teams_pending — migrated to mcp_registry (#257 Option B).
-            {
-                "name": "teams_approve",
-                "description": "核准指定的 Teams 草稿，觸發送出。",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "id": { "type": "string", "description": "PendingReply ID" }
-                    },
-                    "required": ["id"]
-                }
-            },
-            {
-                "name": "trigger_research",
-                "description": "觸發 Sirin 對指定主題進行調研。",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "topic": { "type": "string", "description": "調研主題" },
-                        "url":   { "type": "string", "description": "參考 URL（選填）" }
-                    },
-                    "required": ["topic"]
-                }
-            },
+            // #257 — text-mode tools (memory_search / teams_approve / trigger_research) →
+            //         mcp_registry::seed_default (uses SyncText / AsyncText variants).
+            //         skill_list / teams_pending also already there (batch 1).
             // #257 — entire test_runner sync subset → mcp_registry::seed_default:
             //   reads: list_tests, get_test_result, get_screenshot, get_full_observation,
             //          get_run_trace, list_recent_runs, test_analytics, test_summary,
@@ -1056,21 +1023,8 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         //         for authz, not worth widening the registry signature
         //         to accommodate one tool).
         "browser_exec"         => return call_browser_exec(arguments, user_agent).await.map(wrap_json),
-        _ => {}
+        _ => return Err(format!("Unknown tool: {name}")),
     }
-
-    let text = match name {
-        "memory_search"    => call_memory_search(arguments).await?,
-        // skill_list, teams_pending — migrated to mcp_registry (#257 Option B).
-        "teams_approve"    => call_teams_approve(arguments)?,
-        "trigger_research" => call_trigger_research(arguments)?,
-        other => return Err(format!("Unknown tool: {other}")),
-    };
-
-    // MCP content format (text only tools)
-    Ok(json!({
-        "content": [{ "type": "text", "text": text }]
-    }))
 }
 
 /// Wrap arbitrary JSON payload as MCP content blocks.
@@ -1085,7 +1039,8 @@ fn wrap_json(payload: Value) -> Value {
 
 // ── Tool implementations ──────────────────────────────────────────────────────
 
-async fn call_memory_search(args: Value) -> Result<String, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) async fn call_memory_search(args: Value) -> Result<String, String> {
     let query = args["query"].as_str().ok_or("Missing query")?.to_string();
     let limit = args["limit"].as_u64().unwrap_or(5) as usize;
 
@@ -1128,7 +1083,8 @@ pub(crate) fn call_teams_pending() -> String {
         .join("\n---\n")
 }
 
-fn call_teams_approve(args: Value) -> Result<String, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_teams_approve(args: Value) -> Result<String, String> {
     let id = args["id"].as_str().ok_or("Missing id")?;
     crate::pending_reply::update_status(
         "teams", id,
@@ -1137,7 +1093,8 @@ fn call_teams_approve(args: Value) -> Result<String, String> {
     Ok(format!("草稿 {id} 已核准，等待送出。"))
 }
 
-fn call_trigger_research(args: Value) -> Result<String, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_trigger_research(args: Value) -> Result<String, String> {
     let topic = args["topic"].as_str().ok_or("Missing topic")?.to_string();
     let url   = args["url"].as_str().map(|s| s.to_string());
 

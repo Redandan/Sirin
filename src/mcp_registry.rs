@@ -1430,6 +1430,61 @@ fn seed_default(m: &mut RegistryMap) {
         }),
         handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::mcp_server::call_kb_write(args))),
     });
+
+    // ── Final cluster — text-envelope tools (3 tools).  These return a
+    //    `Result<String, String>` instead of `Result<Value, String>`, which
+    //    is why they sat in a separate `let text = match name { ... }` block
+    //    in mcp_server.rs.  The registry's SyncText / AsyncText variants
+    //    handle the `{"content":[{"type":"text","text":...}]}` envelope
+    //    automatically, so migration is the same fn-pointer pattern.
+    //
+    //    With this batch, every JSON tool except browser_exec is in the
+    //    registry.  browser_exec stays legacy permanently — it's the sole
+    //    handler that needs `user_agent` for authz, and the ToolHandler
+    //    enum doesn't carry that channel.
+
+    m.insert("memory_search", ToolDef {
+        name:         "memory_search",
+        description: "搜尋 Sirin 的記憶庫與對話歷史。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string", "description": "搜尋關鍵字" },
+                "limit": { "type": "number", "description": "最多返回幾筆（預設 5）" }
+            },
+            "required": ["query"]
+        }),
+        // First AsyncText migration — same Box::pin pattern as AsyncJson, just
+        // wraps a `Result<String, String>` future instead of `Result<Value, ..>`.
+        handler:      ToolHandler::AsyncText(|args| Box::pin(crate::mcp_server::call_memory_search(args))),
+    });
+
+    m.insert("teams_approve", ToolDef {
+        name:         "teams_approve",
+        description: "核准指定的 Teams 草稿，觸發送出。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "string", "description": "PendingReply ID" }
+            },
+            "required": ["id"]
+        }),
+        handler:      ToolHandler::SyncText(crate::mcp_server::call_teams_approve),
+    });
+
+    m.insert("trigger_research", ToolDef {
+        name:         "trigger_research",
+        description: "觸發 Sirin 對指定主題進行調研。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "topic": { "type": "string", "description": "調研主題" },
+                "url":   { "type": "string", "description": "參考 URL（選填）" }
+            },
+            "required": ["topic"]
+        }),
+        handler:      ToolHandler::SyncText(crate::mcp_server::call_trigger_research),
+    });
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -1445,14 +1500,16 @@ mod tests {
         assert!(get("teams_pending").is_some());
         assert!(get("discovery_status").is_some());
 
-        // Un-migrated tools must NOT be in the registry yet.  As batches
-        // land these need refreshing — pick still-un-migrated tools, ideally
-        // ones unlikely to migrate next.  `memory_search` (AsyncText special
-        // shape) and `browser_exec` (sole authz exception with user_agent
-        // param — pinned to legacy path forever per CLAUDE.md) are the
-        // safest long-term choices.
-        assert!(get("memory_search").is_none());
+        // Un-migrated tools must NOT be in the registry yet.  Only one tool
+        // is permanently un-migrated: `browser_exec`.  It's the sole authz
+        // exception (needs user_agent for audit), pinned to the legacy
+        // dispatch path forever per CLAUDE.md.  Asserting it stays out is a
+        // structural guarantee — won't go stale on future refactors.
+        //
+        // We also assert a non-existent name to verify `get` returns None
+        // (rather than e.g. always returning a default).
         assert!(get("browser_exec").is_none());
+        assert!(get("definitely_not_a_real_tool").is_none());
     }
 
     #[test]
