@@ -284,7 +284,14 @@ pub fn ensure_open(headless: bool) -> Result<bool, String> {
     let (default_w, default_h) = resolve_default_viewport();
     let window_size_arg = format!("--window-size={default_w},{default_h}");
 
-    let stability_args: Vec<&str> = vec![
+    // Optional `--window-position=X,Y` so users with multi-monitor setups can
+    // pin the Chrome test window to a non-primary screen — see
+    // `resolve_window_position` for the env-var contract.  Built outside the
+    // vec so its lifetime survives the &str push below.
+    let window_position_arg = resolve_window_position()
+        .map(|(x, y)| format!("--window-position={x},{y}"));
+
+    let mut stability_args: Vec<&str> = vec![
         "--disable-dev-shm-usage",
         "--disable-background-timer-throttling",
         "--disable-backgrounding-occluded-windows",
@@ -295,6 +302,9 @@ pub fn ensure_open(headless: bool) -> Result<bool, String> {
         "--use-angle=swiftshader",
         &window_size_arg,
     ];
+    if let Some(pos) = window_position_arg.as_ref() {
+        stability_args.push(pos.as_str());
+    }
     let persistent_profile = resolve_persistent_profile_dir();
     let mut opts_builder = LaunchOptions::default_builder();
     opts_builder
@@ -331,6 +341,55 @@ pub fn ensure_open(headless: bool) -> Result<bool, String> {
         .map_err(|e| format!("LaunchOptions: {e}"))?;
     let browser = Browser::new(opts).map_err(|e| format!("Browser::new: {e}"))?;
     let tab = browser.new_tab().map_err(|e| format!("new_tab: {e}"))?;
+
+    // Force window position via CDP.  Chrome's `--window-position` flag is
+    // ignored when the persistent profile (`SIRIN_PERSISTENT_PROFILE=1`)
+    // remembers a previous window location — `Browser.setWindowBounds` after
+    // launch overrides whatever was restored.  Skip on headless launches
+    // (there's no visible window) and when no env override is configured.
+    if !headless {
+        if let Some((x, y)) = resolve_window_position() {
+            // 1. Get the window id for our newly-created tab.
+            let target_id = tab.get_target_id();
+            let win = tab.call_method(RawGetWindowForTarget {
+                target_id: target_id.to_string(),
+            });
+            match win {
+                Ok(resp) => {
+                    let window_id = resp
+                        .get("windowId")
+                        .and_then(|v| v.as_i64());
+                    if let Some(id) = window_id {
+                        // 2. Apply the bounds.  Width/Height left to Chrome's
+                        // saved values — only repositioning, not resizing.
+                        let bounds = serde_json::json!({
+                            "left":        x,
+                            "top":         y,
+                            "windowState": "normal",
+                        });
+                        let _ = tab.call_method(RawSetWindowBounds {
+                            window_id: id,
+                            bounds,
+                        });
+                        tracing::info!(
+                            "[browser] setWindowBounds applied: window {id} → ({x}, {y})"
+                        );
+                    } else {
+                        tracing::warn!(
+                            "[browser] Browser.getWindowForTarget returned no windowId: {resp:?}"
+                        );
+                    }
+                }
+                Err(e) => {
+                    // Non-fatal — Chrome still works, just stuck on whatever
+                    // monitor it picked.  Log so the user notices.
+                    tracing::warn!(
+                        "[browser] Browser.getWindowForTarget failed: {e}; window stays at default"
+                    );
+                }
+            }
+        }
+    }
 
     // Settle delay — Chrome reports tab ready immediately but internal frame
     // tree / CDP event subscriptions need ~500ms to stabilise.  Without this,
@@ -443,6 +502,60 @@ fn resolve_default_viewport() -> (u32, u32) {
     let w = w.clamp(MIN_W, MAX_W);
     let h = h.clamp(MIN_H, MAX_H);
     (w, h)
+}
+
+/// Resolve an optional initial Chrome window position from the
+/// `SIRIN_BROWSER_WINDOW_POSITION` env var.
+///
+/// Format: `X,Y` (signed integers, e.g. `-1707,378` for a monitor to the
+/// left of the primary).  When set, the launch path appends
+/// `--window-position=X,Y` to the Chrome args so the visible test window
+/// opens on the configured monitor instead of the primary screen.
+///
+/// On Windows you can list monitor coordinates via:
+///
+/// ```pwsh
+/// Add-Type -AssemblyName System.Windows.Forms
+/// [System.Windows.Forms.Screen]::AllScreens |
+///     ForEach-Object { "$($_.DeviceName) Primary=$($_.Primary) X=$($_.Bounds.X) Y=$($_.Bounds.Y)" }
+/// ```
+///
+/// Returns `None` (i.e. let Chrome pick / restore last position) when:
+/// - the env var is unset or empty
+/// - the value isn't a valid `X,Y` pair (warns + falls back to default)
+///
+/// Coordinates are NOT clamped — Chrome will silently pin out-of-bounds
+/// requests to the nearest visible monitor edge, and that's a reasonable
+/// fallback if the user later disconnects the monitor referenced here.
+fn resolve_window_position() -> Option<(i32, i32)> {
+    let raw = std::env::var("SIRIN_BROWSER_WINDOW_POSITION").ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // Accept both `X,Y` and `X Y` for robustness.
+    let parts: Vec<&str> = trimmed.split([',', ' ']).filter(|s| !s.is_empty()).collect();
+    if parts.len() != 2 {
+        tracing::warn!(
+            "[browser] SIRIN_BROWSER_WINDOW_POSITION='{raw}' not in 'X,Y' form; ignoring"
+        );
+        return None;
+    }
+    match (
+        parts[0].trim().parse::<i32>(),
+        parts[1].trim().parse::<i32>(),
+    ) {
+        (Ok(x), Ok(y)) => {
+            tracing::info!("[browser] pinning window to ({x}, {y}) per SIRIN_BROWSER_WINDOW_POSITION");
+            Some((x, y))
+        }
+        _ => {
+            tracing::warn!(
+                "[browser] SIRIN_BROWSER_WINDOW_POSITION='{raw}' has non-numeric parts; ignoring"
+            );
+            None
+        }
+    }
 }
 
 /// Resolve an optional persistent Chrome `--user-data-dir` from the
@@ -2830,6 +2943,33 @@ struct RawClearDataForOrigin {
 }
 impl headless_chrome::protocol::cdp::types::Method for RawClearDataForOrigin {
     const NAME: &'static str = "Storage.clearDataForOrigin";
+    type ReturnObject = serde_json::Value;
+}
+
+// ── Raw CDP helpers for Browser.{getWindowForTarget,setWindowBounds} ─────────
+// Used by `init_browser` to pin the visible Chrome window to a specific
+// monitor when SIRIN_BROWSER_WINDOW_POSITION is set.  headless_chrome 1.0.x
+// doesn't expose typed wrappers for the Browser domain, so we hand-roll
+// these using the same pattern as RawClearDataForOrigin.
+
+#[derive(Debug, serde::Serialize)]
+struct RawGetWindowForTarget {
+    #[serde(rename = "targetId")]
+    target_id: String,
+}
+impl headless_chrome::protocol::cdp::types::Method for RawGetWindowForTarget {
+    const NAME: &'static str = "Browser.getWindowForTarget";
+    type ReturnObject = serde_json::Value;
+}
+
+#[derive(Debug, serde::Serialize)]
+struct RawSetWindowBounds {
+    #[serde(rename = "windowId")]
+    window_id: i64,
+    bounds: serde_json::Value,
+}
+impl headless_chrome::protocol::cdp::types::Method for RawSetWindowBounds {
+    const NAME: &'static str = "Browser.setWindowBounds";
     type ReturnObject = serde_json::Value;
 }
 
