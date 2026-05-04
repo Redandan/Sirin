@@ -956,17 +956,6 @@ fn handle_tools_list_legacy() -> Result<Value, String> {
             //  app; AI drives it via /mcp + browser_exec on the same Chrome.)
             // #257 — list_flaky_tests → mcp_registry::seed_default
             // #257 — script_health / replay_last_failure / shadow_dump_diff / compare_with_replay → mcp_registry::seed_default
-            {
-                "name": "explain_failure",
-                "description": "用 LLM 解釋某次測試失敗的根因。整合截圖分析、console errors、歷史步驟、AI analysis，產生人類可讀的診斷報告。\n\n適合 debug 時快速理解失敗原因，不需要手動翻 history_json。",
-                "inputSchema": {
-                    "type": "object",
-                    "required": ["run_id"],
-                    "properties": {
-                        "run_id": { "type": "string", "description": "要解釋的測試 run_id" }
-                    }
-                }
-            },
             // #257 — auto-fix history (list_fixes) → mcp_registry::seed_default
             // #257 — #225 claude-config-mcp full sync subset → mcp_registry::seed_default
             //         (list_allowlist, list_slash_commands, list_hooks, list_redundant_allow,
@@ -975,142 +964,13 @@ fn handle_tools_list_legacy() -> Result<Value, String> {
             // #257 — #232 session-cost-mcp (session_cost, list_expensive_sessions) → mcp_registry::seed_default
             // #257 — #228 task-tracker-mcp (create_task/list_tasks/mark_task_done/link_task) all in mcp_registry::seed_default
             // #257 — #224 handoff-mcp (create/get_latest/list_handoff_history) all in mcp_registry::seed_default
-            {
-                "name": "generate_daily_brief",
-                "description": "#231 — 自動聚合 agora-trading 多個工具生成每日 ops 摘要（markdown）。\n\n一次呼叫取代手動跑 getMarketSnapshot + getOpenPositions + getShadowSignalStats 等。\n`sections`：逗號分隔，預設 market,portfolio,ml,ops。\n結果同時寫入 KB（topicKey=agora-daily-brief-YYYYMMDD）供下次 session 參考。\n\n需要 agora-trading + agora-ops token 設定。",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "sections": { "type": "string", "description": "逗號分隔：market,portfolio,ml,ops（預設全部）" },
-                        "date":     { "type": "string", "description": "YYYY-MM-DD，預設今天" }
-                    }
-                }
-            },
-            {
-                "name": "kb_merge",
-                "description": "#226 — 合併多個 KB 條目到一個目標 key。\n\n`strategy`：\n- concat：直接合併所有 src 內容（預設）\n- llm：呼叫 LLM 智慧整合，去重複，保留精華\n合併後將 src 條目標為 stale。",
-                "inputSchema": {
-                    "type": "object",
-                    "required": ["src_keys", "dst_key"],
-                    "properties": {
-                        "src_keys":  { "type": "string",  "description": "逗號分隔的來源 topicKey 列表" },
-                        "dst_key":   { "type": "string",  "description": "目標 topicKey（若已存在則追加）" },
-                        "project":   { "type": "string",  "description": "project slug，預設 sirin" },
-                        "strategy":  { "type": "string",  "description": "concat（預設）| llm" },
-                        "dry_run":   { "type": "boolean", "description": "true=只預覽不寫入，預設 false" }
-                    }
-                }
-            },
-            {
-                "name": "route_query",
-                "description": "#233 — 依 intent registry 自動選擇 LLM 並呼叫。\n\n查 ~/.claude/llm_intents.json 找到 intent 對應的 backend+model，呼叫並回傳結果。\nintent 例：indicator-design(→deepseek), code-review(→claude), vision(→gemini)。\n找不到 intent → 使用 primary LLM（Gemini/Claude）。",
-                "inputSchema": {
-                    "type": "object",
-                    "required": ["intent", "prompt"],
-                    "properties": {
-                        "intent": { "type": "string", "description": "意圖名稱，例如 indicator-design / code-review / translate-zh" },
-                        "prompt": { "type": "string", "description": "要發送給 LLM 的 prompt" }
-                    }
-                }
-            },
-            {
-                "name": "query_llm",
-                "description": "#233 — 直接呼叫指定 LLM backend（跳過 intent routing）。\n\n`backend`: gemini / deepseek / claude / ollama。\n`model`: 選填，不指定則用 backend 預設值或 .env 設定。\n`api_key`: 選填，不指定則從 .env 讀取。",
-                "inputSchema": {
-                    "type": "object",
-                    "required": ["backend", "prompt"],
-                    "properties": {
-                        "backend": { "type": "string", "description": "gemini / deepseek / claude / ollama" },
-                        "model":   { "type": "string", "description": "模型名稱（選填）" },
-                        "api_key": { "type": "string", "description": "API key（選填，不填從 .env 讀）" },
-                        "prompt":  { "type": "string", "description": "prompt 內容" }
-                    }
-                }
-            },
-            {
-                "name": "fallback_chain",
-                "description": "#233 — 依序嘗試 LLM 列表，第一個成功的回傳結果。\n\n`backends`：逗號分隔，例如 \"gemini,deepseek,claude\"。\n任一 backend 失敗（429/error）自動切下一個，< 1s latency。",
-                "inputSchema": {
-                    "type": "object",
-                    "required": ["prompt", "backends"],
-                    "properties": {
-                        "prompt":   { "type": "string", "description": "prompt 內容" },
-                        "backends": { "type": "string", "description": "逗號分隔的 backend 列表，例如 gemini,deepseek,claude" }
-                    }
-                }
-            },
+            // #257 — async cluster (16 tools) → mcp_registry::seed_default:
+            //   explain_failure, kb_stats/diff/duplicate_check/merge,
+            //   generate_daily_brief, route_query, query_llm, fallback_chain,
+            //   benchmark_llms, page_state, run_regression_suite, sirin_preflight,
+            //   assistant_task, kb_search, kb_get, kb_write
             // #257 — #233 sync subset (list_intents, register_intent) → mcp_registry::seed_default
-            {
-                "name": "benchmark_llms",
-                "description": "#233 — 同一 prompt 同時發給多個 LLM，比較回應速度和內容。\n\n`backends`：逗號分隔，預設 \"gemini,deepseek\"。結果含每個 backend 的耗時 ms 和前 200 字回應。",
-                "inputSchema": {
-                    "type": "object",
-                    "required": ["prompt"],
-                    "properties": {
-                        "prompt":   { "type": "string", "description": "benchmark 用的 prompt" },
-                        "backends": { "type": "string", "description": "逗號分隔，預設 gemini,deepseek" }
-                    }
-                }
-            },
-            {
-                "name": "kb_duplicate_check",
-                "description": "#226 — 找出 KB 中內容高度重疊的條目（Jaccard 文字相似度），不需要 Chroma embedding。\n\n`threshold`：0.0-1.0，預設 0.7（70% 重疊才算重複）。\n`topic_keys`：逗號分隔，指定要比較的 topicKey 清單；不指定則比較所有傳入的候選集。\n`project`：預設 sirin。\n\n回傳：相似對（pair_a, pair_b, jaccard_score）清單，score 高 → 越相似。",
-                "inputSchema": {
-                    "type": "object",
-                    "required": ["topic_keys"],
-                    "properties": {
-                        "topic_keys": { "type": "string", "description": "逗號分隔的 topicKey 清單（至少 2 個）" },
-                        "project":   { "type": "string", "description": "project slug，預設 sirin" },
-                        "threshold": { "type": "number", "description": "Jaccard 相似度閾值，預設 0.7" }
-                    }
-                }
-            },
-            {
-                "name": "kb_stats",
-                "description": "#226 — KB 深度統計（補強 kbHealth）。透過 agora-trading MCP 取得指定 project 的條目分布：by domain / by status / by layer / draft ratio / stale ratio / oldest+newest confirmed。\n\n需要 agora-trading + agora-ops token 在 ~/.claude.json 中設定。",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "project": { "type": "string", "description": "project slug：sirin / agora-backend / flutter，預設 sirin" }
-                    }
-                }
-            },
-            {
-                "name": "kb_diff",
-                "description": "#226 — 對比兩個 KB 條目的內容差異（行級 unified diff）。適合追蹤同一 topicKey 在不同版本的演進，或對比兩個相關條目的內容重疊度。\n\n需要 agora-trading token 在 ~/.claude.json 中設定。",
-                "inputSchema": {
-                    "type": "object",
-                    "required": ["topic_a", "topic_b"],
-                    "properties": {
-                        "topic_a":  { "type": "string", "description": "第一個 topicKey" },
-                        "topic_b":  { "type": "string", "description": "第二個 topicKey" },
-                        "project_a": { "type": "string", "description": "topic_a 的 project，預設 sirin" },
-                        "project_b": { "type": "string", "description": "topic_b 的 project，預設同 project_a" }
-                    }
-                }
-            },
             // #257 — config_diagnostics / diagnose moved to mcp_registry::seed_default
-            {
-                "name": "page_state",
-                "description": "一次回傳當前瀏覽器頁面的完整狀態 — URL、title、ax_tree 文字片段、JPEG 截圖（Base64）、console 錯誤、最近網路請求。比分別呼叫多個 browser_exec 動作更快，適合 AI agent 做 situational awareness。",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "include_screenshot": {
-                            "type": "boolean",
-                            "description": "是否包含截圖（預設 true）。截圖為 JPEG 80% Base64"
-                        },
-                        "include_ax": {
-                            "type": "boolean",
-                            "description": "是否包含 ax_tree 文字摘要（預設 true）"
-                        },
-                        "max_ax_nodes": {
-                            "type": "number",
-                            "description": "ax_tree 最多返回幾個節點（預設 50）"
-                        }
-                    }
-                }
-            },
             {
                 "name": "browser_exec",
                 "description": "即席執行瀏覽器動作，不走完整 test goal。適合 debug / 探索 / 單步操作。\n\n基本導航：goto, screenshot, screenshot_analyze, click, click_point, type, read, eval, wait, exists, attr, scroll, key, console, network, url, title, close, set_viewport\n\nAX tree（literal text，精確比對）：enable_a11y, ax_tree, ax_find（支援 scroll / scroll_max / name_regex / not_name_matches / limit）, ax_value, ax_click, ax_focus, ax_type, ax_type_verified\n\nAX snapshots：ax_snapshot, ax_diff, wait_for_ax_change\n\nCondition waits（取代 sleep）：wait_for_url, wait_for_ax_ready, wait_for_network_idle\n\nAssertions：assert_ax_contains, assert_url_matches\n\nMulti-session（跨角色 E2E）：list_sessions, close_session；所有動作可加 session_id 參數切換 tab\n\nTest isolation / popup：clear_state, wait_new_tab, wait_request\n\nFlutter CanvasKit（Shadow DOM，用於 WebGL canvas 應用）：先呼叫 enable_a11y 觸發 flt-semantics-host，再用以下動作 — shadow_dump（列出所有元素）, shadow_find（找元素，params: role/name_regex）, shadow_click（JS PointerEvent 點擊，比 click 可靠）, shadow_type（focus+InsertText，非 Flutter 用）, shadow_type_flutter（shadow_click+flutter_type 合一）, flutter_type（逐字 keydown，ASCII only，不支援中文）, flutter_enter（對 flt-text-editing 發 Enter，用於送出訊息/表單）",
@@ -1154,92 +1014,11 @@ fn handle_tools_list_legacy() -> Result<Value, String> {
             //   agent_send, agent_reset, agent_enqueue, agent_start_worker,
             //   agent_queue_status, agent_clear_completed, squad_knowledge,
             //   dev_team_enqueue_issue/list_previews/replay_preview/read_issue
-            // assistant_task remains advertised separately below — it's
-            // AsyncJson and stays on the legacy path until the async batch.
-            {
-                "name": "assistant_task",
-                "description": "用自然語言請求執行一般網頁任務（非 Flutter 測試）。\
-Sirin 透過視覺驅動的 ReAct loop 操作瀏覽器完成任務，回傳結果摘要。\n\
-適用場景：\n\
-- 在 Google Maps 找附近餐廳並過濾評分\n\
-- 在 Facebook 查詢修車廠聯絡資訊\n\
-- 翻譯外語頁面內容（支援泰文等）\n\
-- 在任意網頁填表、搜尋、提取資料\n\
-注意：使用 Sirin 的 Chrome session（需先啟動 Sirin），最多執行 25 步。",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "request": {
-                            "type": "string",
-                            "description": "自然語言任務描述，例如：在 Google Maps 找附近評分 4 星以上的泰式餐廳"
-                        },
-                        "url": {
-                            "type": "string",
-                            "description": "選填：起始 URL，例如 https://maps.google.com"
-                        }
-                    },
-                    "required": ["request"]
-                }
-            },
-            {
-                "name": "kb_search",
-                "description": "語意搜尋 AgoraMarket Knowledge Base，返回最相關的條目內容。KB 必須啟用（KB_ENABLED=1）。Bearer token 留在 Sirin 端，瀏覽器永遠看不到。",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "query":   { "type": "string",  "description": "搜尋查詢文字" },
-                        "project": { "type": "string",  "description": "KB project slug（預設讀 KB_PROJECT env，通常是 'agora_market'）" },
-                        "limit":   { "type": "integer", "description": "最多返回幾筆（預設 5，最大 20）" }
-                    },
-                    "required": ["query"]
-                }
-            },
-            {
-                "name": "kb_get",
-                "description": "依 topicKey 取得 Knowledge Base 單一條目。KB 必須啟用（KB_ENABLED=1）。Bearer token 留在 Sirin 端。",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "topic_key": { "type": "string", "description": "KB topicKey（例如 'agora-pickup-flow'）" },
-                        "project":   { "type": "string", "description": "KB project slug（預設讀 KB_PROJECT env）" }
-                    },
-                    "required": ["topic_key"]
-                }
-            },
-            {
-                "name": "kb_write",
-                "description": "Write a note to AgoraMarket Knowledge Base. Stored as layer=raw, status=draft, source=sirin. KB must be enabled (KB_ENABLED=1).",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "topic_key": { "type": "string", "description": "unique kebab-case key, e.g. 'cic-result-demo-001'" },
-                        "title":     { "type": "string", "description": "human-readable title" },
-                        "content":   { "type": "string", "description": "note body (Markdown OK)" },
-                        "domain":    { "type": "string", "description": "e.g. 'tooling', 'cic', 'session-task'" },
-                        "tags":      { "type": "string", "description": "comma-separated, e.g. 'cic-task,result'" },
-                        "file_refs": { "type": "string", "description": "optional comma-separated file refs" },
-                        "project":   { "type": "string", "description": "KB project slug (default reads KB_PROJECT env)" }
-                    },
-                    "required": ["topic_key", "title", "content", "domain"]
-                }
-            },
+            // #257 — assistant_task / kb_search / kb_get / kb_write moved to
+            //         mcp_registry::seed_default (async batch)
             // #257 — browser_status / sync_config moved to mcp_registry::seed_default
-            {
-                "name": "run_regression_suite",
-                "description": "一鍵執行 config/tests/agora_regression/ 下所有（或指定 tag 的）regression tests，等全部完成後回傳摘要報告。\n\n返回：total/passed/failed/timeout/duration_secs + 每個測試的 status/duration_ms/error。\n\n可選參數：\n- tag: 只跑含此 tag 的測試（如 'c2c'）\n- timeout_secs: 整體 timeout（預設 3600）\n\n關閉 #188。",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "tag": { "type": "string", "description": "只跑含此 tag 的測試，空字串=全部" },
-                        "timeout_secs": { "type": "number", "description": "整體 timeout 秒數（預設 3600）" }
-                    }
-                }
-            },
-            {
-                "name": "sirin_preflight",
-                "description": "Session 開始前驗證環境就緒：Sirin MCP、config sync 狀態、redandan.github.io 版本、API healthy。\n\n返回：ready=true/false + 各項檢查結果 + warnings 清單。\n\n關閉 #193。",
-                "inputSchema": { "type": "object", "properties": {} }
-            }
+            // #257 — run_regression_suite / sirin_preflight moved to
+            //         mcp_registry::seed_default (async batch)
         ]
     }))
 }
@@ -1271,46 +1050,12 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         //            persist_adhoc_run, kill_run, scaffold_test, lint_test, discover_app,
         //            discovery_features (+ already-migrated discovery_status)
         // ui_navigate / ui_state — removed with the egui shell in Phase 7.
-        "explain_failure"         => return call_explain_failure(arguments).await.map(wrap_json),
-        // #257 — replay scripts (list_saved_scripts, delete_saved_script) → mcp_registry
-        // #257 — auto-fix history (list_fixes) → mcp_registry
-        // #257 — #225 claude-config-mcp full sync subset → mcp_registry
-        //         (list_allowlist, list_slash_commands, list_hooks, list_redundant_allow,
-        //          suggest_allowlist, add_allow, remove_allow)
-        // #257 — #227 session-memory-mcp (save/list/restore/expire_point) all in mcp_registry
-        // #257 — #232 session-cost-mcp (session_cost, list_expensive_sessions) → mcp_registry
-        // #257 — #228 task-tracker-mcp (create_task/list_tasks/mark_task_done/link_task) all in mcp_registry::seed_default
-        // #257 — #224 handoff-mcp (create/get_latest/list_handoff_history) all in mcp_registry::seed_default
-        // #226 kb-lifecycle (non-embedding subset)
-        "kb_stats"             => return call_kb_stats(arguments).await.map(wrap_json),
-        "kb_diff"              => return call_kb_diff(arguments).await.map(wrap_json),
-        "kb_duplicate_check"   => return call_kb_duplicate_check(arguments).await.map(wrap_json),
-        // #231 agora-daily-brief
-        "generate_daily_brief"=> return call_generate_daily_brief(arguments).await.map(wrap_json),
-        // #226 kb-merge
-        "kb_merge"            => return call_kb_merge(arguments).await.map(wrap_json),
-        // #233 cross-ai-router-mcp
-        "route_query"         => return call_route_query(arguments).await.map(wrap_json),
-        "query_llm"           => return call_query_llm(arguments).await.map(wrap_json),
-        "fallback_chain"      => return call_fallback_chain(arguments).await.map(wrap_json),
-        // #257 — #233 sync subset (list_intents, register_intent) → mcp_registry
-        "benchmark_llms"      => return call_benchmark_llms(arguments).await.map(wrap_json),
-        // #257 — config_diagnostics / diagnose moved to mcp_registry::seed_default
+        // #257 — at this point every JSON tool except browser_exec lives in
+        //         mcp_registry::seed_default.  browser_exec is the sole
+        //         legacy-path holdout (see CLAUDE.md — needs user_agent
+        //         for authz, not worth widening the registry signature
+        //         to accommodate one tool).
         "browser_exec"         => return call_browser_exec(arguments, user_agent).await.map(wrap_json),
-        // #257 — browser_status / sync_config moved to mcp_registry::seed_default
-        "run_regression_suite" => return call_run_regression_suite(arguments).await.map(wrap_json),
-        "sirin_preflight"      => return call_sirin_preflight().await.map(wrap_json),
-        "page_state"           => return call_page_state(arguments).await.map(wrap_json),
-        // #257 — sync agent / dev_team / cross-session helpers all in mcp_registry::seed_default:
-        //   consult, supervised_run, agent_team_status/task/test,
-        //   agent_send, agent_reset, agent_enqueue, agent_start_worker,
-        //   agent_queue_status, agent_clear_completed, squad_knowledge,
-        //   dev_team_enqueue_issue/list_previews/replay_preview/read_issue
-        // assistant_task stays — it's AsyncJson (calls LLM via vision pipeline).
-        "assistant_task"       => return call_assistant_task(arguments).await.map(wrap_json),
-        "kb_search"               => return call_kb_search(arguments).await.map(wrap_json),
-        "kb_get"                  => return call_kb_get(arguments).await.map(wrap_json),
-        "kb_write"                => return call_kb_write(arguments).await.map(wrap_json),
         _ => {}
     }
 
@@ -2270,7 +2015,8 @@ pub(crate) fn call_list_flaky_tests(args: Value) -> Result<Value, String> {
 /// #230 — explain_failure: LLM-generated root-cause explanation for a test run.
 /// Combines console_log, history, ai_analysis, and failure_category into a
 /// human-readable diagnostic report.
-async fn call_explain_failure(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) async fn call_explain_failure(args: Value) -> Result<Value, String> {
     let run_id = args["run_id"].as_str().ok_or("Missing run_id")?;
 
     // Try in-memory state first, fall back to SQLite (handles pruned runs).
@@ -3525,7 +3271,8 @@ fn jaccard_similarity(a: &str, b: &str) -> f64 {
     intersection as f64 / union as f64
 }
 
-async fn call_kb_duplicate_check(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) async fn call_kb_duplicate_check(args: Value) -> Result<Value, String> {
     let keys_str  = args["topic_keys"].as_str().ok_or("Missing topic_keys")?;
     let project   = args.get("project").and_then(Value::as_str).unwrap_or("sirin");
     let threshold = args.get("threshold").and_then(Value::as_f64).unwrap_or(0.7);
@@ -3696,7 +3443,8 @@ async fn kb_health_via_http(project: &str) -> Result<String, String> {
     Err("kbHealth: no content returned".to_string())
 }
 
-async fn call_kb_stats(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) async fn call_kb_stats(args: Value) -> Result<Value, String> {
     let project = args.get("project").and_then(Value::as_str).unwrap_or("sirin").to_string();
 
     // Get health text and parse the structured sections.
@@ -3753,7 +3501,8 @@ async fn call_kb_stats(args: Value) -> Result<Value, String> {
     }))
 }
 
-async fn call_kb_diff(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) async fn call_kb_diff(args: Value) -> Result<Value, String> {
     let topic_a   = args["topic_a"].as_str().ok_or("Missing topic_a")?;
     let topic_b   = args["topic_b"].as_str().ok_or("Missing topic_b")?;
     let project_a = args.get("project_a").and_then(Value::as_str).unwrap_or("sirin");
@@ -3863,7 +3612,8 @@ fn llm_config_for_backend(backend: &str, model_override: Option<&str>, key_overr
     cfg
 }
 
-async fn call_route_query(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) async fn call_route_query(args: Value) -> Result<Value, String> {
     let intent = args["intent"].as_str().ok_or("Missing intent")?;
     let prompt  = args["prompt"].as_str().ok_or("Missing prompt")?.to_string();
 
@@ -3892,7 +3642,8 @@ async fn call_route_query(args: Value) -> Result<Value, String> {
     }))
 }
 
-async fn call_query_llm(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) async fn call_query_llm(args: Value) -> Result<Value, String> {
     let backend    = args["backend"].as_str().ok_or("Missing backend")?;
     let prompt     = args["prompt"].as_str().ok_or("Missing prompt")?.to_string();
     let model_ov   = args.get("model").and_then(Value::as_str);
@@ -3913,7 +3664,8 @@ async fn call_query_llm(args: Value) -> Result<Value, String> {
     }))
 }
 
-async fn call_fallback_chain(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) async fn call_fallback_chain(args: Value) -> Result<Value, String> {
     let prompt   = args["prompt"].as_str().ok_or("Missing prompt")?.to_string();
     let backends_str = args["backends"].as_str().ok_or("Missing backends")?;
     let backends: Vec<&str> = backends_str.split(',').map(str::trim).collect();
@@ -3972,7 +3724,8 @@ pub(crate) fn call_register_intent(args: Value) -> Result<Value, String> {
     Ok(json!({ "registered": name, "entry": entry, "total": intents.len() }))
 }
 
-async fn call_benchmark_llms(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) async fn call_benchmark_llms(args: Value) -> Result<Value, String> {
     let prompt   = args["prompt"].as_str().ok_or("Missing prompt")?.to_string();
     let backends_str = args.get("backends").and_then(Value::as_str).unwrap_or("gemini,deepseek");
     let backends: Vec<String> = backends_str.split(',').map(|s| s.trim().to_string()).collect();
@@ -4060,7 +3813,8 @@ async fn call_agora_tool(name: &str, arguments: Value) -> Result<String, String>
     Err(format!("{name}: no content returned"))
 }
 
-async fn call_generate_daily_brief(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) async fn call_generate_daily_brief(args: Value) -> Result<Value, String> {
     let sections_str = args.get("sections").and_then(Value::as_str)
         .unwrap_or("market,portfolio,ml,ops");
     let sections: Vec<&str> = sections_str.split(',').map(str::trim).collect();
@@ -4139,7 +3893,8 @@ fn section_title(section: &str) -> &str {
 
 // ── #226 KB Merge ─────────────────────────────────────────────────────────────
 
-async fn call_kb_merge(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) async fn call_kb_merge(args: Value) -> Result<Value, String> {
     let src_keys_str = args["src_keys"].as_str().ok_or("Missing src_keys")?;
     let dst_key      = args["dst_key"].as_str().ok_or("Missing dst_key")?;
     let project      = args.get("project").and_then(Value::as_str).unwrap_or("sirin");
@@ -4745,7 +4500,8 @@ pub(crate) fn call_consult(args: Value) -> Result<Value, String> {
 
 /// 自然語言助理任務 — 視覺驅動的 ReAct loop（非同步，立即回傳 run_id）。
 /// 用 get_test_result 輪詢狀態，完成後 analysis 欄位包含結果。
-async fn call_assistant_task(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) async fn call_assistant_task(args: Value) -> Result<Value, String> {
     let request = args.get("request").and_then(Value::as_str)
         .ok_or("'assistant_task' requires 'request'")?
         .to_string();
@@ -5174,7 +4930,8 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::
 
 // ── #188 run_regression_suite ─────────────────────────────────────────────────
 
-async fn call_run_regression_suite(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) async fn call_run_regression_suite(args: Value) -> Result<Value, String> {
     let tag_filter = args.get("tag").and_then(Value::as_str).unwrap_or("").to_string();
     let suite_timeout = args.get("timeout_secs").and_then(Value::as_u64).unwrap_or(3600);
 
@@ -5305,7 +5062,8 @@ async fn call_run_regression_suite(args: Value) -> Result<Value, String> {
 
 // ── #193 sirin_preflight ──────────────────────────────────────────────────────
 
-async fn call_sirin_preflight() -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) async fn call_sirin_preflight() -> Result<Value, String> {
     let mut warnings: Vec<String> = Vec::new();
     let mut ready = true;
 
@@ -5387,7 +5145,8 @@ async fn fetch_github_pages_version() -> Option<String> {
         .map(|s| s.to_string())
 }
 
-async fn call_page_state(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) async fn call_page_state(args: Value) -> Result<Value, String> {
     let include_screenshot = args.get("include_screenshot").and_then(Value::as_bool).unwrap_or(true);
     let include_ax         = args.get("include_ax").and_then(Value::as_bool).unwrap_or(true);
     let max_ax_nodes       = args.get("max_ax_nodes").and_then(Value::as_u64).unwrap_or(50) as usize;
@@ -5522,7 +5281,8 @@ pub(crate) fn call_get_run_trace(args: Value) -> Result<Value, String> {
 // crosses into the Chrome extension — Claude in Chrome sees only the result
 // text returned by Sirin.
 
-async fn call_kb_search(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) async fn call_kb_search(args: Value) -> Result<Value, String> {
     if !crate::kb_client::enabled() {
         return Ok(json!({ "error": "KB 未啟用，請設定 KB_ENABLED=1" }));
     }
@@ -5552,7 +5312,8 @@ async fn call_kb_search(args: Value) -> Result<Value, String> {
     }
 }
 
-async fn call_kb_get(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) async fn call_kb_get(args: Value) -> Result<Value, String> {
     if !crate::kb_client::enabled() {
         return Ok(json!({ "error": "KB 未啟用，請設定 KB_ENABLED=1" }));
     }
@@ -5581,7 +5342,8 @@ async fn call_kb_get(args: Value) -> Result<Value, String> {
     }
 }
 
-async fn call_kb_write(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) async fn call_kb_write(args: Value) -> Result<Value, String> {
     if !crate::kb_client::enabled() {
         return Ok(json!({ "error": "KB 未啟用，請設定 KB_ENABLED=1" }));
     }

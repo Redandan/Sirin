@@ -1156,6 +1156,25 @@ fn seed_default(m: &mut RegistryMap) {
         handler:      ToolHandler::SyncJson(crate::mcp_server::call_consult),
     });
 
+    // ── First AsyncJson migration (probe — verifies the variant works
+    //    before bulk-migrating the rest of the async cluster) ──
+
+    m.insert("kb_stats", ToolDef {
+        name:         "kb_stats",
+        description: "#226 — KB 深度統計（補強 kbHealth）。透過 agora-trading MCP 取得指定 project 的條目分布：by domain / by status / by layer / draft ratio / stale ratio / oldest+newest confirmed。\n\n需要 agora-trading + agora-ops token 在 ~/.claude.json 中設定。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "project": { "type": "string", "description": "project slug：sirin / agora-backend / flutter，預設 sirin" }
+            }
+        }),
+        // AsyncJson takes `fn(Value) -> Pin<Box<dyn Future<...> + Send + 'static>>`.
+        // The handler `async fn call_X(args) -> Result<Value, String>` returns
+        // an opaque future; wrap with Box::pin in a non-capturing closure to
+        // coerce to the fn pointer the variant requires.
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::mcp_server::call_kb_stats(args))),
+    });
+
     m.insert("supervised_run", ToolDef {
         name:         "supervised_run",
         description: "在指定 repo 啟動一個受監督的 Claude Code session。當主 session 停下來（問問題 / 達到輪次上限），Sirin 自動決定怎麼回應：\n- policy=auto：直接回「yes, continue」\n- policy=consult：把問題轉給另一個 Claude session 取得建議再回答\n最多執行 5 輪，全部完成後回傳結果摘要（含每輪事件）。\n注意：可能需要 1-5 分鐘，視任務複雜度而定。",
@@ -1170,6 +1189,246 @@ fn seed_default(m: &mut RegistryMap) {
             "required": ["cwd", "prompt"]
         }),
         handler:      ToolHandler::SyncJson(crate::mcp_server::call_supervised_run),
+    });
+
+    // ── AsyncJson cluster — full async subset (16 tools).  Pattern proven
+    //    by the kb_stats probe earlier in this file: a non-capturing closure
+    //    that boxes the future coerces to the fn-pointer the variant requires.
+    //    16-tool batch migrated 2026-05-04 — closes #257 to ~95%.
+
+    // #226 kb-lifecycle (async subset)
+    m.insert("kb_diff", ToolDef {
+        name:         "kb_diff",
+        description: "#226 — 對比兩個 KB 條目的內容差異（行級 unified diff）。適合追蹤同一 topicKey 在不同版本的演進，或對比兩個相關條目的內容重疊度。\n\n需要 agora-trading token 在 ~/.claude.json 中設定。",
+        input_schema: json!({
+            "type": "object",
+            "required": ["topic_a", "topic_b"],
+            "properties": {
+                "topic_a":  { "type": "string", "description": "第一個 topicKey" },
+                "topic_b":  { "type": "string", "description": "第二個 topicKey" },
+                "project_a": { "type": "string", "description": "topic_a 的 project，預設 sirin" },
+                "project_b": { "type": "string", "description": "topic_b 的 project，預設同 project_a" }
+            }
+        }),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::mcp_server::call_kb_diff(args))),
+    });
+
+    m.insert("kb_duplicate_check", ToolDef {
+        name:         "kb_duplicate_check",
+        description: "#226 — 找出 KB 中內容高度重疊的條目（Jaccard 文字相似度），不需要 Chroma embedding。\n\n`threshold`：0.0-1.0，預設 0.7（70% 重疊才算重複）。\n`topic_keys`：逗號分隔，指定要比較的 topicKey 清單；不指定則比較所有傳入的候選集。\n`project`：預設 sirin。\n\n回傳：相似對（pair_a, pair_b, jaccard_score）清單，score 高 → 越相似。",
+        input_schema: json!({
+            "type": "object",
+            "required": ["topic_keys"],
+            "properties": {
+                "topic_keys": { "type": "string", "description": "逗號分隔的 topicKey 清單（至少 2 個）" },
+                "project":   { "type": "string", "description": "project slug，預設 sirin" },
+                "threshold": { "type": "number", "description": "Jaccard 相似度閾值，預設 0.7" }
+            }
+        }),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::mcp_server::call_kb_duplicate_check(args))),
+    });
+
+    m.insert("kb_merge", ToolDef {
+        name:         "kb_merge",
+        description: "#226 — 合併多個 KB 條目到一個目標 key。\n\n`strategy`：\n- concat：直接合併所有 src 內容（預設）\n- llm：呼叫 LLM 智慧整合，去重複，保留精華\n合併後將 src 條目標為 stale。",
+        input_schema: json!({
+            "type": "object",
+            "required": ["src_keys", "dst_key"],
+            "properties": {
+                "src_keys":  { "type": "string",  "description": "逗號分隔的來源 topicKey 列表" },
+                "dst_key":   { "type": "string",  "description": "目標 topicKey（若已存在則追加）" },
+                "project":   { "type": "string",  "description": "project slug，預設 sirin" },
+                "strategy":  { "type": "string",  "description": "concat（預設）| llm" },
+                "dry_run":   { "type": "boolean", "description": "true=只預覽不寫入，預設 false" }
+            }
+        }),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::mcp_server::call_kb_merge(args))),
+    });
+
+    // #231 agora-daily-brief
+    m.insert("generate_daily_brief", ToolDef {
+        name:         "generate_daily_brief",
+        description: "#231 — 自動聚合 agora-trading 多個工具生成每日 ops 摘要（markdown）。\n\n一次呼叫取代手動跑 getMarketSnapshot + getOpenPositions + getShadowSignalStats 等。\n`sections`：逗號分隔，預設 market,portfolio,ml,ops。\n結果同時寫入 KB（topicKey=agora-daily-brief-YYYYMMDD）供下次 session 參考。\n\n需要 agora-trading + agora-ops token 設定。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "sections": { "type": "string", "description": "逗號分隔：market,portfolio,ml,ops（預設全部）" },
+                "date":     { "type": "string", "description": "YYYY-MM-DD，預設今天" }
+            }
+        }),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::mcp_server::call_generate_daily_brief(args))),
+    });
+
+    // #233 cross-ai-router (async subset)
+    m.insert("route_query", ToolDef {
+        name:         "route_query",
+        description: "#233 — 依 intent registry 自動選擇 LLM 並呼叫。\n\n查 ~/.claude/llm_intents.json 找到 intent 對應的 backend+model，呼叫並回傳結果。\nintent 例：indicator-design(→deepseek), code-review(→claude), vision(→gemini)。\n找不到 intent → 使用 primary LLM（Gemini/Claude）。",
+        input_schema: json!({
+            "type": "object",
+            "required": ["intent", "prompt"],
+            "properties": {
+                "intent": { "type": "string", "description": "意圖名稱，例如 indicator-design / code-review / translate-zh" },
+                "prompt": { "type": "string", "description": "要發送給 LLM 的 prompt" }
+            }
+        }),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::mcp_server::call_route_query(args))),
+    });
+
+    m.insert("query_llm", ToolDef {
+        name:         "query_llm",
+        description: "#233 — 直接呼叫指定 LLM backend（跳過 intent routing）。\n\n`backend`: gemini / deepseek / claude / ollama。\n`model`: 選填，不指定則用 backend 預設值或 .env 設定。\n`api_key`: 選填，不指定則從 .env 讀取。",
+        input_schema: json!({
+            "type": "object",
+            "required": ["backend", "prompt"],
+            "properties": {
+                "backend": { "type": "string", "description": "gemini / deepseek / claude / ollama" },
+                "model":   { "type": "string", "description": "模型名稱（選填）" },
+                "api_key": { "type": "string", "description": "API key（選填，不填從 .env 讀）" },
+                "prompt":  { "type": "string", "description": "prompt 內容" }
+            }
+        }),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::mcp_server::call_query_llm(args))),
+    });
+
+    m.insert("fallback_chain", ToolDef {
+        name:         "fallback_chain",
+        description: "#233 — 依序嘗試 LLM 列表，第一個成功的回傳結果。\n\n`backends`：逗號分隔，例如 \"gemini,deepseek,claude\"。\n任一 backend 失敗（429/error）自動切下一個，< 1s latency。",
+        input_schema: json!({
+            "type": "object",
+            "required": ["prompt", "backends"],
+            "properties": {
+                "prompt":   { "type": "string", "description": "prompt 內容" },
+                "backends": { "type": "string", "description": "逗號分隔的 backend 列表，例如 gemini,deepseek,claude" }
+            }
+        }),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::mcp_server::call_fallback_chain(args))),
+    });
+
+    m.insert("benchmark_llms", ToolDef {
+        name:         "benchmark_llms",
+        description: "#233 — 同一 prompt 同時發給多個 LLM，比較回應速度和內容。\n\n`backends`：逗號分隔，預設 \"gemini,deepseek\"。結果含每個 backend 的耗時 ms 和前 200 字回應。",
+        input_schema: json!({
+            "type": "object",
+            "required": ["prompt"],
+            "properties": {
+                "prompt":   { "type": "string", "description": "benchmark 用的 prompt" },
+                "backends": { "type": "string", "description": "逗號分隔，預設 gemini,deepseek" }
+            }
+        }),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::mcp_server::call_benchmark_llms(args))),
+    });
+
+    // Triage / browser snapshots / regression suite
+    m.insert("explain_failure", ToolDef {
+        name:         "explain_failure",
+        description: "用 LLM 解釋某次測試失敗的根因。整合截圖分析、console errors、歷史步驟、AI analysis，產生人類可讀的診斷報告。\n\n適合 debug 時快速理解失敗原因，不需要手動翻 history_json。",
+        input_schema: json!({
+            "type": "object",
+            "required": ["run_id"],
+            "properties": {
+                "run_id": { "type": "string", "description": "要解釋的測試 run_id" }
+            }
+        }),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::mcp_server::call_explain_failure(args))),
+    });
+
+    m.insert("page_state", ToolDef {
+        name:         "page_state",
+        description: "一次回傳當前瀏覽器頁面的完整狀態 — URL、title、ax_tree 文字片段、JPEG 截圖（Base64）、console 錯誤、最近網路請求。比分別呼叫多個 browser_exec 動作更快，適合 AI agent 做 situational awareness。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "include_screenshot": { "type": "boolean", "description": "是否包含截圖（預設 true）。截圖為 JPEG 80% Base64" },
+                "include_ax":         { "type": "boolean", "description": "是否包含 ax_tree 文字摘要（預設 true）" },
+                "max_ax_nodes":       { "type": "number",  "description": "ax_tree 最多返回幾個節點（預設 50）" }
+            }
+        }),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::mcp_server::call_page_state(args))),
+    });
+
+    m.insert("run_regression_suite", ToolDef {
+        name:         "run_regression_suite",
+        description: "一鍵執行 config/tests/agora_regression/ 下所有（或指定 tag 的）regression tests，等全部完成後回傳摘要報告。\n\n返回：total/passed/failed/timeout/duration_secs + 每個測試的 status/duration_ms/error。\n\n可選參數：\n- tag: 只跑含此 tag 的測試（如 'c2c'）\n- timeout_secs: 整體 timeout（預設 3600）\n\n關閉 #188。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "tag": { "type": "string", "description": "只跑含此 tag 的測試，空字串=全部" },
+                "timeout_secs": { "type": "number", "description": "整體 timeout 秒數（預設 3600）" }
+            }
+        }),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::mcp_server::call_run_regression_suite(args))),
+    });
+
+    m.insert("sirin_preflight", ToolDef {
+        name:         "sirin_preflight",
+        description: "Session 開始前驗證環境就緒：Sirin MCP、config sync 狀態、redandan.github.io 版本、API healthy。\n\n返回：ready=true/false + 各項檢查結果 + warnings 清單。\n\n關閉 #193。",
+        input_schema: json!({"type": "object", "properties": {}}),
+        // Zero-arg async — wrap with `_args` placeholder closure, drop the args.
+        handler:      ToolHandler::AsyncJson(|_args| Box::pin(crate::mcp_server::call_sirin_preflight())),
+    });
+
+    // Vision-driven assistant (the big one — uses screenshot_analyze internally)
+    m.insert("assistant_task", ToolDef {
+        name:         "assistant_task",
+        description: "用自然語言請求執行一般網頁任務（非 Flutter 測試）。Sirin 透過視覺驅動的 ReAct loop 操作瀏覽器完成任務，回傳結果摘要。\n適用場景：\n- 在 Google Maps 找附近餐廳並過濾評分\n- 在 Facebook 查詢修車廠聯絡資訊\n- 翻譯外語頁面內容（支援泰文等）\n- 在任意網頁填表、搜尋、提取資料\n注意：使用 Sirin 的 Chrome session（需先啟動 Sirin），最多執行 25 步。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "request": { "type": "string", "description": "自然語言任務描述，例如：在 Google Maps 找附近評分 4 星以上的泰式餐廳" },
+                "url":     { "type": "string", "description": "選填：起始 URL，例如 https://maps.google.com" }
+            },
+            "required": ["request"]
+        }),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::mcp_server::call_assistant_task(args))),
+    });
+
+    // KB direct access (Sirin's own search/get/write to the AgoraMarket KB)
+    m.insert("kb_search", ToolDef {
+        name:         "kb_search",
+        description: "語意搜尋 AgoraMarket Knowledge Base，返回最相關的條目內容。KB 必須啟用（KB_ENABLED=1）。Bearer token 留在 Sirin 端，瀏覽器永遠看不到。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "query":   { "type": "string",  "description": "搜尋查詢文字" },
+                "project": { "type": "string",  "description": "KB project slug（預設讀 KB_PROJECT env，通常是 'agora_market'）" },
+                "limit":   { "type": "integer", "description": "最多返回幾筆（預設 5，最大 20）" }
+            },
+            "required": ["query"]
+        }),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::mcp_server::call_kb_search(args))),
+    });
+
+    m.insert("kb_get", ToolDef {
+        name:         "kb_get",
+        description: "依 topicKey 取得 Knowledge Base 單一條目。KB 必須啟用（KB_ENABLED=1）。Bearer token 留在 Sirin 端。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "topic_key": { "type": "string", "description": "KB topicKey（例如 'agora-pickup-flow'）" },
+                "project":   { "type": "string", "description": "KB project slug（預設讀 KB_PROJECT env）" }
+            },
+            "required": ["topic_key"]
+        }),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::mcp_server::call_kb_get(args))),
+    });
+
+    m.insert("kb_write", ToolDef {
+        name:         "kb_write",
+        description: "Write a note to AgoraMarket Knowledge Base. Stored as layer=raw, status=draft, source=sirin. KB must be enabled (KB_ENABLED=1).",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "topic_key": { "type": "string", "description": "unique kebab-case key, e.g. 'cic-result-demo-001'" },
+                "title":     { "type": "string", "description": "human-readable title" },
+                "content":   { "type": "string", "description": "note body (Markdown OK)" },
+                "domain":    { "type": "string", "description": "e.g. 'tooling', 'cic', 'session-task'" },
+                "tags":      { "type": "string", "description": "comma-separated, e.g. 'cic-task,result'" },
+                "file_refs": { "type": "string", "description": "optional comma-separated file refs" },
+                "project":   { "type": "string", "description": "KB project slug (default reads KB_PROJECT env)" }
+            },
+            "required": ["topic_key", "title", "content", "domain"]
+        }),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::mcp_server::call_kb_write(args))),
     });
 }
 
