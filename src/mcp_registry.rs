@@ -188,6 +188,51 @@ fn seed_default(m: &mut RegistryMap) {
         input_schema: json!({"type": "object", "properties": {}}),
         handler:      ToolHandler::SyncJson(|_args| crate::mcp_server::call_discovery_status()),
     });
+
+    // Domain: settings/allowlist + KB + replay scripts (zero-arg SyncJson handlers).
+    // 6-tool batch migrated 2026-05-04 — see #257 follow-up commits.
+
+    m.insert("list_redundant_allow", ToolDef {
+        name:         "list_redundant_allow",
+        description: "#229 — 找出 ~/.claude/settings.json allowlist 中的冗餘項目。\n\n冗餘定義：如果 pattern A 的前綴已被 wildcard pattern B 涵蓋（例如 Bash(git commit:*) 已被 Bash(git:*) 涵蓋），則 A 是冗餘的。\n\n回傳建議刪除的列表。",
+        input_schema: json!({"type": "object", "properties": {}}),
+        handler:      ToolHandler::SyncJson(|_args| crate::mcp_server::call_list_redundant_allow()),
+    });
+
+    m.insert("list_allowlist", ToolDef {
+        name:         "list_allowlist",
+        description: "#225 — 列出 ~/.claude/settings.json permissions.allow 中所有項目。同時計算 Bash wildcard 和 exact 項目數量。",
+        input_schema: json!({"type": "object", "properties": {}}),
+        handler:      ToolHandler::SyncJson(|_args| crate::mcp_server::call_list_allowlist()),
+    });
+
+    m.insert("list_slash_commands", ToolDef {
+        name:         "list_slash_commands",
+        description: "#225 — 列出 ~/.claude/commands/*.md 中所有 slash commands（name + 前 3 行 description）。",
+        input_schema: json!({"type": "object", "properties": {}}),
+        handler:      ToolHandler::SyncJson(|_args| crate::mcp_server::call_list_slash_commands()),
+    });
+
+    m.insert("list_hooks", ToolDef {
+        name:         "list_hooks",
+        description: "#225 — 列出 ~/.claude/settings.json hooks 設定（event → command 清單）。",
+        input_schema: json!({"type": "object", "properties": {}}),
+        handler:      ToolHandler::SyncJson(|_args| crate::mcp_server::call_list_hooks()),
+    });
+
+    m.insert("list_intents", ToolDef {
+        name:         "list_intents",
+        description: "#233 — 列出 ~/.claude/llm_intents.json 中的所有 intent → LLM 路由規則。",
+        input_schema: json!({"type": "object", "properties": {}}),
+        handler:      ToolHandler::SyncJson(|_args| crate::mcp_server::call_list_intents()),
+    });
+
+    m.insert("list_saved_scripts", ToolDef {
+        name:         "list_saved_scripts",
+        description: "列出所有已儲存的確定性重播腳本（deterministic replay scripts）。顯示 test_id、儲存時間、成功/失敗次數、腳本 action 數量。用於管理腳本庫。",
+        input_schema: json!({"type": "object", "properties": {}}),
+        handler:      ToolHandler::SyncJson(|_args| crate::mcp_server::call_list_saved_scripts()),
+    });
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

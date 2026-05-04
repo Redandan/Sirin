@@ -1154,11 +1154,7 @@ fn handle_tools_list_legacy() -> Result<Value, String> {
                     }
                 }
             },
-            {
-                "name": "list_saved_scripts",
-                "description": "列出所有已儲存的確定性重播腳本（deterministic replay scripts）。顯示 test_id、儲存時間、成功/失敗次數、腳本 action 數量。用於管理腳本庫。",
-                "inputSchema": { "type": "object", "properties": {} }
-            },
+            // #257 list_saved_scripts → registry
             {
                 "name": "delete_saved_script",
                 "description": "刪除指定測試的已儲存腳本，迫使下次跑 LLM ReAct loop 重新生成。當 UI 改版導致腳本失效時使用。",
@@ -1347,16 +1343,7 @@ fn handle_tools_list_legacy() -> Result<Value, String> {
                     }
                 }
             },
-            {
-                "name": "list_redundant_allow",
-                "description": "#229 — 找出 ~/.claude/settings.json allowlist 中的冗餘項目。\n\n冗餘定義：如果 pattern A 的前綴已被 wildcard pattern B 涵蓋（例如 Bash(git commit:*) 已被 Bash(git:*) 涵蓋），則 A 是冗餘的。\n\n回傳建議刪除的列表。",
-                "inputSchema": { "type": "object", "properties": {} }
-            },
-            {
-                "name": "list_allowlist",
-                "description": "#225 — 列出 ~/.claude/settings.json permissions.allow 中所有項目。同時計算 Bash wildcard 和 exact 項目數量。",
-                "inputSchema": { "type": "object", "properties": {} }
-            },
+            // #257 list_redundant_allow + list_allowlist → registry
             {
                 "name": "add_allow",
                 "description": "#225 — 向 ~/.claude/settings.json permissions.allow 新增一條 pattern。\n\n原子寫入：讀取 → 修改 → 寫回（JSON 格式化，4-space indent）。重複 pattern 自動去重。",
@@ -1379,16 +1366,7 @@ fn handle_tools_list_legacy() -> Result<Value, String> {
                     }
                 }
             },
-            {
-                "name": "list_slash_commands",
-                "description": "#225 — 列出 ~/.claude/commands/*.md 中所有 slash commands（name + 前 3 行 description）。",
-                "inputSchema": { "type": "object", "properties": {} }
-            },
-            {
-                "name": "list_hooks",
-                "description": "#225 — 列出 ~/.claude/settings.json hooks 設定（event → command 清單）。",
-                "inputSchema": { "type": "object", "properties": {} }
-            },
+            // #257 list_slash_commands + list_hooks → registry
             {
                 "name": "save_point",
                 "description": "#227 — 在 ~/.claude/session_points.json 儲存一個進度記錄點（save point）。可在 session 內或跨 session 快速恢復上下文，比 handoff 更輕量。\n\nttl_days 預設 7 天後自動過期。",
@@ -1600,11 +1578,7 @@ fn handle_tools_list_legacy() -> Result<Value, String> {
                     }
                 }
             },
-            {
-                "name": "list_intents",
-                "description": "#233 — 列出 ~/.claude/llm_intents.json 中的所有 intent → LLM 路由規則。",
-                "inputSchema": { "type": "object", "properties": {} }
-            },
+            // #257 list_intents → registry
             {
                 "name": "register_intent",
                 "description": "#233 — 在 ~/.claude/llm_intents.json 新增或更新一條 intent → LLM 路由規則。",
@@ -2087,17 +2061,14 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         "shadow_dump_diff"        => return call_shadow_dump_diff(arguments).map(wrap_json),
         "compare_with_replay"     => return call_compare_with_replay(arguments).map(wrap_json),
         "explain_failure"         => return call_explain_failure(arguments).await.map(wrap_json),
-        "list_saved_scripts"   => return call_list_saved_scripts().map(wrap_json),
+        // #257 — list_saved_scripts / list_redundant_allow / list_allowlist /
+        // list_slash_commands / list_hooks moved to mcp_registry::seed_default
         "delete_saved_script"  => return call_delete_saved_script(arguments).map(wrap_json),
         "list_fixes"           => return call_list_fixes(arguments).map(wrap_json),
         "suggest_allowlist"    => return call_suggest_allowlist(arguments).map(wrap_json),
-        "list_redundant_allow" => return call_list_redundant_allow().map(wrap_json),
         // #225 claude-config-mcp
-        "list_allowlist"       => return call_list_allowlist().map(wrap_json),
         "add_allow"            => return call_add_allow(arguments).map(wrap_json),
         "remove_allow"         => return call_remove_allow(arguments).map(wrap_json),
-        "list_slash_commands"  => return call_list_slash_commands().map(wrap_json),
-        "list_hooks"           => return call_list_hooks().map(wrap_json),
         // #227 session-memory-mcp
         "save_point"           => return call_save_point(arguments).map(wrap_json),
         "list_points"          => return call_list_points(arguments).map(wrap_json),
@@ -2127,7 +2098,7 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         "route_query"         => return call_route_query(arguments).await.map(wrap_json),
         "query_llm"           => return call_query_llm(arguments).await.map(wrap_json),
         "fallback_chain"      => return call_fallback_chain(arguments).await.map(wrap_json),
-        "list_intents"        => return call_list_intents().map(wrap_json),
+        // #257 — list_intents moved to mcp_registry::seed_default
         "register_intent"     => return call_register_intent(arguments).map(wrap_json),
         "benchmark_llms"      => return call_benchmark_llms(arguments).await.map(wrap_json),
         "config_diagnostics"   => return call_config_diagnostics().map(wrap_json),
@@ -3591,7 +3562,7 @@ fn call_suggest_allowlist(args: Value) -> Result<Value, String> {
 /// List redundant entries in ~/.claude/settings.json allowlist.
 /// A pattern is redundant if it is strictly covered by another wildcard pattern
 /// already in the list (e.g. `Bash(git log:*)` is redundant when `Bash(git:*)` exists).
-fn call_list_redundant_allow() -> Result<Value, String> {
+pub(crate) fn call_list_redundant_allow() -> Result<Value, String> {
     let home = home_dir().ok_or("Cannot determine home directory")?;
     let settings_path = home.join(".claude").join("settings.json");
     let src = std::fs::read_to_string(&settings_path)
@@ -3674,7 +3645,7 @@ where
     Ok(())
 }
 
-fn call_list_allowlist() -> Result<Value, String> {
+pub(crate) fn call_list_allowlist() -> Result<Value, String> {
     let home = home_dir().ok_or("Cannot determine home directory")?;
     let path = home.join(".claude").join("settings.json");
     let src  = std::fs::read_to_string(&path)
@@ -3733,7 +3704,7 @@ fn call_remove_allow(args: Value) -> Result<Value, String> {
     Ok(json!({ "pattern": pattern, "removed": removed }))
 }
 
-fn call_list_slash_commands() -> Result<Value, String> {
+pub(crate) fn call_list_slash_commands() -> Result<Value, String> {
     let home = home_dir().ok_or("Cannot determine home directory")?;
     let cmd_dir = home.join(".claude").join("commands");
     if !cmd_dir.exists() {
@@ -3761,7 +3732,7 @@ fn call_list_slash_commands() -> Result<Value, String> {
     Ok(json!({ "count": cmds.len(), "commands": cmds }))
 }
 
-fn call_list_hooks() -> Result<Value, String> {
+pub(crate) fn call_list_hooks() -> Result<Value, String> {
     let home = home_dir().ok_or("Cannot determine home directory")?;
     let path = home.join(".claude").join("settings.json");
     let src  = std::fs::read_to_string(&path)
@@ -4750,7 +4721,7 @@ async fn call_fallback_chain(args: Value) -> Result<Value, String> {
     Err(format!("All backends failed: {backends_str}"))
 }
 
-fn call_list_intents() -> Result<Value, String> {
+pub(crate) fn call_list_intents() -> Result<Value, String> {
     let intents = load_intents();
     let list: Vec<Value> = intents.iter()
         .map(|(name, entry)| json!({
@@ -5050,7 +5021,7 @@ async fn call_kb_merge(args: Value) -> Result<Value, String> {
 
 // ── Saved Scripts (deterministic replay) ─────────────────────────────────────
 
-fn call_list_saved_scripts() -> Result<Value, String> {
+pub(crate) fn call_list_saved_scripts() -> Result<Value, String> {
     use crate::test_runner::store;
     let tests = store::all_test_stats();
     let mut scripts: Vec<Value> = Vec::new();
