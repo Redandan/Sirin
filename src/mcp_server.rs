@@ -942,16 +942,7 @@ fn handle_tools_list_legacy() -> Result<Value, String> {
                     "required": ["topic"]
                 }
             },
-            {
-                "name": "list_tests",
-                "description": "列出 config/tests/ 目錄下所有 YAML 測試 goal。",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "tag": { "type": "string", "description": "選填：tag filter" }
-                    }
-                }
-            },
+            // #257 — list_tests → mcp_registry::seed_default
             {
                 "name": "run_test_async",
                 "description": "非同步啟動測試；立即返回 run_id。用 get_test_result 輪詢狀態。\n\n#269 — 可選 llm_override 跑單個 test 在 process-wide LLM_PROVIDER 之外的後端（split parallel cloud + local，避免 contention；compare backends 並排）。",
@@ -1013,17 +1004,7 @@ fn handle_tools_list_legacy() -> Result<Value, String> {
                     "required": ["stage_ids"]
                 }
             },
-            {
-                "name": "get_test_result",
-                "description": "依 run_id 取得測試狀態。可能狀態：queued | running | passed | failed | timeout | error。",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "run_id": { "type": "string", "description": "spawn_run_async 返回的 run_id" }
-                    },
-                    "required": ["run_id"]
-                }
-            },
+            // #257 — get_test_result → mcp_registry::seed_default
             {
                 "name": "kill_run",
                 "description": "強制終止卡住的 in-memory test run（zombie）。\n\n當 run_test_async 啟動的 run 因 LLM call 阻塞而超過 timeout_secs 仍顯示 running 時使用。\n設為 error 狀態，讓後續 run_test_async 呼叫可以正常取得 TEST_RUN_LOCK。\n⚠️ 只能終止 Running/Queued 狀態的 run；已完成的 run 無法覆蓋。",
@@ -1035,40 +1016,7 @@ fn handle_tools_list_legacy() -> Result<Value, String> {
                     "required": ["run_id"]
                 }
             },
-            {
-                "name": "get_screenshot",
-                "description": "依 run_id 取得失敗截圖（base64 PNG）。若 bytes 為 null，screenshot_error 說明為何失敗。",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "run_id": { "type": "string" }
-                    },
-                    "required": ["run_id"]
-                }
-            },
-            {
-                "name": "get_full_observation",
-                "description": "取得某步驟的完整（未截斷）browser tool observation。LLM 歷史中的 observation 被截斷時，可用這個抓完整內容。",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "run_id": { "type": "string" },
-                        "step":   { "type": "number", "description": "0-indexed 步驟" }
-                    },
-                    "required": ["run_id", "step"]
-                }
-            },
-            {
-                "name": "get_run_trace",
-                "description": "依 run_id 取得每個 step 的 trace 元資料：LLM model/latency、KB injects、parse errors、timestamp。debug 失敗用。\n\n- `steps`: 陣列，每筆有 ts/llm_model/llm_latency_ms/parse_errors/kb_hits/action（簡化）\n- `summary`: total_steps、kb_hits（去重）、avg_latency_ms",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "run_id": { "type": "string", "description": "已完成的 run_id（從 SQLite test_runs 表讀取）" }
-                    },
-                    "required": ["run_id"]
-                }
-            },
+            // #257 — get_screenshot / get_full_observation / get_run_trace → mcp_registry::seed_default
             {
                 "name": "run_adhoc_test",
                 "description": "即席啟動測試 — 不需預先建立 YAML。外部 AI 收到用戶要求『測 <URL> 的 <流程>』時用這個。立即返回 run_id，用 get_test_result 輪詢。",
@@ -1143,50 +1091,8 @@ fn handle_tools_list_legacy() -> Result<Value, String> {
                     "required": ["run_id", "test_id"]
                 }
             },
-            {
-                "name": "list_recent_runs",
-                "description": "查詢歷史測試執行記錄。不指定 test_id 時列所有測試的近期 runs。用來看 pattern / flakiness / 最近失敗原因。",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "test_id": { "type": "string", "description": "選填：只看特定測試" },
-                        "limit":   { "type": "number", "description": "筆數（預設 20，最多 100）" }
-                    }
-                }
-            },
+            // #257 — list_recent_runs / test_summary / test_analytics / test_coverage → mcp_registry::seed_default
             // #257 — replay scripts (list_saved_scripts, delete_saved_script) → mcp_registry::seed_default
-            {
-                "name": "test_summary",
-                "description": "一次呼叫取得最近一批測試的完整摘要：pass/fail counts + console_errors 統計 + 建議動作。適合每次 regression suite 跑完後立刻查看結果。\n\n回傳: { passed, failed, console_errors_total, console_warnings_total, results: [{test_id, status, console_errors, console_warnings, flag}] }",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "since":  { "type": "string", "description": "只看此時間（HH:MM）之後的 runs，預設最近 1 小時" },
-                        "limit":  { "type": "number", "description": "最多看幾個不重複的 test，預設 31" }
-                    }
-                }
-            },
-            {
-                "name": "test_analytics",
-                "description": "聚合測試健康指標：pass rate (近 10 / 30 runs)、flaky 標記、avg iterations、avg duration、最常見 failure_category。不指定 test_id 時返回全部測試（依 pass_rate_7d 升序，最差優先）+ summary 區塊。",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "test_id": { "type": "string", "description": "選填：只看特定測試" }
-                    }
-                }
-            },
-            {
-                "name": "test_coverage",
-                "description": "AgoraMarket 功能地圖覆蓋率報告。\n\n讀取 config/coverage/agora_market.yaml 功能地圖，交叉比對現有測試和 saved scripts，輸出：\n• 每個功能模組的覆蓋率（%）\n• 各功能點的狀態（confirmed/partial/missing）\n• 哪些測試覆蓋該功能 + 是否有 replay script\n• 覆蓋缺口（missing features）清單\n• 建議下一步新增哪個測試",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "group_id": { "type": "string", "description": "選填：只看特定 feature group（如 'buyer_browse'）" },
-                        "show_missing_only": { "type": "boolean", "description": "只顯示 missing features，預設 false" }
-                    }
-                }
-            },
             // (ui_navigate / ui_state removed in Phase 7 — UI is now a web
             //  app; AI drives it via /mcp + browser_exec on the same Chrome.)
             {
@@ -1213,17 +1119,7 @@ fn handle_tools_list_legacy() -> Result<Value, String> {
                     }
                 }
             },
-            {
-                "name": "list_flaky_tests",
-                "description": "列出歷史上不穩定（flaky）的測試，依 pass rate 升序（最差優先）。\n\n等同 test_analytics 但只回傳 flaky 條目，方便快速定位需要重點關注的測試。\n\nflaky 定義：近 10 次中 pass rate < threshold（預設 70%）且至少 3 次 runs。",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "threshold": { "type": "number", "description": "flaky 閾值，0.0-1.0，預設 0.70" },
-                        "limit":     { "type": "number", "description": "回傳上限，預設 20" }
-                    }
-                }
-            },
+            // #257 — list_flaky_tests → mcp_registry::seed_default
             {
                 "name": "scaffold_test",
                 "description": "產生一份新的 AgoraMarket 測試 YAML 樣板（Issue #239）。\n\n根據 role（buyer / seller / delivery / admin）自動填入正確的 viewport、init 序列、role-pinning goto 跟 success_criteria placeholder。輸出可直接寫入 config/tests/agora_regression/<id>.yaml，確保跑 lint 全部通過（不會踩到常見的 5 個 trap）。\n\n回傳 yaml string + 建議的檔案路徑；不會自動寫檔（避免覆蓋）。",
@@ -1248,56 +1144,7 @@ fn handle_tools_list_legacy() -> Result<Value, String> {
                     }
                 }
             },
-            {
-                "name": "script_health",
-                "description": "#266 — 回傳 saved_scripts 健康度指標，用於 Dashboard KPI / Coverage column / cron 偵測 stale-script drift。\n\n回傳兩部份：\n- `aggregate`: window 內 total_runs / passed_via_replay / passed_via_llm / failed / success_rate_replay + 上一週期比較 + drift\n- `per_test`: 每個 test 的 status (healthy|stale_fallback|llm_only|untested) + 最近 3 次 is_replay 歷史\n\n預設 window=14 天（前 7 天 vs 後 7 天比較）。若 drift < -0.10（10 個百分點），代表 replay 成功率明顯下滑，建議 audit。",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "window_days": {
-                            "type": "number",
-                            "description": "比較窗（會被切兩半做 week-over-week drift），預設 14"
-                        }
-                    }
-                }
-            },
-            {
-                "name": "replay_last_failure",
-                "description": "讀取某個測試最近一次失敗 run 的逐步執行記錄（step-by-step inspection）。\n\n不重新執行測試 — 直接從 SQLite history_json 取出每一個 action 和 LLM observation，讓你像翻日誌一樣審查失敗過程。\n\n`break_at` 可限制只看前 N 步，適合定位哪一步開始出錯。",
-                "inputSchema": {
-                    "type": "object",
-                    "required": ["test_id"],
-                    "properties": {
-                        "test_id":  { "type": "string", "description": "YAML test_id，例如 agora_cart_add_remove" },
-                        "break_at": { "type": "number",  "description": "只返回前 N 步，0=全部（預設）" }
-                    }
-                }
-            },
-            {
-                "name": "shadow_dump_diff",
-                "description": "對比一次失敗 run 中第 A 步和第 B 步的 LLM observation（AX tree 快照）。以行為單位的 unified diff 格式輸出，方便定位 ExpansionTile 動畫、tab 切換等 UI 狀態變化。",
-                "inputSchema": {
-                    "type": "object",
-                    "required": ["test_id", "step_a", "step_b"],
-                    "properties": {
-                        "test_id": { "type": "string", "description": "YAML test_id" },
-                        "step_a":  { "type": "number",  "description": "第一個步驟編號（1-based）" },
-                        "step_b":  { "type": "number",  "description": "第二個步驟編號（1-based）" },
-                        "run_id":  { "type": "string",  "description": "指定 run_id（選填，預設用最新失敗 run）" }
-                    }
-                }
-            },
-            {
-                "name": "compare_with_replay",
-                "description": "#230 — 對比同一 test_id 的最近一次 script replay run 和最近一次 LLM run 的結果差異。\n\n用於評估 replay 模式是否可靠：比較兩者的 status / duration / iterations / failure_category。\n若只有其中一種 run 存在，也會回傳現有資料並標注缺少哪一種。",
-                "inputSchema": {
-                    "type": "object",
-                    "required": ["test_id"],
-                    "properties": {
-                        "test_id": { "type": "string", "description": "YAML test_id" }
-                    }
-                }
-            },
+            // #257 — script_health / replay_last_failure / shadow_dump_diff / compare_with_replay → mcp_registry::seed_default
             {
                 "name": "explain_failure",
                 "description": "用 LLM 解釋某次測試失敗的根因。整合截圖分析、console errors、歷史步驟、AI analysis，產生人類可讀的診斷報告。\n\n適合 debug 時快速理解失敗原因，不需要手動翻 history_json。",
@@ -1794,32 +1641,23 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
     // Only `browser_exec` currently needs the caller's identity (for authz +
     // audit); other tools are read-only w.r.t. authz.
     match name {
-        "list_tests"           => return call_list_tests(arguments).map(wrap_json),
+        // #257 — read-only test_runner queries → mcp_registry::seed_default
+        //         (list_tests, get_test_result, get_screenshot, get_full_observation,
+        //          get_run_trace, list_recent_runs, test_analytics, test_summary,
+        //          list_flaky_tests, test_coverage, script_health, replay_last_failure,
+        //          shadow_dump_diff, compare_with_replay)
         "run_test_async"       => return call_run_test_async(arguments).map(wrap_json),
         "run_test_batch"       => return call_run_test_batch(arguments).map(wrap_json),
         "run_test_pipeline"    => return call_run_test_pipeline(arguments).map(wrap_json),
         "run_adhoc_test"       => return call_run_adhoc_test(arguments).map(wrap_json),
         "persist_adhoc_run"    => return call_persist_adhoc_run(arguments).map(wrap_json),
-        "get_test_result"      => return call_get_test_result(arguments).map(wrap_json),
         "kill_run"             => return call_kill_run(arguments).map(wrap_json),
-        "get_screenshot"       => return call_get_screenshot(arguments).map(wrap_json),
-        "get_full_observation" => return call_get_full_observation(arguments).map(wrap_json),
-        "get_run_trace"        => return call_get_run_trace(arguments).map(wrap_json),
-        "list_recent_runs"     => return call_list_recent_runs(arguments).map(wrap_json),
-        "test_analytics"       => return call_test_analytics(arguments).map(wrap_json),
-        "test_summary"         => return call_test_summary(arguments).map(wrap_json),
-        "list_flaky_tests"        => return call_list_flaky_tests(arguments).map(wrap_json),
         "scaffold_test"           => return call_scaffold_test(arguments).map(wrap_json),
         "lint_test"               => return call_lint_test(arguments).map(wrap_json),
-        "test_coverage"           => return call_test_coverage(arguments).map(wrap_json),
         "discover_app"            => return call_discover_app(arguments).map(wrap_json),
         // discovery_status — migrated to mcp_registry (#257 Option B).
         "discovery_features"      => return call_discovery_features(arguments).map(wrap_json),
         // ui_navigate / ui_state — removed with the egui shell in Phase 7.
-        "script_health"           => return call_script_health(arguments).map(wrap_json),
-        "replay_last_failure"     => return call_replay_last_failure(arguments).map(wrap_json),
-        "shadow_dump_diff"        => return call_shadow_dump_diff(arguments).map(wrap_json),
-        "compare_with_replay"     => return call_compare_with_replay(arguments).map(wrap_json),
         "explain_failure"         => return call_explain_failure(arguments).await.map(wrap_json),
         // #257 — replay scripts (list_saved_scripts, delete_saved_script) → mcp_registry
         // #257 — auto-fix history (list_fixes) → mcp_registry
@@ -1964,7 +1802,8 @@ fn call_trigger_research(args: Value) -> Result<String, String> {
 
 // ── Test runner MCP handlers ─────────────────────────────────────────────────
 
-fn call_list_tests(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_list_tests(args: Value) -> Result<Value, String> {
     let tag_filter = args.get("tag").and_then(Value::as_str);
     let tests = crate::test_runner::list_tests();
     let items: Vec<Value> = tests.iter()
@@ -2217,7 +2056,8 @@ fn call_run_test_pipeline(args: Value) -> Result<Value, String> {
     }))
 }
 
-fn call_get_test_result(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_get_test_result(args: Value) -> Result<Value, String> {
     let run_id = args["run_id"].as_str().ok_or("Missing run_id")?;
     let mut result = match crate::test_runner::runs::get(run_id) {
         Some(state) => crate::test_runner::runs::to_json(&state),
@@ -2286,7 +2126,8 @@ fn call_kill_run(args: Value) -> Result<Value, String> {
     }
 }
 
-fn call_get_screenshot(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_get_screenshot(args: Value) -> Result<Value, String> {
     let run_id = args["run_id"].as_str().ok_or("Missing run_id")?;
     match crate::test_runner::runs::get_screenshot(run_id) {
         Some((Some(bytes), _)) => Ok(json!({
@@ -2373,7 +2214,8 @@ fn call_persist_adhoc_run(args: Value) -> Result<Value, String> {
     serde_json::to_value(&result).map_err(|e| format!("serialize result: {e}"))
 }
 
-fn call_list_recent_runs(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_list_recent_runs(args: Value) -> Result<Value, String> {
     let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(20).min(100) as usize;
     let test_id = args.get("test_id").and_then(Value::as_str);
 
@@ -2409,7 +2251,8 @@ fn call_list_recent_runs(args: Value) -> Result<Value, String> {
 /// `test_summary` — one-shot summary of the most recent batch / regression run.
 /// Groups results by test_id (most recent win), computes console stats, and
 /// flags tests with errors so callers see a clean pass/fail + console report.
-fn call_test_summary(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_test_summary(args: Value) -> Result<Value, String> {
     let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(31).min(100) as usize;
 
     // Default: runs from the last hour.
@@ -2480,7 +2323,8 @@ fn call_test_summary(args: Value) -> Result<Value, String> {
 }
 
 /// test_coverage — read agora_market.yaml feature map and compute coverage statistics.
-fn call_test_coverage(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_test_coverage(args: Value) -> Result<Value, String> {
     let group_filter = args.get("group_id").and_then(Value::as_str).map(String::from);
     let missing_only = args.get("show_missing_only").and_then(Value::as_bool).unwrap_or(false);
 
@@ -2779,7 +2623,8 @@ fn call_lint_test(args: Value) -> Result<Value, String> {
     }))
 }
 
-fn call_list_flaky_tests(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_list_flaky_tests(args: Value) -> Result<Value, String> {
     let threshold = args.get("threshold").and_then(Value::as_f64).unwrap_or(0.70);
     let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize;
 
@@ -2905,7 +2750,8 @@ async fn call_explain_failure(args: Value) -> Result<Value, String> {
 }
 
 /// #266 — script_health: project-wide replay metrics + per-test classification.
-fn call_script_health(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_script_health(args: Value) -> Result<Value, String> {
     let window_days = args.get("window_days")
         .and_then(Value::as_u64)
         .map(|v| v as u32)
@@ -2944,7 +2790,8 @@ fn call_script_health(args: Value) -> Result<Value, String> {
 }
 
 /// #230 — replayLastFailure: step-by-step inspection of the last failed run.
-fn call_replay_last_failure(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_replay_last_failure(args: Value) -> Result<Value, String> {
     let test_id  = args["test_id"].as_str().ok_or("Missing test_id")?;
     let break_at = args.get("break_at").and_then(Value::as_u64).unwrap_or(0) as usize;
 
@@ -2999,7 +2846,8 @@ fn call_replay_last_failure(args: Value) -> Result<Value, String> {
 }
 
 /// #230 — shadowDumpDiff: unified diff of LLM observations at step A vs step B.
-fn call_shadow_dump_diff(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_shadow_dump_diff(args: Value) -> Result<Value, String> {
     let test_id = args["test_id"].as_str().ok_or("Missing test_id")?;
     let step_a  = args["step_a"].as_u64().ok_or("Missing step_a")? as usize;
     let step_b  = args["step_b"].as_u64().ok_or("Missing step_b")? as usize;
@@ -3077,7 +2925,8 @@ fn call_shadow_dump_diff(args: Value) -> Result<Value, String> {
 }
 
 /// #230 compareWithReplay — diff most recent script run vs most recent LLM run.
-fn call_compare_with_replay(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_compare_with_replay(args: Value) -> Result<Value, String> {
     let test_id = args["test_id"].as_str().ok_or("Missing test_id")?;
 
     // Fetch recent runs for this test_id (up to 20, enough to find both kinds).
@@ -3149,7 +2998,8 @@ fn call_compare_with_replay(args: Value) -> Result<Value, String> {
     }))
 }
 
-fn call_test_analytics(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_test_analytics(args: Value) -> Result<Value, String> {
     let test_id = args.get("test_id").and_then(Value::as_str);
     let stats = match test_id {
         Some(tid) => vec![crate::test_runner::store::test_stats(tid)],
@@ -5974,7 +5824,8 @@ async fn call_page_state(args: Value) -> Result<Value, String> {
     .await
 }
 
-fn call_get_full_observation(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_get_full_observation(args: Value) -> Result<Value, String> {
     let run_id = args["run_id"].as_str().ok_or("Missing run_id")?;
     let step   = args["step"].as_u64().ok_or("Missing step (non-negative integer)")? as usize;
     match crate::test_runner::runs::get_full_observation(run_id, step) {
@@ -5991,7 +5842,8 @@ fn call_get_full_observation(args: Value) -> Result<Value, String> {
 /// Issue #39: per-run trace log.  Reads the persisted `history_json` blob
 /// for `run_id` and projects each step into a trace event with the new
 /// metadata fields (llm_model, llm_latency_ms, kb_hits, parse_errors, ts).
-fn call_get_run_trace(args: Value) -> Result<Value, String> {
+// Migrated to mcp_registry — visibility raised so the registry can invoke it.
+pub(crate) fn call_get_run_trace(args: Value) -> Result<Value, String> {
     let run_id = args["run_id"].as_str().ok_or("Missing run_id")?;
     let (test_id, started_at, status, history_json) =
         crate::test_runner::store::find_history_by_run_id(run_id)

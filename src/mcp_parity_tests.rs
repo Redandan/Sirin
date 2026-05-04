@@ -204,17 +204,29 @@ fn tools_list_and_dispatch_in_sync() {
 
     // Sanity: the extractors should find non-trivial counts.  If we hit 0
     // it means the landmark strings drifted and the test is silently
-    // useless.  Fail loud.  Registry can legitimately be empty until tools
-    // start migrating, so we only sanity-check the legacy extractors.
+    // useless.  Fail loud.
+    //
+    // The floor is intentionally generous — the goal is "catch parser
+    // breakage that returns ~0 results", not "assert the literal block
+    // has N tools".  As #257 batches migrate tools out of the legacy
+    // literal/match into the registry, the legacy counts drop and the
+    // registry count grows.  The combined floor below covers both:
+    // even with everything migrated, registry alone keeps the union
+    // well above the threshold.
+    let union_size: usize =
+        listed.union(&dispatched).chain(registry.iter()).collect::<BTreeSet<_>>().len();
     assert!(
-        listed.len()     >= 50,
-        "extract_listed_tool_names found only {} tool(s) — landmark strings may have drifted",
-        listed.len(),
+        union_size >= 50,
+        "extractors collectively found only {} tool name(s) (listed={}, \
+         dispatched={}, registry={}) — landmark strings may have drifted",
+        union_size, listed.len(), dispatched.len(), registry.len(),
     );
+    // Per-extractor minimums: as long as the parser hasn't broken to 0,
+    // any positive count is fine.  We only fail loud if BOTH literal sets
+    // hit zero, which would mean both landmark strings drifted at once.
     assert!(
-        dispatched.len() >= 50,
-        "extract_dispatched_tool_names found only {} arm(s) — landmark strings may have drifted",
-        dispatched.len(),
+        !listed.is_empty() || !dispatched.is_empty() || !registry.is_empty(),
+        "all three extractors returned 0 — landmark strings drifted",
     );
 
     // Issue #257 Option B invariants:
