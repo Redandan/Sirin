@@ -753,6 +753,223 @@ fn seed_default(m: &mut RegistryMap) {
         }),
         handler:      ToolHandler::SyncJson(crate::mcp_server::call_compare_with_replay),
     });
+
+    // Domain: action-taking test_runner tools + discover_app + scaffold/lint
+    // (sync arg-taking handlers).  10-tool batch migrated 2026-05-04 — closes
+    // the test_runner sync subset (only AsyncJson explain_failure remains).
+
+    m.insert("run_test_async", ToolDef {
+        name:         "run_test_async",
+        description: "非同步啟動測試；立即返回 run_id。用 get_test_result 輪詢狀態。\n\n#269 — 可選 llm_override 跑單個 test 在 process-wide LLM_PROVIDER 之外的後端（split parallel cloud + local，避免 contention；compare backends 並排）。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "test_id":  { "type": "string", "description": "測試 id（config/tests/*.yaml 中的 id 欄位）" },
+                "auto_fix": { "type": "boolean", "description": "失敗時自動 spawn claude_session 修 bug（預設 false）" },
+                "llm_override": {
+                    "type": "object",
+                    "description": "#269 per-test LLM override；空 → 用 process-wide config",
+                    "properties": {
+                        "provider": { "type": "string", "description": "lmstudio | gemini | anthropic | ollama" },
+                        "model":    { "type": "string", "description": "model id at the chosen provider" },
+                        "base_url": { "type": "string", "description": "可選；空 → provider 預設 base_url" },
+                        "api_key":  { "type": "string", "description": "可選；空 → provider env API key" }
+                    },
+                    "required": ["provider", "model"]
+                }
+            },
+            "required": ["test_id"]
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_run_test_async),
+    });
+
+    m.insert("run_test_batch", ToolDef {
+        name:         "run_test_batch",
+        description: "並行啟動多個 YAML test，每個跑在獨立 chrome tab（session_id 自動分配）。立即返回 N 個 run_id。\n\n適用場景：smoke suite / nightly regression / 一次跑完多個 tag。\n\n限制：max_concurrency 最大 8（避免 CDP 連線過載）；不會自動 triage 或 auto_fix（失敗請用個別 run_test_async 重跑）；任一 test_id 找不到就整批拒絕。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "test_ids": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "要並行跑的 test_id 清單（必須都存在於 config/tests/*.yaml）"
+                },
+                "max_concurrency": {
+                    "type": "number",
+                    "description": "最大同時執行數量；預設 3，最大 8"
+                }
+            },
+            "required": ["test_ids"]
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_run_test_batch),
+    });
+
+    m.insert("run_test_pipeline", ToolDef {
+        name:         "run_test_pipeline",
+        description: "以管線方式循序執行多個 YAML test，組成粗粒度的交易流程測試。\n\n與 run_test_batch（並行）不同，pipeline 保證執行順序：stage1 完成後才跑 stage2。\n適用場景：C2C 交易生命週期（買家下單→賣家出貨→買家確認）等有依賴順序的流程。\n\n返回：pipeline_id（識別整批）+ 每個 stage 的 run_id（可分別 poll）。\nstop_on_failure=true 時，某 stage 失敗後跳過後續 stage。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "stage_ids": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "按執行順序的 test_id 清單（每個都要存在於 config/tests/）"
+                },
+                "stop_on_failure": {
+                    "type": "boolean",
+                    "description": "某 stage 失敗後是否停止後續（預設 false = 繼續跑完所有）"
+                }
+            },
+            "required": ["stage_ids"]
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_run_test_pipeline),
+    });
+
+    m.insert("kill_run", ToolDef {
+        name:         "kill_run",
+        description: "強制終止卡住的 in-memory test run（zombie）。\n\n當 run_test_async 啟動的 run 因 LLM call 阻塞而超過 timeout_secs 仍顯示 running 時使用。\n設為 error 狀態，讓後續 run_test_async 呼叫可以正常取得 TEST_RUN_LOCK。\n⚠️ 只能終止 Running/Queued 狀態的 run；已完成的 run 無法覆蓋。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "run_id": { "type": "string", "description": "要強制終止的 run_id" }
+            },
+            "required": ["run_id"]
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_kill_run),
+    });
+
+    m.insert("run_adhoc_test", ToolDef {
+        name:         "run_adhoc_test",
+        description: "即席啟動測試 — 不需預先建立 YAML。外部 AI 收到用戶要求『測 <URL> 的 <流程>』時用這個。立即返回 run_id，用 get_test_result 輪詢。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "url":  { "type": "string", "description": "要測試的起始 URL" },
+                "goal": { "type": "string", "description": "高階測試目標（自然語言描述）" },
+                "success_criteria": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "通過條件（1-3 條；空陣列會用預設的『目標達成』判斷）"
+                },
+                "locale":           { "type": "string", "description": "zh-TW / en / zh-CN（預設 zh-TW）" },
+                "max_iterations":   { "type": "number", "description": "預設 15" },
+                "timeout_secs":     { "type": "number", "description": "預設 120" },
+                "browser_headless": { "type": "boolean", "description": "Flutter CanvasKit/WebGL 必須設 false 才能 paint。預設讀 SIRIN_BROWSER_HEADLESS env（預設 true）" },
+                "llm_backend":      { "type": "string", "description": "可選 LLM backend override：'claude_cli'/'claude' = 用 claude -p subprocess（Max plan、JSON 輸出最穩、~3-5s/呼叫 overhead）；省略或其他值 = 用 Sirin 主 LLM 設定（Gemini/LM Studio 等）。優先順序：此參數 > TEST_RUNNER_LLM_BACKEND env > 主設定" },
+                "fixture": {
+                    "type": "object",
+                    "description": "可選的 fixture：setup（測試前執行）和 cleanup（測試後執行，無論成敗）。",
+                    "properties": {
+                        "setup": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "action":     { "type": "string" },
+                                    "target":     { "type": "string" },
+                                    "text":       { "type": "string" },
+                                    "timeout_ms": { "type": "number" }
+                                },
+                                "required": ["action"]
+                            }
+                        },
+                        "cleanup": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "action":     { "type": "string" },
+                                    "target":     { "type": "string" },
+                                    "text":       { "type": "string" },
+                                    "timeout_ms": { "type": "number" }
+                                },
+                                "required": ["action"]
+                            }
+                        }
+                    }
+                }
+            },
+            "required": ["url", "goal"]
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_run_adhoc_test),
+    });
+
+    m.insert("persist_adhoc_run", ToolDef {
+        name:         "persist_adhoc_run",
+        description: "把一次成功的 ad-hoc 探索升級為永久 regression test。\n\n工作流：\n1. AI 用 run_adhoc_test 探索 → 拿 run_id\n2. 用 get_test_result 確認 status=passed\n3. 用 persist_adhoc_run(run_id, test_id='login_flow') 寫出 config/tests/login_flow.yaml\n4. 之後 run_test_async + test_id='login_flow' 就是 regression test\n\n會拒絕：失敗/未完成的 run、test_id 含大寫或連字符、test_id 以 'adhoc_' 開頭、檔案已存在（除非 overwrite=true）、run 超過 1 小時被 prune。\n\n預設行為：strip 'Ad-hoc: ' 前綴 / 把 'adhoc' tag 換成 'adhoc-derived' / max_iterations 提升到 max(used+5, original) 以容忍 regression 變異。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "run_id":  { "type": "string", "description": "run_adhoc_test 返回的 run_id（必須在 1 小時內、且狀態為 passed）" },
+                "test_id": { "type": "string", "description": "新測試的永久 id，必須符合 [a-z0-9_]+，不能以 adhoc_ 開頭。會變成 config/tests/<test_id>.yaml" },
+                "name":    { "type": "string", "description": "可選的人類可讀名稱；省略時沿用 ad-hoc 名稱（自動 strip 'Ad-hoc: ' 前綴）" },
+                "tags":    {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "可選 tags 覆蓋；省略時沿用原 tags（'adhoc' 會被換成 'adhoc-derived'）"
+                },
+                "bump_iterations": { "type": "boolean", "description": "true 時將 max_iterations 提升到 max(used+5, original)，給 regression 留 slack；預設 true" },
+                "overwrite":       { "type": "boolean", "description": "覆蓋現存檔案；預設 false（避免誤刪手寫測試）" }
+            },
+            "required": ["run_id", "test_id"]
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_persist_adhoc_run),
+    });
+
+    m.insert("discover_app", ToolDef {
+        name:         "discover_app",
+        description: "Issue #247 — 啟動自動探索爬蟲。Sirin 開瀏覽器到 seed_url，用 dom_snapshot 列舉可互動元件（button/link/input/tab），存到 SQLite discovered_features 表。\n\n用於 Coverage 3-tier funnel 的「探索」層 — 補 YAML coverage map 沒列到的功能。\n\n回傳 run_id（立即返回，crawl 在背景跑）。用 discovery_status 查狀態。",
+        input_schema: json!({
+            "type": "object",
+            "required": ["seed_url"],
+            "properties": {
+                "seed_url":  { "type": "string", "description": "起始 URL（爬蟲第一個導覽到的頁面）" },
+                "max_depth": { "type": "number", "description": "遞迴深度上限（iter 2 只支援 1，更深需後續 PR）" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_discover_app),
+    });
+
+    m.insert("discovery_features", ToolDef {
+        name:         "discovery_features",
+        description: "列出 discovery 爬蟲找到的所有 features（route/label/kind/selector/last_seen）。可用 limit + kind 過濾。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "limit": { "type": "number", "description": "回傳上限，預設 100" },
+                "kind":  { "type": "string", "description": "選填：只看某個 kind（button/link/form_input/tab/menuitem）" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_discovery_features),
+    });
+
+    m.insert("scaffold_test", ToolDef {
+        name:         "scaffold_test",
+        description: "產生一份新的 AgoraMarket 測試 YAML 樣板（Issue #239）。\n\n根據 role（buyer / seller / delivery / admin）自動填入正確的 viewport、init 序列、role-pinning goto 跟 success_criteria placeholder。輸出可直接寫入 config/tests/agora_regression/<id>.yaml，確保跑 lint 全部通過（不會踩到常見的 5 個 trap）。\n\n回傳 yaml string + 建議的檔案路徑；不會自動寫檔（避免覆蓋）。",
+        input_schema: json!({
+            "type": "object",
+            "required": ["role", "id"],
+            "properties": {
+                "role": { "type": "string", "enum": ["buyer", "seller", "delivery", "admin"], "description": "測試角色" },
+                "id":   { "type": "string", "description": "test_id（同檔名，不含 .yaml），慣例：agora_<role>_<feature>" },
+                "name": { "type": "string", "description": "可讀的測試名稱（預設用 placeholder）" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_scaffold_test),
+    });
+
+    m.insert("lint_test", ToolDef {
+        name:         "lint_test",
+        description: "對單一 test_id 跑全部 5 條 YAML lint 規則 (Issue #239)，回傳所有 issues。\n\n規則：clear_state_reauth / h5_viewport_missing / double_enable_a11y / success_criteria_positive / iterations_ratio。\n\n所有規則都是 warn-level — 不會阻擋測試執行；用來定位常見的 5 個 trap。",
+        input_schema: json!({
+            "type": "object",
+            "required": ["test_id"],
+            "properties": {
+                "test_id": { "type": "string", "description": "要 lint 的 test_id（YAML 檔名不含 .yaml）" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_lint_test),
+    });
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -768,9 +985,13 @@ mod tests {
         assert!(get("teams_pending").is_some());
         assert!(get("discovery_status").is_some());
 
-        // Un-migrated tools must NOT be in the registry yet.
-        assert!(get("run_test_async").is_none());
+        // Un-migrated tools must NOT be in the registry yet.  As batches
+        // land these need refreshing — pick still-un-migrated tools, ideally
+        // ones unlikely to migrate next.  `memory_search` (AsyncText special
+        // shape) and `consult` (sync but tied to an integration handler with
+        // its own state) are reasonably stable choices.
         assert!(get("memory_search").is_none());
+        assert!(get("consult").is_none());
     }
 
     #[test]
