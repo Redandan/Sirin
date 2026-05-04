@@ -970,6 +970,207 @@ fn seed_default(m: &mut RegistryMap) {
         }),
         handler:      ToolHandler::SyncJson(crate::mcp_server::call_lint_test),
     });
+
+    // Domain: multi-agent + dev_team + cross-session helpers (sync arg-taking).
+    // 14-tool batch migrated 2026-05-04 — closes the entire sync agent /
+    // dev_team / consult / supervised_run subset.  Only assistant_task
+    // (AsyncJson) remains in this cluster.
+
+    m.insert("agent_team_status", ToolDef {
+        name:         "agent_team_status",
+        description: "查看 PM / Engineer / Tester 三個 session 的目前狀態。回傳每個 session 的 session_id 和 resume 指令（可直接在 terminal 執行 `claude --resume <id>` 查看對話歷史）。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "cwd": { "type": "string", "description": "工作目錄（repo 路徑）。省略時用 sirin repo" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_agent_team_status),
+    });
+
+    m.insert("agent_team_task", ToolDef {
+        name:         "agent_team_task",
+        description: "派一個任務給 AI 團隊：PM 拆解 → Engineer 執行 → PM review。回傳 PM 的最終 review 結果。每個角色的對話歷史都會自動保留，可用 agent_team_status 取得 resume 指令查看。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "task": { "type": "string", "description": "任務描述" },
+                "cwd":  { "type": "string", "description": "工作目錄（repo 路徑）。省略時用 sirin repo" }
+            },
+            "required": ["task"]
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_agent_team_task),
+    });
+
+    m.insert("agent_team_test", ToolDef {
+        name:         "agent_team_test",
+        description: "觸發測試循環：Tester 跑測試 → 失敗則 Engineer 修 → PM 記錄學習。回傳最終測試結果摘要。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "cwd": { "type": "string", "description": "工作目錄（repo 路徑）。省略時用 sirin repo" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_agent_team_test),
+    });
+
+    m.insert("agent_send", ToolDef {
+        name:         "agent_send",
+        description: "直接送一條訊息給指定角色（pm / engineer / tester），取得回覆。對話歷史自動延續。適合：查詢 PM 的學習記錄、問工程師問題、請測試 session 執行特定測試。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "role":    { "type": "string", "enum": ["pm", "engineer", "tester"], "description": "目標角色" },
+                "message": { "type": "string", "description": "要送的訊息" },
+                "cwd":     { "type": "string", "description": "工作目錄（repo 路徑）。省略時用 sirin repo" }
+            },
+            "required": ["role", "message"]
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_agent_send),
+    });
+
+    m.insert("agent_reset", ToolDef {
+        name:         "agent_reset",
+        description: "重置指定角色的 session（清除對話歷史，開新對話）。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "role": { "type": "string", "enum": ["pm", "engineer", "tester", "all"], "description": "要重置的角色" },
+                "cwd":  { "type": "string", "description": "工作目錄（repo 路徑）。省略時用 sirin repo" }
+            },
+            "required": ["role"]
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_agent_reset),
+    });
+
+    m.insert("agent_enqueue", ToolDef {
+        name:         "agent_enqueue",
+        description: "把一個任務加入 AI 小隊的任務佇列。Worker 執行緒會自動依序執行（PM→Engineer→PM review）。回傳任務 ID，可用 agent_queue_status 查詢進度。\n\nT2-2：傳入 yaml_test_id 後，Engineer 完成任務時 Sirin 會自動執行該 YAML test 驗證，失敗則讓 Engineer 修 YAML 再試一次。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "task":         { "type": "string", "description": "任務描述（越具體越好）" },
+                "cwd":          { "type": "string", "description": "工作目錄（repo 路徑）。省略時用 sirin repo" },
+                "priority":     { "type": "integer", "minimum": 0, "maximum": 255, "description": "任務優先級：0=緊急，50=正常（預設），255=最低" },
+                "yaml_test_id": { "type": "string", "description": "（T2-2）Engineer 完成後，Sirin 自動跑這個 YAML test 驗證。傳 test_id（不含 .yaml）；系統從 Sirin repo 的 config/tests/ 遞迴搜尋，失敗則讓 Engineer 修 YAML 再試。" }
+            },
+            "required": ["task"]
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_agent_enqueue),
+    });
+
+    m.insert("agent_start_worker", ToolDef {
+        name:         "agent_start_worker",
+        description: "啟動 AI 小隊的背景工作執行緒（若尚未啟動）。啟動後持續消費佇列直到進程結束。可選 n 啟動多個平行 worker（T1-1）。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "cwd": { "type": "string", "description": "工作目錄（repo 路徑）。省略時用 sirin repo" },
+                "n":   { "type": "integer", "description": "Worker 執行緒數量（預設 1，最大 8；建議 2-3）。每 worker 有獨立的 PM/Engineer/Tester session。", "minimum": 1, "maximum": 8 }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_agent_start_worker),
+    });
+
+    m.insert("squad_knowledge", ToolDef {
+        name:         "squad_knowledge",
+        description: "查看 Squad PM 積累的學習記錄（squad_knowledge.db）。列出 PM 在任務 review 中記錄的 [📝 學到:] 條目，這些知識會自動注入到下一個相關任務的規劃階段。可用於確認 PM 是否正確學到教訓、或除錯「為何 PM 一直犯同樣的錯」。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "limit": { "type": "integer", "description": "最多回傳幾條（預設 20，最大 100）" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_squad_knowledge),
+    });
+
+    m.insert("dev_team_enqueue_issue", ToolDef {
+        name:         "dev_team_enqueue_issue",
+        description: "從 GitHub issue 直接餵任務給 Sirin Dev Team。讀取 issue 標題+內文+labels，包成 task 後放進佇列；任務完成後 system 會自動把 PM 的最終 review 貼回 issue 留言（除非 dry_run=true）。\n\n預設 dry_run=true（驗證模式）— PM/Engineer/Tester 會收到一段禁止 gh issue comment / git push 的系統提示，task 完成時 review 會存到 data/multi_agent/preview_comments.jsonl 而非貼到 GitHub。要真的跑（會留言/可能 push）就明確傳 dry_run=false。\n\nproject_key 例如 'agora_market' / 'sirin'，會決定 cwd（透過 claude_session::repo_path）；gh_repo 是 GitHub 的 owner/name 字串（例如 'Redandan/AgoraMarket'）。需要 gh CLI 已認證（`gh auth status` 通過）。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "project_key":  { "type": "string", "description": "邏輯專案名稱（決定 cwd 與 session 命名空間）。例：'agora_market', 'sirin', 'agora_api'" },
+                "gh_repo":      { "type": "string", "description": "GitHub repo（owner/name 格式）。例：'Redandan/AgoraMarket'" },
+                "issue_number": { "type": "integer", "minimum": 1, "description": "Issue 編號" },
+                "dry_run":      { "type": "boolean", "description": "驗證模式（預設 true）。true=不會貼 GitHub 留言、不會 git push；false=正常跑會留言。", "default": true },
+                "priority":     { "type": "integer", "minimum": 0, "maximum": 255, "description": "任務優先級（預設 50）" }
+            },
+            "required": ["project_key", "gh_repo", "issue_number"]
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_dev_team_enqueue_issue),
+    });
+
+    m.insert("dev_team_list_previews", ToolDef {
+        name:         "dev_team_list_previews",
+        description: "列出所有 dry-run 任務存下來的 preview comments（位於 data/multi_agent/preview_comments.jsonl）。每筆包含 task_id / issue_url / success / body / saved_at — 給人類 review 後決定要不要用 dev_team_replay_preview 真的貼到 GitHub。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "limit":     { "type": "integer", "minimum": 1, "maximum": 200, "description": "最多回傳幾筆（預設 20，由新到舊）" },
+                "issue_url": { "type": "string", "description": "選填：只列出這個 issue 的 preview" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_dev_team_list_previews),
+    });
+
+    m.insert("dev_team_replay_preview", ToolDef {
+        name:         "dev_team_replay_preview",
+        description: "把指定 task_id 的 dry-run preview 真的貼到 GitHub issue 留言。用於人類 review 過 preview 內容、確認 OK 後手動觸發 — 等同於把 dry-run 模式跑出來的結果「approve + post」。留言會加 'replayed from dry-run' 標記，與一般 worker 自動貼的格式有所區別。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "task_id": { "type": "string", "description": "要 replay 的 task_id（從 dev_team_list_previews 取得）" }
+            },
+            "required": ["task_id"]
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_dev_team_replay_preview),
+    });
+
+    m.insert("dev_team_read_issue", ToolDef {
+        name:         "dev_team_read_issue",
+        description: "用 gh CLI 讀單一 issue 的 title / body / labels（不會把它放進 task 佇列）。適合：先看內容判斷要不要餵給 dev team、或除錯 enqueue 失敗時拿原始資料。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "gh_repo":      { "type": "string", "description": "GitHub repo（owner/name）" },
+                "issue_number": { "type": "integer", "minimum": 1 }
+            },
+            "required": ["gh_repo", "issue_number"]
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_dev_team_read_issue),
+    });
+
+    m.insert("consult", ToolDef {
+        name:         "consult",
+        description: "把一個問題交給另一個 Claude Code session 回答。Sirin 會在指定工作目錄（可以是另一個 repo）啟動一個顧問 session，讓它讀取程式碼後給出簡潔可執行的建議，再把答案帶回來。適合：「這個 API 格式對嗎？」「後端怎麼實作這個？」等需要跨 repo 判斷的問題。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "question":   { "type": "string", "description": "要問顧問的問題" },
+                "context":    { "type": "string", "description": "背景說明（目前在做什麼）" },
+                "cwd":        { "type": "string", "description": "顧問 session 的工作目錄（repo 路徑）。省略時用 sirin 自身目錄" }
+            },
+            "required": ["question"]
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_consult),
+    });
+
+    m.insert("supervised_run", ToolDef {
+        name:         "supervised_run",
+        description: "在指定 repo 啟動一個受監督的 Claude Code session。當主 session 停下來（問問題 / 達到輪次上限），Sirin 自動決定怎麼回應：\n- policy=auto：直接回「yes, continue」\n- policy=consult：把問題轉給另一個 Claude session 取得建議再回答\n最多執行 5 輪，全部完成後回傳結果摘要（含每輪事件）。\n注意：可能需要 1-5 分鐘，視任務複雜度而定。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "cwd":            { "type": "string", "description": "主 session 工作目錄（repo 路徑）" },
+                "prompt":         { "type": "string", "description": "給 Claude Code 的任務描述" },
+                "policy":         { "type": "string", "enum": ["auto", "consult"], "description": "auto=直接回 yes；consult=問另一個 session（預設 auto）" },
+                "consultant_cwd": { "type": "string", "description": "顧問 session 的工作目錄，policy=consult 時有效（省略則與 cwd 相同）" }
+            },
+            "required": ["cwd", "prompt"]
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_supervised_run),
+    });
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -988,10 +1189,11 @@ mod tests {
         // Un-migrated tools must NOT be in the registry yet.  As batches
         // land these need refreshing — pick still-un-migrated tools, ideally
         // ones unlikely to migrate next.  `memory_search` (AsyncText special
-        // shape) and `consult` (sync but tied to an integration handler with
-        // its own state) are reasonably stable choices.
+        // shape) and `browser_exec` (sole authz exception with user_agent
+        // param — pinned to legacy path forever per CLAUDE.md) are the
+        // safest long-term choices.
         assert!(get("memory_search").is_none());
-        assert!(get("consult").is_none());
+        assert!(get("browser_exec").is_none());
     }
 
     #[test]
