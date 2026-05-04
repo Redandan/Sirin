@@ -389,7 +389,7 @@ fn section_action_registry() -> DoctorSection {
         "wait_for_url", "wait_for_ax_ready", "wait_for_network_idle",
         "assert_ax_contains", "assert_url_matches", "shadow_find", "shadow_click",
         "shadow_dump", "flutter_type", "flutter_enter", "shadow_type_flutter",
-        "go_back", "clear_state", "wait_new_tab", "wait_request",
+        "go_back", "clear_state", "reset_session", "wait_new_tab", "wait_request",
         "list_sessions", "close_session", "dom_snapshot",
     ];
     let candidates = [

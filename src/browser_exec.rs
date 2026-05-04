@@ -542,6 +542,43 @@ pub(crate) fn dispatch(action: &str, input: &Value) -> Result<Value, String> {
             browser::clear_browser_state()?;
             Ok(json!({ "status": "cleared" }))
         }
+        // Issue #270 — `reset_session` is a quieter cousin of `clear_state`.
+        //
+        // Both wipe localStorage / sessionStorage / IDB / cookies for the
+        // current origin.  The key difference is HOW:
+        //
+        //   clear_state    → runs `localStorage.clear()` etc. via JS eval on
+        //                    the live page.  Apps that observe storage events
+        //                    (Flutter watches JWT in localStorage) react
+        //                    immediately — typically routing to /login.  This
+        //                    drops URL fragments like `#/delivery` and is the
+        //                    root cause of `sirin-trap-clear-state-loses-test-role-url`.
+        //
+        //   reset_session  → uses CDP `Storage.clearDataForOrigin` which
+        //                    operates on Chrome's profile database directly.
+        //                    No JS executes on the page; the live tab keeps
+        //                    cached state in memory until the next reload /
+        //                    goto.  Use this between tests when you want
+        //                    storage gone for the NEXT navigation but don't
+        //                    want the current page to react.
+        //
+        // No URL parameter — operates on the current tab's origin.  If you
+        // want to specify a target origin explicitly, do `goto` first then
+        // `reset_session`.
+        "reset_session" => {
+            let url = browser::current_url()?;
+            let origin = url
+                .find("://")
+                .and_then(|p| {
+                    let after = &url[p + 3..];
+                    let scheme = &url[..p];
+                    let host_end = after.find(['/', '?', '#']).unwrap_or(after.len());
+                    Some(format!("{scheme}://{}", &after[..host_end]))
+                })
+                .ok_or_else(|| format!("reset_session: cannot extract origin from URL: {url}"))?;
+            browser::clear_origin_data(&origin)?;
+            Ok(json!({ "status": "cleared", "origin": origin }))
+        }
 
         // ── Flutter Shadow DOM ───────────────────────────────────────────
         "shadow_find" => {
