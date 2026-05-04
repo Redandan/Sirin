@@ -8,7 +8,7 @@
 use serde_json::{json, Value};
 
 use crate::adk::AgentContext;
-use crate::llm::{call_prompt, LlmConfig};
+use crate::llm::LlmConfig;
 use crate::persona::Persona;
 use crate::telegram::language::is_direct_answer_request;
 use crate::telegram::llm::generate_ai_reply;
@@ -104,7 +104,8 @@ pub async fn react_loop(
     }.render();
 
     for _turn in 0..REACT_MAX_TURNS {
-        let raw = match call_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), history.clone()).await {
+        // #263 Phase 2 — go through ctx.llm_caller for testability.
+        let raw = match ctx.llm_caller.call_plain(history.clone()).await {
             Ok(r) => r,
             Err(_) => break,
         };
@@ -209,9 +210,8 @@ pub async fn react_loop(
         "{history}\nSystem: You have used all available tool turns. \
          Provide a final [ANSWER] now based on what you know.\n"
     );
-    let final_raw = call_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), final_prompt)
-        .await
-        .unwrap_or_default();
+    // #263 Phase 2 — go through ctx.llm_caller for testability.
+    let final_raw = ctx.llm_caller.call_plain(final_prompt).await.unwrap_or_default();
     final_raw
         .lines()
         .find(|l| l.trim().starts_with("[ANSWER]"))
@@ -659,5 +659,107 @@ mod prompt_tests {
             has_meeting_auth: false,
         }.render();
         assert!(!rendered.contains("Context:"));
+    }
+}
+
+// ── ReAct loop tests ─────────────────────────────────────────────────────────
+//
+// Issue #263 Phase 2 — drive `react_loop` with `MockLlmCaller` for terminal
+// branches that don't depend on the tool registry (immediate [ANSWER],
+// untagged response, three-turn LLM-error fallback).  Tool-driven branches
+// ([SEARCH] / [MEMORY] / [CODE]) need a tool-registry stub to exercise and
+// stay out of scope for this iteration.
+
+#[cfg(test)]
+mod react_loop_tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::adk::tool::ToolRegistry;
+    use crate::adk::AgentContext;
+    use crate::llm::{LlmKind, MockLlmCaller};
+
+    fn ctx_with_mock(mock: Arc<MockLlmCaller>) -> AgentContext {
+        AgentContext::new("test-dispatch", ToolRegistry::new()).with_llm_caller(mock)
+    }
+
+    #[tokio::test]
+    async fn react_loop_returns_immediate_answer_tag() {
+        let mock = Arc::new(MockLlmCaller::with_responses(vec![Ok(
+            "[ANSWER] hello world".to_string(),
+        )]));
+        let ctx = ctx_with_mock(Arc::clone(&mock));
+
+        let reply = react_loop(&ctx, "你好", "Sirin", None, false).await;
+
+        assert_eq!(reply, "hello world");
+        assert_eq!(mock.call_count(), 1, "should exit on first [ANSWER]");
+        // dispatch.rs uses `call_plain` (not coding/router/large).
+        assert_eq!(mock.captured.lock().unwrap()[0].0, LlmKind::Plain);
+    }
+
+    #[tokio::test]
+    async fn react_loop_returns_untagged_response_verbatim() {
+        // No bracket tag at all → react_loop falls through to "treat as final
+        // answer", returning the raw text.
+        let mock = Arc::new(MockLlmCaller::with_responses(vec![Ok(
+            "just a plain reply with no brackets".to_string(),
+        )]));
+        let ctx = ctx_with_mock(Arc::clone(&mock));
+
+        let reply = react_loop(&ctx, "hi", "Sirin", None, false).await;
+
+        assert_eq!(reply, "just a plain reply with no brackets");
+        assert_eq!(mock.call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn react_loop_breaks_loop_on_llm_error_and_falls_to_final_prompt() {
+        // First call errors → loop breaks immediately.  Then the post-loop
+        // "you've used all turns" prompt fires once more — the second
+        // response provides a final [ANSWER].
+        let mock = Arc::new(MockLlmCaller::with_responses(vec![
+            Err("simulated 429".to_string()),
+            Ok("[ANSWER] fallback reply".to_string()),
+        ]));
+        let ctx = ctx_with_mock(Arc::clone(&mock));
+
+        let reply = react_loop(&ctx, "hi", "Sirin", None, false).await;
+
+        assert_eq!(reply, "fallback reply");
+        // Exactly 2 calls: 1 inside the loop (errored, broke out), 1 from
+        // the post-loop "use all turns" final prompt.
+        assert_eq!(mock.call_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn react_loop_returns_raw_when_final_fallback_has_no_answer_tag() {
+        // Loop call errors → fallback prompt also returns no [ANSWER] tag →
+        // function returns the raw fallback text trimmed.
+        let mock = Arc::new(MockLlmCaller::with_responses(vec![
+            Err("simulated 500".to_string()),
+            Ok("  raw fallback without tag  ".to_string()),
+        ]));
+        let ctx = ctx_with_mock(Arc::clone(&mock));
+
+        let reply = react_loop(&ctx, "hi", "Sirin", None, false).await;
+
+        assert_eq!(reply, "raw fallback without tag");
+    }
+
+    #[tokio::test]
+    async fn react_loop_first_call_carries_persona_and_user_text() {
+        let mock = Arc::new(MockLlmCaller::with_responses(vec![Ok(
+            "[ANSWER] ok".to_string(),
+        )]));
+        let ctx = ctx_with_mock(Arc::clone(&mock));
+
+        react_loop(&ctx, "我想要查記憶", "Sirin", Some("note: prior chat about KB"), false).await;
+
+        let captured = mock.captured.lock().unwrap();
+        let prompt = &captured[0].1;
+        assert!(prompt.contains("Sirin"), "prompt must include persona");
+        assert!(prompt.contains("我想要查記憶"), "prompt must include user text");
+        assert!(prompt.contains("prior chat about KB"), "prompt must include initial context");
     }
 }
