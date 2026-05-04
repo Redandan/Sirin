@@ -452,8 +452,31 @@ pub fn is_headless() -> Option<bool> {
 
 pub fn close() {
     HEARTBEAT_STOP.store(true, Ordering::Relaxed);
-    let mut guard = global().lock().unwrap_or_else(|e| e.into_inner());
-    *guard = None;
+    // Take the inner out so we can call CDP `Browser.close` while we still
+    // have a live tab to issue the request from, before letting Drop run.
+    //
+    // Why this matters on Windows: headless_chrome 1.0.x's `Browser` Drop
+    // does not reliably kill the spawned Chrome child process tree on
+    // Windows.  Without this CDP nudge, severing the singleton leaves an
+    // orphaned Chrome (port still listening on /json/version) — visible
+    // window stays up if non-headless, and a relaunch may collide on the
+    // remote-debugging port.  Sending `Browser.close` tells Chrome to exit
+    // itself, which propagates SIGTERM-equivalent to all renderer / GPU
+    // child processes.
+    let inner = {
+        let mut guard = global().lock().unwrap_or_else(|e| e.into_inner());
+        guard.take()
+    };
+    if let Some(inner) = inner {
+        if let Some(tab) = inner.tabs.first() {
+            // Best-effort — if Chrome is already in a bad state, this errors
+            // out and Drop still cleans up what it can.  Either way, we want
+            // the singleton cleared (already done above) and the process
+            // gone.
+            let _ = tab.call_method(RawBrowserClose {});
+        }
+        drop(inner);
+    }
 }
 
 /// Resolve the default Chrome viewport from `SIRIN_DEFAULT_VIEWPORT` env.
@@ -2970,6 +2993,18 @@ struct RawSetWindowBounds {
 }
 impl headless_chrome::protocol::cdp::types::Method for RawSetWindowBounds {
     const NAME: &'static str = "Browser.setWindowBounds";
+    type ReturnObject = serde_json::Value;
+}
+
+/// `Browser.close` — gracefully shuts Chrome down (vs the
+/// process-level SIGKILL the runtime might do on Drop).  Used by
+/// `crate::browser::close()` to ensure the Chrome child process tree
+/// actually exits, especially on Windows where headless_chrome 1.0.x's
+/// Drop doesn't reliably kill descendants.
+#[derive(Debug, serde::Serialize)]
+struct RawBrowserClose {}
+impl headless_chrome::protocol::cdp::types::Method for RawBrowserClose {
+    const NAME: &'static str = "Browser.close";
     type ReturnObject = serde_json::Value;
 }
 
