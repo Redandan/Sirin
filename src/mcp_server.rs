@@ -3126,13 +3126,20 @@ fn try_kb_write_handoff(content: &str, reason: &str, project: &str, file_refs: &
         None => return "skipped (no agora-ops token)".to_string(),
     };
 
+    // 2026-05-05 — project-specific topicKey to avoid cross-project collision.
+    // See KB `sirin-process-mcp-handoff-workflow` v3 for the full rationale:
+    // before this, every project (sirin / agora-backend / flutter) wrote to
+    // the single `sirin-handoff-latest` key and clobbered each other.  Now
+    // each project gets its own `<project>-handoff-latest`.
+    let topic_key = format!("{project}-handoff-latest");
+
     let payload = json!({
         "jsonrpc": "2.0",
         "method": "tools/call",
         "params": {
             "name": "kbWrite",
             "arguments": {
-                "topicKey":   "sirin-handoff-latest",
+                "topicKey":   topic_key,
                 "title":      format!("Mid-session Handoff — {reason}"),
                 "content":    content,
                 "domain":     "ops",
