@@ -2406,30 +2406,31 @@ async fn call_test_llm(
             })
         }
         _ => {
-            // Auto-switch to a compact rolling-window prompt after 5 steps.
-            // Gemini Flash 2.0 starts producing invalid JSON at ~15K tokens.
-            // Local models (LM Studio + Gemma 4 E4B): a 16KB prompt = 11-21s
-            // inference per iteration (Phase B live_trace measurement).
+            // Auto-switch to a compact rolling-window prompt after 8 steps.
+            // Gemini Flash 2.0 (and similar models) start producing invalid JSON
+            // at ~15K tokens (≈ iteration 13+ with full observations).
+            // Compact mode cuts the prompt to last N steps × 300-char obs,
+            // keeping the goal + criteria intact.  More generous than the
+            // claude_cli path (3 steps, 200 chars) since bandwidth isn't the
+            // issue here — it's JSON drift from a very long context window.
             //
-            // 2026-05-05 — threshold lowered 8→5, window 10→5, obs 300→200.
-            // The previous threshold meant iter 8+ ran a 16KB prompt every
-            // turn until DONE — a 9-iter test sent ~50KB/iter on average.
-            // Compacting earlier saves ~30s on a typical buyer_wallet run
-            // (149s → ~95s projected).  screenshot_analyze observations are
-            // pinned separately by build_prompt_with_limits regardless of
-            // window size, so we don't lose visual state from skipped steps.
+            // Issue #172: window increased 5 → 10 so multi-round tests (17 steps/round)
+            // keep more recent context; screenshot_analyze from skipped steps are also
+            // pinned separately by build_prompt_with_limits regardless of window size.
             //
-            // Issue #172 reverted: the original window=5/obs=200 was right
-            // for local models; the bump to 10/300 was for Gemini robustness
-            // before we had per-test llm_override (#269).
-            let prompt = if history.len() >= 5 {
+            // 2026-05-05 — restored to (8, 10, 300) after a (5, 5, 200) attempt
+            // tested out NET WORSE: cutting context too aggressively made the LLM
+            // forget what it had already tried, leading to redundant actions and
+            // 2.4× total prompt token usage (42K → 100K) → timeouts.  The wider
+            // window IS the right default for local LM Studio + Gemma 4 too.
+            let prompt = if history.len() >= 8 {
                 tracing::debug!(
                     "[test_runner] {} iter {}: switching to compact prompt (history={})",
                     test.id,
                     history.len(),
                     history.len(),
                 );
-                build_prompt_with_limits(test, history, parse_error_hint, 5, 200)
+                build_prompt_with_limits(test, history, parse_error_hint, 10, 300)
             } else {
                 build_prompt(test, history, parse_error_hint)
             };
