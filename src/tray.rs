@@ -23,10 +23,13 @@
 //!
 //! - Static icon (`icons/32x32.png`, embedded via `include_bytes!`)
 //! - Tooltip refresh every 5s
-//! - Menu items: Open Dashboard | Open Coverage | Quit
+//! - Menu items: Open Dashboard | Quit
 //!
 //! Deferred: per-status icon colours, pulse animation, more menu items
-//! (Pause / Reload Config / Tail Log).
+//! (Open Coverage / Pause / Reload Config / Tail Log).  Open Coverage
+//! existed in the v0.5.7 first cut but was pruned in v0.5.8 — `#coverage`
+//! is one click away from the dashboard's nav and didn't justify its
+//! own tray slot.
 
 use std::time::{Duration, Instant};
 
@@ -37,7 +40,6 @@ const STATUS_REFRESH: Duration = Duration::from_secs(5);
 const PUMP_TICK: Duration = Duration::from_millis(150);
 const SNAPSHOT_URL: &str = "http://127.0.0.1:7700/api/snapshot";
 const DASHBOARD_URL: &str = "http://127.0.0.1:7700/ui/";
-const COVERAGE_URL: &str = "http://127.0.0.1:7700/ui/#coverage";
 
 /// Spawn the tray icon on a dedicated OS thread.  Returns immediately;
 /// the thread runs until `Quit Sirin` is clicked or the process exits.
@@ -60,11 +62,9 @@ fn tray_thread_main() {
     // Build menu before tray icon so item IDs are captured for event matching.
     let tray_menu = Menu::new();
     let open_dashboard = MenuItem::new("Open Dashboard", true, None);
-    let open_coverage  = MenuItem::new("Open Coverage", true, None);
     let quit_item      = MenuItem::new("Quit Sirin", true, None);
 
     if tray_menu.append(&open_dashboard).is_err()
-        || tray_menu.append(&open_coverage).is_err()
         || tray_menu.append(&PredefinedMenuItem::separator()).is_err()
         || tray_menu.append(&quit_item).is_err()
     {
@@ -97,7 +97,6 @@ fn tray_thread_main() {
 
     // Cache the menu IDs so the event-receive branch doesn't allocate.
     let id_dashboard = open_dashboard.id().clone();
-    let id_coverage  = open_coverage.id().clone();
     let id_quit      = quit_item.id().clone();
 
     let mut last_status_update = Instant::now() - STATUS_REFRESH;
@@ -110,8 +109,6 @@ fn tray_thread_main() {
         while let Ok(event) = menu_events.try_recv() {
             if event.id == id_dashboard {
                 let _ = open_url(DASHBOARD_URL);
-            } else if event.id == id_coverage {
-                let _ = open_url(COVERAGE_URL);
             } else if event.id == id_quit {
                 tracing::info!("[tray] Quit Sirin clicked — exiting daemon");
                 std::process::exit(0);
