@@ -51,6 +51,7 @@ mod skills;
 #[allow(dead_code)] mod workflow;
 mod telegram;
 mod telegram_auth;
+#[cfg(windows)] mod tray;
 pub mod ui_service;
 mod ui_service_impl;
 pub mod chat_history;
@@ -388,6 +389,14 @@ fn main() {
     // dashboards or remote inspection).
     let svc = StdArc::new(ui_service_impl::RealService::new(tracker, tg_auth));
     mcp_server::register_app_service(svc.clone() as StdArc<dyn ui_service::AppService>);
+
+    // Issue #272 — system tray icon for the daemon.  Skipped in headless
+    // mode (no GUI session — tray APIs would error) and on non-Windows
+    // platforms in the MVP (mac/linux pumps not implemented yet).
+    #[cfg(windows)]
+    if !is_headless() {
+        tray::spawn_tray();
+    }
 
     if is_headless() {
         tracing::info!(target: "sirin",

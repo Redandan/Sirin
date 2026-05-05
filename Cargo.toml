@@ -54,6 +54,13 @@ sha2 = "0.10"
 # authors and IDE YAML extensions get auto-complete + validation.
 schemars = "0.8"
 
+# Issue #272 — system tray icon for the Sirin daemon.  default-features
+# disables `libxdo` (Linux X11 helper) which we don't need in src/tray.rs.
+# The crate uses muda for menus and runs a per-platform message pump
+# inside the dedicated `sirin-tray` OS thread (see src/tray.rs).  Skipped
+# entirely in headless mode.
+tray-icon = { version = "0.23", default-features = false }
+
 # Windows Job Object — KILL_ON_JOB_CLOSE so all child processes (claude, node,
 # git, ...) are auto-terminated when sirin.exe exits.  Prevents the orphan
 # claude.exe accumulation observed during 2026-04-19 dev session (12 zombies
@@ -64,6 +71,8 @@ windows = { version = "0.58", features = [
     "Win32_Security",
     "Win32_System_JobObjects",
     "Win32_System_Threading",
+    # Issue #272 — message pump for the tray-icon thread (see src/tray.rs).
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 [package.metadata.bundle]
