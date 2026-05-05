@@ -36,6 +36,18 @@ pub async fn run(state: Arc<MonitorState>, interval_ms: u64) {
             continue;
         }
 
+        // 2026-05-05 — skip when Chrome is closed instead of force-spawning it.
+        // screenshot_jpeg → with_tab() auto-opens Chrome on demand, which fights
+        // the idle-close watcher: pump → spawn → 60s idle close → pump → spawn
+        // → … infinite respawn loop while ANY user kept a dashboard tab open.
+        // The Live Monitor exists to mirror the TEST Chrome — if no test has it
+        // open, there's nothing to mirror, so quietly skip this tick.  Next test
+        // run cold-starts Chrome (2-5s, already paid by test_runner) and the
+        // pump resumes capturing on the following tick.
+        if !crate::browser::is_open() {
+            continue;
+        }
+
         // screenshot_jpeg is synchronous — run in blocking thread
         let state_clone = Arc::clone(&state);
         let result = tokio::task::spawn_blocking(move || {

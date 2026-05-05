@@ -1198,7 +1198,18 @@ pub fn navigate_and_screenshot(url: &str) -> Result<Vec<u8>, String> {
 ///
 /// Falls back to the cached `tab.get_url()` if `Runtime.evaluate` fails
 /// (no exec context yet, debugger paused) — at worst no-worse-than-before.
+///
+/// 2026-05-05 — early-return `Err` when Chrome is closed.  Without this,
+/// every poll of `/api/snapshot` (which the dashboard does every few
+/// seconds while a tab is open) called `with_tab()` which auto-spawned
+/// Chrome.  Combined with `idle_close` closing 60s later, this produced
+/// an open→close→open infinite loop visible in the log.  Snapshot
+/// callers wrap with `.ok()` so the dashboard renders a blank URL when
+/// Chrome is closed — exactly the right UX.
 pub fn current_url() -> Result<String, String> {
+    if !is_open() {
+        return Err("browser not open".into());
+    }
     with_tab(|tab| {
         match tab.evaluate("window.location.href", false) {
             Ok(obj) => match obj.value {
@@ -1212,8 +1223,12 @@ pub fn current_url() -> Result<String, String> {
 
 /// Live title of the active tab.  Same rationale as `current_url()` —
 /// uses `Runtime.evaluate("document.title")` to read the live DOM rather
-/// than the `target_info` cache.
+/// than the `target_info` cache.  Same closed-browser early-return as
+/// `current_url()` to avoid the snapshot-poll respawn loop.
 pub fn page_title() -> Result<String, String> {
+    if !is_open() {
+        return Err("browser not open".into());
+    }
     with_tab(|tab| {
         match tab.evaluate("document.title", false) {
             Ok(obj) => match obj.value {
