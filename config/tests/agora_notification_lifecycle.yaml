@@ -18,7 +18,6 @@ retry_on_parse_error: 2
 fixture:
   setup:
     - {action: "clear_state"}
-    -
     - {action: "goto", target: "https://redandan.github.io/?__test_role=buyer"}
     - {action: "enable_a11y"}
   cleanup:

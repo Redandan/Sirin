@@ -1110,6 +1110,16 @@ pub fn screenshot() -> Result<Vec<u8>, String> {
     // Auto-retry up to 2 extra times if the screenshot is all-black.
     // Flutter WebGL / CanvasKit needs a moment to re-render after Chrome
     // recovery; waiting 2 s and retrying is far cheaper than failing the test.
+    //
+    // 2026-05-05 — skip the retry when the tab is on `about:blank`.  A blank
+    // page LEGITIMATELY produces a sub-threshold PNG (~7 KB), so retrying
+    // would waste 6 s × 2 attempts = 12 s per blank-state screenshot AND
+    // emit two false-positive `all-black` warnings that drown out real
+    // Flutter render failures.  Visually verified by manual screenshot
+    // (KB: sirin-trap-all-black-false-positive-on-blank).  Tests that
+    // legitimately want the about:blank capture (rare — typically only
+    // start-of-session or post-clear_state intermediates) still get the
+    // bytes; no behavioural change for them.
     for attempt in 0u8..3 {
         if attempt > 0 {
             tracing::warn!(
@@ -1118,7 +1128,7 @@ pub fn screenshot() -> Result<Vec<u8>, String> {
             );
             std::thread::sleep(std::time::Duration::from_secs(2));
         }
-        let bytes = with_tab(|tab| {
+        let (bytes, url) = with_tab(|tab| {
             inject_privacy_mask(tab);
             inject_hide_for_tool_use(tab);
             let res = tab
@@ -1126,8 +1136,15 @@ pub fn screenshot() -> Result<Vec<u8>, String> {
                 .map_err(|e| format!("screenshot: {e}"));
             remove_hide_for_tool_use(tab);
             remove_privacy_mask(tab);
-            res
+            // tab.get_url() is cheap (CDP Page.url cached locally) — fine
+            // to call inside the with_tab guard rather than re-acquiring.
+            res.map(|bytes| (bytes, tab.get_url()))
         })?;
+        // Blank-tab fast path: no point waiting for Flutter to re-paint
+        // a page that has nothing to paint.
+        if url == "about:blank" {
+            return Ok(bytes);
+        }
         if bytes.len() >= SCREENSHOT_BLACK_THRESHOLD_BYTES || attempt == 2 {
             return Ok(bytes);
         }
