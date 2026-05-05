@@ -17,11 +17,20 @@ locale: zh-TW
 kb_refs:
   - agora-pickup-flow
 
+# 2026-05-05 perf — moved deterministic boot steps from goal to fixture.setup
+# (saves ~30s LLM time per LLM-mode run; scripted = 0 LLM cost).
+fixture:
+  setup:
+    - {action: "wait", target: "12000"}
+    - {action: "enable_a11y"}
+    - {action: "wait", target: "3000"}
+
 goal: |
   目標：在賣家「新增商品」頁，展開平台配送設定，啟用「啟用平台配送」開關，
   然後把「取貨結束時間」改成 14:00。
 
   起始狀態：URL 已設為 #/seller/product，自動以賣家身份登入並落在新增商品頁。
+  fixture.setup 已完成 12s 等待 + enable_a11y + 3s 等待，AX tree 已就緒。
 
   已知資訊（嚴格遵守）：
   - 「平台配送設定」是個 ExpansionTile，Sirin 用 role=button 點擊（已驗證可用）。
@@ -34,36 +43,33 @@ goal: |
     能完成 ax_focus + flutter_type 兩步即通過。
   - tab 切換 / ExpansionTile 展開後必須重新 enable_a11y 才能繼續 AX 操作。
 
-  ⚠️ 唯一允許 done=true 的位置是步驟 25，其他步驟都不能 done=true。
+  ⚠️ 唯一允許 done=true 的位置是步驟 22，其他步驟都不能 done=true。
   ⚠️ shadow_click 「平台配送設定」前必須先 flutter_scroll_until_visible，否則點擊無效。
-  ⚠️ install_capture（步驟 13）一定要執行，這是 deterministic replay 的關鍵錨點。
+  ⚠️ install_capture（步驟 10）一定要執行，這是 deterministic replay 的關鍵錨點。
 
   步驟（全部依序執行）：
-  1. wait 12000（等 auto-login + Flutter form 完整渲染）
-  2. enable_a11y
-  3. wait 3000
-  4. flutter_scroll_until_visible role=button name_regex="平台配送設定"
-  5. wait 1500（等捲動完成）
-  6. enable_a11y（重建 AX tree，元素現在 viewport 內）
-  7. wait 1000
-  8. shadow_click role=button name_regex="平台配送設定"（展開 ExpansionTile）
-  9. wait 1500（等展開動畫）
-  10. enable_a11y（展開後重新初始化）
-  11. wait 800
-  12. shadow_dump（確認看到「啟用平台配送」switch）
-  13. install_capture（⭐ deterministic replay 錨點）
-  14. shadow_click role=switch name="啟用平台配送"
-  15. wait 2000
-  16. enable_a11y
-  17. wait 1000
-  18. ax_find role=textbox name_regex="取貨結束時間"（記下 backend_id）
-  19. ax_focus backend_id=<上一步的 id>（⭐ Flutter 自動 scroll + focus）
-  20. wait 800（等 flt-text-editing 建立）
-  21. flutter_type text="14:00"
-  22. wait 500
-  23. ax_value backend_id=<同步驟 18 的 id>（讀回欄位值，能讀到即通過）
-  24. screenshot_analyze "「取貨結束時間」欄位是否已被點擊聚焦並嘗試輸入？"
-  25. done=true
+  1. flutter_scroll_until_visible role=button name_regex="平台配送設定"
+  2. wait 1500（等捲動完成）
+  3. enable_a11y（重建 AX tree，元素現在 viewport 內）
+  4. wait 1000
+  5. shadow_click role=button name_regex="平台配送設定"（展開 ExpansionTile）
+  6. wait 1500（等展開動畫）
+  7. enable_a11y（展開後重新初始化）
+  8. wait 800
+  9. shadow_dump（確認看到「啟用平台配送」switch）
+  10. install_capture（⭐ deterministic replay 錨點）
+  11. shadow_click role=switch name="啟用平台配送"
+  12. wait 2000
+  13. enable_a11y
+  14. wait 1000
+  15. ax_find role=textbox name_regex="取貨結束時間"（記下 backend_id）
+  16. ax_focus backend_id=<上一步的 id>（⭐ Flutter 自動 scroll + focus）
+  17. wait 800（等 flt-text-editing 建立）
+  18. flutter_type text="14:00"
+  19. wait 500
+  20. ax_value backend_id=<同步驟 15 的 id>（讀回欄位值，能讀到即通過）
+  21. screenshot_analyze "「取貨結束時間」欄位是否已被點擊聚焦並嘗試輸入？"
+  22. done=true
 
 success_criteria:
   - "成功展開平台配送設定（shadow_click role=button name_regex=\"平台配送設定\" 後 ExpansionTile 展開）"

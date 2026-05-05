@@ -14,10 +14,19 @@ viewport:
 
 locale: zh-TW
 
+# 2026-05-05 perf — moved deterministic boot steps from goal to fixture.setup
+# (saves ~30s LLM time per LLM-mode run; scripted = 0 LLM cost).
+fixture:
+  setup:
+    - {action: "wait", target: "3000"}
+    - {action: "enable_a11y"}
+    - {action: "wait", target: "1500"}
+
 goal: |
   目標：確認賣家可正常進入「新增商品」頁面，表單欄位和物流設定預設值正確。
 
   起始狀態：以賣家身份登入，已在賣家儀表板首頁（URL auto-login via __test_role=seller）。
+  fixture.setup 已完成 3s 等待 + enable_a11y + 1.5s 等待，AX tree 已就緒。
 
   ⚠️ 賣家首頁是儀表板（賣場設定/批量導入商品），不是商品列表。
     必須先點底部「商品」tab 才能進入商品管理列表。
@@ -26,26 +35,23 @@ goal: |
   ⚠️ 物流設定是 ExpansionTile（Flutter AX role=group），展開後加 enable_a11y + wait 800 再截圖。
   ⚠️ 新增商品預設：宅配到府 ON + 7-ELEVEN ON，其餘 OFF。
   ⚠️ Flutter app：所有 UI 判斷用 screenshot_analyze。
-  ⚠️ 不論任何步驟失敗，都必須繼續執行到步驟 17 才能輸出 done=true。嚴禁提早終止。
+  ⚠️ 不論任何步驟失敗，都必須繼續執行到步驟 14 才能輸出 done=true。嚴禁提早終止。
 
   步驟（線性，步驟 14 無條件 done=true，不得提早）：
-  1. wait 3000（等賣家儀表板完整載入）
-  2. enable_a11y（初始化 Flutter semantics）
-  3. wait 1500
-  4. shadow_click role=tab name_regex="^商品$"（點底部商品 tab，進入商品管理列表）
-  5. wait 2500（等商品管理列表載入）
-  6. enable_a11y（重新初始化 Flutter semantics）
-  7. wait 1000
-  8. shadow_click role=button name_regex="^新增商品$"（點新增商品按鈕）
-  9. wait 4000（等新增商品頁面完整載入）
-  10. flutter_scroll_until_visible role=button name_regex="物流設定"（捲動到物流設定按鈕）
-  11. shadow_click role=button name_regex="^物流設定$"（展開物流設定區塊）
-  12. wait 1500
-  13. enable_a11y（展開後重建 AX tree）
-  14. wait 800
-  15. scroll y=200（捲動讓宅配+7-ELEVEN 開關都進入視窗）
-  16. screenshot_analyze "截圖。宅配到府開關是開還是關？預設運費是多少？7-ELEVEN 開關是開還是關？運費是多少？（只需回答這兩項，簡短即可）"
-  17. done=true
+  1. shadow_click role=tab name_regex="^商品$"（點底部商品 tab，進入商品管理列表）
+  2. wait 2500（等商品管理列表載入）
+  3. enable_a11y（重新初始化 Flutter semantics）
+  4. wait 1000
+  5. shadow_click role=button name_regex="^新增商品$"（點新增商品按鈕）
+  6. wait 4000（等新增商品頁面完整載入）
+  7. flutter_scroll_until_visible role=button name_regex="物流設定"（捲動到物流設定按鈕）
+  8. shadow_click role=button name_regex="^物流設定$"（展開物流設定區塊）
+  9. wait 1500
+  10. enable_a11y（展開後重建 AX tree）
+  11. wait 800
+  12. scroll y=200（捲動讓宅配+7-ELEVEN 開關都進入視窗）
+  13. screenshot_analyze "截圖。宅配到府開關是開還是關？預設運費是多少？7-ELEVEN 開關是開還是關？運費是多少？（只需回答這兩項，簡短即可）"
+  14. done=true
 
 success_criteria:
   - "成功從商品管理列表點擊新增商品並進入新增頁面"
