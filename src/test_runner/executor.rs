@@ -789,17 +789,24 @@ pub async fn execute_test_tracked(
             &test.id, 7, &current_vp,
         ) else { break 'replay; };
 
-        // Auto-delete stale scripts: ≥3 replay failures with fail > success
-        // means UI likely changed.  Delete so next run regenerates via LLM.
-        if let Some((_, success, fail)) = crate::test_runner::store::script_info(&test.id) {
-            if fail >= 3 && fail > success {
-                tracing::warn!(
-                    "[scripts] '{}' script has {fail} failures (success={success}) — auto-deleting stale script",
-                    test.id
-                );
-                crate::test_runner::store::delete_script(&test.id);
-                break 'replay;
-            }
+        // Auto-delete stale scripts: ≥4 of the LAST 5 runs failed.
+        //
+        // 2026-05-05 — switched from cumulative (`fail >= 3 && fail > success`)
+        // to a sliding 5-run window.  The cumulative check would delete a
+        // script used 100 times with 50 success / 51 fail despite the script
+        // being useful for 50 confirmations.  Drift only matters at the tail
+        // — last-5 captures "is this CURRENTLY broken" without punishing
+        // scripts for old flakiness that the test owner already tolerated.
+        // Replay rate observed pre-change: 31.5% (`replay_health` 7-day window).
+        let recent5 = crate::test_runner::store::recent_runs(&test.id, 5);
+        let recent_fail_count = recent5.iter().filter(|r| r.status != "passed").count();
+        if recent5.len() >= 5 && recent_fail_count >= 4 {
+            tracing::warn!(
+                "[scripts] '{}' script: {recent_fail_count}/5 of last 5 runs failed — auto-deleting stale script",
+                test.id
+            );
+            crate::test_runner::store::delete_script(&test.id);
+            break 'replay;
         }
 
         // Mark as script mode before attempting replay (#192)
@@ -2399,25 +2406,30 @@ async fn call_test_llm(
             })
         }
         _ => {
-            // Auto-switch to a compact rolling-window prompt after 8 steps.
-            // Gemini Flash 2.0 (and similar models) start producing invalid JSON
-            // at ~15K tokens (≈ iteration 13+ with full observations).
-            // Compact mode cuts the prompt to last N steps × 300-char obs,
-            // keeping the goal + criteria intact.  More generous than the
-            // claude_cli path (3 steps, 200 chars) since bandwidth isn't the
-            // issue here — it's JSON drift from a very long context window.
+            // Auto-switch to a compact rolling-window prompt after 5 steps.
+            // Gemini Flash 2.0 starts producing invalid JSON at ~15K tokens.
+            // Local models (LM Studio + Gemma 4 E4B): a 16KB prompt = 11-21s
+            // inference per iteration (Phase B live_trace measurement).
             //
-            // Issue #172: window increased 5 → 10 so multi-round tests (17 steps/round)
-            // keep more recent context; screenshot_analyze from skipped steps are also
-            // pinned separately by build_prompt_with_limits regardless of window size.
-            let prompt = if history.len() >= 8 {
+            // 2026-05-05 — threshold lowered 8→5, window 10→5, obs 300→200.
+            // The previous threshold meant iter 8+ ran a 16KB prompt every
+            // turn until DONE — a 9-iter test sent ~50KB/iter on average.
+            // Compacting earlier saves ~30s on a typical buyer_wallet run
+            // (149s → ~95s projected).  screenshot_analyze observations are
+            // pinned separately by build_prompt_with_limits regardless of
+            // window size, so we don't lose visual state from skipped steps.
+            //
+            // Issue #172 reverted: the original window=5/obs=200 was right
+            // for local models; the bump to 10/300 was for Gemini robustness
+            // before we had per-test llm_override (#269).
+            let prompt = if history.len() >= 5 {
                 tracing::debug!(
                     "[test_runner] {} iter {}: switching to compact prompt (history={})",
                     test.id,
                     history.len(),
                     history.len(),
                 );
-                build_prompt_with_limits(test, history, parse_error_hint, 10, 300)
+                build_prompt_with_limits(test, history, parse_error_hint, 5, 200)
             } else {
                 build_prompt(test, history, parse_error_hint)
             };
