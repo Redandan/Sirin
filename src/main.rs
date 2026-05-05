@@ -331,6 +331,12 @@ fn main() {
         let _guard = rt.enter();
         rt.spawn(background_loop(tracker.clone()));
 
+        // Auto-close test Chrome after configurable idle period (default
+        // 60s). Frees the 300-500 MB Chrome process tree when no tests
+        // are queued or running.  Set SIRIN_BROWSER_IDLE_CLOSE_SECS=0
+        // to disable.
+        test_runner::idle_close::spawn_idle_close_watcher();
+
         let agents = agent_config::AgentsFile::load().unwrap_or_default();
         let mut primary_auth_assigned = false;
 

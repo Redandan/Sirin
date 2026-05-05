@@ -21,6 +21,7 @@ pub mod notify;
 pub mod screenshot_cache;
 pub mod ax_diff_context;
 pub mod som_renderer;
+pub mod idle_close;
 pub mod action_verify;
 pub mod gif_recorder;
 pub mod discovery;
