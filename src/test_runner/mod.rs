@@ -210,6 +210,19 @@ async fn run_test_with_run_id(
         result.status
     };
 
+    // 2026-05-05 — was previously hardcoded `is_replay: false` here, with
+    // the executor's replay-success branch writing a *separate*
+    // `is_replay: true` row.  That double-write produced 2 SQLite rows
+    // per replay-mode run with the same duration but different
+    // started_at (start-of-run vs end-of-replay), making the dashboard
+    // look like every test ran twice.  Now: single row, replay flag
+    // resolved from the registry's RunState.replay_mode (set inside the
+    // executor's replay-vs-llm decision path).
+    let was_replay = run_id
+        .and_then(runs::get)
+        .map(|s| s.replay_mode.as_deref() == Some("script"))
+        .unwrap_or(false);
+
     let _ = store::record_run(store::NewRun {
         test_id: &test.id,
         started_at: &started,
@@ -231,7 +244,7 @@ async fn run_test_with_run_id(
         dispute_reason: result.dispute.as_ref().map(|d| d.reason.as_str()),
         dispute_suspected_step: result.dispute.as_ref().and_then(|d| d.suspected_step),
         dispute_suggested_fix: result.dispute.as_ref().and_then(|d| d.suggested_fix.as_deref()),
-        is_replay: false,
+        is_replay: was_replay,
         console_log: console_json.as_deref(),
     });
 

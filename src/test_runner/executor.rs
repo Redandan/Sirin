@@ -825,25 +825,18 @@ pub async fn execute_test_tracked(
             break 'replay;
         };
 
-        // Persist the run record (is_replay=true) so analytics can differentiate.
-        let _ = crate::test_runner::store::record_run(crate::test_runner::store::NewRun {
-            test_id: &test.id,
-            started_at: &chrono::Local::now().to_rfc3339(),
-            duration_ms: Some(result.duration_ms as i64),
-            status: "passed",
-            failure_category: None,
-            ai_analysis: result.final_analysis.as_deref(),
-            screenshot_path: None,
-            history_json: None,
-            goal_json: None,
-            run_id,
-            iterations: Some(0),
-            dispute_reason: None,
-            dispute_suspected_step: None,
-            dispute_suggested_fix: None,
-            is_replay: true,
-            console_log: None,
-        });
+        // 2026-05-05 — removed duplicate `record_run` here.  The outer
+        // `mod.rs::run_test_with_run_id` already records the run on return
+        // (line ~213).  The duplicate row from this call would appear in
+        // SQLite with started_at = NOW (post-replay finish time), making
+        // it look like the test had run twice — once at run start, once
+        // at run end.  See `recent_runs` "every test 2 rows same duration"
+        // observation that triggered this fix.
+        //
+        // The `is_replay=true` distinction is preserved by detecting the
+        // replay mode from `runs::RunState.replay_mode` in the outer
+        // record_run path (set via `runs::set_replay_mode("script")`
+        // earlier in this function — line ~810).
         return result;
     }
     // ── end replay ────────────────────────────────────────────────────────────
