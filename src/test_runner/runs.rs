@@ -394,6 +394,21 @@ pub fn list_active() -> Vec<String> {
         .collect()
 }
 
+/// Snapshot every active (Queued + Running) RunState, cloned out of the
+/// registry so the caller can inspect without holding the lock.
+///
+/// Used by the `queue_status` MCP for cross-run aggregation (concurrency,
+/// drain estimate, oldest queue entry).  Cheap enough for MCP polling —
+/// active run count rarely exceeds the low hundreds, and `RunState` clone
+/// skips the heavy `screenshot_cache` / `ax_diff_context` fields.
+pub fn snapshot_active() -> Vec<RunState> {
+    registry().lock().unwrap_or_else(|e| e.into_inner())
+        .values()
+        .filter(|s| matches!(s.phase, RunPhase::Running{..} | RunPhase::Queued))
+        .cloned()
+        .collect()
+}
+
 /// Prune completed runs older than 1 hour to prevent unbounded growth.
 fn prune_old_runs() {
     let cutoff = chrono::Local::now() - chrono::Duration::hours(1);
@@ -442,9 +457,17 @@ pub fn to_json(s: &RunState) -> serde_json::Value {
     };
     // #182 — expose idle_secs for running tests so callers can detect stuck runs.
     // Only meaningful for Running phase; for terminal/queued phases it's 0.
-    let idle_secs = match &s.phase {
-        RunPhase::Running { .. } => s.last_phase_updated_at.elapsed().as_secs(),
-        _ => 0,
+    //
+    // Phase A — also expose last_action_age_ms (millisecond resolution) for
+    // sub-second `idle_secs == 0` analysis: distinguishing "phase just bumped"
+    // from "phase bumped 800ms ago" matters when chasing why a healthy LLM
+    // call is averaging 84s/iter (it's the LLM, not the dispatcher).
+    let (idle_secs, last_action_age_ms) = match &s.phase {
+        RunPhase::Running { .. } => {
+            let elapsed = s.last_phase_updated_at.elapsed();
+            (elapsed.as_secs(), elapsed.as_millis() as u64)
+        }
+        _ => (0, 0),
     };
     json!({
         "run_id": s.run_id,
@@ -452,6 +475,7 @@ pub fn to_json(s: &RunState) -> serde_json::Value {
         "started_at": s.started_at,
         "status": status,
         "idle_secs": idle_secs,
+        "last_action_age_ms": last_action_age_ms,
         "replay_mode": s.replay_mode,  // #192 "script" | "llm" | null
         "details": extra,
     })

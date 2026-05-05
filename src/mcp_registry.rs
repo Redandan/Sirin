@@ -266,6 +266,29 @@ fn seed_default(m: &mut RegistryMap) {
         handler:      ToolHandler::SyncJson(|_args| crate::mcp_server::call_browser_status()),
     });
 
+    // Phase A diagnostics — added 2026-05-05.
+
+    m.insert("tail_app_log", ToolDef {
+        name:         "tail_app_log",
+        description: "回傳 Sirin runtime log 環形 buffer 的最近 N 行（LogBufferLayer 自動 capture 所有 tracing 事件，buffer 上限 300 行）。Sirin 預設 stderr 不寫檔案，這是查 mid-run 訊息的唯一管道。\n\n參數：\n- lines (預設 100, max 300)\n- grep (substring，case-sensitive，可選)\n- level (\"ERROR\"|\"WARN\"|\"INFO\"，可選)\n\n用途：debug stuck test、看 watchdog/timeout/convergence guard 是否觸發、追 LLM error。\n\n範例：tail_app_log lines=50 grep=\"watchdog\"",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "lines": { "type": "number", "description": "回傳行數（預設 100，clamp 1..300）" },
+                "grep":  { "type": "string", "description": "substring filter（case-sensitive）" },
+                "level": { "type": "string", "enum": ["ERROR", "WARN", "INFO"], "description": "等級過濾" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_tail_app_log),
+    });
+
+    m.insert("queue_status", ToolDef {
+        name:         "queue_status",
+        description: "Test runner 佇列+並行度快照。Sirin 用 process-wide TEST_RUN_LOCK 強制 concurrency=1，所以 run_test_batch N 個 test 在 dashboard 看起來像 N 個同時跑（實際 serial）。本工具拆解：running=1 + queued=N，含 oldest_queued_for_secs（解掉「卡 50 分鐘」誤判）+ estimated_drain_secs（用最近 50 筆 median 推估）。\n\n用途：判斷「現在卡住嗎」、看排隊還要多久、確認 LLM ReAct mode 是否拖慢整批。",
+        input_schema: json!({"type": "object", "properties": {}}),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_queue_status),
+    });
+
     m.insert("sync_config", ToolDef {
         name:         "sync_config",
         description: "將 repo 的 config/tests/ 同步到 %LOCALAPPDATA%\\Sirin\\config\\tests/（Sirin 執行時讀取的位置）。\n\n每次修改 YAML 測試檔後必須呼叫，否則 Sirin 跑的是舊版 YAML。\n\n返回：synced=true, files_copied=N。\n\n關閉 #187。",

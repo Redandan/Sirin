@@ -4807,6 +4807,179 @@ async fn call_browser_exec(args: Value, user_agent: &str) -> Result<Value, Strin
 
 /// MCP `browser_status` — 列出目前 Chrome 所有開啟的 tab 和 named session，方便排查。
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
+// ── Phase A diagnostics: tail_app_log + queue_status ────────────────────────
+//
+// Both handlers wrap data that the runtime already has but never exposed
+// over MCP.  Added 2026-05-05 after a debug session where we saw "49 queued
+// from 10:52" in the snapshot and couldn't tell whether tests were actually
+// stuck or just waiting for the concurrency-1 lock.
+
+/// Return up to `lines` (default 100, max 300) recent log lines from the
+/// in-process ring buffer that `LogBufferLayer` populates from every
+/// `tracing::info/warn/error!` call.
+///
+/// Args:
+///   - `lines`: usize, default 100, clamped to [1, 300]
+///   - `grep`:  optional substring filter (case-sensitive); only matching
+///     lines are returned
+///   - `level`: optional level filter — one of "ERROR", "WARN", "INFO".
+///     Tracing's fmt layer prefixes lines like ` INFO [target]` /
+///     ` WARN [target]` so we substring-match on the level token.
+///
+/// Returned shape:
+///   { lines: [...], count: N, total_buffered: M, version: V, filter: {...} }
+pub(crate) fn call_tail_app_log(args: Value) -> Result<Value, String> {
+    let lines_req = args.get("lines")
+        .and_then(Value::as_u64)
+        .unwrap_or(100)
+        .clamp(1, 300) as usize;
+    let grep = args.get("grep").and_then(Value::as_str).map(str::to_string);
+    let level = args.get("level").and_then(Value::as_str).map(str::to_uppercase);
+
+    // Pull more than asked when filtering, so the post-filter slice still
+    // approximates `lines_req` lines.  Capped at MAX_LINES (300) anyway.
+    let pull = if grep.is_some() || level.is_some() { 300 } else { lines_req };
+    let raw = crate::log_buffer::recent(pull);
+
+    let filtered: Vec<String> = raw.into_iter()
+        .filter(|line| {
+            let level_ok = match level.as_deref() {
+                None => true,
+                Some(want) => line.contains(want),
+            };
+            let grep_ok = match grep.as_deref() {
+                None => true,
+                Some(needle) => line.contains(needle),
+            };
+            level_ok && grep_ok
+        })
+        .collect();
+
+    // Trim back to requested count (oldest dropped — most recent kept).
+    let final_lines: Vec<String> = if filtered.len() > lines_req {
+        filtered.into_iter().rev().take(lines_req).rev().collect()
+    } else {
+        filtered
+    };
+
+    Ok(json!({
+        "lines":          final_lines.clone(),
+        "count":          final_lines.len(),
+        "total_buffered": crate::log_buffer::len(),
+        "version":        crate::log_buffer::version(),
+        "filter": {
+            "grep":  grep,
+            "level": level,
+            "lines_requested": lines_req,
+        },
+    }))
+}
+
+/// Test-runner queue + concurrency snapshot.
+///
+/// Sirin serializes test execution via the process-wide
+/// `test_runner::TEST_RUN_LOCK` (concurrency = 1), so a `run_test_batch`
+/// of N tests appears in dashboards as N entries with the same
+/// `started_at`, even though only one is actually running.  This handler
+/// disambiguates: it shows running vs queued counts, the oldest queue
+/// wait, and a drain estimate based on median test duration of the last
+/// 50 completed runs.
+///
+/// Returned shape:
+///   {
+///     concurrency: 1,
+///     running: { test_id, run_id, idle_secs, last_action_age_ms,
+///                step, current_action } | null,
+///     queued_count: N,
+///     queued: [ { test_id, run_id, queued_for_secs }, ... ],   // up to 20
+///     oldest_queued_for_secs: M,
+///     median_test_secs_last_50: 32,
+///     p95_test_secs_last_50:    280,
+///     estimated_drain_secs:     queued_count × median_test_secs,
+///     sampled_recent_runs:      50,
+///   }
+pub(crate) fn call_queue_status(_args: Value) -> Result<Value, String> {
+    let now = chrono::Local::now();
+    let active = crate::test_runner::runs::snapshot_active();
+
+    // Bucket into running vs queued.  Concurrency-1 means at most one
+    // entry in `running`; we still surface a Vec for forward compat in
+    // case TEST_RUN_LOCK becomes optional in the future.
+    let mut running_entries: Vec<Value> = Vec::new();
+    let mut queued_entries:  Vec<(String, String, i64)> = Vec::new();  // (test_id, run_id, secs_waited)
+
+    for state in &active {
+        match &state.phase {
+            crate::test_runner::runs::RunPhase::Running { step, current_action } => {
+                let elapsed = state.last_phase_updated_at.elapsed();
+                running_entries.push(json!({
+                    "test_id":            state.test_id,
+                    "run_id":             state.run_id,
+                    "started_at":         state.started_at,
+                    "idle_secs":          elapsed.as_secs(),
+                    "last_action_age_ms": elapsed.as_millis() as u64,
+                    "step":               step,
+                    "current_action":     current_action,
+                    "replay_mode":        state.replay_mode,
+                }));
+            }
+            crate::test_runner::runs::RunPhase::Queued => {
+                let waited = chrono::DateTime::parse_from_rfc3339(&state.started_at)
+                    .map(|dt| (now.signed_duration_since(dt.with_timezone(&chrono::Local))).num_seconds())
+                    .unwrap_or(0);
+                queued_entries.push((state.test_id.clone(), state.run_id.clone(), waited));
+            }
+            _ => {}
+        }
+    }
+
+    queued_entries.sort_by_key(|(_, _, w)| -*w);  // oldest first
+    let oldest_queued = queued_entries.first().map(|(_, _, w)| *w).unwrap_or(0);
+    let queued_count = queued_entries.len();
+
+    // Compute median + p95 from the last 50 completed runs (across all
+    // tests).  Ignores 0-duration runs — those are usually error-paths
+    // that bailed before any work and would skew the median down.
+    let recent = crate::test_runner::store::recent_runs_all(50);
+    let mut durations: Vec<u64> = recent.iter()
+        .filter_map(|r| r.duration_ms)
+        .filter(|d| *d > 0)
+        .map(|d| ((d / 1000) as u64).max(1))
+        .collect();
+    durations.sort_unstable();
+    let median = if durations.is_empty() { 0 } else { durations[durations.len() / 2] };
+    let p95 = if durations.is_empty() { 0 } else { durations[(durations.len() * 95 / 100).min(durations.len() - 1)] };
+    let estimated_drain = (queued_count as u64) * median;
+
+    let queued_sample: Vec<Value> = queued_entries.iter().take(20).map(|(test_id, run_id, w)| {
+        json!({
+            "test_id":         test_id,
+            "run_id":          run_id,
+            "queued_for_secs": w,
+        })
+    }).collect();
+
+    Ok(json!({
+        "concurrency":              1,
+        "running":                  running_entries.first().cloned(),
+        "queued_count":             queued_count,
+        "queued":                   queued_sample,
+        "oldest_queued_for_secs":   oldest_queued,
+        "median_test_secs_last_50": median,
+        "p95_test_secs_last_50":    p95,
+        "estimated_drain_secs":     estimated_drain,
+        "sampled_recent_runs":      durations.len(),
+        "summary": format!(
+            "{run} running, {q} queued — oldest queued {o}s, est. drain {drain}s (median {m}s × {q})",
+            run = if running_entries.is_empty() { "0" } else { "1" },
+            q = queued_count,
+            o = oldest_queued,
+            drain = estimated_drain,
+            m = median,
+        ),
+    }))
+}
+
 pub(crate) fn call_browser_status() -> Result<Value, String> {
     let status = crate::browser::browser_status();
     let is_open = status.is_open;
@@ -5756,6 +5929,95 @@ mod test_runner_mcp_tests {
             Err(e)  => assert!(e.contains("Unknown tool"), "want Unknown tool error, got: {e}"),
             Ok(env) => panic!("expected error for bogus tool, got envelope: {env}"),
         }
+    }
+
+    // ── Phase A diagnostics: tail_app_log + queue_status ──────────────────────
+
+    #[test]
+    fn tail_app_log_returns_recent_lines_and_envelope() {
+        // Push a marker line through the real log buffer, then assert the
+        // handler surfaces it with the envelope fields callers depend on.
+        crate::log_buffer::push("[INFO] tail_app_log_test_marker_alpha".to_string());
+
+        let r = call_tail_app_log(json!({"lines": 50})).unwrap();
+        assert!(r["lines"].is_array());
+        assert!(r["count"].as_u64().unwrap() >= 1);
+        assert!(r["total_buffered"].as_u64().unwrap() >= 1);
+        assert!(r["version"].as_u64().unwrap() >= 1, "version counter must bump on push");
+        assert_eq!(r["filter"]["lines_requested"], 50);
+        // Marker visible somewhere in the returned slice.
+        let lines = r["lines"].as_array().unwrap();
+        assert!(
+            lines.iter().any(|l| l.as_str().unwrap_or("").contains("tail_app_log_test_marker_alpha")),
+            "marker line must appear in tail output"
+        );
+    }
+
+    #[test]
+    fn tail_app_log_grep_filters_lines() {
+        crate::log_buffer::push("[INFO] grep_target_unique_xyz123".to_string());
+        crate::log_buffer::push("[INFO] some other unrelated line".to_string());
+
+        let r = call_tail_app_log(json!({"grep": "grep_target_unique_xyz123"})).unwrap();
+        let lines = r["lines"].as_array().unwrap();
+        assert!(
+            lines.iter().all(|l| l.as_str().unwrap_or("").contains("grep_target_unique_xyz123")),
+            "all returned lines must match grep filter"
+        );
+        assert_eq!(r["filter"]["grep"], "grep_target_unique_xyz123");
+    }
+
+    #[test]
+    fn tail_app_log_clamps_lines_to_300() {
+        // > 300 in → clamped to 300 in the filter echo.
+        let r = call_tail_app_log(json!({"lines": 9999})).unwrap();
+        assert_eq!(r["filter"]["lines_requested"], 300);
+        // < 1 → clamped to 1.
+        let r = call_tail_app_log(json!({"lines": 0})).unwrap();
+        assert_eq!(r["filter"]["lines_requested"], 1);
+    }
+
+    #[test]
+    fn tail_app_log_level_filter_excludes_other_levels() {
+        crate::log_buffer::push(" ERROR [target] level_filter_marker_zzz".to_string());
+        crate::log_buffer::push(" INFO [target] level_filter_other_marker".to_string());
+
+        let r = call_tail_app_log(json!({"level": "ERROR", "grep": "level_filter"})).unwrap();
+        let lines = r["lines"].as_array().unwrap();
+        // Every returned line must contain the ERROR token AND the grep substring.
+        for l in lines {
+            let s = l.as_str().unwrap_or("");
+            assert!(s.contains("ERROR"), "level filter let through non-ERROR: {s}");
+            assert!(s.contains("level_filter"));
+        }
+        assert_eq!(r["filter"]["level"], "ERROR");
+    }
+
+    #[test]
+    fn queue_status_returns_envelope_with_concurrency_and_drain() {
+        let r = call_queue_status(json!({})).unwrap();
+        // Concurrency is hardwired to 1 by TEST_RUN_LOCK — pin it so a
+        // future change to lift the lock has to update this expectation.
+        assert_eq!(r["concurrency"], 1);
+        // Required fields whatever the registry state.
+        assert!(r["queued_count"].is_u64());
+        assert!(r["queued"].is_array());
+        assert!(r["oldest_queued_for_secs"].is_i64() || r["oldest_queued_for_secs"].is_u64());
+        assert!(r["median_test_secs_last_50"].is_u64());
+        assert!(r["p95_test_secs_last_50"].is_u64());
+        assert!(r["estimated_drain_secs"].is_u64());
+        assert!(r["sampled_recent_runs"].is_u64());
+        assert!(r["summary"].is_string());
+    }
+
+    #[test]
+    fn queue_status_drain_is_count_times_median() {
+        // Pin the arithmetic: estimated_drain_secs = queued_count * median.
+        let r = call_queue_status(json!({})).unwrap();
+        let count = r["queued_count"].as_u64().unwrap();
+        let median = r["median_test_secs_last_50"].as_u64().unwrap();
+        let drain = r["estimated_drain_secs"].as_u64().unwrap();
+        assert_eq!(drain, count * median, "drain estimate must be queued × median");
     }
 }
 
