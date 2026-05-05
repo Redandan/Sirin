@@ -586,7 +586,7 @@ pub(super) async fn dispatch_by_understanding(
 
             let memory_ctx = resolve_memory_context(&request.user_text, ctx).await;
             let search_ctx = if crate::telegram::commands::should_search(&request.user_text) {
-                resolve_search_context(request, ctx, client, direct_answer).await
+                resolve_search_context(request, ctx, direct_answer).await
             } else {
                 None
             };

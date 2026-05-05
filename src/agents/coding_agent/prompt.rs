@@ -86,7 +86,14 @@ pub(super) async fn make_plan(ctx: &AgentContext, task: &str, project_ctx: &str)
     let prompt = PlanPromptArgs { task, project_ctx }.render();
     // Plan generation is a lightweight step-list task — use the router (local)
     // LLM to save remote quota for the actual ReAct coding iterations.
-    crate::llm::call_prompt(ctx.http.as_ref(), &crate::llm::shared_router_llm(), prompt)
+    //
+    // #263 Phase 2 — go through ctx.llm_caller.call_router so tests can inject
+    // a deterministic responder.  In production, RealLlmCaller::from_globals
+    // wires this to the dedicated `shared_router_llm()` singleton — preserving
+    // the cost-saving choice — and call_router_prompt adds keep_alive=-1 on
+    // Ollama so the small router model stays warm in VRAM between plan calls.
+    ctx.llm_caller
+        .call_router(prompt)
         .await
         .unwrap_or_else(|_| "1. Read relevant files\n2. Make changes\n3. Verify".to_string())
 }
@@ -454,5 +461,76 @@ mod tests {
         let raw = "{\"thought\":\"hi\",\"action\":\"DONE\"";
         let s = parse_react_step(raw);
         assert!(s.parse_error);
+    }
+
+    // ── make_plan tests via MockLlmCaller (#263 Phase 2 closure) ─────────────
+    //
+    // make_plan has two paths:
+    //   1. LLM returns Ok(plan_text)  → returned verbatim.
+    //   2. LLM returns Err(_)         → returns the hardcoded 3-step fallback.
+    //
+    // Both must go through the router endpoint (LlmKind::Router) — never
+    // Coding/Plain — because plan generation is a cheap classification-style
+    // call and shouldn't burn the main/coding model's quota.
+
+    use std::sync::Arc;
+    use crate::adk::tool::ToolRegistry;
+    use crate::adk::AgentContext;
+    use crate::llm::{LlmKind, MockLlmCaller};
+
+    fn ctx_with_mock(mock: Arc<MockLlmCaller>) -> AgentContext {
+        AgentContext::new("test-make-plan", ToolRegistry::new()).with_llm_caller(mock)
+    }
+
+    #[tokio::test]
+    async fn make_plan_returns_llm_response_verbatim_on_success() {
+        let plan_text = "1. Read src/foo.rs\n2. Patch the bug\n3. Run cargo test";
+        let mock = Arc::new(MockLlmCaller::with_responses(vec![Ok(plan_text.to_string())]));
+        let ctx = ctx_with_mock(Arc::clone(&mock));
+
+        let plan = make_plan(&ctx, "fix the foo bug", "axum + tower stack").await;
+        assert_eq!(plan, plan_text);
+        assert_eq!(mock.call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn make_plan_falls_back_to_hardcoded_steps_on_llm_error() {
+        // Provider error (e.g. 429 / network drop) → must not propagate; the
+        // ReAct loop downstream can still operate on the fallback plan.
+        let mock = Arc::new(MockLlmCaller::with_responses(vec![Err("simulated 429".to_string())]));
+        let ctx = ctx_with_mock(Arc::clone(&mock));
+
+        let plan = make_plan(&ctx, "fix the foo bug", "ctx").await;
+        assert_eq!(plan, "1. Read relevant files\n2. Make changes\n3. Verify");
+    }
+
+    #[tokio::test]
+    async fn make_plan_uses_router_endpoint_not_coding() {
+        // Pin: planning is a router-tier task.  Routing it through the coding
+        // model would silently double the per-task cost on remote backends.
+        let mock = Arc::new(MockLlmCaller::with_responses(vec![Ok("1. step".to_string())]));
+        let ctx = ctx_with_mock(Arc::clone(&mock));
+
+        make_plan(&ctx, "task", "ctx").await;
+        let captured = mock.captured.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].0, LlmKind::Router,
+            "make_plan must use router endpoint — coding/large/plain would waste quota");
+    }
+
+    #[tokio::test]
+    async fn make_plan_sends_rendered_plan_prompt_to_llm() {
+        // The prompt sent to the LLM must be PlanPromptArgs::render() — pin
+        // by checking the captured prompt contains the task + project_ctx
+        // fields and the boilerplate "3-6 numbered steps" instruction.
+        let mock = Arc::new(MockLlmCaller::with_responses(vec![Ok("ok".to_string())]));
+        let ctx = ctx_with_mock(Arc::clone(&mock));
+
+        make_plan(&ctx, "TASK_MARKER", "CTX_MARKER").await;
+        let captured = mock.captured.lock().unwrap();
+        let prompt = &captured[0].1;
+        assert!(prompt.contains("TASK_MARKER"), "prompt missing task body");
+        assert!(prompt.contains("CTX_MARKER"), "prompt missing project_ctx");
+        assert!(prompt.contains("3-6 numbered steps"), "prompt missing instruction tail");
     }
 }

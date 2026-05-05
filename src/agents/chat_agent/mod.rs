@@ -364,7 +364,7 @@ where
             crate::telegram::language::is_direct_answer_request(&request.user_text);
         let memory_ctx = resolve_memory_context(&request.user_text, &ctx).await;
         let search_ctx = if crate::telegram::commands::should_search(&request.user_text) {
-            resolve_search_context(&request, &ctx, client.as_ref(), direct_answer_request).await
+            resolve_search_context(&request, &ctx, direct_answer_request).await
         } else {
             None
         };
