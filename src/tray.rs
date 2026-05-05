@@ -41,20 +41,24 @@ const PUMP_TICK: Duration = Duration::from_millis(150);
 const SNAPSHOT_URL: &str = "http://127.0.0.1:7700/api/snapshot";
 const DASHBOARD_URL: &str = "http://127.0.0.1:7700/ui/";
 
-/// Spawn the tray icon on a dedicated OS thread.  Returns immediately;
-/// the thread runs until `Quit Sirin` is clicked or the process exits.
-///
-/// No-op (returns Ok) when the platform doesn't support trays — currently
-/// only Windows is wired in this MVP.  Mac/Linux builds get a thread that
-/// just logs once and returns; the daemon keeps running normally.
-pub fn spawn_tray() {
+/// Spawn the tray icon on a dedicated OS thread.  Returns `true` when the
+/// thread successfully launched (the tray icon is the discovery affordance
+/// for the daemon — caller can use this to suppress redundant browser
+/// auto-open on Sirin startup).  Returns `false` on spawn failure.
+pub fn spawn_tray() -> bool {
     let result = std::thread::Builder::new()
         .name("sirin-tray".into())
         .spawn(tray_thread_main);
 
     match result {
-        Ok(_) => tracing::info!("[tray] spawned sirin-tray thread"),
-        Err(e) => tracing::warn!("[tray] failed to spawn tray thread: {e} — daemon continues without tray"),
+        Ok(_) => {
+            tracing::info!("[tray] spawned sirin-tray thread");
+            true
+        }
+        Err(e) => {
+            tracing::warn!("[tray] failed to spawn tray thread: {e} — daemon continues without tray");
+            false
+        }
     }
 }
 

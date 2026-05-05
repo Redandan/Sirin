@@ -394,9 +394,9 @@ fn main() {
     // mode (no GUI session — tray APIs would error) and on non-Windows
     // platforms in the MVP (mac/linux pumps not implemented yet).
     #[cfg(windows)]
-    if !is_headless() {
-        tray::spawn_tray();
-    }
+    let tray_active = !is_headless() && tray::spawn_tray();
+    #[cfg(not(windows))]
+    let tray_active = false;
 
     if is_headless() {
         tracing::info!(target: "sirin",
@@ -414,11 +414,26 @@ fn main() {
     // Auto-open the user's default browser to the UI page. Best-effort —
     // failure (no display, no browser registered) is fine; the user can
     // open the URL themselves.
+    //
+    // Skipped when the system tray is active (#272 follow-up): every Sirin
+    // restart used to spawn a fresh tab in the user's main Chrome, and dev
+    // cycles produced 5+ tabs of stale dashboard URLs.  With the tray, the
+    // user has a persistent, click-once "Open Dashboard" affordance — the
+    // auto-open is now redundant and noisy.  Override with
+    // SIRIN_AUTO_OPEN_BROWSER=1 to restore the old behaviour.
     let port = std::env::var("SIRIN_RPC_PORT").unwrap_or_else(|_| "7700".into());
     let url = format!("http://127.0.0.1:{port}/ui/");
-    open_browser(&url);
-    tracing::info!(target: "sirin",
-        "[main] Web UI: {url}  —  daemon will keep running with the browser tab closed.");
+    let force_open = std::env::var("SIRIN_AUTO_OPEN_BROWSER")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if !tray_active || force_open {
+        open_browser(&url);
+        tracing::info!(target: "sirin",
+            "[main] Web UI: {url}  —  daemon will keep running with the browser tab closed.");
+    } else {
+        tracing::info!(target: "sirin",
+            "[main] Web UI: {url}  —  tray active, skipping auto-open. Use \"Open Dashboard\" tray menu (or SIRIN_AUTO_OPEN_BROWSER=1 to restore auto-open).");
+    }
 
     // Park the main thread forever — RPC/MCP server, telegram listener,
     // followup worker, screenshot pump, etc. all keep working.  Closing the
