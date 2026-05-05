@@ -289,6 +289,20 @@ fn seed_default(m: &mut RegistryMap) {
         handler:      ToolHandler::SyncJson(crate::mcp_server::call_queue_status),
     });
 
+    m.insert("live_trace", ToolDef {
+        name:         "live_trace",
+        description: "Phase B — running test 的最近 N 個 TestStep（mid-run 可拿，不用等 test 完成）+ 當前 sub-phase（llm_call/browser_action/replay/verify）+ subphase_age_ms。專治「84s/iter 不知道在等 LLM 還是 browser」這類謎題。\n\n參數：\n- run_id (必填)\n- last_n (預設 5, max 30)\n\n回傳含每步 thought / action / observation（裁切到 1KB） / llm_model / llm_latency_ms / parse_errors / ts。Action input 內的 string > 200 chars 自動裁切（screenshot base64 不會炸 response）。\n\n用法：當 get_test_result 顯示 idle_secs > 30 時，呼叫此工具看 recent_steps + current_subphase 馬上判斷瓶頸在哪。",
+        input_schema: json!({
+            "type": "object",
+            "required": ["run_id"],
+            "properties": {
+                "run_id": { "type": "string", "description": "spawned-run id from run_test_async" },
+                "last_n": { "type": "number", "description": "回傳最近幾步（預設 5，clamp 1..30）" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_live_trace),
+    });
+
     m.insert("sync_config", ToolDef {
         name:         "sync_config",
         description: "將 repo 的 config/tests/ 同步到 %LOCALAPPDATA%\\Sirin\\config\\tests/（Sirin 執行時讀取的位置）。\n\n每次修改 YAML 測試檔後必須呼叫，否則 Sirin 跑的是舊版 YAML。\n\n返回：synced=true, files_copied=N。\n\n關閉 #187。",

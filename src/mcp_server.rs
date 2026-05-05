@@ -4980,6 +4980,94 @@ pub(crate) fn call_queue_status(_args: Value) -> Result<Value, String> {
     }))
 }
 
+/// Phase B — return the most recent N TestStep records for a running (or
+/// just-completed) test, plus the current sub-phase + idle hints.
+///
+/// Until Phase B, `get_test_result` only exposed a one-line `current_action`
+/// string for the in-flight step.  This handler surfaces the full step
+/// history mirrored into RunState (`runs::push_step_summary`) so callers
+/// can answer "what is the executor doing right now, and what did it just
+/// finish doing?" without waiting for the run to terminate.
+///
+/// Args:
+///   - `run_id` (required) — the spawned-run id from `run_test_async`
+///   - `last_n` (optional, default 5, clamp 1..30) — how many recent
+///     steps to return; oldest first
+///
+/// Returned shape:
+///   {
+///     run_id, test_id, status, idle_secs, last_action_age_ms,
+///     current_subphase, subphase_age_ms, replay_mode,
+///     recent_steps_count, returned_steps_count,
+///     recent_steps: [
+///       { iter, thought, action, observation, llm_model,
+///         llm_latency_ms, parse_errors, ts },
+///       ...
+///     ]
+///   }
+pub(crate) fn call_live_trace(args: Value) -> Result<Value, String> {
+    let run_id = args["run_id"].as_str().ok_or("Missing run_id")?;
+    let last_n = args.get("last_n")
+        .and_then(Value::as_u64)
+        .unwrap_or(5)
+        .clamp(1, 30) as usize;
+
+    let state = crate::test_runner::runs::get(run_id)
+        .ok_or_else(|| format!("run_id '{run_id}' not found (may have been pruned)"))?;
+    let mut envelope = crate::test_runner::runs::to_json(&state);
+
+    let steps = crate::test_runner::runs::recent_steps(run_id, last_n);
+    let serialised: Vec<Value> = steps.iter().enumerate().map(|(i, step)| {
+        // Action input can be huge for screenshot_analyze (base64 image
+        // payload) or file_write — clip the inline preview but keep the
+        // action `name` key intact so callers can still tell what was done.
+        let action_preview = match &step.action {
+            Value::Object(map) => {
+                let mut clipped = serde_json::Map::new();
+                for (k, v) in map {
+                    let s = match v {
+                        Value::String(text) if text.len() > 200 => {
+                            Value::String(format!("{}…(truncated to 200)", &text[..200]))
+                        }
+                        other => other.clone(),
+                    };
+                    clipped.insert(k.clone(), s);
+                }
+                Value::Object(clipped)
+            }
+            other => other.clone(),
+        };
+        // Observation too — clip to 1KB so a wall of AX-tree dump doesn't
+        // blow the MCP response budget.
+        let obs_preview = if step.observation.len() > 1024 {
+            format!("{}…(truncated to 1024 of {} chars; use get_full_observation for full)",
+                &step.observation[..1024], step.observation.len())
+        } else {
+            step.observation.clone()
+        };
+        json!({
+            "iter":               i,
+            "thought":            step.thought,
+            "action":             action_preview,
+            "observation":        obs_preview,
+            "observation_chars":  step.observation.len(),
+            "llm_model":          step.llm_model,
+            "llm_latency_ms":     step.llm_latency_ms,
+            "llm_prompt_bytes":   step.llm_prompt_bytes,
+            "llm_response_bytes": step.llm_response_bytes,
+            "parse_errors":       step.parse_errors,
+            "ts":                 step.ts,
+        })
+    }).collect();
+
+    if let Some(obj) = envelope.as_object_mut() {
+        obj.insert("returned_steps_count".into(), json!(serialised.len()));
+        obj.insert("requested_last_n".into(), json!(last_n));
+        obj.insert("recent_steps".into(), Value::Array(serialised));
+    }
+    Ok(envelope)
+}
+
 pub(crate) fn call_browser_status() -> Result<Value, String> {
     let status = crate::browser::browser_status();
     let is_open = status.is_open;
@@ -6018,6 +6106,142 @@ mod test_runner_mcp_tests {
         let median = r["median_test_secs_last_50"].as_u64().unwrap();
         let drain = r["estimated_drain_secs"].as_u64().unwrap();
         assert_eq!(drain, count * median, "drain estimate must be queued × median");
+    }
+
+    // ── Phase B: live_trace + subphase + recent_steps ─────────────────────────
+
+    #[test]
+    fn live_trace_rejects_missing_run_id() {
+        let r = call_live_trace(json!({}));
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn live_trace_rejects_unknown_run_id() {
+        let r = call_live_trace(json!({"run_id": "run_definitely_does_not_exist_999"}));
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn live_trace_returns_envelope_with_subphase_for_running_run() {
+        // Spin up a fake run via the runs registry, push a step, and call
+        // live_trace.  Pins: envelope shape + recent_steps wiring +
+        // subphase exposure.
+        use crate::test_runner::executor::TestStep;
+        use crate::test_runner::runs::{self, RunPhase};
+
+        let run_id = runs::new_run("test_live_trace_envelope");
+        runs::set_phase(&run_id, RunPhase::Running {
+            step: 7,
+            current_action: "shadow_click".to_string(),
+        });
+        runs::set_subphase(&run_id, "llm_call");
+
+        let step = TestStep {
+            thought:            "let me click that button".to_string(),
+            action:             json!({"action": "shadow_click", "target": "btn"}),
+            observation:        "ok".to_string(),
+            llm_model:          Some("gemma-4-e4b-it".to_string()),
+            llm_latency_ms:     Some(1234),
+            llm_prompt_bytes:   Some(8200),
+            llm_response_bytes: Some(420),
+            ts:                 Some("2026-05-05T12:00:00+08:00".to_string()),
+            ..Default::default()
+        };
+        runs::push_step_summary(&run_id, step);
+
+        let r = call_live_trace(json!({"run_id": run_id, "last_n": 5})).unwrap();
+
+        // Top-level envelope from runs::to_json + live_trace additions.
+        assert_eq!(r["test_id"], "test_live_trace_envelope");
+        assert_eq!(r["status"], "running");
+        assert_eq!(r["current_subphase"], "llm_call");
+        assert!(r["subphase_age_ms"].as_u64().unwrap() < 5000,
+            "subphase just set, age must be small");
+        assert_eq!(r["recent_steps_count"], 1);
+        assert_eq!(r["returned_steps_count"], 1);
+        assert_eq!(r["requested_last_n"], 5);
+
+        // Step shape — every Phase-B field surfaced.
+        let steps = r["recent_steps"].as_array().unwrap();
+        assert_eq!(steps.len(), 1);
+        let s0 = &steps[0];
+        assert_eq!(s0["iter"], 0);
+        assert_eq!(s0["thought"], "let me click that button");
+        assert_eq!(s0["action"]["action"], "shadow_click");
+        assert_eq!(s0["llm_model"], "gemma-4-e4b-it");
+        assert_eq!(s0["llm_latency_ms"], 1234);
+        assert_eq!(s0["llm_prompt_bytes"], 8200);
+        assert_eq!(s0["llm_response_bytes"], 420);
+    }
+
+    #[test]
+    fn live_trace_clamps_last_n_and_truncates_huge_action_input() {
+        // last_n=999 → clamped to 30; huge string in action input → truncated.
+        use crate::test_runner::executor::TestStep;
+        use crate::test_runner::runs::{self, RunPhase};
+
+        let run_id = runs::new_run("test_live_trace_clamp");
+        runs::set_phase(&run_id, RunPhase::Running { step: 1, current_action: "x".into() });
+
+        let huge = "A".repeat(500);
+        runs::push_step_summary(&run_id, TestStep {
+            thought: "t".into(),
+            action: json!({"action": "screenshot", "data": huge}),
+            observation: "ok".into(),
+            ..Default::default()
+        });
+
+        let r = call_live_trace(json!({"run_id": run_id, "last_n": 999})).unwrap();
+        assert_eq!(r["requested_last_n"], 30, "last_n must clamp to 30");
+
+        let s0 = &r["recent_steps"].as_array().unwrap()[0];
+        let data = s0["action"]["data"].as_str().unwrap();
+        assert!(data.len() < 500, "long action-input string must be truncated");
+        assert!(data.contains("truncated"), "preview marker must be present: {data}");
+    }
+
+    #[test]
+    fn live_trace_recent_steps_buffer_caps_at_30() {
+        // Push 35 steps — ring buffer must keep only the most recent 30.
+        use crate::test_runner::executor::TestStep;
+        use crate::test_runner::runs;
+
+        let run_id = runs::new_run("test_live_trace_cap");
+        for i in 0..35 {
+            runs::push_step_summary(&run_id, TestStep {
+                thought: format!("step-{i}"),
+                action: json!({"action": "wait"}),
+                observation: "ok".into(),
+                ..Default::default()
+            });
+        }
+
+        let r = call_live_trace(json!({"run_id": run_id, "last_n": 30})).unwrap();
+        assert_eq!(r["recent_steps_count"], 30, "buffer caps at 30 (oldest dropped)");
+        let steps = r["recent_steps"].as_array().unwrap();
+        // Oldest kept should be step-5 (35 - 30 = step-5 onward).
+        assert_eq!(steps[0]["thought"], "step-5");
+        assert_eq!(steps[29]["thought"], "step-34");
+    }
+
+    #[test]
+    fn subphase_clears_independent_of_phase() {
+        // set_subphase / clear_subphase pair.  After clear, current_subphase
+        // becomes null but the parent phase (Running) is unaffected.
+        use crate::test_runner::runs::{self, RunPhase};
+
+        let run_id = runs::new_run("test_subphase_clear");
+        runs::set_phase(&run_id, RunPhase::Running { step: 1, current_action: "x".into() });
+        runs::set_subphase(&run_id, "browser_action");
+
+        let r = call_get_test_result(json!({"run_id": &run_id})).unwrap();
+        assert_eq!(r["current_subphase"], "browser_action");
+
+        runs::clear_subphase(&run_id);
+        let r = call_get_test_result(json!({"run_id": &run_id})).unwrap();
+        assert!(r["current_subphase"].is_null(), "current_subphase must clear to null");
+        assert_eq!(r["status"], "running", "parent phase unaffected by subphase clear");
     }
 }
 

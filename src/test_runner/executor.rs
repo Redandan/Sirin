@@ -422,6 +422,14 @@ pub struct TestStep {
     /// — placeholder so the schema is forward-compatible).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llm_tokens: Option<u32>,
+    /// Phase B — byte length of the prompt sent to the LLM.  Combined with
+    /// llm_latency_ms answers "was the latency from a huge prompt or a
+    /// hung backend?".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_prompt_bytes: Option<u64>,
+    /// Phase B — byte length of the raw LLM response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_response_bytes: Option<u64>,
     /// KB topicKeys that were injected into the prompt for this run (all
     /// steps share the same set — duplicated for trace simplicity).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -797,6 +805,8 @@ pub async fn execute_test_tracked(
         // Mark as script mode before attempting replay (#192)
         if let Some(rid) = run_id {
             runs::set_replay_mode(rid, "script");
+            // Phase B — sub-phase tracking so live_trace shows "in replay".
+            runs::set_subphase(rid, "replay");
         }
 
         let Some(result) = try_replay_script(ctx, test, run_id, session_id, saved_actions).await else {
@@ -838,6 +848,14 @@ pub async fn execute_test_tracked(
 
     let started = std::time::Instant::now();
     let mut history: Vec<TestStep> = Vec::new();
+    // Phase B — mirror each appended step to RunState.recent_steps so the
+    // `live_trace` MCP can return mid-run progress.  No-op when run_id is
+    // None (legacy entry points without a registry id).
+    let mirror_step = |s: &TestStep| {
+        if let Some(rid) = run_id {
+            runs::push_step_summary(rid, s.clone());
+        }
+    };
     let mut parse_error_hint: Option<String> = None;
     let mut parse_error_count = 0u32;
     let max_parse_errors = test.retry_on_parse_error.max(1);
@@ -1190,6 +1208,10 @@ pub async fn execute_test_tracked(
                     };
                 }
 
+                // Phase B — mark sub-phase so `live_trace` / `get_test_result`
+                // can show "in llm_call for 84s" vs "in browser_action for 12s".
+                if let Some(rid) = run_id { runs::set_subphase(rid, "llm_call"); }
+
                 let mut last_err = String::new();
                 let mut raw_opt: Option<(String, LlmCallMeta)> = None;
                 for attempt in 0u32..3 {
@@ -1257,10 +1279,14 @@ pub async fn execute_test_tracked(
             // `parse_error_count` (mutated below in the parse-error branch).
             let llm_model = llm_meta.model.clone();
             let llm_latency_ms = llm_meta.latency_ms;
+            let llm_prompt_bytes = llm_meta.prompt_bytes as u64;
+            let llm_response_bytes = llm_meta.response_bytes as u64;
             let kb_hits_now = cached_kb_hits(&test.id);
             let trace_stamp = |step: &mut TestStep, parse_errors: u32| {
                 step.llm_model = Some(llm_model.clone());
                 step.llm_latency_ms = Some(llm_latency_ms);
+                step.llm_prompt_bytes = Some(llm_prompt_bytes);
+                step.llm_response_bytes = Some(llm_response_bytes);
                 step.parse_errors = Some(parse_errors);
                 step.kb_hits = kb_hits_now.clone();
                 step.ts = Some(chrono::Local::now().to_rfc3339());
@@ -1277,7 +1303,7 @@ pub async fn execute_test_tracked(
                         ..Default::default()
                     };
                     trace_stamp(&mut s, parse_error_count);
-                    history.push(s);
+                    mirror_step(&s); history.push(s);
                     if let Some(rid) = run_id {
                         runs::push_observation(rid, format!("ERROR (parse): {err}\nRaw: {raw}"));
                     }
@@ -1418,7 +1444,7 @@ pub async fn execute_test_tracked(
                     ..Default::default()
                 };
                 trace_stamp(&mut s, parse_error_count);
-                history.push(s);
+                mirror_step(&s); history.push(s);
 
                 let cap = capture_screenshot(ctx, &test.id, run_id).await;
                 break 'react TestResult {
@@ -1438,11 +1464,19 @@ pub async fn execute_test_tracked(
             // Dispatch to the appropriate tool.  `expand_observation` is a
             // meta-tool (reads run registry, no browser action).  Everything else
             // goes through `web_navigate`.
+            //
+            // Phase B — sub-phase flip from "llm_call" → "browser_action" so
+            // `live_trace` can show "in browser_action for 12s" cleanly.
+            if let Some(rid) = run_id { runs::set_subphase(rid, "browser_action"); }
             let raw_result = if action_label == "expand_observation" {
                 ctx.call_tool("expand_observation", action_input.clone()).await
             } else {
                 ctx.call_tool("web_navigate", action_input.clone()).await
             };
+            // Clear the sub-phase as soon as the action returns — between
+            // here and the next loop iteration we're processing observations,
+            // not waiting on any external resource.
+            if let Some(rid) = run_id { runs::clear_subphase(rid); }
             let full_obs = match &raw_result {
                 Ok(v) => v.to_string(),
                 Err(e) => format!("ERROR: {e}"),
@@ -1488,7 +1522,7 @@ pub async fn execute_test_tracked(
                             ..Default::default()
                         };
                         trace_stamp(&mut s, parse_error_count);
-                        history.push(s);
+                        mirror_step(&s); history.push(s);
                         continue;  // next iteration — LLM will see recovery message
                     }
                 }
@@ -1534,7 +1568,7 @@ pub async fn execute_test_tracked(
                         ..Default::default()
                     };
                     trace_stamp(&mut s, parse_error_count);
-                    history.push(s);
+                    mirror_step(&s); history.push(s);
                     break 'react finalize_early(
                         ctx, run_id, test, &history,
                         format!(
@@ -1582,7 +1616,7 @@ pub async fn execute_test_tracked(
                         ..Default::default()
                     };
                     trace_stamp(&mut s, parse_error_count);
-                    history.push(s);
+                    mirror_step(&s); history.push(s);
                     break 'react finalize_early(
                         ctx, run_id, test, &history,
                         format!(
@@ -1600,7 +1634,7 @@ pub async fn execute_test_tracked(
                 ..Default::default()
             };
             trace_stamp(&mut s, parse_error_count);
-            history.push(s);
+            mirror_step(&s); history.push(s);
 
             // Issue #78: capture a timeline frame after each successful step.
             // Reuses crate::browser::screenshot which auto-applies the privacy
@@ -2248,6 +2282,15 @@ fn resolve_llm_backend(test: &TestGoal) -> String {
 pub(crate) struct LlmCallMeta {
     pub model: String,
     pub latency_ms: u64,
+    /// Phase B — byte length of the rendered prompt sent to the backend.
+    /// Useful for diagnosing "84s/iter" cases — distinguishes "we sent a
+    /// 50KB prompt" (latency expected) from "we sent 2KB and still waited
+    /// 80s" (backend is hung / cold-starting).
+    pub prompt_bytes: usize,
+    /// Phase B — byte length of the raw response.  Combined with
+    /// latency_ms gives an effective tok/s estimate (chars ≈ tokens × 4
+    /// for English, ≈ tokens × 1.5 for CJK).
+    pub response_bytes: usize,
 }
 
 async fn call_test_llm(
@@ -2295,18 +2338,25 @@ async fn call_test_llm(
                     "{base_prompt}\n\n## 截圖視覺描述（由 vision 模型提供）\n{visual_desc}"
                 );
                 let model = ctx.llm.effective_coding_model().to_string();
+                let prompt_bytes = augmented.len();
                 let res = crate::llm::call_coding_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), augmented)
                     .await
                     .map_err(|e| e.to_string());
-                return res.map(|s| (s, LlmCallMeta {
-                    model,
-                    latency_ms: started.elapsed().as_millis() as u64,
-                }));
+                return res.map(|s| {
+                    let response_bytes = s.len();
+                    (s, LlmCallMeta {
+                        model,
+                        latency_ms: started.elapsed().as_millis() as u64,
+                        prompt_bytes,
+                        response_bytes,
+                    })
+                });
             }
 
             // No vision specialist — single stage with main LLM (must be multimodal).
             let prompt = build_prompt_vision(test, history, parse_error_hint, perception);
             let model = format!("vision:{}", ctx.llm.model);
+            let prompt_bytes = prompt.len();
             let res = crate::llm::call_vision(
                 ctx.http.as_ref(),
                 ctx.llm.as_ref(),
@@ -2316,10 +2366,15 @@ async fn call_test_llm(
             )
             .await
             .map_err(|e| e.to_string());
-            return res.map(|s| (s, LlmCallMeta {
-                model,
-                latency_ms: started.elapsed().as_millis() as u64,
-            }));
+            return res.map(|s| {
+                let response_bytes = s.len();
+                (s, LlmCallMeta {
+                    model,
+                    latency_ms: started.elapsed().as_millis() as u64,
+                    prompt_bytes,
+                    response_bytes,
+                })
+            });
         }
         tracing::warn!(
             "[test_runner] perception=vision requested for '{}' but screenshot unavailable; \
@@ -2332,10 +2387,16 @@ async fn call_test_llm(
     match backend.as_str() {
         "claude_cli" | "claude" => {
             let prompt = build_prompt_compact(test, history, parse_error_hint);
-            call_claude_cli(prompt).await.map(|s| (s, LlmCallMeta {
-                model: "claude_cli".into(),
-                latency_ms: started.elapsed().as_millis() as u64,
-            }))
+            let prompt_bytes = prompt.len();
+            call_claude_cli(prompt).await.map(|s| {
+                let response_bytes = s.len();
+                (s, LlmCallMeta {
+                    model: "claude_cli".into(),
+                    latency_ms: started.elapsed().as_millis() as u64,
+                    prompt_bytes,
+                    response_bytes,
+                })
+            })
         }
         _ => {
             // Auto-switch to a compact rolling-window prompt after 8 steps.
@@ -2361,13 +2422,19 @@ async fn call_test_llm(
                 build_prompt(test, history, parse_error_hint)
             };
             let model = ctx.llm.effective_coding_model().to_string();
+            let prompt_bytes = prompt.len();
             crate::llm::call_coding_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), prompt)
                 .await
                 .map_err(|e| e.to_string())
-                .map(|s| (s, LlmCallMeta {
-                    model,
-                    latency_ms: started.elapsed().as_millis() as u64,
-                }))
+                .map(|s| {
+                    let response_bytes = s.len();
+                    (s, LlmCallMeta {
+                        model,
+                        latency_ms: started.elapsed().as_millis() as u64,
+                        prompt_bytes,
+                        response_bytes,
+                    })
+                })
         }
     }
 }

@@ -11,8 +11,13 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use super::executor::{TestResult, TestStatus};
+use super::executor::{TestResult, TestStatus, TestStep};
 use super::parser::TestGoal;
+
+/// Phase B: how many of the most recent TestStep records to keep mirrored
+/// in RunState for live introspection via the `live_trace` MCP.  Capped to
+/// bound memory — older entries drop off the front of a VecDeque.
+const LIVE_TRACE_BUFFER_SIZE: usize = 30;
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -74,6 +79,30 @@ pub struct RunState {
     /// Set by executor: "script" for saved-script replay, "llm" for AI-driven.
     /// None = unknown (run not yet started).
     pub replay_mode: Option<String>,
+    /// Phase B — bounded mirror of the executor's local `history: Vec<TestStep>`.
+    /// Each `runs::push_step_summary(rid, step)` call appends and trims to
+    /// `LIVE_TRACE_BUFFER_SIZE`.  Exposed via the `live_trace` MCP for
+    /// mid-run debugging — when a test averages 84s/iter it's the only way
+    /// to see *what* iteration N actually did without waiting for completion.
+    /// Skipped from JSON serialisation (callers must use `live_trace` to
+    /// fetch — `get_test_result` keeps its small surface).
+    #[serde(skip)]
+    pub recent_steps: std::collections::VecDeque<TestStep>,
+    /// Phase B — finer-grained "what is the executor doing right now" hint
+    /// than `RunPhase::Running { current_action }`.  Set to one of:
+    ///   - "llm_call"        — waiting on the LLM HTTP response
+    ///   - "browser_action"  — calling a CDP tool (click / nav / screenshot)
+    ///   - "replay"          — executing a saved-script step (no LLM)
+    ///   - "verify"          — final success-criteria evaluation LLM call
+    /// `None` between sub-phases or before first transition.  Use with
+    /// `subphase_started_at` to compute "how long has the executor been
+    /// stuck in this sub-phase" — distinguishes LLM hang from browser hang.
+    pub current_subphase: Option<String>,
+    /// Phase B — bumped by `set_subphase`.  `to_json` exposes
+    /// `subphase_age_ms = subphase_started_at.elapsed().as_millis()`.
+    /// Skipped from serde — `Instant` isn't serialisable.
+    #[serde(skip, default = "std::time::Instant::now")]
+    pub subphase_started_at: std::time::Instant,
 }
 
 // ── Registry singleton ───────────────────────────────────────────────────────
@@ -106,6 +135,9 @@ pub fn new_run(test_id: &str) -> String {
         recent_ax_nodes: None,
         last_phase_updated_at: std::time::Instant::now(),
         replay_mode: None,
+        recent_steps: std::collections::VecDeque::with_capacity(LIVE_TRACE_BUFFER_SIZE),
+        current_subphase: None,
+        subphase_started_at: std::time::Instant::now(),
     };
     registry().lock().unwrap_or_else(|e| e.into_inner())
         .insert(run_id.clone(), state);
@@ -241,6 +273,58 @@ pub fn set_replay_mode(run_id: &str, mode: &str) {
     if let Some(s) = reg.get_mut(run_id) {
         s.replay_mode = Some(mode.to_string());
     }
+}
+
+/// Phase B — append a TestStep to the rolling live-trace buffer.  Called
+/// by the executor immediately before each `history.push(step)` so the
+/// `live_trace` MCP can return the latest N completed steps mid-run.
+///
+/// VecDeque caps at `LIVE_TRACE_BUFFER_SIZE`; oldest entry drops on
+/// overflow.  No-op when `run_id` is unknown (executor calls with the
+/// real id from the registry, so this is defensive only).
+pub fn push_step_summary(run_id: &str, step: TestStep) {
+    let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(s) = reg.get_mut(run_id) {
+        if s.recent_steps.len() >= LIVE_TRACE_BUFFER_SIZE {
+            s.recent_steps.pop_front();
+        }
+        s.recent_steps.push_back(step);
+    }
+}
+
+/// Phase B — set the executor's current sub-phase (`"llm_call"` /
+/// `"browser_action"` / `"replay"` / `"verify"`).  Bumps
+/// `subphase_started_at` so `to_json` can expose `subphase_age_ms`.
+///
+/// Pair with `clear_subphase` between iterations so `current_subphase`
+/// stays accurate (otherwise it sticks at the last set value).
+pub fn set_subphase(run_id: &str, kind: &str) {
+    let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(s) = reg.get_mut(run_id) {
+        s.current_subphase = Some(kind.to_string());
+        s.subphase_started_at = std::time::Instant::now();
+    }
+}
+
+/// Phase B — clear `current_subphase`.  Called when an iteration ends so
+/// callers don't see a stale "in llm_call for 8000ms" while the executor
+/// is actually between iterations.
+pub fn clear_subphase(run_id: &str) {
+    let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(s) = reg.get_mut(run_id) {
+        s.current_subphase = None;
+    }
+}
+
+/// Phase B — snapshot the last `n` recent steps for the `live_trace` MCP.
+/// Returns the steps oldest-first; empty Vec if the run is unknown or has
+/// no steps yet.
+pub fn recent_steps(run_id: &str, n: usize) -> Vec<TestStep> {
+    let reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+    let Some(s) = reg.get(run_id) else { return Vec::new() };
+    let take = n.min(s.recent_steps.len());
+    let skip = s.recent_steps.len() - take;
+    s.recent_steps.iter().skip(skip).cloned().collect()
 }
 
 /// Render the action sequence of a passing run as a compact bullet list so
@@ -469,6 +553,15 @@ pub fn to_json(s: &RunState) -> serde_json::Value {
         }
         _ => (0, 0),
     };
+    // Phase B — sub-phase ("llm_call" / "browser_action" / "replay" / "verify")
+    // + age in milliseconds.  Only meaningful for Running phase.
+    let (current_subphase, subphase_age_ms) = match &s.phase {
+        RunPhase::Running { .. } => (
+            s.current_subphase.clone(),
+            s.subphase_started_at.elapsed().as_millis() as u64,
+        ),
+        _ => (None, 0),
+    };
     json!({
         "run_id": s.run_id,
         "test_id": s.test_id,
@@ -477,6 +570,9 @@ pub fn to_json(s: &RunState) -> serde_json::Value {
         "idle_secs": idle_secs,
         "last_action_age_ms": last_action_age_ms,
         "replay_mode": s.replay_mode,  // #192 "script" | "llm" | null
+        "current_subphase": current_subphase,
+        "subphase_age_ms": subphase_age_ms,
+        "recent_steps_count": s.recent_steps.len(),
         "details": extra,
     })
 }
