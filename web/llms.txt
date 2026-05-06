@@ -1,0 +1,71 @@
+# Sirin
+
+> AI-driven browser test daemon — local-only MCP server exposing 65+ tools for browser automation, E2E tests, knowledge-base search, and multi-agent squad orchestration.
+
+This file follows the [llms.txt](https://llmstxt.org/) convention so AI clients
+can discover the API surface in one fetch.  Humans should open `/ui/` instead.
+
+## Connect
+
+- **MCP HTTP (JSON-RPC 2.0)**: `http://127.0.0.1:7700/mcp`
+- **Dashboard**: `http://127.0.0.1:7700/ui/`
+- **Help (HTML)**: `http://127.0.0.1:7700/help`
+- **Snapshot**: `http://127.0.0.1:7700/api/snapshot`
+- **WebSocket (live updates)**: `ws://127.0.0.1:7700/ws`
+
+The fastest way to learn what's available is to call the `help` MCP tool:
+
+```sh
+curl -X POST http://127.0.0.1:7700/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"help"},"id":1}'
+```
+
+It returns a structured JSON envelope with: connection-config snippets for
+Claude Desktop / Cline / Cursor, top-level tool categories, caveats, and a
+3-step quickstart curl example.
+
+## Quick start (3 steps)
+
+```sh
+# 1. List all 65+ tools
+curl -X POST http://127.0.0.1:7700/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"tools/list","id":1}'
+
+# 2. Run an E2E test (returns run_id immediately)
+curl -X POST http://127.0.0.1:7700/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"run_test_async","arguments":{"test_id":"agora_admin_status_chip"}},"id":1}'
+
+# 3. Poll for result (replace RUN_ID)
+curl -X POST http://127.0.0.1:7700/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"get_test_result","arguments":{"run_id":"RUN_ID"}},"id":1}'
+```
+
+## Tool categories
+
+- **browser_automation** — `browser_exec` (45+ CDP actions: navigate / click / type / screenshot / scroll / shadow_dump / vision)
+- **e2e_tests** — `run_test_async`, `run_test_batch`, `run_regression_suite`, `get_test_result`
+- **coverage** — `test_coverage`, `script_health`
+- **knowledge_base** — `kb_search`, `kbWrite`, `kb_stats`
+- **multi_agent_squad** — `agent_assign_task`, `agent_queue_status`, `cleanup_stale_worktrees`
+- **handoff** — `create_handoff`, `get_latest_handoff`
+- **live_observation** — `live_trace`, `queue_status`, `tail_app_log`
+- **memory** — `memory_search`, `record_memory`
+
+Full list: [`tools/list`](http://127.0.0.1:7700/mcp) MCP method.
+
+## Caveats
+
+- **Concurrency = 1** — `TEST_RUN_LOCK` serialises runs. Check `queue_status` for ETA.
+- **Idle close** — Chrome auto-closes after 60 s of no active tests (`SIRIN_BROWSER_IDLE_CLOSE_SECS`).
+- **No auth** — Bind is `127.0.0.1` only. For remote use, add a reverse proxy with auth.
+- **Replay first** — Tests with saved scripts run in ~10 s at $0 cost. LLM ReAct fallback is 30-300 s.
+
+## Optional
+
+- [GitHub repo](https://github.com/Redandan/Sirin)
+- [Issue tracker](https://github.com/Redandan/Sirin/issues)
+- Full HTML help: `http://127.0.0.1:7700/help` (Chinese walkthroughs + troubleshooting)

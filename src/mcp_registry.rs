@@ -163,6 +163,17 @@ pub fn is_populated() -> bool {
 // Migrations land in batches — see #257 for the running checklist.
 
 fn seed_default(m: &mut RegistryMap) {
+    // Domain: AI-facing discovery — first thing other AIs see when they
+    // call `tools/list`, so the description spells out what Sirin is + the
+    // help URL.  Returning the URL inline lets curl-only callers skip the
+    // browser entirely.
+    m.insert("help", ToolDef {
+        name:         "help",
+        description: "📖 What is Sirin? — AI-driven browser test daemon. Returns connection methods + tool categories + the help URL (http://127.0.0.1:7700/help) for full HTML docs. Other AIs (Claude / Cline / Cursor / curl) should call this FIRST to learn what 65+ tools are available and how to use them. No args required.",
+        input_schema: json!({"type": "object", "properties": {}}),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_help),
+    });
+
     // Domain: skills + teams (text-mode handlers).
     m.insert("skill_list", ToolDef {
         name:         "skill_list",

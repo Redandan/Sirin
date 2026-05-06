@@ -184,6 +184,11 @@ pub fn mcp_router() -> Router {
         // Static UI files — bundled into the binary via include_bytes! so
         // the single-binary distribution story holds. /ui (no trailing
         // slash) redirects to /ui/ so relative paths in index.html resolve.
+        // `/` is reserved for the legacy WebSocket upgrade handler in
+        // rpc_server.rs (Sirin pre-:7700/ws compat).  Use `/welcome` for
+        // the human/AI-readable landing instead — still typeable, doesn't
+        // conflict, listed in /llms.txt and the help_html response.
+        .route("/welcome",   get(root_index))
         .route("/ui",        get(|| async { Redirect::permanent("/ui/") }))
         .route("/ui/",       get(ui_index))
         .route("/ui/{file}", get(ui_static))
@@ -191,6 +196,9 @@ pub fn mcp_router() -> Router {
         // type / link to without thinking about the /ui/ prefix.
         .route("/help",      get(|| async { Redirect::permanent("/ui/help.html") }))
         .route("/help/",     get(|| async { Redirect::permanent("/ui/help.html") }))
+        // AI discovery — llmstxt.org convention. Markdown at root level
+        // means crawlers find it without any path guessing.
+        .route("/llms.txt",  get(llms_txt))
         // /api/snapshot — single combined JSON read for the dashboard. Polled
         // every ~5s by the web UI; cheap aggregate of read-only AppService calls.
         .route("/api/snapshot", get(api_snapshot))
@@ -239,6 +247,27 @@ async fn ui_index() -> impl IntoResponse {
     (
         [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
         include_str!("../web/index.html"),
+    )
+}
+
+/// Bare `/` — 4-card landing pointing at the four discoverable surfaces:
+/// dashboard, HTML help, llms.txt, snapshot endpoint.  AI-discovery
+/// hints (meta tags, alternate / help link rels) live in the HTML head.
+async fn root_index() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        include_str!("../web/root.html"),
+    )
+}
+
+/// `/llms.txt` — markdown crawler convention from llmstxt.org.  Plain
+/// text + `text/plain` MIME so AI clients (and any sane crawler) can
+/// ingest it without an HTML parser.  Bundled via include_str! so
+/// single-binary distribution still holds.
+async fn llms_txt() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        include_str!("../web/llms.txt"),
     )
 }
 
@@ -4482,6 +4511,108 @@ pub(crate) fn call_agent_clear_completed() -> Result<Value, String> {
     Ok(serde_json::json!({
         "removed": before - after,
         "remaining": after,
+    }))
+}
+
+/// AI-facing discovery — when another AI client lists Sirin's tools,
+/// `help` is the first thing they see and the natural starting point.
+/// The response is a structured envelope: a one-line summary, the URLs,
+/// connection-config snippets for the common AI clients, top-level tool
+/// categories, and one curl-shaped quickstart.  Anything more detailed
+/// lives in `/help` (HTML).
+///
+/// Pure data — no I/O, no caching needed.  Safe for cron / discovery
+/// crawlers to call repeatedly.
+pub(crate) fn call_help(_args: Value) -> Result<Value, String> {
+    Ok(json!({
+        "name":    "Sirin",
+        "version": env!("CARGO_PKG_VERSION"),
+        "summary": "AI-driven browser test daemon. Exposes 65+ MCP tools (browser automation, E2E test runner, KB search, multi-agent squad). Local-only by default (127.0.0.1).",
+        "urls": {
+            "help_html":   "http://127.0.0.1:7700/help",
+            "dashboard":   "http://127.0.0.1:7700/ui/",
+            "mcp":         "http://127.0.0.1:7700/mcp",
+            "ws":          "ws://127.0.0.1:7700/ws",
+            "snapshot":    "http://127.0.0.1:7700/api/snapshot",
+            "github":      "https://github.com/Redandan/Sirin",
+        },
+        "connect": {
+            "claude_desktop": {
+                "file": "~/.claude.json",
+                "snippet": {
+                    "mcpServers": {
+                        "sirin": { "url": "http://127.0.0.1:7700/mcp" }
+                    }
+                }
+            },
+            "vscode_mcp": {
+                "snippet": {
+                    "mcp.servers": {
+                        "sirin": {
+                            "transport": "http",
+                            "url": "http://127.0.0.1:7700/mcp"
+                        }
+                    }
+                }
+            },
+            "curl": "curl -X POST http://127.0.0.1:7700/mcp -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"method\":\"tools/list\",\"id\":1}'"
+        },
+        "tool_categories": [
+            { "category": "browser_automation",
+              "primary": ["browser_exec"],
+              "what":    "45+ CDP actions: navigate / click / type / screenshot / scroll / shadow_dump / vision" },
+            { "category": "e2e_tests",
+              "primary": ["run_test_async", "run_test_batch", "run_regression_suite", "get_test_result"],
+              "what":    "Run YAML-described user flows; auto ReAct loop; deterministic-script replay when available (0 LLM cost)" },
+            { "category": "coverage",
+              "primary": ["test_coverage", "script_health"],
+              "what":    "Per-feature coverage map + replay-vs-LLM health drift alerts" },
+            { "category": "knowledge_base",
+              "primary": ["kb_search", "kbWrite", "kb_stats"],
+              "what":    "Cross-project confirmed-trap / pass-pattern store (agora-trading KB backend)" },
+            { "category": "multi_agent_squad",
+              "primary": ["agent_assign_task", "agent_queue_status", "cleanup_stale_worktrees"],
+              "what":    "PM/Engineer/Tester worker pool, worktree-isolated per task, GitHub issue loop-closure" },
+            { "category": "handoff",
+              "primary": ["create_handoff", "get_latest_handoff"],
+              "what":    "Session-to-session continuity — tested AI workflow for context recovery" },
+            { "category": "live_observation",
+              "primary": ["live_trace", "queue_status", "tail_app_log"],
+              "what":    "Phase B introspection — see mid-run steps, queue ETA, live daemon log" },
+            { "category": "memory",
+              "primary": ["memory_search", "record_memory"],
+              "what":    "FTS5 SQLite store for cross-session free-form notes" },
+        ],
+        "caveats": [
+            "Concurrency = 1 — TEST_RUN_LOCK serialises test runs; use queue_status for ETA",
+            "Chrome auto-closes after 60 s idle (SIRIN_BROWSER_IDLE_CLOSE_SECS); next test relaunches",
+            "No auth — listens on 127.0.0.1 only; add reverse proxy for remote access",
+            "Replay first — saved-script tests run in 5-30 s with 0 LLM cost; LLM ReAct fallback is 30-300 s",
+            "KB writes auto-dedup via topicKey versioning — multiple AIs running the same test won't spam",
+        ],
+        "quickstart": {
+            "step1_list_tools": {
+                "method": "tools/list",
+                "curl":   "curl -X POST :7700/mcp -d '{\"jsonrpc\":\"2.0\",\"method\":\"tools/list\",\"id\":1}' -H 'Content-Type: application/json'"
+            },
+            "step2_run_test": {
+                "method":  "tools/call name=run_test_async",
+                "example": {
+                    "jsonrpc": "2.0",
+                    "method":  "tools/call",
+                    "params": {
+                        "name": "run_test_async",
+                        "arguments": { "test_id": "agora_admin_status_chip" }
+                    },
+                    "id": 1
+                }
+            },
+            "step3_poll_result": {
+                "method":  "tools/call name=get_test_result",
+                "args":    { "run_id": "<from step 2>" }
+            }
+        },
+        "see_also": "Full HTML docs at the help_html URL above. Includes Chinese walkthroughs, more examples, and troubleshooting."
     }))
 }
 
