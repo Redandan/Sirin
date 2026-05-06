@@ -185,6 +185,15 @@ window.sirin = function () {
       expandedRunDetail: null,
       expandedRunLoading: false,
 
+      // Kibana-style log view state for the run detail page.
+      // expandedStepIters: array of step.iter values currently expanded
+      //   (Alpine isn't reactive on Set mutations — use Array + indexOf).
+      // logSearch: free-text filter across thought/action/observation.
+      // logTypeFilter: 'all' | 'browser' | 'llm-heavy' | 'wait' | 'analyze'.
+      expandedStepIters: [],
+      logSearch: '',
+      logTypeFilter: 'all',
+
       // ── Modal mock data ─────────────────────────────────────────────
       // config_check output — Settings modal lists these cards.
       config_issues: [
@@ -227,6 +236,15 @@ window.sirin = function () {
 
     // ── Lifecycle ──────────────────────────────────────────────────
     async init() {
+      // #279 — touch Kibana log view state so Alpine binds them as
+      // reactive properties at init time rather than lazily-on-template-
+      // render.  Without this, accessing this.logSearch from
+      // filteredLogSteps() before the run-detail section ever rendered
+      // would throw "Cannot read properties of undefined (reading 'trim')".
+      this.logSearch = '';
+      this.logTypeFilter = 'all';
+      this.expandedStepIters = [];
+
       // Restore saved Dashboard layout (v0.5.5). Falls back to default
       // 4-widget layout when localStorage is empty or contains a value
       // our catalog no longer recognizes (e.g. a removed widget id).
@@ -1017,6 +1035,56 @@ window.sirin = function () {
       this.expandedRunId = null;
       this.expandedRunDetail = null;
     },
+
+    // ── Kibana-style log helpers (run detail page) ────────────────────
+
+    // Filter the current expandedRunDetail.steps by logSearch + logTypeFilter.
+    filteredLogSteps() {
+      const steps = this.expandedRunDetail?.steps || [];
+      const q = this.logSearch.trim().toLowerCase();
+      const f = this.logTypeFilter;
+      return steps.filter(s => {
+        // Type filter
+        if (f !== 'all') {
+          const action = (s.action?.action || '').toLowerCase();
+          if (f === 'browser' && !['shadow_click','click_point','goto','wait','scroll','enable_a11y','flutter_type','flutter_scroll_until_visible','ax_click','ax_focus','ax_find','set_viewport','close','reset_session'].includes(action)) return false;
+          if (f === 'llm-heavy' && (s.llm_latency_ms || 0) < 5000) return false;
+          if (f === 'analyze' && action !== 'screenshot_analyze') return false;
+          if (f === 'error' && !(s.observation || '').match(/error|fail|timeout|not.found|exception/i)) return false;
+        }
+        // Search
+        if (q) {
+          const blob = (s.thought + ' ' + JSON.stringify(s.action) + ' ' + s.observation).toLowerCase();
+          if (!blob.includes(q)) return false;
+        }
+        return true;
+      });
+    },
+
+    // Click a log row to toggle its full-document expanded view.
+    toggleStepRow(iter) {
+      const arr = this.expandedStepIters;
+      const idx = arr.indexOf(iter);
+      if (idx >= 0) arr.splice(idx, 1);
+      else arr.push(iter);
+    },
+
+    isStepExpanded(iter) {
+      return this.expandedStepIters.includes(iter);
+    },
+
+    // Color-class a row based on action type — Kibana-style level badge.
+    actionRowClass(step) {
+      const action = step.action?.action || '';
+      const obs = step.observation || '';
+      if (obs.match(/^ERROR|^FAIL|exception|panic/i)) return 'log-row-error';
+      if ((step.llm_latency_ms || 0) > 15000) return 'log-row-warn';      // > 15s = slow
+      if (action === 'screenshot_analyze') return 'log-row-analyze';
+      if (['wait', 'enable_a11y'].includes(action)) return 'log-row-trivial';
+      return 'log-row-info';
+    },
+
+    // (truncate(s, n) already defined earlier — reused here.)
 
     // Format a TestStep's `ts` (RFC-3339) → "HH:MM:SS" for display in
     // the run detail step cards.  Returns empty when ts missing.

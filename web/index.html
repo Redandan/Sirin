@@ -654,26 +654,91 @@
               <div class="small" x-text="expandedRunDetail.analysis"></div>
             </div>
 
-            <!-- Steps -->
+            <!-- Steps — Kibana-inspired log view -->
             <div class="card" x-show="expandedRunDetail.steps && expandedRunDetail.steps.length > 0">
-              <div class="section-label" x-text="'執行步驟 (' + expandedRunDetail.steps.length + ')'"></div>
-              <template x-for="step in expandedRunDetail.steps" :key="step.iter">
-                <div class="run-step-card">
-                  <div class="row gap-md">
-                    <span class="badge-soft mono small" x-text="'iter ' + step.iter"></span>
-                    <span x-show="step.ts" class="dim mono small"
-                          :title="step.ts" x-text="formatStepTime(step.ts)"></span>
-                    <span class="mono small" x-text="formatStepAction(step)"></span>
-                    <span class="row-spacer"></span>
-                    <span x-show="step.llm_latency_ms" class="dim mono small"
-                          x-text="(step.llm_latency_ms/1000).toFixed(1) + 's LLM'"></span>
-                    <span x-show="step.llm_prompt_bytes" class="dim mono small"
-                          x-text="Math.round(step.llm_prompt_bytes/1024) + 'KB'"></span>
+              <div class="row gap-md">
+                <div class="section-label"
+                     x-text="'執行步驟 (' + filteredLogSteps().length + ' / ' + expandedRunDetail.steps.length + ')'"></div>
+                <span class="row-spacer"></span>
+                <input type="text" class="filter-input log-search"
+                       x-model="logSearch"
+                       placeholder="🔍 搜尋 thought / action / observation…">
+              </div>
+
+              <div class="filter-row mt-xs">
+                <button class="filter-pill" :class="logTypeFilter==='all'?'active':''"
+                        @click="logTypeFilter='all'">全部</button>
+                <button class="filter-pill" :class="logTypeFilter==='browser'?'active':''"
+                        @click="logTypeFilter='browser'">瀏覽器動作</button>
+                <button class="filter-pill" :class="logTypeFilter==='analyze'?'active':''"
+                        @click="logTypeFilter='analyze'">截圖分析</button>
+                <button class="filter-pill" :class="logTypeFilter==='llm-heavy'?'active':''"
+                        @click="logTypeFilter='llm-heavy'">慢 LLM (>5s)</button>
+                <button class="filter-pill" :class="logTypeFilter==='error'?'active':''"
+                        @click="logTypeFilter='error'">錯誤</button>
+                <span class="row-spacer"></span>
+                <button class="btn-secondary log-expand-all"
+                        @click="expandedStepIters = expandedStepIters.length === expandedRunDetail.steps.length ? [] : expandedRunDetail.steps.map(s => s.iter)"
+                        x-text="expandedStepIters.length === expandedRunDetail.steps.length ? '全部收合' : '全部展開'"></button>
+              </div>
+
+              <!-- Column header -->
+              <div class="log-row log-row-header mono small">
+                <span class="log-cell-icon"></span>
+                <span class="log-cell-ts">時間</span>
+                <span class="log-cell-iter">#</span>
+                <span class="log-cell-action">動作</span>
+                <span class="log-cell-latency">LLM</span>
+                <span class="log-cell-thought">內容預覽</span>
+              </div>
+
+              <!-- Log rows -->
+              <template x-for="step in filteredLogSteps()" :key="step.iter">
+                <div :class="'log-row-wrapper ' + actionRowClass(step)">
+                  <div class="log-row mono small" @click="toggleStepRow(step.iter)">
+                    <span class="log-cell-icon" x-text="isStepExpanded(step.iter) ? '▼' : '▶'"></span>
+                    <span class="log-cell-ts dim" :title="step.ts"
+                          x-text="formatStepTime(step.ts) || '-'"></span>
+                    <span class="log-cell-iter dim" x-text="step.iter"></span>
+                    <span class="log-cell-action" x-text="formatStepAction(step)"></span>
+                    <span class="log-cell-latency dim"
+                          x-text="step.llm_latency_ms ? (step.llm_latency_ms/1000).toFixed(1) + 's' : '-'"></span>
+                    <span class="log-cell-thought dim"
+                          x-text="truncate(step.thought || step.observation || '', 100)"></span>
                   </div>
-                  <div class="dim small mt-xs" x-show="step.thought" x-text="'💭 ' + step.thought"></div>
-                  <pre class="mono small run-step-obs" x-show="step.observation" x-text="step.observation"></pre>
+                  <!-- Expanded full document — Kibana key/value table -->
+                  <div class="log-doc" x-show="isStepExpanded(step.iter)" x-cloak>
+                    <table class="log-doc-table mono small">
+                      <tr><td class="log-doc-key">timestamp</td>
+                          <td x-text="step.ts || '(none)'"></td></tr>
+                      <tr><td class="log-doc-key">iter</td>
+                          <td x-text="step.iter"></td></tr>
+                      <tr><td class="log-doc-key">action</td>
+                          <td><pre class="mono small log-doc-pre" x-text="JSON.stringify(step.action, null, 2)"></pre></td></tr>
+                      <tr x-show="step.thought"><td class="log-doc-key">thought</td>
+                          <td class="log-doc-val" x-text="step.thought"></td></tr>
+                      <tr><td class="log-doc-key">observation</td>
+                          <td><pre class="mono small log-doc-pre" x-text="step.observation || '(empty)'"></pre>
+                              <div class="dim small" x-show="step.observation_chars > 1024"
+                                   x-text="'(originally ' + step.observation_chars + ' chars; truncated to 1024)'"></div></td></tr>
+                      <tr x-show="step.llm_model"><td class="log-doc-key">llm_model</td>
+                          <td x-text="step.llm_model"></td></tr>
+                      <tr x-show="step.llm_latency_ms"><td class="log-doc-key">llm_latency_ms</td>
+                          <td x-text="step.llm_latency_ms"></td></tr>
+                      <tr x-show="step.llm_prompt_bytes"><td class="log-doc-key">llm_prompt_bytes</td>
+                          <td x-text="step.llm_prompt_bytes + ' (' + Math.round(step.llm_prompt_bytes/1024) + ' KB)'"></td></tr>
+                      <tr x-show="step.llm_response_bytes"><td class="log-doc-key">llm_response_bytes</td>
+                          <td x-text="step.llm_response_bytes"></td></tr>
+                      <tr x-show="step.parse_errors !== null && step.parse_errors > 0">
+                          <td class="log-doc-key">parse_errors</td>
+                          <td class="log-doc-val-warn" x-text="step.parse_errors"></td></tr>
+                    </table>
+                  </div>
                 </div>
               </template>
+
+              <div x-show="filteredLogSteps().length === 0 && expandedRunDetail.steps.length > 0"
+                   class="card-empty">沒有符合條件的步驟（清除搜尋或 filter）</div>
             </div>
 
             <div class="card card-empty" x-show="!expandedRunDetail.steps || expandedRunDetail.steps.length === 0">

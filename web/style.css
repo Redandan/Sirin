@@ -596,6 +596,85 @@ button { font-family: inherit; cursor: pointer; }
   overflow-y: auto;
 }
 
+/* ── Kibana-style log view (#279 — run detail page steps) ───────────── */
+.log-search { width: 280px; }
+.log-expand-all { padding: 4px 10px; font-size: 11px; }
+
+/* 6-column grid: icon, timestamp, iter, action, latency, thought-preview */
+.log-row {
+  display: grid;
+  grid-template-columns: 16px 80px 36px 220px 60px 1fr;
+  gap: 10px;
+  align-items: center;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  user-select: none;
+}
+.log-row:hover { background: var(--hover); }
+.log-row-header {
+  cursor: default;
+  background: rgba(255,255,255,0.02);
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.log-row-header:hover { background: rgba(255,255,255,0.02); }
+
+/* Per-row severity tint (left border accent — Kibana convention) */
+.log-row-wrapper { border-left: 2px solid transparent; }
+.log-row-wrapper.log-row-info     { border-left-color: var(--info); }
+.log-row-wrapper.log-row-trivial  { border-left-color: var(--text-dim); }
+.log-row-wrapper.log-row-analyze  { border-left-color: var(--accent); }
+.log-row-wrapper.log-row-warn     { border-left-color: var(--yellow); }
+.log-row-wrapper.log-row-error    { border-left-color: var(--danger); background: rgba(255,75,75,0.04); }
+
+.log-cell-icon { width: 16px; text-align: center; color: var(--text-dim); }
+.log-cell-ts, .log-cell-iter, .log-cell-action, .log-cell-latency {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.log-cell-thought {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Expanded full-document pane */
+.log-doc {
+  background: rgba(255,255,255,0.015);
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.log-doc-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.log-doc-table td {
+  padding: 4px 10px;
+  vertical-align: top;
+  border-bottom: 1px dashed var(--border);
+}
+.log-doc-table tr:last-child td { border-bottom: none; }
+.log-doc-key {
+  width: 160px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.log-doc-pre {
+  background: rgba(0,0,0,0.2);
+  padding: 6px 10px;
+  border-radius: 2px;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.log-doc-val-warn { color: var(--yellow); }
+
 .run-status {
   width: 16px; flex-shrink: 0;
   font-family: var(--font-mono);
