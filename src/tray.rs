@@ -171,6 +171,11 @@ fn update_tooltip(tray: &TrayIcon) {
 
 /// Synchronous snapshot fetch via `reqwest::blocking` (already pulled in
 /// via the `blocking` feature in Cargo.toml).
+///
+/// #279 tier 1 — tooltip now folds in Phase A/B telemetry that the snapshot
+/// already carries: active run subphase, queue drain ETA, browser
+/// idle-close countdown.  Keeps the tray useful at a glance without having
+/// to open the dashboard for "is anything stuck?".
 fn fetch_status_text() -> Option<String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(2))
@@ -184,13 +189,51 @@ fn fetch_status_text() -> Option<String> {
 
     let runs = json.get("active_runs")?.as_array()?;
     let queued = runs.iter().filter(|r| r.get("status").and_then(|s| s.as_str()) == Some("queued")).count();
-    let running = runs.iter().filter(|r| r.get("status").and_then(|s| s.as_str()) == Some("running")).count();
+    let running_runs: Vec<&serde_json::Value> = runs.iter()
+        .filter(|r| r.get("status").and_then(|s| s.as_str()) == Some("running"))
+        .collect();
+    let running = running_runs.len();
     let version = json.get("version").and_then(|v| v.as_str()).unwrap_or("?");
     let llm_main = json.get("llm_main").and_then(|v| v.as_str()).unwrap_or("?");
 
-    Some(format!(
-        "Sirin v{version}\nRunning {running}, Queued {queued}\nLLM: {llm_main}"
-    ))
+    let mut lines = Vec::with_capacity(6);
+    lines.push(format!("Sirin v{version}"));
+    lines.push(format!("Running {running}, Queued {queued}"));
+    lines.push(format!("LLM: {llm_main}"));
+
+    // Per-run sub-phase line — most informative when 1 test is in flight.
+    if let Some(r) = running_runs.first() {
+        let test_id  = r.get("test_id").and_then(|v| v.as_str()).unwrap_or("?");
+        let subphase = r.get("current_subphase").and_then(|v| v.as_str());
+        let idle_secs = r.get("idle_secs").and_then(|v| v.as_u64()).unwrap_or(0);
+        let stuck = if idle_secs >= 60 { format!(" [stuck {idle_secs}s]") } else { String::new() };
+        match subphase {
+            Some(sp) => lines.push(format!("→ {test_id}  ({sp}{stuck})")),
+            None     => lines.push(format!("→ {test_id}{stuck}")),
+        }
+    }
+
+    // Queue drain ETA when we have backlog.
+    if queued > 0 {
+        if let Some(drain) = json.get("queue")
+            .and_then(|q| q.get("estimated_drain_secs"))
+            .and_then(|d| d.as_u64())
+        {
+            let mins = (drain + 59) / 60;
+            lines.push(format!("Drain ETA: ~{mins} min"));
+        }
+    }
+
+    // Browser idle countdown when Chrome is up but no test claims it.
+    let browser_open  = json.get("browser_open").and_then(|v| v.as_bool()).unwrap_or(false);
+    let browser_owner = json.get("browser_owner").and_then(|v| v.as_object());
+    if browser_open && browser_owner.is_none() {
+        if let Some(secs) = json.get("browser_idle_close_in_secs").and_then(|v| v.as_u64()) {
+            lines.push(format!("Browser idle — auto-close in {secs}s"));
+        }
+    }
+
+    Some(lines.join("\n"))
 }
 
 /// Open a URL in the user's default browser.  Currently Windows-only;
