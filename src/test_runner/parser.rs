@@ -692,13 +692,41 @@ url_query:
         // Since 2026-04-24 these tests use URL auto-login (?__test_role=) instead
         // of the old shadow_click login fixture.  Executor calls
         // Storage.clearDataForOrigin + 8 s wait + enable_a11y before the ReAct loop.
-        // None of the 12 agora_regression tests should require a fixture anymore.
+        // Most of the agora_regression tests should require no fixture anymore.
+        //
+        // Exemption: tests that intentionally pre-load deterministic warm-up
+        // steps (wait / enable_a11y) via fixture.setup are OK — those don't
+        // re-do auto-login, they just give the LLM a quieter starting AX tree.
+        // `agora_checkout_dry` (fa83edf, #265 vision-bloat redesign) is the
+        // canonical example; commit message explains the trade-off.
+        const FIXTURE_ALLOWLIST: &[&str] = &[
+            "agora_checkout_dry",        // #265 vision-bloat redesign (fa83edf)
+            "agora_notification_delete", // wait + enable_a11y warm-up only
+            "agora_pickup_time_picker",  // wait + enable_a11y warm-up only
+        ];
         for id in &expected_ids {
             let test = all.iter().find(|t| t.id == *id).unwrap();
+            let id_ref: &str = *id;
+            if FIXTURE_ALLOWLIST.contains(&id_ref) {
+                // The whitelisted tests must keep their fixture lean: only
+                // wait / enable_a11y / clear_state — no shadow_click login
+                // sequence which the URL auto-login replaced.
+                if let Some(fix) = &test.fixture {
+                    for step in &fix.setup {
+                        let action: &str = &step.action;
+                        assert!(
+                            matches!(action, "wait" | "enable_a11y" | "clear_state"),
+                            "test '{id_ref}' fixture.setup contains '{action}' — only \
+                             wait / enable_a11y / clear_state are allowed; \
+                             auto-login is handled via ?__test_role= URL param",
+                        );
+                    }
+                }
+                continue;
+            }
             assert!(
                 test.fixture.is_none(),
-                "test '{}' has a fixture — should use ?__test_role= URL auto-login instead",
-                id
+                "test '{id_ref}' has a fixture — should use ?__test_role= URL auto-login instead",
             );
         }
 
