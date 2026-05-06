@@ -4480,6 +4480,38 @@ pub(crate) fn call_agent_clear_completed() -> Result<Value, String> {
     }))
 }
 
+/// Issue #242 — Reap abandoned `sirin-task-*` worktrees.  See the MCP
+/// registry entry for the full doc; this function clamps inputs and
+/// hands off to [`crate::multi_agent::worktree::cleanup_stale_worktrees`].
+pub(crate) fn call_cleanup_stale_worktrees(args: Value) -> Result<Value, String> {
+    let older_than_hours = args.get("older_than_hours")
+        .and_then(Value::as_u64)
+        .unwrap_or(24)
+        .clamp(1, 720);  // 1h … 30d
+    let dry_run = args.get("dry_run").and_then(Value::as_bool).unwrap_or(true);
+
+    // Repo cwd: prefer the running process's working dir, which the worker
+    // also passes when it spawns claude — keeps cleanup scoped to the same
+    // checkout that hosts the task branches.
+    let repo_cwd = std::env::current_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .map_err(|e| format!("current_dir: {e}"))?;
+
+    let reaped = crate::multi_agent::worktree::cleanup_stale_worktrees(
+        &repo_cwd,
+        older_than_hours,
+        dry_run,
+    )?;
+    let total = reaped.len();
+    Ok(serde_json::json!({
+        "repo_cwd":          repo_cwd,
+        "older_than_hours":  older_than_hours,
+        "dry_run":           dry_run,
+        "total":             total,
+        "reaped":            reaped,
+    }))
+}
+
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_squad_knowledge(arguments: Value) -> Result<Value, String> {
     let limit = arguments["limit"].as_u64().unwrap_or(20).min(100) as usize;

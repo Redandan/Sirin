@@ -324,6 +324,29 @@ fn seed_default(m: &mut RegistryMap) {
         handler:      ToolHandler::SyncJson(|_args| crate::mcp_server::call_agent_clear_completed()),
     });
 
+    m.insert("cleanup_stale_worktrees", ToolDef {
+        name:         "cleanup_stale_worktrees",
+        description: "Issue #242 — Reap abandoned `sirin-task-*` worktrees older than `older_than_hours` whose task is no longer Queued/Running.\n\nSafe by default: pass `dry_run=true` to preview what would be deleted without touching the filesystem. With `dry_run=false`, removes the worktree via `git worktree remove --force` (fallback `rm -rf`) and drops the matching `task/<id>` branch.\n\nArgs:\n  older_than_hours (default 24, min 1, max 24*30)\n  dry_run          (default true)\n\nReturns: { reaped: [{ path, branch, age_hours, deleted, error? }, ...], total: N, dry_run, older_than_hours }.\n\nCron-friendly — per-row failures are recorded in `error` rather than aborting the sweep.",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "older_than_hours": {
+                    "type":        "integer",
+                    "default":     24,
+                    "minimum":     1,
+                    "maximum":     720,
+                    "description": "Only worktrees older than this many hours are candidates."
+                },
+                "dry_run": {
+                    "type":        "boolean",
+                    "default":     true,
+                    "description": "When true (default), report-only — no filesystem mutation."
+                }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_cleanup_stale_worktrees),
+    });
+
     // Domain: session-memory + task-tracker + handoff (sync arg-taking handlers).
     // 10-tool batch migrated 2026-05-04 — same pattern as zero-arg, but the
     // handler's `fn(Value) -> Result<Value, String>` signature already matches
