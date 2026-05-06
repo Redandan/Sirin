@@ -951,6 +951,17 @@ window.sirin = function () {
       this.expandedRunDetail = null;
     },
 
+    // Format a TestStep's `ts` (RFC-3339) → "HH:MM:SS" for display in
+    // the run detail step cards.  Returns empty when ts missing.
+    // Hover tooltip on the rendered span shows the full ISO timestamp.
+    formatStepTime(ts) {
+      if (!ts) return '';
+      const d = new Date(ts);
+      if (isNaN(d.getTime())) return '';
+      const pad = (n) => String(n).padStart(2, '0');
+      return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    },
+
     // Format a step's action for the expanded view — shows "shadow_click target=..."
     // or just the action name when no target.  Truncates long values.
     formatStepAction(step) {

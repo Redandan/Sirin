@@ -661,6 +661,8 @@
                 <div class="run-step-card">
                   <div class="row gap-md">
                     <span class="badge-soft mono small" x-text="'iter ' + step.iter"></span>
+                    <span x-show="step.ts" class="dim mono small"
+                          :title="step.ts" x-text="formatStepTime(step.ts)"></span>
                     <span class="mono small" x-text="formatStepAction(step)"></span>
                     <span class="row-spacer"></span>
                     <span x-show="step.llm_latency_ms" class="dim mono small"
