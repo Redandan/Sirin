@@ -66,9 +66,12 @@
     -->
     <aside class="sidebar" :class="sidebarCollapsed ? 'sidebar-collapsed' : ''">
       <div class="sidebar-header">
-        <div class="logo-badge">S</div>
+        <div class="logo-badge" x-show="!sidebarCollapsed">S</div>
         <span class="sidebar-brand" x-show="!sidebarCollapsed">Sirin</span>
         <span class="row-spacer" x-show="!sidebarCollapsed"></span>
+        <!-- Collapsed: toggle button is the ONLY thing in the header,
+             so it can be a clean centered button. Expanded: it sits on
+             the right of the brand. -->
         <button class="iconbtn sidebar-toggle"
                 @click="toggleSidebar()"
                 :title="sidebarCollapsed ? '展開側欄' : '收合側欄'"
@@ -121,10 +124,25 @@
         <div class="view-header">
           <h1>儀表板</h1>
           <div class="row gap-md">
-            <button class="iconbtn" title="Edit layout"
+            <button class="iconbtn" title="編輯佈局"
                     :class="dashboard_edit_mode ? 'active' : ''"
                     @click="dashboard_edit_mode = !dashboard_edit_mode">✎</button>
-            <button class="btn-primary" @click="view = 'testing'">▶ 執行測試</button>
+            <!-- Quick-launch: pick a test_id + click to launch immediately,
+                 no need to switch to the testing tab first.  Was confusing
+                 before — the button labelled "▶ 執行測試" only navigated;
+                 didn't actually run anything. -->
+            <select class="select" x-model="state.selected_test_id">
+              <template x-for="id in state.test_ids" :key="id">
+                <option :value="id" x-text="id"></option>
+              </template>
+            </select>
+            <button class="btn-primary"
+                    @click="launchTest(state.selected_test_id)"
+                    title="立即啟動所選測試">▶ 啟動</button>
+            <button class="btn-secondary"
+                    @click="view = 'testing'"
+                    title="前往測試紀錄頁">📊 測試紀錄</button>
+            <span class="dim small" x-show="lastLaunch" x-text="lastLaunch"></span>
           </div>
         </div>
         <hr class="thin-sep">

@@ -147,17 +147,37 @@ button { font-family: inherit; cursor: pointer; }
   height: 100%;
   overflow: hidden;
 }
-/* Collapsed sidebar — icons-only, ~52px wide */
+/* Collapsed sidebar — icons-only, ~56px wide. Wider than 52 because
+   nav SVG is 24px and we want comfortable centered padding. */
 .main-sidebar-collapsed {
-  grid-template-columns: 52px 1fr;
+  grid-template-columns: 56px 1fr;
 }
-.sidebar-collapsed { padding: var(--sp-sm) 6px; }
-.sidebar-collapsed .nav-row { justify-content: center; padding: 6px 0; }
-.sidebar-collapsed .sidebar-header { justify-content: center; }
+.sidebar-collapsed { padding: var(--sp-sm) 0; }
+.sidebar-collapsed .nav-row {
+  justify-content: center;
+  padding: 8px 0;
+  margin: 0;
+  gap: 0;
+}
+/* Hide ALL row content except the leading icon (SVG / agent dot) */
+.sidebar-collapsed .nav-row > :not(svg):not(.agent-dot):not(.badge-count) {
+  display: none;
+}
+.sidebar-collapsed .sidebar-header {
+  justify-content: center;
+  padding: 0;
+  margin-bottom: var(--sp-md);
+}
 .sidebar-toggle {
   font-size: 14px;
   padding: 2px 8px;
   line-height: 1;
+  flex-shrink: 0;
+}
+.sidebar-collapsed .sidebar-toggle {
+  /* Bigger tap target when it's the only header element */
+  padding: 6px 10px;
+  font-size: 16px;
 }
 
 /* ── Sidebar (Linear-inspired) ───────────────────────────────────── */
