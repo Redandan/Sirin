@@ -42,6 +42,10 @@ pub mod caller;
 mod probe;
 pub mod usage;
 
+// LlmKind / MockLlmCaller are only consumed from `#[cfg(test)]` blocks
+// across the agents crate; pub-re-export keeps them available without
+// triggering `unused_imports` in release builds.
+#[allow(unused_imports)]
 pub use caller::{LlmCaller, LlmKind, MockLlmCaller, RealLlmCaller};
 
 pub use probe::probe_and_build_fleet;

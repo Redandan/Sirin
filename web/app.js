@@ -917,7 +917,11 @@ window.sirin = function () {
     //   - running / queued                                      → live_trace
     async openRunDetail(run) {
       if (!run || !run.run_id) {
-        // Legacy row without run_id (pre-#279) — nothing to navigate to.
+        // Legacy row without run_id (pre-Phase-A history, ~2157 rows in
+        // the typical SQLite).  No way to fetch step trace for these.
+        // Show a brief toast so the click isn't silently swallowed.
+        this.lastLaunch = '⚠ 此筆紀錄沒有 run_id（pre-Phase-A 老資料），無法查看詳細';
+        setTimeout(() => { this.lastLaunch = null; }, 4000);
         return;
       }
       this.view = 'run:' + run.run_id;

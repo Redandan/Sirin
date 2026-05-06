@@ -559,6 +559,10 @@ button { font-family: inherit; cursor: pointer; }
 .run-row:last-child { border-bottom: none; }
 .run-row:hover { background: var(--hover); }
 
+/* Legacy rows (no run_id) — dim + disabled cursor + no hover */
+.run-row-legacy { opacity: 0.55; cursor: not-allowed; }
+.run-row-legacy:hover { background: transparent; }
+
 /* #279 click-to-expand panel */
 .run-detail {
   background: var(--card);

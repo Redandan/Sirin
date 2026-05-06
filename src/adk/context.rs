@@ -99,6 +99,8 @@ impl AgentContext {
     /// #263 Phase 2 — swap in a custom [`LlmCaller`] (typically a
     /// [`crate::llm::MockLlmCaller`] in tests).  Leaves `http` and `llm`
     /// alone so any non-agent code that still reads them keeps working.
+    /// Test-only in practice; gated to silence release-build dead_code warning.
+    #[allow(dead_code)]
     pub fn with_llm_caller(mut self, caller: Arc<dyn LlmCaller>) -> Self {
         self.llm_caller = caller;
         self

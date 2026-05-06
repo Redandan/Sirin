@@ -460,7 +460,9 @@
                full-page detail view (#279 follow-up: was inline-expand) -->
           <div class="run-list">
             <template x-for="run in filteredRuns" :key="run.started_at + run.test_id">
-              <button class="run-row" @click="openRunDetail(run)">
+              <button class="run-row" :class="!run.run_id ? 'run-row-legacy' : ''"
+                      @click="openRunDetail(run)"
+                      :title="!run.run_id ? '舊資料 — 沒有 run_id，無法查看詳細' : ''">
                 <span :class="'run-status run-status-' + run.status"
                       x-text="verdictGlyph(run.status)"></span>
                 <span :class="'run-status-text run-status-' + run.status"
