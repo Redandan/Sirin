@@ -146,13 +146,15 @@
                     <div class="card card-empty">目前沒有正在執行的測試</div>
                   </template>
                   <template x-for="run in state.active_runs" :key="run.test_id">
-                    <div class="card-active card-clickable" @click="view = 'testing'">
+                    <div class="card-active card-clickable"
+                         @click="view = 'testing'; testTab = 'runs'; toggleRunDetail(run)">
                       <div class="card-active-body">
                         <div class="row gap-md">
                           <span class="pulse-dot"></span>
                           <span class="card-active-title mono" x-text="run.test_id"></span>
                           <span class="badge-soft" x-show="run.step !== null"
                                 x-text="'step ' + run.step"></span>
+                          <span x-show="run.is_replay" class="badge-soft" title="replay-mode">replay</span>
                           <span class="row-spacer"></span>
                           <span class="dim small">▶ 查看追蹤</span>
                         </div>
@@ -177,12 +179,16 @@
                   </template>
                   <div class="run-list">
                     <template x-for="run in state.recent_runs" :key="run.started_at + run.test_id">
-                      <button class="run-row" @click="view = 'testing'">
+                      <button class="run-row"
+                              @click="view = 'testing'; testTab = 'runs'; toggleRunDetail(run)">
                         <span :class="'run-status run-status-' + run.status"
                               x-text="verdictGlyph(run.status)"></span>
                         <span :class="'run-status-text run-status-' + run.status"
                               x-text="verdictText(run.status)"></span>
                         <span class="run-name mono" x-text="run.test_id"></span>
+                        <span x-show="run.is_replay" class="badge-soft" title="replay">replay</span>
+                        <span x-show="run.iterations !== null && run.iterations > 0"
+                              class="badge-soft" x-text="run.iterations + ' iter'"></span>
                         <span x-show="run.failure_category"
                               class="badge-soft badge-soft-danger"
                               x-text="run.failure_category"></span>

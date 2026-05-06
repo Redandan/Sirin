@@ -833,7 +833,21 @@ window.sirin = function () {
     get filteredRuns() {
       const f = this.runFilter;
       const q = this.runTextFilter.trim().toLowerCase();
-      return this.state.recent_runs.filter((r) => {
+      // #279 — merge active_runs (running / queued) at the TOP so a
+      // dashboard widget click → toggleRunDetail() can find the active
+      // run in the history list and the expand panel renders below it.
+      // De-dupe by run_id so a recently-completed run that's still in
+      // both lists doesn't appear twice.
+      const active = (this.state.active_runs || []).map(r => ({
+        ...r,
+        // active rows lack duration_ms / cost; fill with neutrals
+        duration_ms: null,
+        pass_rate: null,
+      }));
+      const seen = new Set(active.map(r => r.run_id).filter(Boolean));
+      const recent = (this.state.recent_runs || []).filter(r => !r.run_id || !seen.has(r.run_id));
+      const all = [...active, ...recent];
+      return all.filter((r) => {
         if (f === 'passed' && r.status !== 'passed') return false;
         if (f === 'failed' && !['failed', 'error', 'timeout'].includes(r.status)) return false;
         if (q && !r.test_id.toLowerCase().includes(q)) return false;
