@@ -29,7 +29,12 @@ const WIDGET_CATALOG = [
   { id: 'browser',         label: 'Browser preview',      cols: 2 },
   { id: 'kpi_pass_rate',   label: 'KPI: Pass rate',       cols: 1 },
   { id: 'kpi_runs_today',  label: 'KPI: Runs today',      cols: 1 },
+  // #279 tier 2: split into LLM vs replay so the mixed-mode average
+  // doesn't camouflage the LLM cost regression.  Old `kpi_avg_duration`
+  // kept for backward compat with persisted dashboard layouts.
   { id: 'kpi_avg_duration',label: 'KPI: Avg duration',    cols: 1 },
+  { id: 'kpi_avg_duration_split', label: 'KPI: Avg (LLM / replay)', cols: 1 },
+  { id: 'kpi_queue_drain', label: 'KPI: Queue drain ETA', cols: 1 },
   { id: 'kpi_cost_hour',   label: 'KPI: Cost / hour',     cols: 1 },
   { id: 'kpi_active_agents',label:'KPI: Active agents',   cols: 1 },
   { id: 'kpi_running_tests',label:'KPI: Running tests',   cols: 1 },
@@ -409,6 +414,81 @@ window.sirin = function () {
       return (total / runs.length) / 1000;
     },
 
+    /// #279 tier 2 — split duration averages so the dashboard shows LLM
+    /// vs replay without the mixed value camouflaging cost regressions.
+    /// `null` for whichever side has no completed runs in the visible
+    /// window (denominator must be ≥ 1).
+    get kpi_avg_duration_llm() {
+      const runs = (this.state.recent_runs || [])
+        .filter(r => r.duration_ms != null && r.is_replay === false);
+      if (runs.length === 0) return null;
+      const total = runs.reduce((s, r) => s + r.duration_ms, 0);
+      return (total / runs.length) / 1000;
+    },
+    get kpi_avg_duration_replay() {
+      const runs = (this.state.recent_runs || [])
+        .filter(r => r.duration_ms != null && r.is_replay === true);
+      if (runs.length === 0) return null;
+      const total = runs.reduce((s, r) => s + r.duration_ms, 0);
+      return (total / runs.length) / 1000;
+    },
+
+    /// #279 tier 2 — queue drain ETA card.  Returns `null` when the
+    /// queue is empty so the widget can render "—" gracefully.
+    /// Backend already exposes `queue.estimated_drain_secs` (queued_count
+    /// × median_test_secs); we just bucket into minutes for display.
+    get kpi_queue_drain_min() {
+      const q = this.state.queue;
+      if (!q || (q.queued_count || 0) === 0) return null;
+      const secs = q.estimated_drain_secs || 0;
+      return Math.max(1, Math.ceil(secs / 60));
+    },
+    get kpi_queue_count() {
+      return this.state.queue?.queued_count || 0;
+    },
+    get kpi_queue_median_secs() {
+      return this.state.queue?.median_test_secs_last_50 || 0;
+    },
+
+    /// #279 tier 2 — coarse trend signal for pass_rate / avg_duration
+    /// without backend support: split the recent_runs window in half,
+    /// compare new half vs old half.  Returns +N (improving) / -N
+    /// (regressing) / null (not enough data — need ≥ 4 completed runs).
+    /// Pure UI hint; precise 7d trends would need backend stats.
+    _trendDeltaPct(extractor) {
+      const completed = (this.state.recent_runs || [])
+        .filter(r => ['passed', 'failed', 'timeout', 'error'].includes(r.status));
+      if (completed.length < 4) return null;
+      const half = Math.floor(completed.length / 2);
+      const newer = completed.slice(0, half);
+      const older = completed.slice(completed.length - half);
+      const a = extractor(newer);
+      const b = extractor(older);
+      if (a == null || b == null || b === 0) return null;
+      return Math.round(((a - b) / b) * 100);
+    },
+    get kpi_pass_rate_trend_pp() {
+      // Trend in PERCENTAGE POINTS (not %), because pass_rate is itself a %.
+      const completed = (this.state.recent_runs || [])
+        .filter(r => ['passed', 'failed', 'timeout', 'error'].includes(r.status));
+      if (completed.length < 4) return null;
+      const half = Math.floor(completed.length / 2);
+      const rate = (rs) => rs.length === 0 ? null
+        : rs.filter(r => r.status === 'passed').length / rs.length;
+      const a = rate(completed.slice(0, half));
+      const b = rate(completed.slice(completed.length - half));
+      if (a == null || b == null) return null;
+      return Math.round((a - b) * 100);
+    },
+    get kpi_avg_duration_trend_pct() {
+      // Negative = faster (good).  Returns % change relative to older half.
+      return this._trendDeltaPct((rs) => {
+        const valid = rs.filter(r => r.duration_ms != null);
+        if (valid.length === 0) return null;
+        return valid.reduce((s, r) => s + r.duration_ms, 0) / valid.length;
+      });
+    },
+
     /// Cost burn rate ($/hr) — pulled from team_dashboard if present.
     get kpi_cost_per_hour() {
       return this.state.token_usage?.cost_per_hour || 0;
@@ -423,6 +503,18 @@ window.sirin = function () {
     /// Currently running test count (sometimes > 1 with run_test_batch).
     get kpi_running_tests() {
       return (this.state.active_runs || []).length;
+    },
+
+    /// #279 tier 2 — if any active run is stuck (idle ≥ 60s), return
+    /// the most stuck one for the top-bar warning banner.  null when
+    /// nothing is currently stuck (banner hidden).
+    get topbarStuckRun() {
+      const stuck = (this.state.active_runs || [])
+        .filter(r => r.idle_secs != null && r.idle_secs >= 60);
+      if (stuck.length === 0) return null;
+      // Show the worst offender first.
+      stuck.sort((a, b) => (b.idle_secs || 0) - (a.idle_secs || 0));
+      return stuck[0];
     },
 
     /// #266: Replay-success rate over the last 7d (numerator =

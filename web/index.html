@@ -54,6 +54,24 @@
     </div>
   </header>
 
+  <!-- #279 tier 2 — top-bar stuck banner.  Visible whenever any active
+       run has not progressed for ≥ 60 s.  Click jumps to the run detail. -->
+  <div class="stuck-banner"
+       x-show="topbarStuckRun"
+       @click="topbarStuckRun && openRunDetail(topbarStuckRun)"
+       :title="'點擊查看 step trace'">
+    <span class="stuck-icon">⚠</span>
+    <span class="stuck-text mono small">
+      <span x-text="topbarStuckRun?.test_id"></span>
+      <span class="dim"> · </span>
+      <span x-text="subphaseLabel(topbarStuckRun?.current_subphase) || '—'"></span>
+      <span class="dim"> · </span>
+      <span x-text="'卡住 ' + topbarStuckRun?.idle_secs + 's'"></span>
+    </span>
+    <span class="row-spacer"></span>
+    <span class="stuck-hint dim small">點擊查看追蹤 →</span>
+  </div>
+
   <!-- ── Main split: sidebar + content ───────────────────────────────── -->
   <div class="main" :class="sidebarCollapsed ? 'main-sidebar-collapsed' : ''">
 
@@ -359,14 +377,20 @@
                 </div>
               </template>
 
-              <!-- KPI: Pass rate -->
+              <!-- KPI: Pass rate (with #279 tier 2 trend arrow) -->
               <template x-if="wid === 'kpi_pass_rate'">
                 <div class="kpi-widget">
                   <div class="kpi-num mono"
                        x-text="(kpi_pass_rate * 100).toFixed(0) + '%'"></div>
                   <div class="kpi-widget-label">通過率</div>
-                  <div class="kpi-widget-sub dim small"
-                       x-text="state.recent_runs.length + ' recent'"></div>
+                  <div class="kpi-widget-sub dim small">
+                    <span x-show="kpi_pass_rate_trend_pp == null"
+                          x-text="state.recent_runs.length + ' recent'"></span>
+                    <span x-show="kpi_pass_rate_trend_pp != null"
+                          :class="kpi_pass_rate_trend_pp >= 0 ? 'trend-good' : 'trend-bad'"
+                          :title="'最近一半 vs 較舊一半的變化(coarse 訊號)'"
+                          x-text="(kpi_pass_rate_trend_pp >= 0 ? '▲ +' : '▼ ') + kpi_pass_rate_trend_pp + 'pp'"></span>
+                  </div>
                 </div>
               </template>
 
@@ -379,12 +403,49 @@
                 </div>
               </template>
 
-              <!-- KPI: Avg duration -->
+              <!-- KPI: Avg duration (single, mixed mode — kept for back-compat) -->
               <template x-if="wid === 'kpi_avg_duration'">
                 <div class="kpi-widget">
                   <div class="kpi-num mono" x-text="kpi_avg_duration.toFixed(1) + 's'"></div>
                   <div class="kpi-widget-label">平均時長</div>
+                  <div class="kpi-widget-sub dim small">
+                    <span x-show="kpi_avg_duration_trend_pct == null">recent runs</span>
+                    <span x-show="kpi_avg_duration_trend_pct != null"
+                          :class="kpi_avg_duration_trend_pct < 0 ? 'trend-good' : 'trend-bad'"
+                          :title="'最近一半 vs 較舊一半的變化(coarse)'"
+                          x-text="(kpi_avg_duration_trend_pct < 0 ? '▼ ' : '▲ +') + Math.abs(kpi_avg_duration_trend_pct) + '%'"></span>
+                  </div>
+                </div>
+              </template>
+
+              <!-- #279 tier 2 — KPI: Avg duration split (LLM vs replay) -->
+              <template x-if="wid === 'kpi_avg_duration_split'">
+                <div class="kpi-widget kpi-widget-split">
+                  <div class="kpi-split-row">
+                    <span class="badge-soft badge-soft-info" title="LLM ReAct">🤖</span>
+                    <span class="kpi-split-num mono"
+                          x-text="kpi_avg_duration_llm == null ? '—' : kpi_avg_duration_llm.toFixed(1) + 's'"></span>
+                  </div>
+                  <div class="kpi-split-row">
+                    <span class="badge-soft" title="deterministic-script replay">⚡</span>
+                    <span class="kpi-split-num mono"
+                          x-text="kpi_avg_duration_replay == null ? '—' : kpi_avg_duration_replay.toFixed(1) + 's'"></span>
+                  </div>
+                  <div class="kpi-widget-label">平均時長 LLM / Replay</div>
                   <div class="kpi-widget-sub dim small">recent runs</div>
+                </div>
+              </template>
+
+              <!-- #279 tier 2 — KPI: Queue drain ETA — only meaningful when queued > 0 -->
+              <template x-if="wid === 'kpi_queue_drain'">
+                <div class="kpi-widget"
+                     :class="kpi_queue_count > 0 ? 'kpi-warn' : ''"
+                     :title="kpi_queue_count > 0 ? ('排隊 ' + kpi_queue_count + ' 個 · 中位 ' + kpi_queue_median_secs + 's/個') : '佇列清空'">
+                  <div class="kpi-num mono"
+                       x-text="kpi_queue_drain_min == null ? '—' : '~' + kpi_queue_drain_min + ' min'"></div>
+                  <div class="kpi-widget-label">排空 ETA</div>
+                  <div class="kpi-widget-sub dim small"
+                       x-text="kpi_queue_count > 0 ? (kpi_queue_count + ' queued · median ' + kpi_queue_median_secs + 's') : '無排隊'"></div>
                 </div>
               </template>
 
