@@ -435,7 +435,7 @@
             <button class="filter-pill" :class="runFilter === 'failed' ? 'active' : ''"
                     @click="runFilter = 'failed'">失敗</button>
             <input type="text" class="filter-input" x-model="runTextFilter"
-                   placeholder="filter by test_id…">
+                   placeholder="依 test_id 篩選…">
           </div>
 
           <!-- History list — click any row → openRunDetail() opens the
@@ -600,10 +600,11 @@
         view='run:<run_id>' AND fetches the trace data.  This section
         renders that data without column constraints.
       -->
-      <section x-show="view.startsWith('run:')" class="view">
+      <section x-show="view.startsWith('run:')" class="view"
+               @keydown.escape.window="if (view.startsWith('run:')) closeRunDetail()">
         <div class="view-header">
           <div class="row gap-md">
-            <button class="btn-secondary" @click="closeRunDetail()">← 返回</button>
+            <button class="btn-secondary" @click="closeRunDetail()" title="Esc">← 返回</button>
             <h1 class="mono" x-text="expandedRunDetail?.test_id || '(載入中...)'"></h1>
             <template x-if="expandedRunDetail">
               <span :class="'badge-soft run-status-' + expandedRunDetail.status">
@@ -615,8 +616,15 @@
               <span class="badge-soft" title="replay-mode 跑出的紀錄">replay</span>
             </template>
             <span class="row-spacer"></span>
+            <button class="btn-secondary"
+                    x-show="expandedRunDetail?.test_id"
+                    @click="launchTest(expandedRunDetail.test_id)"
+                    title="重新執行此測試">▶ 再次執行</button>
             <span class="dim small" x-show="expandedRunDetail">
-              run_id: <span class="mono" x-text="expandedRunDetail?.run_id"></span>
+              run_id:
+              <span class="mono link" :title="'點擊複製'"
+                    @click="navigator.clipboard.writeText(expandedRunDetail.run_id); lastLaunch='✓ 已複製 run_id'; setTimeout(()=>lastLaunch=null, 2000)"
+                    x-text="expandedRunDetail?.run_id"></span>
             </span>
           </div>
         </div>
@@ -636,6 +644,16 @@
                 <div>
                   <div class="dim small">時長</div>
                   <div class="mono" x-text="expandedRunDetail.duration_ms ? (expandedRunDetail.duration_ms/1000).toFixed(1) + 's' : '-'"></div>
+                </div>
+                <!-- Aggregate token+cost from steps (frontend rollup since
+                     SQLite stores cost only at run level, not per-step) -->
+                <div x-show="expandedRunDetail.steps?.length > 0">
+                  <div class="dim small">總 prompt</div>
+                  <div class="mono" x-text="(expandedRunDetail.steps.reduce((s,x)=>s+(x.llm_prompt_bytes||0),0)/1024).toFixed(1) + ' KB'"></div>
+                </div>
+                <div x-show="expandedRunDetail.steps?.length > 0">
+                  <div class="dim small">LLM 總耗時</div>
+                  <div class="mono" x-text="(expandedRunDetail.steps.reduce((s,x)=>s+(x.llm_latency_ms||0),0)/1000).toFixed(1) + 's'"></div>
                 </div>
                 <div x-show="expandedRunDetail.subphase">
                   <div class="dim small">當前階段</div>
