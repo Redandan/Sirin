@@ -284,6 +284,19 @@ pub fn load_all() -> Vec<TestGoal> {
     out
 }
 
+/// Per-path × error-signature set used to suppress duplicate parse-error
+/// WARN lines. (#277) Without this every `list_tests` call (boot, snapshot
+/// poll, scheduler tick, sync_config…) re-walks the YAML dir and re-emits
+/// the same WARN — boot logs hit 14+ lines for 2 broken YAMLs.
+///
+/// State is keyed `(PathBuf, error_string)` so a file that's still broken
+/// but with a *different* error (user edited but didn't fix) re-warns once.
+/// State persists for the Sirin process lifetime; restart resets it.
+fn warned_parse_errors() -> &'static std::sync::Mutex<std::collections::HashSet<(std::path::PathBuf, String)>> {
+    static S: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<(std::path::PathBuf, String)>>> = std::sync::OnceLock::new();
+    S.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
 /// Recursively walk `dir`, loading every `.yaml` / `.yml` file found.
 fn load_dir_recursive(dir: &std::path::Path, out: &mut Vec<TestGoal>) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
@@ -297,7 +310,14 @@ fn load_dir_recursive(dir: &std::path::Path, out: &mut Vec<TestGoal>) {
         if ext != "yaml" && ext != "yml" { continue; }
         match load_file(&p) {
             Ok(g) => out.push(g),
-            Err(e) => tracing::warn!("Failed to load test {p:?}: {e}"),
+            Err(e) => {
+                // Dedup by (path, error) — same broken file logged once.
+                let key = (p.clone(), e.clone());
+                let mut set = warned_parse_errors().lock().unwrap_or_else(|p| p.into_inner());
+                if set.insert(key) {
+                    tracing::warn!("Failed to load test {p:?}: {e}");
+                }
+            }
         }
     }
 }
@@ -328,6 +348,40 @@ pub fn find(test_id: &str) -> Option<TestGoal> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #277 — `load_dir_recursive` must dedup parse-error WARN per
+    /// (path, error) so dashboard polling doesn't flood the log buffer.
+    #[test]
+    fn parse_warn_dedupes_per_path_and_error() {
+        let dir = std::env::temp_dir().join(format!("sirin_parser_dedup_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let bad = dir.join("broken.yaml");
+        std::fs::write(&bad, "this: is: not: valid: yaml: at: all").expect("write");
+
+        // Reset shared state — other tests in this binary may have seeded it.
+        warned_parse_errors().lock().unwrap().clear();
+
+        let mut out1 = Vec::new();
+        load_dir_recursive(&dir, &mut out1);
+        let after_first = warned_parse_errors().lock().unwrap().len();
+
+        let mut out2 = Vec::new();
+        load_dir_recursive(&dir, &mut out2);
+        let after_second = warned_parse_errors().lock().unwrap().len();
+
+        // Same broken file, same error → second call must NOT add a row.
+        assert_eq!(
+            after_first, 1,
+            "first call should record exactly one (path, error) pair"
+        );
+        assert_eq!(
+            after_second, 1,
+            "second call with same broken file should be a no-op (was {after_second} new entries)"
+        );
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// Issue #255 — guard against `config/test-schema.json` going stale.
     ///
