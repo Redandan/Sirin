@@ -33,15 +33,19 @@ Sirin's MCP API to test other apps, see `sirin-test` instead.
 
 ## Read these FIRST (in order)
 
-1. **`CLAUDE.md`** at repo root — architecture decisions, project layout,
-   efficiency rules.  Contains DO-NOT-revisit decisions (web UI on
-   :7700/ui/, no Tauri/Electron, theme colors).  If you contradict it
-   without explicit user request, you are wrong.
-2. **`docs/ARCHITECTURE.md`** — module relationships
-3. **`docs/test-runner-roadmap.md`** — what's done, what's planned, what
-   has been explicitly rejected (e.g. Bayesian flakiness, Backend trait)
-4. **Latest broadcast** at `~/.claude/broadcasts/2026-04-*-sirin-*.md` —
-   most recent state, what last session shipped
+1. **`CLAUDE.md`** at repo root — lean session-bootstrap (~180 lines).
+   Architecture decisions (DO-NOT-revisit), efficiency rules, build
+   cheatsheet, env vars quick-glance, multi-agent / issue rules.
+   If you contradict it without explicit user request, you are wrong.
+2. **`docs/PROJECT_LAYOUT.md`** — module-level map, where each concept lives
+3. **`docs/ARCHITECTURE.md`** — high-level rationale (egui→web, ADK-RUST)
+4. **`docs/UI_TOKENS.md`** + **`web/DESIGN.md`** — UI design rules
+5. **`docs/AGORA_VIEWPORT.md`** + **`docs/FLUTTER_TEST_PATTERNS.md`** —
+   E2E authoring patterns
+6. **`docs/test-runner-roadmap.md`** — what's done / planned / rejected
+   (e.g. Bayesian flakiness, Backend trait)
+7. **Latest handoff** via SessionStart hook (`fetch-handoff.sh`) — most
+   recent state, what last session shipped
 
 Failing to read these = duplicating work or contradicting decisions.
 
