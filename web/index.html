@@ -162,25 +162,52 @@
                         @click="removeWidget(wid)">✕</button>
               </div>
 
-              <!-- ACTIVE runs widget -->
+              <!-- ACTIVE runs widget — #279 tier 1 redesign -->
               <template x-if="wid === 'active_runs'">
                 <div>
-                  <div class="section-label" x-text="'進行中  (' + state.active_runs.length + ')'"></div>
+                  <div class="section-label">
+                    <span x-text="'進行中  (' + state.active_runs.length + ')'"></span>
+                    <span x-show="state.queue && state.queue.queued_count > 0"
+                          class="dim small ml-md"
+                          :title="'排隊中: ' + state.queue.queued_count + ' 個 — 預估排空 ' + state.queue.estimated_drain_secs + 's'"
+                          x-text="'· 排隊 ' + state.queue.queued_count + ' (排空 ~' + Math.ceil((state.queue.estimated_drain_secs || 0) / 60) + ' min)'"></span>
+                  </div>
                   <template x-if="state.active_runs.length === 0">
                     <div class="card card-empty">目前沒有正在執行的測試</div>
                   </template>
-                  <template x-for="run in state.active_runs" :key="run.test_id">
+                  <template x-for="run in state.active_runs" :key="run.run_id || run.test_id">
                     <div class="card-active card-clickable"
+                         :class="isRunStuck(run) ? 'card-active-stuck' : ''"
                          @click="openRunDetail(run)">
                       <div class="card-active-body">
                         <div class="row gap-md">
-                          <span class="pulse-dot"></span>
+                          <span class="pulse-dot" :class="run.is_replay ? 'pulse-dot-replay' : ''"></span>
                           <span class="card-active-title mono" x-text="run.test_id"></span>
                           <span class="badge-soft" x-show="run.step !== null"
                                 x-text="'step ' + run.step"></span>
-                          <span x-show="run.is_replay" class="badge-soft" title="replay-mode">replay</span>
+                          <span x-show="run.is_replay" class="badge-soft" title="deterministic-script replay">⚡ replay</span>
+                          <span x-show="!run.is_replay && run.replay_mode === 'llm'"
+                                class="badge-soft badge-soft-info" title="LLM ReAct 模式">🤖 LLM</span>
+                          <span x-show="run.recent_steps_count !== null && run.recent_steps_count > 0"
+                                class="badge-soft" x-text="run.recent_steps_count + ' iter'"></span>
                           <span class="row-spacer"></span>
                           <span class="dim small">▶ 查看追蹤</span>
+                        </div>
+                        <!-- Sub-phase + idle line -->
+                        <div class="row gap-md mt-xs subphase-row" x-show="run.current_subphase">
+                          <span class="subphase-dot" :class="subphaseDotClass(run.current_subphase)"></span>
+                          <span class="mono small" x-text="subphaseLabel(run.current_subphase)"></span>
+                          <span class="dim small mono" x-show="run.subphase_age_ms !== null"
+                                x-text="'· ' + formatSubphaseAge(run.subphase_age_ms)"></span>
+                          <span x-show="isRunStuck(run)"
+                                class="badge-soft badge-soft-danger ml-md"
+                                :title="'已 ' + run.idle_secs + 's 沒進度 — 可能 LLM 卡住或 browser hang'"
+                                x-text="'⚠ 卡住 ' + run.idle_secs + 's'"></span>
+                          <span class="row-spacer"></span>
+                          <span x-show="run.estimated_remaining_secs !== null && run.estimated_remaining_secs > 0"
+                                class="dim mono small"
+                                title="ETA: 用 (elapsed × assumed_steps / current_step) 推估"
+                                x-text="'ETA ~' + formatEta(run.estimated_remaining_secs)"></span>
                         </div>
                         <div class="dim small mt-xs" x-show="run.analysis"
                              x-text="truncate(run.analysis, 140)"></div>
@@ -204,13 +231,19 @@
                   <div class="run-list">
                     <template x-for="run in state.recent_runs" :key="run.started_at + run.test_id">
                       <button class="run-row"
+                              :class="!run.run_id ? 'run-row-legacy' : ''"
+                              :title="!run.run_id ? '舊資料無 run_id — 無法載入詳情' : ''"
                               @click="openRunDetail(run)">
                         <span :class="'run-status run-status-' + run.status"
                               x-text="verdictGlyph(run.status)"></span>
                         <span :class="'run-status-text run-status-' + run.status"
                               x-text="verdictText(run.status)"></span>
                         <span class="run-name mono" x-text="run.test_id"></span>
-                        <span x-show="run.is_replay" class="badge-soft" title="replay">replay</span>
+                        <span x-show="run.is_replay" class="badge-soft"
+                              title="deterministic-script replay (no LLM cost)">⚡ replay</span>
+                        <span x-show="!run.is_replay && run.iterations !== null && run.iterations > 0"
+                              class="badge-soft badge-soft-info"
+                              title="LLM ReAct mode">🤖 LLM</span>
                         <span x-show="run.iterations !== null && run.iterations > 0"
                               class="badge-soft" x-text="run.iterations + ' iter'"></span>
                         <span x-show="run.failure_category"
@@ -279,7 +312,7 @@
                 </div>
               </template>
 
-              <!-- BROWSER preview widget -->
+              <!-- BROWSER preview widget — #279 tier 1: owner + idle countdown -->
               <template x-if="wid === 'browser'">
                 <div>
                   <div class="section-label">瀏覽器</div>
@@ -293,6 +326,24 @@
                       </div>
                       <div class="dim mono small mt-xs"
                            x-show="state.browser_url" x-text="state.browser_url"></div>
+                      <!-- Owner: which test currently controls Chrome -->
+                      <div class="row gap-md mt-xs"
+                           x-show="state.browser_open && state.browser_owner">
+                        <span class="badge-soft badge-soft-info"
+                              :title="'執行中的 run_id: ' + (state.browser_owner && state.browser_owner.run_id || '—')">
+                          🔒 占用
+                        </span>
+                        <span class="mono small"
+                              x-text="state.browser_owner && state.browser_owner.test_id || ''"></span>
+                      </div>
+                      <div class="row gap-md mt-xs"
+                           x-show="state.browser_open && !state.browser_owner">
+                        <span class="badge-soft" title="沒有任何 test 在使用 Chrome">閒置</span>
+                        <span class="dim small mono"
+                              x-show="state.browser_idle_close_in_secs !== null && state.browser_idle_close_in_secs !== undefined"
+                              :title="'到達閒置門檻會自動關閉 Chrome 釋放記憶體'"
+                              x-text="'⏱ ' + state.browser_idle_close_in_secs + 's 後自動關閉'"></span>
+                      </div>
                       <span class="link small mt-xs">開啟即時監控 →</span>
                     </div>
                     <div class="card-browser-thumb">

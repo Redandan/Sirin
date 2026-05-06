@@ -815,6 +815,51 @@ window.sirin = function () {
       }
     },
 
+    // ── #279 tier 1: active-runs sub-phase / idle / ETA helpers ────
+    /// True when the executor's current sub-phase has been stuck > 60 s.
+    /// Used to flip a stuck red banner + dim the card border.
+    isRunStuck(run) {
+      if (!run || run.idle_secs === null || run.idle_secs === undefined) return false;
+      return run.idle_secs >= 60;
+    },
+
+    subphaseLabel(kind) {
+      switch (kind) {
+        case 'llm_call':       return 'LLM 呼叫中';
+        case 'browser_action': return '瀏覽器動作中';
+        case 'replay':         return '腳本重播中';
+        case 'verify':         return '判定驗證中';
+        default:               return kind || '—';
+      }
+    },
+
+    subphaseDotClass(kind) {
+      switch (kind) {
+        case 'llm_call':       return 'subphase-dot-llm';
+        case 'browser_action': return 'subphase-dot-browser';
+        case 'replay':         return 'subphase-dot-replay';
+        case 'verify':         return 'subphase-dot-verify';
+        default:               return '';
+      }
+    },
+
+    formatSubphaseAge(ms) {
+      if (ms === null || ms === undefined) return '';
+      if (ms < 1000)   return ms + ' ms';
+      if (ms < 60000)  return (ms / 1000).toFixed(1) + ' s';
+      const m = Math.floor(ms / 60000);
+      const s = Math.floor((ms % 60000) / 1000);
+      return m + 'm ' + s + 's';
+    },
+
+    formatEta(secs) {
+      if (secs === null || secs === undefined) return '';
+      if (secs < 60)   return secs + 's';
+      const m = Math.floor(secs / 60);
+      const s = secs % 60;
+      return s === 0 ? (m + 'm') : (m + 'm' + s + 's');
+    },
+
     modalLabel(m) {
       if (!m) return '';
       const map = {

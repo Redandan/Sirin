@@ -671,6 +671,16 @@ fn build_snapshot(svc: &Arc<dyn AppService>) -> Value {
         // get_test_result / live_trace via /mcp.
         "run_id":    r.run_id,
         "is_replay": r.is_replay,
+        // #279 tier 1 — Phase A/B live telemetry surfaced inline so the
+        // dashboard's active-runs card can render subphase / idle / ETA
+        // without a follow-up MCP fetch.  All None for queued rows.
+        "idle_secs":               r.idle_secs,
+        "last_action_age_ms":      r.last_action_age_ms,
+        "current_subphase":        r.current_subphase,
+        "subphase_age_ms":         r.subphase_age_ms,
+        "recent_steps_count":      r.recent_steps_count,
+        "replay_mode":             r.replay_mode,
+        "estimated_remaining_secs": r.estimated_remaining_secs,
     })).collect();
 
     let recent_runs: Vec<Value> = svc.recent_test_runs(8).into_iter().map(|r| json!({
@@ -746,11 +756,37 @@ fn build_snapshot(svc: &Arc<dyn AppService>) -> Value {
         "recent_modes": t.recent_modes,
     })).collect();
 
+    // #279 tier 1 — surface queue + browser-ownership state at top level
+    // so the dashboard can show queue depth, drain ETA, and which active
+    // run owns Chrome without separate MCP fetches.
+    let queue_summary = build_queue_summary();
+    // browser_owner: the running test_id (concurrency=1, so at most one).
+    // None when no test is running OR Chrome is already closed.
+    let browser_owner = if svc.browser_is_open() {
+        queue_summary.get("running").and_then(|r| {
+            r.get("test_id").and_then(Value::as_str).map(|tid| {
+                json!({
+                    "test_id": tid,
+                    "run_id":  r.get("run_id").and_then(Value::as_str),
+                })
+            })
+        })
+    } else {
+        None
+    };
+    let browser_idle_close_in_secs = if svc.browser_is_open() {
+        crate::test_runner::idle_close::idle_close_in_secs()
+    } else {
+        None
+    };
+
     json!({
         "version":        env!("CARGO_PKG_VERSION"),
         "browser_open":   svc.browser_is_open(),
         "browser_url":    svc.browser_url(),
         "browser_title":  svc.browser_title(),
+        "browser_owner":  browser_owner,
+        "browser_idle_close_in_secs": browser_idle_close_in_secs,
         "rpc_running":    s.rpc_running,
         "tg_connected":   s.telegram_connected,
         "last_verdict":   last_verdict,
@@ -758,6 +794,7 @@ fn build_snapshot(svc: &Arc<dyn AppService>) -> Value {
         "pending_counts": pending,
         "active_runs":    active_runs,
         "recent_runs":    recent_runs,
+        "queue":          queue_summary,
         "coverage":       coverage,
         "replay_health":         replay_health_json,
         "test_replay_statuses":  test_replay_statuses,
@@ -5048,14 +5085,20 @@ pub(crate) fn call_tail_app_log(args: Value) -> Result<Value, String> {
 ///     sampled_recent_runs:      50,
 ///   }
 pub(crate) fn call_queue_status(_args: Value) -> Result<Value, String> {
+    Ok(build_queue_summary())
+}
+
+/// Shared between the `queue_status` MCP tool and the `/api/snapshot`
+/// dashboard endpoint.  Counted as one cheap pass over the active-runs
+/// registry + a 50-row SQLite read; both call sites are polled at most
+/// every 2 s so duplicate execution is fine.  See `call_queue_status`
+/// for the field semantics.
+pub(crate) fn build_queue_summary() -> Value {
     let now = chrono::Local::now();
     let active = crate::test_runner::runs::snapshot_active();
 
-    // Bucket into running vs queued.  Concurrency-1 means at most one
-    // entry in `running`; we still surface a Vec for forward compat in
-    // case TEST_RUN_LOCK becomes optional in the future.
     let mut running_entries: Vec<Value> = Vec::new();
-    let mut queued_entries:  Vec<(String, String, i64)> = Vec::new();  // (test_id, run_id, secs_waited)
+    let mut queued_entries:  Vec<(String, String, i64)> = Vec::new();
 
     for state in &active {
         match &state.phase {
@@ -5082,13 +5125,10 @@ pub(crate) fn call_queue_status(_args: Value) -> Result<Value, String> {
         }
     }
 
-    queued_entries.sort_by_key(|(_, _, w)| -*w);  // oldest first
+    queued_entries.sort_by_key(|(_, _, w)| -*w);
     let oldest_queued = queued_entries.first().map(|(_, _, w)| *w).unwrap_or(0);
     let queued_count = queued_entries.len();
 
-    // Compute median + p95 from the last 50 completed runs (across all
-    // tests).  Ignores 0-duration runs — those are usually error-paths
-    // that bailed before any work and would skew the median down.
     let recent = crate::test_runner::store::recent_runs_all(50);
     let mut durations: Vec<u64> = recent.iter()
         .filter_map(|r| r.duration_ms)
@@ -5108,7 +5148,7 @@ pub(crate) fn call_queue_status(_args: Value) -> Result<Value, String> {
         })
     }).collect();
 
-    Ok(json!({
+    json!({
         "concurrency":              1,
         "running":                  running_entries.first().cloned(),
         "queued_count":             queued_count,
@@ -5126,7 +5166,7 @@ pub(crate) fn call_queue_status(_args: Value) -> Result<Value, String> {
             drain = estimated_drain,
             m = median,
         ),
-    }))
+    })
 }
 
 /// Phase B — return the most recent N TestStep records for a running (or

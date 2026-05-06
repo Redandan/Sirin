@@ -530,9 +530,44 @@ button { font-family: inherit; cursor: pointer; }
   animation: pulse 1.4s ease-in-out infinite;
   box-shadow: 0 0 0 0 var(--accent);
 }
+.pulse-dot-replay {
+  /* Replay runs use info colour so they read as "no LLM, deterministic" */
+  background: var(--info);
+  animation-name: pulse-replay;
+}
 @keyframes pulse {
   0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 60%, transparent); }
   50%      { box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 0%, transparent); }
+}
+@keyframes pulse-replay {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--info) 60%, transparent); }
+  50%      { box-shadow: 0 0 0 6px color-mix(in srgb, var(--info) 0%, transparent); }
+}
+
+/* #279 tier 1 — stuck banner: red border + faint warning bg on the card */
+.card-active-stuck {
+  border-color: var(--danger) !important;
+  background: color-mix(in srgb, var(--danger) 4%, var(--card));
+}
+
+/* Sub-phase row inside active card */
+.subphase-row {
+  align-items: center;
+  padding-top: 2px;
+}
+.subphase-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  flex-shrink: 0;
+}
+.subphase-dot-llm      { background: var(--accent); animation: pulse-mini 1.6s ease-in-out infinite; }
+.subphase-dot-browser  { background: var(--info);   animation: pulse-mini 1.6s ease-in-out infinite; }
+.subphase-dot-replay   { background: var(--info); }
+.subphase-dot-verify   { background: var(--yellow); animation: pulse-mini 1.6s ease-in-out infinite; }
+@keyframes pulse-mini {
+  0%, 100% { opacity: 1.0; }
+  50%      { opacity: 0.4; }
 }
 
 /* ── Recent runs list (GitHub Actions row inspired) ──────────────── */
@@ -758,6 +793,10 @@ button { font-family: inherit; cursor: pointer; }
 .badge-soft-danger {
   background: color-mix(in srgb, var(--danger) 18%, transparent);
   color: var(--danger);
+}
+.badge-soft-info {
+  background: color-mix(in srgb, var(--info) 18%, transparent);
+  color: var(--info);
 }
 
 /* ── Browser card (Playwright trace viewer inspired) ─────────────── */

@@ -286,6 +286,33 @@ pub struct TestRunView {
     /// Run id assigned at spawn — required for the dashboard's expand-row
     /// to fetch the full step history via `get_test_result` MCP.
     pub run_id:            Option<String>,
+    // ── #279 tier 1: live-progress fields (Phase A/B telemetry surfaced) ─
+    /// How many seconds since the executor last bumped `phase` (set_phase /
+    /// set_subphase).  None for queued / completed rows; Some(N) for active
+    /// running rows so the dashboard can show "stuck Ns" banners.
+    pub idle_secs:               Option<u64>,
+    /// Same elapsed time but in milliseconds — lets the UI distinguish a
+    /// 200 ms inter-action gap from a 12 s LLM wait.
+    pub last_action_age_ms:      Option<u64>,
+    /// Phase B sub-phase: "llm_call" | "browser_action" | "replay" | "verify".
+    /// None when between sub-phases or when the run is not currently active.
+    pub current_subphase:        Option<String>,
+    /// How long the executor has been in `current_subphase` (ms).  Snapshot
+    /// uses this to fire a red "stuck >60 s in llm_call" warning per #279.
+    pub subphase_age_ms:         Option<u64>,
+    /// Number of `TestStep` entries mirrored into the live-trace ring buffer.
+    /// Equals "iterations completed so far" mid-run; differs from `iterations`
+    /// (which is final, set on completion).
+    pub recent_steps_count:      Option<u32>,
+    /// Raw replay mode string ("script" / "llm") — None if executor hasn't
+    /// chosen yet.  More expressive than `is_replay` (which collapses the
+    /// not-yet-decided state to false).
+    pub replay_mode:             Option<String>,
+    /// Best-effort ETA in seconds: `(elapsed × median_total / current_step) − elapsed`.
+    /// None when current_step is 0 or no median is available yet.  Pure UI
+    /// hint — frontend may also recompute from snapshot if it wants smoother
+    /// animation between polls.
+    pub estimated_remaining_secs: Option<u64>,
 }
 
 // ── Service traits ───────────────────────────────────────────────────────────

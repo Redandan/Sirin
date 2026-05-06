@@ -264,6 +264,15 @@ impl TestRunnerService for RealService {
                     iterations:       r.iterations,
                     is_replay:        r.is_replay,
                     run_id:           r.run_id,
+                    // Phase A/B telemetry — only meaningful for active rows;
+                    // historical recent_runs entries always None.
+                    idle_secs:               None,
+                    last_action_age_ms:      None,
+                    current_subphase:        None,
+                    subphase_age_ms:         None,
+                    recent_steps_count:      None,
+                    replay_mode:             None,
+                    estimated_remaining_secs: None,
                 }
             })
             .collect()
@@ -271,15 +280,81 @@ impl TestRunnerService for RealService {
 
     fn active_test_runs(&self) -> Vec<TestRunView> {
         use crate::test_runner::runs::{list_active, get, RunPhase};
+        // Pre-compute median completed-run duration so each active row can
+        // surface a best-effort ETA.  One SQLite hit per snapshot tick is
+        // cheap (<1 ms typical) and shared across rows.  Same window as
+        // call_queue_status so users see consistent numbers.
+        let median_total_secs: Option<u64> = {
+            let recent = crate::test_runner::store::recent_runs_all(50);
+            let mut durations: Vec<u64> = recent.iter()
+                .filter_map(|r| r.duration_ms)
+                .filter(|d| *d > 0)
+                .map(|d| ((d / 1000) as u64).max(1))
+                .collect();
+            if durations.is_empty() {
+                None
+            } else {
+                durations.sort_unstable();
+                Some(durations[durations.len() / 2])
+            }
+        };
         list_active()
             .into_iter()
             .filter_map(|run_id| get(&run_id))
             .map(|s| {
-                let (status, analysis, step) = match &s.phase {
-                    RunPhase::Queued => ("queued".to_string(), None, None),
+                let (status, analysis, step, is_running) = match &s.phase {
+                    RunPhase::Queued => ("queued".to_string(), None, None, false),
                     RunPhase::Running { current_action, step } =>
-                        ("running".to_string(), Some(current_action.clone()), Some(*step)),
-                    _ => ("unknown".to_string(), None, None),
+                        ("running".to_string(), Some(current_action.clone()), Some(*step), true),
+                    _ => ("unknown".to_string(), None, None, false),
+                };
+                // Phase A — idle since last set_phase; only meaningful while
+                // RunPhase::Running.  We replicate runs::to_json's decision so
+                // queued / completed rows show None instead of a stale age.
+                let (idle_secs, last_action_age_ms) = if is_running {
+                    let elapsed = s.last_phase_updated_at.elapsed();
+                    (Some(elapsed.as_secs()), Some(elapsed.as_millis() as u64))
+                } else {
+                    (None, None)
+                };
+                let (current_subphase, subphase_age_ms) = if is_running {
+                    (
+                        s.current_subphase.clone(),
+                        Some(s.subphase_started_at.elapsed().as_millis() as u64),
+                    )
+                } else {
+                    (None, None)
+                };
+                let recent_steps_count = if is_running {
+                    Some(s.recent_steps.len() as u32)
+                } else {
+                    None
+                };
+                // ETA: extrapolate (elapsed × median_total / current_step) − elapsed.
+                // Skip when step==0 (no signal) or median is unknown.
+                let estimated_remaining_secs = if is_running {
+                    let step_done = step.unwrap_or(0) as u64;
+                    match (median_total_secs, step_done) {
+                        (Some(_median), 0) => None,
+                        (Some(median), n) if n > 0 => {
+                            // Treat the test's own median (across all runs of any
+                            // test_id) as the budget; if we're past it, ETA = 0.
+                            let elapsed_secs = chrono::DateTime::parse_from_rfc3339(&s.started_at)
+                                .map(|dt| (chrono::Local::now()
+                                    - dt.with_timezone(&chrono::Local))
+                                    .num_seconds().max(0) as u64)
+                                .unwrap_or(0);
+                            // Avoid divide-by-zero / runaway extrapolation: clamp
+                            // step assumption to at least 4 (rough mid-test).
+                            let assumed_total_steps = 8u64;
+                            let projected = (elapsed_secs * assumed_total_steps) / n.max(1);
+                            let projected = projected.max(median);
+                            Some(projected.saturating_sub(elapsed_secs))
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
                 };
                 TestRunView {
                     test_id:          s.test_id.clone(),
@@ -304,6 +379,14 @@ impl TestRunnerService for RealService {
                     iterations:       None,
                     is_replay:        s.replay_mode.as_deref() == Some("script"),
                     run_id:           Some(s.run_id.clone()),
+                    // Phase A/B telemetry pulled fresh from registry.
+                    idle_secs,
+                    last_action_age_ms,
+                    current_subphase,
+                    subphase_age_ms,
+                    recent_steps_count,
+                    replay_mode:             s.replay_mode.clone(),
+                    estimated_remaining_secs,
                 }
             })
             .collect()
