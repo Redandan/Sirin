@@ -31,8 +31,8 @@
       <span class="brand" x-text="'Sirin v' + state.version"></span>
       <span class="dot-group">
         <span class="dot" :class="state.browser_open ? 'dot-ok' : 'dot-bad'"
-              :title="'Browser: ' + (state.browser_open ? 'running' : 'stopped')"></span>
-        <span class="dot-label">Browser</span>
+              :title="'瀏覽器: ' + (state.browser_open ? '執行中' : '已停止')"></span>
+        <span class="dot-label">瀏覽器</span>
         <span class="dot" :class="state.rpc_running ? 'dot-ok' : 'dot-bad'"
               :title="'RPC: ' + (state.rpc_running ? 'running' : 'stopped')"></span>
         <span class="dot-label">RPC</span>
@@ -70,14 +70,14 @@
         <span class="sidebar-brand">Sirin</span>
       </div>
 
-      <div class="sidebar-section-label">VIEWS</div>
+      <div class="sidebar-section-label">主視圖</div>
       <button class="nav-row" :class="view === 'dashboard' ? 'active' : ''"
               @click="view = 'dashboard'">
         <svg class="nav-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
           <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
           <rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
         </svg>
-        <span>Dashboard</span>
+        <span>儀表板</span>
       </button>
       <button class="nav-row" :class="view === 'testing' ? 'active' : ''"
               @click="view = 'testing'">
@@ -85,10 +85,10 @@
           <polyline points="9 11 12 14 22 4"/>
           <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
         </svg>
-        <span>Testing</span>
+        <span>測試</span>
       </button>
 
-      <div class="sidebar-section-label">AGENTS</div>
+      <div class="sidebar-section-label">AGENT 列表</div>
       <template x-for="(agent, i) in state.agents" :key="agent.id">
         <button class="nav-row" :class="view === 'workspace:' + i ? 'active' : ''"
                 @click="view = 'workspace:' + i">
@@ -113,7 +113,7 @@
       -->
       <section x-show="view === 'dashboard'" class="view">
         <div class="view-header">
-          <h1>DASHBOARD</h1>
+          <h1>儀表板</h1>
           <div class="row gap-md">
             <button class="iconbtn" title="Edit layout"
                     :class="dashboard_edit_mode ? 'active' : ''"
@@ -141,7 +141,7 @@
               <!-- ACTIVE runs widget -->
               <template x-if="wid === 'active_runs'">
                 <div>
-                  <div class="section-label" x-text="'ACTIVE  (' + state.active_runs.length + ')'"></div>
+                  <div class="section-label" x-text="'進行中  (' + state.active_runs.length + ')'"></div>
                   <template x-if="state.active_runs.length === 0">
                     <div class="card card-empty">目前沒有正在執行的測試</div>
                   </template>
@@ -171,7 +171,7 @@
               <template x-if="wid === 'recent_runs'">
                 <div>
                   <div class="section-label"
-                       x-text="'RECENT  (' + state.recent_runs.length + ' of last 8)'"></div>
+                       x-text="'最近  (' + state.recent_runs.length + ' / 8)'"></div>
                   <template x-if="state.recent_runs.length === 0">
                     <div class="card card-empty">尚無歷史紀錄</div>
                   </template>
@@ -206,7 +206,7 @@
               <!-- COVERAGE widget -->
               <template x-if="wid === 'coverage'">
                 <div>
-                  <div class="section-label">COVERAGE</div>
+                  <div class="section-label">覆蓋率</div>
                   <div class="card card-clickable" @click="view = 'testing'; testTab = 'coverage'">
                     <template x-if="state.coverage">
                       <div>
@@ -252,7 +252,7 @@
               <!-- BROWSER preview widget -->
               <template x-if="wid === 'browser'">
                 <div>
-                  <div class="section-label">BROWSER</div>
+                  <div class="section-label">瀏覽器</div>
                   <div class="card-browser card-clickable" @click="view = 'testing'; testTab = 'browser'">
                     <div class="card-browser-meta">
                       <div class="row">
@@ -283,7 +283,7 @@
                 <div class="kpi-widget">
                   <div class="kpi-num mono"
                        x-text="(kpi_pass_rate * 100).toFixed(0) + '%'"></div>
-                  <div class="kpi-widget-label">PASS RATE</div>
+                  <div class="kpi-widget-label">通過率</div>
                   <div class="kpi-widget-sub dim small"
                        x-text="state.recent_runs.length + ' recent'"></div>
                 </div>
@@ -293,7 +293,7 @@
               <template x-if="wid === 'kpi_runs_today'">
                 <div class="kpi-widget">
                   <div class="kpi-num mono" x-text="kpi_runs_today"></div>
-                  <div class="kpi-widget-label">RUNS TODAY</div>
+                  <div class="kpi-widget-label">今日執行</div>
                   <div class="kpi-widget-sub dim small">UTC</div>
                 </div>
               </template>
@@ -302,7 +302,7 @@
               <template x-if="wid === 'kpi_avg_duration'">
                 <div class="kpi-widget">
                   <div class="kpi-num mono" x-text="kpi_avg_duration.toFixed(1) + 's'"></div>
-                  <div class="kpi-widget-label">AVG DURATION</div>
+                  <div class="kpi-widget-label">平均時長</div>
                   <div class="kpi-widget-sub dim small">recent runs</div>
                 </div>
               </template>
@@ -312,7 +312,7 @@
                 <div class="kpi-widget">
                   <div class="kpi-num mono"
                        x-text="'$' + kpi_cost_per_hour.toFixed(2)"></div>
-                  <div class="kpi-widget-label">COST / HOUR</div>
+                  <div class="kpi-widget-label">每小時成本</div>
                   <div class="kpi-widget-sub dim small">5-min window</div>
                 </div>
               </template>
@@ -321,7 +321,7 @@
               <template x-if="wid === 'kpi_active_agents'">
                 <div class="kpi-widget">
                   <div class="kpi-num mono" x-text="kpi_active_agents"></div>
-                  <div class="kpi-widget-label">ACTIVE AGENTS</div>
+                  <div class="kpi-widget-label">活躍 Agent</div>
                   <div class="kpi-widget-sub dim small"
                        x-text="state.agents.length + ' total'"></div>
                 </div>
@@ -331,7 +331,7 @@
               <template x-if="wid === 'kpi_running_tests'">
                 <div class="kpi-widget">
                   <div class="kpi-num mono" x-text="kpi_running_tests"></div>
-                  <div class="kpi-widget-label">RUNNING NOW</div>
+                  <div class="kpi-widget-label">執行中</div>
                   <div class="kpi-widget-sub dim small">live tests</div>
                 </div>
               </template>
@@ -344,7 +344,7 @@
                      :class="kpi_replay_drift_warning ? 'kpi-warn' : ''">
                   <div class="kpi-num mono"
                        x-text="(kpi_replay_rate * 100).toFixed(0) + '%'"></div>
-                  <div class="kpi-widget-label">REPLAY RATE</div>
+                  <div class="kpi-widget-label">重播率</div>
                   <div class="kpi-widget-sub dim small">
                     <span x-show="kpi_replay_drift_pp == null">7d window</span>
                     <span x-show="kpi_replay_drift_pp != null"
@@ -383,24 +383,24 @@
       -->
       <section x-show="view === 'testing'" class="view">
         <div class="view-header">
-          <h1>TESTING</h1>
+          <h1>測試</h1>
         </div>
 
         <!-- Sub-tab nav -->
         <div class="subtab-bar">
           <button class="subtab" :class="testTab === 'runs' ? 'active' : ''"
-                  @click="testTab = 'runs'">RUNS</button>
+                  @click="testTab = 'runs'">執行紀錄</button>
           <button class="subtab" :class="testTab === 'coverage' ? 'active' : ''"
-                  @click="testTab = 'coverage'">COVERAGE</button>
+                  @click="testTab = 'coverage'">覆蓋率</button>
           <button class="subtab" :class="testTab === 'browser' ? 'active' : ''"
-                  @click="testTab = 'browser'">BROWSER</button>
+                  @click="testTab = 'browser'">瀏覽器</button>
         </div>
 
         <!-- ── Runs sub-tab ──────────────────────────────────────── -->
         <div x-show="testTab === 'runs'">
           <!-- Launcher row (test_id dropdown + ▶ Run) -->
           <div class="card launcher-row">
-            <span class="dim mono small">RUN</span>
+            <span class="dim mono small">執行</span>
             <select class="select" x-model="state.selected_test_id">
               <template x-for="id in state.test_ids" :key="id">
                 <option :value="id" x-text="id"></option>
@@ -415,13 +415,13 @@
 
           <!-- Filter row -->
           <div class="filter-row">
-            <span class="dim mono small">FILTER</span>
+            <span class="dim mono small">篩選</span>
             <button class="filter-pill" :class="runFilter === 'all' ? 'active' : ''"
-                    @click="runFilter = 'all'">All</button>
+                    @click="runFilter = 'all'">全部</button>
             <button class="filter-pill" :class="runFilter === 'passed' ? 'active' : ''"
-                    @click="runFilter = 'passed'">Passed</button>
+                    @click="runFilter = 'passed'">通過</button>
             <button class="filter-pill" :class="runFilter === 'failed' ? 'active' : ''"
-                    @click="runFilter = 'failed'">Failed</button>
+                    @click="runFilter = 'failed'">失敗</button>
             <input type="text" class="filter-input" x-model="runTextFilter"
                    placeholder="filter by test_id…">
           </div>
@@ -660,11 +660,11 @@
                   <span class="mono" x-text="currentAgent.id"></span>
                 </div>
                 <div class="kv-row">
-                  <span class="kv-label">Platform</span>
+                  <span class="kv-label">平台</span>
                   <span x-text="currentAgent.platform"></span>
                 </div>
                 <div class="kv-row">
-                  <span class="kv-label">Status</span>
+                  <span class="kv-label">狀態</span>
                   <span class="row gap-md">
                     <span class="agent-dot"
                           :class="'agent-' + currentAgent.live_status"></span>
@@ -672,7 +672,7 @@
                   </span>
                 </div>
                 <div class="kv-row">
-                  <span class="kv-label">Enabled</span>
+                  <span class="kv-label">啟用</span>
                   <span x-text="currentAgent.enabled ? '是' : '否'"></span>
                 </div>
               </div>
@@ -820,7 +820,7 @@
 
   <!-- ── Gear dropdown ─────────────────────────────────────────────── -->
   <div class="gear-menu" x-show="gearOpen" @click.outside="gearOpen = false">
-    <button class="menu-item" @click="modal = 'settings'; gearOpen = false">Settings</button>
+    <button class="menu-item" @click="modal = 'settings'; gearOpen = false">設定</button>
     <button class="menu-item" @click="modal = 'logs'; gearOpen = false">System Logs</button>
     <button class="menu-item" @click="paletteOpen = true; gearOpen = false">
       Open Command Palette <span class="dim mono">⌘K</span>
@@ -834,7 +834,7 @@
   <div class="palette" x-show="paletteOpen" x-transition.opacity.duration.150ms>
     <div class="palette-header">
       <span class="dim mono small">⌘K</span>
-      <span class="dim small">Command Palette</span>
+      <span class="dim small">命令面板</span>
       <span class="row-spacer"></span>
       <span class="dim mono small">Esc</span>
     </div>
@@ -907,9 +907,9 @@
       </div>
 
       <div class="modal-section">
-        <h2 class="modal-section-title">Persona</h2>
+        <h2 class="modal-section-title">角色 (Persona)</h2>
         <div class="kv-row">
-          <span class="kv-label">Name</span>
+          <span class="kv-label">名稱</span>
           <input class="kv-input" type="text" x-model="state.persona_name"
                  @keydown.enter="savePersonaName()">
         </div>
@@ -938,10 +938,10 @@
       <div class="row gap-md">
         <input type="text" class="filter-input" x-model="logQ"
                placeholder="search log lines…" style="flex:1">
-        <button class="filter-pill" :class="logLevel === 'all'   ? 'active' : ''" @click="logLevel = 'all'">All</button>
-        <button class="filter-pill" :class="logLevel === 'info'  ? 'active' : ''" @click="logLevel = 'info'">Info</button>
-        <button class="filter-pill" :class="logLevel === 'warn'  ? 'active' : ''" @click="logLevel = 'warn'">Warn</button>
-        <button class="filter-pill" :class="logLevel === 'error' ? 'active' : ''" @click="logLevel = 'error'">Error</button>
+        <button class="filter-pill" :class="logLevel === 'all'   ? 'active' : ''" @click="logLevel = 'all'">全部</button>
+        <button class="filter-pill" :class="logLevel === 'info'  ? 'active' : ''" @click="logLevel = 'info'">資訊</button>
+        <button class="filter-pill" :class="logLevel === 'warn'  ? 'active' : ''" @click="logLevel = 'warn'">警告</button>
+        <button class="filter-pill" :class="logLevel === 'error' ? 'active' : ''" @click="logLevel = 'error'">錯誤</button>
       </div>
       <div class="log-list mt-md">
         <template x-for="line in state.log_lines.filter(l =>
