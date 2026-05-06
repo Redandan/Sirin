@@ -187,6 +187,10 @@ pub fn mcp_router() -> Router {
         .route("/ui",        get(|| async { Redirect::permanent("/ui/") }))
         .route("/ui/",       get(ui_index))
         .route("/ui/{file}", get(ui_static))
+        // Convenience aliases — `/help` is what other AIs are likely to
+        // type / link to without thinking about the /ui/ prefix.
+        .route("/help",      get(|| async { Redirect::permanent("/ui/help.html") }))
+        .route("/help/",     get(|| async { Redirect::permanent("/ui/help.html") }))
         // /api/snapshot — single combined JSON read for the dashboard. Polled
         // every ~5s by the web UI; cheap aggregate of read-only AppService calls.
         .route("/api/snapshot", get(api_snapshot))
@@ -243,6 +247,7 @@ async fn ui_static(Path(file): Path<String>) -> impl IntoResponse {
     // no path-traversal risk. Adding a new file is a one-line patch here.
     let (mime, body): (&'static str, &'static [u8]) = match file.as_str() {
         "index.html"    => ("text/html; charset=utf-8",    include_bytes!("../web/index.html")),
+        "help.html"     => ("text/html; charset=utf-8",    include_bytes!("../web/help.html")),
         "style.css"     => ("text/css; charset=utf-8",     include_bytes!("../web/style.css")),
         "app.js"        => ("application/javascript",      include_bytes!("../web/app.js")),
         "alpine.min.js" => ("application/javascript",      include_bytes!("../web/alpine.min.js")),

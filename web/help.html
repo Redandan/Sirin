@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sirin · 使用說明</title>
+<link rel="stylesheet" href="/ui/style.css">
+<style>
+  /* Help-page-only layout — single column, comfortable line length, code blocks readable. */
+  body { background: var(--bg); color: var(--text); margin: 0; }
+  .help-shell {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 28px 32px 96px;
+    font-size: 14px;
+    line-height: 1.65;
+  }
+  .help-shell h1 {
+    font-size: 26px;
+    margin: 0 0 4px;
+    color: var(--accent);
+    font-family: var(--font-mono);
+    letter-spacing: -0.01em;
+  }
+  .help-shell h2 {
+    font-size: 17px;
+    margin: 32px 0 12px;
+    color: var(--text);
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 6px;
+  }
+  .help-shell h3 {
+    font-size: 14px;
+    margin: 20px 0 6px;
+    color: var(--text);
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .help-shell .tagline {
+    color: var(--text-dim);
+    margin: 0 0 24px;
+    font-size: 13px;
+  }
+  .help-shell pre {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 12px 14px;
+    overflow-x: auto;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text);
+    margin: 8px 0 12px;
+  }
+  .help-shell code {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    background: var(--card);
+    padding: 1px 5px;
+    border-radius: 2px;
+    color: var(--info);
+  }
+  .help-shell pre code {
+    background: transparent;
+    padding: 0;
+    color: var(--text);
+  }
+  .help-shell a {
+    color: var(--info);
+    text-decoration: none;
+  }
+  .help-shell a:hover { text-decoration: underline; }
+  .help-shell ul, .help-shell ol {
+    padding-left: 20px;
+    margin: 6px 0 12px;
+  }
+  .help-shell li { margin: 4px 0; }
+  .help-shell table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 8px 0 14px;
+    font-size: 13px;
+  }
+  .help-shell th, .help-shell td {
+    border: 1px solid var(--border);
+    padding: 6px 10px;
+    text-align: left;
+    vertical-align: top;
+  }
+  .help-shell th {
+    background: var(--card);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-dim);
+  }
+  .help-shell tr:nth-child(even) td { background: rgba(255,255,255,0.015); }
+  .help-shell .pill {
+    display: inline-flex;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    padding: 1px 8px;
+    border-radius: 3px;
+    background: color-mix(in srgb, var(--info) 18%, transparent);
+    color: var(--info);
+    margin-right: 4px;
+  }
+  .help-shell .pill-warn { background: color-mix(in srgb, var(--yellow) 18%, transparent); color: var(--yellow); }
+  .help-shell .pill-good { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+  .help-shell hr { border: 0; border-top: 1px solid var(--border); margin: 32px 0; }
+  .help-shell .topbar-mini {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 16px;
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
+    margin: -28px -32px 24px;
+  }
+  .help-shell .topbar-mini a {
+    font-family: var(--font-mono);
+    font-size: 13px;
+  }
+  .toc {
+    background: var(--card);
+    border-left: 3px solid var(--accent);
+    padding: 12px 16px;
+    margin: 16px 0 24px;
+    border-radius: 0 4px 4px 0;
+  }
+  .toc-title {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-dim);
+    margin-bottom: 6px;
+  }
+  .toc ul { margin: 0; padding-left: 18px; }
+</style>
+</head>
+<body>
+<div class="help-shell">
+
+  <div class="topbar-mini">
+    <a href="/ui/">← 回儀表板</a>
+    <span style="color: var(--text-dim)">·</span>
+    <a href="https://github.com/Redandan/Sirin" target="_blank">GitHub</a>
+    <span style="color: var(--text-dim)">·</span>
+    <a href="/mcp" onclick="return false;" title="MCP HTTP endpoint — POST JSON-RPC 2.0">MCP /mcp</a>
+  </div>
+
+  <h1>Sirin · 使用說明</h1>
+  <p class="tagline">
+    Sirin 是 AI 驅動的瀏覽器測試 daemon。本頁說明 <strong>如何讓任何 AI client(Claude / Cline / Cursor / 自寫 script)接它</strong>，以及對外暴露的 65+ MCP tools。
+  </p>
+
+  <div class="toc">
+    <div class="toc-title">目錄</div>
+    <ul>
+      <li><a href="#quickstart">⚡ 快速開始</a></li>
+      <li><a href="#connect">🔌 接入方式</a></li>
+      <li><a href="#tools">🛠️ 對外暴露的能力</a></li>
+      <li><a href="#examples">📋 用法範例</a></li>
+      <li><a href="#caveats">⚠️ 注意事項</a></li>
+      <li><a href="#troubleshoot">🔧 常見問題</a></li>
+    </ul>
+  </div>
+
+  <h2 id="quickstart">⚡ 快速開始</h2>
+  <p>
+    Sirin daemon 跑在 <code>http://127.0.0.1:7700</code>，提供 3 個主要進入點：
+  </p>
+  <table>
+    <thead><tr><th>路徑</th><th>用途</th><th>協議</th></tr></thead>
+    <tbody>
+      <tr><td><code>/ui/</code></td><td>儀表板 / 觀測 UI</td><td>HTML</td></tr>
+      <tr><td><code>/mcp</code></td><td>給 AI 用的 tool API</td><td>JSON-RPC 2.0 over HTTP</td></tr>
+      <tr><td><code>/ws</code></td><td>UI 即時推送（snapshot 每 2s）</td><td>WebSocket</td></tr>
+    </tbody>
+  </table>
+  <p>
+    確認 daemon 還活著：<code>curl http://127.0.0.1:7700/api/snapshot</code>，
+    應該收到 JSON。
+  </p>
+
+  <h2 id="connect">🔌 接入方式</h2>
+
+  <h3>1. Claude Desktop / Claude Code</h3>
+  <p>把這段加到 <code>~/.claude.json</code> 的 <code>mcpServers</code>：</p>
+<pre><code>{
+  "mcpServers": {
+    "sirin": {
+      "url": "http://127.0.0.1:7700/mcp"
+    }
+  }
+}</code></pre>
+  <p>
+    重啟 Claude 後，新 chat 會看到 65+ 個 <code>mcp__sirin__*</code> tools。
+  </p>
+
+  <h3>2. Cline / Cursor / Roo Code（VS Code MCP）</h3>
+<pre><code>{
+  "mcp.servers": {
+    "sirin": {
+      "transport": "http",
+      "url": "http://127.0.0.1:7700/mcp"
+    }
+  }
+}</code></pre>
+
+  <h3>3. 純 curl / Python</h3>
+<pre><code># curl
+curl -X POST http://127.0.0.1:7700/mcp \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "tools/call",
+    "params": {
+      "name": "run_test_async",
+      "arguments": {"test_id": "agora_buyer_wallet"}
+    },
+    "id": 1
+  }'
+
+# Python
+import requests
+r = requests.post("http://127.0.0.1:7700/mcp", json={
+    "jsonrpc": "2.0",
+    "method": "tools/call",
+    "params": {"name": "run_test_async",
+               "arguments": {"test_id": "agora_buyer_wallet"}},
+    "id": 1,
+})
+print(r.json())</code></pre>
+
+  <h3>4. sirin_call CLI（避 shell escaping 痛）</h3>
+  <p>
+    Sirin 自帶 <code>target/release/sirin_call.exe</code>，專門處理 CJK / Unicode payload：
+  </p>
+<pre><code>sirin_call --list                                       # 列所有 tools
+sirin_call run_test_async test_id=agora_buyer_wallet    # key=value 語法
+echo '{"test_id":"x"}' | sirin_call run_test_async      # stdin JSON</code></pre>
+
+  <h2 id="tools">🛠️ 對外暴露的能力（65+ tools）</h2>
+  <table>
+    <thead><tr><th>類別</th><th>主要 tools</th><th>用途</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>🌐 瀏覽器自動化</td>
+        <td><code>browser_exec</code>（45+ actions）</td>
+        <td>navigate / click / type / screenshot / scroll / shadow_dump / vision</td>
+      </tr>
+      <tr>
+        <td>🧪 E2E 測試</td>
+        <td><code>run_test_async</code> / <code>run_test_batch</code> / <code>run_regression_suite</code></td>
+        <td>跑 YAML 描述的 user flow，自動 ReAct + 失敗截圖</td>
+      </tr>
+      <tr>
+        <td>📊 Coverage</td>
+        <td><code>test_coverage</code> / <code>script_health</code></td>
+        <td>feature 覆蓋率、replay 健康度（drift 警告）</td>
+      </tr>
+      <tr>
+        <td>📚 KB（知識庫）</td>
+        <td><code>kb_search</code> / <code>kbWrite</code> / <code>kb_stats</code></td>
+        <td>跨 project 經驗共享（agora-trading KB）</td>
+      </tr>
+      <tr>
+        <td>👥 Multi-agent squad</td>
+        <td><code>agent_assign_task</code> / <code>agent_queue_status</code></td>
+        <td>PM/Engineer/Tester worker pool（worktree 隔離）</td>
+      </tr>
+      <tr>
+        <td>🔄 Handoff</td>
+        <td><code>create_handoff</code> / <code>get_latest_handoff</code></td>
+        <td>session 之間交接</td>
+      </tr>
+      <tr>
+        <td>🔍 Discovery</td>
+        <td><code>run_test_pipeline</code> / <code>discover_features</code></td>
+        <td>自動爬 buyer/seller/admin 路徑</td>
+      </tr>
+      <tr>
+        <td>🧠 Memory</td>
+        <td><code>memory_search</code> / <code>record_memory</code></td>
+        <td>跨 session FTS5 記憶</td>
+      </tr>
+      <tr>
+        <td>🔭 Phase B 觀測</td>
+        <td><code>live_trace</code> / <code>queue_status</code> / <code>tail_app_log</code></td>
+        <td>看 mid-run step / 排隊 ETA / 即時 log</td>
+      </tr>
+      <tr>
+        <td>🧹 Worktree GC</td>
+        <td><code>cleanup_stale_worktrees</code></td>
+        <td>清舊的 multi-agent task worktree（#242）</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    完整清單：發 JSON-RPC <code>tools/list</code> 給 <code>/mcp</code> 即可拿到所有 tool 名稱 + schema。
+  </p>
+
+  <h2 id="examples">📋 用法範例</h2>
+
+  <h3>跑一個 E2E test 並等結果</h3>
+<pre><code># 觸發
+RUN=$(curl -sX POST :7700/mcp -d '{"jsonrpc":"2.0","method":"tools/call",
+  "params":{"name":"run_test_async","arguments":{"test_id":"agora_buyer_wallet"}},"id":1}' \
+  -H "Content-Type: application/json" | jq -r '.result.content[0].text' | jq -r '.run_id')
+
+# 輪詢
+curl -sX POST :7700/mcp -d '{"jsonrpc":"2.0","method":"tools/call",
+  "params":{"name":"get_test_result","arguments":{"run_id":"'$RUN'"}},"id":1}' \
+  -H "Content-Type: application/json"</code></pre>
+
+  <h3>截圖 + LLM 視覺分析</h3>
+<pre><code>curl -X POST :7700/mcp -H "Content-Type: application/json" -d '{
+  "jsonrpc":"2.0","id":1,"method":"tools/call",
+  "params":{"name":"browser_exec","arguments":{
+    "action":"screenshot_analyze",
+    "prompt":"截圖：頁面是否正確顯示購物車，且 商品數量為 3 ?"
+  }}
+}'</code></pre>
+
+  <h3>查 KB 找確認過的 trap 解法</h3>
+<pre><code>curl -X POST :7700/mcp -H "Content-Type: application/json" -d '{
+  "jsonrpc":"2.0","id":1,"method":"tools/call",
+  "params":{"name":"kb_search","arguments":{
+    "query":"Flutter ExpansionTile click",
+    "project":"sirin",
+    "status":"confirmed"
+  }}
+}'</code></pre>
+
+  <h3>派任務給 Multi-agent squad</h3>
+<pre><code>curl -X POST :7700/mcp -H "Content-Type: application/json" -d '{
+  "jsonrpc":"2.0","id":1,"method":"tools/call",
+  "params":{"name":"agent_assign_task","arguments":{
+    "description":"在 src/foo.rs 加一個 fn bar() 並補單測"
+  }}
+}'</code></pre>
+
+  <h2 id="caveats">⚠️ 注意事項</h2>
+  <ul>
+    <li>
+      <span class="pill pill-warn">並發 = 1</span>
+      <code>TEST_RUN_LOCK</code> 同時只跑一個 test。多個 AI client 觸發會排隊（用 <code>queue_status</code> 看 ETA）。
+    </li>
+    <li>
+      <span class="pill pill-warn">Idle close 60s</span>
+      Chrome 60 秒沒 active test 會自動關（<code>SIRIN_BROWSER_IDLE_CLOSE_SECS</code> 可調）。下次 launch 會重開。
+    </li>
+    <li>
+      <span class="pill pill-warn">無 auth</span>
+      只 listen <code>127.0.0.1</code>，本機任何 process 都能連。對外開要自己加 reverse proxy + auth（沒內建 token）。
+    </li>
+    <li>
+      <span class="pill">Persistent profile</span>
+      Chrome 用 <code>&lt;app_data_dir&gt;/chrome-profile</code>，登入狀態跨 AI session 共享。
+    </li>
+    <li>
+      <span class="pill pill-good">KB write 自動 dedup</span>
+      成功的 test 會自動寫 <code>sirin-pass-{test_id}</code> 到 KB，多 AI 跑同 test 會自動 version up，不會 spam。
+    </li>
+    <li>
+      <span class="pill">Replay 優先</span>
+      有 saved script 的 test 自動走 deterministic replay（0 LLM 成本，5-30s）。沒 script 才走 LLM ReAct（30-300s + token cost）。
+    </li>
+  </ul>
+
+  <h2 id="troubleshoot">🔧 常見問題</h2>
+
+  <h3>Q：MCP call 回 <code>connection refused</code></h3>
+  <p>Sirin daemon 沒在跑。啟動：</p>
+<pre><code># Windows
+./target/release/sirin.exe --headless
+
+# 確認
+curl http://127.0.0.1:7700/api/snapshot</code></pre>
+
+  <h3>Q：test 卡住不動</h3>
+  <p>用 <code>live_trace run_id=...</code> 看執行到第幾步，<code>kill_run run_id=...</code> 強制終止。auto-kill watchdog 90s 也會自動清。</p>
+
+  <h3>Q：Chrome 沒開</h3>
+  <p>正常——idle close 已關。下個 test 觸發會自動重啟。或直接 <code>browser_exec action=goto target=...</code>。</p>
+
+  <h3>Q：要看 daemon log</h3>
+  <p><code>tail_app_log lines=50</code> tool，或直接看 <code>%LOCALAPPDATA%\Sirin\logs\app.log</code>。</p>
+
+  <hr>
+  <p style="color: var(--text-dim); font-size: 12px;">
+    Sirin v0.5+ · 此頁版本 2026-05-06 ·
+    源碼 <a href="https://github.com/Redandan/Sirin/blob/main/web/help.html" target="_blank">web/help.html</a>
+  </p>
+</div>
+</body>
+</html>

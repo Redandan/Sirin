@@ -49,6 +49,8 @@
     </div>
     <div class="topbar-right">
       <span class="url" x-text="truncateUrl(state.browser_url, 38)" :title="state.browser_url"></span>
+      <a class="iconbtn" href="/help" target="_blank"
+         title="使用說明 (給其他 AI 接 Sirin 的指南)">?</a>
       <button class="iconbtn" @click="gearOpen = !gearOpen" title="Settings · Logs · About">⚙</button>
       <button class="iconbtn iconbtn-mono" @click="paletteOpen = true" title="Command palette (Ctrl+K)">⌘K</button>
     </div>
