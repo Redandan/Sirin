@@ -154,11 +154,11 @@
               <div class="widget-toolbar" x-show="dashboard_edit_mode">
                 <span class="dim mono small" x-text="widgetLabel(wid)"></span>
                 <span class="row-spacer"></span>
-                <button class="iconbtn" title="Move up"
+                <button class="iconbtn" title="向上移動"
                         @click="moveWidget(wid, -1)">↑</button>
-                <button class="iconbtn" title="Move down"
+                <button class="iconbtn" title="向下移動"
                         @click="moveWidget(wid, 1)">↓</button>
-                <button class="iconbtn" title="Remove"
+                <button class="iconbtn" title="移除"
                         @click="removeWidget(wid)">✕</button>
               </div>
 
@@ -893,7 +893,7 @@
               </div>
 
               <div class="card mt-md">
-                <h2 class="modal-section-title">KPIs (24h)</h2>
+                <h2 class="modal-section-title">指標（24 小時）</h2>
                 <div class="kpi-grid">
                   <div class="kpi-cell">
                     <div class="kpi-num mono">0</div>
@@ -1059,7 +1059,7 @@
            @keydown.arrow-down.prevent="paletteIdx = Math.min(paletteIdx + 1, filteredEntries.length - 1)"
            @keydown.arrow-up.prevent="paletteIdx = Math.max(paletteIdx - 1, 0)"
            @keydown.enter.prevent="runPaletteEntry(filteredEntries[paletteIdx])"
-           placeholder="Type to filter…">
+           placeholder="輸入關鍵字篩選…">
     <hr class="thin-sep">
     <template x-for="(entry, i) in filteredEntries" :key="entry.label">
       <button class="palette-entry" :class="i === paletteIdx ? 'active' : ''"
@@ -1152,7 +1152,7 @@
          x-data="{ logQ: '', logLevel: 'all' }">
       <div class="row gap-md">
         <input type="text" class="filter-input" x-model="logQ"
-               placeholder="search log lines…" style="flex:1">
+               placeholder="搜尋日誌…" style="flex:1">
         <button class="filter-pill" :class="logLevel === 'all'   ? 'active' : ''" @click="logLevel = 'all'">全部</button>
         <button class="filter-pill" :class="logLevel === 'info'  ? 'active' : ''" @click="logLevel = 'info'">資訊</button>
         <button class="filter-pill" :class="logLevel === 'warn'  ? 'active' : ''" @click="logLevel = 'warn'">警告</button>
@@ -1211,7 +1211,7 @@
         </template>
       </div>
 
-      <h2 class="modal-section-title mt-lg">Token Burn (5-min window)</h2>
+      <h2 class="modal-section-title mt-lg">Token 用量（5 分鐘窗口）</h2>
       <div class="token-burn-grid">
         <div class="kv-row"><span class="kv-label">$/hr</span>
           <span class="mono" x-text="'$' + state.token_usage.cost_per_hour.toFixed(2)"></span></div>
@@ -1230,7 +1230,7 @@
         <!-- Left pane: tool browser -->
         <div class="mcp-list-pane">
           <input type="text" class="filter-input" x-model="mcp_query"
-                 placeholder="search tools…">
+                 placeholder="搜尋 MCP 工具…">
           <div class="dim small mt-xs"
                x-text="mcp_loading
                        ? 'loading…'
