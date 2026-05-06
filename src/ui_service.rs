@@ -277,6 +277,15 @@ pub struct TestRunView {
     /// Estimated USD cost using the per-model rate table in
     /// `crate::llm::usage::price_per_million`.  `None` rules same as above.
     pub cost_usd:          Option<f32>,
+    /// ReAct iteration count (#279 click-to-expand).  None for legacy rows.
+    pub iterations:        Option<u32>,
+    /// True when this run was deterministic-script replay.  False for LLM
+    /// ReAct runs.  Always `false` for active/queued runs (mode unknown until
+    /// the executor's replay-vs-llm decision fires).
+    pub is_replay:         bool,
+    /// Run id assigned at spawn — required for the dashboard's expand-row
+    /// to fetch the full step history via `get_test_result` MCP.
+    pub run_id:            Option<String>,
 }
 
 // ── Service traits ───────────────────────────────────────────────────────────

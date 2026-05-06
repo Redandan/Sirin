@@ -175,6 +175,16 @@ window.sirin = function () {
       ],
       selected_test_id: 'agora_market_smoke',
 
+      // #279 click-to-expand: which run_id (if any) is currently expanded
+      // in the dashboard / testing run lists.  null = no row expanded.
+      // Toggling the same row again collapses.
+      expandedRunId: null,
+      // Detail payload for the currently-expanded row.  Populated by
+      // toggleRunDetail() via /mcp `get_test_result` (terminal runs) or
+      // `live_trace` (running runs).  Shape: { run_id, history[], final_answer, error, fetched_at }.
+      expandedRunDetail: null,
+      expandedRunLoading: false,
+
       // ── Modal mock data ─────────────────────────────────────────────
       // config_check output — Settings modal lists these cards.
       config_issues: [
@@ -853,6 +863,77 @@ window.sirin = function () {
       }
       // Auto-clear after 6 s.
       setTimeout(() => { this.lastLaunch = null; }, 6000);
+    },
+
+    // #279 — toggle inline expansion of a run row.  When expanding, fetch
+    // the full step history via /mcp:
+    //   - terminal runs (passed/failed/timeout/error/disputed) → get_test_result
+    //   - running / queued                                      → live_trace
+    // Re-clicking the same row collapses; clicking a different row swaps.
+    async toggleRunDetail(run) {
+      if (!run || !run.run_id) {
+        // Legacy row without run_id (pre-#279) — nothing to fetch.
+        this.expandedRunId = null;
+        this.expandedRunDetail = null;
+        return;
+      }
+      if (this.expandedRunId === run.run_id) {
+        this.expandedRunId = null;
+        this.expandedRunDetail = null;
+        return;
+      }
+      this.expandedRunId = run.run_id;
+      this.expandedRunDetail = null;
+      this.expandedRunLoading = true;
+      try {
+        const isLive = ['running', 'queued'].includes(run.status);
+        const tool = isLive ? 'live_trace' : 'get_test_result';
+        const args = isLive ? { run_id: run.run_id, last_n: 10 }
+                            : { run_id: run.run_id };
+        const body = JSON.stringify({
+          jsonrpc: '2.0', id: 1, method: 'tools/call',
+          params: { name: tool, arguments: args },
+        });
+        const r = await fetch('/mcp', { method: 'POST', headers: {'Content-Type':'application/json'}, body });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const env = await r.json();
+        if (env.error) throw new Error(env.error.message);
+        const text = env.result?.content?.[0]?.text || '';
+        const data = JSON.parse(text);
+        // get_test_result returns { status, details: { iterations, error, analysis, ... } }
+        // live_trace returns { status, recent_steps[], current_subphase, ... }
+        const steps = data.recent_steps || [];
+        const det = data.details || {};
+        this.expandedRunDetail = {
+          run_id: run.run_id,
+          status: data.status || run.status,
+          subphase: data.current_subphase,
+          subphase_age_ms: data.subphase_age_ms,
+          idle_secs: data.idle_secs,
+          iterations: det.iterations ?? run.iterations,
+          duration_ms: det.duration_ms ?? run.duration_ms,
+          analysis: det.analysis ?? run.analysis,
+          error: det.error,
+          steps,
+        };
+      } catch (e) {
+        this.expandedRunDetail = { error: '無法載入詳情：' + (e.message || e) };
+      } finally {
+        this.expandedRunLoading = false;
+      }
+    },
+
+    // Format a step's action for the expanded view — shows "shadow_click target=..."
+    // or just the action name when no target.  Truncates long values.
+    formatStepAction(step) {
+      if (!step || !step.action) return '?';
+      const a = step.action;
+      if (typeof a === 'string') return a;
+      const name = a.action || '?';
+      const target = a.target || a.path || a.url || a.text;
+      if (!target) return name;
+      const t = String(target);
+      return name + ' ' + (t.length > 60 ? t.slice(0, 60) + '…' : t);
     },
 
     // ── Command palette entries ────────────────────────────────────

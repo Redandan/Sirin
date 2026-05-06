@@ -662,11 +662,15 @@ fn build_snapshot(svc: &Arc<dyn AppService>) -> Value {
     }
 
     let active_runs: Vec<Value> = svc.active_test_runs().into_iter().map(|r| json!({
-        "test_id":  r.test_id,
-        "status":   r.status,
-        "step":     r.step,
-        "analysis": r.analysis,
+        "test_id":   r.test_id,
+        "status":    r.status,
+        "step":      r.step,
+        "analysis":  r.analysis,
         "started_at": r.started_at,
+        // #279 click-to-expand: run_id needed by frontend to fetch
+        // get_test_result / live_trace via /mcp.
+        "run_id":    r.run_id,
+        "is_replay": r.is_replay,
     })).collect();
 
     let recent_runs: Vec<Value> = svc.recent_test_runs(8).into_iter().map(|r| json!({
@@ -682,6 +686,12 @@ fn build_snapshot(svc: &Arc<dyn AppService>) -> Value {
         "completion_tokens": r.completion_tokens,
         "cached_tokens":     r.cached_tokens,
         "cost_usd":          r.cost_usd,
+        // #279 click-to-expand: surface iter count + replay mode + run_id
+        // so the dashboard row click can fetch step history.
+        "iterations":  r.iterations,
+        "is_replay":   r.is_replay,
+        "run_id":      r.run_id,
+        "analysis":    r.analysis,  // short final_analysis for inline preview
     })).collect();
 
     let last_verdict = svc.recent_test_runs(1).into_iter().next().map(|r| json!({

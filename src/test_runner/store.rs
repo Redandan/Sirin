@@ -228,6 +228,13 @@ pub struct RunRecord {
     pub cached_tokens:     u32,
     /// Cost in micro-USD (USD * 1_000_000).  See `cost_micro_usd` column.
     pub cost_micro_usd:    i64,
+    /// ReAct iteration count.  None on legacy rows that pre-date the column;
+    /// Some(0) for replay-mode runs that never called the LLM loop.
+    pub iterations:        Option<u32>,
+    /// Run id assigned by `runs::new_run()` — used by the dashboard's
+    /// click-to-expand to fetch the full step history via `get_test_result` MCP.
+    /// None on rows recorded before `run_id` column existed.
+    pub run_id:            Option<String>,
 }
 
 // ── API ──────────────────────────────────────────────────────────────────────
@@ -397,7 +404,8 @@ pub fn recent_runs_all(limit: usize) -> Vec<RunRecord> {
         "SELECT id, test_id, started_at, duration_ms, status, failure_category, ai_analysis, \
          screenshot_path, console_log, COALESCE(is_replay, 0), \
          COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), \
-         COALESCE(cached_tokens, 0), COALESCE(cost_micro_usd, 0) \
+         COALESCE(cached_tokens, 0), COALESCE(cost_micro_usd, 0), \
+         COALESCE(iterations, 0), run_id \
          FROM test_runs ORDER BY started_at DESC LIMIT ?1",
     ) {
         Ok(s) => s,
@@ -424,6 +432,8 @@ pub fn recent_runs_all(limit: usize) -> Vec<RunRecord> {
                 completion_tokens: row.get::<_, i64>(11).unwrap_or(0).max(0) as u32,
                 cached_tokens:     row.get::<_, i64>(12).unwrap_or(0).max(0) as u32,
                 cost_micro_usd:    row.get::<_, i64>(13).unwrap_or(0),
+                iterations:        row.get::<_, Option<i64>>(14).unwrap_or(Some(0)).map(|v| v.max(0) as u32),
+                run_id:            row.get::<_, Option<String>>(15).unwrap_or(None),
             })
         },
     );
@@ -542,7 +552,8 @@ pub fn recent_runs(test_id: &str, limit: usize) -> Vec<RunRecord> {
         "SELECT id, test_id, started_at, duration_ms, status, failure_category, ai_analysis, \
          screenshot_path, console_log, COALESCE(is_replay, 0), \
          COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), \
-         COALESCE(cached_tokens, 0), COALESCE(cost_micro_usd, 0) \
+         COALESCE(cached_tokens, 0), COALESCE(cost_micro_usd, 0), \
+         COALESCE(iterations, 0), run_id \
          FROM test_runs WHERE test_id = ?1 ORDER BY started_at DESC LIMIT ?2",
     ) {
         Ok(s) => s,
@@ -569,6 +580,8 @@ pub fn recent_runs(test_id: &str, limit: usize) -> Vec<RunRecord> {
                 completion_tokens: row.get::<_, i64>(11).unwrap_or(0).max(0) as u32,
                 cached_tokens:     row.get::<_, i64>(12).unwrap_or(0).max(0) as u32,
                 cost_micro_usd:    row.get::<_, i64>(13).unwrap_or(0),
+                iterations:        row.get::<_, Option<i64>>(14).unwrap_or(Some(0)).map(|v| v.max(0) as u32),
+                run_id:            row.get::<_, Option<String>>(15).unwrap_or(None),
             })
         },
     );

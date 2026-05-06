@@ -258,6 +258,12 @@ impl TestRunnerService for RealService {
                     completion_tokens,
                     cached_tokens,
                     cost_usd,
+                    // #279 click-to-expand: surface iteration count + replay
+                    // mode + run_id so the dashboard row click can fetch the
+                    // full step history via get_test_result MCP.
+                    iterations:       r.iterations,
+                    is_replay:        r.is_replay,
+                    run_id:           r.run_id,
                 }
             })
             .collect()
@@ -291,6 +297,13 @@ impl TestRunnerService for RealService {
                     completion_tokens: None,
                     cached_tokens:     None,
                     cost_usd:          None,
+                    // #279 — iterations only meaningful after run completes;
+                    // is_replay derived from registry's replay_mode field
+                    // (set by executor's replay-vs-llm decision); run_id is
+                    // available because we just looked it up.
+                    iterations:       None,
+                    is_replay:        s.replay_mode.as_deref() == Some("script"),
+                    run_id:           Some(s.run_id.clone()),
                 }
             })
             .collect()

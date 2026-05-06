@@ -426,33 +426,92 @@
                    placeholder="filter by test_id…">
           </div>
 
-          <!-- History list -->
+          <!-- History list (#279 click-to-expand) -->
           <div class="run-list">
             <template x-for="run in filteredRuns" :key="run.started_at + run.test_id">
-              <button class="run-row">
-                <span :class="'run-status run-status-' + run.status"
-                      x-text="verdictGlyph(run.status)"></span>
-                <span :class="'run-status-text run-status-' + run.status"
-                      x-text="verdictText(run.status)"></span>
-                <span class="run-name mono" x-text="run.test_id"></span>
-                <span x-show="run.failure_category"
-                      class="badge-soft badge-soft-danger"
-                      x-text="run.failure_category"></span>
-                <span x-show="run.pass_rate !== null && run.pass_rate < 0.7"
-                      class="badge-soft badge-soft-warn"
-                      x-text="'flaky ' + Math.round(run.pass_rate * 100) + '%'"></span>
-                <span class="row-spacer"></span>
-                <span x-show="run.cost_usd !== null && run.cost_usd > 0"
-                      class="dim mono small ml-md"
-                      :title="'tokens: ' + (run.prompt_tokens || 0) + ' in / ' + (run.completion_tokens || 0) + ' out' + (run.cached_tokens > 0 ? ' (' + run.cached_tokens + ' cached)' : '')"
-                      x-text="'$' + (run.cost_usd >= 0.01 ? run.cost_usd.toFixed(2) : run.cost_usd.toFixed(4))"></span>
-                <span class="dim mono small" x-show="run.duration_ms"
-                      x-text="(run.duration_ms / 1000).toFixed(1) + 's'"></span>
-                <span class="dim small ml-md" x-text="timeAgo(run.started_at)"></span>
-              </button>
+              <div>
+                <button class="run-row" @click="toggleRunDetail(run)">
+                  <span :class="'run-status run-status-' + run.status"
+                        x-text="verdictGlyph(run.status)"></span>
+                  <span :class="'run-status-text run-status-' + run.status"
+                        x-text="verdictText(run.status)"></span>
+                  <span class="run-name mono" x-text="run.test_id"></span>
+                  <span x-show="run.is_replay" class="badge-soft" title="replay-mode 跑出的紀錄">replay</span>
+                  <span x-show="run.iterations !== null && run.iterations > 0"
+                        class="badge-soft" :title="'ReAct iterations'"
+                        x-text="run.iterations + ' iter'"></span>
+                  <span x-show="run.failure_category"
+                        class="badge-soft badge-soft-danger"
+                        x-text="run.failure_category"></span>
+                  <span x-show="run.pass_rate !== null && run.pass_rate < 0.7"
+                        class="badge-soft badge-soft-warn"
+                        x-text="'flaky ' + Math.round(run.pass_rate * 100) + '%'"></span>
+                  <span class="row-spacer"></span>
+                  <span x-show="run.cost_usd !== null && run.cost_usd > 0"
+                        class="dim mono small ml-md"
+                        :title="'tokens: ' + (run.prompt_tokens || 0) + ' in / ' + (run.completion_tokens || 0) + ' out' + (run.cached_tokens > 0 ? ' (' + run.cached_tokens + ' cached)' : '')"
+                        x-text="'$' + (run.cost_usd >= 0.01 ? run.cost_usd.toFixed(2) : run.cost_usd.toFixed(4))"></span>
+                  <span class="dim mono small" x-show="run.duration_ms"
+                        x-text="(run.duration_ms / 1000).toFixed(1) + 's'"></span>
+                  <span class="dim small ml-md" x-text="timeAgo(run.started_at)"></span>
+                  <span class="dim small ml-md"
+                        x-text="expandedRunId === run.run_id ? '▼' : '▶'"></span>
+                </button>
+                <!-- Expanded detail panel — fetched on click via toggleRunDetail -->
+                <div class="run-detail" x-show="expandedRunId === run.run_id" x-cloak>
+                  <div x-show="expandedRunLoading" class="dim small">⏳ 載入中…</div>
+                  <template x-if="expandedRunDetail && !expandedRunLoading">
+                    <div>
+                      <div class="run-detail-meta">
+                        <span class="dim small">run_id:</span>
+                        <span class="mono small" x-text="expandedRunDetail.run_id"></span>
+                        <span x-show="expandedRunDetail.subphase"
+                              class="badge-soft ml-md"
+                              x-text="expandedRunDetail.subphase + ' · ' + (expandedRunDetail.subphase_age_ms ? Math.round(expandedRunDetail.subphase_age_ms/100)/10 + 's' : '')"></span>
+                        <span x-show="expandedRunDetail.idle_secs > 60"
+                              class="badge-soft badge-soft-warn ml-md"
+                              x-text="'idle ' + expandedRunDetail.idle_secs + 's'"></span>
+                      </div>
+                      <div x-show="expandedRunDetail.error" class="run-detail-error">
+                        <span class="dim small">錯誤訊息:</span>
+                        <pre class="mono small" x-text="expandedRunDetail.error"></pre>
+                      </div>
+                      <div x-show="expandedRunDetail.analysis && !expandedRunDetail.error"
+                           class="run-detail-analysis">
+                        <span class="dim small">最終分析:</span>
+                        <div class="small" x-text="expandedRunDetail.analysis"></div>
+                      </div>
+                      <div x-show="expandedRunDetail.steps && expandedRunDetail.steps.length > 0"
+                           class="run-detail-steps">
+                        <div class="dim small mb-xs">最近 步驟 (最多 10):</div>
+                        <template x-for="step in expandedRunDetail.steps" :key="step.iter">
+                          <div class="run-detail-step">
+                            <span class="mono dim small" x-text="'iter ' + step.iter"></span>
+                            <span class="mono small" x-text="formatStepAction(step)"></span>
+                            <span x-show="step.llm_latency_ms"
+                                  class="dim mono small ml-md"
+                                  x-text="(step.llm_latency_ms/1000).toFixed(1) + 's LLM'"></span>
+                            <span x-show="step.llm_prompt_bytes"
+                                  class="dim mono small ml-md"
+                                  x-text="Math.round(step.llm_prompt_bytes/1024) + 'KB prompt'"></span>
+                            <div class="run-detail-obs mono small dim"
+                                 x-show="step.observation"
+                                 x-text="step.observation.length > 200 ? step.observation.slice(0,200) + '…' : step.observation"></div>
+                          </div>
+                        </template>
+                      </div>
+                      <div x-show="!expandedRunDetail.steps || expandedRunDetail.steps.length === 0"
+                           class="dim small">
+                        <span x-show="expandedRunDetail.iterations">iterations: <span x-text="expandedRunDetail.iterations"></span></span>
+                        <span x-show="!expandedRunDetail.iterations">這次執行沒有 step 紀錄（可能是 replay-mode 或舊資料）</span>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+              </div>
             </template>
             <template x-if="filteredRuns.length === 0">
-              <div class="card-empty">No runs match the current filter.</div>
+              <div class="card-empty">沒有符合條件的執行紀錄。</div>
             </template>
           </div>
         </div>
