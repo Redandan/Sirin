@@ -1377,9 +1377,30 @@ pub(crate) fn call_run_test_pipeline(args: Value) -> Result<Value, String> {
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_get_test_result(args: Value) -> Result<Value, String> {
     let run_id = args["run_id"].as_str().ok_or("Missing run_id")?;
+    let last_n = args.get("last_n").and_then(Value::as_u64).unwrap_or(10).clamp(1, 50) as usize;
     let mut result = match crate::test_runner::runs::get(run_id) {
-        Some(state) => crate::test_runner::runs::to_json(&state),
-        None => return Err(format!("run_id '{run_id}' not found (may have been pruned)")),
+        Some(state) => {
+            // In-memory hit: build envelope + attach recent_steps from RunState
+            // so the dashboard expand-row can show step-by-step trace without
+            // a second MCP call.  Limited to `last_n` to bound payload.
+            let mut env = crate::test_runner::runs::to_json(&state);
+            let steps = crate::test_runner::runs::recent_steps(run_id, last_n);
+            let serialised = serialise_steps(&steps);
+            if let Some(obj) = env.as_object_mut() {
+                obj.insert("recent_steps".into(), Value::Array(serialised));
+            }
+            env
+        }
+        None => {
+            // In-memory miss — registry prunes terminated runs after 1 hour.
+            // Fall back to SQLite where history_json blob persists indefinitely.
+            // Caller (dashboard expand-row, MCP scripts) should not have to
+            // care which storage layer answered.  Closes the > 1h trace gap.
+            match build_envelope_from_sqlite(run_id, last_n) {
+                Some(env) => env,
+                None => return Err(format!("run_id '{run_id}' not found in registry or SQLite")),
+            }
+        }
     };
 
     // Issue #220: attach console log from SQLite (written at test completion).
@@ -1403,6 +1424,124 @@ pub(crate) fn call_get_test_result(args: Value) -> Result<Value, String> {
     }
 
     Ok(result)
+}
+
+/// Serialise TestStep slice into the same shape `live_trace` returns.
+/// Reused by `call_get_test_result` (in-memory + SQLite paths) and by
+/// `call_live_trace` so the frontend's expand-row renders identically.
+fn serialise_steps(steps: &[crate::test_runner::executor::TestStep]) -> Vec<Value> {
+    steps.iter().enumerate().map(|(i, step)| {
+        // Action input can be huge (screenshot base64 / file_write content) —
+        // clip the inline preview to 200 chars per field.
+        let action_preview = match &step.action {
+            Value::Object(map) => {
+                let mut clipped = serde_json::Map::new();
+                for (k, v) in map {
+                    let s = match v {
+                        Value::String(text) if text.len() > 200 => {
+                            Value::String(format!("{}…(truncated to 200)", &text[..200]))
+                        }
+                        other => other.clone(),
+                    };
+                    clipped.insert(k.clone(), s);
+                }
+                Value::Object(clipped)
+            }
+            other => other.clone(),
+        };
+        let obs_preview = if step.observation.len() > 1024 {
+            format!("{}…(truncated to 1024 of {} chars; use get_full_observation for full)",
+                &step.observation[..1024], step.observation.len())
+        } else {
+            step.observation.clone()
+        };
+        json!({
+            "iter":               i,
+            "thought":            step.thought,
+            "action":             action_preview,
+            "observation":        obs_preview,
+            "observation_chars":  step.observation.len(),
+            "llm_model":          step.llm_model,
+            "llm_latency_ms":     step.llm_latency_ms,
+            "llm_prompt_bytes":   step.llm_prompt_bytes,
+            "llm_response_bytes": step.llm_response_bytes,
+            "parse_errors":       step.parse_errors,
+            "ts":                 step.ts,
+        })
+    }).collect()
+}
+
+/// SQLite fallback for `get_test_result` when a run is pruned from the
+/// in-memory registry (> 1h after termination).  Reads test_runs row +
+/// parses history_json into TestStep[], builds an envelope matching
+/// `runs::to_json` shape so the frontend works unchanged.  Returns None
+/// when the run_id has no SQLite row either.
+fn build_envelope_from_sqlite(run_id: &str, last_n: usize) -> Option<Value> {
+    use rusqlite::params;
+    let conn_mutex = crate::test_runner::store::__shared_db();
+    let conn = conn_mutex.lock().unwrap_or_else(|e| e.into_inner());
+    let row = conn.query_row(
+        "SELECT test_id, started_at, status, duration_ms, COALESCE(iterations,0), \
+         ai_analysis, failure_category, history_json, COALESCE(is_replay,0) \
+         FROM test_runs WHERE run_id = ?1 ORDER BY id DESC LIMIT 1",
+        params![run_id],
+        |r| Ok((
+            r.get::<_, String>(0)?,           // test_id
+            r.get::<_, String>(1)?,           // started_at
+            r.get::<_, String>(2)?,           // status
+            r.get::<_, Option<i64>>(3)?,      // duration_ms
+            r.get::<_, i64>(4)?,              // iterations
+            r.get::<_, Option<String>>(5)?,   // ai_analysis
+            r.get::<_, Option<String>>(6)?,   // failure_category
+            r.get::<_, Option<String>>(7)?,   // history_json
+            r.get::<_, i64>(8)? != 0,         // is_replay
+        )),
+    ).ok()?;
+    let (test_id, started_at, status, duration_ms, iterations, analysis,
+         failure_category, history_json, is_replay) = row;
+
+    // Parse history_json → Vec<TestStep>.  Older rows may have a malformed
+    // or missing blob; in that case just return an empty steps array — the
+    // dashboard will show analysis/error without per-step detail.
+    let steps: Vec<crate::test_runner::executor::TestStep> = history_json.as_deref()
+        .and_then(|h| serde_json::from_str::<Vec<crate::test_runner::executor::TestStep>>(h).ok())
+        .unwrap_or_default();
+    let total_steps = steps.len();
+    let trimmed: Vec<_> = steps.into_iter().rev().take(last_n).rev().collect();
+    let serialised = serialise_steps(&trimmed);
+
+    // Derive a short error message: ai_analysis when present, else
+    // failure_category, else empty.  Mirrors what the in-memory path
+    // exposes via TestResult.error_message.
+    let error_text: Option<String> = match (failure_category.as_deref(), analysis.as_deref()) {
+        (Some(cat), _) if !cat.is_empty() && status != "passed"
+            => Some(format!("[{cat}] {}", analysis.as_deref().unwrap_or(""))),
+        _ => analysis.clone(),
+    };
+
+    Some(json!({
+        "run_id":              run_id,
+        "test_id":             test_id,
+        "started_at":          started_at,
+        "status":              status,
+        "idle_secs":           0,
+        "last_action_age_ms":  0,
+        "current_subphase":    Value::Null,
+        "subphase_age_ms":     0,
+        "replay_mode":         if is_replay { "script" } else { "llm" },
+        "recent_steps_count":  total_steps,
+        "recent_steps":        serialised,
+        "details": {
+            "iterations":   iterations,
+            "duration_ms":  duration_ms,
+            "error":        if status == "passed" { Value::Null } else { json!(error_text) },
+            "analysis":     analysis,
+            "steps":        total_steps,
+            "has_screenshot": false,
+            "screenshot_error": Value::Null,
+        },
+        "_source": "sqlite",  // diagnostic — caller can tell where data came from
+    }))
 }
 
 /// Portable home directory — USERPROFILE on Windows, HOME on Unix.
@@ -5027,48 +5166,9 @@ pub(crate) fn call_live_trace(args: Value) -> Result<Value, String> {
     let mut envelope = crate::test_runner::runs::to_json(&state);
 
     let steps = crate::test_runner::runs::recent_steps(run_id, last_n);
-    let serialised: Vec<Value> = steps.iter().enumerate().map(|(i, step)| {
-        // Action input can be huge for screenshot_analyze (base64 image
-        // payload) or file_write — clip the inline preview but keep the
-        // action `name` key intact so callers can still tell what was done.
-        let action_preview = match &step.action {
-            Value::Object(map) => {
-                let mut clipped = serde_json::Map::new();
-                for (k, v) in map {
-                    let s = match v {
-                        Value::String(text) if text.len() > 200 => {
-                            Value::String(format!("{}…(truncated to 200)", &text[..200]))
-                        }
-                        other => other.clone(),
-                    };
-                    clipped.insert(k.clone(), s);
-                }
-                Value::Object(clipped)
-            }
-            other => other.clone(),
-        };
-        // Observation too — clip to 1KB so a wall of AX-tree dump doesn't
-        // blow the MCP response budget.
-        let obs_preview = if step.observation.len() > 1024 {
-            format!("{}…(truncated to 1024 of {} chars; use get_full_observation for full)",
-                &step.observation[..1024], step.observation.len())
-        } else {
-            step.observation.clone()
-        };
-        json!({
-            "iter":               i,
-            "thought":            step.thought,
-            "action":             action_preview,
-            "observation":        obs_preview,
-            "observation_chars":  step.observation.len(),
-            "llm_model":          step.llm_model,
-            "llm_latency_ms":     step.llm_latency_ms,
-            "llm_prompt_bytes":   step.llm_prompt_bytes,
-            "llm_response_bytes": step.llm_response_bytes,
-            "parse_errors":       step.parse_errors,
-            "ts":                 step.ts,
-        })
-    }).collect();
+    // 2026-05-06: serialisation moved to shared `serialise_steps()` helper
+    // (used by `get_test_result` SQLite fallback too — same payload shape).
+    let serialised = serialise_steps(&steps);
 
     if let Some(obj) = envelope.as_object_mut() {
         obj.insert("returned_steps_count".into(), json!(serialised.len()));
