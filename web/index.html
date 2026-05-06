@@ -892,7 +892,7 @@
                   </div>
 
                   <div class="card mt-md">
-                    <h2 class="modal-section-title">Objectives</h2>
+                    <h2 class="modal-section-title">目標</h2>
                     <template x-if="!agent_detail[currentAgent.id].objectives?.length">
                       <div class="dim small">尚未設定目標</div>
                     </template>
@@ -929,7 +929,7 @@
   <!-- ── Gear dropdown ─────────────────────────────────────────────── -->
   <div class="gear-menu" x-show="gearOpen" @click.outside="gearOpen = false">
     <button class="menu-item" @click="modal = 'settings'; gearOpen = false">設定</button>
-    <button class="menu-item" @click="modal = 'logs'; gearOpen = false">System Logs</button>
+    <button class="menu-item" @click="modal = 'logs'; gearOpen = false">系統日誌</button>
     <button class="menu-item" @click="paletteOpen = true; gearOpen = false">
       Open Command Palette <span class="dim mono">⌘K</span>
     </button>
@@ -961,7 +961,7 @@
         <span x-text="entry.label"></span>
       </button>
     </template>
-    <div class="dim small" x-show="filteredEntries.length === 0">No matches</div>
+    <div class="dim small" x-show="filteredEntries.length === 0">沒有符合條件的紀錄</div>
   </div>
 
   <!--
@@ -1030,11 +1030,11 @@
       <div class="modal-section">
         <h2 class="modal-section-title">LLM</h2>
         <div class="kv-row">
-          <span class="kv-label">Main model</span>
+          <span class="kv-label">主模型</span>
           <span class="mono" x-text="state.llm_main"></span>
         </div>
         <div class="kv-row">
-          <span class="kv-label">Router model</span>
+          <span class="kv-label">路由模型</span>
           <span class="mono" x-text="state.llm_router"></span>
         </div>
       </div>

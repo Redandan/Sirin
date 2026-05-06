@@ -939,12 +939,79 @@ window.sirin = function () {
       } finally {
         this.expandedRunLoading = false;
       }
+
+      // #279 — auto-refresh while the test is still running so the
+      // detail page acts like a live debugger (subphase ticks up,
+      // new steps append, idle-warning surfaces).  Stops polling
+      // when status becomes terminal OR when user navigates away.
+      this._stopRunDetailPoll();
+      const det = this.expandedRunDetail || {};
+      const isLive = ['running', 'queued'].includes(det.status);
+      if (isLive) {
+        this._run_detail_poll = setInterval(() => {
+          // User left the page — stop polling.
+          if (this.view !== 'run:' + run.run_id) {
+            this._stopRunDetailPoll();
+            return;
+          }
+          this._refreshRunDetail(run);
+        }, 3000);
+      }
+    },
+
+    // Re-fetch run detail data without resetting the loading flag (so the
+    // page doesn't flicker into "載入中…" each tick).  Stops polling on
+    // terminal status.
+    async _refreshRunDetail(run) {
+      try {
+        const isLive = ['running', 'queued'].includes(run.status) || ['running', 'queued'].includes(this.expandedRunDetail?.status);
+        const tool = isLive ? 'live_trace' : 'get_test_result';
+        const args = isLive ? { run_id: run.run_id, last_n: 30 } : { run_id: run.run_id, last_n: 30 };
+        const r = await fetch('/mcp', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call',
+                                 params: { name: tool, arguments: args } }),
+        });
+        if (!r.ok) return;
+        const env = await r.json();
+        if (env.error) return;
+        const data = JSON.parse(env.result?.content?.[0]?.text || '{}');
+        const det = data.details || {};
+        this.expandedRunDetail = {
+          run_id: run.run_id,
+          test_id: data.test_id || run.test_id,
+          status: data.status || run.status,
+          subphase: data.current_subphase,
+          subphase_age_ms: data.subphase_age_ms,
+          idle_secs: data.idle_secs,
+          replay_mode: data.replay_mode,
+          iterations: det.iterations ?? run.iterations,
+          duration_ms: det.duration_ms ?? run.duration_ms,
+          analysis: det.analysis ?? run.analysis,
+          error: det.error,
+          steps: data.recent_steps || [],
+        };
+        // Terminal status → stop polling.
+        if (!['running', 'queued'].includes(this.expandedRunDetail.status)) {
+          this._stopRunDetailPoll();
+        }
+      } catch (_) {
+        // Silent — transient network error; next tick retries.
+      }
+    },
+
+    _stopRunDetailPoll() {
+      if (this._run_detail_poll) {
+        clearInterval(this._run_detail_poll);
+        this._run_detail_poll = null;
+      }
     },
 
     // #279 — return from the run detail full-page view back to the
     // testing tab's history list.  Clears the run-id state so the panel
     // is ready for a fresh fetch on the next click.
     closeRunDetail() {
+      this._stopRunDetailPoll();
       this.view = 'testing';
       this.testTab = 'runs';
       this.expandedRunId = null;
