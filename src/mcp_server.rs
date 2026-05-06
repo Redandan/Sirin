@@ -4531,6 +4531,8 @@ pub(crate) fn call_help(_args: Value) -> Result<Value, String> {
         "urls": {
             "help_html":   "http://127.0.0.1:7700/help",
             "dashboard":   "http://127.0.0.1:7700/ui/",
+            "welcome":     "http://127.0.0.1:7700/welcome",
+            "llms_txt":    "http://127.0.0.1:7700/llms.txt",
             "mcp":         "http://127.0.0.1:7700/mcp",
             "ws":          "ws://127.0.0.1:7700/ws",
             "snapshot":    "http://127.0.0.1:7700/api/snapshot",

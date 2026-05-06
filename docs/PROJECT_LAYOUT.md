@@ -12,6 +12,12 @@ web/                         Web UI (v0.5.0+) — single-binary embedded via
                              • style.css   — design tokens + components
                              • app.js      — sirin() factory: state + fetch
                              • alpine.min.js — bundled v3 runtime
+                             • help.html   — Chinese HTML docs for other
+                                             AI clients (served at /help)
+                             • root.html   — landing page served at /welcome
+                                             (4 cards + AI-discovery meta tags)
+                             • llms.txt    — markdown for LLM crawlers
+                                             (llmstxt.org convention)
                              • DESIGN.md   — competitor inspiration map
 src/ui_service.rs            AppService trait — UI↔backend boundary (8 sub-traits:
                              AgentService, PendingReplyService, WorkflowService,

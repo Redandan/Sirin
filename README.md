@@ -4,6 +4,25 @@
 
 ---
 
+## 給其他 AI 用 Sirin（Claude Desktop / Cline / Cursor / curl）
+
+Sirin 跑起來後（`./target/release/sirin.exe --headless`），在 `http://127.0.0.1:7700` 暴露 4 個 AI-discovery entry point：
+
+| 路徑 | 適合 | 內容 |
+|---|---|---|
+| `/welcome` | 人類 + AI 落地 | 4 卡片導引（dashboard / help / llms.txt / snapshot） |
+| `/help` | 人類 fetch | 完整中文 HTML 文檔（連線 config / 65+ tool 清單 / 範例 / 注意事項） |
+| `/llms.txt` | LLM crawler ([llmstxt.org](https://llmstxt.org/) 慣例) | Plain markdown，one-fetch 全 API surface |
+| `/mcp` + `tools/call name=help` | MCP-aware AI | 結構化 JSON envelope（連線 config / 8 tool 類別 / 5 caveats / 3-step quickstart） |
+
+**最快上手**：在 `~/.claude.json` 加：
+```json
+{ "mcpServers": { "sirin": { "url": "http://127.0.0.1:7700/mcp" } } }
+```
+重啟 Claude → 看到 65+ 個 `mcp__sirin__*` tools，第一個叫 `help` — 直接 call 它就有完整說明。
+
+---
+
 ## 架構總覽
 
 ```

@@ -9,6 +9,7 @@ can discover the API surface in one fetch.  Humans should open `/ui/` instead.
 
 - **MCP HTTP (JSON-RPC 2.0)**: `http://127.0.0.1:7700/mcp`
 - **Dashboard**: `http://127.0.0.1:7700/ui/`
+- **Welcome / landing**: `http://127.0.0.1:7700/welcome`
 - **Help (HTML)**: `http://127.0.0.1:7700/help`
 - **Snapshot**: `http://127.0.0.1:7700/api/snapshot`
 - **WebSocket (live updates)**: `ws://127.0.0.1:7700/ws`
