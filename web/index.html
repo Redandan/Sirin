@@ -55,7 +55,7 @@
   </header>
 
   <!-- ── Main split: sidebar + content ───────────────────────────────── -->
-  <div class="main">
+  <div class="main" :class="sidebarCollapsed ? 'main-sidebar-collapsed' : ''">
 
     <!--
       Sidebar — Linear-inspired labelled nav (default expanded).
@@ -64,37 +64,43 @@
         AGENTS   — per-agent workspaces (badges = pending replies)
       Hover on labels reveals subtle bg highlight; active gets accent bar.
     -->
-    <aside class="sidebar">
+    <aside class="sidebar" :class="sidebarCollapsed ? 'sidebar-collapsed' : ''">
       <div class="sidebar-header">
         <div class="logo-badge">S</div>
-        <span class="sidebar-brand">Sirin</span>
+        <span class="sidebar-brand" x-show="!sidebarCollapsed">Sirin</span>
+        <span class="row-spacer" x-show="!sidebarCollapsed"></span>
+        <button class="iconbtn sidebar-toggle"
+                @click="toggleSidebar()"
+                :title="sidebarCollapsed ? '展開側欄' : '收合側欄'"
+                x-text="sidebarCollapsed ? '»' : '«'"></button>
       </div>
 
-      <div class="sidebar-section-label">主視圖</div>
+      <div class="sidebar-section-label" x-show="!sidebarCollapsed">主視圖</div>
       <button class="nav-row" :class="view === 'dashboard' ? 'active' : ''"
-              @click="view = 'dashboard'">
+              @click="view = 'dashboard'" :title="sidebarCollapsed ? '儀表板' : ''">
         <svg class="nav-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
           <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
           <rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
         </svg>
-        <span>儀表板</span>
+        <span x-show="!sidebarCollapsed">儀表板</span>
       </button>
       <button class="nav-row" :class="view === 'testing' ? 'active' : ''"
-              @click="view = 'testing'">
+              @click="view = 'testing'" :title="sidebarCollapsed ? '測試' : ''">
         <svg class="nav-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
           <polyline points="9 11 12 14 22 4"/>
           <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
         </svg>
-        <span>測試</span>
+        <span x-show="!sidebarCollapsed">測試</span>
       </button>
 
-      <div class="sidebar-section-label">AGENT 列表</div>
+      <div class="sidebar-section-label" x-show="!sidebarCollapsed">AGENT 列表</div>
       <template x-for="(agent, i) in state.agents" :key="agent.id">
         <button class="nav-row" :class="view === 'workspace:' + i ? 'active' : ''"
-                @click="view = 'workspace:' + i">
+                @click="view = 'workspace:' + i"
+                :title="sidebarCollapsed ? agent.name : ''">
           <span class="agent-dot" :class="'agent-' + agent.live_status"></span>
-          <span x-text="agent.name"></span>
-          <span class="row-spacer"></span>
+          <span x-show="!sidebarCollapsed" x-text="agent.name"></span>
+          <span class="row-spacer" x-show="!sidebarCollapsed"></span>
           <span class="badge-count" x-show="state.pending_counts[agent.id] > 0"
                 x-text="state.pending_counts[agent.id]"></span>
         </button>

@@ -194,6 +194,9 @@ window.sirin = function () {
       logSearch: '',
       logTypeFilter: 'all',
 
+      // Sidebar collapse — persisted in localStorage.  Loaded in init().
+      sidebarCollapsed: false,
+
       // ── Modal mock data ─────────────────────────────────────────────
       // config_check output — Settings modal lists these cards.
       config_issues: [
@@ -244,6 +247,12 @@ window.sirin = function () {
       this.logSearch = '';
       this.logTypeFilter = 'all';
       this.expandedStepIters = [];
+
+      // Sidebar collapse pref — restore from localStorage so layout
+      // survives F5.  Saved on every toggle by toggleSidebar().
+      try {
+        this.sidebarCollapsed = localStorage.getItem('sirin_sidebar_collapsed') === '1';
+      } catch (_) { /* localStorage may be blocked */ }
 
       // Restore saved Dashboard layout (v0.5.5). Falls back to default
       // 4-widget layout when localStorage is empty or contains a value
@@ -1023,6 +1032,14 @@ window.sirin = function () {
         clearInterval(this._run_detail_poll);
         this._run_detail_poll = null;
       }
+    },
+
+    // Toggle sidebar collapsed state and persist to localStorage so the
+    // layout choice survives F5 / browser restart.
+    toggleSidebar() {
+      this.sidebarCollapsed = !this.sidebarCollapsed;
+      try { localStorage.setItem('sirin_sidebar_collapsed', this.sidebarCollapsed ? '1' : '0'); }
+      catch (_) { /* localStorage may be blocked */ }
     },
 
     // #279 — return from the run detail full-page view back to the

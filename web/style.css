@@ -147,6 +147,18 @@ button { font-family: inherit; cursor: pointer; }
   height: 100%;
   overflow: hidden;
 }
+/* Collapsed sidebar — icons-only, ~52px wide */
+.main-sidebar-collapsed {
+  grid-template-columns: 52px 1fr;
+}
+.sidebar-collapsed { padding: var(--sp-sm) 6px; }
+.sidebar-collapsed .nav-row { justify-content: center; padding: 6px 0; }
+.sidebar-collapsed .sidebar-header { justify-content: center; }
+.sidebar-toggle {
+  font-size: 14px;
+  padding: 2px 8px;
+  line-height: 1;
+}
 
 /* ── Sidebar (Linear-inspired) ───────────────────────────────────── */
 
