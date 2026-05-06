@@ -879,25 +879,23 @@ window.sirin = function () {
       setTimeout(() => { this.lastLaunch = null; }, 6000);
     },
 
-    // #279 — toggle inline expansion of a run row.  When expanding, fetch
-    // the full step history via /mcp:
+    // #279 — open the run detail full-page view for `run`.  Sets
+    // view='run:<run_id>' (rendered by the dedicated section in index.html)
+    // AND fetches the trace data in parallel.  Replaces the older inline
+    // expand panel (UX feedback: full page > cramped inline strip).
+    //
+    // Fetch path:
     //   - terminal runs (passed/failed/timeout/error/disputed) → get_test_result
+    //     (now has SQLite fallback for runs > 1h old, see commit db15271)
     //   - running / queued                                      → live_trace
-    // Re-clicking the same row collapses; clicking a different row swaps.
-    async toggleRunDetail(run) {
+    async openRunDetail(run) {
       if (!run || !run.run_id) {
-        // Legacy row without run_id (pre-#279) — nothing to fetch.
-        this.expandedRunId = null;
-        this.expandedRunDetail = null;
+        // Legacy row without run_id (pre-#279) — nothing to navigate to.
         return;
       }
-      if (this.expandedRunId === run.run_id) {
-        this.expandedRunId = null;
-        this.expandedRunDetail = null;
-        return;
-      }
+      this.view = 'run:' + run.run_id;
       this.expandedRunId = run.run_id;
-      this.expandedRunDetail = null;
+      this.expandedRunDetail = { test_id: run.test_id, run_id: run.run_id };
       this.expandedRunLoading = true;
       try {
         const isLive = ['running', 'queued'].includes(run.status);
@@ -920,10 +918,12 @@ window.sirin = function () {
         const det = data.details || {};
         this.expandedRunDetail = {
           run_id: run.run_id,
+          test_id: data.test_id || run.test_id,
           status: data.status || run.status,
           subphase: data.current_subphase,
           subphase_age_ms: data.subphase_age_ms,
           idle_secs: data.idle_secs,
+          replay_mode: data.replay_mode,
           iterations: det.iterations ?? run.iterations,
           duration_ms: det.duration_ms ?? run.duration_ms,
           analysis: det.analysis ?? run.analysis,
@@ -931,10 +931,24 @@ window.sirin = function () {
           steps,
         };
       } catch (e) {
-        this.expandedRunDetail = { error: '無法載入詳情：' + (e.message || e) };
+        this.expandedRunDetail = {
+          test_id: run.test_id,
+          run_id: run.run_id,
+          error: '無法載入詳情：' + (e.message || e)
+        };
       } finally {
         this.expandedRunLoading = false;
       }
+    },
+
+    // #279 — return from the run detail full-page view back to the
+    // testing tab's history list.  Clears the run-id state so the panel
+    // is ready for a fresh fetch on the next click.
+    closeRunDetail() {
+      this.view = 'testing';
+      this.testTab = 'runs';
+      this.expandedRunId = null;
+      this.expandedRunDetail = null;
     },
 
     // Format a step's action for the expanded view — shows "shadow_click target=..."

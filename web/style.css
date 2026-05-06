@@ -565,6 +565,37 @@ button { font-family: inherit; cursor: pointer; }
 }
 [x-cloak] { display: none !important; }
 
+/* #279 follow-up: full-page run detail step cards */
+.run-step-card {
+  padding: 10px 12px;
+  margin-bottom: 6px;
+  background: rgba(255,255,255,0.02);
+  border-left: 2px solid var(--border);
+  border-radius: 0 4px 4px 0;
+}
+.run-step-card:hover { border-left-color: var(--accent); }
+.run-step-obs {
+  margin-top: 6px;
+  padding: 6px 10px;
+  background: rgba(0,0,0,0.2);
+  border-radius: 2px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow-y: auto;
+  color: var(--text-dim);
+}
+.run-detail-error-pre {
+  background: rgba(255,75,75,0.08);
+  border-left: 2px solid var(--danger);
+  padding: 8px 12px;
+  margin: 6px 0 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
 .run-status {
   width: 16px; flex-shrink: 0;
   font-family: var(--font-mono);
