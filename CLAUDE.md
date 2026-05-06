@@ -49,8 +49,20 @@ component rules, AI new-page workflow.  Source-of-truth for inspiration is
 - **ALWAYS** set `timeout: 600000` (10 min) on any `cargo test` Bash call.
 - **One cargo at a time.** Never launch a second `cargo` while one is running.
 - **cargo check once.** Capture output, grep twice — never run check twice.
-- **Deadlock signal:** if a cargo output file stays at 0 bytes for >30s,
-  the process is waiting for the lock — kill it and retry.
+- **Pipe-to-tail trap (2026-05-06).** `cargo test ... 2>&1 | tail -50`
+  with the *no-filter* full suite triggers the Bash tool's auto-background
+  AND silently drops output (0 bytes forever, no cargo in tasklist) —
+  the wrapper shell + pipe interaction loses stdout in bg mode.
+  **Workaround:** redirect to a file, then read it.
+  ```bash
+  cargo test --bin sirin --message-format=short --no-fail-fast > /tmp/sirin_test.log 2>&1
+  tail -20 /tmp/sirin_test.log
+  ```
+  Confirmed `cargo test` no-filter finishes 881 passed / 28 ignored in
+  ~6 s when redirected; same command via `| tail` produces 0-byte zombie.
+- **Deadlock signal:** if a cargo output file stays at 0 bytes for >30s
+  AND no cargo/rustc process appears in tasklist, you're hitting the
+  pipe-to-tail trap — kill the task and switch to file redirect.
 
 ```bash
 cargo check                                        # 0 errors
