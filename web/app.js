@@ -742,13 +742,13 @@ window.sirin = function () {
       const ms = Date.now() - new Date(rfc).getTime();
       if (isNaN(ms) || ms < 0) return '';
       const s = Math.floor(ms / 1000);
-      if (s < 60)   return s + 's ago';
+      if (s < 60)   return s + ' 秒前';
       const m = Math.floor(s / 60);
-      if (m < 60)   return m + 'm ago';
+      if (m < 60)   return m + ' 分鐘前';
       const h = Math.floor(m / 60);
-      if (h < 24)   return h + 'h ago';
+      if (h < 24)   return h + ' 小時前';
       const d = Math.floor(h / 24);
-      return d + 'd ago';
+      return d + ' 天前';
     },
 
     verdictGlyph(status) {
@@ -759,6 +759,22 @@ window.sirin = function () {
         case 'error':   return '!';
         case 'running': return '▶';
         default:        return '·';
+      }
+    },
+
+    verdictText(status) {
+      // i18n — Chinese status text for run rows.  Used in place of the
+      // raw `status.toUpperCase()` so the dashboard's PASSED/FAILED/etc
+      // badges read 通過 / 失敗 / 逾時 / 錯誤 / 執行中 / 爭議.
+      switch (status) {
+        case 'passed':   return '通過';
+        case 'failed':   return '失敗';
+        case 'timeout':  return '逾時';
+        case 'error':    return '錯誤';
+        case 'running':  return '執行中';
+        case 'queued':   return '排隊中';
+        case 'disputed': return '爭議';
+        default:         return status;
       }
     },
 

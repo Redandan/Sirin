@@ -34,16 +34,16 @@
               :title="'瀏覽器: ' + (state.browser_open ? '執行中' : '已停止')"></span>
         <span class="dot-label">瀏覽器</span>
         <span class="dot" :class="state.rpc_running ? 'dot-ok' : 'dot-bad'"
-              :title="'RPC: ' + (state.rpc_running ? 'running' : 'stopped')"></span>
+              :title="'RPC: ' + (state.rpc_running ? '執行中' : '已停止')"></span>
         <span class="dot-label">RPC</span>
         <span class="dot" :class="state.tg_connected ? 'dot-ok' : 'dot-bad'"
-              :title="'Telegram: ' + (state.tg_connected ? 'connected' : 'offline')"></span>
+              :title="'Telegram: ' + (state.tg_connected ? '已連線' : '離線')"></span>
         <span class="dot-label">TG</span>
       </span>
       <!-- Last verdict — colored by status -->
       <span class="verdict" x-show="state.last_verdict" :class="'verdict-' + state.last_verdict?.status">
         <span x-text="verdictGlyph(state.last_verdict?.status)"></span>
-        <span x-text="state.last_verdict?.status?.toUpperCase()"></span>
+        <span x-text="verdictText(state.last_verdict?.status)"></span>
         <span class="verdict-name" x-text="state.last_verdict?.test_id"></span>
       </span>
     </div>
@@ -118,7 +118,7 @@
             <button class="iconbtn" title="Edit layout"
                     :class="dashboard_edit_mode ? 'active' : ''"
                     @click="dashboard_edit_mode = !dashboard_edit_mode">✎</button>
-            <button class="btn-primary" @click="view = 'testing'">▶ Run Test</button>
+            <button class="btn-primary" @click="view = 'testing'">▶ 執行測試</button>
           </div>
         </div>
         <hr class="thin-sep">
@@ -154,7 +154,7 @@
                           <span class="badge-soft" x-show="run.step !== null"
                                 x-text="'step ' + run.step"></span>
                           <span class="row-spacer"></span>
-                          <span class="dim small">▶ Open trace</span>
+                          <span class="dim small">▶ 查看追蹤</span>
                         </div>
                         <div class="dim small mt-xs" x-show="run.analysis"
                              x-text="truncate(run.analysis, 140)"></div>
@@ -181,7 +181,7 @@
                         <span :class="'run-status run-status-' + run.status"
                               x-text="verdictGlyph(run.status)"></span>
                         <span :class="'run-status-text run-status-' + run.status"
-                              x-text="run.status.toUpperCase()"></span>
+                              x-text="verdictText(run.status)"></span>
                         <span class="run-name mono" x-text="run.test_id"></span>
                         <span x-show="run.failure_category"
                               class="badge-soft badge-soft-danger"
@@ -214,7 +214,7 @@
                           <strong x-text="state.coverage.product"></strong>
                           <span class="dim mono small" x-text="'v' + state.coverage.version"></span>
                           <span class="row-spacer"></span>
-                          <span class="link">Open full →</span>
+                          <span class="link">查看完整覆蓋率 →</span>
                         </div>
                         <div class="funnel-row">
                           <span class="funnel-label">探索 Discovered</span>
@@ -263,7 +263,7 @@
                       </div>
                       <div class="dim mono small mt-xs"
                            x-show="state.browser_url" x-text="state.browser_url"></div>
-                      <span class="link small mt-xs">Open monitor →</span>
+                      <span class="link small mt-xs">開啟即時監控 →</span>
                     </div>
                     <div class="card-browser-thumb">
                       <img class="browser-thumb-img" alt="browser preview"
@@ -272,7 +272,7 @@
                                  : ''"
                            x-show="state.browser_open"
                            onerror="this.style.opacity=0.15">
-                      <span class="dim mono small" x-show="!state.browser_open">browser offline</span>
+                      <span class="dim mono small" x-show="!state.browser_open">瀏覽器離線</span>
                     </div>
                   </div>
                 </div>
@@ -407,7 +407,7 @@
               </template>
             </select>
             <button class="btn-primary"
-                    @click="launchTest(state.selected_test_id)">▶ Run</button>
+                    @click="launchTest(state.selected_test_id)">▶ 執行</button>
             <span class="row-spacer"></span>
             <span class="dim small" x-show="lastLaunch"
                   x-text="lastLaunch"></span>
@@ -433,7 +433,7 @@
                 <span :class="'run-status run-status-' + run.status"
                       x-text="verdictGlyph(run.status)"></span>
                 <span :class="'run-status-text run-status-' + run.status"
-                      x-text="run.status.toUpperCase()"></span>
+                      x-text="verdictText(run.status)"></span>
                 <span class="run-name mono" x-text="run.test_id"></span>
                 <span x-show="run.failure_category"
                       class="badge-soft badge-soft-danger"
