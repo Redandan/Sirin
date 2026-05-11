@@ -51,6 +51,7 @@ mod skills;
 #[allow(dead_code)] mod workflow;
 mod telegram;
 mod telegram_auth;
+mod trading_guardian;
 #[cfg(windows)] mod tray;
 pub mod ui_service;
 mod ui_service_impl;
@@ -231,6 +232,11 @@ fn main() {
             doctor::print_text(&report);
         }
         std::process::exit(report.exit_code());
+    }
+    if args.iter().any(|a| a == "trading-guardian") {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+        let code = rt.block_on(trading_guardian::run_cli(&args));
+        std::process::exit(code);
     }
 
     init_tracing();

@@ -1,0 +1,21 @@
+# Sirin Trading Guardian (#448)
+#
+# Safe default: disabled + dry-run. This file documents the intended external
+# watchdog config without enabling live trading writes.
+
+enabled: false
+dry_run: true
+allow_live_actions: false
+
+backend_health_url: "https://agoramarketapi.purrtechllc.com/actuator/health"
+mcp_url: "https://agoramarketapi.purrtechllc.com/api/mcp"
+mcp_bearer_env: "AGORAMARKETAPI_MCP_TOKEN"
+health_timeout_secs: 30
+
+# Guardian actions must reduce risk. Risk-expanding actions such as enabling a
+# strategy or opening a market order are hard-denied in code even if listed.
+action_whitelist:
+  - send_tg_message
+  - pause_strategy
+  - modify_oco_tighten
+  - disable_poc_strategy
