@@ -11,6 +11,7 @@ backend_health_url: "https://agoramarketapi.purrtechllc.com/actuator/health"
 mcp_url: "https://agoramarketapi.purrtechllc.com/api/mcp"
 mcp_bearer_env: "AGORAMARKETAPI_MCP_TOKEN"
 health_timeout_secs: 30
+audit_enabled: true
 
 # Guardian actions must reduce risk. Risk-expanding actions such as enabling a
 # strategy or opening a market order are hard-denied in code even if listed.

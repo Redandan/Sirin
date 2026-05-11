@@ -6,6 +6,7 @@
 
 use std::time::Duration;
 
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -25,6 +26,8 @@ pub struct GuardianConfig {
     pub mcp_bearer_env: String,
     #[serde(default = "default_health_timeout_secs")]
     pub health_timeout_secs: u64,
+    #[serde(default = "default_true")]
+    pub audit_enabled: bool,
     #[serde(default = "default_action_whitelist")]
     pub action_whitelist: Vec<ActionKind>,
 }
@@ -68,6 +71,7 @@ impl Default for GuardianConfig {
             mcp_url: default_mcp_url(),
             mcp_bearer_env: default_mcp_bearer_env(),
             health_timeout_secs: default_health_timeout_secs(),
+            audit_enabled: true,
             action_whitelist: default_action_whitelist(),
         }
     }
@@ -156,6 +160,7 @@ pub struct AuthorizationDecision {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GuardianRunReport {
+    pub run_id: String,
     pub enabled: bool,
     pub dry_run: bool,
     pub evaluated_rules: Vec<RuleId>,
@@ -256,9 +261,20 @@ async fn probe_backend_health(config: &GuardianConfig) -> BackendHealthInput {
     }
 }
 
+#[allow(dead_code)]
 pub async fn run_once(config: GuardianConfig) -> GuardianRunReport {
+    run_once_with_backend(config, None).await
+}
+
+pub async fn run_once_with_backend(
+    config: GuardianConfig,
+    backend_override: Option<BackendHealthInput>,
+) -> GuardianRunReport {
     let mut proposed_actions = Vec::new();
-    let backend = probe_backend_health(&config).await;
+    let backend = match backend_override {
+        Some(input) => input,
+        None => probe_backend_health(&config).await,
+    };
     if let Some(action) = evaluate_backend_health(&backend) {
         proposed_actions.push(action);
     }
@@ -269,6 +285,10 @@ pub async fn run_once(config: GuardianConfig) -> GuardianRunReport {
         .collect();
 
     GuardianRunReport {
+        run_id: format!(
+            "sirin-trading-guardian-{}",
+            Utc::now().format("%Y%m%dT%H%M%SZ")
+        ),
         enabled: config.enabled,
         dry_run: config.dry_run,
         evaluated_rules: vec![RuleId::R4BackendHealth],
@@ -286,7 +306,17 @@ pub async fn run_cli(args: &[String]) -> i32 {
     }
 
     let config = GuardianConfig::load();
-    let report = run_once(config).await;
+    let simulate_backend_down = args.iter().any(|a| a == "--simulate-backend-down");
+    let backend_override = simulate_backend_down.then(|| BackendHealthInput {
+        healthy: false,
+        error: Some("simulated backend-down drill".to_string()),
+    });
+    let report = run_once_with_backend(config.clone(), backend_override).await;
+    if config.audit_enabled {
+        if let Err(err) = write_audit_report(&report) {
+            eprintln!("[trading_guardian] audit write failed: {err}");
+        }
+    }
     if args.iter().any(|a| a == "--format=json") {
         println!(
             "{}",
@@ -308,6 +338,19 @@ pub async fn run_cli(args: &[String]) -> i32 {
         }
     }
     0
+}
+
+pub fn audit_dir() -> std::path::PathBuf {
+    crate::platform::app_data_dir().join("trading_guardian")
+}
+
+pub fn write_audit_report(report: &GuardianRunReport) -> Result<std::path::PathBuf, String> {
+    let dir = audit_dir();
+    std::fs::create_dir_all(&dir).map_err(|err| format!("create {}: {err}", dir.display()))?;
+    let path = dir.join(format!("{}.json", report.run_id));
+    let raw = serde_json::to_string_pretty(report).map_err(|err| err.to_string())?;
+    std::fs::write(&path, raw).map_err(|err| format!("write {}: {err}", path.display()))?;
+    Ok(path)
 }
 
 #[allow(dead_code)]
@@ -410,6 +453,7 @@ mod tests {
     #[test]
     fn kb_payload_contains_dry_run_evidence() {
         let report = GuardianRunReport {
+            run_id: "test-run".to_string(),
             enabled: true,
             dry_run: true,
             evaluated_rules: vec![RuleId::R4BackendHealth],
@@ -419,5 +463,25 @@ mod tests {
         let payload = kb_audit_payload(&report);
         assert_eq!(payload["source"], "sirin-trading-guardian");
         assert_eq!(payload["dry_run"], true);
+    }
+
+    #[tokio::test]
+    async fn simulated_backend_down_is_auditable() {
+        let config = GuardianConfig::default();
+        let report = run_once_with_backend(
+            config,
+            Some(BackendHealthInput {
+                healthy: false,
+                error: Some("simulated backend-down drill".to_string()),
+            }),
+        )
+        .await;
+        assert_eq!(report.proposed_actions.len(), 1);
+        assert_eq!(report.proposed_actions[0].rule, RuleId::R4BackendHealth);
+
+        let path = write_audit_report(&report).expect("audit write should succeed in test_data");
+        assert!(path.exists());
+        let raw = std::fs::read_to_string(path).expect("audit file should be readable");
+        assert!(raw.contains("simulated backend-down drill"));
     }
 }

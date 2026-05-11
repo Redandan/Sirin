@@ -26,6 +26,12 @@ The current command runs one evaluation pass. It probes backend health and
 prints proposed actions plus authorization decisions. It does not execute live
 trading writes.
 
+Backend-down drill without touching the real backend:
+
+```powershell
+.\target\release\sirin.exe trading-guardian --simulate-backend-down --format=json
+```
+
 ## Config
 
 Source: `config/trading_guardian.yaml`
@@ -46,6 +52,8 @@ installed copy lives under `%LOCALAPPDATA%\Sirin\config\trading_guardian.yaml`.
   names containing `POC`).
 - Audit payload formatter records enabled/dry-run state, evaluated rules,
   proposed actions, and authorization decisions for future KB writes.
+- Each CLI run writes a local audit JSON file under Sirin app data
+  `trading_guardian/` when `audit_enabled: true`.
 
 ## Remaining Work Before 24/7 Vacation Mode
 
