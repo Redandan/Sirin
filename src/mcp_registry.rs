@@ -1678,6 +1678,7 @@ fn seed_default(m: &mut RegistryMap) {
                 "rss_feeds": { "type": "array", "items": { "type": "string" }, "description": "臨時 RSS 來源；未提供時使用 config/research_sentinel.yaml 的 official/investment_data sources" },
                 "max_results": { "type": "integer", "description": "最多保留結果，預設 12，範圍 1..30" },
                 "create_inbox": { "type": "boolean", "description": "是否寫入 inbox，預設 true" },
+                "create_report": { "description": "HTML 報告產生策略：true/always 強制產生；false/never 不產生；auto 只在 new convert_to_issue、escalated、source_errors 時產生。未提供時手動 run 預設產生。" },
                 "publish_to_kb": { "type": "boolean", "description": "是否對符合條件的新事件/升級事件嘗試寫入 KB；仍受 KB_ENABLED/KB_WRITE_TELEMETRY 保護，預設 false" }
             }
         }),

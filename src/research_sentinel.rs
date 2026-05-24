@@ -829,6 +829,15 @@ fn event_should_publish_to_kb(event: &ResearchEvent, review_status: &str) -> boo
         || (event.occurrence_status == "new" && event.codex_recommendation == "convert_to_issue")
 }
 
+fn event_is_report_worthy(event: &ResearchEvent) -> bool {
+    event.occurrence_status == "escalated"
+        || (event.occurrence_status == "new" && event.codex_recommendation == "convert_to_issue")
+}
+
+fn entry_is_report_worthy(entry: &ResearchInboxEntry) -> bool {
+    !entry.source_errors.is_empty() || entry.events.iter().any(event_is_report_worthy)
+}
+
 fn apply_event_state(events: &mut [ResearchEvent]) -> Result<(), String> {
     let now = Utc::now().to_rfc3339();
     let existing = state_log().read_all().map_err(|e| e.to_string())?;
@@ -1380,6 +1389,7 @@ fn monitor_args(monitor: &ResearchMonitorConfig) -> Value {
         "max_results": monitor.max_results.clamp(1, 30),
         "create_inbox": true,
         "publish_to_kb": monitor.publish_to_kb,
+        "create_report": "auto",
     })
 }
 
@@ -1427,6 +1437,17 @@ fn error_monitor_status(monitor: &ResearchMonitorConfig, next_run_at: String, er
         new_event_count: 0,
         escalated_event_count: 0,
         kb_publish_count: 0,
+    }
+}
+
+fn should_create_report(args: &Value, entry: &ResearchInboxEntry) -> bool {
+    match args.get("create_report") {
+        Some(Value::Bool(value)) => *value,
+        Some(Value::String(value)) if value.eq_ignore_ascii_case("always") => true,
+        Some(Value::String(value)) if value.eq_ignore_ascii_case("never") => false,
+        Some(Value::String(value)) if value.eq_ignore_ascii_case("auto") => entry_is_report_worthy(entry),
+        Some(_) => entry_is_report_worthy(entry),
+        None => true,
     }
 }
 
@@ -1549,11 +1570,15 @@ pub(crate) async fn call_research_sentinel_run_once(args: Value) -> Result<Value
     };
 
     if create_inbox {
-        let report_path = write_research_report(&entry)?;
-        entry.report_path = Some(report_path.to_string_lossy().to_string());
+        if should_create_report(&args, &entry) {
+            let report_path = write_research_report(&entry)?;
+            entry.report_path = Some(report_path.to_string_lossy().to_string());
+        }
         if publish_to_kb {
             publish_entry_to_kb(&mut entry).await;
-            let _ = write_research_report(&entry);
+            if entry.report_path.is_some() {
+                let _ = write_research_report(&entry);
+            }
         }
         inbox_log()
             .upsert_by(entry.clone(), |item| item.id.clone())
@@ -1677,9 +1702,6 @@ pub(crate) async fn call_research_sentinel_review(args: Value) -> Result<Value, 
                     entry.review_note = review_note.clone();
                     entry.reviewed_at = Some(Utc::now().to_rfc3339());
                     entry.status = "read".into();
-                    if entry.report_path.is_none() {
-                        entry.report_path = Some(report_file_path(entry).to_string_lossy().to_string());
-                    }
                     updated = Some(entry.clone());
                     break;
                 }
@@ -1690,13 +1712,16 @@ pub(crate) async fn call_research_sentinel_review(args: Value) -> Result<Value, 
 
     match updated {
         Some(mut entry) => {
+            if entry.report_path.is_none() {
+                entry.report_path = Some(report_file_path(&entry).to_string_lossy().to_string());
+            }
             if matches!(entry.review_status.as_str(), "accepted" | "convert_to_issue") {
                 publish_entry_to_kb(&mut entry).await;
-                inbox_log()
-                    .upsert_by(entry.clone(), |item| item.id.clone())
-                    .map_err(|e| e.to_string())?;
             }
             let _ = write_research_report(&entry);
+            inbox_log()
+                .upsert_by(entry.clone(), |item| item.id.clone())
+                .map_err(|e| e.to_string())?;
             Ok(json!({ "updated": true, "entry": entry }))
         }
         None => Ok(json!({ "updated": false, "id": id })),
@@ -1918,6 +1943,46 @@ mod tests {
         assert!(html.contains("convert_to_issue"));
         assert!(html.contains("https://www.sec.gov/news/press-release/example"));
         assert!(html.contains("Research only; no trading instruction was generated."));
+    }
+
+    #[test]
+    fn report_policy_respects_manual_and_auto_modes() {
+        let item = item_from_candidate(NewsCandidate {
+            title: "Bitcoin slips below $77,000 as BTC cools".into(),
+            url: "https://www.investing.com/rss/example".into(),
+            snippet: "Bitcoin price cools without a new official action.".into(),
+            published_at: None,
+            source_name: "Investing.com Cryptocurrency News".into(),
+            source_group: "investment_data".into(),
+            source_trust: 70,
+            source_categories: vec!["market_flow".into()],
+            official_source: false,
+        });
+        let mut events = aggregate_events(&[item.clone()]);
+        events[0].occurrence_status = "seen".into();
+        let entry = ResearchInboxEntry {
+            id: "rsn-policy".into(),
+            run_id: "rsr-policy".into(),
+            goal_id: None,
+            created_at: "2026-05-24T00:00:00Z".into(),
+            status: "unread".into(),
+            review_status: "pending".into(),
+            review_note: None,
+            reviewed_at: None,
+            topic: "Report policy".into(),
+            focus: "avoid HTML noise".into(),
+            summary: "Seen watch item.".into(),
+            events,
+            items: vec![item],
+            source_errors: Vec::new(),
+            guardrails: Vec::new(),
+            report_path: None,
+            kb_publish_count: 0,
+        };
+        assert!(should_create_report(&json!({}), &entry));
+        assert!(!should_create_report(&json!({ "create_report": "auto" }), &entry));
+        assert!(!should_create_report(&json!({ "create_report": false }), &entry));
+        assert!(should_create_report(&json!({ "create_report": true }), &entry));
     }
 
     #[test]
