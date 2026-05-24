@@ -37,7 +37,7 @@ goal: |
   ⚠️ 任何步驟失敗也要繼續走完，由 success_criteria 判斷通過與否。
 
   步驟（按序執行，不可跳過）：
-  1. shadow_click role=button name_regex="^商品與電商$"
+  1. shadow_click role=button name_regex="^商品與電商(\\n商品與電商)?$"
   2. wait 3000（Flutter 頁面切換動畫）
   3. screenshot_analyze "現在是商品與電商頁嗎？看到商品列表了嗎？商品狀態 chip 是灰色還是有顏色（綠/黃/紅）？記錄頁面頂部的按鈕有哪些。"
   4. shadow_click role=button name_regex="^請選擇產品分類$"
@@ -56,4 +56,3 @@ success_criteria:
   - "點擊「請選擇產品分類」按鈕後，dropdown 展開或頁面有變化（覆蓋 #4），且 AX tree 沒有 collapse 成空白（覆蓋 #20）"
 
 tags: [agora, regression, admin, product, import, category-filter, issue-70, critical]
-

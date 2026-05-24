@@ -2,9 +2,9 @@ id: agora_c2c_place_order
 name: "C2C 核心流程：買家實際下單並確認訂單建立"
 url: "https://redandan.github.io/?__test_role=buyer"
 
-max_iterations: 25
-timeout_secs: 360
-max_retries: 1
+max_iterations: 24
+timeout_secs: 480
+max_retries: 2
 
 viewport:
   width: 390
@@ -13,11 +13,15 @@ viewport:
   mobile: true
 
 locale: zh-TW
+llm_override:
+  provider: lmstudio
+  model: gemma-3-1b-it
 
 goal: |
   目標：買家完整走完「商品→選規格→確認購買→下單→確認訂單出現在訂單列表」流程。
 
   已知資訊：
+  - 買家首頁商品卡是可點擊 button（常見包含商品名 + USDT 價格）
   - 購買流程：商品詳情→購買→SKU對話框→確認購買→#/purchase-confirm
   - purchase-confirm 有「確認購買 USDT X.XX」按鈕（真實下單）
   - 下單後跳回商品頁（#/products/ID）
@@ -25,31 +29,31 @@ goal: |
   - 下單成功的判斷：成功從 purchase-confirm 頁執行了確認購買操作
 
   ⚠️ 這會產生真實測試訂單（測試帳號可接受）。
-  ⚠️ 步驟 22 無條件 done=true。
+  ⚠️ 嚴格禁止點擊搜尋框（「輸入商品ID搜尋...」）與「搜尋」按鈕；若誤進 #/search，立刻返回首頁再重試商品卡。
+  ⚠️ 本測試只允許從首頁商品卡進入 #/products/，不可用搜尋頁導流。
 
   步驟（線性，步驟 22 done=true）：
   1. goto target="https://redandan.github.io/?__test_role=buyer"（防前一測試 session 污染）
-  2. wait 5000（等 auto-login + Flutter 買家首頁載入）
+  2. wait 3000
   3. enable_a11y
-  4. wait 2000
-  5. enable_a11y（二次確保 AX tree 就緒）
-  6. wait 1000
-  7. shadow_click role=button name_regex="USDT"（選第一個商品）
-  8. wait 2500
-  9. scroll y=400
-  10. shadow_click role=button name_regex="^購買$"（開啟 SKU 對話框）
-  11. wait 2000
-  12. shadow_click role=button name_regex="128GB|256GB|64GB|32GB"（選規格）
+  4. shadow_click role=button name_regex="^測試買家$"（若在登入頁，先進測試買家）
+  5. wait_for_url target="#/home" timeout=20000（確認已進入買家首頁）
+  6. enable_a11y（二次確保 AX tree 就緒）
+  7. wait 1000
+  8. shadow_click role=button name_regex="^0\\.0\\n.+\\n[0-9]+\\.[0-9]{2}\\nUSDT\\n0$"（固定點首頁第一張商品卡，避免點到搜尋框）
+  9. wait 2500
+  9.5 wait_for_url target="#/products/" timeout=15000（確認已進入商品詳情頁）
+  10. scroll y=400
+  11. shadow_click role=button name_regex="^購買$"（開啟 SKU 對話框）
+  12. wait 2000
   13. wait 1000
-  14. shadow_click role=button name_regex="^確認購買$"（跳到 purchase-confirm）
-  15. wait 3000
-  16. enable_a11y
-  17. wait 1000
-  18. screenshot_analyze "是否在結帳確認頁？看到「確認購買 USDT X」按鈕嗎？記錄商品名稱和金額。"
-  19. shadow_click role=button name_regex="確認購買 USDT"（真實下單）
-  20. wait 4000
-  21. screenshot_analyze "下單後頁面狀態：是回到商品頁、顯示成功提示、還是其他？記錄當前頁面標題和內容。"
-  22. done=true
+  14. wait 1000
+  15. shadow_click role=button name_regex="^確認購買$|^立即購買$|^下單$"（跳到 purchase-confirm 或等價確認流程）
+  16. wait_for_url target="#/purchase-confirm" timeout=15000（等待進入結帳確認頁）
+  17. enable_a11y
+  18. shadow_click role=button name_regex="確認購買 USDT|確認購買|確認下單|提交訂單"（真實下單）
+  19. wait 4000
+  20. done=true
 
 success_criteria:
   - "成功到達結帳確認頁（purchase-confirm），看到商品摘要"

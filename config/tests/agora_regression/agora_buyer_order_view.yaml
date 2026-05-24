@@ -24,9 +24,9 @@ goal: |
   無相關訂單而不顯示，不列為必要條件）。
   ⚠️ 必須點底部「訂單」tab，不是搜尋或其他按鈕。
   ⚠️ Flutter app：所有 UI 判斷用 screenshot_analyze。
-  ⚠️ 不論任何步驟失敗，都必須繼續執行到步驟 15 才能輸出 done=true。嚴禁提早終止。
+  ⚠️ 若任一步驟觀測到「訂單數據格式錯誤」或「請聯繫客服」，本次測試必須判定 failed，嚴禁輸出 done=true。
 
-  步驟（線性，步驟 15 無條件 done=true，不得提早）：
+  步驟（線性）：
   1. goto target="https://redandan.github.io/?__test_role=buyer"（防前一測試 session 污染）
   2. wait 5000（等 auto-login + Flutter 買家首頁載入）
   3. enable_a11y
@@ -41,12 +41,12 @@ goal: |
   12. shadow_click role=tab name_regex="^待出貨$"（點待出貨 tab）
   13. wait 1500
   14. screenshot_analyze "待出貨截圖：有訂單還是空列表？記錄顯示狀態。"
-  15. done=true
+  15. 若步驟 11 或 14 的分析文字包含「訂單數據格式錯誤」或「請聯繫客服」→ done=false 並回報錯誤文案；否則 done=true
 
 success_criteria:
   - "成功點擊底部訂單 tab 並進入訂單管理頁"
   - "看到訂單分類 tab（至少有全部、待出貨等基本分類）"
   - "待出貨 tab 可正常切換（有訂單或空列表均通過）"
+  - "頁面不得出現『訂單數據格式錯誤』或『請聯繫客服』等錯誤提示"
 
 tags: [regression, orders, buyer, agora]
-

@@ -26,7 +26,7 @@ goal: |
   1. goto target="https://redandan.github.io/?__test_role=admin"（確保 admin 角色登入）
   2. wait 5000（等 admin 後台完整載入）
   3. screenshot_analyze "確認在 admin 後台，看到哪個頁面？"
-  4. shadow_click role=button name_regex="^商品與電商$"
+  4. shadow_click role=button name_regex="^商品與電商(\\n商品與電商)?$"
   5. wait 3000（等待 Flutter 頁面過渡動畫完成）
   6. screenshot_analyze "是否在商品管理頁？看到商品列表了嗎？"
   7. shadow_click role=button name_regex="請選擇產品分類"（點擊分類篩選按鈕）
@@ -41,4 +41,3 @@ success_criteria:
   - "找到並點擊「請選擇產品分類」篩選按鈕（記錄 dropdown 展開或失敗）"
 
 tags: [regression, admin, category-filter, agora, critical, issue-70]
-

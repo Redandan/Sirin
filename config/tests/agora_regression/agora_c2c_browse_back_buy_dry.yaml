@@ -1,0 +1,63 @@
+# yaml-language-server: $schema=../test-schema.json
+id: agora_c2c_browse_back_buy_dry
+name: "C2C 回歸：商品瀏覽→詳情返回→重新進入→購買確認頁(DRY)"
+url: "https://redandan.github.io/?__test_role=buyer"
+
+max_iterations: 18
+timeout_secs: 360
+max_retries: 1
+locale: zh-TW
+
+viewport:
+  width: 390
+  height: 844
+  scale: 2.0
+  mobile: true
+
+blocked_url_patterns:
+  - "*/payment/confirm*"
+  - "*/order/submit*"
+
+fixture:
+  setup:
+    - {action: "wait", target: "3500"}
+    - {action: "enable_a11y"}
+    - {action: "wait", target: "1500"}
+
+goal: |
+  目標：驗證買家「商品瀏覽→詳情返回→再次進詳情→購買到確認頁」流程，且不真的下單。
+
+  起始狀態：buyer auto-login，位於商品列表。
+
+  嚴格執行以下固定步驟（不可自行擴充循環）：
+  1. shadow_dump（只執行一次，用於確認商品列表可互動元素）
+  2. shadow_click role=button name_regex="USDT"（點第一個商品卡）
+  3. wait 2200
+  4. eval target="window.location.href"（記錄 URL）
+  5. shadow_click role=button name_regex="^返回$"
+  6. wait 1800
+  7. eval target="window.location.href"（記錄 URL）
+  8. shadow_click role=button name_regex="USDT"（第二次進詳情）
+  9. wait 2200
+  10. eval target="window.location.href"（記錄 URL）
+  11. scroll y=450
+  12. shadow_click role=button name_regex="^購買$|立即購買|確認購買"
+  13. wait 2200
+  14. eval target="window.location.href"（記錄 URL）
+  15. shadow_dump（確認有「確認購買 USDT」或「確認購買」按鈕）
+  16. done=true
+
+  強約束：
+  - 嚴禁 click_point
+  - 嚴禁重複呼叫 shadow_dump 超過 2 次
+  - 嚴禁使用 go_back 取代返回按鈕
+  - 若任何 URL 讀值不符合當前步驟目標，直接標記 failed，不要自我修復跳步
+
+success_criteria:
+  - "步驟 4 或步驟 10 的 URL 至少一次包含 #/products/"
+  - "步驟 7 的 URL 回到 #/home 或商品列表路由"
+  - "步驟 14 的 URL 包含 #/purchase-confirm"
+  - "步驟 15 可見『確認購買』按鈕（可含 USDT 字樣）"
+  - "流程未執行最終下單"
+
+tags: [agora, regression, c2c, buyer, navigation, checkout, dry-run]
