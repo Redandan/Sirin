@@ -468,10 +468,6 @@ pub fn spawn_run_async_with_override(
         Some(o) => Some(std::sync::Arc::new(crate::llm::LlmConfig::from_override(&o)?)),
         None => None,
     };
-    let goal = parser::find(&test_id).ok_or_else(|| format!("Test '{test_id}' not found"))?;
-    preflight_llm_readiness(&goal, resolved_llm.as_deref())
-        .map_err(|e| format!("LLM preflight failed: {e}"))?;
-
     let run_id = runs::new_run(&test_id);
     let run_id_clone = run_id.clone();
     let test_id_clone = test_id.clone();
@@ -505,6 +501,22 @@ pub fn spawn_run_async_with_override(
                     "[test_runner] '{}' was killed while queued — skipping after lock acquired",
                     run_id_clone
                 );
+                return;
+            }
+
+            let goal = match parser::find(&test_id_clone) {
+                Some(goal) => goal,
+                None => {
+                    runs::set_phase(&run_id_clone, runs::RunPhase::Error(
+                        format!("Test '{test_id_clone}' not found")
+                    ));
+                    return;
+                }
+            };
+            if let Err(e) = preflight_llm_readiness(&goal, llm_override_resolved.as_deref()) {
+                runs::set_phase(&run_id_clone, runs::RunPhase::Error(
+                    format!("LLM preflight failed: {e}")
+                ));
                 return;
             }
 

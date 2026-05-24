@@ -6324,9 +6324,6 @@ pub(crate) fn call_get_run_trace(args: Value) -> Result<Value, String> {
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) async fn call_kb_search(args: Value) -> Result<Value, String> {
-    if !crate::kb_client::enabled() {
-        return Ok(json!({ "error": "KB 未啟用，請設定 KB_ENABLED=1" }));
-    }
     let query = args["query"]
         .as_str()
         .ok_or("Missing 'query'")?
@@ -6336,6 +6333,9 @@ pub(crate) async fn call_kb_search(args: Value) -> Result<Value, String> {
         .map(String::from)
         .unwrap_or_else(crate::kb_client::default_project);
     let limit = args["limit"].as_u64().unwrap_or(5).min(20) as usize;
+    if !crate::kb_client::enabled() {
+        return Ok(json!({ "error": "KB 未啟用，請設定 KB_ENABLED=1" }));
+    }
 
     match crate::kb_client::search(&project, &query, limit).await {
         Ok(Some(text)) => Ok(json!({
@@ -6355,9 +6355,6 @@ pub(crate) async fn call_kb_search(args: Value) -> Result<Value, String> {
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) async fn call_kb_get(args: Value) -> Result<Value, String> {
-    if !crate::kb_client::enabled() {
-        return Ok(json!({ "error": "KB 未啟用，請設定 KB_ENABLED=1" }));
-    }
     let topic = args["topic_key"]
         .as_str()
         .ok_or("Missing 'topic_key'")?
@@ -6366,6 +6363,9 @@ pub(crate) async fn call_kb_get(args: Value) -> Result<Value, String> {
         .as_str()
         .map(String::from)
         .unwrap_or_else(crate::kb_client::default_project);
+    if !crate::kb_client::enabled() {
+        return Ok(json!({ "error": "KB 未啟用，請設定 KB_ENABLED=1" }));
+    }
 
     match crate::kb_client::get(&project, &topic).await {
         Ok(Some(text)) => Ok(json!({
@@ -6385,9 +6385,6 @@ pub(crate) async fn call_kb_get(args: Value) -> Result<Value, String> {
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) async fn call_kb_write(args: Value) -> Result<Value, String> {
-    if !crate::kb_client::enabled() {
-        return Ok(json!({ "error": "KB 未啟用，請設定 KB_ENABLED=1" }));
-    }
     let topic_key = args["topic_key"].as_str().ok_or("Missing 'topic_key'")?.to_string();
     let title     = args["title"].as_str().ok_or("Missing 'title'")?.to_string();
     let content   = args["content"].as_str().ok_or("Missing 'content'")?.to_string();
@@ -6399,6 +6396,9 @@ pub(crate) async fn call_kb_write(args: Value) -> Result<Value, String> {
     let file_refs = args["file_refs"].as_str().unwrap_or("").to_string();
     let project   = args["project"].as_str().map(String::from)
         .unwrap_or_else(crate::kb_client::default_project);
+    if !crate::kb_client::enabled() {
+        return Ok(json!({ "error": "KB 未啟用，請設定 KB_ENABLED=1" }));
+    }
 
     match crate::kb_client::write_raw_to_project(
         &project, &topic_key, &title, &content, &domain, &tags, &file_refs,
