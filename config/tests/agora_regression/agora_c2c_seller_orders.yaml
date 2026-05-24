@@ -39,10 +39,10 @@ goal: |
   6. enable_a11y
   7. wait 1000
   8. shadow_dump（確認訂單管理頁已載入，找到 tab 列表）
-  10. shadow_click role=tab name_regex="^待處理$|^運送中$"（切換到可操作中的訂單 tab）
-  11. wait 1500
-  12. shadow_dump（確認已切換到目標 tab，允許空列表）
-  13. done=true
+  9. shadow_click role=tab name_regex="^待處理$|^運送中$"（切換到可操作中的訂單 tab）
+  10. wait 1500
+  11. shadow_dump（確認已切換到目標 tab，允許空列表）
+  12. done=true
 
 success_criteria:
   - "成功進入賣家訂單管理頁"

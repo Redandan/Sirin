@@ -30,6 +30,7 @@ mod tests {
         [
             // OS-provided
             "HOME", "APPDATA", "LOCALAPPDATA", "USERPROFILE", "XDG_DATA_HOME",
+            "COMPUTERNAME", "HOSTNAME",
         ].into_iter().collect()
     }
 

@@ -32,6 +32,7 @@ mod log_buffer;
 #[allow(dead_code)] mod persona;
 #[allow(dead_code)] mod researcher;
 #[allow(dead_code)] mod research_sentinel;
+#[allow(dead_code)] mod a2a_worker;
 #[allow(dead_code)] mod mcp_client;
 #[allow(dead_code)] mod kb_client;
 #[allow(dead_code)] mod integrations;
@@ -380,6 +381,7 @@ fn main() {
         rt.spawn(followup::run_worker(tracker.clone()));
         rt.spawn(rpc_server::start_rpc_server());
         research_sentinel::spawn_monitor_loop();
+        a2a_worker::spawn_worker_loop();
         // Background LLM reachability probe — feeds diagnose.llm.reachable.
         // Cheap (one HTTP GET every 30s); ensures stale "model configured but
         // Ollama is down" cases get reported truthfully via the MCP tool.

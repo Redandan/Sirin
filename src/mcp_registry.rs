@@ -1708,6 +1708,16 @@ fn seed_default(m: &mut RegistryMap) {
         handler:      ToolHandler::SyncJson(crate::research_sentinel::call_research_sentinel_monitor_status),
     });
 
+    m.insert("a2a_worker_status", ToolDef {
+        name:         "a2a_worker_status",
+        description: "查看 Sirin server-side A2A worker 狀態。此 worker 只負責從外部任務服務 claim Sirin 可執行的工作、執行本地 research sentinel、再回報 artifacts；任務管理與驗收仍在服務端/Codex。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {}
+        }),
+        handler:      ToolHandler::SyncJson(crate::a2a_worker::call_a2a_worker_status),
+    });
+
     m.insert("research_sentinel_ack", ToolDef {
         name:         "research_sentinel_ack",
         description: "將指定 News Research Sentinel inbox item 標記為 read。",
@@ -1759,6 +1769,7 @@ mod tests {
         assert!(get("research_sentinel_run_once").is_some());
         assert!(get("research_sentinel_inbox").is_some());
         assert!(get("research_sentinel_monitor_status").is_some());
+        assert!(get("a2a_worker_status").is_some());
         assert!(get("research_sentinel_ack").is_some());
         assert!(get("research_sentinel_review").is_some());
 

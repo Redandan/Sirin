@@ -121,6 +121,19 @@ Kick off a research task.
 {"name":"trigger_research","arguments":{"topic":"...","url":"..."}}
 ```
 
+#### `a2a_worker_status`
+Inspect Sirin's server-side A2A worker. The worker is a local runner only:
+it claims compatible tasks from an external MCP task service, executes Sirin
+capabilities such as `SIRIN_RESEARCH_SENTINEL_RUN_ONCE`, and reports artifacts
+back to the server for Codex/server review.
+```json
+{"name":"a2a_worker_status","arguments":{}}
+```
+
+The worker is disabled by default. Configure `config/a2a_worker.yaml` or set
+`SIRIN_A2A_WORKER_ENABLED=1`, `SIRIN_A2A_SERVER_URL`, and either
+`SIRIN_A2A_BEARER` or the configured bearer env var before launch.
+
 ---
 
 ### Multi-Agent Squad (1 tool)
