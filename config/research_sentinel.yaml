@@ -1,8 +1,14 @@
+official_only: true
+enabled_groups:
+  - official
+  - investment_data
+
 default_keywords:
   - BTC
   - Bitcoin
   - ETH
   - USDT
+  - USDC
   - stablecoin
   - Binance
   - Coinbase
@@ -11,15 +17,62 @@ default_keywords:
   - Federal Reserve
   - CPI
   - FOMC
+  - ETF
+  - liquidity
+  - volatility
 
 sources:
-  - name: CoinDesk
+  - name: SEC Press Releases
     kind: rss
-    url: https://www.coindesk.com/arc/outboundfeeds/rss/
+    group: official
+    official: true
+    trust: 100
+    categories: [regulation, policy]
+    url: https://www.sec.gov/news/pressreleases.rss
     priority: 10
     enabled: true
-  - name: Cointelegraph
+  - name: Federal Reserve Press Releases
     kind: rss
-    url: https://cointelegraph.com/rss
+    group: official
+    official: true
+    trust: 100
+    categories: [macro_calendar, macro_data, policy]
+    url: https://www.federalreserve.gov/feeds/press_all.xml
     priority: 20
+    enabled: true
+  - name: Federal Reserve Monetary Policy
+    kind: rss
+    group: official
+    official: true
+    trust: 100
+    categories: [macro_calendar, macro_data]
+    url: https://www.federalreserve.gov/feeds/press_monetary.xml
+    priority: 30
+    enabled: true
+  - name: Investing.com Cryptocurrency News
+    kind: rss
+    group: investment_data
+    official: false
+    trust: 70
+    categories: [market_flow, volatility_regime, market_structure]
+    url: https://www.investing.com/rss/news_301.rss
+    priority: 100
+    enabled: true
+  - name: Investing.com Economic Indicators
+    kind: rss
+    group: investment_data
+    official: false
+    trust: 75
+    categories: [macro_data, macro_calendar]
+    url: https://www.investing.com/rss/news_95.rss
+    priority: 110
+    enabled: true
+  - name: Investing.com Central Banks
+    kind: rss
+    group: investment_data
+    official: false
+    trust: 75
+    categories: [macro_calendar, policy]
+    url: https://www.investing.com/rss/central_banks.rss
+    priority: 120
     enabled: true

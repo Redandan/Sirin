@@ -1651,7 +1651,7 @@ fn seed_default(m: &mut RegistryMap) {
 
     m.insert("research_sentinel_goal_create", ToolDef {
         name:         "research_sentinel_goal_create",
-        description: "建立 Codex 定義的新聞/事件研究目標。Sirin 只做外部研究與本地 inbox 保存；不讀 AgoraMarketAPI 交易狀態、不下單、不改 OCO。",
+        description: "建立 Codex 定義的官方/投資資料研究目標。Sirin 只讀配置來源與本地 inbox；不讀 AgoraMarketAPI 交易狀態、不下單、不改 OCO。",
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -1666,7 +1666,7 @@ fn seed_default(m: &mut RegistryMap) {
 
     m.insert("research_sentinel_run_once", ToolDef {
         name:         "research_sentinel_run_once",
-        description: "依 Codex 定義的 goal 或 inline topic 執行一次新聞/事件研究，整理來源 URL、事件類型、資產、relevance、confidence，並保存到 Codex 可讀 inbox。研究結果不是買賣建議。",
+        description: "依 Codex 定義的 goal 或 inline topic 執行一次 Official + Investment Intelligence 研究。只讀 configured official/investment_data RSS 來源，整理 event score、Codex recommendation、來源 URL 與風險關聯；不使用一般新聞/搜尋 fallback，不輸出買賣建議。",
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -1675,8 +1675,7 @@ fn seed_default(m: &mut RegistryMap) {
                 "focus": { "type": "string", "description": "inline 研究焦點" },
                 "keywords": { "type": "array", "items": { "type": "string" }, "description": "inline 搜尋關鍵字" },
                 "lookback_hours": { "type": "integer", "description": "回看小時，預設 goal 值或 24，範圍 1..168" },
-                "rss_feeds": { "type": "array", "items": { "type": "string" }, "description": "RSS fallback feeds；預設 CoinDesk + Cointelegraph" },
-                "max_queries": { "type": "integer", "description": "最多搜尋 query 數，預設 4，範圍 1..8" },
+                "rss_feeds": { "type": "array", "items": { "type": "string" }, "description": "臨時 RSS 來源；未提供時使用 config/research_sentinel.yaml 的 official/investment_data sources" },
                 "max_results": { "type": "integer", "description": "最多保留結果，預設 12，範圍 1..30" },
                 "create_inbox": { "type": "boolean", "description": "是否寫入 inbox，預設 true" }
             }
