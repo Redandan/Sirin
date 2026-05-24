@@ -34,6 +34,26 @@ pub struct ResearchGoal {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchSource {
+    pub name: String,
+    pub url: String,
+    #[serde(default = "default_source_kind")]
+    pub kind: String,
+    #[serde(default)]
+    pub priority: u8,
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchSentinelConfig {
+    #[serde(default = "default_keywords")]
+    pub default_keywords: Vec<String>,
+    #[serde(default = "default_config_sources")]
+    pub sources: Vec<ResearchSource>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchItem {
     pub id: String,
     pub title: String,
@@ -51,15 +71,34 @@ pub struct ResearchItem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchEvent {
+    pub id: String,
+    pub event_key: String,
+    pub event_type: String,
+    pub title: String,
+    pub summary: String,
+    pub assets: Vec<String>,
+    pub impact_window: String,
+    pub confidence: String,
+    pub needs_codex_review: bool,
+    pub relevance: String,
+    pub sources: Vec<ResearchItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchInboxEntry {
     pub id: String,
     pub run_id: String,
     pub goal_id: Option<String>,
     pub created_at: String,
     pub status: String,
+    pub review_status: String,
+    pub review_note: Option<String>,
+    pub reviewed_at: Option<String>,
     pub topic: String,
     pub focus: String,
     pub summary: String,
+    pub events: Vec<ResearchEvent>,
     pub items: Vec<ResearchItem>,
     pub source_errors: Vec<String>,
     pub guardrails: Vec<String>,
@@ -87,6 +126,24 @@ fn tracking_path(file: &str) -> PathBuf {
     crate::platform::app_data_dir().join("tracking").join(file)
 }
 
+fn default_source_kind() -> String {
+    "rss".into()
+}
+
+fn default_config_sources() -> Vec<ResearchSource> {
+    default_rss_feeds()
+        .into_iter()
+        .enumerate()
+        .map(|(idx, url)| ResearchSource {
+            name: source_domain(&url),
+            url,
+            kind: "rss".into(),
+            priority: idx as u8,
+            enabled: true,
+        })
+        .collect()
+}
+
 fn default_keywords() -> Vec<String> {
     [
         "BTC", "Bitcoin", "ETH", "USDT", "stablecoin", "Binance", "Coinbase",
@@ -102,6 +159,31 @@ fn default_rss_feeds() -> Vec<String> {
         "https://www.coindesk.com/arc/outboundfeeds/rss/".into(),
         "https://cointelegraph.com/rss".into(),
     ]
+}
+
+fn default_config() -> ResearchSentinelConfig {
+    ResearchSentinelConfig {
+        default_keywords: default_keywords(),
+        sources: default_config_sources(),
+    }
+}
+
+fn config_candidates() -> Vec<PathBuf> {
+    vec![
+        crate::platform::config_path("research_sentinel.yaml"),
+        PathBuf::from("config").join("research_sentinel.yaml"),
+    ]
+}
+
+fn load_config() -> ResearchSentinelConfig {
+    for path in config_candidates() {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            if let Ok(cfg) = serde_yaml::from_str::<ResearchSentinelConfig>(&text) {
+                return cfg;
+            }
+        }
+    }
+    default_config()
 }
 
 fn hash_id(prefix: &str, value: &str) -> String {
@@ -134,7 +216,12 @@ fn keywords_arg(args: &Value) -> Vec<String> {
         .unwrap_or_default();
 
     if from_args.is_empty() {
-        default_keywords()
+        let cfg = load_config();
+        if cfg.default_keywords.is_empty() {
+            default_keywords()
+        } else {
+            cfg.default_keywords
+        }
     } else {
         from_args
     }
@@ -154,7 +241,18 @@ fn rss_feeds_arg(args: &Value) -> Vec<String> {
         })
         .unwrap_or_default();
     if feeds.is_empty() {
-        default_rss_feeds()
+        let mut sources = load_config().sources;
+        sources.sort_by_key(|source| source.priority);
+        let configured = sources
+            .into_iter()
+            .filter(|source| source.enabled && source.kind == "rss")
+            .map(|source| source.url)
+            .collect::<Vec<_>>();
+        if configured.is_empty() {
+            default_rss_feeds()
+        } else {
+            configured
+        }
     } else {
         feeds
     }
@@ -288,6 +386,106 @@ fn impact_window_for(event_type: &str) -> String {
         "market_structure" => "intraday".into(),
         _ => "unknown".into(),
     }
+}
+
+fn normalize_event_word(word: &str) -> String {
+    word.chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_lowercase()
+}
+
+fn event_key_for(item: &ResearchItem) -> String {
+    let mut parts = item.assets.iter().map(|s| s.to_lowercase()).collect::<Vec<_>>();
+    parts.push(item.event_type.clone());
+    let mut title_words = item
+        .title
+        .split_whitespace()
+        .map(normalize_event_word)
+        .filter(|word| word.len() >= 4)
+        .filter(|word| {
+            !matches!(
+                word.as_str(),
+                "with" | "from" | "that" | "this" | "after" | "before" | "into" | "over" | "under"
+            )
+        })
+        .take(6)
+        .collect::<Vec<_>>();
+    parts.append(&mut title_words);
+    if parts.len() <= 1 {
+        parts.push(hash_id("h", &item.url));
+    }
+    parts.join(":")
+}
+
+fn merge_assets(items: &[ResearchItem]) -> Vec<String> {
+    let mut assets = Vec::new();
+    for item in items {
+        for asset in &item.assets {
+            if !assets.contains(asset) {
+                assets.push(asset.clone());
+            }
+        }
+    }
+    assets
+}
+
+fn best_confidence(items: &[ResearchItem]) -> String {
+    if items.iter().any(|item| item.confidence == "high") {
+        "high".into()
+    } else if items.iter().any(|item| item.confidence == "medium") {
+        "medium".into()
+    } else {
+        "low".into()
+    }
+}
+
+fn aggregate_events(items: &[ResearchItem]) -> Vec<ResearchEvent> {
+    let mut grouped: Vec<(String, Vec<ResearchItem>)> = Vec::new();
+    for item in items {
+        let key = event_key_for(item);
+        if let Some((_, bucket)) = grouped.iter_mut().find(|(existing, _)| existing == &key) {
+            bucket.push(item.clone());
+        } else {
+            grouped.push((key, vec![item.clone()]));
+        }
+    }
+
+    let mut events = grouped
+        .into_iter()
+        .map(|(event_key, sources)| {
+            let lead = sources
+                .iter()
+                .find(|item| item.needs_codex_review)
+                .unwrap_or(&sources[0]);
+            let assets = merge_assets(&sources);
+            let confidence = best_confidence(&sources);
+            ResearchEvent {
+                id: hash_id("rse", &event_key),
+                event_key,
+                event_type: lead.event_type.clone(),
+                title: lead.title.clone(),
+                summary: lead.snippet.clone(),
+                assets: assets.clone(),
+                impact_window: lead.impact_window.clone(),
+                confidence,
+                needs_codex_review: sources.iter().any(|item| item.needs_codex_review),
+                relevance: relevance_for(&lead.event_type, &assets),
+                sources,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    events.sort_by_key(|event| {
+        let review_rank = if event.needs_codex_review { 0 } else { 1 };
+        let confidence_rank = match event.confidence.as_str() {
+            "high" => 0,
+            "medium" => 1,
+            _ => 2,
+        };
+        (review_rank, confidence_rank, event.event_type.clone())
+    });
+    events
 }
 
 fn item_from_search(result: SearchResult) -> ResearchItem {
@@ -435,20 +633,20 @@ async fn fetch_rss_candidates(feeds: &[String], goal: &ResearchGoal) -> (Vec<New
     (candidates, errors)
 }
 
-fn summarize(topic: &str, items: &[ResearchItem], errors: &[String]) -> String {
-    let review_count = items.iter().filter(|item| item.needs_codex_review).count();
-    let critical_types = items
+fn summarize(topic: &str, events: &[ResearchEvent], errors: &[String]) -> String {
+    let review_count = events.iter().filter(|event| event.needs_codex_review).count();
+    let critical_types = events
         .iter()
-        .filter(|item| item.needs_codex_review)
-        .map(|item| item.event_type.as_str())
+        .filter(|event| event.needs_codex_review)
+        .map(|event| event.event_type.as_str())
         .collect::<HashSet<_>>()
         .len();
-    if items.is_empty() {
+    if events.is_empty() {
         format!("No usable research items found for `{topic}`. Source errors: {}.", errors.len())
     } else if review_count > 0 {
-        format!("Found {review_count} Codex-review item(s) across {critical_types} event type(s) for `{topic}`.")
+        format!("Found {review_count} Codex-review event(s) across {critical_types} event type(s) for `{topic}`.")
     } else {
-        format!("Found {} background item(s) for `{topic}`, with no direct Codex-review flag.", items.len())
+        format!("Found {} background event(s) for `{topic}`, with no direct Codex-review flag.", events.len())
     }
 }
 
@@ -525,15 +723,20 @@ pub(crate) async fn call_research_sentinel_run_once(args: Value) -> Result<Value
 
     let run_id = format!("rsr-{}", Utc::now().timestamp_millis());
     let inbox_id = hash_id("rsn", &format!("{}:{run_id}", goal.id));
+    let events = aggregate_events(&items);
     let entry = ResearchInboxEntry {
         id: inbox_id.clone(),
         run_id: run_id.clone(),
         goal_id: Some(goal.id.clone()),
         created_at: Utc::now().to_rfc3339(),
         status: "unread".into(),
+        review_status: "pending".into(),
+        review_note: None,
+        reviewed_at: None,
         topic: goal.topic.clone(),
         focus: goal.focus.clone(),
-        summary: summarize(&goal.topic, &items, &source_errors),
+        summary: summarize(&goal.topic, &events, &source_errors),
+        events,
         items,
         source_errors,
         guardrails: vec![
@@ -554,7 +757,8 @@ pub(crate) async fn call_research_sentinel_run_once(args: Value) -> Result<Value
         "inbox_id": if create_inbox { Some(inbox_id) } else { None },
         "summary": entry.summary,
         "count": entry.items.len(),
-        "review_count": entry.items.iter().filter(|item| item.needs_codex_review).count(),
+        "event_count": entry.events.len(),
+        "review_count": entry.events.iter().filter(|event| event.needs_codex_review).count(),
         "entry": entry,
     }))
 }
@@ -592,6 +796,51 @@ pub(crate) fn call_research_sentinel_ack(args: Value) -> Result<Value, String> {
         })
         .map_err(|e| e.to_string())?;
     Ok(json!({ "id": id, "acknowledged": changed }))
+}
+
+pub(crate) fn call_research_sentinel_review(args: Value) -> Result<Value, String> {
+    let id = args.get("id").and_then(Value::as_str).ok_or("Missing id")?.to_string();
+    let review_status = args
+        .get("review_status")
+        .and_then(Value::as_str)
+        .ok_or("Missing review_status")?
+        .trim()
+        .to_string();
+    let allowed = ["accepted", "ignored", "needs_more_sources", "convert_to_issue"];
+    if !allowed.contains(&review_status.as_str()) {
+        return Err(format!(
+            "Invalid review_status `{review_status}`; expected one of {}",
+            allowed.join(", ")
+        ));
+    }
+    let review_note = args
+        .get("review_note")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
+    let mut updated: Option<ResearchInboxEntry> = None;
+    inbox_log()
+        .rewrite_with(|mut entries| {
+            for entry in entries.iter_mut() {
+                if entry.id == id {
+                    entry.review_status = review_status.clone();
+                    entry.review_note = review_note.clone();
+                    entry.reviewed_at = Some(Utc::now().to_rfc3339());
+                    entry.status = "read".into();
+                    updated = Some(entry.clone());
+                    break;
+                }
+            }
+            entries
+        })
+        .map_err(|e| e.to_string())?;
+
+    match updated {
+        Some(entry) => Ok(json!({ "updated": true, "entry": entry })),
+        None => Ok(json!({ "updated": false, "id": id })),
+    }
 }
 
 #[cfg(test)]
@@ -636,5 +885,50 @@ mod tests {
         assert!(item.needs_codex_review);
         assert!(!item.relevance.to_lowercase().contains("buy"));
         assert!(!item.relevance.to_lowercase().contains("sell"));
+    }
+
+    #[test]
+    fn parses_rss_items_and_keeps_source_metadata() {
+        let xml = r#"
+            <rss><channel>
+              <item>
+                <title><![CDATA[Bitcoin ETF flows affect market volatility]]></title>
+                <link>https://www.coindesk.com/markets/example</link>
+                <description><![CDATA[BTC liquidity and volatility changed after ETF flows.]]></description>
+                <pubDate>Sun, 24 May 2026 00:00:00 +0000</pubDate>
+              </item>
+            </channel></rss>
+        "#;
+        let items = parse_rss_items(xml);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].title, "Bitcoin ETF flows affect market volatility");
+        assert_eq!(items[0].published_at.as_deref(), Some("Sun, 24 May 2026 00:00:00 +0000"));
+    }
+
+    #[test]
+    fn aggregates_items_into_reviewable_events() {
+        let items = vec![
+            item_from_search(SearchResult {
+                title: "Binance announces Bitcoin wallet maintenance".into(),
+                url: "https://www.binance.com/a".into(),
+                snippet: "BTC withdrawals paused during scheduled maintenance".into(),
+            }),
+            item_from_search(SearchResult {
+                title: "Binance announces Bitcoin wallet maintenance update".into(),
+                url: "https://www.binance.com/b".into(),
+                snippet: "BTC maintenance update from Binance".into(),
+            }),
+        ];
+        let events = aggregate_events(&items);
+        assert_eq!(events.len(), 2);
+        assert!(events.iter().all(|event| event.needs_codex_review));
+        assert!(events.iter().any(|event| event.assets.contains(&"BTC".to_string())));
+    }
+
+    #[test]
+    fn load_config_falls_back_to_defaults() {
+        let cfg = default_config();
+        assert!(!cfg.default_keywords.is_empty());
+        assert!(cfg.sources.iter().any(|source| source.url.contains("coindesk")));
     }
 }

@@ -1,0 +1,25 @@
+default_keywords:
+  - BTC
+  - Bitcoin
+  - ETH
+  - USDT
+  - stablecoin
+  - Binance
+  - Coinbase
+  - SEC
+  - CFTC
+  - Federal Reserve
+  - CPI
+  - FOMC
+
+sources:
+  - name: CoinDesk
+    kind: rss
+    url: https://www.coindesk.com/arc/outboundfeeds/rss/
+    priority: 10
+    enabled: true
+  - name: Cointelegraph
+    kind: rss
+    url: https://cointelegraph.com/rss
+    priority: 20
+    enabled: true

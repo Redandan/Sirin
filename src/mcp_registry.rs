@@ -1709,6 +1709,25 @@ fn seed_default(m: &mut RegistryMap) {
         }),
         handler:      ToolHandler::SyncJson(crate::research_sentinel::call_research_sentinel_ack),
     });
+
+    m.insert("research_sentinel_review", ToolDef {
+        name:         "research_sentinel_review",
+        description: "回寫 Codex 對 News Research Sentinel inbox item 的驗收結果，形成研究閉環。狀態可為 accepted、ignored、needs_more_sources、convert_to_issue。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "string", "description": "inbox item id" },
+                "review_status": {
+                    "type": "string",
+                    "enum": ["accepted", "ignored", "needs_more_sources", "convert_to_issue"],
+                    "description": "Codex 驗收狀態"
+                },
+                "review_note": { "type": "string", "description": "Codex 驗收備註" }
+            },
+            "required": ["id", "review_status"]
+        }),
+        handler:      ToolHandler::SyncJson(crate::research_sentinel::call_research_sentinel_review),
+    });
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -1729,6 +1748,7 @@ mod tests {
         assert!(get("research_sentinel_run_once").is_some());
         assert!(get("research_sentinel_inbox").is_some());
         assert!(get("research_sentinel_ack").is_some());
+        assert!(get("research_sentinel_review").is_some());
 
         // Un-migrated tools must NOT be in the registry yet.  Only one tool
         // is permanently un-migrated: `browser_exec`.  It's the sole authz

@@ -6753,6 +6753,7 @@ mod test_runner_mcp_tests {
         assert!(names.contains(&"research_sentinel_run_once"), "research sentinel run tool missing");
         assert!(names.contains(&"research_sentinel_inbox"), "research sentinel inbox tool missing");
         assert!(names.contains(&"research_sentinel_ack"), "research sentinel ack tool missing");
+        assert!(names.contains(&"research_sentinel_review"), "research sentinel review tool missing");
 
         // Some legacy tools must also still be present (we didn't accidentally
         // delete the literal block).
