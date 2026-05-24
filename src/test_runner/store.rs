@@ -504,6 +504,38 @@ pub fn find_history_by_run_id(
     ).ok()
 }
 
+#[derive(Debug, Clone)]
+pub struct RunPerfRecord {
+    pub status: String,
+    pub duration_ms: Option<i64>,
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub cached_tokens: u32,
+    pub llm_model: Option<String>,
+    pub history_json: Option<String>,
+}
+
+pub fn find_run_perf_by_run_id(run_id: &str) -> Option<RunPerfRecord> {
+    let conn = db().lock().unwrap_or_else(|e| e.into_inner());
+    conn.query_row(
+        "SELECT status, duration_ms, COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), \
+                COALESCE(cached_tokens, 0), llm_model, history_json \
+         FROM test_runs WHERE run_id = ?1 ORDER BY id DESC LIMIT 1",
+        rusqlite::params![run_id],
+        |row| {
+            Ok(RunPerfRecord {
+                status: row.get::<_, String>(0)?,
+                duration_ms: row.get::<_, Option<i64>>(1)?,
+                prompt_tokens: row.get::<_, i64>(2).unwrap_or(0).max(0) as u32,
+                completion_tokens: row.get::<_, i64>(3).unwrap_or(0).max(0) as u32,
+                cached_tokens: row.get::<_, i64>(4).unwrap_or(0).max(0) as u32,
+                llm_model: row.get::<_, Option<String>>(5).unwrap_or(None),
+                history_json: row.get::<_, Option<String>>(6)?,
+            })
+        },
+    ).ok()
+}
+
 /// Find the most recent failed (or timed-out) run for a given test_id.
 ///
 /// Returns a tuple:

@@ -907,6 +907,30 @@ window.sirin = function () {
       }
     },
 
+    perfHintText(hint) {
+      switch (hint) {
+        case 'healthy_fast_path': return '快路徑';
+        case 'llm_latency_tail': return 'LLM尾延遲';
+        case 'action_loop_or_ui_drift': return '動作迴圈';
+        case 'long_tail_needs_trace_review': return '長尾待檢';
+        case 'normal_range': return '正常';
+        default: return hint || '';
+      }
+    },
+
+    perfHintBadgeClass(hint) {
+      switch (hint) {
+        case 'healthy_fast_path': return 'badge-soft';
+        case 'normal_range': return 'badge-soft badge-soft-info';
+        case 'llm_latency_tail':
+        case 'action_loop_or_ui_drift':
+        case 'long_tail_needs_trace_review':
+          return 'badge-soft badge-soft-warn';
+        default:
+          return 'badge-soft';
+      }
+    },
+
     // ── #279 tier 1: active-runs sub-phase / idle / ETA helpers ────
     /// True when the executor's current sub-phase has been stuck > 60 s.
     /// Used to flip a stuck red banner + dim the card border.

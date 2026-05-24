@@ -71,6 +71,163 @@ pub struct AdhocRunRequest {
     pub blocked_url_patterns: Option<Vec<String>>,
 }
 
+fn resolved_test_llm_backend(test: &TestGoal) -> String {
+    if let Some(v) = test.llm_backend.as_deref() {
+        let s = v.trim().to_lowercase();
+        if !s.is_empty() {
+            return s;
+        }
+    }
+    std::env::var("TEST_RUNNER_LLM_BACKEND")
+        .ok()
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_default()
+}
+
+fn preflight_claude_cli(cwd: &str) -> Result<(), String> {
+    let probe = crate::claude_session::run_sync(cwd, "Reply with exactly: SIRIN_LLM_READY")
+        .map_err(|e| format!("claude_cli preflight spawn failed: {e}"))?;
+    if !probe.success {
+        let msg: String = probe.output.chars().take(300).collect();
+        return Err(format!("claude_cli preflight failed (exit {}): {}", probe.exit_code, msg));
+    }
+    if !probe.output.contains("SIRIN_LLM_READY") {
+        let msg: String = probe.output.chars().take(300).collect();
+        return Err(format!("claude_cli preflight unexpected output: {}", msg));
+    }
+    Ok(())
+}
+
+fn preflight_local_llm(cfg: &crate::llm::LlmConfig, provider: &str) -> Result<(), String> {
+    fn preflight_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>> {
+        use std::collections::HashMap;
+        use std::sync::{Mutex, OnceLock};
+        static CACHE: OnceLock<Mutex<HashMap<String, std::time::Instant>>> = OnceLock::new();
+        CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    let key = format!(
+        "{}|{}|{}",
+        provider,
+        cfg.base_url.trim().to_lowercase(),
+        cfg.model.trim().to_lowercase(),
+    );
+    let ttl = std::time::Duration::from_secs(30);
+    {
+        let now = std::time::Instant::now();
+        let g = preflight_cache().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(last_ok) = g.get(&key) {
+            if now.duration_since(*last_ok) <= ttl {
+                return Ok(());
+            }
+        }
+    }
+
+    let run_probe = |cfg: crate::llm::LlmConfig| -> Result<_, String> {
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| format!("preflight runtime error: {e}"))?;
+        Ok(rt.block_on(async move {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                crate::llm::call_prompt_messages(
+                    &crate::llm::shared_http(),
+                    &cfg,
+                    &[crate::llm::LlmMessage::user("Reply with exactly: SIRIN_LLM_READY")],
+                ),
+            )
+            .await
+        }))
+    };
+    let ping = if tokio::runtime::Handle::try_current().is_ok() {
+        // We are already inside a Tokio runtime (e.g. MCP tools/call path).
+        // Spawning a tiny helper thread avoids nested-runtime panic.
+        let cfg_cloned = cfg.clone();
+        std::thread::spawn(move || run_probe(cfg_cloned))
+            .join()
+            .map_err(|_| "preflight thread panicked".to_string())??
+    } else {
+        run_probe(cfg.clone())?
+    };
+    let out = match ping {
+        Ok(Ok(v)) => v,
+        Ok(Err(e1)) => {
+            // One fast retry to absorb transient local endpoint hiccups.
+            std::thread::sleep(std::time::Duration::from_millis(600));
+            let ping2 = if tokio::runtime::Handle::try_current().is_ok() {
+                let cfg_cloned = cfg.clone();
+                std::thread::spawn(move || run_probe(cfg_cloned))
+                    .join()
+                    .map_err(|_| "preflight thread panicked".to_string())??
+            } else {
+                run_probe(cfg.clone())?
+            };
+            match ping2 {
+                Ok(Ok(v)) => v,
+                Ok(Err(e2)) => return Err(format!("{} preflight call failed (after retry): {e2}; first error: {e1}", provider)),
+                Err(_) => return Err(format!("{} preflight timeout at {} (after retry)", provider, cfg.base_url)),
+            }
+        }
+        Err(_) => {
+            std::thread::sleep(std::time::Duration::from_millis(600));
+            let ping2 = if tokio::runtime::Handle::try_current().is_ok() {
+                let cfg_cloned = cfg.clone();
+                std::thread::spawn(move || run_probe(cfg_cloned))
+                    .join()
+                    .map_err(|_| "preflight thread panicked".to_string())??
+            } else {
+                run_probe(cfg.clone())?
+            };
+            match ping2 {
+                Ok(Ok(v)) => v,
+                Ok(Err(e2)) => return Err(format!("{} preflight call failed after timeout retry: {e2}", provider)),
+                Err(_) => return Err(format!("{} preflight timeout at {} (after retry)", provider, cfg.base_url)),
+            }
+        }
+    };
+    if !out.contains("SIRIN_LLM_READY") {
+        let head: String = out.chars().take(240).collect();
+        return Err(format!("{} preflight unexpected output: {}", provider, head));
+    }
+    preflight_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key, std::time::Instant::now());
+    Ok(())
+}
+
+fn preflight_llm_readiness(test: &TestGoal, llm_override: Option<&crate::llm::LlmConfig>) -> Result<(), String> {
+    let backend = resolved_test_llm_backend(test);
+    if matches!(backend.as_str(), "claude_cli" | "claude") {
+        let cwd = crate::claude_session::repo_path("sirin")
+            .unwrap_or_else(|| {
+                std::env::current_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                    .to_string_lossy()
+                    .to_string()
+            });
+        return preflight_claude_cli(&cwd);
+    }
+
+    let cfg = if let Some(cfg) = llm_override.cloned() {
+        cfg
+    } else if let Some(ov) = test.llm_override.as_ref() {
+        crate::llm::LlmConfig::from_override(&crate::llm::LlmOverride {
+            provider: ov.provider.clone(),
+            model: ov.model.clone(),
+            base_url: ov.base_url.clone(),
+            api_key: ov.api_key.clone(),
+        }).map_err(|e| format!("invalid yaml llm_override: {e}"))?
+    } else {
+        (*crate::llm::shared_llm()).clone()
+    };
+    match cfg.backend {
+        crate::llm::LlmBackend::LmStudio => preflight_local_llm(&cfg, "lmstudio"),
+        crate::llm::LlmBackend::Ollama => preflight_local_llm(&cfg, "ollama"),
+        _ => Ok(()),
+    }
+}
+
 /// Run a single test by id, record the result, and optionally auto-fix.
 ///
 /// Returns the full [`TestResult`].  Pass `auto_fix=true` to spawn a
@@ -121,6 +278,29 @@ async fn run_test_with_run_id(
     if !test.blocked_url_patterns.is_empty() {
         if let Ok(json) = serde_json::to_string(&test.blocked_url_patterns) {
             ctx_with_run = ctx_with_run.with_metadata("blocked_url_patterns", &json);
+        }
+    }
+    let has_mcp_override = ctx_with_run
+        .metadata
+        .get("llm_override_source")
+        .map(|v| v == "mcp")
+        .unwrap_or(false);
+    if !has_mcp_override {
+        if let Some(ov) = test.llm_override.as_ref() {
+            let cfg = crate::llm::LlmConfig::from_override(&crate::llm::LlmOverride {
+                provider: ov.provider.clone(),
+                model: ov.model.clone(),
+                base_url: ov.base_url.clone(),
+                api_key: ov.api_key.clone(),
+            }).map_err(|e| format!("invalid test llm_override: {e}"))?;
+            let cfg = std::sync::Arc::new(cfg);
+            tracing::info!(
+                "[test_runner] '{}' using YAML llm_override: provider={:?} model={}",
+                test.id, cfg.backend, cfg.model
+            );
+            ctx_with_run = ctx_with_run
+                .with_llm(cfg)
+                .with_metadata("llm_override_source", "yaml");
         }
     }
     let result = executor::execute_test_tracked(&ctx_with_run, &test, run_id, None).await;
@@ -288,6 +468,9 @@ pub fn spawn_run_async_with_override(
         Some(o) => Some(std::sync::Arc::new(crate::llm::LlmConfig::from_override(&o)?)),
         None => None,
     };
+    let goal = parser::find(&test_id).ok_or_else(|| format!("Test '{test_id}' not found"))?;
+    preflight_llm_readiness(&goal, resolved_llm.as_deref())
+        .map_err(|e| format!("LLM preflight failed: {e}"))?;
 
     let run_id = runs::new_run(&test_id);
     let run_id_clone = run_id.clone();
@@ -361,6 +544,7 @@ pub fn spawn_run_async_with_override(
             // Issue #269 — apply per-test LLM override when caller supplied one.
             if let Some(llm) = llm_override_resolved.as_ref() {
                 ctx = ctx.with_llm(llm.clone());
+                ctx = ctx.with_metadata("llm_override_source", "mcp");
                 tracing::info!(
                     "[test_runner] '{}' using override LLM: provider={:?} model={}",
                     test_id_clone, llm.backend, llm.model
@@ -550,6 +734,7 @@ pub fn spawn_adhoc_run(req: AdhocRunRequest) -> Result<String, String> {
         url_query: Default::default(),
         browser_headless: req.browser_headless,
         llm_backend: req.llm_backend,
+        llm_override: None,
         success_criteria: req.success_criteria,
         tags: vec!["adhoc".into()],
         fixture: req.fixture,
@@ -558,12 +743,14 @@ pub fn spawn_adhoc_run(req: AdhocRunRequest) -> Result<String, String> {
         perception: Default::default(),
         mask_sensitive: None,  // None → executor defaults to fail-secure on
         blocked_url_patterns: req.blocked_url_patterns.clone().unwrap_or_default(),
-        record_timeline_gif: true,  // adhoc runs default-on; same as YAML default
+        record_timeline_gif: false, // adhoc runs default-off to reduce overhead; opt in when debugging
         show_action_indicator: false,  // Issue #75: opt-in only; ad-hoc keeps clean DOM
         max_retries: 0,  // ad-hoc runs don't retry by default
         viewport: None,  // ad-hoc uses process default viewport
         fail_on_console_errors: false,  // ad-hoc runs never auto-fail on console errors
     };
+    preflight_llm_readiness(&test, None)
+        .map_err(|e| format!("LLM preflight failed: {e}"))?;
 
     let run_id = runs::new_run(&test_id);
     // Attach the synthetic TestGoal to the run state so persist_adhoc_run
@@ -1226,6 +1413,7 @@ pub fn persist_adhoc_run(p: PersistAdhocParams) -> Result<PersistAdhocResult, St
         url_query: goal.url_query.clone(),
         browser_headless: goal.browser_headless,
         llm_backend: goal.llm_backend.clone(),
+        llm_override: goal.llm_override.clone(),
         success_criteria: goal.success_criteria.clone(),
         tags: tags.clone(),
         fixture: goal.fixture.clone(),
@@ -1293,6 +1481,7 @@ mod persist_tests {
             url_query: Default::default(),
             browser_headless: Some(false),
             llm_backend: None,
+            llm_override: None,
             success_criteria: vec!["URL contains /dashboard".into()],
             tags: vec!["adhoc".into()],
             fixture: None,
@@ -1385,6 +1574,7 @@ mod persist_tests {
             url_query: Default::default(),
             browser_headless: None,
             llm_backend: None,
+            llm_override: None,
             success_criteria: vec![],
             tags: vec![],
             fixture: None,
@@ -1474,6 +1664,7 @@ mod persist_tests {
             url_query: Default::default(),
             browser_headless: Some(true),
             llm_backend: None,
+            llm_override: None,
             success_criteria: vec!["Recovered OK".into()],
             tags: vec!["adhoc".into()],
             fixture: None,

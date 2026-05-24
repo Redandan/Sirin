@@ -82,6 +82,21 @@ pub struct TestGoal {
     /// → main LLM config.
     #[serde(default)]
     pub llm_backend: Option<String>,
+    /// Optional full per-test LLM override (Issue #275).
+    ///
+    /// Use this when you want to benchmark or pin one YAML test to a specific
+    /// provider/model combo without passing MCP `run_test_async.llm_override`
+    /// every time.
+    ///
+    /// Precedence:
+    /// 1. MCP `run_test_async.llm_override` (highest)
+    /// 2. YAML `llm_override` (this field)
+    /// 3. Process-level env config (`LLM_PROVIDER` + provider-specific vars)
+    ///
+    /// Note: `llm_backend: claude_cli` still routes through Claude CLI path
+    /// and takes precedence over HTTP-provider overrides.
+    #[serde(default)]
+    pub llm_override: Option<TestLlmOverride>,
     #[serde(default)]
     pub success_criteria: Vec<String>,
     #[serde(default)]
@@ -147,11 +162,12 @@ pub struct TestGoal {
     #[serde(default)]
     pub blocked_url_patterns: Vec<String>,
     /// Capture an action-annotated GIF timeline of the run (Issue #78).
-    /// When `true` (default), every ReAct iteration captures a frame and on
+    /// When `true`, every ReAct iteration captures a frame and on
     /// failure the frames are encoded into `test_failures/<run_id>/timeline.gif`
     /// (the single failure-screenshot path stays for back-compat).
-    /// Set to `false` to disable for tests where the extra screenshot per step
-    /// is too expensive (slow Flutter pages).
+    /// Default `false` to avoid extra screenshot overhead in normal runs.
+    /// Set to `true` when debugging flaky failures and you need frame-by-frame
+    /// playback.
     #[serde(default = "default_record_timeline_gif")]
     pub record_timeline_gif: bool,
     /// Inject an in-page action indicator (right-bottom badge + faint border)
@@ -206,6 +222,21 @@ pub struct TestGoal {
     pub fail_on_console_errors: bool,
 }
 
+/// Per-test provider/model override for YAML-authored tests.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TestLlmOverride {
+    /// `lmstudio` | `gemini` | `anthropic` | `ollama` (case-insensitive).
+    pub provider: String,
+    /// Model id at the chosen provider.
+    pub model: String,
+    /// Optional override base URL (empty/missing uses provider default).
+    #[serde(default)]
+    pub base_url: Option<String>,
+    /// Optional API key (empty/missing uses provider default).
+    #[serde(default)]
+    pub api_key: Option<String>,
+}
+
 /// Viewport configuration for a test.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 pub struct TestViewport {
@@ -221,7 +252,7 @@ pub struct TestViewport {
 
 fn default_scale() -> f64 { 1.0 }
 
-fn default_record_timeline_gif() -> bool { true }
+fn default_record_timeline_gif() -> bool { false }
 
 impl TestGoal {
     /// Return the navigation URL with `url_query` appended as query string.
@@ -579,6 +610,25 @@ goal: "do something"
 "#;
         let g: TestGoal = serde_yaml::from_str(yaml).unwrap();
         assert!(g.llm_backend.is_none());
+    }
+
+    #[test]
+    fn parse_yaml_with_llm_override() {
+        let yaml = r#"
+id: override_test
+name: "LLM override test"
+url: "https://example.com"
+goal: "do something"
+llm_override:
+  provider: lmstudio
+  model: gemma-3-1b-it
+  base_url: http://localhost:1234/v1
+"#;
+        let g: TestGoal = serde_yaml::from_str(yaml).unwrap();
+        let ov = g.llm_override.expect("llm_override should parse");
+        assert_eq!(ov.provider, "lmstudio");
+        assert_eq!(ov.model, "gemma-3-1b-it");
+        assert_eq!(ov.base_url.as_deref(), Some("http://localhost:1234/v1"));
     }
 
     #[test]

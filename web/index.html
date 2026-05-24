@@ -269,6 +269,10 @@
                         <span x-show="run.failure_category"
                               class="badge-soft badge-soft-danger"
                               x-text="run.failure_category"></span>
+                        <span x-show="run.perf_hint"
+                              :class="perfHintBadgeClass(run.perf_hint)"
+                              :title="'perf hint: ' + run.perf_hint"
+                              x-text="perfHintText(run.perf_hint)"></span>
                         <span x-show="run.pass_rate !== null && run.pass_rate < 0.7"
                               class="badge-soft badge-soft-warn"
                               x-text="'flaky ' + Math.round(run.pass_rate * 100) + '%'"></span>
@@ -588,6 +592,10 @@
                 <span x-show="run.failure_category"
                       class="badge-soft badge-soft-danger"
                       x-text="run.failure_category"></span>
+                <span x-show="run.perf_hint"
+                      :class="perfHintBadgeClass(run.perf_hint)"
+                      :title="'perf hint: ' + run.perf_hint"
+                      x-text="perfHintText(run.perf_hint)"></span>
                 <span x-show="run.pass_rate !== null && run.pass_rate < 0.7"
                       class="badge-soft badge-soft-warn"
                       x-text="'flaky ' + Math.round(run.pass_rate * 100) + '%'"></span>

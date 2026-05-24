@@ -1232,11 +1232,17 @@ fn seed_default(m: &mut RegistryMap) {
 
     m.insert("kb_stats", ToolDef {
         name:         "kb_stats",
-        description: "#226 — KB 深度統計（補強 kbHealth）。透過 agora-trading MCP 取得指定 project 的條目分布：by domain / by status / by layer / draft ratio / stale ratio / oldest+newest confirmed。\n\n需要 agora-trading + agora-ops token 在 ~/.claude.json 中設定。",
+        description: "#226 — KB 深度統計（補強 kbHealth）。透過 agora-trading MCP 取得指定 project 的條目分布：by domain / by status / by layer / by tag（若上游提供）/ draft ratio / stale ratio。\n\n另外包含 #219 的 brief 長度治理 breakdown：可檢查指定 topicKey 的字數是否超過上限（預設 3000）。\n\n需要 agora-trading + agora-ops token 在 ~/.claude.json 中設定。",
         input_schema: json!({
             "type": "object",
             "properties": {
-                "project": { "type": "string", "description": "project slug：sirin / agora-backend / flutter，預設 sirin" }
+                "project": { "type": "string", "description": "project slug：sirin / agora-backend / flutter，預設 sirin" },
+                "brief_limit": { "type": "integer", "description": "brief 長度上限（預設 3000）" },
+                "brief_topics": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "要檢查字數上限的 topicKey 清單；省略時 sirin 預設檢查 sirin-overview 與 sirin-playbook-lhi-marathon"
+                }
             }
         }),
         // AsyncJson takes `fn(Value) -> Pin<Box<dyn Future<...> + Send + 'static>>`.
@@ -1387,6 +1393,92 @@ fn seed_default(m: &mut RegistryMap) {
             }
         }),
         handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::mcp_server::call_benchmark_llms(args))),
+    });
+
+    m.insert("benchmark_test_override", ToolDef {
+        name:         "benchmark_test_override",
+        description: "#275 — benchmark per-test llm_override latency without running full browser E2E.\n\nProvide test_ids + provider/model; Sirin builds short prompts from each test goal and measures LLM round-trip latency (avg/p95). Useful to compare candidate small models before committing to full run_test_async matrices.",
+        input_schema: json!({
+            "type": "object",
+            "required": ["test_ids", "provider", "model"],
+            "properties": {
+                "test_ids": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "YAML test ids to benchmark against prompt context"
+                },
+                "provider": {
+                    "type": "string",
+                    "description": "lmstudio | gemini | anthropic | ollama"
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Model id at provider"
+                },
+                "base_url": {
+                    "type": "string",
+                    "description": "Optional override base URL"
+                },
+                "api_key": {
+                    "type": "string",
+                    "description": "Optional override API key"
+                },
+                "runs_per_test": {
+                    "type": "integer",
+                    "description": "How many latency samples per test (default 3, clamp 1..5)"
+                }
+            }
+        }),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::mcp_server::call_benchmark_test_override(args))),
+    });
+
+    m.insert("benchmark_test_override_matrix", ToolDef {
+        name:         "benchmark_test_override_matrix",
+        description: "#275 — one-shot matrix benchmark: compare baseline vs candidate llm_override across test_ids.\n\nReturns per-test side-by-side metrics + computed speedup/pass-rate-drop + recommendation (adopt candidate / keep baseline / per-test mix).",
+        input_schema: json!({
+            "type": "object",
+            "required": ["test_ids", "baseline", "candidate"],
+            "properties": {
+                "test_ids": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "YAML test ids to benchmark"
+                },
+                "baseline": {
+                    "type": "object",
+                    "required": ["provider", "model"],
+                    "properties": {
+                        "provider": { "type": "string" },
+                        "model": { "type": "string" },
+                        "base_url": { "type": "string" },
+                        "api_key": { "type": "string" }
+                    }
+                },
+                "candidate": {
+                    "type": "object",
+                    "required": ["provider", "model"],
+                    "properties": {
+                        "provider": { "type": "string" },
+                        "model": { "type": "string" },
+                        "base_url": { "type": "string" },
+                        "api_key": { "type": "string" }
+                    }
+                },
+                "runs_per_test": {
+                    "type": "integer",
+                    "description": "Latency samples per test (default 3, clamp 1..5)"
+                },
+                "min_speedup_pct": {
+                    "type": "integer",
+                    "description": "Adoption threshold for average speedup (default 30)"
+                },
+                "max_pass_rate_drop_pct": {
+                    "type": "integer",
+                    "description": "Reject candidate when worst pass-rate drop exceeds this (default 10)"
+                }
+            }
+        }),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::mcp_server::call_benchmark_test_override_matrix(args))),
     });
 
     // Triage / browser snapshots / regression suite
@@ -1570,6 +1662,8 @@ mod tests {
         assert!(get("skill_list").is_some());
         assert!(get("teams_pending").is_some());
         assert!(get("discovery_status").is_some());
+        assert!(get("benchmark_test_override").is_some());
+        assert!(get("benchmark_test_override_matrix").is_some());
 
         // Un-migrated tools must NOT be in the registry yet.  Only one tool
         // is permanently un-migrated: `browser_exec`.  It's the sole authz

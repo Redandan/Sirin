@@ -73,6 +73,18 @@
         "null"
       ]
     },
+    "llm_override": {
+      "description": "Optional full per-test LLM override (Issue #275).\n\nUse this when you want to benchmark or pin one YAML test to a specific provider/model combo without passing MCP `run_test_async.llm_override` every time.\n\nPrecedence: 1. MCP `run_test_async.llm_override` (highest) 2. YAML `llm_override` (this field) 3. Process-level env config (`LLM_PROVIDER` + provider-specific vars)\n\nNote: `llm_backend: claude_cli` still routes through Claude CLI path and takes precedence over HTTP-provider overrides.",
+      "default": null,
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TestLlmOverride"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "locale": {
       "description": "Locale for LLM prompts and responses.  Supported: \"zh-TW\" (default), \"en\", \"zh-CN\".",
       "default": "zh-TW",
@@ -112,8 +124,8 @@
       ]
     },
     "record_timeline_gif": {
-      "description": "Capture an action-annotated GIF timeline of the run (Issue #78). When `true` (default), every ReAct iteration captures a frame and on failure the frames are encoded into `test_failures/<run_id>/timeline.gif` (the single failure-screenshot path stays for back-compat). Set to `false` to disable for tests where the extra screenshot per step is too expensive (slow Flutter pages).",
-      "default": true,
+      "description": "Capture an action-annotated GIF timeline of the run (Issue #78). When `true`, every ReAct iteration captures a frame and on failure the frames are encoded into `test_failures/<run_id>/timeline.gif` (the single failure-screenshot path stays for back-compat). Default `false` to avoid extra screenshot overhead in normal runs. Set to `true` when debugging flaky failures and you need frame-by-frame playback.",
+      "default": false,
       "type": "boolean"
     },
     "retry_on_parse_error": {
@@ -254,6 +266,40 @@
           ]
         }
       ]
+    },
+    "TestLlmOverride": {
+      "description": "Per-test provider/model override for YAML-authored tests.",
+      "type": "object",
+      "required": [
+        "model",
+        "provider"
+      ],
+      "properties": {
+        "api_key": {
+          "description": "Optional API key (empty/missing uses provider default).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "base_url": {
+          "description": "Optional override base URL (empty/missing uses provider default).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "description": "Model id at the chosen provider.",
+          "type": "string"
+        },
+        "provider": {
+          "description": "`lmstudio` | `gemini` | `anthropic` | `ollama` (case-insensitive).",
+          "type": "string"
+        }
+      }
     },
     "TestViewport": {
       "description": "Viewport configuration for a test.",

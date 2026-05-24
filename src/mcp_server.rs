@@ -717,26 +717,33 @@ fn build_snapshot(svc: &Arc<dyn AppService>) -> Value {
         "estimated_remaining_secs": r.estimated_remaining_secs,
     })).collect();
 
-    let recent_runs: Vec<Value> = svc.recent_test_runs(8).into_iter().map(|r| json!({
-        "test_id":     r.test_id,
-        "status":      r.status,
-        "duration_ms": r.duration_ms,
-        "started_at":  r.started_at,
-        "pass_rate":   r.pass_rate,
-        "failure_category": r.failure_category,
-        // Issue #240: token + cost telemetry surfaced to the dashboard.
-        // null for old rows / replays / runs with no LLM traffic.
-        "prompt_tokens":     r.prompt_tokens,
-        "completion_tokens": r.completion_tokens,
-        "cached_tokens":     r.cached_tokens,
-        "cost_usd":          r.cost_usd,
-        // #279 click-to-expand: surface iter count + replay mode + run_id
-        // so the dashboard row click can fetch step history.
-        "iterations":  r.iterations,
-        "is_replay":   r.is_replay,
-        "run_id":      r.run_id,
-        "analysis":    r.analysis,  // short final_analysis for inline preview
-    })).collect();
+    let mut recent_runs: Vec<Value> = Vec::new();
+    for r in svc.recent_test_runs(8) {
+        let perf_hint = r.run_id.as_deref()
+            .and_then(classify_perf_hint)
+            .and_then(|v| v.get("hint").and_then(|h| h.as_str()).map(|s| s.to_string()));
+        recent_runs.push(json!({
+            "test_id":     r.test_id,
+            "status":      r.status,
+            "duration_ms": r.duration_ms,
+            "started_at":  r.started_at,
+            "pass_rate":   r.pass_rate,
+            "failure_category": r.failure_category,
+            // Issue #240: token + cost telemetry surfaced to the dashboard.
+            // null for old rows / replays / runs with no LLM traffic.
+            "prompt_tokens":     r.prompt_tokens,
+            "completion_tokens": r.completion_tokens,
+            "cached_tokens":     r.cached_tokens,
+            "cost_usd":          r.cost_usd,
+            // #279 click-to-expand: surface iter count + replay mode + run_id
+            // so the dashboard row click can fetch step history.
+            "iterations":  r.iterations,
+            "is_replay":   r.is_replay,
+            "run_id":      r.run_id,
+            "analysis":    r.analysis,  // short final_analysis for inline preview
+            "perf_hint":   perf_hint,
+        }));
+    }
 
     let last_verdict = svc.recent_test_runs(1).into_iter().next().map(|r| json!({
         "test_id":   r.test_id,
@@ -1494,6 +1501,21 @@ pub(crate) fn call_get_test_result(args: Value) -> Result<Value, String> {
         }
     }
 
+    if let Some(usage) = fetch_run_usage_snapshot(run_id) {
+        if let Some(obj) = result.as_object_mut() {
+            obj.insert("prompt_tokens".into(), json!(usage.prompt_tokens));
+            obj.insert("completion_tokens".into(), json!(usage.completion_tokens));
+            obj.insert("cached_tokens".into(), json!(usage.cached_tokens));
+            obj.insert("cost_micro_usd".into(), json!(usage.cost_micro_usd));
+            obj.insert("llm_model".into(), json!(usage.llm_model));
+        }
+    }
+    if let Some(hint) = classify_perf_hint(run_id) {
+        if let Some(obj) = result.as_object_mut() {
+            obj.insert("perf_hint".into(), hint);
+        }
+    }
+
     Ok(result)
 }
 
@@ -1509,8 +1531,14 @@ fn serialise_steps(steps: &[crate::test_runner::executor::TestStep]) -> Vec<Valu
                 let mut clipped = serde_json::Map::new();
                 for (k, v) in map {
                     let s = match v {
-                        Value::String(text) if text.len() > 200 => {
-                            Value::String(format!("{}…(truncated to 200)", &text[..200]))
+                        Value::String(text) => {
+                            let char_len = text.chars().count();
+                            if char_len > 200 {
+                                let clipped: String = text.chars().take(200).collect();
+                                Value::String(format!("{clipped}…(truncated to 200)"))
+                            } else {
+                                Value::String(text.clone())
+                            }
                         }
                         other => other.clone(),
                     };
@@ -1520,9 +1548,10 @@ fn serialise_steps(steps: &[crate::test_runner::executor::TestStep]) -> Vec<Valu
             }
             other => other.clone(),
         };
-        let obs_preview = if step.observation.len() > 1024 {
-            format!("{}…(truncated to 1024 of {} chars; use get_full_observation for full)",
-                &step.observation[..1024], step.observation.len())
+        let obs_chars = step.observation.chars().count();
+        let obs_preview = if obs_chars > 1024 {
+            let clipped: String = step.observation.chars().take(1024).collect();
+            format!("{clipped}…(truncated to 1024 of {obs_chars} chars; use get_full_observation for full)")
         } else {
             step.observation.clone()
         };
@@ -1553,7 +1582,9 @@ fn build_envelope_from_sqlite(run_id: &str, last_n: usize) -> Option<Value> {
     let conn = conn_mutex.lock().unwrap_or_else(|e| e.into_inner());
     let row = conn.query_row(
         "SELECT test_id, started_at, status, duration_ms, COALESCE(iterations,0), \
-         ai_analysis, failure_category, history_json, COALESCE(is_replay,0) \
+         ai_analysis, failure_category, history_json, COALESCE(is_replay,0), \
+         COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), \
+         COALESCE(cached_tokens, 0), COALESCE(cost_micro_usd, 0), llm_model \
          FROM test_runs WHERE run_id = ?1 ORDER BY id DESC LIMIT 1",
         params![run_id],
         |r| Ok((
@@ -1566,10 +1597,16 @@ fn build_envelope_from_sqlite(run_id: &str, last_n: usize) -> Option<Value> {
             r.get::<_, Option<String>>(6)?,   // failure_category
             r.get::<_, Option<String>>(7)?,   // history_json
             r.get::<_, i64>(8)? != 0,         // is_replay
+            r.get::<_, i64>(9).unwrap_or(0).max(0) as u32,   // prompt_tokens
+            r.get::<_, i64>(10).unwrap_or(0).max(0) as u32,  // completion_tokens
+            r.get::<_, i64>(11).unwrap_or(0).max(0) as u32,  // cached_tokens
+            r.get::<_, i64>(12).unwrap_or(0),                // cost_micro_usd
+            r.get::<_, Option<String>>(13).unwrap_or(None),  // llm_model
         )),
     ).ok()?;
     let (test_id, started_at, status, duration_ms, iterations, analysis,
-         failure_category, history_json, is_replay) = row;
+         failure_category, history_json, is_replay, prompt_tokens, completion_tokens,
+         cached_tokens, cost_micro_usd, llm_model) = row;
 
     // Parse history_json → Vec<TestStep>.  Older rows may have a malformed
     // or missing blob; in that case just return an empty steps array — the
@@ -1577,6 +1614,9 @@ fn build_envelope_from_sqlite(run_id: &str, last_n: usize) -> Option<Value> {
     let steps: Vec<crate::test_runner::executor::TestStep> = history_json.as_deref()
         .and_then(|h| serde_json::from_str::<Vec<crate::test_runner::executor::TestStep>>(h).ok())
         .unwrap_or_default();
+    let llm_prompt_bytes_sum: u64 = steps.iter().filter_map(|s| s.llm_prompt_bytes).sum();
+    let llm_response_bytes_sum: u64 = steps.iter().filter_map(|s| s.llm_response_bytes).sum();
+    let llm_steps: u64 = steps.iter().filter(|s| s.llm_latency_ms.is_some()).count() as u64;
     let total_steps = steps.len();
     let trimmed: Vec<_> = steps.into_iter().rev().take(last_n).rev().collect();
     let serialised = serialise_steps(&trimmed);
@@ -1602,6 +1642,14 @@ fn build_envelope_from_sqlite(run_id: &str, last_n: usize) -> Option<Value> {
         "replay_mode":         if is_replay { "script" } else { "llm" },
         "recent_steps_count":  total_steps,
         "recent_steps":        serialised,
+        "llm_steps":           llm_steps,
+        "llm_prompt_bytes_sum": llm_prompt_bytes_sum,
+        "llm_response_bytes_sum": llm_response_bytes_sum,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "cached_tokens": cached_tokens,
+        "cost_micro_usd": cost_micro_usd,
+        "llm_model": llm_model,
         "details": {
             "iterations":   iterations,
             "duration_ms":  duration_ms,
@@ -3630,6 +3678,30 @@ async fn kb_health_via_http(project: &str) -> Result<String, String> {
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) async fn call_kb_stats(args: Value) -> Result<Value, String> {
     let project = args.get("project").and_then(Value::as_str).unwrap_or("sirin").to_string();
+    let brief_limit = args
+        .get("brief_limit")
+        .and_then(Value::as_u64)
+        .unwrap_or(3000) as usize;
+    let brief_topics: Vec<String> = args
+        .get("brief_topics")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_else(|| {
+            if project == "sirin" {
+                vec![
+                    "sirin-overview".to_string(),
+                    "sirin-playbook-lhi-marathon".to_string(),
+                ]
+            } else {
+                Vec::new()
+            }
+        });
 
     // Get health text and parse the structured sections.
     let health_raw = kb_health_via_http(&project).await
@@ -3639,6 +3711,7 @@ pub(crate) async fn call_kb_stats(args: Value) -> Result<Value, String> {
     let mut by_status: std::collections::HashMap<String, u64> = Default::default();
     let mut by_layer:  std::collections::HashMap<String, u64> = Default::default();
     let mut by_domain: std::collections::HashMap<String, u64> = Default::default();
+    let mut by_tag:    std::collections::HashMap<String, u64> = Default::default();
     let mut total = 0u64;
     let mut section = "";
     for line in health_raw.lines() {
@@ -3648,6 +3721,7 @@ pub(crate) async fn call_kb_stats(args: Value) -> Result<Value, String> {
         } else if t == "by status:" { section = "status"; }
         else if t == "by layer:"  { section = "layer"; }
         else if t == "by domain:" { section = "domain"; }
+        else if t == "by tag:"    { section = "tag"; }
         else if !t.is_empty() && !section.is_empty() {
             let parts: Vec<&str> = t.split_whitespace().collect();
             if parts.len() >= 2 {
@@ -3657,6 +3731,7 @@ pub(crate) async fn call_kb_stats(args: Value) -> Result<Value, String> {
                     "status" => { by_status.insert(key, val); }
                     "layer"  => { by_layer.insert(key, val); }
                     "domain" => { by_domain.insert(key, val); }
+                    "tag"    => { by_tag.insert(key, val); }
                     _ => {}
                 }
             }
@@ -3669,19 +3744,157 @@ pub(crate) async fn call_kb_stats(args: Value) -> Result<Value, String> {
     let stale_pct  = if total > 0 { stale * 100 / total } else { 0 };
     let draft_pct  = if total > 0 { draft * 100 / total } else { 0 };
 
+    // #219 backlog item 8 — brief-layer length governance.
+    // Probe known topicKeys and surface over-limit items as a structured breakdown.
+    let mut brief_entries: Vec<Value> = Vec::new();
+    let mut brief_violation_count = 0usize;
+    for topic in &brief_topics {
+        match kb_get_via_http(topic, &project).await {
+            Ok(content) => {
+                let chars = content.chars().count();
+                let over_by = chars.saturating_sub(brief_limit);
+                if over_by > 0 {
+                    brief_violation_count += 1;
+                }
+                brief_entries.push(json!({
+                    "topic_key": topic,
+                    "chars": chars,
+                    "limit": brief_limit,
+                    "over_by": over_by,
+                    "ok": over_by == 0
+                }));
+            }
+            Err(e) => {
+                brief_entries.push(json!({
+                    "topic_key": topic,
+                    "error": e,
+                    "limit": brief_limit,
+                    "ok": false
+                }));
+            }
+        }
+    }
+
+    let mut health_flags: Vec<String> = Vec::new();
+    if stale_pct > 10 {
+        health_flags.push("stale_over_10pct".to_string());
+    }
+    if draft_pct > 5 {
+        health_flags.push("draft_over_5pct".to_string());
+    }
+    if brief_violation_count > 0 {
+        health_flags.push("brief_length_violations".to_string());
+    }
+    let health_flag = if health_flags.is_empty() {
+        "✅ healthy"
+    } else {
+        "⚠️ attention_needed"
+    };
+
     Ok(json!({
         "project":    project,
         "total":      total,
         "by_status":  by_status,
         "by_layer":   by_layer,
         "by_domain":  by_domain,
+        "by_tag":     by_tag,
         "ratios": {
             "stale_pct":     stale_pct,
             "draft_pct":     draft_pct,
             "confirmed_pct": if total > 0 { confirmed * 100 / total } else { 0 },
         },
-        "health_flag": if stale_pct > 10 { "⚠️ stale > 10%" } else { "✅ healthy" },
+        "breakdown": {
+            "brief_length": {
+                "limit": brief_limit,
+                "topics_checked": brief_topics.len(),
+                "violations": brief_violation_count,
+                "entries": brief_entries
+            }
+        },
+        "health_flag": health_flag,
+        "health_flags": health_flags,
         "raw_health":  health_raw,
+    }))
+}
+
+#[derive(Debug, Clone)]
+struct RunUsageSnapshot {
+    prompt_tokens: u32,
+    completion_tokens: u32,
+    cached_tokens: u32,
+    cost_micro_usd: i64,
+    llm_model: Option<String>,
+}
+
+fn fetch_run_usage_snapshot(run_id: &str) -> Option<RunUsageSnapshot> {
+    use rusqlite::params;
+    let conn_mutex = crate::test_runner::store::__shared_db();
+    let conn = conn_mutex.lock().unwrap_or_else(|e| e.into_inner());
+    conn.query_row(
+        "SELECT COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), \
+                COALESCE(cached_tokens, 0), COALESCE(cost_micro_usd, 0), llm_model \
+         FROM test_runs WHERE run_id = ?1 ORDER BY id DESC LIMIT 1",
+        params![run_id],
+        |row| {
+            Ok(RunUsageSnapshot {
+                prompt_tokens: row.get::<_, i64>(0).unwrap_or(0).max(0) as u32,
+                completion_tokens: row.get::<_, i64>(1).unwrap_or(0).max(0) as u32,
+                cached_tokens: row.get::<_, i64>(2).unwrap_or(0).max(0) as u32,
+                cost_micro_usd: row.get::<_, i64>(3).unwrap_or(0),
+                llm_model: row.get::<_, Option<String>>(4).unwrap_or(None),
+            })
+        },
+    ).ok()
+}
+
+fn classify_perf_hint(run_id: &str) -> Option<Value> {
+    let rec = crate::test_runner::store::find_run_perf_by_run_id(run_id)?;
+    let steps: Vec<crate::test_runner::executor::TestStep> = rec
+        .history_json
+        .as_deref()
+        .and_then(|h| serde_json::from_str(h).ok())
+        .unwrap_or_default();
+
+    let llm_steps = steps.iter().filter(|s| s.llm_latency_ms.is_some()).count() as u64;
+    let avg_llm_latency_ms = if llm_steps > 0 {
+        let sum: u64 = steps.iter().filter_map(|s| s.llm_latency_ms).sum();
+        sum / llm_steps
+    } else {
+        0
+    };
+    let mut repeated_action_pairs = 0u64;
+    for w in steps.windows(2) {
+        let a0 = w[0].action.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        let a1 = w[1].action.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        if !a0.is_empty() && a0 == a1 {
+            repeated_action_pairs += 1;
+        }
+    }
+
+    let duration_ms = rec.duration_ms.unwrap_or(0).max(0) as u64;
+    let hint = if llm_steps == 0 && duration_ms < 45_000 {
+        "healthy_fast_path"
+    } else if avg_llm_latency_ms >= 15_000 {
+        "llm_latency_tail"
+    } else if repeated_action_pairs >= 4 {
+        "action_loop_or_ui_drift"
+    } else if duration_ms >= 180_000 {
+        "long_tail_needs_trace_review"
+    } else {
+        "normal_range"
+    };
+
+    Some(json!({
+        "hint": hint,
+        "duration_ms": duration_ms,
+        "llm_steps": llm_steps,
+        "avg_llm_latency_ms": avg_llm_latency_ms,
+        "repeated_action_pairs": repeated_action_pairs,
+        "prompt_tokens": rec.prompt_tokens,
+        "completion_tokens": rec.completion_tokens,
+        "cached_tokens": rec.cached_tokens,
+        "llm_model": rec.llm_model,
+        "status": rec.status,
     }))
 }
 
@@ -3952,6 +4165,274 @@ pub(crate) async fn call_benchmark_llms(args: Value) -> Result<Value, String> {
         "prompt_preview": prompt.chars().take(80).collect::<String>(),
         "backends_tested": results.len(),
         "results":         results,
+    }))
+}
+
+/// #275 — per-test llm_override benchmark without full browser execution.
+///
+/// This benchmarks pure LLM latency for prompts derived from selected test
+/// goals, so model suitability can be compared quickly before committing to
+/// full end-to-end runs.
+///
+/// Args:
+/// - `test_ids`: string[] (required)
+/// - `provider`: lmstudio|gemini|anthropic|ollama (required)
+/// - `model`: model id at provider (required)
+/// - `base_url`: optional override URL
+/// - `api_key`: optional override key
+/// - `runs_per_test`: optional integer (default 3, clamp 1..5)
+pub(crate) async fn call_benchmark_test_override(args: Value) -> Result<Value, String> {
+    let test_ids: Vec<String> = args.get("test_ids")
+        .and_then(Value::as_array)
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .ok_or("Missing test_ids (array of strings)")?;
+    if test_ids.is_empty() {
+        return Err("test_ids is empty".into());
+    }
+    let provider = args.get("provider").and_then(Value::as_str)
+        .ok_or("Missing provider")?;
+    let model = args.get("model").and_then(Value::as_str)
+        .ok_or("Missing model")?;
+    let base_url = args.get("base_url").and_then(Value::as_str).map(String::from);
+    let api_key = args.get("api_key").and_then(Value::as_str).map(String::from);
+    let runs_per_test = args.get("runs_per_test").and_then(Value::as_u64).unwrap_or(3)
+        .clamp(1, 5) as usize;
+
+    let override_cfg = crate::llm::LlmOverride {
+        provider: provider.to_string(),
+        model: model.to_string(),
+        base_url,
+        api_key,
+    };
+    let cfg = crate::llm::LlmConfig::from_override(&override_cfg)
+        .map_err(|e| format!("invalid llm override: {e}"))?;
+    let http = crate::llm::shared_http();
+
+    let mut per_test = Vec::new();
+    for tid in &test_ids {
+        let goal = crate::test_runner::parser::find(tid)
+            .ok_or_else(|| format!("Test '{tid}' not found"))?;
+        let goal_preview: String = goal.goal.chars().take(450).collect();
+        let mut elapsed_ms: Vec<u128> = Vec::new();
+        let mut failures: Vec<String> = Vec::new();
+
+        for i in 0..runs_per_test {
+            let prompt = format!(
+                "You are benchmarking test-runner planning latency. \
+                 Read the goal snippet and reply with exactly: BENCH_OK\n\
+                 test_id={tid}\nrun={}\n\nGoal:\n{}",
+                i + 1,
+                goal_preview
+            );
+            let started = std::time::Instant::now();
+            match crate::llm::call_prompt(http.as_ref(), &cfg, prompt).await {
+                Ok(_) => elapsed_ms.push(started.elapsed().as_millis()),
+                Err(e) => failures.push(e.to_string()),
+            }
+        }
+
+        let ok = elapsed_ms.len();
+        let avg_ms = if ok > 0 {
+            (elapsed_ms.iter().sum::<u128>() / ok as u128) as u64
+        } else {
+            0
+        };
+        elapsed_ms.sort_unstable();
+        let p95_ms = if ok > 0 {
+            let idx = ((ok as f64 * 0.95).ceil() as usize).saturating_sub(1).min(ok - 1);
+            elapsed_ms[idx] as u64
+        } else {
+            0
+        };
+
+        per_test.push(json!({
+            "test_id": tid,
+            "runs_requested": runs_per_test,
+            "runs_ok": ok,
+            "runs_failed": failures.len(),
+            "avg_ms": avg_ms,
+            "p95_ms": p95_ms,
+            "errors": failures.into_iter().take(3).collect::<Vec<_>>(),
+        }));
+    }
+
+    Ok(json!({
+        "provider": provider,
+        "model": model,
+        "runs_per_test": runs_per_test,
+        "tests": per_test,
+    }))
+}
+
+async fn benchmark_override_for_tests(
+    test_ids: &[String],
+    cfg: &crate::llm::LlmConfig,
+    runs_per_test: usize,
+) -> Result<Vec<Value>, String> {
+    let http = crate::llm::shared_http();
+    let mut per_test = Vec::new();
+    for tid in test_ids {
+        let goal = crate::test_runner::parser::find(tid)
+            .ok_or_else(|| format!("Test '{tid}' not found"))?;
+        let goal_preview: String = goal.goal.chars().take(450).collect();
+        let mut elapsed_ms: Vec<u128> = Vec::new();
+        let mut failures: Vec<String> = Vec::new();
+
+        for i in 0..runs_per_test {
+            let prompt = format!(
+                "You are benchmarking test-runner planning latency. \
+                 Read the goal snippet and reply with exactly: BENCH_OK\n\
+                 test_id={tid}\nrun={}\n\nGoal:\n{}",
+                i + 1,
+                goal_preview
+            );
+            let started = std::time::Instant::now();
+            match crate::llm::call_prompt(http.as_ref(), cfg, prompt).await {
+                Ok(_) => elapsed_ms.push(started.elapsed().as_millis()),
+                Err(e) => failures.push(e.to_string()),
+            }
+        }
+
+        let ok = elapsed_ms.len();
+        let avg_ms = if ok > 0 {
+            (elapsed_ms.iter().sum::<u128>() / ok as u128) as u64
+        } else {
+            0
+        };
+        elapsed_ms.sort_unstable();
+        let p95_ms = if ok > 0 {
+            let idx = ((ok as f64 * 0.95).ceil() as usize).saturating_sub(1).min(ok - 1);
+            elapsed_ms[idx] as u64
+        } else {
+            0
+        };
+
+        per_test.push(json!({
+            "test_id": tid,
+            "runs_requested": runs_per_test,
+            "runs_ok": ok,
+            "runs_failed": failures.len(),
+            "avg_ms": avg_ms,
+            "p95_ms": p95_ms,
+            "errors": failures.into_iter().take(3).collect::<Vec<_>>(),
+        }));
+    }
+    Ok(per_test)
+}
+
+/// #275 — one-shot benchmark matrix: baseline vs candidate per-test override.
+///
+/// Returns side-by-side metrics + computed speedup and a simple recommendation.
+pub(crate) async fn call_benchmark_test_override_matrix(args: Value) -> Result<Value, String> {
+    let test_ids: Vec<String> = args.get("test_ids")
+        .and_then(Value::as_array)
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .ok_or("Missing test_ids (array of strings)")?;
+    if test_ids.is_empty() {
+        return Err("test_ids is empty".into());
+    }
+    let runs_per_test = args.get("runs_per_test").and_then(Value::as_u64).unwrap_or(3)
+        .clamp(1, 5) as usize;
+    let min_speedup_pct = args.get("min_speedup_pct").and_then(Value::as_u64).unwrap_or(30) as u64;
+    let max_pass_rate_drop_pct = args
+        .get("max_pass_rate_drop_pct")
+        .and_then(Value::as_u64)
+        .unwrap_or(10) as u64;
+
+    let parse_override = |root: &Value, key: &str| -> Result<crate::llm::LlmOverride, String> {
+        let obj = root.get(key).and_then(Value::as_object)
+            .ok_or_else(|| format!("Missing {key} object"))?;
+        let provider = obj.get("provider").and_then(Value::as_str)
+            .ok_or_else(|| format!("Missing {key}.provider"))?;
+        let model = obj.get("model").and_then(Value::as_str)
+            .ok_or_else(|| format!("Missing {key}.model"))?;
+        let base_url = obj.get("base_url").and_then(Value::as_str).map(String::from);
+        let api_key = obj.get("api_key").and_then(Value::as_str).map(String::from);
+        Ok(crate::llm::LlmOverride {
+            provider: provider.to_string(),
+            model: model.to_string(),
+            base_url,
+            api_key,
+        })
+    };
+
+    let base_ov = parse_override(&args, "baseline")?;
+    let cand_ov = parse_override(&args, "candidate")?;
+    let base_cfg = crate::llm::LlmConfig::from_override(&base_ov)
+        .map_err(|e| format!("invalid baseline override: {e}"))?;
+    let cand_cfg = crate::llm::LlmConfig::from_override(&cand_ov)
+        .map_err(|e| format!("invalid candidate override: {e}"))?;
+
+    let base = benchmark_override_for_tests(&test_ids, &base_cfg, runs_per_test).await?;
+    let cand = benchmark_override_for_tests(&test_ids, &cand_cfg, runs_per_test).await?;
+
+    let mut merged = Vec::new();
+    let mut speedup_sum = 0f64;
+    let mut speedup_count = 0usize;
+    let mut pass_drop_worst_pct = 0u64;
+    for tid in &test_ids {
+        let b = base.iter().find(|v| v["test_id"].as_str() == Some(tid.as_str()));
+        let c = cand.iter().find(|v| v["test_id"].as_str() == Some(tid.as_str()));
+        let (Some(b), Some(c)) = (b, c) else { continue };
+        let b_avg = b["avg_ms"].as_u64().unwrap_or(0);
+        let c_avg = c["avg_ms"].as_u64().unwrap_or(0);
+        let b_ok = b["runs_ok"].as_u64().unwrap_or(0);
+        let c_ok = c["runs_ok"].as_u64().unwrap_or(0);
+        let b_req = b["runs_requested"].as_u64().unwrap_or(1).max(1);
+        let c_req = c["runs_requested"].as_u64().unwrap_or(1).max(1);
+        let b_pass_pct = b_ok * 100 / b_req;
+        let c_pass_pct = c_ok * 100 / c_req;
+        let pass_drop = b_pass_pct.saturating_sub(c_pass_pct);
+        if pass_drop > pass_drop_worst_pct {
+            pass_drop_worst_pct = pass_drop;
+        }
+        let speedup_pct = if b_avg > 0 && c_avg > 0 && c_avg <= b_avg {
+            (b_avg - c_avg) * 100 / b_avg
+        } else {
+            0
+        };
+        if b_avg > 0 && c_avg > 0 {
+            speedup_sum += (b_avg as f64 - c_avg as f64) * 100.0 / b_avg as f64;
+            speedup_count += 1;
+        }
+        merged.push(json!({
+            "test_id": tid,
+            "baseline": b,
+            "candidate": c,
+            "speedup_pct": speedup_pct,
+            "baseline_pass_pct": b_pass_pct,
+            "candidate_pass_pct": c_pass_pct,
+            "pass_rate_drop_pct": pass_drop
+        }));
+    }
+
+    let avg_speedup_pct = if speedup_count > 0 {
+        (speedup_sum / speedup_count as f64).round() as u64
+    } else {
+        0
+    };
+    let recommendation = if avg_speedup_pct >= min_speedup_pct && pass_drop_worst_pct <= max_pass_rate_drop_pct {
+        "adopt_candidate_for_routine_tests"
+    } else if pass_drop_worst_pct > max_pass_rate_drop_pct {
+        "keep_baseline_candidate_hurts_pass_rate"
+    } else {
+        "mixed_result_try_per_test_override"
+    };
+
+    Ok(json!({
+        "runs_per_test": runs_per_test,
+        "thresholds": {
+            "min_speedup_pct": min_speedup_pct,
+            "max_pass_rate_drop_pct": max_pass_rate_drop_pct
+        },
+        "baseline": { "provider": base_ov.provider, "model": base_ov.model },
+        "candidate": { "provider": cand_ov.provider, "model": cand_ov.model },
+        "summary": {
+            "avg_speedup_pct": avg_speedup_pct,
+            "worst_pass_rate_drop_pct": pass_drop_worst_pct,
+            "recommendation": recommendation
+        },
+        "tests": merged
     }))
 }
 
@@ -5785,9 +6266,15 @@ pub(crate) fn call_get_run_trace(args: Value) -> Result<Value, String> {
 
     let mut total_latency: u64 = 0;
     let mut latency_samples: u64 = 0;
+    let mut llm_prompt_bytes_sum: u64 = 0;
+    let mut llm_response_bytes_sum: u64 = 0;
+    let mut llm_steps: u64 = 0;
     let mut all_kb_hits: std::collections::BTreeSet<String> = Default::default();
     let steps: Vec<Value> = history.iter().enumerate().map(|(i, s)| {
         if let Some(ms) = s.llm_latency_ms { total_latency += ms; latency_samples += 1; }
+        if let Some(b) = s.llm_prompt_bytes { llm_prompt_bytes_sum += b; }
+        if let Some(b) = s.llm_response_bytes { llm_response_bytes_sum += b; }
+        if s.llm_latency_ms.is_some() { llm_steps += 1; }
         for k in &s.kb_hits { all_kb_hits.insert(k.clone()); }
         let action_short = s.action.get("action").cloned()
             .unwrap_or_else(|| s.action.clone());
@@ -5805,6 +6292,7 @@ pub(crate) fn call_get_run_trace(args: Value) -> Result<Value, String> {
     }).collect();
 
     let avg = if latency_samples > 0 { total_latency / latency_samples } else { 0 };
+    let usage = fetch_run_usage_snapshot(run_id);
     Ok(json!({
         "run_id": run_id,
         "test_id": test_id,
@@ -5814,6 +6302,14 @@ pub(crate) fn call_get_run_trace(args: Value) -> Result<Value, String> {
             "total_steps": history.len(),
             "kb_hits": all_kb_hits.into_iter().collect::<Vec<_>>(),
             "avg_latency_ms": avg,
+            "llm_steps": llm_steps,
+            "llm_prompt_bytes_sum": llm_prompt_bytes_sum,
+            "llm_response_bytes_sum": llm_response_bytes_sum,
+            "prompt_tokens": usage.as_ref().map(|u| u.prompt_tokens).unwrap_or(0),
+            "completion_tokens": usage.as_ref().map(|u| u.completion_tokens).unwrap_or(0),
+            "cached_tokens": usage.as_ref().map(|u| u.cached_tokens).unwrap_or(0),
+            "cost_micro_usd": usage.as_ref().map(|u| u.cost_micro_usd).unwrap_or(0),
+            "llm_model": usage.and_then(|u| u.llm_model),
         },
         "steps": steps,
     }))

@@ -487,7 +487,7 @@ pub struct DisputeInfo {
 /// Truncate observation text past this many chars in LLM history.
 /// Default: 800 chars for normal tests.
 /// Vision-heavy tests (with frequent screenshots) use more aggressive 500 chars to save tokens.
-const OBS_TRUNCATE_CHARS: usize = 800;
+const OBS_TRUNCATE_CHARS: usize = 500;
 const OBS_TRUNCATE_CHARS_VISION_HEAVY: usize = 500;
 
 /// Merge a `session_id` field into a browser action's JSON args (no-op if
@@ -1789,7 +1789,7 @@ fn truncate_with_hint(full: &str, step_idx: usize) -> String {
 
 // ── Prompt building ──────────────────────────────────────────────────────────
 
-/// Full prompt — all history with adaptive observation truncation.
+/// Default prompt — rolling window (last 8 steps) with adaptive observation truncation.
 /// - Default: 500-char observations for balanced token usage
 /// - Vision-heavy tests: use OBS_TRUNCATE_CHARS_VISION_HEAVY (500 chars) for aggressive savings
 /// Used by Gemini / main LLM backend.
@@ -1809,7 +1809,7 @@ fn build_prompt(test: &TestGoal, history: &[TestStep], parse_error_hint: Option<
     } else {
         500
     };
-    build_prompt_with_limits(test, history, parse_error_hint, usize::MAX, obs_limit)
+    build_prompt_with_limits(test, history, parse_error_hint, 8, obs_limit)
 }
 
 /// Vision-mode prompt: the screenshot is the primary observation, so we
@@ -1961,7 +1961,7 @@ fn build_prompt_with_limits(
                 s.action.get("action").and_then(|v| v.as_str()) == Some("screenshot_analyze")
             })
             .map(|(i, s)| {
-                let obs = truncate(&s.observation, 400);
+                let obs = truncate(&s.observation, 240);
                 format!("[Step {} – screenshot_analyze] {obs}", i + 1)
             })
             .collect()
@@ -2399,7 +2399,7 @@ async fn call_test_llm(
             })
         }
         _ => {
-            // Auto-switch to a compact rolling-window prompt after 8 steps.
+            // Auto-switch to a compact rolling-window prompt after 6 steps.
             // Gemini Flash 2.0 (and similar models) start producing invalid JSON
             // at ~15K tokens (≈ iteration 13+ with full observations).
             // Compact mode cuts the prompt to last N steps × 300-char obs,
@@ -2416,14 +2416,14 @@ async fn call_test_llm(
             // forget what it had already tried, leading to redundant actions and
             // 2.4× total prompt token usage (42K → 100K) → timeouts.  The wider
             // window IS the right default for local LM Studio + Gemma 4 too.
-            let prompt = if history.len() >= 8 {
+            let prompt = if history.len() >= 6 {
                 tracing::debug!(
                     "[test_runner] {} iter {}: switching to compact prompt (history={})",
                     test.id,
                     history.len(),
                     history.len(),
                 );
-                build_prompt_with_limits(test, history, parse_error_hint, 10, 300)
+                build_prompt_with_limits(test, history, parse_error_hint, 8, 240)
             } else {
                 build_prompt(test, history, parse_error_hint)
             };

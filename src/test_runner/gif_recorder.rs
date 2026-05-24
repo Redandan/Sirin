@@ -11,8 +11,8 @@
 //!   frame is evicted when the buffer fills.
 //! - **Soft-fail**: encode errors are logged at warn-level, never bubble up
 //!   into the triage path.
-//! - **Opt-in via `TestGoal.record_timeline_gif`** (default `true`); set to
-//!   `false` to skip per-step capture entirely.
+//! - **Opt-in via `TestGoal.record_timeline_gif`** (default `false`); set to
+//!   `true` to enable per-step capture when debugging.
 //!
 //! Single-frame failure screenshot (the legacy `screenshot_path` field of
 //! `TestResult`) is preserved unchanged for back-compat.
