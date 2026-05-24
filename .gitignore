@@ -25,6 +25,17 @@ build/
 # ── Runtime / verification dirs ───────────────────────────────────────────────
 .sirin-verify/
 .claude/scheduled_tasks.lock
+.codex/
+
+# ── Local one-off verification artifacts ─────────────────────────────────────
+/_*.json
+/_*.png
+/_*.html
+/_*.log
+/_*.txt
+/__sirin_test_*.txt
+/.last_*
+/.batch_runs.txt
 
 # ── Node / Next.js ────────────────────────────────────────────────────────────
 node_modules/
