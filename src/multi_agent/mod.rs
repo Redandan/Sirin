@@ -93,6 +93,18 @@ impl AgentTeam {
         self.tester.dry_run   = dry_run;
     }
 
+    /// Per-task Cargo target dir hint. Empty string clears the hint.
+    pub fn set_cargo_target_dir(&mut self, target_dir: &str) {
+        let v = if target_dir.trim().is_empty() {
+            None
+        } else {
+            Some(target_dir.to_string())
+        };
+        self.pm.cargo_target_dir = v.clone();
+        self.engineer.cargo_target_dir = v.clone();
+        self.tester.cargo_target_dir = v;
+    }
+
     /// PM 分配任務 → 工程師執行 → PM review → (不通過則迭代修改)。
     ///
     /// 最多執行 `MAX_ITER` 輪 Engineer → PM review 循環。

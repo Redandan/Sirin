@@ -18,8 +18,8 @@
 //! - 每個 worker 有自己的 `AgentTeam`（PM/Engineer/Tester），session 檔分別存
 //!   在 `data/multi_agent/w{N}_{role}.json`（worker 0 走原 path，向後相容）。
 //! - `queue::take_next_queued()` 是原子操作，不會兩個 worker 搶到同個 task。
-//! - 三個 worker **共用同一 cwd**（Sirin repo），改不同檔通常 OK；改同檔會
-//!   git-stage 衝突。徹底解決靠 T2-4 worktree 隔離。
+//! - 每個任務在獨立 git worktree 執行（T2-4），避免多 worker 互踩 working tree。
+//! - 失敗任務保留 worktree 供人工排查；成功任務會 merge + cleanup。
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -117,6 +117,15 @@ fn run_loop(default_cwd: String, worker_id: usize) {
                     });
                 team.engineer.cwd = worktree_path.clone();
                 team.tester.cwd   = worktree_path.clone();
+                if worktree_path != project_cwd {
+                    let target_dir = std::path::PathBuf::from(&worktree_path)
+                        .join(format!("target-task-{}", task.id))
+                        .to_string_lossy()
+                        .to_string();
+                    team.set_cargo_target_dir(&target_dir);
+                } else {
+                    team.set_cargo_target_dir("");
+                }
 
                 // Capture issue_url before assign_task — task may be moved/cloned.
                 let issue_url = task.project.as_ref()
@@ -169,6 +178,20 @@ fn run_loop(default_cwd: String, worker_id: usize) {
                                 post_issue_comment(&task.id, url, &review, true);
                             }
                         }
+
+                        // T2-4: merge task branch back to the project branch on success.
+                        if worktree_path != project_cwd {
+                            if let Err(e) = super::worktree::merge_task_branch(&project_cwd, &task.id) {
+                                tracing::warn!(target: "sirin",
+                                    "[team-worker:w{worker_id}] T2-4 merge failed for task {}: {e}",
+                                    task.id);
+                            }
+                            if let Err(e) = super::worktree::cleanup_worktree(&project_cwd, &task.id) {
+                                tracing::warn!(target: "sirin",
+                                    "[team-worker:w{worker_id}] T2-4 worktree cleanup failed \
+                                     for task {}: {e}", task.id);
+                            }
+                        }
                     }
                     Err(e) => {
                         tracing::warn!(target: "sirin",
@@ -202,18 +225,12 @@ fn run_loop(default_cwd: String, worker_id: usize) {
                             tracing::warn!(target: "sirin",
                                 "[team-worker] Task {} failed after retry", task.id);
                         }
-                    }
-                }
-
-                // T2-4: Clean up the isolated worktree after task completion.
-                // Non-fatal: a cleanup failure is logged but does not stop the worker.
-                // The next create_worktree() call for the same task_id will remove any
-                // leftover directory automatically (see worktree::create_worktree).
-                if worktree_path != project_cwd {
-                    if let Err(e) = super::worktree::cleanup_worktree(&project_cwd, &task.id) {
-                        tracing::warn!(target: "sirin",
-                            "[team-worker:w{worker_id}] T2-4 worktree cleanup failed \
-                             for task {}: {e}", task.id);
+                        // Failure path: keep worktree for debugging.
+                        if worktree_path != project_cwd {
+                            tracing::warn!(target: "sirin",
+                                "[team-worker:w{worker_id}] Keeping failed task worktree for \
+                                 debugging: task={} path={}", task.id, worktree_path);
+                        }
                     }
                 }
 
@@ -226,6 +243,7 @@ fn run_loop(default_cwd: String, worker_id: usize) {
                 // permissions or guardrails.
                 team.set_extra_tools(&[]);
                 team.set_dry_run(false);
+                team.set_cargo_target_dir("");
 
                 // Engineer context window 保護：超過 40 輪就開新 session
                 // (raised from 20 → 40 because T1-4 keeps context within a task,

@@ -35,6 +35,11 @@ struct SessionFile {
 pub struct PersistentSession {
     pub role:          String,
     pub cwd:           String,
+    /// Optional per-task Cargo target dir hint.
+    /// Worker sets this when running inside an isolated worktree so
+    /// concurrent cargo invocations avoid lock contention on a shared
+    /// `target/` directory.
+    pub cargo_target_dir: Option<String>,
     pub system_prompt: String,
     pub worker_id:     usize,    // T1-1: per-worker session isolation
     /// Project key — namespaces session files when running cross-repo tasks.
@@ -90,6 +95,7 @@ impl PersistentSession {
         Self {
             role:          role.to_string(),
             cwd:           cwd.to_string(),
+            cargo_target_dir: None,
             system_prompt: system_prompt.to_string(),
             worker_id,
             project_key:   project_key.to_string(),
@@ -118,6 +124,11 @@ impl PersistentSession {
         // which directory each past task ran in — useful temporal context.
         let body = if !self.cwd.is_empty() {
             format!("[工作目錄: {}]\n\n{}", self.cwd, body)
+        } else {
+            body
+        };
+        let body = if let Some(dir) = &self.cargo_target_dir {
+            format!("[CARGO_TARGET_DIR: {dir}]\n\n{body}")
         } else {
             body
         };
