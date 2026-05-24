@@ -5,11 +5,12 @@
 //! and stores a Codex-readable inbox item.  It does not read or mutate
 //! AgoraMarketAPI trading state.
 
-use std::collections::{HashSet, hash_map::DefaultHasher};
+use std::collections::{HashMap, HashSet, hash_map::DefaultHasher};
 use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -22,6 +23,7 @@ const DEFAULT_TOPIC: &str = "AgoraMarketAPI automated trading crypto news";
 const DEFAULT_FOCUS: &str = "events that may affect automated trading volatility, liquidity, exchange risk, stablecoin risk, regulation, or macro risk";
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
      (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+const MONITOR_CONFIG_FILE: &str = "research_sentinel_monitors.yaml";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchGoal {
@@ -64,6 +66,49 @@ pub struct ResearchSentinelConfig {
     pub default_keywords: Vec<String>,
     #[serde(default = "default_config_sources")]
     pub sources: Vec<ResearchSource>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchMonitorConfig {
+    pub id: String,
+    #[serde(default)]
+    pub enabled: bool,
+    pub topic: String,
+    pub focus: String,
+    #[serde(default)]
+    pub keywords: Vec<String>,
+    #[serde(default = "default_monitor_interval_minutes")]
+    pub interval_minutes: u64,
+    #[serde(default = "default_monitor_lookback_hours")]
+    pub lookback_hours: u64,
+    #[serde(default = "default_monitor_max_results")]
+    pub max_results: usize,
+    #[serde(default)]
+    pub publish_to_kb: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchMonitorFile {
+    #[serde(default)]
+    pub monitors: Vec<ResearchMonitorConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchMonitorStatus {
+    pub id: String,
+    pub enabled: bool,
+    pub interval_minutes: u64,
+    pub last_run_at: Option<String>,
+    pub next_run_at: Option<String>,
+    pub last_inbox_id: Option<String>,
+    pub last_report_path: Option<String>,
+    pub last_summary: Option<String>,
+    pub last_error: Option<String>,
+    pub event_count: usize,
+    pub review_count: usize,
+    pub new_event_count: usize,
+    pub escalated_event_count: usize,
+    pub kb_publish_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -187,6 +232,11 @@ fn state_log() -> &'static JsonlLog<ResearchEventState> {
     LOG.get_or_init(|| JsonlLog::new(tracking_path("research_sentinel_state.jsonl")))
 }
 
+fn monitor_statuses() -> &'static Mutex<Vec<ResearchMonitorStatus>> {
+    static STATUSES: OnceLock<Mutex<Vec<ResearchMonitorStatus>>> = OnceLock::new();
+    STATUSES.get_or_init(|| Mutex::new(Vec::new()))
+}
+
 fn report_dir() -> PathBuf {
     crate::platform::app_data_dir().join("tracking").join("reports").join("research_sentinel")
 }
@@ -209,6 +259,18 @@ fn default_official_only() -> bool {
 
 fn default_source_groups() -> Vec<String> {
     vec!["official".into(), "investment_data".into()]
+}
+
+fn default_monitor_interval_minutes() -> u64 {
+    60
+}
+
+fn default_monitor_lookback_hours() -> u64 {
+    72
+}
+
+fn default_monitor_max_results() -> usize {
+    12
 }
 
 fn default_config_sources() -> Vec<ResearchSource> {
@@ -283,6 +345,22 @@ fn default_config() -> ResearchSentinelConfig {
     }
 }
 
+fn default_monitor_file() -> ResearchMonitorFile {
+    ResearchMonitorFile {
+        monitors: vec![ResearchMonitorConfig {
+            id: "agoramarketapi-official-investment".into(),
+            enabled: false,
+            topic: "AgoraMarketAPI auto trading official investment monitor".into(),
+            focus: "official announcements and investment market data that may affect automated trading guardrails: volatility, liquidity, exchange operations, stablecoin risk, ETF flow, regulation, SEC CFTC Federal Reserve macro calendar".into(),
+            keywords: default_keywords(),
+            interval_minutes: default_monitor_interval_minutes(),
+            lookback_hours: default_monitor_lookback_hours(),
+            max_results: default_monitor_max_results(),
+            publish_to_kb: false,
+        }],
+    }
+}
+
 fn config_candidates() -> Vec<PathBuf> {
     vec![
         crate::platform::config_path("research_sentinel.yaml"),
@@ -299,6 +377,24 @@ fn load_config() -> ResearchSentinelConfig {
         }
     }
     default_config()
+}
+
+fn monitor_config_candidates() -> Vec<PathBuf> {
+    vec![
+        crate::platform::config_path(MONITOR_CONFIG_FILE),
+        PathBuf::from("config").join(MONITOR_CONFIG_FILE),
+    ]
+}
+
+fn load_monitor_file() -> ResearchMonitorFile {
+    for path in monitor_config_candidates() {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            if let Ok(cfg) = serde_yaml::from_str::<ResearchMonitorFile>(&text) {
+                return cfg;
+            }
+        }
+    }
+    default_monitor_file()
 }
 
 fn hash_id(prefix: &str, value: &str) -> String {
@@ -1275,6 +1371,104 @@ async fn publish_entry_to_kb(entry: &mut ResearchInboxEntry) -> usize {
     published
 }
 
+fn monitor_args(monitor: &ResearchMonitorConfig) -> Value {
+    json!({
+        "topic": monitor.topic.clone(),
+        "focus": monitor.focus.clone(),
+        "keywords": monitor.keywords.clone(),
+        "lookback_hours": monitor.lookback_hours.clamp(1, 168),
+        "max_results": monitor.max_results.clamp(1, 30),
+        "create_inbox": true,
+        "publish_to_kb": monitor.publish_to_kb,
+    })
+}
+
+fn upsert_monitor_status(status: ResearchMonitorStatus) {
+    let mut statuses = monitor_statuses().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(existing) = statuses.iter_mut().find(|item| item.id == status.id) {
+        *existing = status;
+    } else {
+        statuses.push(status);
+    }
+}
+
+fn status_from_run(monitor: &ResearchMonitorConfig, next_run_at: String, run: &Value) -> ResearchMonitorStatus {
+    ResearchMonitorStatus {
+        id: monitor.id.clone(),
+        enabled: monitor.enabled,
+        interval_minutes: monitor.interval_minutes,
+        last_run_at: Some(Utc::now().to_rfc3339()),
+        next_run_at: Some(next_run_at),
+        last_inbox_id: run.get("inbox_id").and_then(Value::as_str).map(str::to_string),
+        last_report_path: run.get("report_path").and_then(Value::as_str).map(str::to_string),
+        last_summary: run.get("summary").and_then(Value::as_str).map(str::to_string),
+        last_error: None,
+        event_count: run.get("event_count").and_then(Value::as_u64).unwrap_or(0) as usize,
+        review_count: run.get("review_count").and_then(Value::as_u64).unwrap_or(0) as usize,
+        new_event_count: run.get("new_event_count").and_then(Value::as_u64).unwrap_or(0) as usize,
+        escalated_event_count: run.get("escalated_event_count").and_then(Value::as_u64).unwrap_or(0) as usize,
+        kb_publish_count: run.get("kb_publish_count").and_then(Value::as_u64).unwrap_or(0) as usize,
+    }
+}
+
+fn error_monitor_status(monitor: &ResearchMonitorConfig, next_run_at: String, error: String) -> ResearchMonitorStatus {
+    ResearchMonitorStatus {
+        id: monitor.id.clone(),
+        enabled: monitor.enabled,
+        interval_minutes: monitor.interval_minutes,
+        last_run_at: Some(Utc::now().to_rfc3339()),
+        next_run_at: Some(next_run_at),
+        last_inbox_id: None,
+        last_report_path: None,
+        last_summary: None,
+        last_error: Some(error),
+        event_count: 0,
+        review_count: 0,
+        new_event_count: 0,
+        escalated_event_count: 0,
+        kb_publish_count: 0,
+    }
+}
+
+pub(crate) fn spawn_monitor_loop() {
+    tokio::spawn(async {
+        let mut next_due: HashMap<String, Instant> = HashMap::new();
+        let mut tick = tokio::time::interval(Duration::from_secs(30));
+        loop {
+            tick.tick().await;
+            let cfg = load_monitor_file();
+            for monitor in cfg.monitors.iter().filter(|monitor| monitor.enabled) {
+                let interval_minutes = monitor.interval_minutes.max(1);
+                let due = next_due.entry(monitor.id.clone()).or_insert_with(Instant::now);
+                if Instant::now() < *due {
+                    continue;
+                }
+                *due = Instant::now() + Duration::from_secs(interval_minutes * 60);
+                let next_run_at = (Utc::now() + chrono::Duration::minutes(interval_minutes as i64)).to_rfc3339();
+                tracing::info!(target: "sirin", "[research_sentinel] monitor {} running", monitor.id);
+                match call_research_sentinel_run_once(monitor_args(monitor)).await {
+                    Ok(run) => {
+                        let status = status_from_run(monitor, next_run_at, &run);
+                        tracing::info!(
+                            target: "sirin",
+                            "[research_sentinel] monitor {} complete: new={}, escalated={}, report={:?}",
+                            status.id,
+                            status.new_event_count,
+                            status.escalated_event_count,
+                            status.last_report_path
+                        );
+                        upsert_monitor_status(status);
+                    }
+                    Err(e) => {
+                        tracing::warn!(target: "sirin", "[research_sentinel] monitor {} failed: {e}", monitor.id);
+                        upsert_monitor_status(error_monitor_status(monitor, next_run_at, e));
+                    }
+                }
+            }
+        }
+    });
+}
+
 pub(crate) fn call_research_sentinel_goal_create(args: Value) -> Result<Value, String> {
     let goal = build_goal_from_args(&args);
     goal_log()
@@ -1395,6 +1589,42 @@ pub(crate) fn call_research_sentinel_inbox(args: Value) -> Result<Value, String>
         "unread_only": unread_only,
         "count": entries.len(),
         "entries": entries,
+    }))
+}
+
+pub(crate) fn call_research_sentinel_monitor_status(_args: Value) -> Result<Value, String> {
+    let cfg = load_monitor_file();
+    let statuses = monitor_statuses()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let mut out = Vec::new();
+    for monitor in cfg.monitors {
+        if let Some(status) = statuses.iter().find(|status| status.id == monitor.id) {
+            out.push(status.clone());
+        } else {
+            out.push(ResearchMonitorStatus {
+                id: monitor.id,
+                enabled: monitor.enabled,
+                interval_minutes: monitor.interval_minutes,
+                last_run_at: None,
+                next_run_at: None,
+                last_inbox_id: None,
+                last_report_path: None,
+                last_summary: None,
+                last_error: None,
+                event_count: 0,
+                review_count: 0,
+                new_event_count: 0,
+                escalated_event_count: 0,
+                kb_publish_count: 0,
+            });
+        }
+    }
+    Ok(json!({
+        "config_file": crate::platform::config_path(MONITOR_CONFIG_FILE),
+        "count": out.len(),
+        "monitors": out,
     }))
 }
 

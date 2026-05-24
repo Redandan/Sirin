@@ -1697,6 +1697,16 @@ fn seed_default(m: &mut RegistryMap) {
         handler:      ToolHandler::SyncJson(crate::research_sentinel::call_research_sentinel_inbox),
     });
 
+    m.insert("research_sentinel_monitor_status", ToolDef {
+        name:         "research_sentinel_monitor_status",
+        description: "查看 Research Sentinel 背景 monitor loop 狀態：enabled、interval、last_run、next_run、new/escalated counts、HTML report path、KB publish count。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {}
+        }),
+        handler:      ToolHandler::SyncJson(crate::research_sentinel::call_research_sentinel_monitor_status),
+    });
+
     m.insert("research_sentinel_ack", ToolDef {
         name:         "research_sentinel_ack",
         description: "將指定 News Research Sentinel inbox item 標記為 read。",
@@ -1747,6 +1757,7 @@ mod tests {
         assert!(get("research_sentinel_goal_create").is_some());
         assert!(get("research_sentinel_run_once").is_some());
         assert!(get("research_sentinel_inbox").is_some());
+        assert!(get("research_sentinel_monitor_status").is_some());
         assert!(get("research_sentinel_ack").is_some());
         assert!(get("research_sentinel_review").is_some());
 

@@ -6752,6 +6752,7 @@ mod test_runner_mcp_tests {
         assert!(names.contains(&"research_sentinel_goal_create"), "research sentinel goal tool missing");
         assert!(names.contains(&"research_sentinel_run_once"), "research sentinel run tool missing");
         assert!(names.contains(&"research_sentinel_inbox"), "research sentinel inbox tool missing");
+        assert!(names.contains(&"research_sentinel_monitor_status"), "research sentinel monitor status tool missing");
         assert!(names.contains(&"research_sentinel_ack"), "research sentinel ack tool missing");
         assert!(names.contains(&"research_sentinel_review"), "research sentinel review tool missing");
 

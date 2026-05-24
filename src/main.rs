@@ -379,6 +379,7 @@ fn main() {
 
         rt.spawn(followup::run_worker(tracker.clone()));
         rt.spawn(rpc_server::start_rpc_server());
+        research_sentinel::spawn_monitor_loop();
         // Background LLM reachability probe — feeds diagnose.llm.reachable.
         // Cheap (one HTTP GET every 30s); ensures stale "model configured but
         // Ollama is down" cases get reported truthfully via the MCP tool.
