@@ -4439,7 +4439,7 @@ pub(crate) async fn call_benchmark_test_override_matrix(args: Value) -> Result<V
 // ── #231 Daily Brief ─────────────────────────────────────────────────────────
 
 /// Call any agora-trading tool via HTTP and return raw text response.
-async fn call_agora_tool(name: &str, arguments: Value) -> Result<String, String> {
+pub(crate) async fn call_agora_tool(name: &str, arguments: Value) -> Result<String, String> {
     let read_tok = |server: &str| -> Option<String> {
         let path = home_dir()?.join(".claude.json");
         let src = std::fs::read_to_string(path).ok()?;
@@ -4467,13 +4467,21 @@ async fn call_agora_tool(name: &str, arguments: Value) -> Result<String, String>
         .send().await.map_err(|e| e.to_string())?
         .text().await.map_err(|e| e.to_string())?;
 
+    let mut last_error: Option<String> = None;
     for line in resp.lines() {
         let line = line.trim().trim_start_matches("data: ");
         if !line.starts_with('{') { continue; }
         let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        if let Some(error) = v.get("error") {
+            last_error = Some(error.to_string());
+            continue;
+        }
         if let Some(text) = v["result"]["content"][0]["text"].as_str() {
             return Ok(text.to_string());
         }
+    }
+    if let Some(error) = last_error {
+        return Err(format!("{name}: MCP error: {error}"));
     }
     Err(format!("{name}: no content returned"))
 }
@@ -4554,6 +4562,288 @@ fn section_title(section: &str) -> &str {
         "ops"       => "System Health",
         other       => other,
     }
+}
+
+// ── Agora Trading Sentinel (read-only MVP) ───────────────────────────────────
+
+fn trading_sentinel_db_init(conn: &rusqlite::Connection) {
+    let _ = conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS trading_sentinel_notifications ( \
+            id INTEGER PRIMARY KEY AUTOINCREMENT, \
+            run_id TEXT NOT NULL, \
+            created_at TEXT NOT NULL, \
+            status TEXT NOT NULL, \
+            severity TEXT NOT NULL, \
+            summary TEXT NOT NULL, \
+            suggested_action TEXT NOT NULL, \
+            evidence_json TEXT NOT NULL \
+        ); \
+        CREATE INDEX IF NOT EXISTS idx_tsn_status_created \
+            ON trading_sentinel_notifications(status, created_at DESC); \
+        CREATE INDEX IF NOT EXISTS idx_tsn_run ON trading_sentinel_notifications(run_id);"
+    );
+}
+
+fn trading_sentinel_store_notification(
+    run_id: &str,
+    severity: &str,
+    summary: &str,
+    suggested_action: &str,
+    evidence: &Value,
+) -> Result<i64, String> {
+    let conn_mutex = crate::test_runner::store::__shared_db();
+    let conn = conn_mutex.lock().unwrap_or_else(|e| e.into_inner());
+    trading_sentinel_db_init(&conn);
+    conn.execute(
+        "INSERT INTO trading_sentinel_notifications \
+         (run_id, created_at, status, severity, summary, suggested_action, evidence_json) \
+         VALUES (?1, ?2, 'unread', ?3, ?4, ?5, ?6)",
+        rusqlite::params![
+            run_id,
+            chrono::Local::now().to_rfc3339(),
+            severity,
+            summary,
+            suggested_action,
+            serde_json::to_string_pretty(evidence).unwrap_or_else(|_| evidence.to_string()),
+        ],
+    ).map_err(|e| format!("insert trading sentinel notification: {e}"))?;
+    Ok(conn.last_insert_rowid())
+}
+
+fn trading_sentinel_severity_for_text(tool: &str, text: &str) -> (&'static str, Vec<String>) {
+    let lower = text.to_lowercase();
+    let mut reasons = Vec::new();
+
+    let critical_needles = [
+        "missing oco",
+        "without oco",
+        "target_touched_but_record_open",
+        "tp touched",
+        "tp_touched",
+        "record remains open",
+        "漏評估",
+        "漏单",
+        "漏單",
+        "未發現漏評估/漏單 bug: false",
+        "critical",
+        "panic",
+        "outofmemory",
+        "pool exhausted",
+    ];
+    for needle in critical_needles {
+        if lower.contains(needle) {
+            reasons.push(format!("{tool}: matched critical pattern `{needle}`"));
+        }
+    }
+    if !reasons.is_empty() {
+        return ("critical", reasons);
+    }
+
+    let warn_needles = [
+        "actionable_trade",
+        "warning",
+        "warn",
+        "异常",
+        "異常",
+        "failed",
+        "error",
+        "blocked",
+        "entrydedup",
+        "oco",
+        "trailing",
+        "risk",
+        "tp_stretched",
+    ];
+    for needle in warn_needles {
+        if lower.contains(needle) {
+            reasons.push(format!("{tool}: matched warning pattern `{needle}`"));
+        }
+    }
+    if !reasons.is_empty() {
+        return ("warn", reasons);
+    }
+
+    ("info", Vec::new())
+}
+
+fn trading_sentinel_rank(severity: &str) -> u8 {
+    match severity {
+        "critical" => 3,
+        "warn" => 2,
+        _ => 1,
+    }
+}
+
+fn trading_sentinel_suggest(severity: &str, reasons: &[String], errors: &[Value]) -> String {
+    if errors.iter().any(|e| e.get("error").and_then(Value::as_str).unwrap_or("").contains("BATCH_PLAN_REQUIRED")) {
+        return "Agora MCP requires an approved batch plan/session grant before Sirin can poll trading tools.".into();
+    }
+    if errors.iter().any(|e| e.get("error").and_then(Value::as_str).unwrap_or("").contains("no content returned")) {
+        return "Agora MCP returned no content for at least one read-only probe. Check hosted MCP auth/session state before treating this as a trading anomaly.".into();
+    }
+    if severity == "critical" {
+        return "Open a Codex investigation with the evidence bundle. Keep the path read-only until the anomaly is classified; do not auto-modify OCO or place orders.".into();
+    }
+    if severity == "warn" || !reasons.is_empty() {
+        return "Review the warning evidence and decide whether to run a deeper AgoraMarketAPI MCP diagnostic pass.".into();
+    }
+    "No immediate action. Keep monitoring; this run produced only informational evidence.".into()
+}
+
+/// Run a read-only Agora trading sentinel pass and write a Codex-readable inbox notification.
+pub(crate) async fn call_trading_sentinel_run_once(args: Value) -> Result<Value, String> {
+    let symbol = args.get("symbol").and_then(Value::as_str).unwrap_or("BTCUSDT");
+    let days = args.get("days").and_then(Value::as_u64).unwrap_or(5).clamp(1, 30);
+    let hours = args.get("hours").and_then(Value::as_u64).unwrap_or(24).clamp(1, 168);
+    let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(80).clamp(1, 200);
+    let create_notification = args.get("create_notification").and_then(Value::as_bool).unwrap_or(true);
+    let run_id = format!("ts-{}", chrono::Utc::now().timestamp_millis());
+
+    let tool_plan: Vec<(&str, Value)> = vec![
+        ("getTradingManagerDigest", json!({"deep": true, "days": days, "symbol": symbol})),
+        ("getTgNotificationHistory", json!({"hours": hours, "limit": limit})),
+        ("verifyStrategyExecution", json!({"days": days})),
+        ("getCurrentStartupLogIssues", json!({})),
+        ("listRecentDecisions", json!({"days": days, "limit": 50})),
+    ];
+
+    let mut evidence = serde_json::Map::new();
+    let mut errors: Vec<Value> = Vec::new();
+    let mut reasons: Vec<String> = Vec::new();
+    let mut top_severity = "info";
+
+    for (tool, tool_args) in tool_plan {
+        match call_agora_tool(tool, tool_args.clone()).await {
+            Ok(text) => {
+                let (severity, mut tool_reasons) = trading_sentinel_severity_for_text(tool, &text);
+                if trading_sentinel_rank(severity) > trading_sentinel_rank(top_severity) {
+                    top_severity = severity;
+                }
+                reasons.append(&mut tool_reasons);
+                evidence.insert(tool.to_string(), json!({
+                    "ok": true,
+                    "args": tool_args,
+                    "text": text,
+                }));
+            }
+            Err(e) => {
+                let severity = if e.contains("BATCH_PLAN_REQUIRED")
+                    || e.contains("FORBIDDEN")
+                    || e.contains("no content returned")
+                {
+                    "warn"
+                } else {
+                    "critical"
+                };
+                if trading_sentinel_rank(severity) > trading_sentinel_rank(top_severity) {
+                    top_severity = severity;
+                }
+                errors.push(json!({"tool": tool, "args": tool_args, "error": e}));
+            }
+        }
+    }
+
+    let summary = match top_severity {
+        "critical" => format!("Agora Trading Sentinel found critical trading/ops evidence for {symbol}."),
+        "warn" => format!("Agora Trading Sentinel found warnings or blocked evidence collection for {symbol}."),
+        _ => format!("Agora Trading Sentinel found no immediate actionable issue for {symbol}."),
+    };
+    let evidence_value = json!({
+        "run_id": run_id,
+        "symbol": symbol,
+        "checked_at": chrono::Local::now().to_rfc3339(),
+        "severity": top_severity,
+        "reasons": reasons,
+        "errors": errors,
+        "tools": Value::Object(evidence),
+        "read_only": true,
+        "guardrails": [
+            "No trading writes were attempted",
+            "No OCO modifications were attempted",
+            "Market/TG background signals are not treated as trade instructions"
+        ]
+    });
+    let reason_texts: Vec<String> = evidence_value["reasons"].as_array()
+        .map(|arr| arr.iter().filter_map(Value::as_str).map(str::to_string).collect())
+        .unwrap_or_default();
+    let empty_errors = Vec::new();
+    let error_values = evidence_value["errors"].as_array().unwrap_or(&empty_errors);
+    let suggested_action = trading_sentinel_suggest(top_severity, &reason_texts, error_values);
+
+    let notification_id = if create_notification {
+        Some(trading_sentinel_store_notification(
+            &run_id,
+            top_severity,
+            &summary,
+            &suggested_action,
+            &evidence_value,
+        )?)
+    } else {
+        None
+    };
+
+    Ok(json!({
+        "run_id": run_id,
+        "severity": top_severity,
+        "summary": summary,
+        "suggested_action": suggested_action,
+        "notification_id": notification_id,
+        "evidence": evidence_value,
+    }))
+}
+
+/// List Codex-readable Agora Trading Sentinel notifications.
+pub(crate) fn call_trading_sentinel_notifications(args: Value) -> Result<Value, String> {
+    let unread_only = args.get("unread_only").and_then(Value::as_bool).unwrap_or(true);
+    let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(20).clamp(1, 100);
+    let conn_mutex = crate::test_runner::store::__shared_db();
+    let conn = conn_mutex.lock().unwrap_or_else(|e| e.into_inner());
+    trading_sentinel_db_init(&conn);
+
+    let sql = if unread_only {
+        "SELECT id, run_id, created_at, status, severity, summary, suggested_action, evidence_json \
+         FROM trading_sentinel_notifications WHERE status = 'unread' \
+         ORDER BY id DESC LIMIT ?1"
+    } else {
+        "SELECT id, run_id, created_at, status, severity, summary, suggested_action, evidence_json \
+         FROM trading_sentinel_notifications ORDER BY id DESC LIMIT ?1"
+    };
+
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([limit as i64], |row| {
+        let evidence_raw: String = row.get(7)?;
+        let evidence: Value = serde_json::from_str(&evidence_raw).unwrap_or_else(|_| json!({"raw": evidence_raw}));
+        Ok(json!({
+            "id": row.get::<_, i64>(0)?,
+            "run_id": row.get::<_, String>(1)?,
+            "created_at": row.get::<_, String>(2)?,
+            "status": row.get::<_, String>(3)?,
+            "severity": row.get::<_, String>(4)?,
+            "summary": row.get::<_, String>(5)?,
+            "suggested_action": row.get::<_, String>(6)?,
+            "evidence": evidence,
+        }))
+    }).map_err(|e| e.to_string())?;
+
+    let notifications: Vec<Value> = rows.filter_map(Result::ok).collect();
+    Ok(json!({
+        "unread_only": unread_only,
+        "count": notifications.len(),
+        "notifications": notifications,
+    }))
+}
+
+/// Mark an Agora Trading Sentinel notification as read.
+pub(crate) fn call_trading_sentinel_ack(args: Value) -> Result<Value, String> {
+    let id = args.get("id").and_then(Value::as_i64).ok_or("Missing id")?;
+    let conn_mutex = crate::test_runner::store::__shared_db();
+    let conn = conn_mutex.lock().unwrap_or_else(|e| e.into_inner());
+    trading_sentinel_db_init(&conn);
+    let changed = conn.execute(
+        "UPDATE trading_sentinel_notifications SET status = 'read' WHERE id = ?1",
+        [id],
+    ).map_err(|e| e.to_string())?;
+    Ok(json!({"id": id, "acknowledged": changed > 0}))
 }
 
 // ── #226 KB Merge ─────────────────────────────────────────────────────────────
@@ -6754,6 +7044,9 @@ mod test_runner_mcp_tests {
         // delete the literal block).
         assert!(names.contains(&"memory_search"),    "legacy memory_search missing");
         assert!(names.contains(&"run_test_async"),   "legacy run_test_async missing");
+        assert!(names.contains(&"trading_sentinel_run_once"), "sentinel run tool missing");
+        assert!(names.contains(&"trading_sentinel_notifications"), "sentinel inbox tool missing");
+        assert!(names.contains(&"trading_sentinel_ack"), "sentinel ack tool missing");
 
         // No tool name is duplicated (registry tools must not also live in
         // the literal block).
@@ -6761,6 +7054,50 @@ mod test_runner_mcp_tests {
         for n in &names {
             assert!(seen.insert(n.to_string()), "duplicate tool name: {n}");
         }
+    }
+
+    #[test]
+    fn trading_sentinel_classifies_actionable_evidence() {
+        let (severity, reasons) = trading_sentinel_severity_for_text(
+            "getTgNotificationHistory",
+            "ACTIONABLE_TRADE BTCUSDT 4H buy",
+        );
+        assert_eq!(severity, "warn");
+        assert!(!reasons.is_empty());
+
+        let (severity, reasons) = trading_sentinel_severity_for_text(
+            "verifyStrategyExecution",
+            "TARGET_TOUCHED_BUT_RECORD_OPEN: TP touched but record remains open",
+        );
+        assert_eq!(severity, "critical");
+        assert!(!reasons.is_empty());
+
+        let (severity, reasons) = trading_sentinel_severity_for_text(
+            "getTradingManagerDigest",
+            "all systems normal",
+        );
+        assert_eq!(severity, "info");
+        assert!(reasons.is_empty());
+    }
+
+    #[test]
+    fn trading_sentinel_suggests_batch_plan_for_auth_block() {
+        let errors = vec![json!({
+            "tool": "getTradingManagerDigest",
+            "error": "MCP tool error: FORBIDDEN; BATCH_PLAN_REQUIRED"
+        })];
+        let suggestion = trading_sentinel_suggest("warn", &[], &errors);
+        assert!(suggestion.contains("batch plan"), "suggestion: {suggestion}");
+    }
+
+    #[test]
+    fn trading_sentinel_suggests_auth_check_for_empty_mcp_content() {
+        let errors = vec![json!({
+            "tool": "getTradingManagerDigest",
+            "error": "getTradingManagerDigest: no content returned"
+        })];
+        let suggestion = trading_sentinel_suggest("warn", &[], &errors);
+        assert!(suggestion.contains("auth/session"), "suggestion: {suggestion}");
     }
 
     #[tokio::test]

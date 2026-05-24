@@ -1336,6 +1336,49 @@ fn seed_default(m: &mut RegistryMap) {
         handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::mcp_server::call_generate_daily_brief(args))),
     });
 
+    // Agora Trading Sentinel — read-only trading ops monitor MVP.
+    m.insert("trading_sentinel_run_once", ToolDef {
+        name:         "trading_sentinel_run_once",
+        description: "Agora Trading Sentinel read-only MVP — 一次性讀取 AgoraMarketAPI live MCP 交易狀態，分類 CRITICAL/WARN/INFO，保存 Codex 可讀 notification inbox。\n\n只讀工具；不下單、不改 OCO、不做任何交易寫入。若 hosted MCP 需要 batch approval/session grant，會回 blocked/auth evidence 而不是硬闖。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "symbol": { "type": "string", "description": "交易對，預設 BTCUSDT" },
+                "days": { "type": "integer", "description": "診斷回看天數，預設 5，範圍 1..30" },
+                "hours": { "type": "integer", "description": "TG 回看小時，預設 24，範圍 1..168" },
+                "limit": { "type": "integer", "description": "TG/decision 最大筆數，預設 80，範圍 1..200" },
+                "create_notification": { "type": "boolean", "description": "是否寫入 notification inbox，預設 true" }
+            }
+        }),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::mcp_server::call_trading_sentinel_run_once(args))),
+    });
+
+    m.insert("trading_sentinel_notifications", ToolDef {
+        name:         "trading_sentinel_notifications",
+        description: "列出 Agora Trading Sentinel 的 durable inbox notifications，供 Codex 回來後讀取監控結果與 evidence bundle。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "unread_only": { "type": "boolean", "description": "只列 unread，預設 true" },
+                "limit": { "type": "integer", "description": "最多筆數，預設 20，範圍 1..100" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_trading_sentinel_notifications),
+    });
+
+    m.insert("trading_sentinel_ack", ToolDef {
+        name:         "trading_sentinel_ack",
+        description: "將指定 Agora Trading Sentinel notification 標記為 read。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "integer", "description": "notification id" }
+            },
+            "required": ["id"]
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_trading_sentinel_ack),
+    });
+
     // #233 cross-ai-router (async subset)
     m.insert("route_query", ToolDef {
         name:         "route_query",
@@ -1664,6 +1707,9 @@ mod tests {
         assert!(get("discovery_status").is_some());
         assert!(get("benchmark_test_override").is_some());
         assert!(get("benchmark_test_override_matrix").is_some());
+        assert!(get("trading_sentinel_run_once").is_some());
+        assert!(get("trading_sentinel_notifications").is_some());
+        assert!(get("trading_sentinel_ack").is_some());
 
         // Un-migrated tools must NOT be in the registry yet.  Only one tool
         // is permanently un-migrated: `browser_exec`.  It's the sole authz
