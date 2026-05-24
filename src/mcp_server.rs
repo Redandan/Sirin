@@ -6749,6 +6749,10 @@ mod test_runner_mcp_tests {
         assert!(names.contains(&"skill_list"),       "skill_list missing: {names:?}");
         assert!(names.contains(&"teams_pending"),    "teams_pending missing: {names:?}");
         assert!(names.contains(&"discovery_status"), "discovery_status missing: {names:?}");
+        assert!(names.contains(&"research_sentinel_goal_create"), "research sentinel goal tool missing");
+        assert!(names.contains(&"research_sentinel_run_once"), "research sentinel run tool missing");
+        assert!(names.contains(&"research_sentinel_inbox"), "research sentinel inbox tool missing");
+        assert!(names.contains(&"research_sentinel_ack"), "research sentinel ack tool missing");
 
         // Some legacy tools must also still be present (we didn't accidentally
         // delete the literal block).

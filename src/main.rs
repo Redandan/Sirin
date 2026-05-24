@@ -31,6 +31,7 @@ mod log_buffer;
 #[allow(dead_code)] mod pending_reply;
 #[allow(dead_code)] mod persona;
 #[allow(dead_code)] mod researcher;
+#[allow(dead_code)] mod research_sentinel;
 #[allow(dead_code)] mod mcp_client;
 #[allow(dead_code)] mod kb_client;
 #[allow(dead_code)] mod integrations;

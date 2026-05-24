@@ -1648,6 +1648,67 @@ fn seed_default(m: &mut RegistryMap) {
         }),
         handler:      ToolHandler::SyncText(crate::mcp_server::call_trigger_research),
     });
+
+    m.insert("research_sentinel_goal_create", ToolDef {
+        name:         "research_sentinel_goal_create",
+        description: "建立 Codex 定義的新聞/事件研究目標。Sirin 只做外部研究與本地 inbox 保存；不讀 AgoraMarketAPI 交易狀態、不下單、不改 OCO。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "topic": { "type": "string", "description": "研究主題，例如 BTCUSDT automated trading risk news" },
+                "focus": { "type": "string", "description": "研究焦點，例如 volatility/liquidity/exchange/regulation/macro risk" },
+                "keywords": { "type": "array", "items": { "type": "string" }, "description": "搜尋關鍵字" },
+                "lookback_hours": { "type": "integer", "description": "回看小時，預設 24，範圍 1..168" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::research_sentinel::call_research_sentinel_goal_create),
+    });
+
+    m.insert("research_sentinel_run_once", ToolDef {
+        name:         "research_sentinel_run_once",
+        description: "依 Codex 定義的 goal 或 inline topic 執行一次新聞/事件研究，整理來源 URL、事件類型、資產、relevance、confidence，並保存到 Codex 可讀 inbox。研究結果不是買賣建議。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "goal_id": { "type": "string", "description": "既有 research_sentinel goal id；未提供時使用 inline topic/focus/keywords" },
+                "topic": { "type": "string", "description": "inline 研究主題" },
+                "focus": { "type": "string", "description": "inline 研究焦點" },
+                "keywords": { "type": "array", "items": { "type": "string" }, "description": "inline 搜尋關鍵字" },
+                "lookback_hours": { "type": "integer", "description": "回看小時，預設 goal 值或 24，範圍 1..168" },
+                "rss_feeds": { "type": "array", "items": { "type": "string" }, "description": "RSS fallback feeds；預設 CoinDesk + Cointelegraph" },
+                "max_queries": { "type": "integer", "description": "最多搜尋 query 數，預設 4，範圍 1..8" },
+                "max_results": { "type": "integer", "description": "最多保留結果，預設 12，範圍 1..30" },
+                "create_inbox": { "type": "boolean", "description": "是否寫入 inbox，預設 true" }
+            }
+        }),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::research_sentinel::call_research_sentinel_run_once(args))),
+    });
+
+    m.insert("research_sentinel_inbox", ToolDef {
+        name:         "research_sentinel_inbox",
+        description: "列出 Sirin 本地 News Research Sentinel inbox，供 Codex 驗收研究結果。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "unread_only": { "type": "boolean", "description": "只列 unread，預設 true" },
+                "limit": { "type": "integer", "description": "最多筆數，預設 20，範圍 1..100" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::research_sentinel::call_research_sentinel_inbox),
+    });
+
+    m.insert("research_sentinel_ack", ToolDef {
+        name:         "research_sentinel_ack",
+        description: "將指定 News Research Sentinel inbox item 標記為 read。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "string", "description": "inbox item id" }
+            },
+            "required": ["id"]
+        }),
+        handler:      ToolHandler::SyncJson(crate::research_sentinel::call_research_sentinel_ack),
+    });
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -1664,6 +1725,10 @@ mod tests {
         assert!(get("discovery_status").is_some());
         assert!(get("benchmark_test_override").is_some());
         assert!(get("benchmark_test_override_matrix").is_some());
+        assert!(get("research_sentinel_goal_create").is_some());
+        assert!(get("research_sentinel_run_once").is_some());
+        assert!(get("research_sentinel_inbox").is_some());
+        assert!(get("research_sentinel_ack").is_some());
 
         // Un-migrated tools must NOT be in the registry yet.  Only one tool
         // is permanently un-migrated: `browser_exec`.  It's the sole authz
