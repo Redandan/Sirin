@@ -418,6 +418,60 @@ fn contains_any(text: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| text.contains(needle))
 }
 
+fn contains_token(text: &str, needle: &str) -> bool {
+    text.split(|ch: char| !ch.is_ascii_alphanumeric())
+        .any(|token| token.eq_ignore_ascii_case(needle))
+}
+
+fn contains_any_token(text: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| contains_token(text, needle))
+}
+
+fn has_strategy_relevance(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    contains_any_token(&lower, &["btc", "eth", "usdt", "usdc", "fomc", "cpi", "pce", "ppi"])
+        || contains_any(
+            &lower,
+            &[
+                "bitcoin",
+                "ether",
+                "ethereum",
+                "crypto",
+                "digital asset",
+                "digital assets",
+                "stablecoin",
+                "tether",
+                "circle",
+                "binance",
+                "coinbase",
+                "crypto exchange",
+                "digital asset exchange",
+                "spot etf",
+                "bitcoin etf",
+                "ether etf",
+                "etf flow",
+                "etf flows",
+                "liquidity",
+                "order book",
+                "market depth",
+                "market maker",
+                "volatility",
+                "funding rate",
+                "open interest",
+                "liquidation",
+                "liquidations",
+                "federal funds",
+                "interest rate",
+                "rate cut",
+                "rate hike",
+                "inflation",
+                "payroll",
+                "treasury yield",
+                "dollar liquidity",
+            ],
+        )
+}
+
 fn classify_event(text: &str) -> String {
     let lower = text.to_lowercase();
     if contains_any(&lower, &["wallet maintenance", "maintenance", "suspend deposits", "suspend withdrawals", "network upgrade"]) {
@@ -426,7 +480,7 @@ fn classify_event(text: &str) -> String {
         "listing_delisting".into()
     } else if contains_any(&lower, &["hack", "exploit", "breach", "stolen", "security incident", "phishing"]) {
         "security_incident".into()
-    } else if contains_any(&lower, &["stablecoin", "usdt", "usdc", "depeg", "reserve", "redemption", "tether", "circle"]) {
+    } else if contains_any(&lower, &["stablecoin", "usdt", "usdc", "depeg", "stablecoin reserve", "usdt reserve", "usdc reserve", "redemption", "tether", "circle"]) {
         "stablecoin_risk".into()
     } else if contains_any(&lower, &["etf flow", "etf flows", "outflow", "outflows", "inflow", "inflows", "fund flow", "fund flows"]) {
         "etf_flow".into()
@@ -440,11 +494,13 @@ fn classify_event(text: &str) -> String {
         "macro_calendar".into()
     } else if contains_any(&lower, &["jobs report", "gdp", "pce", "ppi", "retail sales", "selected interest rates", "treasury yield"]) {
         "macro_data".into()
-    } else if contains_any(&lower, &["sec", "cftc", "lawsuit", "regulation", "regulatory", "treasury", "enforcement", "commissioner"]) {
+    } else if contains_any(&lower, &["sec", "cftc", "lawsuit", "regulation", "regulatory", "treasury", "enforcement", "commissioner"])
+        && has_strategy_relevance(&lower)
+    {
         "regulation".into()
-    } else if contains_any(&lower, &["policy", "rule", "proposal", "guidance"]) {
+    } else if contains_any(&lower, &["policy", "rule", "proposal", "guidance"]) && has_strategy_relevance(&lower) {
         "policy".into()
-    } else if contains_any(&lower, &["price", "rally", "tanks", "stocks", "bonds", "wall street"]) {
+    } else if contains_any(&lower, &["price", "rally", "tanks", "stocks", "bonds", "wall street"]) && has_strategy_relevance(&lower) {
         "market_flow".into()
     } else {
         "background".into()
@@ -456,6 +512,9 @@ fn classify_event_with_source(text: &str, candidate: &NewsCandidate) -> String {
     if text_type != "background" {
         return text_type;
     }
+    if !has_strategy_relevance(text) {
+        return text_type;
+    }
     for category in &candidate.source_categories {
         if category != "background" {
             return category.clone();
@@ -465,17 +524,19 @@ fn classify_event_with_source(text: &str, candidate: &NewsCandidate) -> String {
 }
 
 fn detect_assets(text: &str) -> Vec<String> {
-    let upper = text.to_uppercase();
+    let lower = text.to_lowercase();
     let mut assets = Vec::new();
-    for (asset, needles) in [
-        ("BTC", vec!["BTC", "BITCOIN"]),
-        ("ETH", vec!["ETH", "ETHEREUM"]),
-        ("USDT", vec!["USDT", "TETHER"]),
-        ("USDC", vec!["USDC"]),
-        ("BNB", vec!["BNB", "BINANCE"]),
-        ("SOL", vec!["SOL", "SOLANA"]),
+    for (asset, token_needles, phrase_needles) in [
+        ("BTC", vec!["btc"], vec!["bitcoin"]),
+        ("ETH", vec!["eth"], vec!["ethereum", "ether"]),
+        ("USDT", vec!["usdt"], vec!["tether"]),
+        ("USDC", vec!["usdc"], vec![]),
+        ("BNB", vec!["bnb"], vec!["binance"]),
+        ("SOL", vec!["sol"], vec!["solana"]),
     ] {
-        if needles.iter().any(|needle| upper.contains(needle)) {
+        if token_needles.iter().any(|needle| contains_token(&lower, needle))
+            || phrase_needles.iter().any(|needle| lower.contains(needle))
+        {
             assets.push(asset.to_string());
         }
     }
@@ -611,7 +672,7 @@ fn source_group_weight(groups: &[String]) -> i32 {
     }
 }
 
-fn review_score_for(event_type: &str, assets: &[String], sources: &[ResearchItem]) -> i32 {
+fn review_score_for(event_type: &str, assets: &[String], sources: &[ResearchItem], strategy_relevant: bool) -> i32 {
     let max_trust = sources.iter().map(|item| item.source_trust as i32).max().unwrap_or(0);
     let trust_score = max_trust / 2;
     let source_count_bonus = ((sources.len().saturating_sub(1)).min(3) as i32) * 10;
@@ -626,16 +687,18 @@ fn review_score_for(event_type: &str, assets: &[String], sources: &[ResearchItem
     } else {
         0
     };
+    let relevance_gate = if strategy_relevant { 0 } else { -80 };
     trust_score
         + source_group_weight(&groups)
         + source_count_bonus
         + asset_bonus
         + category_weight(event_type)
         + single_investment_penalty
+        + relevance_gate
 }
 
-fn codex_recommendation_for(score: i32, event_type: &str, groups: &[String], source_count: usize) -> String {
-    if event_type == "background" || score < 45 {
+fn codex_recommendation_for(score: i32, event_type: &str, groups: &[String], source_count: usize, strategy_relevant: bool) -> String {
+    if !strategy_relevant || event_type == "background" || score < 45 {
         "ignore".into()
     } else if groups.iter().any(|group| group == "official")
         && score >= 75
@@ -672,12 +735,16 @@ fn aggregate_events(items: &[ResearchItem]) -> Vec<ResearchEvent> {
             let assets = merge_assets(&sources);
             let confidence = best_confidence(&sources);
             let groups = source_groups(&sources);
-            let review_score = review_score_for(&lead.event_type, &assets, &sources);
+            let strategy_relevant = sources
+                .iter()
+                .any(|item| has_strategy_relevance(&format!("{} {}", item.title, item.snippet)));
+            let review_score = review_score_for(&lead.event_type, &assets, &sources, strategy_relevant);
             let codex_recommendation = codex_recommendation_for(
                 review_score,
                 &lead.event_type,
                 &groups,
                 sources.len(),
+                strategy_relevant,
             );
             ResearchEvent {
                 id: hash_id("rse", &event_key),
@@ -735,7 +802,9 @@ fn item_from_candidate(candidate: NewsCandidate) -> ResearchItem {
     let source_trust = candidate.source_trust;
     let source_categories = candidate.source_categories.clone();
     let official_source = candidate.official_source;
+    let strategy_relevant = has_strategy_relevance(&text);
     let needs_codex_review = event_type != "background"
+        && strategy_relevant
         && (official_source || source_group == "investment_data" || confidence != "low" || !assets.is_empty());
     ResearchItem {
         id: hash_id("rsi", &candidate.url),
@@ -834,12 +903,14 @@ fn parse_rss_items(xml: &str, source: &ResearchSource) -> Vec<NewsCandidate> {
 
 fn candidate_matches_goal(candidate: &NewsCandidate, goal: &ResearchGoal) -> bool {
     let haystack = format!("{} {}", candidate.title, candidate.snippet).to_lowercase();
-    goal.keywords
+    let keyword_match = goal
+        .keywords
         .iter()
         .any(|kw| haystack.contains(&kw.to_lowercase()))
         || haystack.contains("bitcoin")
         || haystack.contains("crypto")
-        || haystack.contains("stablecoin")
+        || haystack.contains("stablecoin");
+    keyword_match && has_strategy_relevance(&haystack)
 }
 
 async fn fetch_rss_candidates(sources: &[ResearchSource], goal: &ResearchGoal) -> (Vec<NewsCandidate>, Vec<String>) {
@@ -1187,6 +1258,56 @@ mod tests {
         assert_eq!(events[0].codex_recommendation, "convert_to_issue");
         assert!(events[0].review_score >= 75);
         assert!(events[0].source_groups.contains(&"official".to_string()));
+    }
+
+    #[test]
+    fn generic_official_sec_item_is_ignored_without_strategy_relevance() {
+        let candidate = NewsCandidate {
+            title: "SEC proposes reforms to help public companies conduct registered offerings".into(),
+            url: "https://www.sec.gov/news/press-release/generic".into(),
+            snippet: "The SEC proposed amendments to simplify reporting requirements for public companies.".into(),
+            published_at: Some("Sun, 24 May 2026 00:00:00 +0000".into()),
+            source_name: "SEC Press Releases".into(),
+            source_group: "official".into(),
+            source_trust: 100,
+            source_categories: vec!["regulation".into(), "policy".into()],
+            official_source: true,
+        };
+        let goal = ResearchGoal {
+            id: "g".into(),
+            created_at: Utc::now().to_rfc3339(),
+            status: "active".into(),
+            topic: "AgoraMarketAPI auto trading official monitor".into(),
+            focus: "official market and crypto risk".into(),
+            keywords: vec!["SEC".into()],
+            lookback_hours: 24,
+        };
+        assert!(!candidate_matches_goal(&candidate, &goal));
+        let item = item_from_candidate(candidate);
+        assert_eq!(item.event_type, "background");
+        assert!(item.assets.is_empty());
+        assert!(!item.needs_codex_review);
+        let events = aggregate_events(&[item]);
+        assert_eq!(events[0].codex_recommendation, "ignore");
+        assert!(!events[0].needs_codex_review);
+    }
+
+    #[test]
+    fn federal_reserve_macro_item_is_not_stablecoin_risk() {
+        let item = item_from_candidate(NewsCandidate {
+            title: "Federal Reserve issues FOMC statement".into(),
+            url: "https://www.federalreserve.gov/newsevents/pressreleases/example.htm".into(),
+            snippet: "The Federal Open Market Committee maintained the target range for the federal funds rate.".into(),
+            published_at: Some("Sun, 24 May 2026 00:00:00 +0000".into()),
+            source_name: "Federal Reserve Press Releases".into(),
+            source_group: "official".into(),
+            source_trust: 100,
+            source_categories: vec!["macro_calendar".into(), "macro_data".into()],
+            official_source: true,
+        });
+        assert_eq!(item.event_type, "macro_calendar");
+        assert!(item.needs_codex_review);
+        assert!(!item.assets.contains(&"USDT".to_string()));
     }
 
     #[test]
