@@ -6,6 +6,7 @@
 //! AgoraMarketAPI trading state.
 
 use std::collections::{HashSet, hash_map::DefaultHasher};
+use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -130,6 +131,8 @@ pub struct ResearchInboxEntry {
     pub items: Vec<ResearchItem>,
     pub source_errors: Vec<String>,
     pub guardrails: Vec<String>,
+    #[serde(default)]
+    pub report_path: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -157,6 +160,10 @@ fn inbox_log() -> &'static JsonlLog<ResearchInboxEntry> {
 
 fn tracking_path(file: &str) -> PathBuf {
     crate::platform::app_data_dir().join("tracking").join(file)
+}
+
+fn report_dir() -> PathBuf {
+    crate::platform::app_data_dir().join("tracking").join("reports").join("research_sentinel")
 }
 
 fn default_source_kind() -> String {
@@ -963,6 +970,110 @@ fn summarize(topic: &str, events: &[ResearchEvent], errors: &[String]) -> String
     }
 }
 
+fn html_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+fn report_file_path(entry: &ResearchInboxEntry) -> PathBuf {
+    report_dir().join(format!("research_sentinel_{}_{}.html", entry.run_id, entry.id))
+}
+
+fn render_research_report_html(entry: &ResearchInboxEntry) -> String {
+    let mut html = String::new();
+    let _ = write!(
+        html,
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>{}</title>\
+<style>\
+body{{font-family:Arial,sans-serif;background:#0b0f10;color:#d7e0dc;margin:0;padding:24px;line-height:1.45}}\
+a{{color:#7dd3fc}}.meta,.guardrail,.error{{color:#94a3b8}}\
+.event{{border:1px solid #263238;border-radius:8px;padding:16px;margin:16px 0;background:#111719}}\
+.pill{{display:inline-block;border:1px solid #334155;border-radius:999px;padding:2px 8px;margin:0 6px 6px 0;color:#cbd5e1;font-size:12px}}\
+.convert_to_issue{{border-color:#22c55e}}.watch{{border-color:#f59e0b}}.ignore{{opacity:.72}}\
+pre{{white-space:pre-wrap;background:#050708;padding:12px;border-radius:6px;color:#cbd5e1}}\
+</style></head><body>",
+        html_escape(&entry.topic)
+    );
+    let _ = write!(
+        html,
+        "<h1>{}</h1><p class=\"meta\">Inbox: {} | Run: {} | Created: {} | Review: {}</p>\
+<p>{}</p><p class=\"meta\">Focus: {}</p>\
+<p class=\"meta\">Events: {} | Items: {} | Source errors: {}</p>",
+        html_escape(&entry.topic),
+        html_escape(&entry.id),
+        html_escape(&entry.run_id),
+        html_escape(&entry.created_at),
+        html_escape(&entry.review_status),
+        html_escape(&entry.summary),
+        html_escape(&entry.focus),
+        entry.events.len(),
+        entry.items.len(),
+        entry.source_errors.len()
+    );
+    if let Some(note) = &entry.review_note {
+        let _ = write!(html, "<h2>Codex Review</h2><pre>{}</pre>", html_escape(note));
+    }
+    html.push_str("<h2>Events</h2>");
+    for event in &entry.events {
+        let _ = write!(
+            html,
+            "<section class=\"event {}\"><h3>{}</h3>\
+<p><span class=\"pill\">{}</span><span class=\"pill\">score {}</span><span class=\"pill\">{}</span><span class=\"pill\">{}</span></p>\
+<p>{}</p><p>{}</p>",
+            html_escape(&event.codex_recommendation),
+            html_escape(&event.title),
+            html_escape(&event.event_type),
+            event.review_score,
+            html_escape(&event.confidence),
+            html_escape(&event.codex_recommendation),
+            html_escape(&event.relevance),
+            html_escape(&event.summary)
+        );
+        html.push_str("<h4>Sources</h4><ul>");
+        for source in &event.sources {
+            let _ = write!(
+                html,
+                "<li><a href=\"{}\">{}</a> <span class=\"pill\">{}</span><span class=\"pill\">trust {}</span><br>{}</li>",
+                html_escape(&source.url),
+                html_escape(&source.title),
+                html_escape(&source.source_group),
+                source.source_trust,
+                html_escape(&source.snippet)
+            );
+        }
+        html.push_str("</ul></section>");
+    }
+    if !entry.source_errors.is_empty() {
+        html.push_str("<h2>Source Errors</h2><ul>");
+        for error in &entry.source_errors {
+            let _ = write!(html, "<li class=\"error\">{}</li>", html_escape(error));
+        }
+        html.push_str("</ul>");
+    }
+    if !entry.guardrails.is_empty() {
+        html.push_str("<h2>Guardrails</h2><ul>");
+        for guardrail in &entry.guardrails {
+            let _ = write!(html, "<li class=\"guardrail\">{}</li>", html_escape(guardrail));
+        }
+        html.push_str("</ul>");
+    }
+    html.push_str("</body></html>");
+    html
+}
+
+fn write_research_report(entry: &ResearchInboxEntry) -> Result<PathBuf, String> {
+    let path = report_file_path(entry);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create report dir failed: {e}"))?;
+    }
+    std::fs::write(&path, render_research_report_html(entry)).map_err(|e| format!("write report failed: {e}"))?;
+    Ok(path)
+}
+
 pub(crate) fn call_research_sentinel_goal_create(args: Value) -> Result<Value, String> {
     let goal = build_goal_from_args(&args);
     goal_log()
@@ -1014,7 +1125,7 @@ pub(crate) async fn call_research_sentinel_run_once(args: Value) -> Result<Value
     let run_id = format!("rsr-{}", Utc::now().timestamp_millis());
     let inbox_id = hash_id("rsn", &format!("{}:{run_id}", goal.id));
     let events = aggregate_events(&items);
-    let entry = ResearchInboxEntry {
+    let mut entry = ResearchInboxEntry {
         id: inbox_id.clone(),
         run_id: run_id.clone(),
         goal_id: Some(goal.id.clone()),
@@ -1034,9 +1145,12 @@ pub(crate) async fn call_research_sentinel_run_once(args: Value) -> Result<Value
             "Sirin did not read or mutate AgoraMarketAPI trading state.".into(),
             "Codex must review sources before converting findings into engineering or risk-control work.".into(),
         ],
+        report_path: None,
     };
 
     if create_inbox {
+        let report_path = write_research_report(&entry)?;
+        entry.report_path = Some(report_path.to_string_lossy().to_string());
         inbox_log()
             .upsert_by(entry.clone(), |item| item.id.clone())
             .map_err(|e| e.to_string())?;
@@ -1049,6 +1163,7 @@ pub(crate) async fn call_research_sentinel_run_once(args: Value) -> Result<Value
         "count": entry.items.len(),
         "event_count": entry.events.len(),
         "review_count": entry.events.iter().filter(|event| event.needs_codex_review).count(),
+        "report_path": entry.report_path,
         "entry": entry,
     }))
 }
@@ -1119,6 +1234,9 @@ pub(crate) fn call_research_sentinel_review(args: Value) -> Result<Value, String
                     entry.review_note = review_note.clone();
                     entry.reviewed_at = Some(Utc::now().to_rfc3339());
                     entry.status = "read".into();
+                    if entry.report_path.is_none() {
+                        entry.report_path = Some(report_file_path(entry).to_string_lossy().to_string());
+                    }
                     updated = Some(entry.clone());
                     break;
                 }
@@ -1128,7 +1246,10 @@ pub(crate) fn call_research_sentinel_review(args: Value) -> Result<Value, String
         .map_err(|e| e.to_string())?;
 
     match updated {
-        Some(entry) => Ok(json!({ "updated": true, "entry": entry })),
+        Some(entry) => {
+            let _ = write_research_report(&entry);
+            Ok(json!({ "updated": true, "entry": entry }))
+        }
         None => Ok(json!({ "updated": false, "id": id })),
     }
 }
@@ -1308,6 +1429,45 @@ mod tests {
         assert_eq!(item.event_type, "macro_calendar");
         assert!(item.needs_codex_review);
         assert!(!item.assets.contains(&"USDT".to_string()));
+    }
+
+    #[test]
+    fn renders_human_readable_html_report() {
+        let item = item_from_candidate(NewsCandidate {
+            title: "SEC announces crypto market structure rule proposal".into(),
+            url: "https://www.sec.gov/news/press-release/example".into(),
+            snippet: "The SEC announces a regulatory proposal for crypto market structure.".into(),
+            published_at: Some("Sun, 24 May 2026 00:00:00 +0000".into()),
+            source_name: "SEC Press Releases".into(),
+            source_group: "official".into(),
+            source_trust: 100,
+            source_categories: vec!["regulation".into()],
+            official_source: true,
+        });
+        let events = aggregate_events(&[item.clone()]);
+        let entry = ResearchInboxEntry {
+            id: "rsn-test".into(),
+            run_id: "rsr-test".into(),
+            goal_id: Some("goal-test".into()),
+            created_at: "2026-05-24T00:00:00Z".into(),
+            status: "unread".into(),
+            review_status: "pending".into(),
+            review_note: None,
+            reviewed_at: None,
+            topic: "HTML report smoke".into(),
+            focus: "official crypto market structure".into(),
+            summary: "Found one review event.".into(),
+            events,
+            items: vec![item],
+            source_errors: Vec::new(),
+            guardrails: vec!["Research only; no trading instruction was generated.".into()],
+            report_path: None,
+        };
+        let html = render_research_report_html(&entry);
+        assert!(html.contains("SEC announces crypto market structure rule proposal"));
+        assert!(html.contains("convert_to_issue"));
+        assert!(html.contains("https://www.sec.gov/news/press-release/example"));
+        assert!(html.contains("Research only; no trading instruction was generated."));
     }
 
     #[test]
