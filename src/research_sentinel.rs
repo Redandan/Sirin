@@ -111,6 +111,12 @@ pub struct ResearchEvent {
     pub source_count: usize,
     #[serde(default)]
     pub source_groups: Vec<String>,
+    #[serde(default)]
+    pub occurrence_status: String,
+    #[serde(default)]
+    pub kb_topic_key: Option<String>,
+    #[serde(default)]
+    pub kb_publish_status: String,
     pub sources: Vec<ResearchItem>,
 }
 
@@ -133,6 +139,20 @@ pub struct ResearchInboxEntry {
     pub guardrails: Vec<String>,
     #[serde(default)]
     pub report_path: Option<String>,
+    #[serde(default)]
+    pub kb_publish_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ResearchEventState {
+    event_key: String,
+    first_seen_at: String,
+    last_seen_at: String,
+    seen_count: u64,
+    last_review_score: i32,
+    last_recommendation: String,
+    last_title: String,
+    last_kb_topic_key: String,
 }
 
 #[derive(Debug, Clone)]
@@ -160,6 +180,11 @@ fn inbox_log() -> &'static JsonlLog<ResearchInboxEntry> {
 
 fn tracking_path(file: &str) -> PathBuf {
     crate::platform::app_data_dir().join("tracking").join(file)
+}
+
+fn state_log() -> &'static JsonlLog<ResearchEventState> {
+    static LOG: OnceLock<JsonlLog<ResearchEventState>> = OnceLock::new();
+    LOG.get_or_init(|| JsonlLog::new(tracking_path("research_sentinel_state.jsonl")))
 }
 
 fn report_dir() -> PathBuf {
@@ -659,6 +684,91 @@ fn source_groups(items: &[ResearchItem]) -> Vec<String> {
     groups
 }
 
+fn kb_topic_key_for(event: &ResearchEvent) -> String {
+    let mut slug = event
+        .event_key
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_lowercase() } else { '-' })
+        .collect::<String>();
+    while slug.contains("--") {
+        slug = slug.replace("--", "-");
+    }
+    slug = slug.trim_matches('-').to_string();
+    if slug.len() > 72 {
+        slug.truncate(72);
+        slug = slug.trim_matches('-').to_string();
+    }
+    format!("research-sentinel-event-{slug}")
+}
+
+fn recommendation_rank(recommendation: &str) -> i32 {
+    match recommendation {
+        "convert_to_issue" => 4,
+        "needs_more_sources" => 3,
+        "watch" => 2,
+        "ignore" => 1,
+        _ => 0,
+    }
+}
+
+fn classify_occurrence(event: &ResearchEvent, previous: Option<&ResearchEventState>) -> String {
+    match previous {
+        None => "new".into(),
+        Some(prev)
+            if recommendation_rank(&event.codex_recommendation) > recommendation_rank(&prev.last_recommendation)
+                || event.review_score >= prev.last_review_score + 20 =>
+        {
+            "escalated".into()
+        }
+        Some(prev) if event.review_score != prev.last_review_score || event.codex_recommendation != prev.last_recommendation => {
+            "updated".into()
+        }
+        Some(_) => "seen".into(),
+    }
+}
+
+fn event_should_publish_to_kb(event: &ResearchEvent, review_status: &str) -> bool {
+    matches!(review_status, "accepted" | "convert_to_issue")
+        || event.occurrence_status == "escalated"
+        || (event.occurrence_status == "new" && event.codex_recommendation == "convert_to_issue")
+}
+
+fn apply_event_state(events: &mut [ResearchEvent]) -> Result<(), String> {
+    let now = Utc::now().to_rfc3339();
+    let existing = state_log().read_all().map_err(|e| e.to_string())?;
+    let mut updates = Vec::new();
+    for event in events.iter_mut() {
+        let previous = existing.iter().rev().find(|state| state.event_key == event.event_key);
+        let topic_key = previous
+            .map(|state| state.last_kb_topic_key.clone())
+            .filter(|key| !key.is_empty())
+            .unwrap_or_else(|| kb_topic_key_for(event));
+        event.occurrence_status = classify_occurrence(event, previous);
+        event.kb_topic_key = Some(topic_key.clone());
+        event.kb_publish_status = if event_should_publish_to_kb(event, "pending") {
+            "candidate".into()
+        } else {
+            "not_eligible".into()
+        };
+        updates.push(ResearchEventState {
+            event_key: event.event_key.clone(),
+            first_seen_at: previous.map(|state| state.first_seen_at.clone()).unwrap_or_else(|| now.clone()),
+            last_seen_at: now.clone(),
+            seen_count: previous.map(|state| state.seen_count + 1).unwrap_or(1),
+            last_review_score: event.review_score,
+            last_recommendation: event.codex_recommendation.clone(),
+            last_title: event.title.clone(),
+            last_kb_topic_key: topic_key,
+        });
+    }
+    for update in updates {
+        state_log()
+            .upsert_by(update, |state| state.event_key.clone())
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 fn category_weight(event_type: &str) -> i32 {
     match event_type {
         "exchange_ops" | "security_incident" | "stablecoin_risk" => 35,
@@ -768,6 +878,9 @@ fn aggregate_events(items: &[ResearchItem]) -> Vec<ResearchEvent> {
                 relevance: relevance_for(&lead.event_type, &assets),
                 source_count: sources.len(),
                 source_groups: groups,
+                occurrence_status: String::new(),
+                kb_topic_key: None,
+                kb_publish_status: "not_evaluated".into(),
                 sources,
             }
         })
@@ -1074,6 +1187,94 @@ fn write_research_report(entry: &ResearchInboxEntry) -> Result<PathBuf, String> 
     Ok(path)
 }
 
+fn render_kb_intelligence_note(entry: &ResearchInboxEntry, event: &ResearchEvent) -> String {
+    let mut content = String::new();
+    let _ = writeln!(content, "# {}", event.title);
+    let _ = writeln!(content);
+    let _ = writeln!(content, "- inbox_id: {}", entry.id);
+    let _ = writeln!(content, "- run_id: {}", entry.run_id);
+    let _ = writeln!(content, "- topic: {}", entry.topic);
+    let _ = writeln!(content, "- event_type: {}", event.event_type);
+    let _ = writeln!(content, "- occurrence_status: {}", event.occurrence_status);
+    let _ = writeln!(content, "- recommendation: {}", event.codex_recommendation);
+    let _ = writeln!(content, "- review_score: {}", event.review_score);
+    let _ = writeln!(content, "- confidence: {}", event.confidence);
+    let _ = writeln!(content, "- review_status: {}", entry.review_status);
+    if let Some(path) = &entry.report_path {
+        let _ = writeln!(content, "- html_report: {}", path);
+    }
+    if let Some(note) = &entry.review_note {
+        let _ = writeln!(content, "- codex_review_note: {}", note);
+    }
+    let _ = writeln!(content);
+    let _ = writeln!(content, "## Why It Matters");
+    let _ = writeln!(content, "{}", event.relevance);
+    let _ = writeln!(content);
+    let _ = writeln!(content, "## Summary");
+    let _ = writeln!(content, "{}", event.summary);
+    let _ = writeln!(content);
+    let _ = writeln!(content, "## Sources");
+    for source in &event.sources {
+        let _ = writeln!(
+            content,
+            "- [{}]({}) — group={}, trust={}, published={}",
+            source.title,
+            source.url,
+            source.source_group,
+            source.source_trust,
+            source.published_at.clone().unwrap_or_else(|| "unknown".into())
+        );
+    }
+    let _ = writeln!(content);
+    let _ = writeln!(content, "## Guardrails");
+    for guardrail in &entry.guardrails {
+        let _ = writeln!(content, "- {}", guardrail);
+    }
+    content
+}
+
+async fn publish_entry_to_kb(entry: &mut ResearchInboxEntry) -> usize {
+    let mut published = 0usize;
+    let report_path = entry.report_path.clone().unwrap_or_default();
+    let file_refs = if report_path.is_empty() { String::new() } else { report_path };
+    let review_status = entry.review_status.clone();
+    let snapshot = entry.clone();
+    for event in entry.events.iter_mut() {
+        if !event_should_publish_to_kb(event, &review_status) {
+            if event.kb_publish_status.is_empty() || event.kb_publish_status == "candidate" {
+                event.kb_publish_status = "not_eligible".into();
+            }
+            continue;
+        }
+        let topic_key = event.kb_topic_key.clone().unwrap_or_else(|| kb_topic_key_for(event));
+        let title = format!("Research Sentinel: {}", event.title);
+        let content = render_kb_intelligence_note(&snapshot, event);
+        match crate::kb_client::write_raw_to_project(
+            "sirin",
+            &topic_key,
+            &title,
+            &content,
+            "research-sentinel",
+            "research_sentinel,official_investment,agoramarketapi_guardrails",
+            &file_refs,
+        )
+        .await
+        {
+            Ok(()) => {
+                event.kb_topic_key = Some(topic_key);
+                event.kb_publish_status = "published_or_skipped_by_env".into();
+                published += 1;
+            }
+            Err(e) => {
+                event.kb_topic_key = Some(topic_key);
+                event.kb_publish_status = format!("error: {e}");
+            }
+        }
+    }
+    entry.kb_publish_count = published;
+    published
+}
+
 pub(crate) fn call_research_sentinel_goal_create(args: Value) -> Result<Value, String> {
     let goal = build_goal_from_args(&args);
     goal_log()
@@ -1095,6 +1296,7 @@ pub(crate) async fn call_research_sentinel_run_once(args: Value) -> Result<Value
 
     let max_results = args.get("max_results").and_then(Value::as_u64).unwrap_or(12).clamp(1, 30) as usize;
     let create_inbox = args.get("create_inbox").and_then(Value::as_bool).unwrap_or(true);
+    let publish_to_kb = args.get("publish_to_kb").and_then(Value::as_bool).unwrap_or(false);
     let sources = sources_arg(&args);
 
     let mut source_errors = Vec::new();
@@ -1124,7 +1326,10 @@ pub(crate) async fn call_research_sentinel_run_once(args: Value) -> Result<Value
 
     let run_id = format!("rsr-{}", Utc::now().timestamp_millis());
     let inbox_id = hash_id("rsn", &format!("{}:{run_id}", goal.id));
-    let events = aggregate_events(&items);
+    let mut events = aggregate_events(&items);
+    if create_inbox {
+        apply_event_state(&mut events)?;
+    }
     let mut entry = ResearchInboxEntry {
         id: inbox_id.clone(),
         run_id: run_id.clone(),
@@ -1146,11 +1351,16 @@ pub(crate) async fn call_research_sentinel_run_once(args: Value) -> Result<Value
             "Codex must review sources before converting findings into engineering or risk-control work.".into(),
         ],
         report_path: None,
+        kb_publish_count: 0,
     };
 
     if create_inbox {
         let report_path = write_research_report(&entry)?;
         entry.report_path = Some(report_path.to_string_lossy().to_string());
+        if publish_to_kb {
+            publish_entry_to_kb(&mut entry).await;
+            let _ = write_research_report(&entry);
+        }
         inbox_log()
             .upsert_by(entry.clone(), |item| item.id.clone())
             .map_err(|e| e.to_string())?;
@@ -1163,6 +1373,9 @@ pub(crate) async fn call_research_sentinel_run_once(args: Value) -> Result<Value
         "count": entry.items.len(),
         "event_count": entry.events.len(),
         "review_count": entry.events.iter().filter(|event| event.needs_codex_review).count(),
+        "new_event_count": entry.events.iter().filter(|event| event.occurrence_status == "new").count(),
+        "escalated_event_count": entry.events.iter().filter(|event| event.occurrence_status == "escalated").count(),
+        "kb_publish_count": entry.kb_publish_count,
         "report_path": entry.report_path,
         "entry": entry,
     }))
@@ -1203,7 +1416,7 @@ pub(crate) fn call_research_sentinel_ack(args: Value) -> Result<Value, String> {
     Ok(json!({ "id": id, "acknowledged": changed }))
 }
 
-pub(crate) fn call_research_sentinel_review(args: Value) -> Result<Value, String> {
+pub(crate) async fn call_research_sentinel_review(args: Value) -> Result<Value, String> {
     let id = args.get("id").and_then(Value::as_str).ok_or("Missing id")?.to_string();
     let review_status = args
         .get("review_status")
@@ -1246,7 +1459,13 @@ pub(crate) fn call_research_sentinel_review(args: Value) -> Result<Value, String
         .map_err(|e| e.to_string())?;
 
     match updated {
-        Some(entry) => {
+        Some(mut entry) => {
+            if matches!(entry.review_status.as_str(), "accepted" | "convert_to_issue") {
+                publish_entry_to_kb(&mut entry).await;
+                inbox_log()
+                    .upsert_by(entry.clone(), |item| item.id.clone())
+                    .map_err(|e| e.to_string())?;
+            }
             let _ = write_research_report(&entry);
             Ok(json!({ "updated": true, "entry": entry }))
         }
@@ -1462,12 +1681,43 @@ mod tests {
             source_errors: Vec::new(),
             guardrails: vec!["Research only; no trading instruction was generated.".into()],
             report_path: None,
+            kb_publish_count: 0,
         };
         let html = render_research_report_html(&entry);
         assert!(html.contains("SEC announces crypto market structure rule proposal"));
         assert!(html.contains("convert_to_issue"));
         assert!(html.contains("https://www.sec.gov/news/press-release/example"));
         assert!(html.contains("Research only; no trading instruction was generated."));
+    }
+
+    #[test]
+    fn classifies_event_occurrence_for_kb_pipeline() {
+        let item = item_from_candidate(NewsCandidate {
+            title: "SEC announces crypto market structure rule proposal".into(),
+            url: "https://www.sec.gov/news/press-release/example".into(),
+            snippet: "The SEC announces a regulatory proposal for crypto market structure.".into(),
+            published_at: Some("Sun, 24 May 2026 00:00:00 +0000".into()),
+            source_name: "SEC Press Releases".into(),
+            source_group: "official".into(),
+            source_trust: 100,
+            source_categories: vec!["regulation".into()],
+            official_source: true,
+        });
+        let event = aggregate_events(&[item])[0].clone();
+        assert_eq!(classify_occurrence(&event, None), "new");
+        let previous = ResearchEventState {
+            event_key: event.event_key.clone(),
+            first_seen_at: "2026-05-24T00:00:00Z".into(),
+            last_seen_at: "2026-05-24T00:00:00Z".into(),
+            seen_count: 1,
+            last_review_score: event.review_score,
+            last_recommendation: event.codex_recommendation.clone(),
+            last_title: event.title.clone(),
+            last_kb_topic_key: kb_topic_key_for(&event),
+        };
+        assert_eq!(classify_occurrence(&event, Some(&previous)), "seen");
+        assert!(event_should_publish_to_kb(&event, "accepted"));
+        assert!(kb_topic_key_for(&event).starts_with("research-sentinel-event-"));
     }
 
     #[test]

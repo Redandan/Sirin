@@ -1677,7 +1677,8 @@ fn seed_default(m: &mut RegistryMap) {
                 "lookback_hours": { "type": "integer", "description": "回看小時，預設 goal 值或 24，範圍 1..168" },
                 "rss_feeds": { "type": "array", "items": { "type": "string" }, "description": "臨時 RSS 來源；未提供時使用 config/research_sentinel.yaml 的 official/investment_data sources" },
                 "max_results": { "type": "integer", "description": "最多保留結果，預設 12，範圍 1..30" },
-                "create_inbox": { "type": "boolean", "description": "是否寫入 inbox，預設 true" }
+                "create_inbox": { "type": "boolean", "description": "是否寫入 inbox，預設 true" },
+                "publish_to_kb": { "type": "boolean", "description": "是否對符合條件的新事件/升級事件嘗試寫入 KB；仍受 KB_ENABLED/KB_WRITE_TELEMETRY 保護，預設 false" }
             }
         }),
         handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::research_sentinel::call_research_sentinel_run_once(args))),
@@ -1711,7 +1712,7 @@ fn seed_default(m: &mut RegistryMap) {
 
     m.insert("research_sentinel_review", ToolDef {
         name:         "research_sentinel_review",
-        description: "回寫 Codex 對 News Research Sentinel inbox item 的驗收結果，形成研究閉環。狀態可為 accepted、ignored、needs_more_sources、convert_to_issue。",
+        description: "回寫 Codex 對 News Research Sentinel inbox item 的驗收結果，形成研究閉環。accepted/convert_to_issue 會對符合條件事件嘗試寫入 KB；狀態可為 accepted、ignored、needs_more_sources、convert_to_issue。",
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -1725,7 +1726,7 @@ fn seed_default(m: &mut RegistryMap) {
             },
             "required": ["id", "review_status"]
         }),
-        handler:      ToolHandler::SyncJson(crate::research_sentinel::call_research_sentinel_review),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::research_sentinel::call_research_sentinel_review(args))),
     });
 }
 
