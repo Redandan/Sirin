@@ -121,6 +121,15 @@ Kick off a research task.
 {"name":"trigger_research","arguments":{"topic":"...","url":"..."}}
 ```
 
+#### `research_sentinel_run_once`
+Run one official/investment RSS research pass for a Codex-defined review goal.
+Set `deep_research=true` or `deep_research_mode=auto|required` to request the
+optional local LLM analysis layer. `auto` keeps the deterministic RSS result if
+the LLM is unavailable; `required` records the deep research step as failed.
+```json
+{"name":"research_sentinel_run_once","arguments":{"topic":"AgoraMarketAPI auto trading news","deep_research":true,"max_deep_events":4}}
+```
+
 #### `a2a_worker_status`
 Inspect Sirin's server-side A2A worker. The worker is a local runner only:
 it claims compatible tasks from an external MCP task service, executes Sirin

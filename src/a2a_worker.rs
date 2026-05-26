@@ -409,6 +409,31 @@ fn artifacts_from_result(result: &Value) -> Value {
             "metadata": { "name": "research_sentinel_run" },
         }));
     }
+    if let Some(deep) = result
+        .get("deep_research")
+        .or_else(|| result.get("entry").and_then(|entry| entry.get("deep_research")))
+        .filter(|value| !value.is_null())
+    {
+        artifacts.push(json!({
+            "artifactType": "JSON_PAYLOAD",
+            "uriOrValue": deep.to_string(),
+            "metadata": { "name": "deep_research_result" },
+        }));
+        if let Some(issue) = deep.get("issue_draft").and_then(Value::as_str).filter(|s| !s.trim().is_empty()) {
+            artifacts.push(json!({
+                "artifactType": "LOG",
+                "uriOrValue": issue,
+                "metadata": { "name": "deep_research_issue_draft" },
+            }));
+        }
+        if let Some(kb) = deep.get("kb_draft").and_then(Value::as_str).filter(|s| !s.trim().is_empty()) {
+            artifacts.push(json!({
+                "artifactType": "LOG",
+                "uriOrValue": kb,
+                "metadata": { "name": "deep_research_kb_draft" },
+            }));
+        }
+    }
     artifacts.push(json!({
         "artifactType": "JSON_PAYLOAD",
         "uriOrValue": result.to_string(),
@@ -426,6 +451,10 @@ fn normalize_research_params(args: &mut Value) {
         ("createReport", "create_report"),
         ("publishToKb", "publish_to_kb"),
         ("rssFeeds", "rss_feeds"),
+        ("deepResearch", "deep_research"),
+        ("deepResearchMode", "deep_research_mode"),
+        ("maxDeepEvents", "max_deep_events"),
+        ("llmAnalysis", "llm_analysis"),
     ] {
         if !obj.contains_key(snake) {
             if let Some(value) = obj.get(camel).cloned() {
@@ -564,13 +593,19 @@ mod tests {
             "lookbackHours": 6,
             "maxResults": 3,
             "publishToKb": false,
-            "createReport": "auto"
+            "createReport": "auto",
+            "deepResearch": true,
+            "deepResearchMode": "auto",
+            "maxDeepEvents": 2
         });
         normalize_research_params(&mut args);
         assert_eq!(args["lookback_hours"], 6);
         assert_eq!(args["max_results"], 3);
         assert_eq!(args["publish_to_kb"], false);
         assert_eq!(args["create_report"], "auto");
+        assert_eq!(args["deep_research"], true);
+        assert_eq!(args["deep_research_mode"], "auto");
+        assert_eq!(args["max_deep_events"], 2);
     }
 
     #[test]
@@ -579,11 +614,26 @@ mod tests {
             "run_id": "rsr-1",
             "inbox_id": "rsn-1",
             "report_path": "C:/tmp/report.html",
-            "summary": "done"
+            "summary": "done",
+            "deep_research": {
+                "enabled": true,
+                "status": "completed",
+                "issue_draft": "Open an issue",
+                "kb_draft": "Write KB"
+            }
         }));
         let first = artifacts.as_array().expect("array").first().expect("artifact");
         assert!(first.get("artifactType").is_some());
         assert!(first.get("uriOrValue").is_some());
         assert!(first.get("metadata").is_some());
+        let names: Vec<_> = artifacts
+            .as_array()
+            .expect("array")
+            .iter()
+            .filter_map(|item| item.get("metadata")?.get("name")?.as_str())
+            .collect();
+        assert!(names.contains(&"deep_research_result"));
+        assert!(names.contains(&"deep_research_issue_draft"));
+        assert!(names.contains(&"deep_research_kb_draft"));
     }
 }

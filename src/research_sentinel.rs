@@ -183,9 +183,59 @@ pub struct ResearchInboxEntry {
     pub source_errors: Vec<String>,
     pub guardrails: Vec<String>,
     #[serde(default)]
+    pub deep_research: Option<DeepResearchResult>,
+    #[serde(default)]
     pub report_path: Option<String>,
     #[serde(default)]
     pub kb_publish_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeepResearchResult {
+    pub enabled: bool,
+    pub status: String,
+    #[serde(default)]
+    pub mode: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub findings: Vec<DeepResearchFinding>,
+    #[serde(default)]
+    pub risk_guardrail_candidates: Vec<String>,
+    #[serde(default)]
+    pub issue_draft: Option<String>,
+    #[serde(default)]
+    pub kb_draft: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeepResearchFinding {
+    pub title: String,
+    pub evidence: String,
+    pub relevance: String,
+    pub recommendation: String,
+    #[serde(default, deserialize_with = "deserialize_source_urls")]
+    pub source_urls: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct DeepResearchPayload {
+    summary: String,
+    findings: Vec<DeepResearchFinding>,
+    risk_guardrail_candidates: Vec<String>,
+    issue_draft: Option<String>,
+    kb_draft: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeepResearchMode {
+    Off,
+    Auto,
+    Required,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -410,6 +460,49 @@ fn str_arg(args: &Value, key: &str, default: &str) -> String {
         .filter(|s| !s.is_empty())
         .unwrap_or(default)
         .to_string()
+}
+
+fn boolish_arg(args: &Value, key: &str) -> Option<bool> {
+    match args.get(key)? {
+        Value::Bool(value) => Some(*value),
+        Value::String(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn deep_research_mode(args: &Value) -> DeepResearchMode {
+    if let Some(mode) = args.get("deep_research_mode").and_then(Value::as_str) {
+        return match mode.trim().to_ascii_lowercase().as_str() {
+            "required" | "require" | "strict" => DeepResearchMode::Required,
+            "auto" | "optional" | "on" | "true" => DeepResearchMode::Auto,
+            _ => DeepResearchMode::Off,
+        };
+    }
+    for key in ["deep_research", "llm_analysis"] {
+        if let Some(enabled) = boolish_arg(args, key) {
+            return if enabled { DeepResearchMode::Auto } else { DeepResearchMode::Off };
+        }
+        if let Some(mode) = args.get(key).and_then(Value::as_str) {
+            return match mode.trim().to_ascii_lowercase().as_str() {
+                "required" | "require" | "strict" => DeepResearchMode::Required,
+                "auto" | "optional" | "on" | "true" => DeepResearchMode::Auto,
+                _ => DeepResearchMode::Off,
+            };
+        }
+    }
+    DeepResearchMode::Off
+}
+
+fn deep_research_mode_name(mode: DeepResearchMode) -> &'static str {
+    match mode {
+        DeepResearchMode::Off => "off",
+        DeepResearchMode::Auto => "auto",
+        DeepResearchMode::Required => "required",
+    }
 }
 
 fn keywords_arg(args: &Value) -> Vec<String> {
@@ -1188,6 +1281,275 @@ fn summarize(topic: &str, events: &[ResearchEvent], errors: &[String]) -> String
     }
 }
 
+fn compact_text(value: &str, max_chars: usize) -> String {
+    let trimmed = value.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+    let mut out = trimmed.chars().take(max_chars.saturating_sub(1)).collect::<String>();
+    out.push('…');
+    out
+}
+
+fn strip_json_fence(text: &str) -> &str {
+    let trimmed = text.trim();
+    if !trimmed.starts_with("```") {
+        return trimmed;
+    }
+    let without_open = trimmed
+        .trim_start_matches("```json")
+        .trim_start_matches("```JSON")
+        .trim_start_matches("```")
+        .trim();
+    without_open.strip_suffix("```").unwrap_or(without_open).trim()
+}
+
+fn deserialize_source_urls<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    let Some(items) = value.as_array() else {
+        return Ok(Vec::new());
+    };
+    Ok(items
+        .iter()
+        .filter_map(|item| {
+            item.as_str()
+                .or_else(|| item.get("url").and_then(Value::as_str))
+                .or_else(|| item.get("href").and_then(Value::as_str))
+                .map(str::trim)
+                .filter(|url| !url.is_empty())
+                .map(str::to_string)
+        })
+        .collect())
+}
+
+fn value_to_text(value: &Value) -> String {
+    if let Some(text) = value.as_str() {
+        return text.trim().to_string();
+    }
+    if let Some(obj) = value.as_object() {
+        let mut parts = Vec::new();
+        for key in ["title", "summary", "body", "content", "text", "description"] {
+            if let Some(text) = obj.get(key).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()) {
+                parts.push(text.to_string());
+            }
+        }
+        if !parts.is_empty() {
+            return parts.join("\n\n");
+        }
+    }
+    if value.is_null() {
+        String::new()
+    } else {
+        value.to_string()
+    }
+}
+
+fn optional_value_to_text(value: Option<&Value>) -> Option<String> {
+    value
+        .map(value_to_text)
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+}
+
+fn value_to_string_vec(value: Option<&Value>) -> Vec<String> {
+    match value {
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(|item| optional_value_to_text(Some(item)))
+            .collect(),
+        Some(value) => optional_value_to_text(Some(value)).into_iter().collect(),
+        None => Vec::new(),
+    }
+}
+
+fn source_urls_from_value(value: Option<&Value>) -> Vec<String> {
+    let Some(Value::Array(items)) = value else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            item.as_str()
+                .or_else(|| item.get("url").and_then(Value::as_str))
+                .or_else(|| item.get("href").and_then(Value::as_str))
+                .map(str::trim)
+                .filter(|url| !url.is_empty())
+                .map(str::to_string)
+        })
+        .collect()
+}
+
+fn finding_from_value(value: &Value) -> DeepResearchFinding {
+    DeepResearchFinding {
+        title: optional_value_to_text(value.get("title")).unwrap_or_else(|| "Untitled finding".into()),
+        evidence: optional_value_to_text(value.get("evidence")).unwrap_or_default(),
+        relevance: optional_value_to_text(value.get("relevance")).unwrap_or_default(),
+        recommendation: optional_value_to_text(value.get("recommendation")).unwrap_or_default(),
+        source_urls: source_urls_from_value(value.get("source_urls").or_else(|| value.get("sources"))),
+    }
+}
+
+fn parse_deep_research_payload(text: &str) -> Result<DeepResearchPayload, String> {
+    let json_text = strip_json_fence(text);
+    let value = serde_json::from_str::<Value>(json_text)
+        .map_err(|e| format!("deep research returned non-JSON text: {e}; excerpt={}", compact_text(json_text, 240)))?;
+    let findings = value
+        .get("findings")
+        .and_then(Value::as_array)
+        .map(|items| items.iter().map(finding_from_value).collect())
+        .unwrap_or_default();
+    Ok(DeepResearchPayload {
+        summary: optional_value_to_text(value.get("summary")).unwrap_or_default(),
+        findings,
+        risk_guardrail_candidates: value_to_string_vec(value.get("risk_guardrail_candidates")),
+        issue_draft: optional_value_to_text(value.get("issue_draft")),
+        kb_draft: optional_value_to_text(value.get("kb_draft")),
+    })
+}
+
+fn deep_research_prompt(goal: &ResearchGoal, entry: &ResearchInboxEntry, max_events: usize) -> String {
+    let events = entry
+        .events
+        .iter()
+        .filter(|event| event.needs_codex_review)
+        .take(max_events)
+        .map(|event| {
+            json!({
+                "title": event.title,
+                "event_type": event.event_type,
+                "confidence": event.confidence,
+                "occurrence_status": event.occurrence_status,
+                "codex_recommendation": event.codex_recommendation,
+                "relevance": compact_text(&event.relevance, 700),
+                "summary": compact_text(&event.summary, 700),
+                "sources": event.sources.iter().take(5).map(|source| json!({
+                    "title": source.title,
+                    "url": source.url,
+                    "source_group": source.source_group,
+                    "source_trust": source.source_trust,
+                    "published_at": source.published_at,
+                    "snippet": compact_text(&source.snippet, 500),
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let context = json!({
+        "goal": {
+            "topic": goal.topic,
+            "focus": goal.focus,
+            "keywords": goal.keywords,
+        },
+        "deterministic_summary": entry.summary,
+        "events": events,
+        "guardrails": entry.guardrails,
+    });
+    format!(
+        "You are Sirin's local deep research layer for Codex review. \
+Analyze only the supplied public-source event bundle for AgoraMarketAPI auto-trading risk research. \
+Do not create trading instructions. Return strict JSON only with keys: \
+summary, findings, risk_guardrail_candidates, issue_draft, kb_draft. \
+Each finding must include title, evidence, relevance, recommendation, source_urls. \
+Prefer concrete Codex-verifiable engineering or risk-control follow-up work.\n\nEvent bundle:\n{}",
+        serde_json::to_string_pretty(&context).unwrap_or_else(|_| "{}".into())
+    )
+}
+
+fn deep_research_skipped(mode: DeepResearchMode, status: &str, error: Option<String>) -> DeepResearchResult {
+    DeepResearchResult {
+        enabled: !matches!(mode, DeepResearchMode::Off),
+        status: status.into(),
+        mode: deep_research_mode_name(mode).into(),
+        model: None,
+        summary: String::new(),
+        findings: Vec::new(),
+        risk_guardrail_candidates: Vec::new(),
+        issue_draft: None,
+        kb_draft: None,
+        error,
+    }
+}
+
+async fn call_deep_research_model(
+    prompt: &str,
+) -> Result<(String, String), Box<dyn std::error::Error + Send + Sync>> {
+    let http = crate::llm::shared_http();
+    let messages = [
+        crate::llm::LlmMessage::system(
+            "Return strict JSON only. Never include markdown fences unless explicitly impossible.",
+        ),
+        crate::llm::LlmMessage::user(prompt),
+    ];
+    let primary = crate::llm::shared_llm();
+    match tokio::time::timeout(
+        Duration::from_secs(45),
+        crate::llm::call_prompt_messages(&http, &primary, &messages),
+    )
+    .await
+    {
+        Ok(Ok(text)) => return Ok((text, primary.model.clone())),
+        Ok(Err(primary_err)) => {
+            if let Some(fallback) = crate::llm::fallback_llm() {
+                let fallback_result = tokio::time::timeout(
+                    Duration::from_secs(45),
+                    crate::llm::call_prompt_messages(&http, &fallback, &messages),
+                )
+                .await;
+                match fallback_result {
+                    Ok(Ok(text)) => return Ok((text, fallback.model.clone())),
+                    Ok(Err(fallback_err)) => {
+                        return Err(format!("primary failed: {primary_err}; fallback failed: {fallback_err}").into());
+                    }
+                    Err(_) => {
+                        return Err(format!("primary failed: {primary_err}; fallback timed out").into());
+                    }
+                }
+            }
+            Err(primary_err)
+        }
+        Err(_) => Err("primary deep research LLM timed out".into()),
+    }
+}
+
+async fn maybe_run_deep_research(
+    args: &Value,
+    goal: &ResearchGoal,
+    entry: &ResearchInboxEntry,
+) -> Option<DeepResearchResult> {
+    let mode = deep_research_mode(args);
+    if matches!(mode, DeepResearchMode::Off) {
+        return None;
+    }
+    let max_events = args.get("max_deep_events").and_then(Value::as_u64).unwrap_or(4).clamp(1, 8) as usize;
+    if !entry.events.iter().any(|event| event.needs_codex_review) {
+        return Some(deep_research_skipped(mode, "skipped", Some("no Codex-review events to analyze".into())));
+    }
+    let prompt = deep_research_prompt(goal, entry, max_events);
+    match call_deep_research_model(&prompt).await {
+        Ok((text, model)) => match parse_deep_research_payload(&text) {
+            Ok(payload) => Some(DeepResearchResult {
+                enabled: true,
+                status: "completed".into(),
+                mode: deep_research_mode_name(mode).into(),
+                model: Some(model),
+                summary: payload.summary,
+                findings: payload.findings,
+                risk_guardrail_candidates: payload.risk_guardrail_candidates,
+                issue_draft: payload.issue_draft,
+                kb_draft: payload.kb_draft,
+                error: None,
+            }),
+            Err(e) => Some(deep_research_skipped(mode, "failed", Some(e))),
+        },
+        Err(e) => {
+            let status = if matches!(mode, DeepResearchMode::Required) { "failed" } else { "unavailable" };
+            Some(deep_research_skipped(mode, status, Some(e.to_string())))
+        }
+    }
+}
+
 fn html_escape(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -1234,6 +1596,56 @@ pre{{white-space:pre-wrap;background:#050708;padding:12px;border-radius:6px;colo
     );
     if let Some(note) = &entry.review_note {
         let _ = write!(html, "<h2>Codex Review</h2><pre>{}</pre>", html_escape(note));
+    }
+    if let Some(deep) = &entry.deep_research {
+        let _ = write!(
+            html,
+            "<h2>Deep Research</h2><p class=\"meta\">Status: {} | Mode: {} | Model: {}</p>",
+            html_escape(&deep.status),
+            html_escape(&deep.mode),
+            html_escape(deep.model.as_deref().unwrap_or("n/a"))
+        );
+        if !deep.summary.is_empty() {
+            let _ = write!(html, "<p>{}</p>", html_escape(&deep.summary));
+        }
+        if let Some(error) = &deep.error {
+            let _ = write!(html, "<p class=\"error\">{}</p>", html_escape(error));
+        }
+        if !deep.findings.is_empty() {
+            html.push_str("<h3>Findings</h3><ul>");
+            for finding in &deep.findings {
+                let _ = write!(
+                    html,
+                    "<li><strong>{}</strong><br>{}<br><span class=\"meta\">{} | {}</span>",
+                    html_escape(&finding.title),
+                    html_escape(&finding.evidence),
+                    html_escape(&finding.relevance),
+                    html_escape(&finding.recommendation)
+                );
+                if !finding.source_urls.is_empty() {
+                    html.push_str("<ul>");
+                    for url in &finding.source_urls {
+                        let _ = write!(html, "<li><a href=\"{}\">{}</a></li>", html_escape(url), html_escape(url));
+                    }
+                    html.push_str("</ul>");
+                }
+                html.push_str("</li>");
+            }
+            html.push_str("</ul>");
+        }
+        if !deep.risk_guardrail_candidates.is_empty() {
+            html.push_str("<h3>Risk Guardrail Candidates</h3><ul>");
+            for guardrail in &deep.risk_guardrail_candidates {
+                let _ = write!(html, "<li class=\"guardrail\">{}</li>", html_escape(guardrail));
+            }
+            html.push_str("</ul>");
+        }
+        if let Some(issue) = &deep.issue_draft {
+            let _ = write!(html, "<h3>Issue Draft</h3><pre>{}</pre>", html_escape(issue));
+        }
+        if let Some(kb) = &deep.kb_draft {
+            let _ = write!(html, "<h3>KB Draft</h3><pre>{}</pre>", html_escape(kb));
+        }
     }
     html.push_str("<h2>Events</h2>");
     for event in &entry.events {
@@ -1565,9 +1977,12 @@ pub(crate) async fn call_research_sentinel_run_once(args: Value) -> Result<Value
             "Sirin did not read or mutate AgoraMarketAPI trading state.".into(),
             "Codex must review sources before converting findings into engineering or risk-control work.".into(),
         ],
+        deep_research: None,
         report_path: None,
         kb_publish_count: 0,
     };
+
+    entry.deep_research = maybe_run_deep_research(&args, &goal, &entry).await;
 
     if create_inbox {
         if should_create_report(&args, &entry) {
@@ -1596,6 +2011,7 @@ pub(crate) async fn call_research_sentinel_run_once(args: Value) -> Result<Value
         "escalated_event_count": entry.events.iter().filter(|event| event.occurrence_status == "escalated").count(),
         "kb_publish_count": entry.kb_publish_count,
         "report_path": entry.report_path,
+        "deep_research": entry.deep_research,
         "entry": entry,
     }))
 }
@@ -1935,6 +2351,24 @@ mod tests {
             items: vec![item],
             source_errors: Vec::new(),
             guardrails: vec!["Research only; no trading instruction was generated.".into()],
+            deep_research: Some(DeepResearchResult {
+                enabled: true,
+                status: "completed".into(),
+                mode: "auto".into(),
+                model: Some("test-model".into()),
+                summary: "Deep review found one policy-sensitive event.".into(),
+                findings: vec![DeepResearchFinding {
+                    title: "SEC rule proposal may affect risk filters".into(),
+                    evidence: "Official SEC source references crypto market structure.".into(),
+                    relevance: "Codex should inspect exchange and compliance guardrails.".into(),
+                    recommendation: "convert_to_issue".into(),
+                    source_urls: vec!["https://www.sec.gov/news/press-release/example".into()],
+                }],
+                risk_guardrail_candidates: vec!["Pause high-risk strategy changes until Codex review.".into()],
+                issue_draft: Some("Review SEC market structure impact on strategy filters.".into()),
+                kb_draft: Some("KB note draft.".into()),
+                error: None,
+            }),
             report_path: None,
             kb_publish_count: 0,
         };
@@ -1943,6 +2377,9 @@ mod tests {
         assert!(html.contains("convert_to_issue"));
         assert!(html.contains("https://www.sec.gov/news/press-release/example"));
         assert!(html.contains("Research only; no trading instruction was generated."));
+        assert!(html.contains("Deep Research"));
+        assert!(html.contains("Risk Guardrail Candidates"));
+        assert!(html.contains("Review SEC market structure impact on strategy filters."));
     }
 
     #[test]
@@ -1976,6 +2413,7 @@ mod tests {
             items: vec![item],
             source_errors: Vec::new(),
             guardrails: Vec::new(),
+            deep_research: None,
             report_path: None,
             kb_publish_count: 0,
         };
@@ -1983,6 +2421,50 @@ mod tests {
         assert!(!should_create_report(&json!({ "create_report": "auto" }), &entry));
         assert!(!should_create_report(&json!({ "create_report": false }), &entry));
         assert!(should_create_report(&json!({ "create_report": true }), &entry));
+    }
+
+    #[test]
+    fn deep_research_mode_parses_optional_and_required_inputs() {
+        assert_eq!(deep_research_mode(&json!({})), DeepResearchMode::Off);
+        assert_eq!(deep_research_mode(&json!({ "deep_research": true })), DeepResearchMode::Auto);
+        assert_eq!(deep_research_mode(&json!({ "llm_analysis": "required" })), DeepResearchMode::Required);
+        assert_eq!(deep_research_mode(&json!({ "deep_research_mode": "off" })), DeepResearchMode::Off);
+    }
+
+    #[test]
+    fn parses_deep_research_json_fence() {
+        let payload = parse_deep_research_payload(
+            r#"```json
+{
+  "summary": "Codex should review one item.",
+  "findings": [
+    {
+      "title": "Macro risk",
+      "evidence": "Fed source",
+      "relevance": "Volatility",
+      "recommendation": "watch",
+      "source_urls": [
+        "https://www.federalreserve.gov/example",
+        {"url": "https://www.sec.gov/example"}
+      ]
+    }
+  ],
+  "risk_guardrail_candidates": [
+    "Require Codex review before strategy changes.",
+    {"title": "Guardrail", "body": "Use event windows."}
+  ],
+  "issue_draft": {"title": "Draft issue", "body": "Review macro window."},
+  "kb_draft": {"title": "Draft KB", "content": "Store event evidence."}
+}
+```"#,
+        )
+        .expect("valid fenced json");
+        assert_eq!(payload.summary, "Codex should review one item.");
+        assert_eq!(payload.findings[0].recommendation, "watch");
+        assert_eq!(payload.findings[0].source_urls.len(), 2);
+        assert_eq!(payload.risk_guardrail_candidates.len(), 2);
+        assert!(payload.issue_draft.as_deref().unwrap_or_default().contains("Review macro window."));
+        assert!(payload.kb_draft.as_deref().unwrap_or_default().contains("Store event evidence."));
     }
 
     #[test]

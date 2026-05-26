@@ -1679,7 +1679,10 @@ fn seed_default(m: &mut RegistryMap) {
                 "max_results": { "type": "integer", "description": "最多保留結果，預設 12，範圍 1..30" },
                 "create_inbox": { "type": "boolean", "description": "是否寫入 inbox，預設 true" },
                 "create_report": { "description": "HTML 報告產生策略：true/always 強制產生；false/never 不產生；auto 只在 new convert_to_issue、escalated、source_errors 時產生。未提供時手動 run 預設產生。" },
-                "publish_to_kb": { "type": "boolean", "description": "是否對符合條件的新事件/升級事件嘗試寫入 KB；仍受 KB_ENABLED/KB_WRITE_TELEMETRY 保護，預設 false" }
+                "publish_to_kb": { "type": "boolean", "description": "是否對符合條件的新事件/升級事件嘗試寫入 KB；仍受 KB_ENABLED/KB_WRITE_TELEMETRY 保護，預設 false" },
+                "deep_research": { "type": "boolean", "description": "是否啟用可選 LLM deep research 層；LLM 不可用時會保留 deterministic 結果並標記 unavailable，預設 false" },
+                "deep_research_mode": { "type": "string", "enum": ["off", "auto", "required"], "description": "deep research 模式；auto 允許安全降級，required 會把 LLM 失敗標成 failed" },
+                "max_deep_events": { "type": "integer", "description": "最多交給 deep research 分析的 Codex-review events，預設 4，範圍 1..8" }
             }
         }),
         handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::research_sentinel::call_research_sentinel_run_once(args))),

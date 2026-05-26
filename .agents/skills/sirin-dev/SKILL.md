@@ -110,6 +110,11 @@ src/
 │                           not depend on this.
 ├── assistant/              Assistant mode scaffold (empty stub) — populate
 │                           when adding Google Maps / FB farm style tasks
+├── research_sentinel.rs    Official/investment RSS research inbox for Codex
+│                           review.  Optional `deep_research` / `deep_research_mode`
+│                           adds an LLM analysis layer, but the deterministic
+│                           RSS/event result must still succeed when local LLM
+│                           is unavailable.
 ├── test_runner/            AI test runner (browser, not unit tests)
 │   ├── parser.rs           YAML TestGoal (locale, retry, url_query,
 │   │                       browser_headless, llm_backend, success_criteria,
