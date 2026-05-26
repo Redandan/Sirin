@@ -251,7 +251,6 @@ async fn run_one_poll(cfg: &A2aWorkerConfig) {
     let claim_args = json!({
         "workerId": cfg.worker_id,
         "assigneeType": cfg.assignee_type,
-        "capabilities": [DEFAULT_TASK_TYPE],
     });
     let claim = crate::mcp_client::call_tool_with_bearer(
         &cfg.server_url,
@@ -296,7 +295,7 @@ async fn run_one_poll(cfg: &A2aWorkerConfig) {
         status.last_status = Some("running".into());
     });
 
-    let _ = report_task_status(cfg, &task.id, "RUNNING", None, json!({}), json!(null)).await;
+    let _ = report_task_status(cfg, &task.id, "RUNNING", None, json!([]), json!(null)).await;
 
     let outcome = execute_task(&task).await;
     match outcome {
@@ -314,7 +313,7 @@ async fn run_one_poll(cfg: &A2aWorkerConfig) {
             });
         }
         Err(e) => {
-            let _ = report_task_status(cfg, &task.id, "FAILED", Some(e.clone()), json!({}), json!(null)).await;
+            let _ = report_task_status(cfg, &task.id, "FAILED", Some(e.clone()), json!([]), json!(null)).await;
             update_status(|status| {
                 status.last_status = Some("failed".into());
                 status.last_error = Some(e);
@@ -330,6 +329,7 @@ async fn execute_task(task: &A2aTask) -> Result<Value, String> {
             if !args.is_object() {
                 args = json!({});
             }
+            normalize_research_params(&mut args);
             if args.get("create_inbox").is_none() {
                 args["create_inbox"] = json!(true);
             }
@@ -350,14 +350,23 @@ async fn report_task_status(
     artifacts: Value,
     result: Value,
 ) -> Result<Value, String> {
+    let summary = if let Some(error) = error.as_deref() {
+        status_message(status, Some(error))
+    } else {
+        result
+            .get("summary")
+            .and_then(Value::as_str)
+            .map(|s| s.chars().take(1000).collect::<String>())
+            .unwrap_or_else(|| status_message(status, None))
+    };
+    let artifacts_json = serde_json::to_string(&artifacts)
+        .map_err(|e| format!("serialize A2A artifacts failed: {e}"))?;
     let args = json!({
         "taskId": task_id,
-        "workerId": cfg.worker_id,
         "status": status,
-        "message": status_message(status, error.as_deref()),
-        "error": error,
-        "artifacts": artifacts,
-        "result": result,
+        "summary": summary,
+        "errorMessage": error.unwrap_or_default(),
+        "artifactsJson": artifacts_json,
     });
     crate::mcp_client::call_tool_with_bearer(
         &cfg.server_url,
@@ -381,41 +390,79 @@ fn artifacts_from_result(result: &Value) -> Value {
     let mut artifacts = Vec::new();
     if let Some(inbox_id) = result.get("inbox_id").and_then(Value::as_str) {
         artifacts.push(json!({
-            "type": "SIRIN_INBOX",
-            "name": "research_sentinel_inbox",
-            "value": inbox_id,
+            "artifactType": "INBOX_ID",
+            "uriOrValue": inbox_id,
+            "metadata": { "name": "research_sentinel_inbox" },
         }));
     }
     if let Some(report_path) = result.get("report_path").and_then(Value::as_str) {
         artifacts.push(json!({
-            "type": "HTML_REPORT",
-            "name": "human_readable_report",
-            "path": report_path,
+            "artifactType": "HTML_REPORT",
+            "uriOrValue": report_path,
+            "metadata": { "name": "human_readable_report" },
         }));
     }
     if let Some(run_id) = result.get("run_id").and_then(Value::as_str) {
         artifacts.push(json!({
-            "type": "SIRIN_RUN",
-            "name": "research_sentinel_run",
-            "value": run_id,
+            "artifactType": "LOG",
+            "uriOrValue": run_id,
+            "metadata": { "name": "research_sentinel_run" },
         }));
     }
+    artifacts.push(json!({
+        "artifactType": "JSON_PAYLOAD",
+        "uriOrValue": result.to_string(),
+        "metadata": { "name": "research_sentinel_result" },
+    }));
     json!(artifacts)
+}
+
+fn normalize_research_params(args: &mut Value) {
+    let Some(obj) = args.as_object_mut() else { return };
+    for (camel, snake) in [
+        ("lookbackHours", "lookback_hours"),
+        ("maxResults", "max_results"),
+        ("createInbox", "create_inbox"),
+        ("createReport", "create_report"),
+        ("publishToKb", "publish_to_kb"),
+        ("rssFeeds", "rss_feeds"),
+    ] {
+        if !obj.contains_key(snake) {
+            if let Some(value) = obj.get(camel).cloned() {
+                obj.insert(snake.into(), value);
+            }
+        }
+    }
 }
 
 fn normalize_result(value: &Value) -> Result<Value, String> {
     if let Some(text) = value.get("result").and_then(Value::as_str) {
-        let text = text.trim();
-        if text.is_empty() {
-            return Ok(Value::Null);
-        }
-        return serde_json::from_str(text)
-            .map_err(|e| format!("A2A task service returned non-JSON text result: {e}"));
+        return parse_nested_json_text(text);
     }
     if let Some(result) = value.get("result") {
         return Ok(result.clone());
     }
     Ok(value.clone())
+}
+
+fn parse_nested_json_text(text: &str) -> Result<Value, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(Value::Null);
+    }
+    let mut parsed: Value = serde_json::from_str(text)
+        .map_err(|e| format!("A2A task service returned non-JSON text result: {e}"))?;
+    for _ in 0..2 {
+        let Some(inner) = parsed.as_str().map(str::trim) else {
+            return Ok(parsed);
+        };
+        if !(inner.starts_with('{') || inner.starts_with('[') || inner == "null") {
+            return Ok(parsed);
+        }
+        parsed = serde_json::from_str(inner)
+            .map_err(|e| format!("A2A task service returned invalid nested JSON text: {e}"))?;
+    }
+    Ok(parsed)
 }
 
 fn extract_task(value: &Value) -> Result<Option<A2aTask>, String> {
@@ -483,6 +530,23 @@ mod tests {
     }
 
     #[test]
+    fn extracts_task_from_double_encoded_mcp_text_result() {
+        let inner = json!({
+            "claimed": true,
+            "task": {
+                "taskId": "t-1",
+                "taskType": "SIRIN_RESEARCH_SENTINEL_RUN_ONCE",
+                "params": { "topic": "BTC" }
+            }
+        })
+        .to_string();
+        let value = json!({ "result": json!(inner).to_string() });
+        let task = extract_task(&value).expect("valid payload").expect("task");
+        assert_eq!(task.id, "t-1");
+        assert_eq!(task.params["topic"], "BTC");
+    }
+
+    #[test]
     fn empty_claim_result_is_idle() {
         assert!(extract_task(&json!({"task": null})).expect("valid").is_none());
         assert!(extract_task(&json!({})).expect("valid").is_none());
@@ -492,5 +556,34 @@ mod tests {
     fn missing_task_type_is_error() {
         let err = extract_task(&json!({"taskId":"t-2"})).expect_err("missing type");
         assert!(err.contains("missing taskType"));
+    }
+
+    #[test]
+    fn normalizes_server_camel_case_params() {
+        let mut args = json!({
+            "lookbackHours": 6,
+            "maxResults": 3,
+            "publishToKb": false,
+            "createReport": "auto"
+        });
+        normalize_research_params(&mut args);
+        assert_eq!(args["lookback_hours"], 6);
+        assert_eq!(args["max_results"], 3);
+        assert_eq!(args["publish_to_kb"], false);
+        assert_eq!(args["create_report"], "auto");
+    }
+
+    #[test]
+    fn artifacts_match_server_contract() {
+        let artifacts = artifacts_from_result(&json!({
+            "run_id": "rsr-1",
+            "inbox_id": "rsn-1",
+            "report_path": "C:/tmp/report.html",
+            "summary": "done"
+        }));
+        let first = artifacts.as_array().expect("array").first().expect("artifact");
+        assert!(first.get("artifactType").is_some());
+        assert!(first.get("uriOrValue").is_some());
+        assert!(first.get("metadata").is_some());
     }
 }
