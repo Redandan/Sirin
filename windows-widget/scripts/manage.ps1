@@ -118,7 +118,30 @@ if (-not (Test-Path -LiteralPath $manifest)) {
     throw "Build the widget before installing it: $manifest"
 }
 
-Add-AppxPackage -Register $manifest -ForceApplicationShutdown
+[xml]$desiredManifest = Get-Content -LiteralPath $manifest -Raw -Encoding UTF8
+$desiredVersion = [version]([string]$desiredManifest.Package.Identity.Version)
+$installedPackage = Get-AppxPackage -Name $packageName -ErrorAction SilentlyContinue
+$sameRegistration = $false
+if ($installedPackage) {
+    $installedVersion = [version]([string]$installedPackage.Version)
+    $installedLocation = [IO.Path]::GetFullPath([string]$installedPackage.InstallLocation)
+    $desiredLocation = [IO.Path]::GetFullPath($layout)
+    $sameLocation = [string]::Equals(
+        $installedLocation,
+        $desiredLocation,
+        [StringComparison]::OrdinalIgnoreCase
+    )
+    if ($installedVersion -gt $desiredVersion) {
+        throw "Refusing to downgrade Widget $installedVersion to $desiredVersion"
+    }
+    if ($installedVersion -eq $desiredVersion -and -not $sameLocation) {
+        throw "Widget $desiredVersion is already registered from another location: $installedLocation"
+    }
+    $sameRegistration = $installedVersion -eq $desiredVersion -and $sameLocation
+}
+if (-not $sameRegistration) {
+    Add-AppxPackage -Register $manifest -ForceApplicationShutdown
+}
 $reload = if ($SkipReload) {
     [pscustomobject]@{
         host_restarted = $false
@@ -141,6 +164,7 @@ $status = Get-SirinWidgetStatus
     provider_pid = $status.provider_pid
     widget_service_running = $status.widget_service_running
     manifest_ready = $status.manifest_ready
+    registration_updated = -not $sameRegistration
     host_restarted = $reload.host_restarted
     board_open_requested = $reload.board_open_requested
 } | ConvertTo-Json -Compress
