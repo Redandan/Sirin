@@ -1,14 +1,23 @@
 [CmdletBinding()]
 param(
     [ValidateSet('Debug', 'Release')]
-    [string]$Configuration = 'Release'
+    [string]$Configuration = 'Release',
+    [string]$BuildRoot = ''
 )
 
 $ErrorActionPreference = 'Stop'
 $widgetRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $projectRoot = Join-Path $widgetRoot 'SirinWidgetProvider'
 $project = Join-Path $projectRoot 'SirinWidgetProvider.vcxproj'
-$outRoot = [IO.Path]::GetFullPath((Join-Path $widgetRoot 'out'))
+$BuildRoot = if ([string]::IsNullOrWhiteSpace($BuildRoot)) {
+    $widgetRoot
+} else {
+    [IO.Path]::GetFullPath($BuildRoot)
+}
+$packagesRoot = [IO.Path]::GetFullPath((Join-Path $BuildRoot 'packages'))
+$intermediateRoot = [IO.Path]::GetFullPath((Join-Path $BuildRoot "obj\$Configuration")) + [IO.Path]::DirectorySeparatorChar
+$buildOutput = [IO.Path]::GetFullPath((Join-Path $BuildRoot "bin\$Configuration")) + [IO.Path]::DirectorySeparatorChar
+$outRoot = [IO.Path]::GetFullPath((Join-Path $BuildRoot 'out'))
 $layout = [IO.Path]::GetFullPath((Join-Path $outRoot 'layout'))
 
 if (-not $layout.StartsWith($outRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
@@ -31,6 +40,11 @@ if (-not (Test-Path -LiteralPath $msbuild)) {
 & $msbuild $project `
     /restore `
     /p:RestorePackagesConfig=true `
+    /p:RestorePackagesPath=$packagesRoot `
+    /p:RestoreRepositoryPath=$packagesRoot `
+    /p:NugetPackageDirectory=$packagesRoot `
+    /p:IntDir=$intermediateRoot `
+    /p:OutDir=$buildOutput `
     /p:Configuration=$Configuration `
     /p:Platform=x64 `
     /p:EnableCoreMrtTooling=false `
@@ -50,7 +64,6 @@ $providerAssetsLayout = Join-Path $layout 'ProviderAssets'
 @($layout, $providerLayout, $templateLayout, $imagesLayout, $providerAssetsLayout) |
     ForEach-Object { New-Item -ItemType Directory -Path $_ -Force | Out-Null }
 
-$buildOutput = Join-Path $projectRoot "x64\$Configuration"
 $providerExe = Join-Path $buildOutput 'SirinWidgetProvider.exe'
 if (-not (Test-Path -LiteralPath $providerExe)) {
     throw "Provider executable was not produced: $providerExe"
@@ -157,7 +170,9 @@ try {
 }
 
 $makeAppx = 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\makeappx.exe'
-$msix = Join-Path $outRoot 'SirinAIWorkWidget_0.1.4.0_x64_unsigned.msix'
+$packageManifest = [xml](Get-Content -LiteralPath (Join-Path $widgetRoot 'Package.appxmanifest') -Raw -Encoding UTF8)
+$packageVersion = [string]$packageManifest.Package.Identity.Version
+$msix = Join-Path $outRoot "SirinAIWorkWidget_${packageVersion}_x64_unsigned.msix"
 if (Test-Path -LiteralPath $makeAppx) {
     & $makeAppx pack /d $layout /p $msix /o | Out-Null
     if ($LASTEXITCODE -ne 0) {
@@ -168,9 +183,8 @@ if (Test-Path -LiteralPath $makeAppx) {
 [pscustomobject]@{
     status = 'BUILT'
     configuration = $Configuration
+    build_root = $BuildRoot
     provider = $providerExe
     layout = $layout
     unsigned_msix = if (Test-Path -LiteralPath $msix) { $msix } else { $null }
 } | ConvertTo-Json -Compress
-
-

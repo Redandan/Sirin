@@ -1,9 +1,9 @@
-//! Read-only, on-demand Windows AI work monitor.
+//! Read-only Windows AI work monitor.
 //!
-//! The collector deliberately does no background work. The web UI calls the
-//! dedicated endpoint only while the AI monitor view is open; this module then
-//! serves a 15-second cached snapshot. No credentials, command lines, message
-//! bodies, or file contents are returned.
+//! A lightweight sampler records local Codex/process counters once per minute
+//! so the trend survives while the Widget board is closed. Network route and
+//! latency probes remain on-demand and separately cached. No credentials,
+//! command lines, message bodies, or file contents are returned.
 
 use crate::platform::NoWindow;
 use chrono::{SecondsFormat, Utc};
@@ -12,12 +12,18 @@ use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
+use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-const SNAPSHOT_TTL: Duration = Duration::from_secs(15);
+const NETWORK_TTL: Duration = Duration::from_secs(15);
+const AI_SAMPLE_INTERVAL: Duration = Duration::from_secs(60);
+const AI_SAMPLE_MIN_AGE: Duration = Duration::from_secs(55);
+const AI_WORK_TTL: Duration = Duration::from_secs(75);
+const AI_SAMPLE_GAP_SECS: u64 = 90;
 const CODEX_TASK_LIMIT: usize = 8;
-const TOKEN_HISTORY_LIMIT: usize = 12;
+const TOKEN_HISTORY_LIMIT: usize = 60;
 const SPEED_TEST_BYTES: u64 = 5_000_000;
 const SPEED_TEST_URL: &str = "https://speed.cloudflare.com/__down?bytes=5000000";
 
@@ -56,7 +62,7 @@ impl Default for SafetyView {
             local_only: true,
             read_only: true,
             credentials_accessed: false,
-            background_sampling: false,
+            background_sampling: BACKGROUND_SAMPLER_RUNNING.load(Ordering::Relaxed),
             automatic_download_test: false,
         }
     }
@@ -158,9 +164,11 @@ pub struct TokenTrendView {
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct TokenTrendPointView {
+    pub sampled_at_ms: i64,
     pub interval_secs: u64,
     pub delta_tokens: u64,
     pub tokens_per_min: u64,
+    pub gap: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -185,12 +193,15 @@ pub struct SpeedTestView {
     pub evidence: EvidenceLevel,
 }
 
-struct SnapshotCache {
+struct TimedCache<T> {
     refreshed_at: Instant,
-    value: Option<AiMonitorSnapshot>,
+    value: Option<T>,
 }
 
-static SNAPSHOT_CACHE: OnceLock<Mutex<SnapshotCache>> = OnceLock::new();
+static NETWORK_CACHE: OnceLock<Mutex<TimedCache<NetworkSnapshot>>> = OnceLock::new();
+static AI_WORK_CACHE: OnceLock<Mutex<TimedCache<AiWorkSnapshot>>> = OnceLock::new();
+static SAMPLER_STARTED: OnceLock<bool> = OnceLock::new();
+static BACKGROUND_SAMPLER_RUNNING: AtomicBool = AtomicBool::new(false);
 
 #[derive(Default)]
 struct TokenTrendState {
@@ -201,37 +212,80 @@ struct TokenTrendState {
 
 static TOKEN_TREND: OnceLock<Mutex<TokenTrendState>> = OnceLock::new();
 
-/// Return a cached, read-only monitor snapshot. Collection only happens when
-/// this function is called by the on-demand web endpoint.
+/// Start the once-per-minute lightweight sampler. It never calls the network
+/// collector and is safe to invoke repeatedly from normal and acceptance mode.
+pub fn spawn_sampler() {
+    let started = *SAMPLER_STARTED.get_or_init(|| {
+        match thread::Builder::new()
+            .name("sirin-ai-monitor-sampler".into())
+            .spawn(|| loop {
+                let _ = cached_ai_work(AI_SAMPLE_MIN_AGE);
+                thread::sleep(AI_SAMPLE_INTERVAL);
+            }) {
+            Ok(_) => true,
+            Err(error) => {
+                tracing::warn!(target: "sirin", "[ai-monitor] sampler start failed: {error}");
+                false
+            }
+        }
+    });
+    BACKGROUND_SAMPLER_RUNNING.store(started, Ordering::Relaxed);
+}
+
+/// Return a read-only monitor snapshot. The expensive network collector and
+/// lightweight AI-work collector use independent caches.
 pub fn snapshot() -> AiMonitorSnapshot {
-    let cache = SNAPSHOT_CACHE.get_or_init(|| {
-        Mutex::new(SnapshotCache {
-            refreshed_at: Instant::now() - SNAPSHOT_TTL,
+    spawn_sampler();
+    let started = Instant::now();
+    let network = cached_network();
+    let ai_work = cached_ai_work(AI_WORK_TTL);
+    AiMonitorSnapshot {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        captured_at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+        collection_ms: started.elapsed().as_millis() as u64,
+        cache_ttl_secs: NETWORK_TTL.as_secs(),
+        network,
+        ai_work,
+        safety: SafetyView::default(),
+    }
+}
+
+fn cached_network() -> NetworkSnapshot {
+    let cache = NETWORK_CACHE.get_or_init(|| {
+        Mutex::new(TimedCache {
+            refreshed_at: Instant::now() - NETWORK_TTL,
             value: None,
         })
     });
-    let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
-    if guard.refreshed_at.elapsed() < SNAPSHOT_TTL {
+    let mut guard = cache.lock().unwrap_or_else(|error| error.into_inner());
+    if guard.refreshed_at.elapsed() < NETWORK_TTL {
         if let Some(value) = &guard.value {
             return value.clone();
         }
     }
-
-    let started = Instant::now();
-    let network = collect_network();
-    let ai_work = collect_ai_work();
-    let result = AiMonitorSnapshot {
-        version: env!("CARGO_PKG_VERSION").to_string(),
-        captured_at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
-        collection_ms: started.elapsed().as_millis() as u64,
-        cache_ttl_secs: SNAPSHOT_TTL.as_secs(),
-        network,
-        ai_work,
-        safety: SafetyView::default(),
-    };
+    let value = collect_network();
     guard.refreshed_at = Instant::now();
-    guard.value = Some(result.clone());
-    result
+    guard.value = Some(value.clone());
+    value
+}
+
+fn cached_ai_work(max_age: Duration) -> AiWorkSnapshot {
+    let cache = AI_WORK_CACHE.get_or_init(|| {
+        Mutex::new(TimedCache {
+            refreshed_at: Instant::now() - AI_WORK_TTL,
+            value: None,
+        })
+    });
+    let mut guard = cache.lock().unwrap_or_else(|error| error.into_inner());
+    if guard.refreshed_at.elapsed() < max_age {
+        if let Some(value) = &guard.value {
+            return value.clone();
+        }
+    }
+    let value = collect_ai_work();
+    guard.refreshed_at = Instant::now();
+    guard.value = Some(value.clone());
+    value
 }
 
 /// Explicit, user-triggered 5 MB download measurement. This is never called
@@ -385,6 +439,7 @@ fn local_user_home_dir() -> Option<std::path::PathBuf> {
 
 fn update_token_trend(tasks: &[CodexTaskView]) -> TokenTrendView {
     let now = Instant::now();
+    let sampled_at_ms = unix_time_ms();
     let current: HashMap<String, u64> = tasks
         .iter()
         .map(|task| (task.id.clone(), task.tokens_used))
@@ -409,9 +464,11 @@ fn update_token_trend(tasks: &[CodexTaskView]) -> TokenTrendView {
     push_token_history(
         &mut state.history,
         TokenTrendPointView {
+            sampled_at_ms,
             interval_secs: elapsed.as_secs(),
             delta_tokens: delta,
             tokens_per_min,
+            gap: elapsed.as_secs() > AI_SAMPLE_GAP_SECS,
         },
     );
     state.sampled_at = Some(now);
@@ -907,21 +964,23 @@ mod tests {
     }
 
     #[test]
-    fn token_history_keeps_latest_twelve_points() {
+    fn token_history_keeps_latest_hour_of_points() {
         let mut history = VecDeque::new();
-        for value in 0..15 {
+        for value in 0_u64..65 {
             push_token_history(
                 &mut history,
                 TokenTrendPointView {
+                    sampled_at_ms: (value * 60_000) as i64,
                     interval_secs: 60,
                     delta_tokens: value,
                     tokens_per_min: value,
+                    gap: false,
                 },
             );
         }
         assert_eq!(history.len(), TOKEN_HISTORY_LIMIT);
-        assert_eq!(history.front().map(|point| point.tokens_per_min), Some(3));
-        assert_eq!(history.back().map(|point| point.tokens_per_min), Some(14));
+        assert_eq!(history.front().map(|point| point.tokens_per_min), Some(5));
+        assert_eq!(history.back().map(|point| point.tokens_per_min), Some(64));
     }
 
     /// Manual acceptance for the owned Windows workstation. Kept ignored so
@@ -935,7 +994,7 @@ mod tests {
         assert!(live.safety.local_only);
         assert!(live.safety.read_only);
         assert!(!live.safety.credentials_accessed);
-        assert!(!live.safety.background_sampling);
+        assert!(live.safety.background_sampling);
         assert!(!live.safety.automatic_download_test);
         assert_eq!(live.network.evidence, EvidenceLevel::Measured);
         assert!(live
@@ -987,4 +1046,3 @@ mod tests {
         );
     }
 }
-

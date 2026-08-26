@@ -278,6 +278,7 @@ fn main() {
     ensure_first_run_dirs();
 
     if is_ai_monitor_only() {
+        ai_monitor::spawn_sampler();
         let tracker = TaskTracker::new(task_log_path());
         let tg_auth = TelegramAuthState::new();
         let svc = StdArc::new(ui_service_impl::RealService::new(tracker, tg_auth));
@@ -333,6 +334,7 @@ fn main() {
 
     let tracker = TaskTracker::new(task_log_path());
     let tg_auth = TelegramAuthState::new();
+    ai_monitor::spawn_sampler();
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
 

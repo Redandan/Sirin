@@ -33,5 +33,3 @@ private:
     std::atomic_bool m_refreshRequested{false};
     std::jthread m_refreshThread;
 };
-
-

@@ -32,7 +32,6 @@ namespace winrt
         return service_lock{};
     }
 }
-
 #define WINRT_CUSTOM_MODULE_LOCK
 
 #include <wil/cppwinrt.h>
@@ -45,6 +44,7 @@ namespace winrt
 #include <winrt/Microsoft.Windows.Widgets.Providers.h>
 
 #include <algorithm>
+#include <cmath>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -71,5 +71,3 @@ namespace winrt
     using namespace Windows::Foundation;
     using namespace Windows::Storage;
 }
-
-

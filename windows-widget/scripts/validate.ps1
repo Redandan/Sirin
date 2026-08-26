@@ -1,11 +1,18 @@
 [CmdletBinding()]
-param()
+param(
+    [string]$BuildRoot = ''
+)
 
 $ErrorActionPreference = 'Stop'
 $widgetRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+$BuildRoot = if ([string]::IsNullOrWhiteSpace($BuildRoot)) {
+    $widgetRoot
+} else {
+    [IO.Path]::GetFullPath($BuildRoot)
+}
 $templatePath = Join-Path $widgetRoot 'Templates\SirinAiMonitorWidget.json'
 $manifestPath = Join-Path $widgetRoot 'Package.appxmanifest'
-$builtPreviewPath = Join-Path $widgetRoot 'out\layout\ProviderAssets\SirinAIWork_Screenshot.png'
+$builtPreviewPath = Join-Path $BuildRoot 'out\layout\ProviderAssets\SirinAIWork_Screenshot.png'
 
 $templateText = Get-Content -LiteralPath $templatePath -Raw -Encoding UTF8
 $template = $templateText | ConvertFrom-Json
@@ -59,4 +66,3 @@ if (Test-Path -LiteralPath $builtPreviewPath) {
     publisher = $manifest.Package.Identity.Publisher
     picker_preview_ready = $previewReady
 } | ConvertTo-Json -Compress
-

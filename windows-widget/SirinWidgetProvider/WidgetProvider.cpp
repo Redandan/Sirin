@@ -226,6 +226,71 @@ namespace
                 return result;
             }
 
+            constexpr wchar_t levels[] = L"▁▂▃▄▅▆▇█";
+            constexpr size_t chartSlots = 30;
+            constexpr double slotMs = 120'000.0;
+            constexpr double windowMs = chartSlots * slotMs;
+
+            double newestSampleMs = 0;
+            for (const auto& pointValue : history)
+            {
+                const auto point = pointValue.GetObject();
+                newestSampleMs = std::max(newestSampleMs, NumberOr(point, L"sampled_at_ms"));
+            }
+
+            // New backends provide an epoch timestamp for every minute sample.
+            // Bin those samples into fixed two-minute slots so horizontal space
+            // represents real time and sleep/restart gaps stay visibly blank.
+            if (newestSampleMs > 0)
+            {
+                std::vector<double> rates(chartSlots, 0);
+                std::vector<bool> present(chartSlots, false);
+                const auto windowStartMs = newestSampleMs - windowMs + slotMs;
+                double totalTokens = 0;
+                double peakRate = 0;
+
+                for (const auto& pointValue : history)
+                {
+                    const auto point = pointValue.GetObject();
+                    const auto sampledAtMs = NumberOr(point, L"sampled_at_ms");
+                    if (sampledAtMs < windowStartMs || sampledAtMs > newestSampleMs + slotMs)
+                    {
+                        continue;
+                    }
+                    const auto rawSlot = static_cast<size_t>(
+                        std::max(0.0, std::floor((sampledAtMs - windowStartMs) / slotMs)));
+                    const auto slot = std::min(rawSlot, chartSlots - 1);
+                    const auto rate = NumberOr(point, L"tokens_per_min");
+                    rates[slot] = present[slot] ? std::max(rates[slot], rate) : rate;
+                    present[slot] = true;
+                    totalTokens += NumberOr(point, L"delta_tokens");
+                    peakRate = std::max(peakRate, rate);
+                }
+
+                std::wstring graph;
+                graph.reserve(chartSlots);
+                for (size_t index = 0; index < chartSlots; ++index)
+                {
+                    if (!present[index])
+                    {
+                        graph.push_back(L'·');
+                        continue;
+                    }
+                    const auto scaled = peakRate > 0
+                        ? static_cast<size_t>((rates[index] / peakRate) * 7.0 + 0.5)
+                        : 0;
+                    graph.push_back(levels[std::min<size_t>(scaled, 7)]);
+                }
+
+                result.sparkline = winrt::hstring{graph};
+                result.windowLabel = L"最近 60 分鐘 · 2 分/格";
+                result.totalLabel = L"+" + FormatCompact(totalTokens) + L" tokens";
+                result.peakLabel = L"峰值 " + FormatCompact(peakRate) + L"/min";
+                return result;
+            }
+
+            // Compatibility fallback while a newly installed Widget is still
+            // talking to an older Sirin backend without sampled_at_ms.
             std::vector<double> rates;
             rates.reserve(history.Size());
             uint64_t totalSeconds = 0;
@@ -240,8 +305,6 @@ namespace
                 totalTokens += NumberOr(point, L"delta_tokens");
                 peakRate = std::max(peakRate, rate);
             }
-
-            constexpr wchar_t levels[] = L"▁▂▃▄▅▆▇█";
             std::wstring graph;
             const auto visiblePoints = std::min<size_t>(rates.size(), 12);
             graph.append(12 - visiblePoints, L'·');
@@ -253,7 +316,6 @@ namespace
                     : 0;
                 graph.push_back(levels[std::min<size_t>(scaled, 7)]);
             }
-
             result.sparkline = winrt::hstring{graph};
             result.windowLabel = totalSeconds < 60
                 ? L"最近 " + winrt::to_hstring(totalSeconds) + L" 秒"
@@ -284,7 +346,6 @@ namespace
         data.SetNamedValue(name, winrt::JsonValue::CreateStringValue(value));
     }
 }
-
 WidgetProvider::WidgetProvider()
 {
     RecoverRunningWidgets();
@@ -763,5 +824,3 @@ winrt::hstring WidgetProvider::BuildData(bool fetchSnapshot)
     PutString(data, L"networkWarning", networkWarning);
     return data.Stringify();
 }
-
-

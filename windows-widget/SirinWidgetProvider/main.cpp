@@ -62,5 +62,3 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
         &index));
     return 0;
 }
-
-

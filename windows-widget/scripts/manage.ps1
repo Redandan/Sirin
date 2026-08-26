@@ -3,13 +3,19 @@ param(
     [ValidateSet('Plan', 'Install', 'Status', 'OpenBoard', 'Remove')]
     [string]$Action = 'Plan',
     [switch]$Build,
-    [switch]$SkipReload
+    [switch]$SkipReload,
+    [string]$BuildRoot = ''
 )
 
 $ErrorActionPreference = 'Stop'
 $packageName = 'Redan.SirinAIWorkWidget'
 $widgetRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$layout = Join-Path $widgetRoot 'out\layout'
+$BuildRoot = if ([string]::IsNullOrWhiteSpace($BuildRoot)) {
+    $widgetRoot
+} else {
+    [IO.Path]::GetFullPath($BuildRoot)
+}
+$layout = Join-Path $BuildRoot 'out\layout'
 $manifest = Join-Path $layout 'AppxManifest.xml'
 $providerPath = Join-Path $layout 'SirinWidgetProvider\SirinWidgetProvider.exe'
 
@@ -63,6 +69,7 @@ function Get-SirinWidgetStatus {
         package_name = $packageName
         installed = $null -ne $package
         package_full_name = if ($package) { $package.PackageFullName } else { $null }
+        package_version = if ($package) { [string]$package.Version } else { $null }
         install_location = if ($package) { $package.InstallLocation } else { $null }
         provider_running = $null -ne $provider
         provider_pid = if ($provider) { $provider.ProcessId } else { $null }
@@ -104,8 +111,8 @@ if ($Action -eq 'Remove') {
 
 if ($Build) {
     Stop-SirinWidgetProvider
-    & (Join-Path $PSScriptRoot 'build.ps1')
-    & (Join-Path $PSScriptRoot 'validate.ps1')
+    & (Join-Path $PSScriptRoot 'build.ps1') -BuildRoot $BuildRoot
+    & (Join-Path $PSScriptRoot 'validate.ps1') -BuildRoot $BuildRoot
 }
 if (-not (Test-Path -LiteralPath $manifest)) {
     throw "Build the widget before installing it: $manifest"
@@ -128,6 +135,7 @@ $status = Get-SirinWidgetStatus
     package_name = $status.package_name
     installed = $status.installed
     package_full_name = $status.package_full_name
+    package_version = $status.package_version
     install_location = $status.install_location
     provider_running = $status.provider_running
     provider_pid = $status.provider_pid
@@ -136,5 +144,3 @@ $status = Get-SirinWidgetStatus
     host_restarted = $reload.host_restarted
     board_open_requested = $reload.board_open_requested
 } | ConvertTo-Json -Compress
-
-

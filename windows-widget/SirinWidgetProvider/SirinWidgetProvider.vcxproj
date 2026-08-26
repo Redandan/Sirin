@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup>
-    <NugetPackageDirectory>$(MSBuildProjectDirectory)\packages</NugetPackageDirectory>
+    <NugetPackageDirectory Condition="'$(NugetPackageDirectory)' == ''">$(MSBuildProjectDirectory)\packages</NugetPackageDirectory>
   </PropertyGroup>
   <Import Project="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.1.8.260804001\build\native\Microsoft.WindowsAppSDK.props" Condition="Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.1.8.260804001\build\native\Microsoft.WindowsAppSDK.props')" />
   <Import Project="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Widgets.1.8.251231004\buildTransitive\native\Microsoft.WindowsAppSDK.Widgets.props" Condition="Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Widgets.1.8.251231004\buildTransitive\native\Microsoft.WindowsAppSDK.Widgets.props')" />
@@ -119,6 +119,3 @@
     <Error Condition="!Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.1.8.260804001\build\native\Microsoft.WindowsAppSDK.props')" Text="Restore NuGet packages before building." />
   </Target>
 </Project>
-
-
-
