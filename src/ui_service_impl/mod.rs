@@ -150,6 +150,9 @@ impl SystemService for RealService {
     fn config_apply_fixes(&self, fixes: Vec<ConfigFixView>) -> Result<Vec<String>, String> {
         system::config_apply_fixes(self, fixes)
     }
+    fn ai_monitor_snapshot(&self) -> crate::ai_monitor::AiMonitorSnapshot {
+        crate::ai_monitor::snapshot()
+    }
 }
 
 impl BrowserService for RealService {

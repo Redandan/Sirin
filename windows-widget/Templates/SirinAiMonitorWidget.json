@@ -1,0 +1,341 @@
+{
+  "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+  "type": "AdaptiveCard",
+  "version": "1.5",
+  "body": [
+    {
+      "type": "ColumnSet",
+      "columns": [
+        {
+          "type": "Column",
+          "width": "stretch",
+          "items": [
+            {
+              "type": "TextBlock",
+              "text": "AI 工作狀態",
+              "weight": "Bolder",
+              "size": "Medium",
+              "wrap": true
+            },
+            {
+              "type": "TextBlock",
+              "text": "${status}",
+              "color": "${if(online, workColor, 'Attention')}",
+              "spacing": "None",
+              "size": "Small",
+              "weight": "Bolder",
+              "wrap": true
+            }
+          ]
+        },
+        {
+          "type": "Column",
+          "width": "auto",
+          "verticalContentAlignment": "Center",
+          "items": [
+            {
+              "type": "TextBlock",
+              "text": "${updated}",
+              "isSubtle": true,
+              "size": "Small"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "Container",
+      "style": "emphasis",
+      "spacing": "Medium",
+      "items": [
+        {
+          "type": "TextBlock",
+          "text": "CURRENT AI WORK",
+          "size": "Small",
+          "isSubtle": true,
+          "weight": "Bolder"
+        },
+        {
+          "type": "ColumnSet",
+          "spacing": "Small",
+          "columns": [
+            {
+              "type": "Column",
+              "width": "stretch",
+              "items": [
+                {
+                  "type": "TextBlock",
+                  "text": "${workState}",
+                  "size": "Large",
+                  "weight": "Bolder",
+                  "color": "${workColor}",
+                  "wrap": true
+                }
+              ]
+            },
+            {
+              "type": "Column",
+              "width": "auto",
+              "verticalContentAlignment": "Center",
+              "items": [
+                {
+                  "type": "TextBlock",
+                  "text": "${activeSummary}",
+                  "weight": "Bolder",
+                  "horizontalAlignment": "Right",
+                  "wrap": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "TextBlock",
+          "text": "${workDetail}",
+          "spacing": "Small",
+          "wrap": true
+        },
+        {
+          "type": "Container",
+          "spacing": "Small",
+          "$when": "${$host.widgetSize != 'small'}",
+          "items": [
+            {
+              "type": "TextBlock",
+              "text": "TOKEN CONSUMPTION · INFERRED",
+              "size": "Small",
+              "isSubtle": true,
+              "weight": "Bolder"
+            },
+            {
+              "type": "TextBlock",
+              "text": "${tokenSparkline}",
+              "size": "ExtraLarge",
+              "fontType": "Monospace",
+              "color": "Good",
+              "spacing": "None",
+              "wrap": false
+            },
+            {
+              "type": "ColumnSet",
+              "spacing": "None",
+              "columns": [
+                {
+                  "type": "Column",
+                  "width": "stretch",
+                  "items": [
+                    { "type": "TextBlock", "text": "${tokenWindow}", "size": "Small", "isSubtle": true }
+                  ]
+                },
+                {
+                  "type": "Column",
+                  "width": "auto",
+                  "items": [
+                    { "type": "TextBlock", "text": "${tokenWindowTotal}", "size": "Small", "weight": "Bolder", "horizontalAlignment": "Right" }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "ColumnSet",
+              "spacing": "None",
+              "columns": [
+                {
+                  "type": "Column",
+                  "width": "stretch",
+                  "items": [
+                    { "type": "TextBlock", "text": "${tokenActivity}", "size": "Small", "wrap": true }
+                  ]
+                },
+                {
+                  "type": "Column",
+                  "width": "auto",
+                  "items": [
+                    { "type": "TextBlock", "text": "${tokenPeak}", "size": "Small", "isSubtle": true, "horizontalAlignment": "Right" }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "TextBlock",
+          "text": "${workEvidence}",
+          "spacing": "None",
+          "size": "Small",
+          "isSubtle": true,
+          "wrap": true
+        }
+      ]
+    },
+    {
+      "type": "Container",
+      "spacing": "Medium",
+      "$when": "${$host.widgetSize != 'small'}",
+      "items": [
+        {
+          "type": "TextBlock",
+          "text": "RECENT CODEX TASKS",
+          "size": "Small",
+          "isSubtle": true,
+          "weight": "Bolder"
+        },
+        {
+          "type": "ColumnSet",
+          "$when": "${hasTask1}",
+          "columns": [
+            {
+              "type": "Column",
+              "width": "stretch",
+              "items": [
+                { "type": "TextBlock", "text": "${task1Name}", "weight": "Bolder", "wrap": true }
+              ]
+            },
+            {
+              "type": "Column",
+              "width": "auto",
+              "items": [
+                { "type": "TextBlock", "text": "${task1Meta}", "color": "${task1Color}", "size": "Small", "horizontalAlignment": "Right" }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "ColumnSet",
+          "spacing": "Small",
+          "$when": "${hasTask2}",
+          "columns": [
+            {
+              "type": "Column",
+              "width": "stretch",
+              "items": [
+                { "type": "TextBlock", "text": "${task2Name}", "weight": "Bolder", "wrap": true }
+              ]
+            },
+            {
+              "type": "Column",
+              "width": "auto",
+              "items": [
+                { "type": "TextBlock", "text": "${task2Meta}", "color": "${task2Color}", "size": "Small", "horizontalAlignment": "Right" }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "ColumnSet",
+          "spacing": "Small",
+          "$when": "${hasTask3 && $host.widgetSize == 'large'}",
+          "columns": [
+            {
+              "type": "Column",
+              "width": "stretch",
+              "items": [
+                { "type": "TextBlock", "text": "${task3Name}", "weight": "Bolder", "wrap": true }
+              ]
+            },
+            {
+              "type": "Column",
+              "width": "auto",
+              "items": [
+                { "type": "TextBlock", "text": "${task3Meta}", "color": "${task3Color}", "size": "Small", "horizontalAlignment": "Right" }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "Container",
+      "spacing": "Medium",
+      "$when": "${$host.widgetSize == 'large'}",
+      "items": [
+        {
+          "type": "TextBlock",
+          "text": "AI RUNTIMES",
+          "size": "Small",
+          "isSubtle": true,
+          "weight": "Bolder"
+        },
+        {
+          "type": "ColumnSet",
+          "columns": [
+            {
+              "type": "Column",
+              "width": "stretch",
+              "items": [
+                { "type": "TextBlock", "text": "ChatGPT", "weight": "Bolder" },
+                { "type": "TextBlock", "text": "${chatgptState}", "spacing": "None", "size": "Small", "wrap": true },
+                { "type": "TextBlock", "text": "${chatgpt}", "spacing": "None", "isSubtle": true, "size": "Small" }
+              ]
+            },
+            {
+              "type": "Column",
+              "width": "stretch",
+              "items": [
+                { "type": "TextBlock", "text": "Codex", "weight": "Bolder" },
+                { "type": "TextBlock", "text": "${codexState}", "spacing": "None", "size": "Small", "wrap": true },
+                { "type": "TextBlock", "text": "${codex}", "spacing": "None", "isSubtle": true, "size": "Small" }
+              ]
+            },
+            {
+              "type": "Column",
+              "width": "stretch",
+              "items": [
+                { "type": "TextBlock", "text": "Sirin", "weight": "Bolder" },
+                { "type": "TextBlock", "text": "${sirinState}", "spacing": "None", "size": "Small", "wrap": true },
+                { "type": "TextBlock", "text": "${sirin}", "spacing": "None", "isSubtle": true, "size": "Small" }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "Container",
+      "style": "emphasis",
+      "spacing": "Medium",
+      "items": [
+        {
+          "type": "TextBlock",
+          "text": "NETWORK",
+          "size": "Small",
+          "isSubtle": true,
+          "weight": "Bolder"
+        },
+        {
+          "type": "TextBlock",
+          "text": "${networkSummary}",
+          "spacing": "Small",
+          "weight": "Bolder",
+          "wrap": true
+        },
+        {
+          "type": "TextBlock",
+          "text": "${networkWarning}",
+          "spacing": "None",
+          "size": "Small",
+          "color": "${if(splitRoute, 'Warning', 'Good')}",
+          "wrap": true,
+          "$when": "${$host.widgetSize != 'small'}"
+        }
+      ]
+    },
+    {
+      "type": "TextBlock",
+      "text": "LOCAL · READ ONLY · NO CONTENT · 60S",
+      "horizontalAlignment": "Center",
+      "isSubtle": true,
+      "size": "Small",
+      "spacing": "Small"
+    }
+  ],
+  "actions": [
+    {
+      "type": "Action.Execute",
+      "title": "立即更新",
+      "verb": "refresh"
+    }
+  ]
+}
+
+

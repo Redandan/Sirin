@@ -202,6 +202,9 @@ pub fn mcp_router() -> Router {
         // /api/snapshot — single combined JSON read for the dashboard. Polled
         // every ~5s by the web UI; cheap aggregate of read-only AppService calls.
         .route("/api/snapshot", get(api_snapshot))
+        // Dedicated local-only monitor endpoint. Kept separate from the global
+        // dashboard snapshot so network probes never slow the 2-second feed.
+        .route("/api/ai-monitor", get(api_ai_monitor))
         // /api/browser_screenshot — raw PNG bytes of the controlled Chrome
         // session. Used by the Browser tab + Dashboard browser card to show
         // a live preview. Returns 503 when no Chrome is open.
@@ -676,6 +679,26 @@ async fn api_snapshot() -> impl IntoResponse {
         Err(e) => axum::Json(json!({
             "error": format!("snapshot task failed: {e}")
         })).into_response(),
+    }
+}
+
+/// Local-only Windows network + AI work snapshot. The synchronous collectors
+/// run off the async runtime; missing evidence is returned in-band as JSON.
+async fn api_ai_monitor() -> impl IntoResponse {
+    let svc = match app_service() {
+        Some(s) => s,
+        None => return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(json!({"error": "AppService not registered (sirin still booting?)"})),
+        ).into_response(),
+    };
+
+    match tokio::task::spawn_blocking(move || svc.ai_monitor_snapshot()).await {
+        Ok(snapshot) => axum::Json(snapshot).into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({"error": format!("AI monitor task failed: {error}")})),
+        ).into_response(),
     }
 }
 
@@ -1669,6 +1692,12 @@ fn home_dir() -> Option<std::path::PathBuf> {
         .or_else(|_| std::env::var("HOME"))
         .ok()
         .map(std::path::PathBuf::from)
+}
+
+/// Manual-only 5 MB download throughput measurement for the AI Work Monitor.
+pub(crate) async fn call_ai_monitor_speed_test(_args: Value) -> Result<Value, String> {
+    let result = crate::ai_monitor::manual_speed_test().await?;
+    serde_json::to_value(result).map_err(|error| error.to_string())
 }
 
 /// Parse a console_log JSON string (array of {level, text}) and return

@@ -40,6 +40,7 @@ const STATUS_REFRESH: Duration = Duration::from_secs(5);
 const PUMP_TICK: Duration = Duration::from_millis(150);
 const SNAPSHOT_URL: &str = "http://127.0.0.1:7700/api/snapshot";
 const DASHBOARD_URL: &str = "http://127.0.0.1:7700/ui/";
+const AI_MONITOR_URL: &str = "http://127.0.0.1:7700/ui/?view=ai-monitor";
 
 /// Spawn the tray icon on a dedicated OS thread.  Returns `true` when the
 /// thread successfully launched (the tray icon is the discovery affordance
@@ -66,9 +67,11 @@ fn tray_thread_main() {
     // Build menu before tray icon so item IDs are captured for event matching.
     let tray_menu = Menu::new();
     let open_dashboard = MenuItem::new("Open Dashboard", true, None);
+    let open_ai_monitor = MenuItem::new("Open AI Work Monitor", true, None);
     let quit_item      = MenuItem::new("Quit Sirin", true, None);
 
     if tray_menu.append(&open_dashboard).is_err()
+        || tray_menu.append(&open_ai_monitor).is_err()
         || tray_menu.append(&PredefinedMenuItem::separator()).is_err()
         || tray_menu.append(&quit_item).is_err()
     {
@@ -101,6 +104,7 @@ fn tray_thread_main() {
 
     // Cache the menu IDs so the event-receive branch doesn't allocate.
     let id_dashboard = open_dashboard.id().clone();
+    let id_ai_monitor = open_ai_monitor.id().clone();
     let id_quit      = quit_item.id().clone();
 
     let mut last_status_update = Instant::now() - STATUS_REFRESH;
@@ -113,6 +117,8 @@ fn tray_thread_main() {
         while let Ok(event) = menu_events.try_recv() {
             if event.id == id_dashboard {
                 let _ = open_url(DASHBOARD_URL);
+            } else if event.id == id_ai_monitor {
+                let _ = open_url(AI_MONITOR_URL);
             } else if event.id == id_quit {
                 tracing::info!("[tray] Quit Sirin clicked — exiting daemon");
                 std::process::exit(0);

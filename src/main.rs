@@ -3,6 +3,7 @@
 
 mod adk;
 #[allow(dead_code)] mod agent_config;
+pub mod ai_monitor;
 mod authz;
 #[cfg(test)] mod devex;
 #[cfg(test)] mod mcp_parity_tests;
@@ -216,6 +217,13 @@ fn is_headless() -> bool {
             .unwrap_or(false)
 }
 
+/// Acceptance mode for the local AI Work Monitor. It exposes only the
+/// loopback AppService/MCP surface and deliberately skips every background
+/// worker, browser, updater, LLM probe, scheduler, and Telegram listener.
+fn is_ai_monitor_only() -> bool {
+    std::env::args().any(|a| a == "--ai-monitor-only")
+}
+
 fn main() {
     // ── Subcommand handling (Issue #261 — sirin doctor) ────────────────────────
     // Must run BEFORE init_tracing / process_group / dotenvy so the diagnostic
@@ -268,6 +276,27 @@ fn main() {
     }
 
     ensure_first_run_dirs();
+
+    if is_ai_monitor_only() {
+        let tracker = TaskTracker::new(task_log_path());
+        let tg_auth = TelegramAuthState::new();
+        let svc = StdArc::new(ui_service_impl::RealService::new(tracker, tg_auth));
+        mcp_server::register_app_service(svc as StdArc<dyn ui_service::AppService>);
+
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+        {
+            let _guard = rt.enter();
+            rt.spawn(rpc_server::start_rpc_server());
+        }
+        std::mem::forget(rt);
+        tracing::info!(target: "sirin",
+            "[main] AI-monitor-only mode on 127.0.0.1:{}; background integrations are disabled.",
+            std::env::var("SIRIN_RPC_PORT").unwrap_or_else(|_| "7700".into())
+        );
+        loop {
+            std::thread::park();
+        }
+    }
 
     // ── Privacy mask default (Issue #80) ─────────────────────────────────────
     // Read SIRIN_PRIVACY_MASK once .env is loaded.  Default = on (fail-secure).

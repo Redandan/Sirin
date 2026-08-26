@@ -115,6 +115,14 @@
         </svg>
         <span x-show="!sidebarCollapsed">測試</span>
       </button>
+      <button class="nav-row" :class="view === 'ai-monitor' ? 'active' : ''"
+              @click="view = 'ai-monitor'" :title="sidebarCollapsed ? 'AI 工作監控' : ''">
+        <svg class="nav-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M4 19V9"/><path d="M10 19V5"/><path d="M16 19v-7"/><path d="M22 19V3"/>
+          <path d="M2 19h22"/>
+        </svg>
+        <span x-show="!sidebarCollapsed">AI 工作監控</span>
+      </button>
 
       <div class="sidebar-section-label" x-show="!sidebarCollapsed">AGENT 列表</div>
       <template x-for="(agent, i) in state.agents" :key="agent.id">
@@ -520,6 +528,228 @@
           <button class="btn-secondary" @click="resetDashboardLayout()"
                   title="重設為預設 4 個 widget">↻ Reset</button>
         </div>
+      </section>
+
+      <!-- AI Work Monitor — local-only, read-only and sampled only while open. -->
+      <section x-show="view === 'ai-monitor'" class="view ai-monitor-view">
+        <div class="view-header ai-monitor-header">
+          <div>
+            <div class="row gap-sm">
+              <h1>AI 工作監控</h1>
+              <span class="evidence-badge evidence-measured">本機</span>
+              <span class="evidence-badge evidence-measured">唯讀</span>
+              <span class="evidence-badge evidence-inferred">按需採樣</span>
+            </div>
+            <div class="dim small mt-xs">頁面關閉後停止採樣；不讀憑證、不改網路、不終止工作。</div>
+          </div>
+          <div class="row gap-sm">
+            <span class="dim small mono" x-show="aiMonitor"
+                  x-text="'更新 ' + formatMonitorTime(aiMonitor?.captured_at) + ' · ' + (aiMonitor?.collection_ms || 0) + ' ms'"></span>
+            <button class="btn-secondary" @click="loadAiMonitor()" :disabled="aiMonitorLoading"
+                    x-text="aiMonitorLoading ? '採樣中…' : '立即更新'"></button>
+          </div>
+        </div>
+
+        <div class="monitor-callout monitor-callout-error" x-show="aiMonitorError" x-cloak>
+          <strong>資料取得失敗</strong>
+          <span x-text="aiMonitorError"></span>
+        </div>
+        <div class="monitor-loading" x-show="aiMonitorLoading && !aiMonitor" x-cloak>正在收集本機證據…</div>
+
+        <template x-if="aiMonitor">
+          <div class="monitor-stack">
+            <template x-for="warning in (aiMonitor.network?.warnings || [])" :key="warning">
+              <div class="monitor-callout monitor-callout-warning">
+                <span class="mono">ROUTE</span><span x-text="warning"></span>
+              </div>
+            </template>
+
+            <div class="monitor-section-title">
+              <span>網路狀況</span>
+              <span class="evidence-badge"
+                    :class="aiEvidenceClass(aiMonitor.network?.evidence)"
+                    x-text="aiEvidenceLabel(aiMonitor.network?.evidence)"></span>
+            </div>
+
+            <div class="monitor-grid monitor-grid-network">
+              <div class="card monitor-card route-card">
+                <div class="monitor-card-title">預設路由</div>
+                <template x-for="family in ['IPv4','IPv6']" :key="family">
+                  <div class="route-row">
+                    <div class="route-family mono" x-text="family"></div>
+                    <template x-if="aiSelectedRoute(family)">
+                      <div class="route-main">
+                        <div class="row gap-sm wrap">
+                          <strong x-text="aiSelectedRoute(family).interface_alias"></strong>
+                          <span class="status-chip"
+                                :class="aiSelectedRoute(family).latency_status === 'GOOD' ? 'status-passed' : (aiSelectedRoute(family).latency_status === 'NO_REPLY' ? 'status-timeout' : 'status-running')"
+                                x-text="aiSelectedRoute(family).latency_ms != null ? aiSelectedRoute(family).latency_ms + ' ms' : '無回覆'"></span>
+                          <span class="evidence-badge"
+                                :class="aiEvidenceClass(aiSelectedRoute(family).latency_evidence)"
+                                x-text="aiEvidenceLabel(aiSelectedRoute(family).latency_evidence)"></span>
+                        </div>
+                        <div class="monitor-kv mono small">
+                          <span>gateway</span><span x-text="aiSelectedRoute(family).gateway"></span>
+                          <span>metric</span><span x-text="aiSelectedRoute(family).route_metric + ' + ' + aiSelectedRoute(family).interface_metric + ' = ' + aiSelectedRoute(family).effective_metric"></span>
+                          <span>probe</span><span x-text="aiSelectedRoute(family).latency_target || '—'"></span>
+                        </div>
+                      </div>
+                    </template>
+                    <div class="dim" x-show="!aiSelectedRoute(family)">沒有可證明的預設路由</div>
+                  </div>
+                </template>
+              </div>
+
+              <div class="card monitor-card wifi-card">
+                <div class="monitor-card-title">Wi‑Fi 連線</div>
+                <template x-if="aiMonitor.network?.wifi">
+                  <div>
+                    <div class="wifi-signal-line">
+                      <div class="wifi-signal-value mono"
+                           x-text="(aiMonitor.network.wifi.signal_percent ?? '—') + '%' "></div>
+                      <div>
+                        <strong x-text="aiMonitor.network.wifi.ssid || '未取得 SSID'"></strong>
+                        <div class="dim small" x-text="aiMonitor.network.wifi.radio_type || 'radio type 未知'"></div>
+                      </div>
+                    </div>
+                    <div class="signal-track"><span :style="`width:${aiMonitor.network.wifi.signal_percent || 0}%`"></span></div>
+                    <div class="monitor-kv mono small mt-md">
+                      <span>RSSI</span>
+                      <span>
+                        <span x-text="aiMonitor.network.wifi.rssi_dbm_approx != null ? aiMonitor.network.wifi.rssi_dbm_approx + ' dBm' : '—'"></span>
+                        <span class="evidence-badge ml-xs"
+                              :class="aiEvidenceClass(aiMonitor.network.wifi.rssi_evidence)"
+                              x-text="aiEvidenceLabel(aiMonitor.network.wifi.rssi_evidence)"></span>
+                      </span>
+                      <span>link ↓</span><span x-text="aiMonitor.network.wifi.receive_rate_mbps != null ? aiMonitor.network.wifi.receive_rate_mbps + ' Mbps' : '—'"></span>
+                      <span>link ↑</span><span x-text="aiMonitor.network.wifi.transmit_rate_mbps != null ? aiMonitor.network.wifi.transmit_rate_mbps + ' Mbps' : '—'"></span>
+                      <span>channel</span><span x-text="aiMonitor.network.wifi.channel ?? '—'"></span>
+                    </div>
+                  </div>
+                </template>
+                <div class="dim" x-show="!aiMonitor.network?.wifi">MISSING_PROOF — 未取得 Wi‑Fi 介面資料</div>
+              </div>
+            </div>
+
+            <div class="card monitor-card">
+              <div class="monitor-card-title row">
+                <span>介面與 metric</span><span class="row-spacer"></span>
+                <span class="dim small">effective = route + interface；數值越小越優先</span>
+              </div>
+              <div class="interface-table mono small">
+                <div class="interface-row interface-head">
+                  <span>協定</span><span>IDX</span><span>介面</span><span>狀態</span><span>METRIC</span><span>預設</span>
+                </div>
+                <template x-for="iface in (aiMonitor.network?.interfaces || [])" :key="iface.family + '-' + iface.index">
+                  <div class="interface-row" :class="(iface.active_ipv4_default || iface.active_ipv6_default) ? 'interface-active' : ''">
+                    <span x-text="iface.family"></span>
+                    <span x-text="iface.index"></span>
+                    <span x-text="iface.alias"></span>
+                    <span x-text="iface.state"></span>
+                    <span x-text="iface.metric"></span>
+                    <span>
+                      <span class="route-tag" x-show="iface.active_ipv4_default">v4</span>
+                      <span class="route-tag route-tag-v6" x-show="iface.active_ipv6_default">v6</span>
+                    </span>
+                  </div>
+                </template>
+              </div>
+            </div>
+
+            <div class="monitor-section-title">
+              <span>AI 工作</span>
+              <span class="evidence-badge"
+                    :class="aiEvidenceClass(aiMonitor.ai_work?.evidence)"
+                    x-text="aiEvidenceLabel(aiMonitor.ai_work?.evidence)"></span>
+            </div>
+
+            <div class="process-grid">
+              <template x-for="process in (aiMonitor.ai_work?.processes || [])" :key="process.app">
+                <div class="card process-card" :class="process.running ? 'process-running' : ''">
+                  <div class="row">
+                    <span class="process-dot" :class="process.running ? 'on' : ''"></span>
+                    <strong x-text="process.app"></strong><span class="row-spacer"></span>
+                    <span class="evidence-badge" :class="aiEvidenceClass(process.evidence)" x-text="aiEvidenceLabel(process.evidence)"></span>
+                  </div>
+                  <div class="process-value mono" x-text="process.running ? process.process_count : 'OFF'"></div>
+                  <div class="dim small mono" x-text="process.running ? process.working_set_mb.toFixed(1) + ' MB working set' : '未執行'"></div>
+                </div>
+              </template>
+            </div>
+
+            <div class="monitor-grid monitor-grid-ai">
+              <div class="card monitor-card token-summary-card">
+                <div class="monitor-card-title">Codex token</div>
+                <div class="token-hero mono"
+                     x-text="formatCompactNumber(aiMonitor.ai_work?.codex_tasks?.[0]?.tokens_used || 0)"></div>
+                <div class="dim small">最近工作累積 · 本機計數，非帳單</div>
+                <div class="token-stat-row">
+                  <div>
+                    <span class="token-stat mono" x-text="formatCompactNumber(aiMonitor.ai_work?.codex_token_trend?.tokens_per_min || 0)"></span>
+                    <span class="dim small"> token/min</span>
+                  </div>
+                  <span class="evidence-badge"
+                        :class="aiEvidenceClass(aiMonitor.ai_work?.codex_token_trend?.evidence)"
+                        x-text="aiEvidenceLabel(aiMonitor.ai_work?.codex_token_trend?.evidence)"></span>
+                </div>
+                <div class="dim tiny mt-md">來源：state_5.sqlite 的 threads.tokens_used；不查詢標題或訊息內容。</div>
+              </div>
+
+              <div class="card monitor-card token-summary-card">
+                <div class="monitor-card-title row">
+                  <span>Sirin 小隊 · 近 5 分鐘</span><span class="row-spacer"></span>
+                  <span class="evidence-badge"
+                        :class="aiEvidenceClass(aiMonitor.ai_work?.sirin_tokens?.evidence)"
+                        x-text="aiEvidenceLabel(aiMonitor.ai_work?.sirin_tokens?.evidence)"></span>
+                </div>
+                <div class="token-hero mono" x-text="formatCompactNumber(aiMonitor.ai_work?.sirin_tokens?.total_tokens || 0)"></div>
+                <div class="dim small" x-text="(aiMonitor.ai_work?.sirin_tokens?.api_calls || 0) + ' API calls'"></div>
+                <div class="monitor-kv mono small mt-md">
+                  <span>rate</span><span x-text="formatCompactNumber(aiMonitor.ai_work?.sirin_tokens?.tokens_per_min || 0) + '/min'"></span>
+                  <span>cache</span><span x-text="(aiMonitor.ai_work?.sirin_tokens?.cache_hit_pct || 0).toFixed(1) + '%' "></span>
+                  <span>est. cost</span><span x-text="'$' + (aiMonitor.ai_work?.sirin_tokens?.estimated_cost_per_hour_usd || 0).toFixed(3) + '/h'"></span>
+                </div>
+              </div>
+
+              <div class="card monitor-card speed-card">
+                <div class="monitor-card-title">下載速度 · 手動</div>
+                <div class="token-hero mono" x-text="aiSpeedTest ? aiSpeedTest.megabits_per_second.toFixed(1) : '—'"></div>
+                <div class="dim small">Mbps · 5 MB Cloudflare endpoint</div>
+                <button class="btn-primary mt-md" @click="runAiSpeedTest()" :disabled="aiSpeedTestBusy"
+                        x-text="aiSpeedTestBusy ? '測速中…' : '開始下載測速'"></button>
+                <div class="monitor-error small mt-sm" x-show="aiSpeedTestError" x-text="aiSpeedTestError"></div>
+                <div class="dim tiny mt-md">只有按下按鈕才連外；不會自動執行。</div>
+              </div>
+            </div>
+
+            <div class="card monitor-card">
+              <div class="monitor-card-title row">
+                <span>最近 Codex 工作</span><span class="row-spacer"></span>
+                <span class="evidence-badge evidence-inferred">活動狀態為推估</span>
+              </div>
+              <div class="task-monitor-table">
+                <template x-for="task in (aiMonitor.ai_work?.codex_tasks || [])" :key="task.id">
+                  <div class="task-monitor-row">
+                    <div>
+                      <div class="task-monitor-title" x-text="task.display_name"></div>
+                      <div class="dim tiny mono" x-text="task.id.slice(0, 8) + ' · ' + new Date(task.updated_at_ms).toLocaleString('zh-TW', { hour12: false })"></div>
+                    </div>
+                    <span class="status-chip"
+                          :class="task.activity === 'ACTIVE_RECENTLY' ? 'status-running' : 'status-idle'"
+                          x-text="task.activity === 'ACTIVE_RECENTLY' ? '最近有活動' : (task.activity === 'RECENT' ? '近期' : '閒置')"></span>
+                    <span class="task-token mono" x-text="formatCompactNumber(task.tokens_used)"></span>
+                    <span class="evidence-badge" :class="aiEvidenceClass(task.token_evidence)" x-text="aiEvidenceLabel(task.token_evidence)"></span>
+                  </div>
+                </template>
+                <div class="card-empty" x-show="(aiMonitor.ai_work?.codex_tasks || []).length === 0">MISSING_PROOF — 未取得 Codex 工作資料</div>
+              </div>
+            </div>
+
+            <div class="monitor-safety mono tiny">
+              LOCAL_ONLY · READ_ONLY · NO_CREDENTIALS · NO_ROUTE_CHANGES · NO_TASK_TERMINATION · NO_BACKGROUND_SPEED_TEST
+            </div>
+          </div>
+        </template>
       </section>
 
       <!--

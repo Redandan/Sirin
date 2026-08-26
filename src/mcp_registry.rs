@@ -174,6 +174,13 @@ fn seed_default(m: &mut RegistryMap) {
         handler:      ToolHandler::SyncJson(crate::mcp_server::call_help),
     });
 
+    m.insert("ai_monitor_speed_test", ToolDef {
+        name:         "ai_monitor_speed_test",
+        description: "AI Work Monitor manual download test. Downloads 5 MB only after an explicit call; it does not run in the background, change routes, or access credentials.",
+        input_schema: json!({"type": "object", "properties": {}}),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::mcp_server::call_ai_monitor_speed_test(args))),
+    });
+
     // Domain: skills + teams (text-mode handlers).
     m.insert("skill_list", ToolDef {
         name:         "skill_list",

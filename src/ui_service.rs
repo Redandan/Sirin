@@ -434,6 +434,9 @@ pub trait SystemService: Send + Sync + 'static {
     /// Apply approved fixes.  Backs up each file to .bak.TIMESTAMP first.
     /// Returns list of applied fix descriptions or Err on failure.
     fn config_apply_fixes(&self, fixes: Vec<ConfigFixView>) -> Result<Vec<String>, String>;
+
+    /// Local-only, read-only Windows network and AI work snapshot.
+    fn ai_monitor_snapshot(&self) -> crate::ai_monitor::AiMonitorSnapshot;
 }
 
 /// 開發小隊狀態感知 — 佇列讀寫、Worker 控制、成員重置。

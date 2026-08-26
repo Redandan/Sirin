@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap3 com rescap">
+
+  <Identity
+    Name="Redan.SirinAIWorkWidget"
+    Publisher="CN=Redan Sirin Widget"
+    Version="0.1.4.0"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>Sirin AI 工作監控</DisplayName>
+    <PublisherDisplayName>Redan</PublisherDisplayName>
+    <Description>Local read-only AI work and network monitor powered by Sirin.</Description>
+    <Logo>Images\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Universal" MinVersion="10.0.22000.0" MaxVersionTested="10.0.26200.0" />
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.22000.0" MaxVersionTested="10.0.26200.0" />
+    <PackageDependency
+      Name="Microsoft.WindowsAppRuntime.1.8"
+      Publisher="CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US"
+      MinVersion="8000.946.1701.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="zh-TW" />
+    <Resource Language="en-US" />
+  </Resources>
+
+  <Applications>
+    <Application
+      Id="App"
+      Executable="SirinWidgetProvider\SirinWidgetProvider.exe"
+      EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        AppListEntry="none"
+        DisplayName="Sirin AI 工作監控"
+        Description="Local read-only AI work monitor"
+        BackgroundColor="transparent"
+        Square150x150Logo="Images\Square150x150Logo.png"
+        Square44x44Logo="Images\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Images\Wide310x150Logo.png" />
+      </uap:VisualElements>
+      <Extensions>
+        <com:Extension Category="windows.comServer">
+          <com:ComServer>
+            <com:ExeServer
+              Executable="SirinWidgetProvider\SirinWidgetProvider.exe"
+              Arguments="-RegisterProcessAsComServer"
+              DisplayName="Sirin AI Work Widget Provider">
+              <com:Class
+                Id="C0BBCAE5-713A-49C7-8422-3B28D6B0B365"
+                DisplayName="Sirin AI Work Widget Provider" />
+            </com:ExeServer>
+          </com:ComServer>
+        </com:Extension>
+        <uap3:Extension Category="windows.appExtension">
+          <uap3:AppExtension
+            Name="com.microsoft.windows.widgets"
+            DisplayName="Sirin AI 工作監控"
+            Id="SirinAIWorkWidgetProvider"
+            PublicFolder="Public">
+            <uap3:Properties>
+              <WidgetProvider>
+                <ProviderIcons>
+                  <Icon Path="Images\StoreLogo.png" />
+                </ProviderIcons>
+                <Activation>
+                  <CreateInstance ClassId="C0BBCAE5-713A-49C7-8422-3B28D6B0B365" />
+                </Activation>
+                <Definitions>
+                  <Definition
+                    Id="Sirin_AI_Work_Monitor"
+                    DisplayName="Sirin AI 工作監控"
+                    Description="本機唯讀的網路、AI 程序與 Codex token 監控。">
+                    <Capabilities>
+                      <Capability><Size Name="small" /></Capability>
+                      <Capability><Size Name="medium" /></Capability>
+                      <Capability><Size Name="large" /></Capability>
+                    </Capabilities>
+                    <ThemeResources>
+                      <Icons>
+                        <Icon Path="ProviderAssets\SirinAIWork_Icon.png" />
+                      </Icons>
+                      <Screenshots>
+                        <Screenshot
+                          Path="ProviderAssets\SirinAIWork_Screenshot.png"
+                          DisplayAltText="Sirin AI 工作監控小工具預覽" />
+                      </Screenshots>
+                      <DarkMode />
+                      <LightMode />
+                    </ThemeResources>
+                  </Definition>
+                </Definitions>
+              </WidgetProvider>
+            </uap3:Properties>
+          </uap3:AppExtension>
+        </uap3:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <Capability Name="internetClient" />
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>
+
+

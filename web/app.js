@@ -57,6 +57,18 @@ window.sirin = function () {
     runTextFilter: '',
     lastLaunch:    null,   // status string after launch attempt
 
+    // AI Work Monitor — the dedicated snapshot is refreshed only while this
+    // view is visible. The normal dashboard WebSocket is paused meanwhile.
+    aiMonitor: null,
+    aiMonitorLoading: false,
+    aiMonitorError: null,
+    aiMonitorTimer: null,
+    aiSpeedTest: null,
+    aiSpeedTestBusy: false,
+    aiSpeedTestError: null,
+    coreTelemetryStarted: false,
+    coreTelemetryPaused: false,
+
     // MCP Playground modal state
     mcp_tools:    [],     // [{name, description, inputSchema}, …]
     mcp_loading:  false,
@@ -259,6 +271,19 @@ window.sirin = function () {
         this.sidebarCollapsed = localStorage.getItem('sirin_sidebar_collapsed') === '1';
       } catch (_) { /* localStorage may be blocked */ }
 
+      // The tray shortcut opens this dedicated view directly. Only accept a
+      // fixed value so query text can never become an Alpine state key.
+      try {
+        if (new URLSearchParams(location.search).get('view') === 'ai-monitor') {
+          this.view = 'ai-monitor';
+          this.state.browser_open = false;
+          this.state.browser_url = 'AI monitor · local read-only';
+          this.state.last_verdict = null;
+          this.state.agents = [];
+          this.state.pending_counts = {};
+        }
+      } catch (_) {}
+
       // Restore saved Dashboard layout (v0.5.5). Falls back to default
       // 4-widget layout when localStorage is empty or contains a value
       // our catalog no longer recognizes (e.g. a removed widget id).
@@ -301,9 +326,7 @@ window.sirin = function () {
       // v0.5.4: prefer WebSocket push (2s tick from /ws). Falls back
       // automatically to 5s HTTP polling if the WS handshake fails or
       // the connection drops, so static-server previews still work.
-      this.fetchSnapshot();   // initial hydrate (also lets UI render
-                              // even if WS takes a sec to connect)
-      this.connectWs();
+      if (this.view !== 'ai-monitor') this.startCoreTelemetry();
 
       // Lazy-load slow modal data when each modal first opens.
       // (Settings / Logs / Dev Squad each have their own dedicated
@@ -320,6 +343,13 @@ window.sirin = function () {
       // (objectives + behavior settings) and pending replies. Cached per
       // agent so toggling between them is instant on subsequent visits.
       this.$watch('view', (v) => {
+        if (v === 'ai-monitor') {
+          this.pauseCoreTelemetry();
+          this.startAiMonitorRefresh();
+          return;
+        }
+        this.stopAiMonitorRefresh();
+        this.startCoreTelemetry();
         const m = v.match(/^workspace:(\d+)$/);
         if (!m) return;
         const idx = parseInt(m[1], 10);
@@ -330,6 +360,116 @@ window.sirin = function () {
         // v0.5.3: hydrate persisted chat thread (if not already cached)
         if (!this.chat_history[agent.id]) this.loadChatHistory(agent.id);
       });
+
+      if (this.view === 'ai-monitor') this.startAiMonitorRefresh();
+    },
+
+    // ── AI Work Monitor ────────────────────────────────────────────
+    startCoreTelemetry() {
+      if (this.coreTelemetryStarted) return;
+      this.coreTelemetryPaused = false;
+      this.coreTelemetryStarted = true;
+      this.fetchSnapshot();
+      this.connectWs();
+    },
+
+    pauseCoreTelemetry() {
+      this.coreTelemetryPaused = true;
+      this.coreTelemetryStarted = false;
+      if (this._poll_timer) {
+        window.clearInterval(this._poll_timer);
+        this._poll_timer = null;
+      }
+      if (this._ws) {
+        const ws = this._ws;
+        this._ws = null;
+        ws.close();
+      }
+      this._ws_connected = false;
+    },
+
+    startAiMonitorRefresh() {
+      this.stopAiMonitorRefresh();
+      this.loadAiMonitor();
+      this.aiMonitorTimer = window.setInterval(() => {
+        if (this.view === 'ai-monitor' && document.visibilityState === 'visible') {
+          this.loadAiMonitor();
+        }
+      }, 15000);
+    },
+
+    stopAiMonitorRefresh() {
+      if (this.aiMonitorTimer) {
+        window.clearInterval(this.aiMonitorTimer);
+        this.aiMonitorTimer = null;
+      }
+    },
+
+    async loadAiMonitor() {
+      if (this.aiMonitorLoading) return;
+      this.aiMonitorLoading = true;
+      this.aiMonitorError = null;
+      try {
+        const r = await fetch('/api/ai-monitor', { cache: 'no-store' });
+        const data = await r.json();
+        if (!r.ok || data.error) throw new Error(data.error || `HTTP ${r.status}`);
+        this.aiMonitor = data;
+        if (data.version) this.state.version = data.version;
+      } catch (e) {
+        this.aiMonitorError = e.message || String(e);
+      } finally {
+        this.aiMonitorLoading = false;
+      }
+    },
+
+    async runAiSpeedTest() {
+      if (this.aiSpeedTestBusy) return;
+      this.aiSpeedTestBusy = true;
+      this.aiSpeedTestError = null;
+      try {
+        const r = await fetch('/mcp', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: `ai-speed-${Date.now()}`,
+            method: 'tools/call',
+            params: { name: 'ai_monitor_speed_test', arguments: {} },
+          }),
+        });
+        const data = await r.json();
+        if (data.error) throw new Error(data.error.message || '測速失敗');
+        const text = data.result?.content?.[0]?.text;
+        this.aiSpeedTest = typeof text === 'string' ? JSON.parse(text) : data.result;
+      } catch (e) {
+        this.aiSpeedTestError = e.message || String(e);
+      } finally {
+        this.aiSpeedTestBusy = false;
+      }
+    },
+
+    aiSelectedRoute(family) {
+      return (this.aiMonitor?.network?.default_routes || [])
+        .find(route => route.family === family && route.selected) || null;
+    },
+
+    aiEvidenceLabel(level) {
+      return { MEASURED: '實測', INFERRED: '推估', MISSING_PROOF: '缺證據' }[level] || '缺證據';
+    },
+
+    aiEvidenceClass(level) {
+      return `evidence-${String(level || 'MISSING_PROOF').toLowerCase().replace('_', '-')}`;
+    },
+
+    formatCompactNumber(value) {
+      return new Intl.NumberFormat('zh-TW', { notation: 'compact', maximumFractionDigits: 1 })
+        .format(Number(value || 0));
+    },
+
+    formatMonitorTime(value) {
+      if (!value) return '—';
+      const d = new Date(value);
+      return Number.isNaN(d.getTime()) ? '—' : d.toLocaleTimeString('zh-TW', { hour12: false });
     },
 
     // ── Dashboard widget layout actions (v0.5.5) ───────────────────
@@ -819,6 +959,7 @@ window.sirin = function () {
     _ws_connected: false,
     _poll_timer:   null,
     connectWs() {
+      if (this.coreTelemetryPaused) return;
       try {
         const proto = location.protocol === 'https:' ? 'wss' : 'ws';
         const ws = new WebSocket(`${proto}://${location.host}/ws`);
@@ -837,6 +978,7 @@ window.sirin = function () {
         ws.addEventListener('close', () => {
           this._ws_connected = false;
           this._ws = null;
+          if (this.coreTelemetryPaused) return;
           // Fallback: poll while disconnected, retry WS in 5 s.
           if (!this._poll_timer) {
             this._poll_timer = setInterval(() => this.fetchSnapshot(), 5000);
@@ -845,6 +987,7 @@ window.sirin = function () {
         });
         ws.addEventListener('error', () => { /* close fires next */ });
       } catch (_) {
+        if (this.coreTelemetryPaused) return;
         // WebSocket constructor threw (very rare). Just poll.
         if (!this._poll_timer) {
           this._poll_timer = setInterval(() => this.fetchSnapshot(), 5000);
@@ -1294,6 +1437,7 @@ window.sirin = function () {
 
     // ── Command palette entries ────────────────────────────────────
     paletteEntries: [
+      { group: 'SYSTEM',    label: 'AI Work Monitor',   action: 'go-ai-monitor' },
       { group: 'TESTING',   label: 'Coverage Map',     action: 'go-coverage' },
       { group: 'TESTING',   label: 'Browser Monitor',  action: 'go-browser' },
       { group: 'AUTOMATION',label: 'Dev Squad',        action: 'open-devsquad' },
@@ -1319,6 +1463,7 @@ window.sirin = function () {
       if (!entry) return;
       switch (entry.action) {
         case 'go-dashboard': this.view = 'dashboard'; break;
+        case 'go-ai-monitor': this.view = 'ai-monitor'; break;
         case 'go-coverage':  this.view = 'testing'; this.testTab = 'coverage'; break;
         case 'go-browser':   this.view = 'testing'; this.testTab = 'browser'; break;
         case 'open-devsquad':   this.modal = 'devsquad'; break;
