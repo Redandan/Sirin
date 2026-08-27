@@ -615,8 +615,54 @@
                      x-text="'取樣 ' + (aiMonitor.recovery?.sample_age_secs ?? '—') + ' 秒前 · uptime ' + Math.floor((aiMonitor.recovery?.uptime_secs || 0) / 60) + ' 分鐘'"></div>
                 <div class="monitor-kv mono small mt-md">
                   <span>history</span><span x-text="aiMonitor.recovery?.token_history_restored ? 'RESTORED' : 'CURRENT BOOT'"></span>
-                  <span>last standby</span><span x-text="aiMonitor.power?.modern_standby?.last_entered_at ? formatMonitorTime(aiMonitor.power.modern_standby.last_entered_at) : 'MISSING_PROOF'"></span>
+                  <span>last standby</span><span x-text="aiMonitor.power?.modern_standby?.last_entered_at ? new Date(aiMonitor.power.modern_standby.last_entered_at).toLocaleString('zh-TW', { hour12: false }) : 'MISSING_PROOF'"></span>
                   <span>persist</span><span x-text="aiMonitor.recovery?.token_history_persisted ? 'READY' : 'FAILED'"></span>
+                </div>
+              </div>
+            </div>
+
+            <div class="monitor-section-title">
+              <span>監控成本</span>
+              <span class="evidence-badge"
+                    :class="aiEvidenceClass(aiMonitor.overhead?.evidence)"
+                    x-text="aiEvidenceLabel(aiMonitor.overhead?.evidence)"></span>
+            </div>
+
+            <div class="monitor-grid monitor-grid-ai">
+              <div class="card monitor-card">
+                <div class="monitor-card-title">Sirin 程序</div>
+                <div class="token-hero mono"
+                     x-text="aiMonitor.overhead?.process?.cpu_percent_recent != null ? aiMonitor.overhead.process.cpu_percent_recent.toFixed(3) + '%' : '—'"></div>
+                <div class="dim small">最近區間的全 Sirin CPU；不是只算監控模組</div>
+                <div class="monitor-kv mono small mt-md">
+                  <span>working set</span><span x-text="aiMonitor.overhead?.process?.working_set_mb != null ? aiMonitor.overhead.process.working_set_mb.toFixed(1) + ' MB' : 'MISSING_PROOF'"></span>
+                  <span>private</span><span x-text="aiMonitor.overhead?.process?.private_mb != null ? aiMonitor.overhead.process.private_mb.toFixed(1) + ' MB' : 'MISSING_PROOF'"></span>
+                  <span>interval</span><span x-text="aiMonitor.overhead?.process?.cpu_interval_secs != null ? aiMonitor.overhead.process.cpu_interval_secs.toFixed(1) + ' s' : '建立基線中'"></span>
+                </div>
+              </div>
+
+              <div class="card monitor-card">
+                <div class="monitor-card-title">背景取樣 thread</div>
+                <div class="token-hero mono"
+                     x-text="(aiMonitor.overhead?.last_sampler_wall_ms || 0).toFixed(1) + ' ms'"></div>
+                <div class="dim small">每 60 秒一次；CPU 為此 thread 的直接計時</div>
+                <div class="monitor-kv mono small mt-md">
+                  <span>thread CPU</span><span x-text="aiMonitor.overhead?.last_sampler_cpu_ms != null ? aiMonitor.overhead.last_sampler_cpu_ms.toFixed(3) + ' ms' : 'MISSING_PROOF'"></span>
+                  <span>runs</span><span x-text="aiMonitor.overhead?.sampler_runs_total || 0"></span>
+                  <span>AI cache</span><span x-text="(aiMonitor.overhead?.ai_cache_hits_total || 0) + ' hits / ' + (aiMonitor.overhead?.ai_collections_total || 0) + ' collect'"></span>
+                </div>
+              </div>
+
+              <div class="card monitor-card">
+                <div class="monitor-card-title">本機 I/O 預算</div>
+                <div class="token-hero mono"
+                     x-text="aiMonitor.overhead?.trend_file_bytes != null ? (aiMonitor.overhead.trend_file_bytes / 1024).toFixed(1) + ' KB' : '—'"></div>
+                <div class="dim small">Token 趨勢檔 · 最多 60 點，原子替換</div>
+                <div class="monitor-kv mono small mt-md">
+                  <span>disk writes</span><span x-text="aiMonitor.overhead?.trend_writes_total || 0"></span>
+                  <span>network cache</span><span x-text="(aiMonitor.overhead?.network_cache_hits_total || 0) + ' hits / ' + (aiMonitor.overhead?.network_collections_total || 0) + ' collect'"></span>
+                  <span>background probes</span><span x-text="aiMonitor.overhead?.background_network_probes ? 'ON' : 'OFF'"></span>
+                  <span>background download</span><span x-text="aiMonitor.overhead?.background_download_tests ? 'ON' : 'OFF'"></span>
                 </div>
               </div>
             </div>
@@ -752,6 +798,11 @@
                 <div class="dim tiny mt-md">來源：state_5.sqlite 的 threads.tokens_used；不查詢標題或訊息內容。</div>
                 <div class="dim tiny mt-xs"
                      x-text="aiMonitor.ai_work?.codex_token_trend?.history_persisted ? '最近一小時統計已安全保存在本機' : '趨勢保存目前缺少證據'"></div>
+                <div class="monitor-kv mono small mt-md">
+                  <span>lifecycle</span><span x-text="aiMonitor.ai_work?.codex_token_trend?.lifecycle || 'MISSING_PROOF'"></span>
+                  <span>source</span><span x-text="aiMonitor.ai_work?.codex_token_trend?.source_available ? 'AVAILABLE' : 'MISSING_PROOF'"></span>
+                  <span>apps</span><span x-text="(aiMonitor.ai_work?.codex_token_trend?.chatgpt_running ? 'ChatGPT ' : '') + (aiMonitor.ai_work?.codex_token_trend?.codex_running ? 'Codex' : '') || 'CLOSED'"></span>
+                </div>
               </div>
 
               <div class="card monitor-card token-summary-card">

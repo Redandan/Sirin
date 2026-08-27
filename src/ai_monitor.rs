@@ -18,7 +18,7 @@ use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-const NETWORK_TTL: Duration = Duration::from_secs(15);
+const NETWORK_TTL: Duration = Duration::from_secs(60);
 const POWER_TTL: Duration = Duration::from_secs(60);
 const AI_SAMPLE_INTERVAL: Duration = Duration::from_secs(60);
 const AI_SAMPLE_MIN_AGE: Duration = Duration::from_secs(55);
@@ -51,6 +51,7 @@ pub struct AiMonitorSnapshot {
     pub ai_work: AiWorkSnapshot,
     pub power: PowerSnapshot,
     pub recovery: RecoverySnapshot,
+    pub overhead: MonitorOverheadSnapshot,
     pub alerts: Vec<LocalAlertView>,
     pub safety: SafetyView,
 }
@@ -126,6 +127,47 @@ pub struct RecoverySnapshot {
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
+pub struct MonitorOverheadSnapshot {
+    pub evidence: EvidenceLevel,
+    pub scope: String,
+    pub sampler_interval_secs: u64,
+    pub network_cache_ttl_secs: u64,
+    pub power_cache_ttl_secs: u64,
+    pub ai_cache_ttl_secs: u64,
+    pub sampler_runs_total: u64,
+    pub last_sampler_wall_ms: f64,
+    pub last_sampler_cpu_ms: Option<f64>,
+    pub ai_collections_total: u64,
+    pub ai_cache_hits_total: u64,
+    pub last_ai_collection_ms: f64,
+    pub network_collections_total: u64,
+    pub network_cache_hits_total: u64,
+    pub last_network_collection_ms: f64,
+    pub standby_collections_total: u64,
+    pub standby_cache_hits_total: u64,
+    pub last_standby_collection_ms: f64,
+    pub trend_writes_total: u64,
+    pub trend_file_bytes: Option<u64>,
+    pub manual_speed_tests_total: u64,
+    pub manual_download_bytes_total: u64,
+    pub background_network_probes: bool,
+    pub background_download_tests: bool,
+    pub process: SirinProcessResourceView,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SirinProcessResourceView {
+    pub scope: String,
+    pub cpu_percent_recent: Option<f64>,
+    pub cpu_interval_secs: Option<f64>,
+    pub cpu_evidence: EvidenceLevel,
+    pub working_set_mb: Option<f64>,
+    pub private_mb: Option<f64>,
+    pub memory_evidence: EvidenceLevel,
+    pub source_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct LocalAlertView {
     pub code: String,
     pub severity: String,
@@ -196,6 +238,7 @@ pub struct AiWorkSnapshot {
     pub codex_token_trend: TokenTrendView,
     pub codex_source: String,
     pub codex_source_error: Option<String>,
+    pub process_source_error: Option<String>,
     pub sirin_tokens: SirinTokenView,
 }
 
@@ -226,11 +269,16 @@ pub struct TokenTrendView {
     pub tokens_per_min: u64,
     pub gap: bool,
     pub evidence: EvidenceLevel,
+    pub lifecycle: String,
+    pub source_available: bool,
+    pub chatgpt_running: bool,
+    pub codex_running: bool,
     pub history: Vec<TokenTrendPointView>,
     pub history_persisted: bool,
     pub history_restored: bool,
     pub persistence_error: Option<String>,
     pub last_sampled_at_ms: Option<i64>,
+    pub last_attempted_at_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -240,6 +288,14 @@ pub struct TokenTrendPointView {
     pub delta_tokens: u64,
     pub tokens_per_min: u64,
     pub gap: bool,
+    #[serde(default)]
+    pub lifecycle: String,
+    #[serde(default = "default_true")]
+    pub source_available: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -279,6 +335,29 @@ static TOKEN_TREND_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 static AWAKE_GUARD_ACTIVE: AtomicBool = AtomicBool::new(false);
 static AWAKE_GUARD_LAST_UPDATED_MS: AtomicI64 = AtomicI64::new(0);
 static AWAKE_GUARD_ERROR: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+static SAMPLER_RUNS: AtomicU64 = AtomicU64::new(0);
+static LAST_SAMPLER_WALL_US: AtomicU64 = AtomicU64::new(0);
+static LAST_SAMPLER_CPU_US: AtomicU64 = AtomicU64::new(0);
+static AI_COLLECTIONS: AtomicU64 = AtomicU64::new(0);
+static AI_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
+static LAST_AI_COLLECTION_US: AtomicU64 = AtomicU64::new(0);
+static NETWORK_COLLECTIONS: AtomicU64 = AtomicU64::new(0);
+static NETWORK_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
+static LAST_NETWORK_COLLECTION_US: AtomicU64 = AtomicU64::new(0);
+static STANDBY_COLLECTIONS: AtomicU64 = AtomicU64::new(0);
+static STANDBY_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
+static LAST_STANDBY_COLLECTION_US: AtomicU64 = AtomicU64::new(0);
+static TOKEN_TREND_WRITES: AtomicU64 = AtomicU64::new(0);
+static MANUAL_SPEED_TESTS: AtomicU64 = AtomicU64::new(0);
+static MANUAL_DOWNLOAD_BYTES: AtomicU64 = AtomicU64::new(0);
+static PROCESS_RESOURCE_BASELINE: OnceLock<Mutex<ProcessResourceBaseline>> = OnceLock::new();
+
+struct ProcessResourceBaseline {
+    captured_at: Instant,
+    cpu_time_100ns: u64,
+    last_cpu_percent: Option<f64>,
+    last_interval_secs: Option<f64>,
+}
 
 struct SamplerLivenessGuard;
 
@@ -316,7 +395,7 @@ impl Default for TokenTrendState {
 #[derive(Debug, Serialize, Deserialize)]
 struct PersistedTokenTrend {
     schema_version: u32,
-    sampled_at_ms: i64,
+    sampled_at_ms: Option<i64>,
     tokens: HashMap<String, u64>,
     history: VecDeque<TokenTrendPointView>,
 }
@@ -333,8 +412,21 @@ pub fn spawn_sampler() {
             .spawn(|| {
                 let _liveness_guard = SamplerLivenessGuard;
                 loop {
+                    let wall_started = Instant::now();
+                    let cpu_started = current_thread_cpu_time_100ns();
                     let ai_work = cached_ai_work(AI_SAMPLE_MIN_AGE);
                     update_awake_guard(&ai_work);
+                    LAST_SAMPLER_WALL_US.store(
+                        wall_started.elapsed().as_micros().min(u64::MAX as u128) as u64,
+                        Ordering::Relaxed,
+                    );
+                    if let (Some(before), Some(after)) =
+                        (cpu_started, current_thread_cpu_time_100ns())
+                    {
+                        LAST_SAMPLER_CPU_US
+                            .store(after.saturating_sub(before) / 10, Ordering::Relaxed);
+                    }
+                    SAMPLER_RUNS.fetch_add(1, Ordering::Relaxed);
                     thread::sleep(AI_SAMPLE_INTERVAL);
                 }
             }) {
@@ -357,7 +449,8 @@ pub fn snapshot() -> AiMonitorSnapshot {
     let ai_work = cached_ai_work(AI_WORK_TTL);
     let power = collect_power(&ai_work);
     let recovery = collect_recovery(&ai_work, &power);
-    let alerts = build_local_alerts(&ai_work, &power, &recovery);
+    let overhead = collect_monitor_overhead();
+    let alerts = build_local_alerts(&ai_work, &power, &recovery, &overhead);
     AiMonitorSnapshot {
         version: env!("CARGO_PKG_VERSION").to_string(),
         captured_at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
@@ -367,6 +460,7 @@ pub fn snapshot() -> AiMonitorSnapshot {
         ai_work,
         power,
         recovery,
+        overhead,
         alerts,
         safety: SafetyView::default(),
     }
@@ -382,10 +476,17 @@ fn cached_network() -> NetworkSnapshot {
     let mut guard = cache.lock().unwrap_or_else(|error| error.into_inner());
     if guard.refreshed_at.elapsed() < NETWORK_TTL {
         if let Some(value) = &guard.value {
+            NETWORK_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
             return value.clone();
         }
     }
+    let started = Instant::now();
     let value = collect_network();
+    LAST_NETWORK_COLLECTION_US.store(
+        started.elapsed().as_micros().min(u64::MAX as u128) as u64,
+        Ordering::Relaxed,
+    );
+    NETWORK_COLLECTIONS.fetch_add(1, Ordering::Relaxed);
     guard.refreshed_at = Instant::now();
     guard.value = Some(value.clone());
     value
@@ -401,10 +502,17 @@ fn cached_ai_work(max_age: Duration) -> AiWorkSnapshot {
     let mut guard = cache.lock().unwrap_or_else(|error| error.into_inner());
     if guard.refreshed_at.elapsed() < max_age {
         if let Some(value) = &guard.value {
+            AI_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
             return value.clone();
         }
     }
+    let started = Instant::now();
     let value = collect_ai_work();
+    LAST_AI_COLLECTION_US.store(
+        started.elapsed().as_micros().min(u64::MAX as u128) as u64,
+        Ordering::Relaxed,
+    );
+    AI_COLLECTIONS.fetch_add(1, Ordering::Relaxed);
     guard.refreshed_at = Instant::now();
     guard.value = Some(value.clone());
     value
@@ -619,10 +727,17 @@ fn cached_modern_standby() -> ModernStandbyView {
     let mut guard = cache.lock().unwrap_or_else(|error| error.into_inner());
     if guard.refreshed_at.elapsed() < POWER_TTL {
         if let Some(value) = &guard.value {
+            STANDBY_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
             return value.clone();
         }
     }
+    let started = Instant::now();
     let value = collect_modern_standby();
+    LAST_STANDBY_COLLECTION_US.store(
+        started.elapsed().as_micros().min(u64::MAX as u128) as u64,
+        Ordering::Relaxed,
+    );
+    STANDBY_COLLECTIONS.fetch_add(1, Ordering::Relaxed);
     guard.refreshed_at = Instant::now();
     guard.value = Some(value.clone());
     value
@@ -771,10 +886,192 @@ fn collect_recovery(ai_work: &AiWorkSnapshot, power: &PowerSnapshot) -> Recovery
     }
 }
 
+fn collect_monitor_overhead() -> MonitorOverheadSnapshot {
+    let process = collect_sirin_process_resources();
+    let trend_file_bytes = std::fs::metadata(token_trend_path())
+        .ok()
+        .map(|metadata| metadata.len());
+    MonitorOverheadSnapshot {
+        evidence: if SAMPLER_RUNS.load(Ordering::Relaxed) > 0
+            && process.memory_evidence == EvidenceLevel::Measured
+        {
+            EvidenceLevel::Measured
+        } else {
+            EvidenceLevel::MissingProof
+        },
+        scope: "AI_MONITOR_COUNTERS_AND_ENTIRE_SIRIN_PROCESS_RESOURCES".to_string(),
+        sampler_interval_secs: AI_SAMPLE_INTERVAL.as_secs(),
+        network_cache_ttl_secs: NETWORK_TTL.as_secs(),
+        power_cache_ttl_secs: POWER_TTL.as_secs(),
+        ai_cache_ttl_secs: AI_WORK_TTL.as_secs(),
+        sampler_runs_total: SAMPLER_RUNS.load(Ordering::Relaxed),
+        last_sampler_wall_ms: micros_to_millis(LAST_SAMPLER_WALL_US.load(Ordering::Relaxed)),
+        last_sampler_cpu_ms: atomic_optional_micros(&LAST_SAMPLER_CPU_US),
+        ai_collections_total: AI_COLLECTIONS.load(Ordering::Relaxed),
+        ai_cache_hits_total: AI_CACHE_HITS.load(Ordering::Relaxed),
+        last_ai_collection_ms: micros_to_millis(LAST_AI_COLLECTION_US.load(Ordering::Relaxed)),
+        network_collections_total: NETWORK_COLLECTIONS.load(Ordering::Relaxed),
+        network_cache_hits_total: NETWORK_CACHE_HITS.load(Ordering::Relaxed),
+        last_network_collection_ms: micros_to_millis(
+            LAST_NETWORK_COLLECTION_US.load(Ordering::Relaxed),
+        ),
+        standby_collections_total: STANDBY_COLLECTIONS.load(Ordering::Relaxed),
+        standby_cache_hits_total: STANDBY_CACHE_HITS.load(Ordering::Relaxed),
+        last_standby_collection_ms: micros_to_millis(
+            LAST_STANDBY_COLLECTION_US.load(Ordering::Relaxed),
+        ),
+        trend_writes_total: TOKEN_TREND_WRITES.load(Ordering::Relaxed),
+        trend_file_bytes,
+        manual_speed_tests_total: MANUAL_SPEED_TESTS.load(Ordering::Relaxed),
+        manual_download_bytes_total: MANUAL_DOWNLOAD_BYTES.load(Ordering::Relaxed),
+        background_network_probes: false,
+        background_download_tests: false,
+        process,
+    }
+}
+
+fn micros_to_millis(value: u64) -> f64 {
+    value as f64 / 1_000.0
+}
+
+fn atomic_optional_micros(value: &AtomicU64) -> Option<f64> {
+    match value.load(Ordering::Relaxed) {
+        0 => None,
+        value => Some(micros_to_millis(value)),
+    }
+}
+
+#[cfg(windows)]
+fn collect_sirin_process_resources() -> SirinProcessResourceView {
+    use windows::Win32::Foundation::FILETIME;
+    use windows::Win32::System::ProcessStatus::{
+        K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX,
+    };
+    use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+
+    let process = unsafe { GetCurrentProcess() };
+    let mut creation = FILETIME::default();
+    let mut exit = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    let cpu_time_100ns =
+        match unsafe { GetProcessTimes(process, &mut creation, &mut exit, &mut kernel, &mut user) }
+        {
+            Ok(()) => Some(filetime_ticks(kernel).saturating_add(filetime_ticks(user))),
+            Err(_) => None,
+        };
+
+    let mut counters = PROCESS_MEMORY_COUNTERS_EX::default();
+    counters.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32;
+    let memory_ok = unsafe {
+        K32GetProcessMemoryInfo(
+            process,
+            (&mut counters as *mut PROCESS_MEMORY_COUNTERS_EX).cast::<PROCESS_MEMORY_COUNTERS>(),
+            counters.cb,
+        )
+        .as_bool()
+    };
+
+    let (cpu_percent_recent, cpu_interval_secs, cpu_evidence) =
+        if let Some(cpu_time_100ns) = cpu_time_100ns {
+            let now = Instant::now();
+            let cell = PROCESS_RESOURCE_BASELINE.get_or_init(|| {
+                Mutex::new(ProcessResourceBaseline {
+                    captured_at: now,
+                    cpu_time_100ns,
+                    last_cpu_percent: None,
+                    last_interval_secs: None,
+                })
+            });
+            let mut baseline = cell.lock().unwrap_or_else(|error| error.into_inner());
+            let elapsed = now.saturating_duration_since(baseline.captured_at);
+            if elapsed >= Duration::from_secs(5) {
+                let cpu_seconds =
+                    cpu_time_100ns.saturating_sub(baseline.cpu_time_100ns) as f64 / 10_000_000.0;
+                let processors = std::thread::available_parallelism()
+                    .map(|count| count.get())
+                    .unwrap_or(1) as f64;
+                baseline.last_cpu_percent =
+                    Some((cpu_seconds / elapsed.as_secs_f64() / processors * 100.0).max(0.0));
+                baseline.last_interval_secs = Some(elapsed.as_secs_f64());
+                baseline.captured_at = now;
+                baseline.cpu_time_100ns = cpu_time_100ns;
+            }
+            (
+                baseline.last_cpu_percent,
+                baseline.last_interval_secs,
+                if baseline.last_cpu_percent.is_some() {
+                    EvidenceLevel::Measured
+                } else {
+                    EvidenceLevel::MissingProof
+                },
+            )
+        } else {
+            (None, None, EvidenceLevel::MissingProof)
+        };
+
+    SirinProcessResourceView {
+        scope: "ENTIRE_SIRIN_PROCESS_NOT_MONITOR_ONLY".to_string(),
+        cpu_percent_recent,
+        cpu_interval_secs,
+        cpu_evidence,
+        working_set_mb: memory_ok.then_some(counters.WorkingSetSize as f64 / 1_048_576.0),
+        private_mb: memory_ok.then_some(counters.PrivateUsage as f64 / 1_048_576.0),
+        memory_evidence: if memory_ok {
+            EvidenceLevel::Measured
+        } else {
+            EvidenceLevel::MissingProof
+        },
+        source_error: (!memory_ok).then(|| "Read Sirin process memory counters failed".to_string()),
+    }
+}
+
+#[cfg(not(windows))]
+fn collect_sirin_process_resources() -> SirinProcessResourceView {
+    SirinProcessResourceView {
+        scope: "ENTIRE_SIRIN_PROCESS_NOT_MONITOR_ONLY".to_string(),
+        source_error: Some("Sirin process resource monitoring is currently Windows-only".into()),
+        ..Default::default()
+    }
+}
+
+#[cfg(windows)]
+fn current_thread_cpu_time_100ns() -> Option<u64> {
+    use windows::Win32::Foundation::FILETIME;
+    use windows::Win32::System::Threading::{GetCurrentThread, GetThreadTimes};
+
+    let mut creation = FILETIME::default();
+    let mut exit = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    unsafe {
+        GetThreadTimes(
+            GetCurrentThread(),
+            &mut creation,
+            &mut exit,
+            &mut kernel,
+            &mut user,
+        )
+    }
+    .ok()?;
+    Some(filetime_ticks(kernel).saturating_add(filetime_ticks(user)))
+}
+
+#[cfg(not(windows))]
+fn current_thread_cpu_time_100ns() -> Option<u64> {
+    None
+}
+
+#[cfg(windows)]
+fn filetime_ticks(value: windows::Win32::Foundation::FILETIME) -> u64 {
+    ((value.dwHighDateTime as u64) << 32) | value.dwLowDateTime as u64
+}
+
 fn build_local_alerts(
     ai_work: &AiWorkSnapshot,
     power: &PowerSnapshot,
     recovery: &RecoverySnapshot,
+    overhead: &MonitorOverheadSnapshot,
 ) -> Vec<LocalAlertView> {
     let mut alerts = Vec::new();
     if power.session_locked == Some(true) {
@@ -807,6 +1104,15 @@ fn build_local_alerts(
             evidence: EvidenceLevel::Measured,
         });
     }
+    if let Some(error) = &ai_work.codex_source_error {
+        alerts.push(LocalAlertView {
+            code: "TOKEN_SOURCE_MISSING".to_string(),
+            severity: "WARNING".to_string(),
+            message: "Codex Token 資料來源目前不可讀".to_string(),
+            action: format!("保留上一個有效基線並停止推算速率：{error}"),
+            evidence: EvidenceLevel::MissingProof,
+        });
+    }
     if recovery
         .sample_age_secs
         .is_some_and(|age| age > AI_SAMPLE_GAP_SECS)
@@ -832,6 +1138,40 @@ fn build_local_alerts(
             message: "最近 10 分鐘內曾進入 Modern Standby".to_string(),
             action: "確認 Token 圖上的中斷區段與桌面操作恢復狀態".to_string(),
             evidence: power.modern_standby.evidence,
+        });
+    }
+    if overhead.last_sampler_wall_ms > 5_000.0
+        || overhead
+            .last_sampler_cpu_ms
+            .is_some_and(|value| value > 500.0)
+    {
+        alerts.push(LocalAlertView {
+            code: "MONITOR_SAMPLER_SLOW".to_string(),
+            severity: "WARNING".to_string(),
+            message: "AI 背景取樣超出低負擔預算".to_string(),
+            action: "檢查 Codex 狀態資料庫與程序查詢是否變慢".to_string(),
+            evidence: overhead.evidence,
+        });
+    }
+    if overhead.last_network_collection_ms > 5_000.0 {
+        alerts.push(LocalAlertView {
+            code: "MONITOR_NETWORK_COLLECTION_SLOW".to_string(),
+            severity: "WARNING".to_string(),
+            message: "本機網路證據收集超過 5 秒".to_string(),
+            action: "檢查 netsh 或 ICMP 是否被系統網路堆疊延遲".to_string(),
+            evidence: EvidenceLevel::Measured,
+        });
+    }
+    if overhead
+        .trend_file_bytes
+        .is_some_and(|bytes| bytes > 1_048_576)
+    {
+        alerts.push(LocalAlertView {
+            code: "TOKEN_TREND_FILE_TOO_LARGE".to_string(),
+            severity: "WARNING".to_string(),
+            message: "Token 趨勢檔超出 1 MB 安全界線".to_string(),
+            action: "檢查一小時／60 點的保留上限是否失效；不要自動刪除檔案".to_string(),
+            evidence: EvidenceLevel::Measured,
         });
     }
     alerts
@@ -867,6 +1207,8 @@ pub async fn manual_speed_test() -> Result<SpeedTestView, String> {
     }
     let elapsed = started.elapsed();
     let elapsed_secs = elapsed.as_secs_f64().max(0.001);
+    MANUAL_SPEED_TESTS.fetch_add(1, Ordering::Relaxed);
+    MANUAL_DOWNLOAD_BYTES.fetch_add(bytes_downloaded, Ordering::Relaxed);
     Ok(SpeedTestView {
         captured_at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
         endpoint: SPEED_TEST_URL.to_string(),
@@ -882,7 +1224,14 @@ fn collect_ai_work() -> AiWorkSnapshot {
     let (processes, process_error) = collect_processes();
     let (tasks, codex_error) = collect_codex_tasks();
     let recent_total = tasks.iter().map(|task| task.tokens_used).sum();
-    let trend = update_token_trend(&tasks);
+    let chatgpt_running = process_group_running(&processes, "ChatGPT");
+    let codex_running = process_group_running(&processes, "Codex");
+    let trend = update_token_trend(
+        &tasks,
+        codex_error.is_none(),
+        chatgpt_running,
+        codex_running,
+    );
     let sirin = crate::multi_agent::usage::snapshot(300);
 
     AiWorkSnapshot {
@@ -896,7 +1245,8 @@ fn collect_ai_work() -> AiWorkSnapshot {
         codex_recent_total_tokens: recent_total,
         codex_token_trend: trend,
         codex_source: "%USERPROFILE%\\.codex\\state_5.sqlite / threads.tokens_used (read-only internal counter; not billing)".to_string(),
-        codex_source_error: codex_error.or(process_error),
+        codex_source_error: codex_error,
+        process_source_error: process_error,
         sirin_tokens: SirinTokenView {
             window_secs: sirin.window_secs,
             api_calls: sirin.api_calls,
@@ -913,6 +1263,12 @@ fn collect_ai_work() -> AiWorkSnapshot {
             },
         },
     }
+}
+
+fn process_group_running(processes: &[ProcessGroupView], app: &str) -> bool {
+    processes
+        .iter()
+        .any(|process| process.app == app && process.running)
 }
 
 fn collect_codex_tasks() -> (Vec<CodexTaskView>, Option<String>) {
@@ -986,7 +1342,12 @@ fn local_user_home_dir() -> Option<std::path::PathBuf> {
         .map(std::path::PathBuf::from)
 }
 
-fn update_token_trend(tasks: &[CodexTaskView]) -> TokenTrendView {
+fn update_token_trend(
+    tasks: &[CodexTaskView],
+    source_available: bool,
+    chatgpt_running: bool,
+    codex_running: bool,
+) -> TokenTrendView {
     let sampled_at_ms = unix_time_ms();
     let current: HashMap<String, u64> = tasks
         .iter()
@@ -994,21 +1355,51 @@ fn update_token_trend(tasks: &[CodexTaskView]) -> TokenTrendView {
         .collect();
     let cell = TOKEN_TREND.get_or_init(|| Mutex::new(load_token_trend_state(sampled_at_ms)));
     let mut state = cell.lock().unwrap_or_else(|e| e.into_inner());
-    let (interval_secs, delta, tokens_per_min, gap, evidence) =
-        advance_token_trend_state(&mut state, current, sampled_at_ms);
+    let (interval_secs, delta, tokens_per_min, gap, evidence, lifecycle) = if source_available {
+        advance_token_trend_state(
+            &mut state,
+            current,
+            sampled_at_ms,
+            chatgpt_running,
+            codex_running,
+        )
+    } else {
+        record_missing_token_source(&mut state, sampled_at_ms)
+    };
     persist_token_trend_state(&mut state);
-    token_trend_view(&state, interval_secs, delta, tokens_per_min, gap, evidence)
+    token_trend_view(
+        &state,
+        interval_secs,
+        delta,
+        tokens_per_min,
+        gap,
+        evidence,
+        lifecycle,
+        source_available,
+        chatgpt_running,
+        codex_running,
+        sampled_at_ms,
+    )
 }
 
 fn advance_token_trend_state(
     state: &mut TokenTrendState,
     current: HashMap<String, u64>,
     sampled_at_ms: i64,
-) -> (u64, u64, u64, bool, EvidenceLevel) {
+    chatgpt_running: bool,
+    codex_running: bool,
+) -> (u64, u64, u64, bool, EvidenceLevel, String) {
     let Some(previous_sampled_at_ms) = state.sampled_at_ms else {
         state.sampled_at_ms = Some(sampled_at_ms);
         state.tokens = current;
-        return (0, 0, 0, false, EvidenceLevel::MissingProof);
+        return (
+            0,
+            0,
+            0,
+            false,
+            EvidenceLevel::MissingProof,
+            "BASELINE".to_string(),
+        );
     };
     let elapsed_ms = sampled_at_ms.saturating_sub(previous_sampled_at_ms).max(0) as u64;
     let interval_secs = elapsed_ms / 1_000;
@@ -1020,6 +1411,7 @@ fn advance_token_trend_state(
     } else {
         0
     };
+    let lifecycle = token_lifecycle(gap, delta, chatgpt_running, codex_running).to_string();
     push_token_history(
         &mut state.history,
         TokenTrendPointView {
@@ -1028,6 +1420,8 @@ fn advance_token_trend_state(
             delta_tokens: delta,
             tokens_per_min,
             gap,
+            lifecycle: lifecycle.clone(),
+            source_available: true,
         },
     );
     state.sampled_at_ms = Some(sampled_at_ms);
@@ -1044,7 +1438,56 @@ fn advance_token_trend_state(
             // than a billing meter or an event stream.
             EvidenceLevel::Inferred
         },
+        lifecycle,
     )
+}
+
+fn record_missing_token_source(
+    state: &mut TokenTrendState,
+    attempted_at_ms: i64,
+) -> (u64, u64, u64, bool, EvidenceLevel, String) {
+    let interval_secs = state
+        .sampled_at_ms
+        .map(|sampled_at| attempted_at_ms.saturating_sub(sampled_at).max(0) as u64 / 1_000)
+        .unwrap_or(0);
+    let lifecycle = "SOURCE_MISSING".to_string();
+    push_token_history(
+        &mut state.history,
+        TokenTrendPointView {
+            sampled_at_ms: attempted_at_ms,
+            interval_secs,
+            delta_tokens: 0,
+            tokens_per_min: 0,
+            gap: true,
+            lifecycle: lifecycle.clone(),
+            source_available: false,
+        },
+    );
+    (
+        interval_secs,
+        0,
+        0,
+        true,
+        EvidenceLevel::MissingProof,
+        lifecycle,
+    )
+}
+
+fn token_lifecycle(
+    gap: bool,
+    delta_tokens: u64,
+    chatgpt_running: bool,
+    codex_running: bool,
+) -> &'static str {
+    if gap {
+        "GAP"
+    } else if delta_tokens > 0 {
+        "ACTIVE"
+    } else if !chatgpt_running && !codex_running {
+        "APPS_CLOSED"
+    } else {
+        "IDLE"
+    }
 }
 
 fn token_trend_view(
@@ -1054,6 +1497,11 @@ fn token_trend_view(
     tokens_per_min: u64,
     gap: bool,
     evidence: EvidenceLevel,
+    lifecycle: String,
+    source_available: bool,
+    chatgpt_running: bool,
+    codex_running: bool,
+    attempted_at_ms: i64,
 ) -> TokenTrendView {
     TokenTrendView {
         interval_secs,
@@ -1061,11 +1509,16 @@ fn token_trend_view(
         tokens_per_min,
         gap,
         evidence,
+        lifecycle,
+        source_available,
+        chatgpt_running,
+        codex_running,
         history: state.history.iter().cloned().collect(),
         history_persisted: state.persistence_ok,
         history_restored: state.history_restored,
         persistence_error: state.persistence_error.clone(),
         last_sampled_at_ms: state.sampled_at_ms,
+        last_attempted_at_ms: Some(attempted_at_ms),
     }
 }
 
@@ -1118,13 +1571,21 @@ fn load_token_trend_state_from_path(
     persisted
         .history
         .retain(|point| point.sampled_at_ms >= earliest_ms && point.sampled_at_ms <= now_ms);
+    for point in &mut persisted.history {
+        if point.lifecycle.is_empty() {
+            point.lifecycle = if point.gap { "GAP" } else { "LEGACY" }.to_string();
+        }
+    }
     while persisted.history.len() > TOKEN_HISTORY_LIMIT {
         persisted.history.pop_front();
     }
-    let baseline_is_fresh =
-        persisted.sampled_at_ms >= earliest_ms && persisted.sampled_at_ms <= now_ms;
+    let baseline_is_fresh = persisted
+        .sampled_at_ms
+        .is_some_and(|sampled_at| sampled_at >= earliest_ms && sampled_at <= now_ms);
     Ok(Some(TokenTrendState {
-        sampled_at_ms: baseline_is_fresh.then_some(persisted.sampled_at_ms),
+        sampled_at_ms: baseline_is_fresh
+            .then_some(persisted.sampled_at_ms)
+            .flatten(),
         tokens: if baseline_is_fresh {
             persisted.tokens
         } else {
@@ -1140,6 +1601,7 @@ fn load_token_trend_state_from_path(
 fn persist_token_trend_state(state: &mut TokenTrendState) {
     match persist_token_trend_state_to_path(state, &token_trend_path()) {
         Ok(()) => {
+            TOKEN_TREND_WRITES.fetch_add(1, Ordering::Relaxed);
             state.persistence_ok = true;
             state.persistence_error = None;
         }
@@ -1155,12 +1617,9 @@ fn persist_token_trend_state_to_path(
     state: &TokenTrendState,
     path: &std::path::Path,
 ) -> Result<(), String> {
-    let sampled_at_ms = state
-        .sampled_at_ms
-        .ok_or_else(|| "Persist token trend: missing baseline timestamp".to_string())?;
     let persisted = PersistedTokenTrend {
         schema_version: TOKEN_TREND_SCHEMA_VERSION,
-        sampled_at_ms,
+        sampled_at_ms: state.sampled_at_ms,
         tokens: state.tokens.clone(),
         history: state.history.clone(),
     };
@@ -1734,6 +2193,8 @@ mod tests {
                     delta_tokens: value,
                     tokens_per_min: value,
                     gap: false,
+                    lifecycle: "ACTIVE".to_string(),
+                    source_available: true,
                 },
             );
         }
@@ -1750,18 +2211,75 @@ mod tests {
         let after_gap = HashMap::from([("task-a".to_string(), 9_000_u64)]);
 
         assert_eq!(
-            advance_token_trend_state(&mut state, first, 1_000),
-            (0, 0, 0, false, EvidenceLevel::MissingProof)
+            advance_token_trend_state(&mut state, first, 1_000, true, true),
+            (
+                0,
+                0,
+                0,
+                false,
+                EvidenceLevel::MissingProof,
+                "BASELINE".to_string()
+            )
         );
-        let normal = advance_token_trend_state(&mut state, second, 61_000);
-        assert_eq!(normal, (60, 60, 60, false, EvidenceLevel::Inferred));
+        let normal = advance_token_trend_state(&mut state, second, 61_000, true, true);
+        assert_eq!(
+            normal,
+            (
+                60,
+                60,
+                60,
+                false,
+                EvidenceLevel::Inferred,
+                "ACTIVE".to_string()
+            )
+        );
 
-        let interrupted = advance_token_trend_state(&mut state, after_gap, 161_001);
-        assert_eq!(interrupted, (100, 0, 0, true, EvidenceLevel::MissingProof));
+        let interrupted = advance_token_trend_state(&mut state, after_gap, 161_001, true, true);
+        assert_eq!(
+            interrupted,
+            (
+                100,
+                0,
+                0,
+                true,
+                EvidenceLevel::MissingProof,
+                "GAP".to_string()
+            )
+        );
         let last = state.history.back().expect("gap point");
         assert!(last.gap);
         assert_eq!(last.delta_tokens, 0);
         assert_eq!(last.tokens_per_min, 0);
+        assert_eq!(last.lifecycle, "GAP");
+    }
+
+    #[test]
+    fn token_trend_distinguishes_closed_apps_from_missing_source() {
+        let mut state = TokenTrendState::default();
+        let baseline = HashMap::from([("task-a".to_string(), 100_u64)]);
+        let unchanged = baseline.clone();
+        let resumed = HashMap::from([("task-a".to_string(), 500_u64)]);
+
+        let _ = advance_token_trend_state(&mut state, baseline, 1_000, true, true);
+        let closed = advance_token_trend_state(&mut state, unchanged, 61_000, false, false);
+        assert_eq!(closed.5, "APPS_CLOSED");
+        assert_eq!(closed.1, 0);
+        assert_eq!(state.sampled_at_ms, Some(61_000));
+
+        let missing = record_missing_token_source(&mut state, 121_000);
+        assert_eq!(missing.5, "SOURCE_MISSING");
+        assert_eq!(state.sampled_at_ms, Some(61_000));
+        assert!(
+            !state
+                .history
+                .back()
+                .expect("missing point")
+                .source_available
+        );
+
+        let after_missing = advance_token_trend_state(&mut state, resumed, 181_001, true, true);
+        assert_eq!(after_missing.5, "GAP");
+        assert_eq!(after_missing.1, 0);
     }
 
     #[test]
@@ -1802,7 +2320,12 @@ mod tests {
             ..Default::default()
         };
 
-        let alerts = build_local_alerts(&ai_work, &power, &recovery);
+        let alerts = build_local_alerts(
+            &ai_work,
+            &power,
+            &recovery,
+            &MonitorOverheadSnapshot::default(),
+        );
         let codes = alerts
             .iter()
             .map(|alert| alert.code.as_str())
@@ -1816,6 +2339,38 @@ mod tests {
             ]
         );
         assert!(alerts.iter().all(|alert| !alert.action.is_empty()));
+    }
+
+    #[test]
+    fn local_alerts_enforce_monitor_overhead_budgets_without_cleanup() {
+        let overhead = MonitorOverheadSnapshot {
+            evidence: EvidenceLevel::Measured,
+            last_sampler_wall_ms: 5_001.0,
+            last_sampler_cpu_ms: Some(501.0),
+            last_network_collection_ms: 5_001.0,
+            trend_file_bytes: Some(1_048_577),
+            ..Default::default()
+        };
+        let alerts = build_local_alerts(
+            &AiWorkSnapshot::default(),
+            &PowerSnapshot::default(),
+            &RecoverySnapshot::default(),
+            &overhead,
+        );
+        assert_eq!(
+            alerts
+                .iter()
+                .map(|alert| alert.code.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "MONITOR_SAMPLER_SLOW",
+                "MONITOR_NETWORK_COLLECTION_SLOW",
+                "TOKEN_TREND_FILE_TOO_LARGE"
+            ]
+        );
+        assert!(alerts
+            .iter()
+            .all(|alert| !alert.action.contains("自動刪除") || alert.action.contains("不要")));
     }
 
     #[test]
@@ -1838,6 +2393,8 @@ mod tests {
                 delta_tokens: 21,
                 tokens_per_min: 21,
                 gap: false,
+                lifecycle: "ACTIVE".to_string(),
+                source_available: true,
             },
         );
 
@@ -1874,6 +2431,14 @@ mod tests {
         assert!(!live.safety.credentials_accessed);
         assert!(live.safety.background_sampling);
         assert!(!live.safety.automatic_download_test);
+        assert_eq!(live.overhead.network_cache_ttl_secs, 60);
+        assert!(!live.overhead.background_network_probes);
+        assert!(!live.overhead.background_download_tests);
+        assert!(live.overhead.sampler_runs_total > 0);
+        assert_eq!(
+            live.overhead.process.memory_evidence,
+            EvidenceLevel::Measured
+        );
         assert_eq!(live.network.evidence, EvidenceLevel::Measured);
         assert!(live
             .network

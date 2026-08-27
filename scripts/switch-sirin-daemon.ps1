@@ -194,6 +194,20 @@ function Test-MonitorContract([string]$BaseUrl) {
     if ($null -eq $monitor.ai_work.codex_token_trend.history) {
         throw 'AI monitor token history contract is missing'
     }
+    $trend = $monitor.ai_work.codex_token_trend
+    if ([string]::IsNullOrWhiteSpace([string]$trend.lifecycle) -or
+        $null -eq $trend.PSObject.Properties['source_available']) {
+        throw 'AI monitor token lifecycle contract is missing'
+    }
+    $overhead = $monitor.overhead
+    if ($null -eq $overhead -or
+        [int]$overhead.network_cache_ttl_secs -lt 60 -or
+        [bool]$overhead.background_network_probes -or
+        [bool]$overhead.background_download_tests -or
+        [int64]$overhead.sampler_runs_total -lt 1 -or
+        [string]$overhead.process.memory_evidence -ne 'MEASURED') {
+        throw 'AI monitor low-overhead contract failed'
+    }
 
     [pscustomobject]@{
         version = [string]$monitor.version
@@ -204,6 +218,14 @@ function Test-MonitorContract([string]$BaseUrl) {
         local_only = [bool]$monitor.safety.local_only
         read_only = [bool]$monitor.safety.read_only
         history_points = @($monitor.ai_work.codex_token_trend.history).Count
+        token_lifecycle = [string]$trend.lifecycle
+        token_source_available = [bool]$trend.source_available
+        overhead_ready = $true
+        network_cache_ttl_secs = [int]$overhead.network_cache_ttl_secs
+        sampler_runs_total = [int64]$overhead.sampler_runs_total
+        background_network_probes = [bool]$overhead.background_network_probes
+        background_download_tests = [bool]$overhead.background_download_tests
+        process_memory_evidence = [string]$overhead.process.memory_evidence
     }
 }
 

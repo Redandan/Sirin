@@ -345,6 +345,13 @@ namespace
         return winrt::hstring{output.str()};
     }
 
+    winrt::hstring FormatFixed(double value, int precision)
+    {
+        std::wostringstream output;
+        output << std::fixed << std::setprecision(precision) << value;
+        return winrt::hstring{output.str()};
+    }
+
     void PutString(winrt::JsonObject& data, wchar_t const* name, winrt::hstring const& value)
     {
         data.SetNamedValue(name, winrt::JsonValue::CreateStringValue(value));
@@ -574,6 +581,8 @@ winrt::hstring WidgetProvider::BuildData(bool fetchSnapshot)
     winrt::hstring recoveryStatus = L"恢復狀態 UNKNOWN";
     winrt::hstring healthAlert = L"健康狀態尚未取得";
     winrt::hstring healthColor = L"Warning";
+    winrt::hstring resourceStatus = L"監控成本缺證據";
+    winrt::hstring resourceDetail = L"等待 Sirin 資源取樣";
 
     if (const auto response = fetchSnapshot ? FetchSnapshotUtf8() : std::nullopt)
     {
@@ -709,6 +718,7 @@ winrt::hstring WidgetProvider::BuildData(bool fetchSnapshot)
             const auto intervalSecs = static_cast<uint64_t>(NumberOr(trend, L"interval_secs"));
             const auto tokensPerMin = NumberOr(trend, L"tokens_per_min");
             const auto samplingGap = trend.GetNamedBoolean(L"gap", false);
+            const auto lifecycle = StringOr(trend, L"lifecycle", L"MISSING_PROOF");
             tokenRate = FormatCompact(tokensPerMin) + L" / min";
             const auto evidence = StringOr(trend, L"evidence", L"MISSING_PROOF");
             tokenEvidence = evidence == L"INFERRED" ? L"推估" : L"缺證據";
@@ -721,7 +731,15 @@ winrt::hstring WidgetProvider::BuildData(bool fetchSnapshot)
             }
             tokenWindowTotal = chart.totalLabel;
             tokenPeak = chart.peakLabel;
-            if (samplingGap)
+            if (lifecycle == L"SOURCE_MISSING")
+            {
+                tokenActivity = L"Token 來源缺證據，保留上一個有效基線";
+            }
+            else if (lifecycle == L"APPS_CLOSED")
+            {
+                tokenActivity = L"AI 程式已關閉，本區間為 0 用量";
+            }
+            else if (samplingGap)
             {
                 tokenActivity = L"取樣曾中斷，已重新建立基線";
             }
@@ -826,6 +844,24 @@ winrt::hstring WidgetProvider::BuildData(bool fetchSnapshot)
                     healthColor = L"Good";
                 }
             }
+            if (root.HasKey(L"overhead"))
+            {
+                const auto overhead = root.GetNamedObject(L"overhead");
+                const auto process = overhead.GetNamedObject(L"process");
+                const auto cpuMeasured = StringOr(process, L"cpu_evidence", L"MISSING_PROOF") == L"MEASURED";
+                const auto memoryMeasured = StringOr(process, L"memory_evidence", L"MISSING_PROOF") == L"MEASURED";
+                const auto cpu = cpuMeasured
+                    ? FormatFixed(NumberOr(process, L"cpu_percent_recent"), 3) + L"%"
+                    : L"CPU 缺證據";
+                const auto memory = memoryMeasured
+                    ? FormatFixed(NumberOr(process, L"working_set_mb"), 0) + L" MB"
+                    : L"記憶體缺證據";
+                resourceStatus = L"Sirin " + cpu + L" · " + memory;
+                resourceDetail = L"sampler " +
+                    FormatFixed(NumberOr(overhead, L"last_sampler_wall_ms"), 1) + L" ms · thread CPU " +
+                    FormatFixed(NumberOr(overhead, L"last_sampler_cpu_ms"), 3) + L" ms · trend " +
+                    FormatFixed(NumberOr(overhead, L"trend_file_bytes") / 1024.0, 1) + L" KB";
+            }
 
             networkSummary = L"IPv4 " + v4Interface + L" · " + v4Latency;
             networkWarning = splitRoute
@@ -899,5 +935,7 @@ winrt::hstring WidgetProvider::BuildData(bool fetchSnapshot)
     PutString(data, L"recoveryStatus", recoveryStatus);
     PutString(data, L"healthAlert", healthAlert);
     PutString(data, L"healthColor", healthColor);
+    PutString(data, L"resourceStatus", resourceStatus);
+    PutString(data, L"resourceDetail", resourceDetail);
     return data.Stringify();
 }

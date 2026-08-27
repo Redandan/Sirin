@@ -37,6 +37,8 @@ $requiredBindings = @(
     '${powerStatus}',
     '${sessionStatus}',
     '${healthAlert}',
+    '${resourceStatus}',
+    '${resourceDetail}',
     '${networkSummary}'
 )
 $missingBindings = @($requiredBindings | Where-Object { -not $templateText.Contains($_) })

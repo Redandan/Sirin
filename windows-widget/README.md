@@ -9,9 +9,11 @@
 - 顯示最近一小時的 Token/min 迷你趨勢圖、區間總增量與峰值；每格代表 2 分鐘，取樣中斷會顯示空格。
 - 大型版補充 ChatGPT、Codex、Sirin 執行環境狀態、程序數與 working set。
 - 顯示 Sirin AI 待機防護、Windows 鎖定狀態、最近 Modern Standby 與重啟恢復證據；異常時給出可執行的本機提示。
+- 大型版顯示整個 Sirin 程序 CPU／記憶體、監控 sampler thread 耗時／CPU 與趨勢檔大小；不同 scope 不混稱。
 - 網路縮成次要摘要；大型版仍保留 IPv4 / IPv6 分流證據。
 - Sirin 離線或探測無回覆時顯示「缺證據」，不推斷為零或故障。
 - 狀態來自本機時間戳與 Token 變化，屬明確標示的推定；不把「等待」誤報成「卡住」。
+- Token lifecycle 分開顯示 `IDLE`、`APPS_CLOSED`、`SOURCE_MISSING` 與 `GAP`，來源缺失時不顯示假速率。
 
 Sirin 每 60 秒在本機記憶體保留一次輕量 Token／程序取樣；不執行網路探測。Widget Provider 每 60 秒只在 Widget 可見時讀取一次
 `http://127.0.0.1:7700/api/ai-monitor`。按「立即更新」可手動刷新。

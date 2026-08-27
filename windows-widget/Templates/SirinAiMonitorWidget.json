@@ -331,6 +331,22 @@
           "size": "Small",
           "color": "${healthColor}",
           "wrap": true
+        },
+        {
+          "type": "TextBlock",
+          "text": "${resourceStatus}",
+          "spacing": "Small",
+          "size": "Small",
+          "weight": "Bolder",
+          "wrap": true
+        },
+        {
+          "type": "TextBlock",
+          "text": "${resourceDetail}",
+          "spacing": "None",
+          "size": "Small",
+          "isSubtle": true,
+          "wrap": true
         }
       ]
     },

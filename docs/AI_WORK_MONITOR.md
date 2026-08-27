@@ -9,7 +9,7 @@ Windows 本機 AI 工作監控，整合在 Sirin 既有 daemon、tray、`/ui/`�
 - URL：`http://127.0.0.1:7700/ui/?view=ai-monitor`
 - Windows 小工具：安裝後按 `Win + W`，在小工具選擇器搜尋 `Sirin AI 工作監控`
 
-直接開啟監控頁時，不啟動原本每 2 秒的全域 snapshot/WebSocket；切換到其他 Sirin 頁面後才會啟動。Sirin 每 60 秒唯讀採樣一次 Codex token 與程序資訊，保留最近 60 點；網路路由與 ping 仍只在 `/api/ai-monitor` 被讀取時執行。監控頁每 15 秒讀取快取，Windows 小工具在可見/啟用期間最多每 60 秒讀取一次。
+直接開啟監控頁時，不啟動原本每 2 秒的全域 snapshot/WebSocket；切換到其他 Sirin 頁面後才會啟動。Sirin 每 60 秒唯讀採樣一次 Codex token 與程序資訊，保留最近 60 點；網路路由與 ping 仍只在 `/api/ai-monitor` 被讀取時執行，且共用 60 秒快取。監控頁每 15 秒讀取 API 快照，Windows 小工具在可見/啟用期間最多每 60 秒讀取一次。
 
 ## 證據來源
 
@@ -27,8 +27,13 @@ Windows 本機 AI 工作監控，整合在 Sirin 既有 daemon、tray、`/ui/`�
 | Windows 鎖定狀態 | WTS current-session `SessionFlags` | `MEASURED` 或 `MISSING_PROOF` |
 | Modern Standby | System event log 的 Kernel-Power 506 / 507 | 成功讀取事件記錄為 `MEASURED` |
 | AI 待機防護 | Sirin sampler thread 的 Windows execution-state 呼叫結果 | 成功設定／清除並與 ChatGPT 程序狀態一致為 `MEASURED` |
+| 監控 thread 成本 | sampler thread 的 wall time 與 Windows thread CPU time | `MEASURED`；只代表監控 thread |
+| Sirin 程序資源 | Windows process CPU time、working set、private bytes | `MEASURED`；明確標示為整個 Sirin，不冒充監控模組獨占成本 |
+| 本機 I/O 成本 | collector/cache/write 計數器與 Token 趨勢檔 metadata | `MEASURED`；程序重啟後重新計數 |
 
 `MISSING_PROOF` 不會被轉寫成離線、故障或零用量。
+
+Token 趨勢的 `lifecycle` 會明確區分 `BASELINE`、`ACTIVE`、`IDLE`、`APPS_CLOSED`、`SOURCE_MISSING` 與 `GAP`。Codex SQLite 暫時不可讀時，Sirin 會保留上一個有效基線、記錄缺證據點且停止推算；來源恢復但間隔超過 90 秒時只重建基線，不把中斷期間的差額換算成速率。AI 程式關閉但資料來源仍可讀時則記為 `APPS_CLOSED`，不與來源故障混淆。
 
 ## 安全邊界
 
@@ -36,6 +41,7 @@ Windows 本機 AI 工作監控，整合在 Sirin 既有 daemon、tray、`/ui/`�
 - 不讀或顯示 API key、登入憑證、程序 command line。
 - 不改路由、不終止 task/process、不部署、不設定開機自啟。
 - 不送 telemetry；最近一小時的 Token 統計以原子替換方式保存在 Sirin 本機 tracking 目錄，內容不含工作標題或訊息。
+- 背景 sampler 不執行網路探測或下載測速；API 觸發的路由／ICMP 收集最多每 60 秒一次，手動下載位元組另行計數。
 - 下載測速是 `ai_monitor_speed_test` MCP action，只有按下按鈕才會向 Cloudflare endpoint 下載 5 MB；不會背景執行。
 
 ## 電源、鎖定與恢復
