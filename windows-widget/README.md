@@ -8,13 +8,14 @@
 - 顯示兩分鐘內活動工作數、最近工作更新時間與 Token 增量趨勢。
 - 顯示最近一小時的 Token/min 迷你趨勢圖、區間總增量與峰值；每格代表 2 分鐘，取樣中斷會顯示空格。
 - 大型版補充 ChatGPT、Codex、Sirin 執行環境狀態、程序數與 working set。
+- 顯示 Sirin AI 待機防護、Windows 鎖定狀態、最近 Modern Standby 與重啟恢復證據；異常時給出可執行的本機提示。
 - 網路縮成次要摘要；大型版仍保留 IPv4 / IPv6 分流證據。
 - Sirin 離線或探測無回覆時顯示「缺證據」，不推斷為零或故障。
 - 狀態來自本機時間戳與 Token 變化，屬明確標示的推定；不把「等待」誤報成「卡住」。
 
 Sirin 每 60 秒在本機記憶體保留一次輕量 Token／程序取樣；不執行網路探測。Widget Provider 每 60 秒只在 Widget 可見時讀取一次
 `http://127.0.0.1:7700/api/ai-monitor`。按「立即更新」可手動刷新。
-不執行下載測速、不改網路、不終止程序、不顯示 Codex 工作標題或訊息內容。
+不執行下載測速、不改網路、不終止程序、不顯示 Codex 工作標題或訊息內容。Sirin daemon 會在 ChatGPT 執行期間管理 Windows execution request；Widget 本身只顯示結果，不持有電源要求。
 
 ## 建置與安裝
 

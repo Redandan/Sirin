@@ -567,6 +567,13 @@ winrt::hstring WidgetProvider::BuildData(bool fetchSnapshot)
     winrt::hstring sirinState = L"未執行";
     winrt::hstring networkSummary = L"網路證據尚未取得";
     winrt::hstring networkWarning = L"";
+    winrt::hstring powerStatus = L"待機防護缺證據";
+    winrt::hstring powerDetail = L"等待 Sirin 電源狀態";
+    winrt::hstring powerColor = L"Warning";
+    winrt::hstring sessionStatus = L"工作階段 UNKNOWN";
+    winrt::hstring recoveryStatus = L"恢復狀態 UNKNOWN";
+    winrt::hstring healthAlert = L"健康狀態尚未取得";
+    winrt::hstring healthColor = L"Warning";
 
     if (const auto response = fetchSnapshot ? FetchSnapshotUtf8() : std::nullopt)
     {
@@ -770,6 +777,56 @@ winrt::hstring WidgetProvider::BuildData(bool fetchSnapshot)
                     ? L"工作中 · " + winrt::to_hstring(sirinCalls) + L" 呼叫/5分"
                     : L"服務中 · 使用量缺證據";
 
+            if (root.HasKey(L"power"))
+            {
+                const auto power = root.GetNamedObject(L"power");
+                const auto awake = power.GetNamedObject(L"awake_guard");
+                const auto guardActive = awake.GetNamedBoolean(L"request_active", false);
+                const auto guardExpected = awake.GetNamedBoolean(L"chatgpt_running", false) &&
+                    awake.GetNamedBoolean(L"enabled", false);
+                if (guardActive)
+                {
+                    powerStatus = L"AI 待機防護 ACTIVE";
+                    powerDetail = L"SYSTEM + DISPLAY REQUIRED";
+                    powerColor = L"Good";
+                }
+                else if (guardExpected)
+                {
+                    powerStatus = L"AI 待機防護 FAILED";
+                    powerDetail = L"ChatGPT 執行中但沒有防護證據";
+                    powerColor = L"Attention";
+                }
+                else
+                {
+                    powerStatus = L"AI 待機防護 READY";
+                    powerDetail = L"ChatGPT 關閉時允許待機";
+                    powerColor = L"Default";
+                }
+                const auto sessionState = StringOr(power, L"session_state", L"UNKNOWN");
+                sessionStatus = L"工作階段 " + sessionState;
+            }
+            if (root.HasKey(L"recovery"))
+            {
+                const auto recovery = root.GetNamedObject(L"recovery");
+                recoveryStatus = L"恢復 " + StringOr(recovery, L"status", L"UNKNOWN");
+            }
+            if (root.HasKey(L"alerts"))
+            {
+                const auto alerts = root.GetNamedArray(L"alerts");
+                if (alerts.Size() > 0)
+                {
+                    const auto alert = alerts.GetObjectAt(0);
+                    healthAlert = StringOr(alert, L"message", L"需要檢查本機健康狀態");
+                    const auto severity = StringOr(alert, L"severity", L"WARNING");
+                    healthColor = severity == L"CRITICAL" ? L"Attention" : L"Warning";
+                }
+                else
+                {
+                    healthAlert = L"沒有需要處理的本機警示";
+                    healthColor = L"Good";
+                }
+            }
+
             networkSummary = L"IPv4 " + v4Interface + L" · " + v4Latency;
             networkWarning = splitRoute
                 ? L"IPv6 走 " + v6Interface + L" · " + v6Latency
@@ -835,5 +892,12 @@ winrt::hstring WidgetProvider::BuildData(bool fetchSnapshot)
     PutString(data, L"sirinState", sirinState);
     PutString(data, L"networkSummary", networkSummary);
     PutString(data, L"networkWarning", networkWarning);
+    PutString(data, L"powerStatus", powerStatus);
+    PutString(data, L"powerDetail", powerDetail);
+    PutString(data, L"powerColor", powerColor);
+    PutString(data, L"sessionStatus", sessionStatus);
+    PutString(data, L"recoveryStatus", recoveryStatus);
+    PutString(data, L"healthAlert", healthAlert);
+    PutString(data, L"healthColor", healthColor);
     return data.Stringify();
 }

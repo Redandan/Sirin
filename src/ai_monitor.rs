@@ -13,12 +13,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::io::Write;
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const NETWORK_TTL: Duration = Duration::from_secs(15);
+const POWER_TTL: Duration = Duration::from_secs(60);
 const AI_SAMPLE_INTERVAL: Duration = Duration::from_secs(60);
 const AI_SAMPLE_MIN_AGE: Duration = Duration::from_secs(55);
 const AI_WORK_TTL: Duration = Duration::from_secs(75);
@@ -48,6 +49,9 @@ pub struct AiMonitorSnapshot {
     pub cache_ttl_secs: u64,
     pub network: NetworkSnapshot,
     pub ai_work: AiWorkSnapshot,
+    pub power: PowerSnapshot,
+    pub recovery: RecoverySnapshot,
+    pub alerts: Vec<LocalAlertView>,
     pub safety: SafetyView,
 }
 
@@ -58,6 +62,7 @@ pub struct SafetyView {
     pub credentials_accessed: bool,
     pub background_sampling: bool,
     pub automatic_download_test: bool,
+    pub execution_request_managed: bool,
 }
 
 impl Default for SafetyView {
@@ -68,8 +73,65 @@ impl Default for SafetyView {
             credentials_accessed: false,
             background_sampling: BACKGROUND_SAMPLER_RUNNING.load(Ordering::Relaxed),
             automatic_download_test: false,
+            execution_request_managed: awake_guard_enabled(),
         }
     }
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct PowerSnapshot {
+    pub evidence: EvidenceLevel,
+    pub session_state: String,
+    pub session_locked: Option<bool>,
+    pub session_evidence: EvidenceLevel,
+    pub session_source_error: Option<String>,
+    pub awake_guard: AwakeGuardView,
+    pub modern_standby: ModernStandbyView,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct AwakeGuardView {
+    pub enabled: bool,
+    pub chatgpt_running: bool,
+    pub request_active: bool,
+    pub system_required: bool,
+    pub display_required: bool,
+    pub last_updated_at_ms: Option<i64>,
+    pub evidence: EvidenceLevel,
+    pub source_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ModernStandbyView {
+    pub capable: Option<bool>,
+    pub last_entered_at: Option<String>,
+    pub last_entered_at_ms: Option<i64>,
+    pub last_resumed_at: Option<String>,
+    pub last_resumed_at_ms: Option<i64>,
+    pub entered_since_monitor_start: bool,
+    pub evidence: EvidenceLevel,
+    pub source_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct RecoverySnapshot {
+    pub status: String,
+    pub monitor_started_at_ms: i64,
+    pub uptime_secs: u64,
+    pub last_ai_sample_at_ms: Option<i64>,
+    pub sample_age_secs: Option<u64>,
+    pub token_history_restored: bool,
+    pub token_history_persisted: bool,
+    pub evidence: EvidenceLevel,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct LocalAlertView {
+    pub code: String,
+    pub severity: String,
+    pub message: String,
+    pub action: String,
+    pub evidence: EvidenceLevel,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -168,6 +230,7 @@ pub struct TokenTrendView {
     pub history_persisted: bool,
     pub history_restored: bool,
     pub persistence_error: Option<String>,
+    pub last_sampled_at_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -208,9 +271,25 @@ struct TimedCache<T> {
 
 static NETWORK_CACHE: OnceLock<Mutex<TimedCache<NetworkSnapshot>>> = OnceLock::new();
 static AI_WORK_CACHE: OnceLock<Mutex<TimedCache<AiWorkSnapshot>>> = OnceLock::new();
+static STANDBY_CACHE: OnceLock<Mutex<TimedCache<ModernStandbyView>>> = OnceLock::new();
 static SAMPLER_STARTED: OnceLock<bool> = OnceLock::new();
+static MONITOR_STARTED_AT_MS: OnceLock<i64> = OnceLock::new();
 static BACKGROUND_SAMPLER_RUNNING: AtomicBool = AtomicBool::new(false);
 static TOKEN_TREND_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+static AWAKE_GUARD_ACTIVE: AtomicBool = AtomicBool::new(false);
+static AWAKE_GUARD_LAST_UPDATED_MS: AtomicI64 = AtomicI64::new(0);
+static AWAKE_GUARD_ERROR: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+struct SamplerLivenessGuard;
+
+impl Drop for SamplerLivenessGuard {
+    fn drop(&mut self) {
+        if AWAKE_GUARD_ACTIVE.swap(false, Ordering::Relaxed) {
+            let _ = set_thread_awake_request(false);
+        }
+        BACKGROUND_SAMPLER_RUNNING.store(false, Ordering::Relaxed);
+    }
+}
 
 struct TokenTrendState {
     sampled_at_ms: Option<i64>,
@@ -247,12 +326,17 @@ static TOKEN_TREND: OnceLock<Mutex<TokenTrendState>> = OnceLock::new();
 /// Start the once-per-minute lightweight sampler. It never calls the network
 /// collector and is safe to invoke repeatedly from normal and acceptance mode.
 pub fn spawn_sampler() {
+    MONITOR_STARTED_AT_MS.get_or_init(unix_time_ms);
     let started = *SAMPLER_STARTED.get_or_init(|| {
         match thread::Builder::new()
             .name("sirin-ai-monitor-sampler".into())
-            .spawn(|| loop {
-                let _ = cached_ai_work(AI_SAMPLE_MIN_AGE);
-                thread::sleep(AI_SAMPLE_INTERVAL);
+            .spawn(|| {
+                let _liveness_guard = SamplerLivenessGuard;
+                loop {
+                    let ai_work = cached_ai_work(AI_SAMPLE_MIN_AGE);
+                    update_awake_guard(&ai_work);
+                    thread::sleep(AI_SAMPLE_INTERVAL);
+                }
             }) {
             Ok(_) => true,
             Err(error) => {
@@ -271,6 +355,9 @@ pub fn snapshot() -> AiMonitorSnapshot {
     let started = Instant::now();
     let network = cached_network();
     let ai_work = cached_ai_work(AI_WORK_TTL);
+    let power = collect_power(&ai_work);
+    let recovery = collect_recovery(&ai_work, &power);
+    let alerts = build_local_alerts(&ai_work, &power, &recovery);
     AiMonitorSnapshot {
         version: env!("CARGO_PKG_VERSION").to_string(),
         captured_at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
@@ -278,6 +365,9 @@ pub fn snapshot() -> AiMonitorSnapshot {
         cache_ttl_secs: NETWORK_TTL.as_secs(),
         network,
         ai_work,
+        power,
+        recovery,
+        alerts,
         safety: SafetyView::default(),
     }
 }
@@ -318,6 +408,433 @@ fn cached_ai_work(max_age: Duration) -> AiWorkSnapshot {
     guard.refreshed_at = Instant::now();
     guard.value = Some(value.clone());
     value
+}
+
+fn awake_guard_enabled() -> bool {
+    !std::env::var("SIRIN_AI_MONITOR_DISABLE_AWAKE_GUARD")
+        .ok()
+        .is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes"
+            )
+        })
+}
+
+fn update_awake_guard(ai_work: &AiWorkSnapshot) {
+    let chatgpt_running = ai_work
+        .processes
+        .iter()
+        .any(|process| process.app == "ChatGPT" && process.running);
+    AWAKE_GUARD_LAST_UPDATED_MS.store(unix_time_ms(), Ordering::Relaxed);
+
+    let desired = awake_guard_enabled() && chatgpt_running;
+    let active = AWAKE_GUARD_ACTIVE.load(Ordering::Relaxed);
+    if desired == active {
+        set_awake_guard_error(None);
+        return;
+    }
+    match set_thread_awake_request(desired) {
+        Ok(()) => {
+            AWAKE_GUARD_ACTIVE.store(desired, Ordering::Relaxed);
+            set_awake_guard_error(None);
+        }
+        Err(error) => {
+            set_awake_guard_error(Some(error.clone()));
+            tracing::warn!(target: "sirin", "[ai-monitor] awake guard transition failed: {error}");
+        }
+    }
+}
+
+fn set_awake_guard_error(error: Option<String>) {
+    let cell = AWAKE_GUARD_ERROR.get_or_init(|| Mutex::new(None));
+    *cell.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = error;
+}
+
+fn awake_guard_error() -> Option<String> {
+    AWAKE_GUARD_ERROR
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
+
+#[cfg(windows)]
+fn set_thread_awake_request(required: bool) -> Result<(), String> {
+    use windows::Win32::System::Power::{
+        SetThreadExecutionState, ES_CONTINUOUS, ES_DISPLAY_REQUIRED, ES_SYSTEM_REQUIRED,
+    };
+    let flags = if required {
+        ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED
+    } else {
+        ES_CONTINUOUS
+    };
+    let previous = unsafe { SetThreadExecutionState(flags) };
+    if previous.0 == 0 {
+        Err(format!(
+            "SetThreadExecutionState was rejected: {}",
+            std::io::Error::last_os_error()
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn set_thread_awake_request(_required: bool) -> Result<(), String> {
+    Err("Awake guard is currently Windows-only".to_string())
+}
+
+fn collect_power(ai_work: &AiWorkSnapshot) -> PowerSnapshot {
+    let (session_locked, session_evidence, session_source_error) = collect_session_lock();
+    let source_error = awake_guard_error();
+    let enabled = awake_guard_enabled();
+    let chatgpt_running = ai_work
+        .processes
+        .iter()
+        .any(|process| process.app == "ChatGPT" && process.running);
+    let request_active = AWAKE_GUARD_ACTIVE.load(Ordering::Relaxed);
+    let last_updated_at_ms = match AWAKE_GUARD_LAST_UPDATED_MS.load(Ordering::Relaxed) {
+        0 => None,
+        value => Some(value),
+    };
+    let awake_guard = AwakeGuardView {
+        enabled,
+        chatgpt_running,
+        request_active,
+        system_required: request_active,
+        display_required: request_active,
+        last_updated_at_ms,
+        evidence: if source_error.is_none()
+            && last_updated_at_ms.is_some()
+            && request_active == (enabled && chatgpt_running)
+        {
+            EvidenceLevel::Measured
+        } else {
+            EvidenceLevel::MissingProof
+        },
+        source_error,
+    };
+    let modern_standby = cached_modern_standby();
+    let evidence = if session_evidence == EvidenceLevel::Measured
+        && awake_guard.evidence == EvidenceLevel::Measured
+        && modern_standby.evidence == EvidenceLevel::Measured
+    {
+        EvidenceLevel::Measured
+    } else {
+        EvidenceLevel::MissingProof
+    };
+    PowerSnapshot {
+        evidence,
+        session_state: match session_locked {
+            Some(true) => "LOCKED",
+            Some(false) => "UNLOCKED",
+            None => "UNKNOWN",
+        }
+        .to_string(),
+        session_locked,
+        session_evidence,
+        session_source_error,
+        awake_guard,
+        modern_standby,
+    }
+}
+
+#[cfg(windows)]
+fn collect_session_lock() -> (Option<bool>, EvidenceLevel, Option<String>) {
+    use windows::core::PWSTR;
+    use windows::Win32::System::RemoteDesktop::{
+        WTSFreeMemory, WTSQuerySessionInformationW, WTSSessionInfoEx, WTSINFOEXW,
+        WTS_CURRENT_SERVER_HANDLE, WTS_CURRENT_SESSION, WTS_SESSIONSTATE_LOCK,
+        WTS_SESSIONSTATE_UNLOCK,
+    };
+
+    let mut buffer = PWSTR::null();
+    let mut bytes_returned = 0_u32;
+    if let Err(error) = unsafe {
+        WTSQuerySessionInformationW(
+            WTS_CURRENT_SERVER_HANDLE,
+            WTS_CURRENT_SESSION,
+            WTSSessionInfoEx,
+            &mut buffer,
+            &mut bytes_returned,
+        )
+    } {
+        return (
+            None,
+            EvidenceLevel::MissingProof,
+            Some(format!("Query Windows session lock state: {error}")),
+        );
+    }
+    if buffer.is_null() || bytes_returned < std::mem::size_of::<WTSINFOEXW>() as u32 {
+        if !buffer.is_null() {
+            unsafe { WTSFreeMemory(buffer.0.cast()) };
+        }
+        return (
+            None,
+            EvidenceLevel::MissingProof,
+            Some("Windows session lock response was incomplete".to_string()),
+        );
+    }
+    let info = unsafe { &*(buffer.0 as *const WTSINFOEXW) };
+    let level = info.Level;
+    let flags = if level == 1 {
+        Some(unsafe { info.Data.WTSInfoExLevel1.SessionFlags })
+    } else {
+        None
+    };
+    unsafe { WTSFreeMemory(buffer.0.cast()) };
+    match flags.map(|value| value as u32) {
+        Some(WTS_SESSIONSTATE_LOCK) => (Some(true), EvidenceLevel::Measured, None),
+        Some(WTS_SESSIONSTATE_UNLOCK) => (Some(false), EvidenceLevel::Measured, None),
+        Some(value) => (
+            None,
+            EvidenceLevel::MissingProof,
+            Some(format!("Unknown Windows session flag: {value}")),
+        ),
+        None => (
+            None,
+            EvidenceLevel::MissingProof,
+            Some(format!("Unsupported Windows session info level: {level}")),
+        ),
+    }
+}
+
+#[cfg(not(windows))]
+fn collect_session_lock() -> (Option<bool>, EvidenceLevel, Option<String>) {
+    (
+        None,
+        EvidenceLevel::MissingProof,
+        Some("Session lock monitoring is currently Windows-only".to_string()),
+    )
+}
+
+fn cached_modern_standby() -> ModernStandbyView {
+    let cache = STANDBY_CACHE.get_or_init(|| {
+        Mutex::new(TimedCache {
+            refreshed_at: Instant::now() - POWER_TTL,
+            value: None,
+        })
+    });
+    let mut guard = cache.lock().unwrap_or_else(|error| error.into_inner());
+    if guard.refreshed_at.elapsed() < POWER_TTL {
+        if let Some(value) = &guard.value {
+            return value.clone();
+        }
+    }
+    let value = collect_modern_standby();
+    guard.refreshed_at = Instant::now();
+    guard.value = Some(value.clone());
+    value
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PowerEvent {
+    id: u32,
+    timestamp: String,
+    timestamp_ms: i64,
+}
+
+#[cfg(windows)]
+fn collect_modern_standby() -> ModernStandbyView {
+    let query = "*[System[Provider[@Name='Microsoft-Windows-Kernel-Power'] and (EventID=506 or EventID=507)]]";
+    let query_arg = format!("/q:{query}");
+    let output = match run_program_utf8(
+        "wevtutil.exe",
+        &[
+            "qe",
+            "System",
+            &query_arg,
+            "/rd:true",
+            "/c:16",
+            "/f:xml",
+            "/uni:false",
+        ],
+    ) {
+        Ok(output) => output,
+        Err(error) => {
+            return ModernStandbyView {
+                evidence: EvidenceLevel::MissingProof,
+                source_error: Some(error),
+                ..Default::default()
+            }
+        }
+    };
+    let events = parse_power_events(&output);
+    let entered = events.iter().find(|event| event.id == 506);
+    let resumed = events.iter().find(|event| event.id == 507);
+    let monitor_started_at_ms = *MONITOR_STARTED_AT_MS.get_or_init(unix_time_ms);
+    ModernStandbyView {
+        capable: (!events.is_empty()).then_some(true),
+        last_entered_at: entered.map(|event| event.timestamp.clone()),
+        last_entered_at_ms: entered.map(|event| event.timestamp_ms),
+        last_resumed_at: resumed.map(|event| event.timestamp.clone()),
+        last_resumed_at_ms: resumed.map(|event| event.timestamp_ms),
+        entered_since_monitor_start: entered
+            .is_some_and(|event| event.timestamp_ms >= monitor_started_at_ms),
+        evidence: EvidenceLevel::Measured,
+        source_error: None,
+    }
+}
+
+#[cfg(not(windows))]
+fn collect_modern_standby() -> ModernStandbyView {
+    ModernStandbyView {
+        evidence: EvidenceLevel::MissingProof,
+        source_error: Some("Modern Standby event monitoring is currently Windows-only".to_string()),
+        ..Default::default()
+    }
+}
+
+fn parse_power_events(xml: &str) -> Vec<PowerEvent> {
+    static EVENT_RE: OnceLock<regex::Regex> = OnceLock::new();
+    static ID_RE: OnceLock<regex::Regex> = OnceLock::new();
+    static TIME_RE: OnceLock<regex::Regex> = OnceLock::new();
+    let event_re = EVENT_RE
+        .get_or_init(|| regex::Regex::new(r"(?s)<Event\b.*?</Event>").expect("power event regex"));
+    let id_re = ID_RE.get_or_init(|| {
+        regex::Regex::new(r"<EventID>(\d+)</EventID>").expect("power event id regex")
+    });
+    let time_re = TIME_RE.get_or_init(|| {
+        regex::Regex::new(r#"<TimeCreated\s+SystemTime=['"]([^'"]+)['"]"#)
+            .expect("power event time regex")
+    });
+
+    event_re
+        .find_iter(xml)
+        .filter_map(|event_match| {
+            let event = event_match.as_str();
+            let id = id_re
+                .captures(event)?
+                .get(1)?
+                .as_str()
+                .parse::<u32>()
+                .ok()?;
+            if id != 506 && id != 507 {
+                return None;
+            }
+            let raw_time = time_re.captures(event)?.get(1)?.as_str();
+            let parsed = chrono::DateTime::parse_from_rfc3339(raw_time).ok()?;
+            Some(PowerEvent {
+                id,
+                timestamp: parsed
+                    .with_timezone(&Utc)
+                    .to_rfc3339_opts(SecondsFormat::Secs, true),
+                timestamp_ms: parsed.timestamp_millis(),
+            })
+        })
+        .collect()
+}
+
+fn collect_recovery(ai_work: &AiWorkSnapshot, power: &PowerSnapshot) -> RecoverySnapshot {
+    let now_ms = unix_time_ms();
+    let monitor_started_at_ms = *MONITOR_STARTED_AT_MS.get_or_init(|| now_ms);
+    let trend = &ai_work.codex_token_trend;
+    let sample_age_secs = trend
+        .last_sampled_at_ms
+        .map(|sampled_at| now_ms.saturating_sub(sampled_at).max(0) as u64 / 1_000);
+    let guard_failed = power.awake_guard.enabled
+        && power.awake_guard.chatgpt_running
+        && !power.awake_guard.request_active;
+    let status = if !BACKGROUND_SAMPLER_RUNNING.load(Ordering::Relaxed)
+        || trend.persistence_error.is_some()
+    {
+        "DEGRADED"
+    } else if guard_failed {
+        "GUARD_FAILED"
+    } else if power.session_locked == Some(true) {
+        "LOCKED"
+    } else if sample_age_secs.is_some_and(|age| age > AI_SAMPLE_GAP_SECS) {
+        "STALE"
+    } else if power.modern_standby.entered_since_monitor_start {
+        "RECOVERED_AFTER_STANDBY"
+    } else if trend.history_restored {
+        "RESTORED"
+    } else {
+        "HEALTHY"
+    };
+    RecoverySnapshot {
+        status: status.to_string(),
+        monitor_started_at_ms,
+        uptime_secs: now_ms.saturating_sub(monitor_started_at_ms).max(0) as u64 / 1_000,
+        last_ai_sample_at_ms: trend.last_sampled_at_ms,
+        sample_age_secs,
+        token_history_restored: trend.history_restored,
+        token_history_persisted: trend.history_persisted,
+        evidence: if trend.last_sampled_at_ms.is_some()
+            && BACKGROUND_SAMPLER_RUNNING.load(Ordering::Relaxed)
+        {
+            EvidenceLevel::Measured
+        } else {
+            EvidenceLevel::MissingProof
+        },
+    }
+}
+
+fn build_local_alerts(
+    ai_work: &AiWorkSnapshot,
+    power: &PowerSnapshot,
+    recovery: &RecoverySnapshot,
+) -> Vec<LocalAlertView> {
+    let mut alerts = Vec::new();
+    if power.session_locked == Some(true) {
+        alerts.push(LocalAlertView {
+            code: "WINDOWS_SESSION_LOCKED".to_string(),
+            severity: "WARNING".to_string(),
+            message: "Windows 已鎖定；需要桌面畫面的 AI 操作會暫停".to_string(),
+            action: "由使用者解鎖 Windows；不要嘗試繞過登入".to_string(),
+            evidence: EvidenceLevel::Measured,
+        });
+    }
+    if power.awake_guard.enabled
+        && power.awake_guard.chatgpt_running
+        && !power.awake_guard.request_active
+    {
+        alerts.push(LocalAlertView {
+            code: "AWAKE_GUARD_FAILED".to_string(),
+            severity: "CRITICAL".to_string(),
+            message: "ChatGPT 正在執行，但 Sirin 沒有取得待機防護".to_string(),
+            action: "檢查 Sirin 日誌；必要時暫時恢復舊 PowerShell 守護".to_string(),
+            evidence: power.awake_guard.evidence,
+        });
+    }
+    if let Some(error) = &ai_work.codex_token_trend.persistence_error {
+        alerts.push(LocalAlertView {
+            code: "TOKEN_HISTORY_SAVE_FAILED".to_string(),
+            severity: "WARNING".to_string(),
+            message: "Token 趨勢無法保存，重啟後可能中斷".to_string(),
+            action: format!("檢查 Sirin tracking 目錄：{error}"),
+            evidence: EvidenceLevel::Measured,
+        });
+    }
+    if recovery
+        .sample_age_secs
+        .is_some_and(|age| age > AI_SAMPLE_GAP_SECS)
+    {
+        alerts.push(LocalAlertView {
+            code: "AI_SAMPLE_STALE".to_string(),
+            severity: "WARNING".to_string(),
+            message: "AI 工作取樣已超過 90 秒沒有更新".to_string(),
+            action: "確認 Sirin 背景取樣仍在執行，並檢查是否剛從待機恢復".to_string(),
+            evidence: recovery.evidence,
+        });
+    }
+    let now_ms = unix_time_ms();
+    if power.modern_standby.entered_since_monitor_start
+        && power
+            .modern_standby
+            .last_entered_at_ms
+            .is_some_and(|entered| now_ms.saturating_sub(entered) <= 10 * 60 * 1_000)
+    {
+        alerts.push(LocalAlertView {
+            code: "RECENT_MODERN_STANDBY".to_string(),
+            severity: "INFO".to_string(),
+            message: "最近 10 分鐘內曾進入 Modern Standby".to_string(),
+            action: "確認 Token 圖上的中斷區段與桌面操作恢復狀態".to_string(),
+            evidence: power.modern_standby.evidence,
+        });
+    }
+    alerts
 }
 
 /// Explicit, user-triggered 5 MB download measurement. This is never called
@@ -548,6 +1065,7 @@ fn token_trend_view(
         history_persisted: state.persistence_ok,
         history_restored: state.history_restored,
         persistence_error: state.persistence_error.clone(),
+        last_sampled_at_ms: state.sampled_at_ms,
     }
 }
 
@@ -788,11 +1306,30 @@ fn collect_network() -> NetworkSnapshot {
 
     #[cfg(windows)]
     {
-        let ipv4_interfaces_text = run_utf8_command("netsh.exe interface ipv4 show interfaces");
-        let ipv6_interfaces_text = run_utf8_command("netsh.exe interface ipv6 show interfaces");
-        let ipv4_text = run_utf8_command("netsh.exe interface ipv4 show route store=active");
-        let ipv6_text = run_utf8_command("netsh.exe interface ipv6 show route store=active");
-        let wifi_text = run_utf8_command("netsh.exe wlan show interfaces");
+        let (ipv4_interfaces_text, ipv6_interfaces_text, ipv4_text, ipv6_text, wifi_text) =
+            thread::scope(|scope| {
+                let i4 =
+                    scope.spawn(|| run_utf8_command("netsh.exe interface ipv4 show interfaces"));
+                let i6 =
+                    scope.spawn(|| run_utf8_command("netsh.exe interface ipv6 show interfaces"));
+                let r4 = scope
+                    .spawn(|| run_utf8_command("netsh.exe interface ipv4 show route store=active"));
+                let r6 = scope
+                    .spawn(|| run_utf8_command("netsh.exe interface ipv6 show route store=active"));
+                let wifi = scope.spawn(|| run_utf8_command("netsh.exe wlan show interfaces"));
+                (
+                    i4.join()
+                        .unwrap_or_else(|_| Err("IPv4 interface collector panicked".to_string())),
+                    i6.join()
+                        .unwrap_or_else(|_| Err("IPv6 interface collector panicked".to_string())),
+                    r4.join()
+                        .unwrap_or_else(|_| Err("IPv4 route collector panicked".to_string())),
+                    r6.join()
+                        .unwrap_or_else(|_| Err("IPv6 route collector panicked".to_string())),
+                    wifi.join()
+                        .unwrap_or_else(|_| Err("Wi-Fi collector panicked".to_string())),
+                )
+            });
 
         let (ipv4_interfaces_text, ipv6_interfaces_text, ipv4_text, ipv6_text) = match (
             ipv4_interfaces_text,
@@ -843,16 +1380,19 @@ fn collect_network() -> NetworkSnapshot {
         ));
         routes.sort_by_key(|route| (route.family.clone(), route.effective_metric));
 
-        for family in ["IPv4", "IPv6"] {
+        let (ipv4_latency, ipv6_latency) = thread::scope(|scope| {
+            let v4 = scope.spawn(|| ping_latency("IPv4", "1.1.1.1"));
+            let v6 = scope.spawn(|| ping_latency("IPv6", "2606:4700:4700::1111"));
+            (v4.join().unwrap_or(None), v6.join().unwrap_or(None))
+        });
+        for (family, target, measured_latency) in [
+            ("IPv4", "1.1.1.1", ipv4_latency),
+            ("IPv6", "2606:4700:4700::1111", ipv6_latency),
+        ] {
             if let Some(route) = routes.iter_mut().find(|route| route.family == family) {
                 route.selected = true;
-                let target = if family == "IPv4" {
-                    "1.1.1.1"
-                } else {
-                    "2606:4700:4700::1111"
-                };
                 route.latency_target = Some(target.to_string());
-                match ping_latency(family, target) {
+                match measured_latency {
                     Some(ms) => {
                         route.latency_ms = Some(ms);
                         route.latency_status = match ms {
@@ -925,6 +1465,19 @@ fn run_utf8_command(command: &str) -> Result<String, String> {
         .map_err(|e| format!("Run {command}: {e}"))?;
     if !output.status.success() {
         return Err(format!("{command} exited with {}", output.status));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+#[cfg(windows)]
+fn run_program_utf8(program: &str, args: &[&str]) -> Result<String, String> {
+    let output = Command::new(program)
+        .no_window()
+        .args(args)
+        .output()
+        .map_err(|error| format!("Run {program}: {error}"))?;
+    if !output.status.success() {
+        return Err(format!("{program} exited with {}", output.status));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
@@ -1209,6 +1762,60 @@ mod tests {
         assert!(last.gap);
         assert_eq!(last.delta_tokens, 0);
         assert_eq!(last.tokens_per_min, 0);
+    }
+
+    #[test]
+    fn parses_modern_standby_enter_and_resume_events() {
+        let xml = r#"
+            <Events>
+              <Event><System><Provider Name="Microsoft-Windows-Kernel-Power"/><EventID>507</EventID><TimeCreated SystemTime="2026-08-26T01:21:11.6872336Z"/></System></Event>
+              <Event><System><Provider Name="Microsoft-Windows-Kernel-Power"/><EventID>506</EventID><TimeCreated SystemTime="2026-08-26T01:19:33.1428631Z"/></System></Event>
+              <Event><System><EventID>42</EventID><TimeCreated SystemTime="2026-08-26T01:00:00Z"/></System></Event>
+            </Events>
+        "#;
+        let events = parse_power_events(xml);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].id, 507);
+        assert_eq!(events[0].timestamp, "2026-08-26T01:21:11Z");
+        assert_eq!(events[1].id, 506);
+        assert_eq!(events[1].timestamp, "2026-08-26T01:19:33Z");
+        assert!(events[0].timestamp_ms > events[1].timestamp_ms);
+    }
+
+    #[test]
+    fn local_alerts_explain_lock_guard_and_stale_sample_actions() {
+        let ai_work = AiWorkSnapshot::default();
+        let power = PowerSnapshot {
+            session_locked: Some(true),
+            awake_guard: AwakeGuardView {
+                enabled: true,
+                chatgpt_running: true,
+                request_active: false,
+                evidence: EvidenceLevel::MissingProof,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let recovery = RecoverySnapshot {
+            sample_age_secs: Some(AI_SAMPLE_GAP_SECS + 1),
+            evidence: EvidenceLevel::Measured,
+            ..Default::default()
+        };
+
+        let alerts = build_local_alerts(&ai_work, &power, &recovery);
+        let codes = alerts
+            .iter()
+            .map(|alert| alert.code.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            codes,
+            [
+                "WINDOWS_SESSION_LOCKED",
+                "AWAKE_GUARD_FAILED",
+                "AI_SAMPLE_STALE"
+            ]
+        );
+        assert!(alerts.iter().all(|alert| !alert.action.is_empty()));
     }
 
     #[test]

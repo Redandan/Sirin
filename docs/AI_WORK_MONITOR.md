@@ -24,6 +24,9 @@ Windows 本機 AI 工作監控，整合在 Sirin 既有 daemon、tray、`/ui/`�
 | Codex token 趨勢 | 兩次重疊的近期工作快照相減 | `INFERRED` |
 | Codex 活動狀態 | `updated_at_ms` 的時間新鮮度 | `INFERRED` |
 | Sirin 小隊 token | 既有 `multi_agent::usage` 近 5 分鐘資料 | `MEASURED` |
+| Windows 鎖定狀態 | WTS current-session `SessionFlags` | `MEASURED` 或 `MISSING_PROOF` |
+| Modern Standby | System event log 的 Kernel-Power 506 / 507 | 成功讀取事件記錄為 `MEASURED` |
+| AI 待機防護 | Sirin sampler thread 的 Windows execution-state 呼叫結果 | 成功設定／清除並與 ChatGPT 程序狀態一致為 `MEASURED` |
 
 `MISSING_PROOF` 不會被轉寫成離線、故障或零用量。
 
@@ -32,8 +35,22 @@ Windows 本機 AI 工作監控，整合在 Sirin 既有 daemon、tray、`/ui/`�
 - Codex 查詢只讀取工作 ID、`tokens_used`、更新時間；不查詢或顯示標題、prompt、訊息內容。
 - 不讀或顯示 API key、登入憑證、程序 command line。
 - 不改路由、不終止 task/process、不部署、不設定開機自啟。
-- 不送 telemetry；最近一小時的採樣只保存在 Sirin 記憶體，重啟後清空。
+- 不送 telemetry；最近一小時的 Token 統計以原子替換方式保存在 Sirin 本機 tracking 目錄，內容不含工作標題或訊息。
 - 下載測速是 `ai_monitor_speed_test` MCP action，只有按下按鈕才會向 Cloudflare endpoint 下載 5 MB；不會背景執行。
+
+## 電源、鎖定與恢復
+
+當 ChatGPT 程序存在時，Sirin 的每分鐘 sampler thread 會維持 Windows `SYSTEM_REQUIRED` 與 `DISPLAY_REQUIRED` execution request；ChatGPT 關閉或 Sirin 結束時會在同一 thread 清除。它不模擬滑鼠／鍵盤、不使用 away mode，也不解鎖 Windows。這代表防止閒置待機與螢幕自動關閉，不代表已鎖定的桌面仍可被 UI automation 操作。
+
+`/api/ai-monitor` 同時回傳目前 Windows session 是否鎖定、最近一次 Modern Standby 進入／恢復時間、sampler 取樣年齡、趨勢是否從磁碟恢復，以及具體的本機告警。Kernel-Power 查詢快取 60 秒；網路探測與下載測速不會因此增加背景流量。
+
+正式 daemon 驗證新守護後，可用可回滾腳本移除舊的 `ChatGPTKeepAwake` 登入啟動值與精確匹配的舊 PowerShell 程序；舊腳本檔會保留作回滾：
+
+```powershell
+.\scripts\migrate-chatgpt-awake-guard.ps1 -Action Status
+.\scripts\migrate-chatgpt-awake-guard.ps1 -Action Migrate
+.\scripts\migrate-chatgpt-awake-guard.ps1 -Action Rollback -BackupPath <exact-backup-json>
+```
 
 ## Windows 11 小工具
 
@@ -41,7 +58,7 @@ Windows 本機 AI 工作監控，整合在 Sirin 既有 daemon、tray、`/ui/`�
 
 Token 趨勢會以單一、原子替換的 JSONL 快照保存在 `platform::app_data_dir()/tracking/ai_monitor_token_trend.jsonl`，只包含最近 60 個統計點、最多 8 個不透明工作 ID 與其累積計數，不保存工作標題、訊息、提示詞、回覆或憑證。啟動時只恢復最近一小時內的資料；超過 90 秒的睡眠、停機或取樣中斷會重新建立基線，該區段不計入速率與圖表總量。
 
-候選版本的隔離驗證會暫時設定 `SIRIN_AI_MONITOR_TREND_PATH`，讓 alternate-port smoke test 使用獨立的暫存快照；正式與候選程序不會同時改寫正式趨勢檔。此變數只供部署守門與測試使用。
+候選版本的隔離驗證會暫時設定 `SIRIN_AI_MONITOR_TREND_PATH`，讓 alternate-port smoke test 使用獨立的暫存快照，並設定 `SIRIN_AI_MONITOR_DISABLE_AWAKE_GUARD=1`，避免候選程序額外持有 execution request。正式與候選程序不會同時改寫正式趨勢檔或同時管理待機防護。這兩個變數只供部署守門與測試使用。
 
 ```powershell
 .\windows-widget\scripts\build.ps1

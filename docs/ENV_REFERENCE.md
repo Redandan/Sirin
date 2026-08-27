@@ -81,6 +81,13 @@ KB_MCP_BEARER=<paste-token-from-~/.claude.json>
 | `SIRIN_REPO_SIRIN` | *(this repo)* | Repo path for auto-fix (Sirin itself) |
 | `SIRIN_CLAUDE_BIN` | *(auto-detect)* | Override path to `claude` CLI binary |
 
+## AI Work Monitor
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SIRIN_AI_MONITOR_TREND_PATH` | `%LOCALAPPDATA%\Sirin\tracking\ai_monitor_token_trend.jsonl` | Internal test/deployment override for the local Token trend snapshot. Production should normally leave it unset. |
+| `SIRIN_AI_MONITOR_DISABLE_AWAKE_GUARD` | `0` | Set to `1` only for isolated candidate smoke tests or troubleshooting. Disables Sirin's conditional Windows execution request without disabling observation. |
+
 ## Data Paths (Windows)
 
 | Path | Content |

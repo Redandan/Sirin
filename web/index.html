@@ -558,11 +558,68 @@
 
         <template x-if="aiMonitor">
           <div class="monitor-stack">
+            <template x-for="alert in (aiMonitor.alerts || [])" :key="alert.code">
+              <div class="monitor-callout"
+                   :class="alert.severity === 'CRITICAL' ? 'monitor-callout-error' : 'monitor-callout-warning'">
+                <strong x-text="alert.message"></strong>
+                <span class="dim small" x-text="alert.action"></span>
+                <span class="evidence-badge ml-xs"
+                      :class="aiEvidenceClass(alert.evidence)"
+                      x-text="aiEvidenceLabel(alert.evidence)"></span>
+              </div>
+            </template>
             <template x-for="warning in (aiMonitor.network?.warnings || [])" :key="warning">
               <div class="monitor-callout monitor-callout-warning">
                 <span class="mono">ROUTE</span><span x-text="warning"></span>
               </div>
             </template>
+
+            <div class="monitor-section-title">
+              <span>電源與恢復</span>
+              <span class="evidence-badge"
+                    :class="aiEvidenceClass(aiMonitor.power?.evidence)"
+                    x-text="aiEvidenceLabel(aiMonitor.power?.evidence)"></span>
+            </div>
+
+            <div class="monitor-grid monitor-grid-ai">
+              <div class="card monitor-card">
+                <div class="monitor-card-title">AI 待機防護</div>
+                <div class="token-hero mono"
+                     x-text="aiMonitor.power?.awake_guard?.request_active ? 'ACTIVE' : (aiMonitor.power?.awake_guard?.chatgpt_running ? 'FAILED' : 'READY')"></div>
+                <div class="dim small"
+                     x-text="aiMonitor.power?.awake_guard?.request_active ? 'SYSTEM_REQUIRED + DISPLAY_REQUIRED' : 'ChatGPT 未執行時不阻止待機'"></div>
+                <div class="monitor-kv mono small mt-md">
+                  <span>owner</span><span>Sirin</span>
+                  <span>ChatGPT</span><span x-text="aiMonitor.power?.awake_guard?.chatgpt_running ? 'RUNNING' : 'OFF'"></span>
+                  <span>evidence</span><span x-text="aiEvidenceLabel(aiMonitor.power?.awake_guard?.evidence)"></span>
+                </div>
+              </div>
+
+              <div class="card monitor-card">
+                <div class="monitor-card-title">Windows 工作階段</div>
+                <div class="token-hero mono"
+                     x-text="aiMonitor.power?.session_state || 'UNKNOWN'"></div>
+                <div class="dim small"
+                     x-text="aiMonitor.power?.session_locked === true ? '桌面操作會被登入畫面阻擋' : (aiMonitor.power?.session_locked === false ? '桌面操作目前未被鎖定阻擋' : 'MISSING_PROOF — 無法判定鎖定狀態')"></div>
+                <div class="mt-md">
+                  <span class="evidence-badge"
+                        :class="aiEvidenceClass(aiMonitor.power?.session_evidence)"
+                        x-text="aiEvidenceLabel(aiMonitor.power?.session_evidence)"></span>
+                </div>
+              </div>
+
+              <div class="card monitor-card">
+                <div class="monitor-card-title">啟動與恢復</div>
+                <div class="token-hero mono" x-text="aiMonitor.recovery?.status || 'UNKNOWN'"></div>
+                <div class="dim small"
+                     x-text="'取樣 ' + (aiMonitor.recovery?.sample_age_secs ?? '—') + ' 秒前 · uptime ' + Math.floor((aiMonitor.recovery?.uptime_secs || 0) / 60) + ' 分鐘'"></div>
+                <div class="monitor-kv mono small mt-md">
+                  <span>history</span><span x-text="aiMonitor.recovery?.token_history_restored ? 'RESTORED' : 'CURRENT BOOT'"></span>
+                  <span>last standby</span><span x-text="aiMonitor.power?.modern_standby?.last_entered_at ? formatMonitorTime(aiMonitor.power.modern_standby.last_entered_at) : 'MISSING_PROOF'"></span>
+                  <span>persist</span><span x-text="aiMonitor.recovery?.token_history_persisted ? 'READY' : 'FAILED'"></span>
+                </div>
+              </div>
+            </div>
 
             <div class="monitor-section-title">
               <span>網路狀況</span>
@@ -748,7 +805,7 @@
             </div>
 
             <div class="monitor-safety mono tiny">
-              LOCAL_ONLY · READ_ONLY · NO_CREDENTIALS · NO_ROUTE_CHANGES · NO_TASK_TERMINATION · NO_BACKGROUND_SPEED_TEST
+              LOCAL_ONLY · OBSERVATION_READ_ONLY · MANAGES_AWAKE_REQUEST · NO_CREDENTIALS · NO_ROUTE_CHANGES · NO_TASK_TERMINATION · NO_BACKGROUND_SPEED_TEST
             </div>
           </div>
         </template>

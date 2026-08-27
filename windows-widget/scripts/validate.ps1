@@ -34,6 +34,9 @@ $requiredBindings = @(
     '${tokenSparkline}',
     '${tokenWindowTotal}',
     '${task1Meta}',
+    '${powerStatus}',
+    '${sessionStatus}',
+    '${healthAlert}',
     '${networkSummary}'
 )
 $missingBindings = @($requiredBindings | Where-Object { -not $templateText.Contains($_) })

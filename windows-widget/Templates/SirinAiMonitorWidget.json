@@ -292,6 +292,50 @@
     },
     {
       "type": "Container",
+      "spacing": "Medium",
+      "$when": "${$host.widgetSize != 'small'}",
+      "items": [
+        {
+          "type": "TextBlock",
+          "text": "POWER / RECOVERY",
+          "size": "Small",
+          "isSubtle": true,
+          "weight": "Bolder"
+        },
+        {
+          "type": "ColumnSet",
+          "spacing": "Small",
+          "columns": [
+            {
+              "type": "Column",
+              "width": "stretch",
+              "items": [
+                { "type": "TextBlock", "text": "${powerStatus}", "weight": "Bolder", "color": "${powerColor}", "wrap": true },
+                { "type": "TextBlock", "text": "${powerDetail}", "spacing": "None", "size": "Small", "isSubtle": true, "wrap": true }
+              ]
+            },
+            {
+              "type": "Column",
+              "width": "auto",
+              "items": [
+                { "type": "TextBlock", "text": "${sessionStatus}", "weight": "Bolder", "horizontalAlignment": "Right", "wrap": true },
+                { "type": "TextBlock", "text": "${recoveryStatus}", "spacing": "None", "size": "Small", "isSubtle": true, "horizontalAlignment": "Right", "wrap": true }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "TextBlock",
+          "text": "${healthAlert}",
+          "spacing": "Small",
+          "size": "Small",
+          "color": "${healthColor}",
+          "wrap": true
+        }
+      ]
+    },
+    {
+      "type": "Container",
       "style": "emphasis",
       "spacing": "Medium",
       "items": [
@@ -322,7 +366,7 @@
     },
     {
       "type": "TextBlock",
-      "text": "LOCAL · READ ONLY · NO CONTENT · 60S",
+      "text": "LOCAL · NO CONTENT · AWAKE GUARD · 60S",
       "horizontalAlignment": "Center",
       "isSubtle": true,
       "size": "Small",

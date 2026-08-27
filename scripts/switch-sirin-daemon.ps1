@@ -218,10 +218,12 @@ function Test-Candidate([string]$Path) {
     $trendState = Join-Path $env:TEMP "sirin-daemon-switch-$nonce-token-trend.jsonl"
     $previousPort = $env:SIRIN_RPC_PORT
     $previousTrendState = $env:SIRIN_AI_MONITOR_TREND_PATH
+    $previousAwakeGuard = $env:SIRIN_AI_MONITOR_DISABLE_AWAKE_GUARD
     $process = $null
     try {
         $env:SIRIN_RPC_PORT = [string]$SmokePort
         $env:SIRIN_AI_MONITOR_TREND_PATH = $trendState
+        $env:SIRIN_AI_MONITOR_DISABLE_AWAKE_GUARD = '1'
         $process = Start-Process `
             -FilePath $resolved `
             -ArgumentList @('--ai-monitor-only') `
@@ -253,6 +255,12 @@ function Test-Candidate([string]$Path) {
         }
         else {
             $env:SIRIN_AI_MONITOR_TREND_PATH = $previousTrendState
+        }
+        if ($null -eq $previousAwakeGuard) {
+            Remove-Item Env:SIRIN_AI_MONITOR_DISABLE_AWAKE_GUARD -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:SIRIN_AI_MONITOR_DISABLE_AWAKE_GUARD = $previousAwakeGuard
         }
         Remove-Item -LiteralPath $stdout, $stderr, $trendState -Force -ErrorAction SilentlyContinue
     }
