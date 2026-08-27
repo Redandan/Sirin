@@ -581,6 +581,12 @@ winrt::hstring WidgetProvider::BuildData(bool fetchSnapshot)
     winrt::hstring recoveryStatus = L"恢復狀態 UNKNOWN";
     winrt::hstring healthAlert = L"健康狀態尚未取得";
     winrt::hstring healthColor = L"Warning";
+    winrt::hstring codexHealthState = L"Codex 健康狀態缺證據";
+    winrt::hstring codexHealthDetail = L"等待 Sirin 健康分類";
+    winrt::hstring codexHealthColor = L"Warning";
+    winrt::hstring codexResourceSummary = L"本機資源缺證據";
+    winrt::hstring codexNetworkHealth = L"網路缺證據";
+    winrt::hstring codexRemoteLimit = L"遠端限流 MISSING_PROOF";
     winrt::hstring resourceStatus = L"監控成本缺證據";
     winrt::hstring resourceDetail = L"等待 Sirin 資源取樣";
     winrt::hstring acceptanceStatus = L"實機驗收 MISSING_PROOF";
@@ -644,6 +650,20 @@ winrt::hstring WidgetProvider::BuildData(bool fetchSnapshot)
             }
 
             const auto aiWork = root.GetNamedObject(L"ai_work");
+            if (root.HasKey(L"codex_health"))
+            {
+                const auto codexHealth = root.GetNamedObject(L"codex_health");
+                codexHealthState = StringOr(codexHealth, L"label", L"Codex 健康狀態缺證據");
+                codexHealthDetail = StringOr(codexHealth, L"detail", L"沒有足夠證據");
+                codexResourceSummary = StringOr(codexHealth, L"resource_summary", L"本機資源缺證據");
+                codexNetworkHealth = StringOr(codexHealth, L"network_summary", L"網路缺證據");
+                codexRemoteLimit = L"遠端限流 " +
+                    StringOr(codexHealth, L"remote_limit_status", L"MISSING_PROOF");
+                const auto severity = StringOr(codexHealth, L"severity", L"UNKNOWN");
+                codexHealthColor = severity == L"OK"
+                    ? L"Good"
+                    : severity == L"CRITICAL" ? L"Attention" : L"Warning";
+            }
             for (const auto& processValue : aiWork.GetNamedArray(L"processes"))
             {
                 const auto process = processValue.GetObject();
@@ -947,6 +967,12 @@ winrt::hstring WidgetProvider::BuildData(bool fetchSnapshot)
     PutString(data, L"recoveryStatus", recoveryStatus);
     PutString(data, L"healthAlert", healthAlert);
     PutString(data, L"healthColor", healthColor);
+    PutString(data, L"codexHealthState", codexHealthState);
+    PutString(data, L"codexHealthDetail", codexHealthDetail);
+    PutString(data, L"codexHealthColor", codexHealthColor);
+    PutString(data, L"codexResourceSummary", codexResourceSummary);
+    PutString(data, L"codexNetworkHealth", codexNetworkHealth);
+    PutString(data, L"codexRemoteLimit", codexRemoteLimit);
     PutString(data, L"resourceStatus", resourceStatus);
     PutString(data, L"resourceDetail", resourceDetail);
     PutString(data, L"acceptanceStatus", acceptanceStatus);

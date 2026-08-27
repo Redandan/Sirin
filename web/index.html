@@ -530,7 +530,7 @@
         </div>
       </section>
 
-      <!-- AI Work Monitor — local-only, read-only and sampled only while open. -->
+      <!-- AI Work Monitor — local-only/read-only; Token and resource sampling continue in the daemon. -->
       <section x-show="view === 'ai-monitor'" class="view ai-monitor-view">
         <div class="view-header ai-monitor-header">
           <div>
@@ -573,6 +573,61 @@
                 <span class="mono">ROUTE</span><span x-text="warning"></span>
               </div>
             </template>
+
+            <div class="monitor-section-title">
+              <span>Codex 運行健康</span>
+              <span class="evidence-badge"
+                    :class="aiEvidenceClass(aiMonitor.codex_health?.evidence)"
+                    x-text="aiEvidenceLabel(aiMonitor.codex_health?.evidence)"></span>
+            </div>
+
+            <div class="monitor-grid monitor-grid-ai">
+              <div class="card monitor-card">
+                <div class="monitor-card-title row">
+                  <span>進度判斷</span><span class="row-spacer"></span>
+                  <span class="status-chip"
+                        :class="aiMonitor.codex_health?.severity === 'OK' ? 'status-passed' : (aiMonitor.codex_health?.severity === 'CRITICAL' ? 'status-failed' : 'status-timeout')"
+                        x-text="aiMonitor.codex_health?.status || 'MISSING_PROOF'"></span>
+                </div>
+                <div class="token-hero mono" x-text="aiMonitor.codex_health?.label || '無法判定'"></div>
+                <div class="dim small" x-text="aiMonitor.codex_health?.detail || '沒有足夠證據'"></div>
+                <div class="monitor-kv mono small mt-md">
+                  <span>progress</span><span x-text="aiMonitor.codex_health?.progress_status || 'MISSING_PROOF'"></span>
+                  <span>active tasks</span><span x-text="aiMonitor.codex_health?.active_task_count ?? '—'"></span>
+                  <span>last update</span><span x-text="aiMonitor.codex_health?.progress_age_secs != null ? aiMonitor.codex_health.progress_age_secs + ' s' : 'MISSING_PROOF'"></span>
+                  <span>token delta</span><span x-text="formatCompactNumber(aiMonitor.codex_health?.token_delta || 0)"></span>
+                </div>
+              </div>
+
+              <div class="card monitor-card">
+                <div class="monitor-card-title row">
+                  <span>本機資源</span><span class="row-spacer"></span>
+                  <span class="status-chip"
+                        :class="aiMonitor.codex_health?.local_resource_status === 'HEALTHY' ? 'status-passed' : (aiMonitor.codex_health?.local_resource_status === 'CRITICAL' ? 'status-failed' : 'status-timeout')"
+                        x-text="aiMonitor.codex_health?.local_resource_status || 'MISSING_PROOF'"></span>
+                </div>
+                <div class="dim small" x-text="aiMonitor.codex_health?.resource_summary || '本機資源缺證據'"></div>
+                <div class="monitor-kv mono small mt-md">
+                  <span>CPU</span><span x-text="aiMonitor.ai_work?.system_resources?.cpu_percent_recent != null ? aiMonitor.ai_work.system_resources.cpu_percent_recent.toFixed(1) + '%' : '建立基線中'"></span>
+                  <span>RAM available</span><span x-text="aiMonitor.ai_work?.system_resources?.physical_memory_available_gb != null ? aiMonitor.ai_work.system_resources.physical_memory_available_gb.toFixed(1) + ' GB · ' + aiMonitor.ai_work.system_resources.physical_memory_available_percent.toFixed(1) + '%' : 'MISSING_PROOF'"></span>
+                  <span>commit</span><span x-text="aiMonitor.ai_work?.system_resources?.committed_percent != null ? aiMonitor.ai_work.system_resources.committed_percent.toFixed(1) + '%' : 'MISSING_PROOF'"></span>
+                  <span>system drive</span><span x-text="aiMonitor.ai_work?.system_resources?.system_drive_free_gb != null ? aiMonitor.ai_work.system_resources.system_drive + ' · ' + aiMonitor.ai_work.system_resources.system_drive_free_gb.toFixed(1) + ' GB free' : 'MISSING_PROOF'"></span>
+                  <span>AI working set</span><span x-text="(aiMonitor.ai_work?.system_resources?.ai_working_set_mb || 0).toFixed(0) + ' MB'"></span>
+                </div>
+              </div>
+
+              <div class="card monitor-card">
+                <div class="monitor-card-title">網路與遠端限制</div>
+                <div class="token-hero mono" x-text="aiMonitor.codex_health?.network_status || 'MISSING_PROOF'"></div>
+                <div class="dim small" x-text="aiMonitor.codex_health?.network_summary || '網路缺證據'"></div>
+                <div class="monitor-callout monitor-callout-warning mt-md">
+                  <strong>遠端限流／帳號額度</strong>
+                  <span class="dim small">本機活動與資源無法證明遠端服務狀態；只有明確錯誤碼才能判定。</span>
+                  <span class="evidence-badge evidence-missing-proof"
+                        x-text="aiMonitor.codex_health?.remote_limit_status || 'MISSING_PROOF'"></span>
+                </div>
+              </div>
+            </div>
 
             <div class="monitor-section-title">
               <span>電源與恢復</span>

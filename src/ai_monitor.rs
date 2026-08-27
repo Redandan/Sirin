@@ -60,6 +60,7 @@ pub struct AiMonitorSnapshot {
     pub cache_ttl_secs: u64,
     pub network: NetworkSnapshot,
     pub ai_work: AiWorkSnapshot,
+    pub codex_health: CodexHealthView,
     pub power: PowerSnapshot,
     pub recovery: RecoverySnapshot,
     pub acceptance: MonitorAcceptanceView,
@@ -280,7 +281,48 @@ pub struct AiWorkSnapshot {
     pub codex_source: String,
     pub codex_source_error: Option<String>,
     pub process_source_error: Option<String>,
+    pub system_resources: SystemResourceView,
     pub sirin_tokens: SirinTokenView,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CodexHealthView {
+    pub status: String,
+    pub severity: String,
+    pub label: String,
+    pub detail: String,
+    pub evidence: EvidenceLevel,
+    pub progress_status: String,
+    pub progress_age_secs: Option<u64>,
+    pub active_task_count: u32,
+    pub token_delta: u64,
+    pub local_resource_status: String,
+    pub resource_summary: String,
+    pub network_status: String,
+    pub network_summary: String,
+    pub remote_limit_status: String,
+    pub remote_limit_evidence: EvidenceLevel,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SystemResourceView {
+    pub evidence: EvidenceLevel,
+    pub cpu_percent_recent: Option<f64>,
+    pub cpu_interval_secs: Option<f64>,
+    pub cpu_evidence: EvidenceLevel,
+    pub physical_memory_total_gb: Option<f64>,
+    pub physical_memory_available_gb: Option<f64>,
+    pub physical_memory_available_percent: Option<f64>,
+    pub committed_percent: Option<f64>,
+    pub memory_evidence: EvidenceLevel,
+    pub system_drive: Option<String>,
+    pub system_drive_free_gb: Option<f64>,
+    pub system_drive_free_percent: Option<f64>,
+    pub disk_evidence: EvidenceLevel,
+    pub ai_working_set_mb: f64,
+    pub pressure: String,
+    pub pressure_reasons: Vec<String>,
+    pub source_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -393,10 +435,20 @@ static TOKEN_TREND_WRITES: AtomicU64 = AtomicU64::new(0);
 static MANUAL_SPEED_TESTS: AtomicU64 = AtomicU64::new(0);
 static MANUAL_DOWNLOAD_BYTES: AtomicU64 = AtomicU64::new(0);
 static PROCESS_RESOURCE_BASELINE: OnceLock<Mutex<ProcessResourceBaseline>> = OnceLock::new();
+static SYSTEM_CPU_BASELINE: OnceLock<Mutex<SystemCpuBaseline>> = OnceLock::new();
 
 struct ProcessResourceBaseline {
     captured_at: Instant,
     cpu_time_100ns: u64,
+    last_cpu_percent: Option<f64>,
+    last_interval_secs: Option<f64>,
+}
+
+struct SystemCpuBaseline {
+    captured_at: Instant,
+    idle_time_100ns: u64,
+    kernel_time_100ns: u64,
+    user_time_100ns: u64,
     last_cpu_percent: Option<f64>,
     last_interval_secs: Option<f64>,
 }
@@ -493,12 +545,13 @@ pub fn snapshot() -> AiMonitorSnapshot {
     let started = Instant::now();
     let network = cached_network();
     let ai_work = cached_ai_work(AI_WORK_TTL);
+    let codex_health = build_codex_health(&ai_work, &network);
     let power = collect_power(&ai_work);
     update_acceptance_from_power(&power);
     let recovery = collect_recovery(&ai_work, &power);
     let acceptance = collect_monitor_acceptance(&power);
     let overhead = collect_monitor_overhead();
-    let alerts = build_local_alerts(&ai_work, &power, &recovery, &overhead);
+    let alerts = build_local_alerts(&ai_work, &codex_health, &power, &recovery, &overhead);
     AiMonitorSnapshot {
         version: env!("CARGO_PKG_VERSION").to_string(),
         captured_at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
@@ -506,6 +559,7 @@ pub fn snapshot() -> AiMonitorSnapshot {
         cache_ttl_secs: NETWORK_TTL.as_secs(),
         network,
         ai_work,
+        codex_health,
         power,
         recovery,
         acceptance,
@@ -1401,13 +1455,425 @@ fn filetime_ticks(value: windows::Win32::Foundation::FILETIME) -> u64 {
     ((value.dwHighDateTime as u64) << 32) | value.dwLowDateTime as u64
 }
 
+#[cfg(windows)]
+fn collect_system_resources(processes: &[ProcessGroupView]) -> SystemResourceView {
+    use windows::core::HSTRING;
+    use windows::Win32::Foundation::FILETIME;
+    use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    use windows::Win32::System::SystemInformation::{
+        GetWindowsDirectoryW, GlobalMemoryStatusEx, MEMORYSTATUSEX,
+    };
+    use windows::Win32::System::Threading::GetSystemTimes;
+
+    let mut errors = Vec::new();
+    let now = Instant::now();
+    let mut idle = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    let (cpu_percent_recent, cpu_interval_secs, cpu_evidence) = match unsafe {
+        GetSystemTimes(Some(&mut idle), Some(&mut kernel), Some(&mut user))
+    } {
+        Ok(()) => {
+            let idle_time_100ns = filetime_ticks(idle);
+            let kernel_time_100ns = filetime_ticks(kernel);
+            let user_time_100ns = filetime_ticks(user);
+            let cell = SYSTEM_CPU_BASELINE.get_or_init(|| {
+                Mutex::new(SystemCpuBaseline {
+                    captured_at: now,
+                    idle_time_100ns,
+                    kernel_time_100ns,
+                    user_time_100ns,
+                    last_cpu_percent: None,
+                    last_interval_secs: None,
+                })
+            });
+            let mut baseline = cell.lock().unwrap_or_else(|error| error.into_inner());
+            let elapsed = now.saturating_duration_since(baseline.captured_at);
+            if elapsed >= Duration::from_secs(30) {
+                let idle_delta = idle_time_100ns.saturating_sub(baseline.idle_time_100ns);
+                let kernel_delta = kernel_time_100ns.saturating_sub(baseline.kernel_time_100ns);
+                let user_delta = user_time_100ns.saturating_sub(baseline.user_time_100ns);
+                let total_delta = kernel_delta.saturating_add(user_delta);
+                if total_delta > 0 {
+                    let busy_delta = total_delta.saturating_sub(idle_delta);
+                    baseline.last_cpu_percent =
+                        Some((busy_delta as f64 / total_delta as f64 * 100.0).clamp(0.0, 100.0));
+                    baseline.last_interval_secs = Some(elapsed.as_secs_f64());
+                }
+                baseline.captured_at = now;
+                baseline.idle_time_100ns = idle_time_100ns;
+                baseline.kernel_time_100ns = kernel_time_100ns;
+                baseline.user_time_100ns = user_time_100ns;
+            }
+            (
+                baseline.last_cpu_percent,
+                baseline.last_interval_secs,
+                if baseline.last_cpu_percent.is_some() {
+                    EvidenceLevel::Measured
+                } else {
+                    EvidenceLevel::MissingProof
+                },
+            )
+        }
+        Err(error) => {
+            errors.push(format!("Read Windows CPU counters: {error}"));
+            (None, None, EvidenceLevel::MissingProof)
+        }
+    };
+
+    let mut memory = MEMORYSTATUSEX::default();
+    memory.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+    let memory_ok = match unsafe { GlobalMemoryStatusEx(&mut memory) } {
+        Ok(()) => true,
+        Err(error) => {
+            errors.push(format!("Read Windows memory counters: {error}"));
+            false
+        }
+    };
+    let physical_memory_total_gb =
+        memory_ok.then_some(memory.ullTotalPhys as f64 / 1_073_741_824.0);
+    let physical_memory_available_gb =
+        memory_ok.then_some(memory.ullAvailPhys as f64 / 1_073_741_824.0);
+    let physical_memory_available_percent = (memory_ok && memory.ullTotalPhys > 0)
+        .then_some(memory.ullAvailPhys as f64 / memory.ullTotalPhys as f64 * 100.0);
+    let committed_percent = (memory_ok && memory.ullTotalPageFile > 0).then_some(
+        memory
+            .ullTotalPageFile
+            .saturating_sub(memory.ullAvailPageFile) as f64
+            / memory.ullTotalPageFile as f64
+            * 100.0,
+    );
+
+    let mut windows_directory = [0_u16; 260];
+    let windows_directory_len = unsafe { GetWindowsDirectoryW(Some(&mut windows_directory)) };
+    let windows_directory = String::from_utf16_lossy(
+        &windows_directory[..(windows_directory_len as usize).min(windows_directory.len())],
+    );
+    let system_drive = windows_directory
+        .get(..2)
+        .filter(|drive| drive.ends_with(':'))
+        .unwrap_or("C:")
+        .to_string();
+    let drive_root = HSTRING::from(format!("{}\\", system_drive.trim_end_matches('\\')));
+    let mut available_to_caller = 0_u64;
+    let mut total_bytes = 0_u64;
+    let mut total_free_bytes = 0_u64;
+    let disk_ok = match unsafe {
+        GetDiskFreeSpaceExW(
+            &drive_root,
+            Some(&mut available_to_caller),
+            Some(&mut total_bytes),
+            Some(&mut total_free_bytes),
+        )
+    } {
+        Ok(()) => true,
+        Err(error) => {
+            errors.push(format!("Read system drive capacity: {error}"));
+            false
+        }
+    };
+    let system_drive_free_gb = disk_ok.then_some(total_free_bytes as f64 / 1_073_741_824.0);
+    let system_drive_free_percent = (disk_ok && total_bytes > 0)
+        .then_some(total_free_bytes as f64 / total_bytes as f64 * 100.0);
+    let ai_working_set_mb = processes
+        .iter()
+        .filter(|process| process.app == "ChatGPT" || process.app == "Codex")
+        .map(|process| process.working_set_mb)
+        .sum();
+
+    let mut view = SystemResourceView {
+        evidence: if memory_ok && disk_ok {
+            EvidenceLevel::Measured
+        } else {
+            EvidenceLevel::MissingProof
+        },
+        cpu_percent_recent,
+        cpu_interval_secs,
+        cpu_evidence,
+        physical_memory_total_gb,
+        physical_memory_available_gb,
+        physical_memory_available_percent,
+        committed_percent,
+        memory_evidence: if memory_ok {
+            EvidenceLevel::Measured
+        } else {
+            EvidenceLevel::MissingProof
+        },
+        system_drive: disk_ok.then_some(system_drive),
+        system_drive_free_gb,
+        system_drive_free_percent,
+        disk_evidence: if disk_ok {
+            EvidenceLevel::Measured
+        } else {
+            EvidenceLevel::MissingProof
+        },
+        ai_working_set_mb,
+        pressure: String::new(),
+        pressure_reasons: Vec::new(),
+        source_error: (!errors.is_empty()).then(|| errors.join("; ")),
+    };
+    let (pressure, reasons) = classify_system_pressure(&view);
+    view.pressure = pressure;
+    view.pressure_reasons = reasons;
+    view
+}
+
+#[cfg(not(windows))]
+fn collect_system_resources(processes: &[ProcessGroupView]) -> SystemResourceView {
+    SystemResourceView {
+        ai_working_set_mb: processes
+            .iter()
+            .filter(|process| process.app == "ChatGPT" || process.app == "Codex")
+            .map(|process| process.working_set_mb)
+            .sum(),
+        pressure: "MISSING_PROOF".to_string(),
+        source_error: Some("System resource monitoring is currently Windows-only".to_string()),
+        ..Default::default()
+    }
+}
+
+fn classify_system_pressure(resources: &SystemResourceView) -> (String, Vec<String>) {
+    let mut critical = Vec::new();
+    let mut warning = Vec::new();
+    if resources
+        .cpu_percent_recent
+        .is_some_and(|percent| percent >= 98.0)
+    {
+        critical.push("CPU 最近區間達 98% 以上".to_string());
+    } else if resources
+        .cpu_percent_recent
+        .is_some_and(|percent| percent >= 90.0)
+    {
+        warning.push("CPU 最近區間達 90% 以上".to_string());
+    }
+    if resources
+        .physical_memory_available_percent
+        .is_some_and(|percent| percent < 8.0)
+        || resources
+            .committed_percent
+            .is_some_and(|percent| percent >= 95.0)
+    {
+        critical.push("可用記憶體低於 8% 或已認可記憶體達 95%".to_string());
+    } else if resources
+        .physical_memory_available_percent
+        .is_some_and(|percent| percent < 15.0)
+        || resources
+            .committed_percent
+            .is_some_and(|percent| percent >= 90.0)
+    {
+        warning.push("可用記憶體低於 15% 或已認可記憶體達 90%".to_string());
+    }
+    if resources.system_drive_free_gb.is_some_and(|gb| gb < 5.0)
+        || resources
+            .system_drive_free_percent
+            .is_some_and(|percent| percent < 3.0)
+    {
+        critical.push("系統碟可用空間低於 5 GB 或 3%".to_string());
+    } else if resources.system_drive_free_gb.is_some_and(|gb| gb < 15.0)
+        || resources
+            .system_drive_free_percent
+            .is_some_and(|percent| percent < 8.0)
+    {
+        warning.push("系統碟可用空間低於 15 GB 或 8%".to_string());
+    }
+    if !critical.is_empty() {
+        critical.extend(warning);
+        ("CRITICAL".to_string(), critical)
+    } else if !warning.is_empty() {
+        ("WARNING".to_string(), warning)
+    } else if resources.memory_evidence == EvidenceLevel::Measured
+        && resources.disk_evidence == EvidenceLevel::Measured
+    {
+        ("HEALTHY".to_string(), Vec::new())
+    } else {
+        ("MISSING_PROOF".to_string(), Vec::new())
+    }
+}
+
+fn build_codex_health(ai_work: &AiWorkSnapshot, network: &NetworkSnapshot) -> CodexHealthView {
+    let resources = &ai_work.system_resources;
+    let codex_running = process_group_running(&ai_work.processes, "Codex");
+    let active_task_count = ai_work
+        .codex_tasks
+        .iter()
+        .filter(|task| task.activity == "ACTIVE_RECENTLY")
+        .count() as u32;
+    let progress_age_secs = ai_work
+        .codex_tasks
+        .first()
+        .map(|task| unix_time_ms().saturating_sub(task.updated_at_ms).max(0) as u64 / 1_000);
+    let (network_status, network_summary) = classify_network_health(network);
+    let resource_summary = format_system_resource_summary(resources);
+
+    let (status, severity, label, detail, evidence, progress_status) =
+        if ai_work.codex_source_error.is_some() || ai_work.process_source_error.is_some() {
+            (
+                "MISSING_PROOF",
+                "UNKNOWN",
+                "Codex 健康狀態缺證據",
+                "本機程序或 Token 資料來源不可讀；不推定為正常或故障".to_string(),
+                EvidenceLevel::MissingProof,
+                "MISSING_PROOF",
+            )
+        } else if resources.pressure == "CRITICAL" {
+            (
+                "LOCAL_RESOURCE_PRESSURE",
+                "CRITICAL",
+                "本機資源受限",
+                resources.pressure_reasons.join("；"),
+                EvidenceLevel::Measured,
+                "RESOURCE_LIMITED",
+            )
+        } else if resources.pressure == "WARNING" {
+            (
+                "LOCAL_RESOURCE_PRESSURE",
+                "WARNING",
+                "本機資源偏高",
+                resources.pressure_reasons.join("；"),
+                EvidenceLevel::Measured,
+                "RESOURCE_LIMITED",
+            )
+        } else if !codex_running {
+            (
+                "CODEX_CLOSED",
+                "NEUTRAL",
+                "Codex 未執行",
+                "沒有偵測到 Codex 程序；這不是卡住證據".to_string(),
+                EvidenceLevel::Measured,
+                "IDLE",
+            )
+        } else if ai_work.codex_token_trend.delta_tokens > 0 && active_task_count > 0 {
+            (
+                "HEALTHY_ACTIVITY",
+                "OK",
+                "本機健康 · 有進度",
+                format!(
+                    "{} 項近期活動；最近取樣增加 {} tokens",
+                    active_task_count, ai_work.codex_token_trend.delta_tokens
+                ),
+                EvidenceLevel::Inferred,
+                "PROGRESS_OBSERVED",
+            )
+        } else if active_task_count > 0 {
+            (
+                "RECENT_ACTIVITY",
+                "OK",
+                "本機健康 · 最近有活動",
+                "工作時間戳仍在更新；本次 Token 取樣沒有增量".to_string(),
+                EvidenceLevel::Inferred,
+                "RECENT_UPDATE",
+            )
+        } else {
+            (
+                "WAITING_OR_IDLE",
+                "UNKNOWN",
+                "等待或暫停",
+                "沒有新進度證據；無法區分正常等待、使用者決定或停滯".to_string(),
+                EvidenceLevel::MissingProof,
+                "SUSPECTED_STALL_OR_WAITING",
+            )
+        };
+
+    CodexHealthView {
+        status: status.to_string(),
+        severity: severity.to_string(),
+        label: label.to_string(),
+        detail,
+        evidence,
+        progress_status: progress_status.to_string(),
+        progress_age_secs,
+        active_task_count,
+        token_delta: ai_work.codex_token_trend.delta_tokens,
+        local_resource_status: resources.pressure.clone(),
+        resource_summary,
+        network_status,
+        network_summary,
+        remote_limit_status: "MISSING_PROOF".to_string(),
+        remote_limit_evidence: EvidenceLevel::MissingProof,
+    }
+}
+
+fn classify_network_health(network: &NetworkSnapshot) -> (String, String) {
+    let ipv4 = network
+        .default_routes
+        .iter()
+        .find(|route| route.selected && route.family == "IPv4");
+    let Some(ipv4) = ipv4 else {
+        return (
+            "MISSING_PROOF".to_string(),
+            "IPv4 預設路由缺證據".to_string(),
+        );
+    };
+    let latency = ipv4
+        .latency_ms
+        .map(|ms| format!("{} ms", ms))
+        .unwrap_or_else(|| "無回覆".to_string());
+    let summary = if network.split_default_route {
+        format!(
+            "IPv4 {} · {}；IPv6 分流至其他介面",
+            ipv4.interface_alias, latency
+        )
+    } else {
+        format!("IPv4 {} · {}", ipv4.interface_alias, latency)
+    };
+    if ipv4.latency_status == "GOOD" {
+        (
+            if network.split_default_route {
+                "SPLIT_ROUTE_WARNING"
+            } else {
+                "GOOD"
+            }
+            .to_string(),
+            summary,
+        )
+    } else {
+        ("WARNING".to_string(), summary)
+    }
+}
+
+fn format_system_resource_summary(resources: &SystemResourceView) -> String {
+    let cpu = resources
+        .cpu_percent_recent
+        .map(|value| format!("CPU {:.0}%", value))
+        .unwrap_or_else(|| "CPU 建立基線中".to_string());
+    let memory = resources
+        .physical_memory_available_percent
+        .map(|value| format!("RAM 可用 {:.0}%", value))
+        .unwrap_or_else(|| "RAM 缺證據".to_string());
+    let drive = match (&resources.system_drive, resources.system_drive_free_gb) {
+        (Some(drive), Some(gb)) => format!("{} 可用 {:.0} GB", drive, gb),
+        _ => "系統碟缺證據".to_string(),
+    };
+    format!(
+        "{} · {} · {} · AI 程序 {:.0} MB",
+        cpu, memory, drive, resources.ai_working_set_mb
+    )
+}
+
 fn build_local_alerts(
     ai_work: &AiWorkSnapshot,
+    codex_health: &CodexHealthView,
     power: &PowerSnapshot,
     recovery: &RecoverySnapshot,
     overhead: &MonitorOverheadSnapshot,
 ) -> Vec<LocalAlertView> {
     let mut alerts = Vec::new();
+    if codex_health.local_resource_status == "CRITICAL"
+        || codex_health.local_resource_status == "WARNING"
+    {
+        alerts.push(LocalAlertView {
+            code: "CODEX_LOCAL_RESOURCE_PRESSURE".to_string(),
+            severity: if codex_health.local_resource_status == "CRITICAL" {
+                "CRITICAL"
+            } else {
+                "WARNING"
+            }
+            .to_string(),
+            message: codex_health.label.clone(),
+            action: "先確認 CPU、記憶體與系統碟壓力；不自動終止程序或清理檔案".to_string(),
+            evidence: EvidenceLevel::Measured,
+        });
+    }
     if power.session_locked == Some(true) {
         alerts.push(LocalAlertView {
             code: "WINDOWS_SESSION_LOCKED".to_string(),
@@ -1556,6 +2022,7 @@ pub async fn manual_speed_test() -> Result<SpeedTestView, String> {
 
 fn collect_ai_work() -> AiWorkSnapshot {
     let (processes, process_error) = collect_processes();
+    let system_resources = collect_system_resources(&processes);
     let (tasks, codex_error) = collect_codex_tasks();
     let recent_total = tasks.iter().map(|task| task.tokens_used).sum();
     let chatgpt_running = process_group_running(&processes, "ChatGPT");
@@ -1597,6 +2064,7 @@ fn collect_ai_work() -> AiWorkSnapshot {
         codex_source: "%USERPROFILE%\\.codex\\state_5.sqlite / threads.tokens_used (read-only internal counter; not billing)".to_string(),
         codex_source_error: codex_error,
         process_source_error: process_error,
+        system_resources,
         sirin_tokens: SirinTokenView {
             window_secs: sirin.window_secs,
             api_calls: sirin.api_calls,
@@ -2806,6 +3274,7 @@ mod tests {
 
         let alerts = build_local_alerts(
             &ai_work,
+            &CodexHealthView::default(),
             &power,
             &recovery,
             &MonitorOverheadSnapshot::default(),
@@ -2837,6 +3306,7 @@ mod tests {
         };
         let alerts = build_local_alerts(
             &AiWorkSnapshot::default(),
+            &CodexHealthView::default(),
             &PowerSnapshot::default(),
             &RecoverySnapshot::default(),
             &overhead,
@@ -2855,6 +3325,142 @@ mod tests {
         assert!(alerts
             .iter()
             .all(|alert| !alert.action.contains("自動刪除") || alert.action.contains("不要")));
+    }
+
+    fn healthy_system_resources() -> SystemResourceView {
+        SystemResourceView {
+            evidence: EvidenceLevel::Measured,
+            cpu_percent_recent: Some(42.0),
+            cpu_interval_secs: Some(60.0),
+            cpu_evidence: EvidenceLevel::Measured,
+            physical_memory_total_gb: Some(48.0),
+            physical_memory_available_gb: Some(24.0),
+            physical_memory_available_percent: Some(50.0),
+            committed_percent: Some(67.0),
+            memory_evidence: EvidenceLevel::Measured,
+            system_drive: Some("C:".to_string()),
+            system_drive_free_gb: Some(78.0),
+            system_drive_free_percent: Some(26.0),
+            disk_evidence: EvidenceLevel::Measured,
+            ai_working_set_mb: 2_950.0,
+            pressure: "HEALTHY".to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn good_ipv4_network() -> NetworkSnapshot {
+        NetworkSnapshot {
+            evidence: EvidenceLevel::Measured,
+            default_routes: vec![DefaultRouteView {
+                family: "IPv4".to_string(),
+                interface_alias: "Wi-Fi 2".to_string(),
+                selected: true,
+                latency_ms: Some(15),
+                latency_status: "GOOD".to_string(),
+                latency_evidence: EvidenceLevel::Measured,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn resource_pressure_uses_sustained_cpu_memory_and_disk_thresholds() {
+        let healthy = healthy_system_resources();
+        assert_eq!(classify_system_pressure(&healthy).0, "HEALTHY");
+
+        let warning = SystemResourceView {
+            cpu_percent_recent: Some(91.0),
+            ..healthy.clone()
+        };
+        let (status, reasons) = classify_system_pressure(&warning);
+        assert_eq!(status, "WARNING");
+        assert!(reasons.iter().any(|reason| reason.contains("CPU")));
+
+        let critical = SystemResourceView {
+            physical_memory_available_percent: Some(7.0),
+            ..healthy
+        };
+        assert_eq!(classify_system_pressure(&critical).0, "CRITICAL");
+    }
+
+    #[test]
+    fn codex_health_reports_progress_without_claiming_remote_limit_proof() {
+        let now = unix_time_ms();
+        let ai_work = AiWorkSnapshot {
+            processes: vec![ProcessGroupView {
+                app: "Codex".to_string(),
+                running: true,
+                process_count: 2,
+                working_set_mb: 760.0,
+                evidence: EvidenceLevel::Measured,
+            }],
+            codex_tasks: vec![CodexTaskView {
+                id: "opaque".to_string(),
+                display_name: "Codex 工作 opaque".to_string(),
+                tokens_used: 10_000,
+                updated_at_ms: now - 15_000,
+                activity: "ACTIVE_RECENTLY".to_string(),
+                token_evidence: EvidenceLevel::Measured,
+                activity_evidence: EvidenceLevel::Inferred,
+            }],
+            codex_token_trend: TokenTrendView {
+                delta_tokens: 500,
+                evidence: EvidenceLevel::Inferred,
+                ..Default::default()
+            },
+            system_resources: healthy_system_resources(),
+            ..Default::default()
+        };
+        let health = build_codex_health(&ai_work, &good_ipv4_network());
+        assert_eq!(health.status, "HEALTHY_ACTIVITY");
+        assert_eq!(health.progress_status, "PROGRESS_OBSERVED");
+        assert_eq!(health.local_resource_status, "HEALTHY");
+        assert_eq!(health.remote_limit_status, "MISSING_PROOF");
+        assert_eq!(health.remote_limit_evidence, EvidenceLevel::MissingProof);
+    }
+
+    #[test]
+    fn codex_health_does_not_call_absence_of_updates_a_stall() {
+        let ai_work = AiWorkSnapshot {
+            processes: vec![ProcessGroupView {
+                app: "Codex".to_string(),
+                running: true,
+                process_count: 1,
+                evidence: EvidenceLevel::Measured,
+                ..Default::default()
+            }],
+            system_resources: healthy_system_resources(),
+            ..Default::default()
+        };
+        let health = build_codex_health(&ai_work, &good_ipv4_network());
+        assert_eq!(health.status, "WAITING_OR_IDLE");
+        assert_eq!(health.progress_status, "SUSPECTED_STALL_OR_WAITING");
+        assert_eq!(health.evidence, EvidenceLevel::MissingProof);
+        assert!(health.detail.contains("無法區分"));
+    }
+
+    #[test]
+    fn codex_health_prioritizes_local_resource_pressure() {
+        let mut resources = healthy_system_resources();
+        resources.physical_memory_available_percent = Some(6.0);
+        let (pressure, reasons) = classify_system_pressure(&resources);
+        resources.pressure = pressure;
+        resources.pressure_reasons = reasons;
+        let ai_work = AiWorkSnapshot {
+            processes: vec![ProcessGroupView {
+                app: "Codex".to_string(),
+                running: true,
+                process_count: 1,
+                evidence: EvidenceLevel::Measured,
+                ..Default::default()
+            }],
+            system_resources: resources,
+            ..Default::default()
+        };
+        let health = build_codex_health(&ai_work, &good_ipv4_network());
+        assert_eq!(health.status, "LOCAL_RESOURCE_PRESSURE");
+        assert_eq!(health.severity, "CRITICAL");
     }
 
     #[test]

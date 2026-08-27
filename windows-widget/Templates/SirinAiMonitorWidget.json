@@ -98,6 +98,53 @@
         {
           "type": "Container",
           "spacing": "Small",
+          "separator": true,
+          "items": [
+            {
+              "type": "TextBlock",
+              "text": "CODEX HEALTH",
+              "size": "Small",
+              "isSubtle": true,
+              "weight": "Bolder"
+            },
+            {
+              "type": "TextBlock",
+              "text": "${codexHealthState}",
+              "color": "${codexHealthColor}",
+              "weight": "Bolder",
+              "spacing": "None",
+              "wrap": true
+            },
+            {
+              "type": "TextBlock",
+              "text": "${codexHealthDetail}",
+              "size": "Small",
+              "spacing": "None",
+              "wrap": true
+            },
+            {
+              "type": "TextBlock",
+              "text": "${codexResourceSummary}",
+              "size": "Small",
+              "isSubtle": true,
+              "spacing": "Small",
+              "wrap": true,
+              "$when": "${$host.widgetSize != 'small'}"
+            },
+            {
+              "type": "TextBlock",
+              "text": "${codexNetworkHealth} · ${codexRemoteLimit}",
+              "size": "Small",
+              "isSubtle": true,
+              "spacing": "None",
+              "wrap": true,
+              "$when": "${$host.widgetSize != 'small'}"
+            }
+          ]
+        },
+        {
+          "type": "Container",
+          "spacing": "Small",
           "$when": "${$host.widgetSize != 'small'}",
           "items": [
             {

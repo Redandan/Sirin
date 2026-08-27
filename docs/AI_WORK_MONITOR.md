@@ -29,10 +29,14 @@ Windows 本機 AI 工作監控，整合在 Sirin 既有 daemon、tray、`/ui/`�
 | AI 待機防護 | Sirin sampler thread 的 Windows execution-state 呼叫結果 | 成功設定／清除並與 ChatGPT 程序狀態一致為 `MEASURED` |
 | 監控 thread 成本 | sampler thread 的 wall time 與 Windows thread CPU time | `MEASURED`；只代表監控 thread |
 | Sirin 程序資源 | Windows process CPU time、working set、private bytes | `MEASURED`；明確標示為整個 Sirin，不冒充監控模組獨占成本 |
+| Codex 本機資源健康 | Windows `GetSystemTimes`、`GlobalMemoryStatusEx`、`GetDiskFreeSpaceExW` 與既有程序 working set | 每 60 秒本機取樣；CPU 使用跨取樣區間，RAM／系統碟為即時容量，不啟動 PowerShell/WMI |
+| Codex 進度健康 | thread 更新時間、Token 增量、Codex 程序存在與上述資源壓力 | 有增量可標示 `HEALTHY_ACTIVITY`；沒有更新只能是 `WAITING_OR_IDLE`／`MISSING_PROOF`，不能單獨判成卡住 |
 | 本機 I/O 成本 | collector/cache/write 計數器與 Token 趨勢檔 metadata | `MEASURED`；程序重啟後重新計數 |
 | 狀態週期驗收 | 固定事件種類的首次／最後時間與次數；鎖定使用 WTS、待機使用 Kernel-Power 與取樣 GAP 關聯 | 有完整週期才 `PASS`；其餘保持 `PARTIAL`／`MISSING_PROOF` |
 
 `MISSING_PROOF` 不會被轉寫成離線、故障或零用量。
+
+`codex_health` 把狀態拆成進度、本機資源、網路與遠端限制。CPU 最近區間達 90%、可用 RAM 低於 15%／commit 達 90%，或系統碟低於 15 GB／8% 時顯示警告；更嚴格的 98%、8%／95%、5 GB／3% 顯示嚴重。這些門檻只產生本機警示，不會終止程序、清理檔案或修改路由。遠端模型限流與帳號額度除非有明確結構化錯誤，固定保持 `MISSING_PROOF`。
 
 Token 趨勢的 `lifecycle` 會明確區分 `BASELINE`、`ACTIVE`、`IDLE`、`APPS_CLOSED`、`SOURCE_MISSING` 與 `GAP`。Codex SQLite 暫時不可讀時，Sirin 會保留上一個有效基線、記錄缺證據點且停止推算；來源恢復但間隔超過 90 秒時只重建基線，不把中斷期間的差額換算成速率。AI 程式關閉但資料來源仍可讀時則記為 `APPS_CLOSED`，不與來源故障混淆。
 
