@@ -622,6 +622,43 @@
             </div>
 
             <div class="monitor-section-title">
+              <span>狀態週期實機驗收</span>
+              <span class="evidence-badge"
+                    :class="aiEvidenceClass(aiMonitor.acceptance?.evidence)"
+                    x-text="aiMonitor.acceptance?.status || 'MISSING_PROOF'"></span>
+            </div>
+
+            <div class="monitor-callout"
+                 :class="aiMonitor.acceptance?.status === 'PASS' ? '' : 'monitor-callout-warning'">
+              <strong x-text="aiMonitor.acceptance?.status === 'PASS' ? '必要週期已有持久化實機證據' : '仍保留實機證據缺口' "></strong>
+              <span class="dim small"
+                    x-text="(aiMonitor.acceptance?.missing_required_modes || []).length ? '缺少：' + aiMonitor.acceptance.missing_required_modes.join(' / ') : '閒置、關閉、鎖定、待機與重啟週期均已有證據' "></span>
+              <span class="dim small mono"
+                    x-text="'ledger ' + (aiMonitor.acceptance?.ledger_persisted ? 'PERSISTED' : 'FAILED') + ' · ' + (aiMonitor.acceptance?.ledger_restored ? 'RESTORED' : 'CURRENT BOOT')"></span>
+            </div>
+
+            <div class="monitor-grid monitor-grid-ai">
+              <template x-for="mode in (aiMonitor.acceptance?.modes || [])" :key="mode.mode">
+                <div class="card monitor-card">
+                  <div class="monitor-card-title row">
+                    <span x-text="mode.mode"></span>
+                    <span class="row-spacer"></span>
+                    <span class="status-chip"
+                          :class="mode.status === 'PASS' ? 'status-passed' : 'status-timeout'"
+                          x-text="mode.status"></span>
+                  </div>
+                  <div class="dim small" x-text="mode.detail"></div>
+                  <div class="monitor-kv mono small mt-md">
+                    <span>last</span><span x-text="mode.last_observed_at_ms ? new Date(mode.last_observed_at_ms).toLocaleString('zh-TW', { hour12: false }) : 'MISSING_PROOF'"></span>
+                    <span>observations</span><span x-text="mode.observations || 0"></span>
+                    <span>required</span><span x-text="mode.required ? 'YES' : 'DIAGNOSTIC'"></span>
+                    <span>evidence</span><span x-text="aiEvidenceLabel(mode.evidence)"></span>
+                  </div>
+                </div>
+              </template>
+            </div>
+
+            <div class="monitor-section-title">
               <span>監控成本</span>
               <span class="evidence-badge"
                     :class="aiEvidenceClass(aiMonitor.overhead?.evidence)"
@@ -663,6 +700,7 @@
                   <span>network cache</span><span x-text="(aiMonitor.overhead?.network_cache_hits_total || 0) + ' hits / ' + (aiMonitor.overhead?.network_collections_total || 0) + ' collect'"></span>
                   <span>background probes</span><span x-text="aiMonitor.overhead?.background_network_probes ? 'ON' : 'OFF'"></span>
                   <span>background download</span><span x-text="aiMonitor.overhead?.background_download_tests ? 'ON' : 'OFF'"></span>
+                  <span>gap event query</span><span x-text="aiMonitor.overhead?.gap_power_event_queries_total || 0"></span>
                 </div>
               </div>
             </div>

@@ -583,6 +583,8 @@ winrt::hstring WidgetProvider::BuildData(bool fetchSnapshot)
     winrt::hstring healthColor = L"Warning";
     winrt::hstring resourceStatus = L"監控成本缺證據";
     winrt::hstring resourceDetail = L"等待 Sirin 資源取樣";
+    winrt::hstring acceptanceStatus = L"實機驗收 MISSING_PROOF";
+    winrt::hstring acceptanceDetail = L"等待持久化狀態週期證據";
 
     if (const auto response = fetchSnapshot ? FetchSnapshotUtf8() : std::nullopt)
     {
@@ -828,6 +830,16 @@ winrt::hstring WidgetProvider::BuildData(bool fetchSnapshot)
                 const auto recovery = root.GetNamedObject(L"recovery");
                 recoveryStatus = L"恢復 " + StringOr(recovery, L"status", L"UNKNOWN");
             }
+            if (root.HasKey(L"acceptance"))
+            {
+                const auto acceptance = root.GetNamedObject(L"acceptance");
+                const auto status = StringOr(acceptance, L"status", L"MISSING_PROOF");
+                acceptanceStatus = L"實機驗收 " + status;
+                const auto missing = acceptance.GetNamedArray(L"missing_required_modes");
+                acceptanceDetail = status == L"PASS"
+                    ? L"閒置、關閉、鎖定、待機與重啟週期已有證據"
+                    : L"仍缺 " + winrt::to_hstring(missing.Size()) + L" 項必要週期 · 不強制觸發";
+            }
             if (root.HasKey(L"alerts"))
             {
                 const auto alerts = root.GetNamedArray(L"alerts");
@@ -937,5 +949,7 @@ winrt::hstring WidgetProvider::BuildData(bool fetchSnapshot)
     PutString(data, L"healthColor", healthColor);
     PutString(data, L"resourceStatus", resourceStatus);
     PutString(data, L"resourceDetail", resourceDetail);
+    PutString(data, L"acceptanceStatus", acceptanceStatus);
+    PutString(data, L"acceptanceDetail", acceptanceDetail);
     return data.Stringify();
 }

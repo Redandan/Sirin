@@ -334,6 +334,22 @@
         },
         {
           "type": "TextBlock",
+          "text": "${acceptanceStatus}",
+          "spacing": "Small",
+          "size": "Small",
+          "weight": "Bolder",
+          "wrap": true
+        },
+        {
+          "type": "TextBlock",
+          "text": "${acceptanceDetail}",
+          "spacing": "None",
+          "size": "Small",
+          "isSubtle": true,
+          "wrap": true
+        },
+        {
+          "type": "TextBlock",
           "text": "${resourceStatus}",
           "spacing": "Small",
           "size": "Small",

@@ -208,6 +208,25 @@ function Test-MonitorContract([string]$BaseUrl) {
         [string]$overhead.process.memory_evidence -ne 'MEASURED') {
         throw 'AI monitor low-overhead contract failed'
     }
+    $acceptance = $monitor.acceptance
+    $requiredAcceptanceModes = @(
+        'IDLE',
+        'APP_CLOSURE',
+        'LOCK_CYCLE',
+        'STANDBY_CYCLE',
+        'RESTART_RESTORE',
+        'TOKEN_SOURCE_RECOVERY'
+    )
+    $acceptanceModes = @($acceptance.modes | ForEach-Object { [string]$_.mode })
+    $missingAcceptanceModes = @(
+        $requiredAcceptanceModes | Where-Object { $_ -notin $acceptanceModes }
+    )
+    if ($null -eq $acceptance -or
+        [string]::IsNullOrWhiteSpace([string]$acceptance.status) -or
+        -not [bool]$acceptance.ledger_persisted -or
+        $missingAcceptanceModes.Count -gt 0) {
+        throw "AI monitor acceptance ledger contract failed; missing modes: $($missingAcceptanceModes -join ', ')"
+    }
 
     [pscustomobject]@{
         version = [string]$monitor.version
@@ -226,6 +245,10 @@ function Test-MonitorContract([string]$BaseUrl) {
         background_network_probes = [bool]$overhead.background_network_probes
         background_download_tests = [bool]$overhead.background_download_tests
         process_memory_evidence = [string]$overhead.process.memory_evidence
+        acceptance_status = [string]$acceptance.status
+        acceptance_missing_required = @($acceptance.missing_required_modes).Count
+        acceptance_ledger_persisted = [bool]$acceptance.ledger_persisted
+        acceptance_mode_count = $acceptanceModes.Count
     }
 }
 

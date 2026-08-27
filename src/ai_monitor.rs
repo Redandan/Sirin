@@ -29,6 +29,17 @@ const TOKEN_HISTORY_LIMIT: usize = 60;
 const TOKEN_HISTORY_WINDOW_MS: i64 = 60 * 60 * 1_000;
 const TOKEN_TREND_SCHEMA_VERSION: u32 = 1;
 const TOKEN_TREND_FILE: &str = "ai_monitor_token_trend.jsonl";
+const ACCEPTANCE_EVENT_KINDS: [&str; 9] = [
+    "TOKEN_ACTIVE",
+    "TOKEN_IDLE",
+    "APPS_CLOSED",
+    "SOURCE_MISSING",
+    "SAMPLING_GAP",
+    "WINDOWS_LOCKED",
+    "WINDOWS_UNLOCKED",
+    "HISTORY_RESTORED",
+    "STANDBY_CYCLE",
+];
 const SPEED_TEST_BYTES: u64 = 5_000_000;
 const SPEED_TEST_URL: &str = "https://speed.cloudflare.com/__down?bytes=5000000";
 
@@ -51,6 +62,7 @@ pub struct AiMonitorSnapshot {
     pub ai_work: AiWorkSnapshot,
     pub power: PowerSnapshot,
     pub recovery: RecoverySnapshot,
+    pub acceptance: MonitorAcceptanceView,
     pub overhead: MonitorOverheadSnapshot,
     pub alerts: Vec<LocalAlertView>,
     pub safety: SafetyView,
@@ -127,6 +139,34 @@ pub struct RecoverySnapshot {
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
+pub struct MonitorAcceptanceView {
+    pub status: String,
+    pub evidence: EvidenceLevel,
+    pub modes: Vec<AcceptanceModeView>,
+    pub missing_required_modes: Vec<String>,
+    pub ledger_persisted: bool,
+    pub ledger_restored: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct AcceptanceModeView {
+    pub mode: String,
+    pub required: bool,
+    pub status: String,
+    pub last_observed_at_ms: Option<i64>,
+    pub observations: u64,
+    pub evidence: EvidenceLevel,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct AcceptanceEventRecord {
+    first_observed_at_ms: i64,
+    last_observed_at_ms: i64,
+    observations: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct MonitorOverheadSnapshot {
     pub evidence: EvidenceLevel,
     pub scope: String,
@@ -146,6 +186,7 @@ pub struct MonitorOverheadSnapshot {
     pub standby_collections_total: u64,
     pub standby_cache_hits_total: u64,
     pub last_standby_collection_ms: f64,
+    pub gap_power_event_queries_total: u64,
     pub trend_writes_total: u64,
     pub trend_file_bytes: Option<u64>,
     pub manual_speed_tests_total: u64,
@@ -347,6 +388,7 @@ static LAST_NETWORK_COLLECTION_US: AtomicU64 = AtomicU64::new(0);
 static STANDBY_COLLECTIONS: AtomicU64 = AtomicU64::new(0);
 static STANDBY_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
 static LAST_STANDBY_COLLECTION_US: AtomicU64 = AtomicU64::new(0);
+static GAP_POWER_EVENT_QUERIES: AtomicU64 = AtomicU64::new(0);
 static TOKEN_TREND_WRITES: AtomicU64 = AtomicU64::new(0);
 static MANUAL_SPEED_TESTS: AtomicU64 = AtomicU64::new(0);
 static MANUAL_DOWNLOAD_BYTES: AtomicU64 = AtomicU64::new(0);
@@ -374,6 +416,7 @@ struct TokenTrendState {
     sampled_at_ms: Option<i64>,
     tokens: HashMap<String, u64>,
     history: VecDeque<TokenTrendPointView>,
+    acceptance_events: HashMap<String, AcceptanceEventRecord>,
     history_restored: bool,
     persistence_ok: bool,
     persistence_error: Option<String>,
@@ -385,6 +428,7 @@ impl Default for TokenTrendState {
             sampled_at_ms: None,
             tokens: HashMap::new(),
             history: VecDeque::new(),
+            acceptance_events: HashMap::new(),
             history_restored: false,
             persistence_ok: false,
             persistence_error: None,
@@ -398,6 +442,8 @@ struct PersistedTokenTrend {
     sampled_at_ms: Option<i64>,
     tokens: HashMap<String, u64>,
     history: VecDeque<TokenTrendPointView>,
+    #[serde(default)]
+    acceptance_events: HashMap<String, AcceptanceEventRecord>,
 }
 
 static TOKEN_TREND: OnceLock<Mutex<TokenTrendState>> = OnceLock::new();
@@ -448,7 +494,9 @@ pub fn snapshot() -> AiMonitorSnapshot {
     let network = cached_network();
     let ai_work = cached_ai_work(AI_WORK_TTL);
     let power = collect_power(&ai_work);
+    update_acceptance_from_power(&power);
     let recovery = collect_recovery(&ai_work, &power);
+    let acceptance = collect_monitor_acceptance(&power);
     let overhead = collect_monitor_overhead();
     let alerts = build_local_alerts(&ai_work, &power, &recovery, &overhead);
     AiMonitorSnapshot {
@@ -460,6 +508,7 @@ pub fn snapshot() -> AiMonitorSnapshot {
         ai_work,
         power,
         recovery,
+        acceptance,
         overhead,
         alerts,
         safety: SafetyView::default(),
@@ -886,6 +935,290 @@ fn collect_recovery(ai_work: &AiWorkSnapshot, power: &PowerSnapshot) -> Recovery
     }
 }
 
+fn update_acceptance_from_power(power: &PowerSnapshot) {
+    let Some(cell) = TOKEN_TREND.get() else {
+        return;
+    };
+    let (Some(entered_at_ms), Some(resumed_at_ms)) = (
+        power.modern_standby.last_entered_at_ms,
+        power.modern_standby.last_resumed_at_ms,
+    ) else {
+        return;
+    };
+    if resumed_at_ms < entered_at_ms {
+        return;
+    }
+
+    let mut state = cell.lock().unwrap_or_else(|error| error.into_inner());
+    let correlated_gap = standby_gap_correlated(&state.history, entered_at_ms, resumed_at_ms);
+    if correlated_gap && record_acceptance_event(&mut state, "STANDBY_CYCLE", resumed_at_ms) {
+        // This writes once per distinct resume event, not on every dashboard
+        // refresh. It makes the correlation survive beyond the one-hour chart.
+        persist_token_trend_state(&mut state);
+    }
+}
+
+fn standby_gap_correlated(
+    history: &VecDeque<TokenTrendPointView>,
+    entered_at_ms: i64,
+    resumed_at_ms: i64,
+) -> bool {
+    if resumed_at_ms < entered_at_ms {
+        return false;
+    }
+    let resume_deadline_ms = resumed_at_ms.saturating_add((AI_SAMPLE_GAP_SECS * 1_000) as i64);
+    history.iter().any(|point| {
+        point.lifecycle == "GAP"
+            && point.sampled_at_ms >= entered_at_ms
+            && point.sampled_at_ms <= resume_deadline_ms
+    })
+}
+
+fn collect_monitor_acceptance(power: &PowerSnapshot) -> MonitorAcceptanceView {
+    let Some(cell) = TOKEN_TREND.get() else {
+        return MonitorAcceptanceView {
+            status: "MISSING_PROOF".to_string(),
+            evidence: EvidenceLevel::MissingProof,
+            missing_required_modes: vec![
+                "IDLE".to_string(),
+                "APP_CLOSURE".to_string(),
+                "LOCK_CYCLE".to_string(),
+                "STANDBY_CYCLE".to_string(),
+                "RESTART_RESTORE".to_string(),
+            ],
+            ..Default::default()
+        };
+    };
+    let state = cell.lock().unwrap_or_else(|error| error.into_inner());
+    classify_monitor_acceptance(
+        &state.acceptance_events,
+        state.persistence_ok,
+        state.history_restored,
+        power,
+    )
+}
+
+fn classify_monitor_acceptance(
+    events: &HashMap<String, AcceptanceEventRecord>,
+    ledger_persisted: bool,
+    ledger_restored: bool,
+    power: &PowerSnapshot,
+) -> MonitorAcceptanceView {
+    let idle = simple_acceptance_mode(
+        events,
+        "TOKEN_IDLE",
+        "IDLE",
+        true,
+        EvidenceLevel::Inferred,
+        "已觀察到 AI 程式仍執行但 Token 無增量的區間",
+        "尚未觀察到真實閒置區間",
+    );
+
+    let apps_closed = events.get("APPS_CLOSED");
+    let reopened = latest_acceptance_event(events, &["TOKEN_ACTIVE", "TOKEN_IDLE"]);
+    let app_closure = cycle_acceptance_mode(
+        "APP_CLOSURE",
+        true,
+        apps_closed,
+        reopened,
+        EvidenceLevel::Inferred,
+        "已觀察 AI 程式關閉，並在重新開啟後恢復可信取樣",
+        "已觀察 AI 程式關閉；尚未觀察重新開啟後的有效取樣",
+        "尚未觀察 ChatGPT 與 Codex 同時關閉",
+    );
+
+    let source_missing = events.get("SOURCE_MISSING");
+    let source_recovered = latest_acceptance_event(
+        events,
+        &["TOKEN_ACTIVE", "TOKEN_IDLE", "APPS_CLOSED", "SAMPLING_GAP"],
+    );
+    let token_source = cycle_acceptance_mode(
+        "TOKEN_SOURCE_RECOVERY",
+        false,
+        source_missing,
+        source_recovered,
+        EvidenceLevel::Inferred,
+        "Token 來源曾不可讀，恢復後已重新建立可信基線",
+        "Token 來源目前有缺口；尚未觀察恢復",
+        "尚未發生 Token 來源不可讀事件",
+    );
+
+    let locked = events.get("WINDOWS_LOCKED");
+    let unlocked = events.get("WINDOWS_UNLOCKED");
+    let lock_cycle = cycle_acceptance_mode(
+        "LOCK_CYCLE",
+        true,
+        locked,
+        unlocked,
+        EvidenceLevel::Measured,
+        "已由 Win32 直接觀察鎖定與其後解鎖",
+        "已觀察鎖定；尚未觀察其後解鎖",
+        "尚未觀察真實 Windows 鎖定",
+    );
+
+    let standby_cycle = if let Some(record) = events.get("STANDBY_CYCLE") {
+        AcceptanceModeView {
+            mode: "STANDBY_CYCLE".to_string(),
+            required: true,
+            status: "PASS".to_string(),
+            last_observed_at_ms: Some(record.last_observed_at_ms),
+            observations: record.observations,
+            evidence: EvidenceLevel::Measured,
+            detail: "Kernel-Power 待機／恢復事件已與 Token 取樣 GAP 對齊".to_string(),
+        }
+    } else if let (Some(entered), Some(resumed)) = (
+        power.modern_standby.last_entered_at_ms,
+        power.modern_standby.last_resumed_at_ms,
+    ) {
+        AcceptanceModeView {
+            mode: "STANDBY_CYCLE".to_string(),
+            required: true,
+            status: "PARTIAL".to_string(),
+            last_observed_at_ms: Some(resumed.max(entered)),
+            observations: 1,
+            evidence: EvidenceLevel::MissingProof,
+            detail: "已有歷史待機事件，但尚未與目前持久化 Token GAP 對齊".to_string(),
+        }
+    } else {
+        AcceptanceModeView {
+            mode: "STANDBY_CYCLE".to_string(),
+            required: true,
+            status: "MISSING_PROOF".to_string(),
+            evidence: EvidenceLevel::MissingProof,
+            detail: "尚未觀察可對齊的真實 Modern Standby／恢復週期".to_string(),
+            ..Default::default()
+        }
+    };
+
+    let restart_restore = simple_acceptance_mode(
+        events,
+        "HISTORY_RESTORED",
+        "RESTART_RESTORE",
+        true,
+        EvidenceLevel::Measured,
+        "Sirin 重啟後已從本機趨勢檔恢復歷史",
+        "尚未證明 Sirin 重啟後可恢復 Token 歷史",
+    );
+
+    let modes = vec![
+        idle,
+        app_closure,
+        lock_cycle,
+        standby_cycle,
+        restart_restore,
+        token_source,
+    ];
+    let missing_required_modes = modes
+        .iter()
+        .filter(|mode| mode.required && mode.status != "PASS")
+        .map(|mode| mode.mode.clone())
+        .collect::<Vec<_>>();
+    MonitorAcceptanceView {
+        status: if missing_required_modes.is_empty() {
+            "PASS"
+        } else {
+            "PARTIAL"
+        }
+        .to_string(),
+        evidence: if missing_required_modes.is_empty() {
+            EvidenceLevel::Inferred
+        } else {
+            EvidenceLevel::MissingProof
+        },
+        modes,
+        missing_required_modes,
+        ledger_persisted,
+        ledger_restored,
+    }
+}
+
+fn simple_acceptance_mode(
+    events: &HashMap<String, AcceptanceEventRecord>,
+    event_kind: &str,
+    mode: &str,
+    required: bool,
+    pass_evidence: EvidenceLevel,
+    pass_detail: &str,
+    missing_detail: &str,
+) -> AcceptanceModeView {
+    match events.get(event_kind) {
+        Some(record) => AcceptanceModeView {
+            mode: mode.to_string(),
+            required,
+            status: "PASS".to_string(),
+            last_observed_at_ms: Some(record.last_observed_at_ms),
+            observations: record.observations,
+            evidence: pass_evidence,
+            detail: pass_detail.to_string(),
+        },
+        None => AcceptanceModeView {
+            mode: mode.to_string(),
+            required,
+            status: "MISSING_PROOF".to_string(),
+            evidence: EvidenceLevel::MissingProof,
+            detail: missing_detail.to_string(),
+            ..Default::default()
+        },
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cycle_acceptance_mode(
+    mode: &str,
+    required: bool,
+    start: Option<&AcceptanceEventRecord>,
+    recovered: Option<&AcceptanceEventRecord>,
+    pass_evidence: EvidenceLevel,
+    pass_detail: &str,
+    partial_detail: &str,
+    missing_detail: &str,
+) -> AcceptanceModeView {
+    match start {
+        Some(start)
+            if recovered
+                .is_some_and(|record| record.last_observed_at_ms > start.last_observed_at_ms) =>
+        {
+            let recovered = recovered.expect("recovery record checked");
+            AcceptanceModeView {
+                mode: mode.to_string(),
+                required,
+                status: "PASS".to_string(),
+                last_observed_at_ms: Some(recovered.last_observed_at_ms),
+                observations: start.observations,
+                evidence: pass_evidence,
+                detail: pass_detail.to_string(),
+            }
+        }
+        Some(start) => AcceptanceModeView {
+            mode: mode.to_string(),
+            required,
+            status: "PARTIAL".to_string(),
+            last_observed_at_ms: Some(start.last_observed_at_ms),
+            observations: start.observations,
+            evidence: EvidenceLevel::MissingProof,
+            detail: partial_detail.to_string(),
+        },
+        None => AcceptanceModeView {
+            mode: mode.to_string(),
+            required,
+            status: "MISSING_PROOF".to_string(),
+            evidence: EvidenceLevel::MissingProof,
+            detail: missing_detail.to_string(),
+            ..Default::default()
+        },
+    }
+}
+
+fn latest_acceptance_event<'a>(
+    events: &'a HashMap<String, AcceptanceEventRecord>,
+    kinds: &[&str],
+) -> Option<&'a AcceptanceEventRecord> {
+    kinds
+        .iter()
+        .filter_map(|kind| events.get(*kind))
+        .max_by_key(|record| record.last_observed_at_ms)
+}
+
 fn collect_monitor_overhead() -> MonitorOverheadSnapshot {
     let process = collect_sirin_process_resources();
     let trend_file_bytes = std::fs::metadata(token_trend_path())
@@ -920,6 +1253,7 @@ fn collect_monitor_overhead() -> MonitorOverheadSnapshot {
         last_standby_collection_ms: micros_to_millis(
             LAST_STANDBY_COLLECTION_US.load(Ordering::Relaxed),
         ),
+        gap_power_event_queries_total: GAP_POWER_EVENT_QUERIES.load(Ordering::Relaxed),
         trend_writes_total: TOKEN_TREND_WRITES.load(Ordering::Relaxed),
         trend_file_bytes,
         manual_speed_tests_total: MANUAL_SPEED_TESTS.load(Ordering::Relaxed),
@@ -1226,12 +1560,28 @@ fn collect_ai_work() -> AiWorkSnapshot {
     let recent_total = tasks.iter().map(|task| task.tokens_used).sum();
     let chatgpt_running = process_group_running(&processes, "ChatGPT");
     let codex_running = process_group_running(&processes, "Codex");
+    // WTSQuerySessionInformationW is an in-process, local Win32 read. Recording
+    // it with the existing minute sampler preserves a real lock/unlock cycle
+    // even when neither the Web UI nor the Widgets board is open.
+    let (session_locked, _, _) = collect_session_lock();
     let trend = update_token_trend(
         &tasks,
         codex_error.is_none(),
         chatgpt_running,
         codex_running,
+        session_locked,
     );
+    if trend.lifecycle == "GAP" {
+        // A gap is rare and is the only background condition that justifies a
+        // local event-log query. Correlating immediately prevents standby proof
+        // from disappearing if the UI remains closed for more than an hour.
+        GAP_POWER_EVENT_QUERIES.fetch_add(1, Ordering::Relaxed);
+        let modern_standby = cached_modern_standby();
+        update_acceptance_from_power(&PowerSnapshot {
+            modern_standby,
+            ..Default::default()
+        });
+    }
     let sirin = crate::multi_agent::usage::snapshot(300);
 
     AiWorkSnapshot {
@@ -1347,6 +1697,7 @@ fn update_token_trend(
     source_available: bool,
     chatgpt_running: bool,
     codex_running: bool,
+    session_locked: Option<bool>,
 ) -> TokenTrendView {
     let sampled_at_ms = unix_time_ms();
     let current: HashMap<String, u64> = tasks
@@ -1366,6 +1717,16 @@ fn update_token_trend(
     } else {
         record_missing_token_source(&mut state, sampled_at_ms)
     };
+    record_acceptance_lifecycle(&mut state, &lifecycle, sampled_at_ms);
+    match session_locked {
+        Some(true) => {
+            record_acceptance_event(&mut state, "WINDOWS_LOCKED", sampled_at_ms);
+        }
+        Some(false) => {
+            record_acceptance_event(&mut state, "WINDOWS_UNLOCKED", sampled_at_ms);
+        }
+        None => {}
+    }
     persist_token_trend_state(&mut state);
     token_trend_view(
         &state,
@@ -1380,6 +1741,46 @@ fn update_token_trend(
         codex_running,
         sampled_at_ms,
     )
+}
+
+fn record_acceptance_lifecycle(state: &mut TokenTrendState, lifecycle: &str, observed_at_ms: i64) {
+    let kind = match lifecycle {
+        "ACTIVE" => Some("TOKEN_ACTIVE"),
+        "IDLE" => Some("TOKEN_IDLE"),
+        "APPS_CLOSED" => Some("APPS_CLOSED"),
+        "SOURCE_MISSING" => Some("SOURCE_MISSING"),
+        "GAP" => Some("SAMPLING_GAP"),
+        _ => None,
+    };
+    if let Some(kind) = kind {
+        record_acceptance_event(state, kind, observed_at_ms);
+    }
+}
+
+fn record_acceptance_event(state: &mut TokenTrendState, kind: &str, observed_at_ms: i64) -> bool {
+    if !ACCEPTANCE_EVENT_KINDS.contains(&kind) {
+        return false;
+    }
+    match state.acceptance_events.get_mut(kind) {
+        Some(record) if observed_at_ms == record.last_observed_at_ms => false,
+        Some(record) => {
+            record.first_observed_at_ms = record.first_observed_at_ms.min(observed_at_ms);
+            record.last_observed_at_ms = record.last_observed_at_ms.max(observed_at_ms);
+            record.observations = record.observations.saturating_add(1);
+            true
+        }
+        None => {
+            state.acceptance_events.insert(
+                kind.to_string(),
+                AcceptanceEventRecord {
+                    first_observed_at_ms: observed_at_ms,
+                    last_observed_at_ms: observed_at_ms,
+                    observations: 1,
+                },
+            );
+            true
+        }
+    }
 }
 
 fn advance_token_trend_state(
@@ -1582,7 +1983,10 @@ fn load_token_trend_state_from_path(
     let baseline_is_fresh = persisted
         .sampled_at_ms
         .is_some_and(|sampled_at| sampled_at >= earliest_ms && sampled_at <= now_ms);
-    Ok(Some(TokenTrendState {
+    persisted
+        .acceptance_events
+        .retain(|kind, _| ACCEPTANCE_EVENT_KINDS.contains(&kind.as_str()));
+    let mut state = TokenTrendState {
         sampled_at_ms: baseline_is_fresh
             .then_some(persisted.sampled_at_ms)
             .flatten(),
@@ -1592,10 +1996,26 @@ fn load_token_trend_state_from_path(
             HashMap::new()
         },
         history: persisted.history,
+        acceptance_events: persisted.acceptance_events,
         history_restored: true,
         persistence_ok: true,
         persistence_error: None,
-    }))
+    };
+    // Schema v1 files written before the acceptance ledger are upgraded from
+    // their still-bounded recent history. Existing ledgers are left intact so
+    // process restarts do not double-count the same minute samples.
+    if state.acceptance_events.is_empty() {
+        let recent = state
+            .history
+            .iter()
+            .map(|point| (point.lifecycle.clone(), point.sampled_at_ms))
+            .collect::<Vec<_>>();
+        for (lifecycle, observed_at_ms) in recent {
+            record_acceptance_lifecycle(&mut state, &lifecycle, observed_at_ms);
+        }
+    }
+    record_acceptance_event(&mut state, "HISTORY_RESTORED", now_ms);
+    Ok(Some(state))
 }
 
 fn persist_token_trend_state(state: &mut TokenTrendState) {
@@ -1622,6 +2042,7 @@ fn persist_token_trend_state_to_path(
         sampled_at_ms: state.sampled_at_ms,
         tokens: state.tokens.clone(),
         history: state.history.clone(),
+        acceptance_events: state.acceptance_events.clone(),
     };
     atomic_write_token_trend(path, &persisted)
 }
@@ -2283,6 +2704,69 @@ mod tests {
     }
 
     #[test]
+    fn acceptance_classifier_requires_real_cycles_and_keeps_optional_source_separate() {
+        let mut state = TokenTrendState::default();
+        for (kind, observed_at_ms) in [
+            ("TOKEN_ACTIVE", 100),
+            ("TOKEN_IDLE", 200),
+            ("APPS_CLOSED", 300),
+            ("TOKEN_ACTIVE", 400),
+            ("SOURCE_MISSING", 500),
+            ("SAMPLING_GAP", 600),
+            ("WINDOWS_LOCKED", 700),
+            ("WINDOWS_UNLOCKED", 800),
+            ("HISTORY_RESTORED", 900),
+            ("STANDBY_CYCLE", 1_000),
+        ] {
+            assert!(record_acceptance_event(&mut state, kind, observed_at_ms));
+        }
+        assert!(!record_acceptance_event(
+            &mut state,
+            "NOT_A_REAL_EVENT",
+            2_000
+        ));
+        let acceptance = classify_monitor_acceptance(
+            &state.acceptance_events,
+            true,
+            true,
+            &PowerSnapshot::default(),
+        );
+        assert_eq!(acceptance.status, "PASS");
+        assert!(acceptance.missing_required_modes.is_empty());
+        assert!(acceptance.ledger_persisted);
+        assert!(acceptance.ledger_restored);
+        assert_eq!(acceptance.modes.len(), 6);
+        assert_eq!(
+            acceptance
+                .modes
+                .iter()
+                .find(|mode| mode.mode == "TOKEN_SOURCE_RECOVERY")
+                .map(|mode| (mode.required, mode.status.as_str())),
+            Some((false, "PASS"))
+        );
+    }
+
+    #[test]
+    fn standby_acceptance_requires_gap_near_the_resume_event() {
+        let mut history = VecDeque::new();
+        push_token_history(
+            &mut history,
+            TokenTrendPointView {
+                sampled_at_ms: 250_000,
+                interval_secs: 150,
+                delta_tokens: 0,
+                tokens_per_min: 0,
+                gap: true,
+                lifecycle: "GAP".to_string(),
+                source_available: true,
+            },
+        );
+        assert!(standby_gap_correlated(&history, 100_000, 220_000));
+        assert!(!standby_gap_correlated(&history, 1_000, 10_000));
+        assert!(!standby_gap_correlated(&history, 300_000, 200_000));
+    }
+
+    #[test]
     fn parses_modern_standby_enter_and_resume_events() {
         let xml = r#"
             <Events>
@@ -2397,6 +2881,7 @@ mod tests {
                 source_available: true,
             },
         );
+        record_acceptance_event(&mut state, "TOKEN_ACTIVE", 120_000);
 
         persist_token_trend_state_to_path(&state, &path).expect("persist trend");
         let restored = load_token_trend_state_from_path(&path, 180_000)
@@ -2407,6 +2892,8 @@ mod tests {
         assert_eq!(restored.sampled_at_ms, Some(120_000));
         assert_eq!(restored.tokens.get("opaque-task-id"), Some(&321));
         assert_eq!(restored.history.len(), 1);
+        assert!(restored.acceptance_events.contains_key("TOKEN_ACTIVE"));
+        assert!(restored.acceptance_events.contains_key("HISTORY_RESTORED"));
 
         let expired =
             load_token_trend_state_from_path(&path, 120_000 + TOKEN_HISTORY_WINDOW_MS + 1)
@@ -2415,6 +2902,27 @@ mod tests {
         assert_eq!(expired.sampled_at_ms, None);
         assert!(expired.tokens.is_empty());
         assert!(expired.history.is_empty());
+        assert!(expired.acceptance_events.contains_key("TOKEN_ACTIVE"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn legacy_schema_without_acceptance_ledger_still_loads() {
+        let path = std::env::temp_dir().join(format!(
+            "sirin-ai-monitor-token-trend-legacy-{}-{}.jsonl",
+            std::process::id(),
+            unix_time_ms()
+        ));
+        std::fs::write(
+            &path,
+            r#"{"schema_version":1,"sampled_at_ms":120000,"tokens":{},"history":[]}"#,
+        )
+        .expect("write legacy trend");
+        let restored = load_token_trend_state_from_path(&path, 180_000)
+            .expect("load legacy trend")
+            .expect("legacy trend exists");
+        assert!(restored.history_restored);
+        assert!(restored.acceptance_events.contains_key("HISTORY_RESTORED"));
         let _ = std::fs::remove_file(path);
     }
 
@@ -2435,6 +2943,13 @@ mod tests {
         assert!(!live.overhead.background_network_probes);
         assert!(!live.overhead.background_download_tests);
         assert!(live.overhead.sampler_runs_total > 0);
+        assert_eq!(live.acceptance.modes.len(), 6);
+        assert!(live.acceptance.ledger_persisted);
+        assert!(live
+            .acceptance
+            .modes
+            .iter()
+            .any(|mode| mode.mode == "RESTART_RESTORE"));
         assert_eq!(
             live.overhead.process.memory_evidence,
             EvidenceLevel::Measured
