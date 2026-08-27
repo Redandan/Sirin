@@ -227,6 +227,20 @@ function Test-MonitorContract([string]$BaseUrl) {
         $missingAcceptanceModes.Count -gt 0) {
         throw "AI monitor acceptance ledger contract failed; missing modes: $($missingAcceptanceModes -join ', ')"
     }
+    $health = $monitor.codex_health
+    $resources = $monitor.ai_work.system_resources
+    if ($null -eq $health -or
+        [string]::IsNullOrWhiteSpace([string]$health.status) -or
+        [string]::IsNullOrWhiteSpace([string]$health.progress_status) -or
+        [string]::IsNullOrWhiteSpace([string]$health.local_resource_status) -or
+        [string]::IsNullOrWhiteSpace([string]$health.network_status) -or
+        $null -eq $health.PSObject.Properties['remote_limit_status'] -or
+        $null -eq $resources -or
+        [string]$resources.memory_evidence -ne 'MEASURED' -or
+        [string]$resources.disk_evidence -ne 'MEASURED' -or
+        $null -eq $resources.system_drive_free_gb) {
+        throw 'AI monitor Codex health contract failed'
+    }
 
     [pscustomobject]@{
         version = [string]$monitor.version
@@ -249,6 +263,13 @@ function Test-MonitorContract([string]$BaseUrl) {
         acceptance_missing_required = @($acceptance.missing_required_modes).Count
         acceptance_ledger_persisted = [bool]$acceptance.ledger_persisted
         acceptance_mode_count = $acceptanceModes.Count
+        codex_health_status = [string]$health.status
+        codex_progress_status = [string]$health.progress_status
+        local_resource_status = [string]$health.local_resource_status
+        network_status = [string]$health.network_status
+        remote_limit_status = [string]$health.remote_limit_status
+        resource_memory_evidence = [string]$resources.memory_evidence
+        resource_disk_evidence = [string]$resources.disk_evidence
     }
 }
 
