@@ -33,8 +33,6 @@ $requiredBindings = @(
     '${codexHealthState}',
     '${codexHealthDetail}',
     '${codexResourceSummary}',
-    '${codexNetworkHealth}',
-    '${codexRemoteLimit}',
     '${tokenActivity}',
     '${tokenSparkline}',
     '${tokenWindowTotal}',
@@ -51,6 +49,11 @@ $requiredBindings = @(
 $missingBindings = @($requiredBindings | Where-Object { -not $templateText.Contains($_) })
 if ($missingBindings.Count -gt 0) {
     throw "Required work-status bindings missing: $($missingBindings -join ', ')"
+}
+$duplicatedHealthBindings = @('${codexNetworkHealth}', '${codexRemoteLimit}') |
+    Where-Object { $templateText.Contains($_) }
+if (@($duplicatedHealthBindings).Count -gt 0) {
+    throw "Compact Codex health block contains duplicated details: $($duplicatedHealthBindings -join ', ')"
 }
 if ($null -eq $manifest.Package.Applications.Application.Extensions) {
     throw 'Widget package extensions are missing.'

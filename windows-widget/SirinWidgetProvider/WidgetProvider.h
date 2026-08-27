@@ -19,7 +19,7 @@ private:
     };
 
     void RecoverRunningWidgets();
-    void RequestRefresh() noexcept;
+    void RequestRefresh(winrt::hstring const& widgetId) noexcept;
     void RefreshLoop(std::stop_token stopToken);
     void SendUpdate(
         winrt::hstring const& widgetId,
@@ -30,6 +30,7 @@ private:
 
     std::mutex m_mutex;
     std::unordered_map<winrt::hstring, WidgetEntry> m_widgets;
+    std::unordered_set<winrt::hstring> m_pendingRefreshIds;
     std::atomic_bool m_refreshRequested{false};
     std::jthread m_refreshThread;
 };

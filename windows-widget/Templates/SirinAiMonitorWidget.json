@@ -101,44 +101,58 @@
           "separator": true,
           "items": [
             {
-              "type": "TextBlock",
-              "text": "CODEX HEALTH",
-              "size": "Small",
-              "isSubtle": true,
-              "weight": "Bolder"
+              "type": "ColumnSet",
+              "columns": [
+                {
+                  "type": "Column",
+                  "width": "stretch",
+                  "items": [
+                    {
+                      "type": "TextBlock",
+                      "text": "CODEX HEALTH",
+                      "size": "Small",
+                      "isSubtle": true,
+                      "weight": "Bolder"
+                    }
+                  ]
+                },
+                {
+                  "type": "Column",
+                  "width": "auto",
+                  "items": [
+                    {
+                      "type": "TextBlock",
+                      "text": "${codexHealthState}",
+                      "color": "${codexHealthColor}",
+                      "size": "Small",
+                      "weight": "Bolder",
+                      "horizontalAlignment": "Right",
+                      "wrap": true,
+                      "maxLines": 1
+                    }
+                  ]
+                }
+              ]
             },
             {
               "type": "TextBlock",
-              "text": "${codexHealthState}",
-              "color": "${codexHealthColor}",
-              "weight": "Bolder",
+              "text": "${codexHealthDetail} · ${codexResourceSummary}",
+              "size": "Small",
               "spacing": "None",
-              "wrap": true
+              "isSubtle": true,
+              "wrap": true,
+              "maxLines": 2,
+              "$when": "${$host.widgetSize != 'small'}"
             },
             {
               "type": "TextBlock",
               "text": "${codexHealthDetail}",
               "size": "Small",
-              "spacing": "None",
-              "wrap": true
-            },
-            {
-              "type": "TextBlock",
-              "text": "${codexResourceSummary}",
-              "size": "Small",
-              "isSubtle": true,
-              "spacing": "Small",
-              "wrap": true,
-              "$when": "${$host.widgetSize != 'small'}"
-            },
-            {
-              "type": "TextBlock",
-              "text": "${codexNetworkHealth} · ${codexRemoteLimit}",
-              "size": "Small",
               "isSubtle": true,
               "spacing": "None",
               "wrap": true,
-              "$when": "${$host.widgetSize != 'small'}"
+              "maxLines": 1,
+              "$when": "${$host.widgetSize == 'small'}"
             }
           ]
         },

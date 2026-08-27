@@ -28,6 +28,82 @@ namespace
         return value > 0 ? static_cast<uint64_t>(value) : 0;
     }
 
+    void WriteProviderState(char const* eventName, size_t widgetCount, HRESULT result = S_OK) noexcept
+    {
+        try
+        {
+            const DWORD required = GetEnvironmentVariableW(L"LOCALAPPDATA", nullptr, 0);
+            if (required == 0)
+            {
+                return;
+            }
+
+            std::wstring localAppData(required, L'\0');
+            const DWORD length = GetEnvironmentVariableW(
+                L"LOCALAPPDATA",
+                localAppData.data(),
+                static_cast<DWORD>(localAppData.size()));
+            if (length == 0 || length >= localAppData.size())
+            {
+                return;
+            }
+            localAppData.resize(length);
+
+            const std::wstring stateDirectory = localAppData + L"\\Sirin";
+            if (!CreateDirectoryW(stateDirectory.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS)
+            {
+                return;
+            }
+
+            const std::wstring statePath = stateDirectory + L"\\widget-provider-state.json";
+            const std::wstring temporaryPath = statePath + L".tmp";
+            std::ostringstream output;
+            output << "{\"version\":\"0.1.11.0\",\"event\":\"" << eventName
+                   << "\",\"widget_count\":" << widgetCount
+                   << ",\"timestamp_unix_ms\":" << CurrentUnixTimeMs()
+                   << ",\"hresult\":" << static_cast<int32_t>(result) << "}";
+            const auto state = output.str();
+
+            HANDLE file = CreateFileW(
+                temporaryPath.c_str(),
+                GENERIC_WRITE,
+                FILE_SHARE_READ,
+                nullptr,
+                CREATE_ALWAYS,
+                FILE_ATTRIBUTE_NORMAL,
+                nullptr);
+            if (file == INVALID_HANDLE_VALUE)
+            {
+                return;
+            }
+
+            DWORD written{};
+            const BOOL writeSucceeded = WriteFile(
+                file,
+                state.data(),
+                static_cast<DWORD>(state.size()),
+                &written,
+                nullptr);
+            FlushFileBuffers(file);
+            CloseHandle(file);
+            if (!writeSucceeded || written != state.size())
+            {
+                DeleteFileW(temporaryPath.c_str());
+                return;
+            }
+            if (!MoveFileExW(
+                    temporaryPath.c_str(),
+                    statePath.c_str(),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+            {
+                DeleteFileW(temporaryPath.c_str());
+            }
+        }
+        catch (...)
+        {
+        }
+    }
+
     winrt::hstring FormatActivityAge(double updatedAtMs)
     {
         const auto updated = updatedAtMs > 0 ? static_cast<uint64_t>(updatedAtMs) : 0;
@@ -361,6 +437,8 @@ WidgetProvider::WidgetProvider()
 {
     RecoverRunningWidgets();
     m_refreshThread = std::jthread([this](std::stop_token stopToken) { RefreshLoop(stopToken); });
+    std::scoped_lock lock(m_mutex);
+    WriteProviderState("RECOVERED", m_widgets.size());
 }
 
 WidgetProvider::~WidgetProvider()
@@ -381,7 +459,7 @@ void WidgetProvider::CreateWidget(winrt::WidgetContext widgetContext)
     // Do not make the host wait for netsh/ping/API collection. Render a valid
     // placeholder card immediately, then replace it from the worker thread.
     SendUpdate(widgetContext.Id(), true, false);
-    RequestRefresh();
+    RequestRefresh(widgetContext.Id());
 }
 
 void WidgetProvider::DeleteWidget(
@@ -390,6 +468,7 @@ void WidgetProvider::DeleteWidget(
 {
     std::scoped_lock lock(m_mutex);
     m_widgets.erase(widgetId);
+    m_pendingRefreshIds.erase(widgetId);
 }
 
 void WidgetProvider::OnActionInvoked(winrt::WidgetActionInvokedArgs actionInvokedArgs)
@@ -400,14 +479,14 @@ void WidgetProvider::OnActionInvoked(winrt::WidgetActionInvokedArgs actionInvoke
             std::scoped_lock lock(m_mutex);
             m_widgets[actionInvokedArgs.WidgetContext().Id()].active = true;
         }
-        RequestRefresh();
+        RequestRefresh(actionInvokedArgs.WidgetContext().Id());
     }
 }
 
 void WidgetProvider::OnWidgetContextChanged(winrt::WidgetContextChangedArgs contextChangedArgs)
 {
     SendUpdate(contextChangedArgs.WidgetContext().Id(), true, false);
-    RequestRefresh();
+    RequestRefresh(contextChangedArgs.WidgetContext().Id());
 }
 
 void WidgetProvider::Activate(winrt::WidgetContext widgetContext)
@@ -416,7 +495,10 @@ void WidgetProvider::Activate(winrt::WidgetContext widgetContext)
         std::scoped_lock lock(m_mutex);
         m_widgets[widgetContext.Id()].active = true;
     }
-    RequestRefresh();
+    // Activation windows can be very short. Render immediately and enqueue a
+    // fetched update that remains pending even if Deactivate arrives first.
+    SendUpdate(widgetContext.Id(), true, false);
+    RequestRefresh(widgetContext.Id());
 }
 
 void WidgetProvider::Deactivate(winrt::hstring widgetId)
@@ -440,7 +522,7 @@ void WidgetProvider::RecoverRunningWidgets()
             {
                 m_widgets[context.Id()] = WidgetEntry{true};
                 SendUpdate(context.Id(), true, false);
-                RequestRefresh();
+                RequestRefresh(context.Id());
             }
         }
     }
@@ -451,8 +533,16 @@ void WidgetProvider::RecoverRunningWidgets()
     }
 }
 
-void WidgetProvider::RequestRefresh() noexcept
+void WidgetProvider::RequestRefresh(winrt::hstring const& widgetId) noexcept
 {
+    try
+    {
+        std::scoped_lock lock(m_mutex);
+        m_pendingRefreshIds.insert(widgetId);
+    }
+    catch (...)
+    {
+    }
     m_refreshRequested.store(true, std::memory_order_release);
 }
 
@@ -474,18 +564,24 @@ void WidgetProvider::RefreshLoop(std::stop_token stopToken)
             break;
         }
 
-        std::vector<winrt::hstring> activeWidgetIds;
+        std::vector<winrt::hstring> refreshWidgetIds;
         {
             std::scoped_lock lock(m_mutex);
+            refreshWidgetIds.reserve(m_pendingRefreshIds.size() + m_widgets.size());
+            for (const auto& id : m_pendingRefreshIds)
+            {
+                refreshWidgetIds.push_back(id);
+            }
+            m_pendingRefreshIds.clear();
             for (const auto& [id, entry] : m_widgets)
             {
-                if (entry.active)
+                if (entry.active && std::find(refreshWidgetIds.begin(), refreshWidgetIds.end(), id) == refreshWidgetIds.end())
                 {
-                    activeWidgetIds.push_back(id);
+                    refreshWidgetIds.push_back(id);
                 }
             }
         }
-        for (const auto& id : activeWidgetIds)
+        for (const auto& id : refreshWidgetIds)
         {
             SendUpdate(id, false);
         }
@@ -507,11 +603,32 @@ void WidgetProvider::SendUpdate(
         options.Data(BuildData(fetchSnapshot));
         options.CustomState(L"sirin-ai-monitor-v1");
         winrt::WidgetManager::GetDefault().UpdateWidget(options);
+        size_t widgetCount{};
+        {
+            std::scoped_lock lock(m_mutex);
+            widgetCount = m_widgets.size();
+        }
+        WriteProviderState("UPDATE_OK", widgetCount);
+    }
+    catch (winrt::hresult_error const& error)
+    {
+        size_t widgetCount{};
+        {
+            std::scoped_lock lock(m_mutex);
+            widgetCount = m_widgets.size();
+        }
+        WriteProviderState("UPDATE_FAILED", widgetCount, error.code());
     }
     catch (...)
     {
         // Fail closed. The host keeps the previous card and will request a
         // refresh again when the widget is activated.
+        size_t widgetCount{};
+        {
+            std::scoped_lock lock(m_mutex);
+            widgetCount = m_widgets.size();
+        }
+        WriteProviderState("UPDATE_FAILED", widgetCount, E_FAIL);
     }
 }
 

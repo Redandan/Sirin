@@ -17,19 +17,32 @@ void SignalLocalServerShutdown()
 template <typename T>
 struct SingletonClassFactory : winrt::implements<SingletonClassFactory<T>, IClassFactory, winrt::no_module_lock>
 {
-    STDMETHODIMP CreateInstance(IUnknown* outer, GUID const& iid, void** result) noexcept final
+    void EnsureInstance()
     {
-        *result = nullptr;
         std::scoped_lock lock(m_mutex);
-        if (outer)
-        {
-            return CLASS_E_NOAGGREGATION;
-        }
         if (!m_instance)
         {
             m_instance = winrt::make<T>();
         }
-        return m_instance.as(iid, result);
+    }
+
+    STDMETHODIMP CreateInstance(IUnknown* outer, GUID const& iid, void** result) noexcept final
+    {
+        *result = nullptr;
+        if (outer)
+        {
+            return CLASS_E_NOAGGREGATION;
+        }
+        try
+        {
+            EnsureInstance();
+            std::scoped_lock lock(m_mutex);
+            return m_instance.as(iid, result);
+        }
+        catch (...)
+        {
+            return winrt::to_hresult();
+        }
     }
 
     STDMETHODIMP LockServer(BOOL) noexcept final { return S_OK; }
@@ -44,13 +57,18 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
 
     wil::unique_com_class_object_cookie providerCookie;
-    auto factory = winrt::make<SingletonClassFactory<WidgetProvider>>();
+    auto factory = winrt::make_self<SingletonClassFactory<WidgetProvider>>();
     winrt::check_hresult(CoRegisterClassObject(
         widget_provider_clsid,
         factory.get(),
         CLSCTX_LOCAL_SERVER,
         REGCLS_MULTIPLEUSE,
         providerCookie.put()));
+
+    // A package-aware launch is also used as a bounded recovery path. Create
+    // the singleton after COM registration so it can recover pinned widgets
+    // even when the host has not issued a fresh CreateInstance call yet.
+    factory->EnsureInstance();
 
     DWORD index{};
     HANDLE events[] = {g_shutdownEvent.get()};
