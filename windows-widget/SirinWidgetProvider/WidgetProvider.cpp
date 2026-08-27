@@ -260,6 +260,10 @@ namespace
                     const auto rawSlot = static_cast<size_t>(
                         std::max(0.0, std::floor((sampledAtMs - windowStartMs) / slotMs)));
                     const auto slot = std::min(rawSlot, chartSlots - 1);
+                    if (point.GetNamedBoolean(L"gap", false))
+                    {
+                        continue;
+                    }
                     const auto rate = NumberOr(point, L"tokens_per_min");
                     rates[slot] = present[slot] ? std::max(rates[slot], rate) : rate;
                     present[slot] = true;
@@ -697,15 +701,24 @@ winrt::hstring WidgetProvider::BuildData(bool fetchSnapshot)
             const auto deltaTokens = NumberOr(trend, L"delta_tokens");
             const auto intervalSecs = static_cast<uint64_t>(NumberOr(trend, L"interval_secs"));
             const auto tokensPerMin = NumberOr(trend, L"tokens_per_min");
+            const auto samplingGap = trend.GetNamedBoolean(L"gap", false);
             tokenRate = FormatCompact(tokensPerMin) + L" / min";
             const auto evidence = StringOr(trend, L"evidence", L"MISSING_PROOF");
             tokenEvidence = evidence == L"INFERRED" ? L"推估" : L"缺證據";
             const auto chart = BuildTokenChart(trend);
             tokenSparkline = chart.sparkline;
             tokenWindow = chart.windowLabel;
+            if (trend.GetNamedBoolean(L"history_restored", false))
+            {
+                tokenWindow = tokenWindow + L" · 重啟接續";
+            }
             tokenWindowTotal = chart.totalLabel;
             tokenPeak = chart.peakLabel;
-            if (evidence == L"INFERRED")
+            if (samplingGap)
+            {
+                tokenActivity = L"取樣曾中斷，已重新建立基線";
+            }
+            else if (evidence == L"INFERRED")
             {
                 tokenActivity = deltaTokens > 0
                     ? FormatCompact(deltaTokens) + L" 新增 / " +

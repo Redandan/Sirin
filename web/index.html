@@ -540,7 +540,7 @@
               <span class="evidence-badge evidence-measured">唯讀</span>
               <span class="evidence-badge evidence-inferred">60 秒輕量採樣</span>
             </div>
-            <div class="dim small mt-xs">Token／程序每 60 秒留存一小時；網路僅在開啟頁面時探測。</div>
+            <div class="dim small mt-xs">Token／程序每 60 秒留存一小時並在重啟後接續；網路僅在開啟頁面時探測。</div>
           </div>
           <div class="row gap-sm">
             <span class="dim small mono" x-show="aiMonitor"
@@ -693,6 +693,8 @@
                         x-text="aiEvidenceLabel(aiMonitor.ai_work?.codex_token_trend?.evidence)"></span>
                 </div>
                 <div class="dim tiny mt-md">來源：state_5.sqlite 的 threads.tokens_used；不查詢標題或訊息內容。</div>
+                <div class="dim tiny mt-xs"
+                     x-text="aiMonitor.ai_work?.codex_token_trend?.history_persisted ? '最近一小時統計已安全保存在本機' : '趨勢保存目前缺少證據'"></div>
               </div>
 
               <div class="card monitor-card token-summary-card">

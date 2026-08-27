@@ -10,7 +10,7 @@
   <Identity
     Name="Redan.SirinAIWorkWidget"
     Publisher="CN=Redan Sirin Widget"
-    Version="0.1.5.0"
+    Version="0.1.6.0"
     ProcessorArchitecture="x64" />
 
   <Properties>

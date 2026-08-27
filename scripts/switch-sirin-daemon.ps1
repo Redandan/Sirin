@@ -215,10 +215,13 @@ function Test-Candidate([string]$Path) {
     $nonce = [Guid]::NewGuid().ToString('N')
     $stdout = Join-Path $env:TEMP "sirin-daemon-switch-$nonce.out.log"
     $stderr = Join-Path $env:TEMP "sirin-daemon-switch-$nonce.err.log"
+    $trendState = Join-Path $env:TEMP "sirin-daemon-switch-$nonce-token-trend.jsonl"
     $previousPort = $env:SIRIN_RPC_PORT
+    $previousTrendState = $env:SIRIN_AI_MONITOR_TREND_PATH
     $process = $null
     try {
         $env:SIRIN_RPC_PORT = [string]$SmokePort
+        $env:SIRIN_AI_MONITOR_TREND_PATH = $trendState
         $process = Start-Process `
             -FilePath $resolved `
             -ArgumentList @('--ai-monitor-only') `
@@ -245,7 +248,13 @@ function Test-Candidate([string]$Path) {
         else {
             $env:SIRIN_RPC_PORT = $previousPort
         }
-        Remove-Item -LiteralPath $stdout, $stderr -Force -ErrorAction SilentlyContinue
+        if ($null -eq $previousTrendState) {
+            Remove-Item Env:SIRIN_AI_MONITOR_TREND_PATH -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:SIRIN_AI_MONITOR_TREND_PATH = $previousTrendState
+        }
+        Remove-Item -LiteralPath $stdout, $stderr, $trendState -Force -ErrorAction SilentlyContinue
     }
 }
 

@@ -39,6 +39,10 @@ Windows 本機 AI 工作監控，整合在 Sirin 既有 daemon、tray、`/ui/`�
 
 `windows-widget/` 是 Windows App SDK C++/WinRT 的 packaged Widget Provider。卡片使用 Adaptive Cards，僅連到 `http://127.0.0.1:7700/api/ai-monitor`，不經系統 proxy、不啟動測速，也不包含工作標題或訊息內容。Token 圖固定為最近 60 分鐘、每格 2 分鐘；睡眠、重啟或取樣中斷會保留空格，不把不等長區間畫成等距連續資料。
 
+Token 趨勢會以單一、原子替換的 JSONL 快照保存在 `platform::app_data_dir()/tracking/ai_monitor_token_trend.jsonl`，只包含最近 60 個統計點、最多 8 個不透明工作 ID 與其累積計數，不保存工作標題、訊息、提示詞、回覆或憑證。啟動時只恢復最近一小時內的資料；超過 90 秒的睡眠、停機或取樣中斷會重新建立基線，該區段不計入速率與圖表總量。
+
+候選版本的隔離驗證會暫時設定 `SIRIN_AI_MONITOR_TREND_PATH`，讓 alternate-port smoke test 使用獨立的暫存快照；正式與候選程序不會同時改寫正式趨勢檔。此變數只供部署守門與測試使用。
+
 ```powershell
 .\windows-widget\scripts\build.ps1
 .\windows-widget\scripts\manage.ps1 -Action Install

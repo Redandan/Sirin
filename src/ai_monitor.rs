@@ -9,10 +9,11 @@ use crate::platform::NoWindow;
 use chrono::{SecondsFormat, Utc};
 use futures_util::StreamExt;
 use rusqlite::{Connection, OpenFlags};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
+use std::io::Write;
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -24,6 +25,9 @@ const AI_WORK_TTL: Duration = Duration::from_secs(75);
 const AI_SAMPLE_GAP_SECS: u64 = 90;
 const CODEX_TASK_LIMIT: usize = 8;
 const TOKEN_HISTORY_LIMIT: usize = 60;
+const TOKEN_HISTORY_WINDOW_MS: i64 = 60 * 60 * 1_000;
+const TOKEN_TREND_SCHEMA_VERSION: u32 = 1;
+const TOKEN_TREND_FILE: &str = "ai_monitor_token_trend.jsonl";
 const SPEED_TEST_BYTES: u64 = 5_000_000;
 const SPEED_TEST_URL: &str = "https://speed.cloudflare.com/__down?bytes=5000000";
 
@@ -158,11 +162,15 @@ pub struct TokenTrendView {
     pub interval_secs: u64,
     pub delta_tokens: u64,
     pub tokens_per_min: u64,
+    pub gap: bool,
     pub evidence: EvidenceLevel,
     pub history: Vec<TokenTrendPointView>,
+    pub history_persisted: bool,
+    pub history_restored: bool,
+    pub persistence_error: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TokenTrendPointView {
     pub sampled_at_ms: i64,
     pub interval_secs: u64,
@@ -202,10 +210,34 @@ static NETWORK_CACHE: OnceLock<Mutex<TimedCache<NetworkSnapshot>>> = OnceLock::n
 static AI_WORK_CACHE: OnceLock<Mutex<TimedCache<AiWorkSnapshot>>> = OnceLock::new();
 static SAMPLER_STARTED: OnceLock<bool> = OnceLock::new();
 static BACKGROUND_SAMPLER_RUNNING: AtomicBool = AtomicBool::new(false);
+static TOKEN_TREND_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Default)]
 struct TokenTrendState {
-    sampled_at: Option<Instant>,
+    sampled_at_ms: Option<i64>,
+    tokens: HashMap<String, u64>,
+    history: VecDeque<TokenTrendPointView>,
+    history_restored: bool,
+    persistence_ok: bool,
+    persistence_error: Option<String>,
+}
+
+impl Default for TokenTrendState {
+    fn default() -> Self {
+        Self {
+            sampled_at_ms: None,
+            tokens: HashMap::new(),
+            history: VecDeque::new(),
+            history_restored: false,
+            persistence_ok: false,
+            persistence_error: None,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistedTokenTrend {
+    schema_version: u32,
+    sampled_at_ms: i64,
     tokens: HashMap<String, u64>,
     history: VecDeque<TokenTrendPointView>,
 }
@@ -438,26 +470,36 @@ fn local_user_home_dir() -> Option<std::path::PathBuf> {
 }
 
 fn update_token_trend(tasks: &[CodexTaskView]) -> TokenTrendView {
-    let now = Instant::now();
     let sampled_at_ms = unix_time_ms();
     let current: HashMap<String, u64> = tasks
         .iter()
         .map(|task| (task.id.clone(), task.tokens_used))
         .collect();
-    let cell = TOKEN_TREND.get_or_init(|| Mutex::new(TokenTrendState::default()));
+    let cell = TOKEN_TREND.get_or_init(|| Mutex::new(load_token_trend_state(sampled_at_ms)));
     let mut state = cell.lock().unwrap_or_else(|e| e.into_inner());
-    let Some(sampled_at) = state.sampled_at else {
-        state.sampled_at = Some(now);
+    let (interval_secs, delta, tokens_per_min, gap, evidence) =
+        advance_token_trend_state(&mut state, current, sampled_at_ms);
+    persist_token_trend_state(&mut state);
+    token_trend_view(&state, interval_secs, delta, tokens_per_min, gap, evidence)
+}
+
+fn advance_token_trend_state(
+    state: &mut TokenTrendState,
+    current: HashMap<String, u64>,
+    sampled_at_ms: i64,
+) -> (u64, u64, u64, bool, EvidenceLevel) {
+    let Some(previous_sampled_at_ms) = state.sampled_at_ms else {
+        state.sampled_at_ms = Some(sampled_at_ms);
         state.tokens = current;
-        return TokenTrendView {
-            history: state.history.iter().cloned().collect(),
-            ..Default::default()
-        };
+        return (0, 0, 0, false, EvidenceLevel::MissingProof);
     };
-    let elapsed = now.saturating_duration_since(sampled_at);
-    let delta = token_delta(&current, &state.tokens);
-    let tokens_per_min = if elapsed.as_secs_f64() > 0.0 {
-        (delta as f64 * 60.0 / elapsed.as_secs_f64()).round() as u64
+    let elapsed_ms = sampled_at_ms.saturating_sub(previous_sampled_at_ms).max(0) as u64;
+    let interval_secs = elapsed_ms / 1_000;
+    let gap = interval_secs > AI_SAMPLE_GAP_SECS || interval_secs == 0;
+    let measured_delta = token_delta(&current, &state.tokens);
+    let delta = if gap { 0 } else { measured_delta };
+    let tokens_per_min = if !gap && elapsed_ms > 0 {
+        (delta as f64 * 60_000.0 / elapsed_ms as f64).round() as u64
     } else {
         0
     };
@@ -465,23 +507,187 @@ fn update_token_trend(tasks: &[CodexTaskView]) -> TokenTrendView {
         &mut state.history,
         TokenTrendPointView {
             sampled_at_ms,
-            interval_secs: elapsed.as_secs(),
+            interval_secs,
             delta_tokens: delta,
             tokens_per_min,
-            gap: elapsed.as_secs() > AI_SAMPLE_GAP_SECS,
+            gap,
         },
     );
-    state.sampled_at = Some(now);
+    state.sampled_at_ms = Some(sampled_at_ms);
     state.tokens = current;
-    TokenTrendView {
-        interval_secs: elapsed.as_secs(),
-        delta_tokens: delta,
+    (
+        interval_secs,
+        delta,
         tokens_per_min,
-        // This is derived from two overlapping top-N task snapshots rather
-        // than a billing meter or an event stream.
-        evidence: EvidenceLevel::Inferred,
+        gap,
+        if gap {
+            EvidenceLevel::MissingProof
+        } else {
+            // This is derived from two overlapping top-N task snapshots rather
+            // than a billing meter or an event stream.
+            EvidenceLevel::Inferred
+        },
+    )
+}
+
+fn token_trend_view(
+    state: &TokenTrendState,
+    interval_secs: u64,
+    delta_tokens: u64,
+    tokens_per_min: u64,
+    gap: bool,
+    evidence: EvidenceLevel,
+) -> TokenTrendView {
+    TokenTrendView {
+        interval_secs,
+        delta_tokens,
+        tokens_per_min,
+        gap,
+        evidence,
         history: state.history.iter().cloned().collect(),
+        history_persisted: state.persistence_ok,
+        history_restored: state.history_restored,
+        persistence_error: state.persistence_error.clone(),
     }
+}
+
+fn token_trend_path() -> std::path::PathBuf {
+    if let Some(path) = std::env::var_os("SIRIN_AI_MONITOR_TREND_PATH") {
+        if !path.is_empty() {
+            return std::path::PathBuf::from(path);
+        }
+    }
+    crate::platform::app_data_dir()
+        .join("tracking")
+        .join(TOKEN_TREND_FILE)
+}
+
+fn load_token_trend_state(now_ms: i64) -> TokenTrendState {
+    match load_token_trend_state_from_path(&token_trend_path(), now_ms) {
+        Ok(Some(state)) => state,
+        Ok(None) => TokenTrendState::default(),
+        Err(error) => TokenTrendState {
+            persistence_error: Some(error),
+            ..TokenTrendState::default()
+        },
+    }
+}
+
+fn load_token_trend_state_from_path(
+    path: &std::path::Path,
+    now_ms: i64,
+) -> Result<Option<TokenTrendState>, String> {
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("Read persisted token trend: {error}")),
+    };
+    let line = raw
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .ok_or_else(|| "Persisted token trend is empty".to_string())?;
+    let mut persisted: PersistedTokenTrend = serde_json::from_str(line)
+        .map_err(|error| format!("Decode persisted token trend: {error}"))?;
+    if persisted.schema_version != TOKEN_TREND_SCHEMA_VERSION {
+        return Err(format!(
+            "Unsupported persisted token trend schema: {}",
+            persisted.schema_version
+        ));
+    }
+
+    let earliest_ms = now_ms.saturating_sub(TOKEN_HISTORY_WINDOW_MS);
+    persisted
+        .history
+        .retain(|point| point.sampled_at_ms >= earliest_ms && point.sampled_at_ms <= now_ms);
+    while persisted.history.len() > TOKEN_HISTORY_LIMIT {
+        persisted.history.pop_front();
+    }
+    let baseline_is_fresh =
+        persisted.sampled_at_ms >= earliest_ms && persisted.sampled_at_ms <= now_ms;
+    Ok(Some(TokenTrendState {
+        sampled_at_ms: baseline_is_fresh.then_some(persisted.sampled_at_ms),
+        tokens: if baseline_is_fresh {
+            persisted.tokens
+        } else {
+            HashMap::new()
+        },
+        history: persisted.history,
+        history_restored: true,
+        persistence_ok: true,
+        persistence_error: None,
+    }))
+}
+
+fn persist_token_trend_state(state: &mut TokenTrendState) {
+    match persist_token_trend_state_to_path(state, &token_trend_path()) {
+        Ok(()) => {
+            state.persistence_ok = true;
+            state.persistence_error = None;
+        }
+        Err(error) => {
+            state.persistence_ok = false;
+            state.persistence_error = Some(error.clone());
+            tracing::warn!(target: "sirin", "[ai-monitor] token trend persistence failed: {error}");
+        }
+    }
+}
+
+fn persist_token_trend_state_to_path(
+    state: &TokenTrendState,
+    path: &std::path::Path,
+) -> Result<(), String> {
+    let sampled_at_ms = state
+        .sampled_at_ms
+        .ok_or_else(|| "Persist token trend: missing baseline timestamp".to_string())?;
+    let persisted = PersistedTokenTrend {
+        schema_version: TOKEN_TREND_SCHEMA_VERSION,
+        sampled_at_ms,
+        tokens: state.tokens.clone(),
+        history: state.history.clone(),
+    };
+    atomic_write_token_trend(path, &persisted)
+}
+
+fn atomic_write_token_trend(
+    path: &std::path::Path,
+    persisted: &PersistedTokenTrend,
+) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("Create token trend directory: {error}"))?;
+    }
+    let sequence = TOKEN_TREND_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(TOKEN_TREND_FILE);
+    let temp_path = path.with_file_name(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        sequence
+    ));
+    let result = (|| -> Result<(), String> {
+        let mut file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp_path)
+            .map_err(|error| format!("Create token trend snapshot: {error}"))?;
+        serde_json::to_writer(&mut file, persisted)
+            .map_err(|error| format!("Encode token trend snapshot: {error}"))?;
+        file.write_all(b"\n")
+            .map_err(|error| format!("Finish token trend snapshot: {error}"))?;
+        file.sync_all()
+            .map_err(|error| format!("Sync token trend snapshot: {error}"))?;
+        drop(file);
+        std::fs::rename(&temp_path, path)
+            .map_err(|error| format!("Replace token trend snapshot: {error}"))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp_path);
+    }
+    result
 }
 
 fn token_delta(current: &HashMap<String, u64>, previous: &HashMap<String, u64>) -> u64 {
@@ -981,6 +1187,71 @@ mod tests {
         assert_eq!(history.len(), TOKEN_HISTORY_LIMIT);
         assert_eq!(history.front().map(|point| point.tokens_per_min), Some(5));
         assert_eq!(history.back().map(|point| point.tokens_per_min), Some(64));
+    }
+
+    #[test]
+    fn token_trend_gap_rebaselines_without_inventing_a_rate() {
+        let mut state = TokenTrendState::default();
+        let first = HashMap::from([("task-a".to_string(), 100_u64)]);
+        let second = HashMap::from([("task-a".to_string(), 160_u64)]);
+        let after_gap = HashMap::from([("task-a".to_string(), 9_000_u64)]);
+
+        assert_eq!(
+            advance_token_trend_state(&mut state, first, 1_000),
+            (0, 0, 0, false, EvidenceLevel::MissingProof)
+        );
+        let normal = advance_token_trend_state(&mut state, second, 61_000);
+        assert_eq!(normal, (60, 60, 60, false, EvidenceLevel::Inferred));
+
+        let interrupted = advance_token_trend_state(&mut state, after_gap, 161_001);
+        assert_eq!(interrupted, (100, 0, 0, true, EvidenceLevel::MissingProof));
+        let last = state.history.back().expect("gap point");
+        assert!(last.gap);
+        assert_eq!(last.delta_tokens, 0);
+        assert_eq!(last.tokens_per_min, 0);
+    }
+
+    #[test]
+    fn persisted_token_trend_round_trips_and_expires_old_data() {
+        let path = std::env::temp_dir().join(format!(
+            "sirin-ai-monitor-token-trend-{}-{}.jsonl",
+            std::process::id(),
+            unix_time_ms()
+        ));
+        let mut state = TokenTrendState {
+            sampled_at_ms: Some(120_000),
+            tokens: HashMap::from([("opaque-task-id".to_string(), 321_u64)]),
+            ..TokenTrendState::default()
+        };
+        push_token_history(
+            &mut state.history,
+            TokenTrendPointView {
+                sampled_at_ms: 120_000,
+                interval_secs: 60,
+                delta_tokens: 21,
+                tokens_per_min: 21,
+                gap: false,
+            },
+        );
+
+        persist_token_trend_state_to_path(&state, &path).expect("persist trend");
+        let restored = load_token_trend_state_from_path(&path, 180_000)
+            .expect("load trend")
+            .expect("trend exists");
+        assert!(restored.history_restored);
+        assert!(restored.persistence_ok);
+        assert_eq!(restored.sampled_at_ms, Some(120_000));
+        assert_eq!(restored.tokens.get("opaque-task-id"), Some(&321));
+        assert_eq!(restored.history.len(), 1);
+
+        let expired =
+            load_token_trend_state_from_path(&path, 120_000 + TOKEN_HISTORY_WINDOW_MS + 1)
+                .expect("load expired trend")
+                .expect("trend exists");
+        assert_eq!(expired.sampled_at_ms, None);
+        assert!(expired.tokens.is_empty());
+        assert!(expired.history.is_empty());
+        let _ = std::fs::remove_file(path);
     }
 
     /// Manual acceptance for the owned Windows workstation. Kept ignored so
