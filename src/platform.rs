@@ -9,6 +9,16 @@
 
 use std::path::PathBuf;
 
+/// Returns the current user's home directory without creating or mutating it.
+/// This is the shared resolver for integrations that inspect user-scoped local
+/// state such as Codex's read-only SQLite database.
+pub fn user_home_dir() -> Option<PathBuf> {
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
 /// Returns the platform-appropriate directory for Sirin's persistent data.
 /// The directory is **not** guaranteed to exist; callers must `create_dir_all`.
 ///

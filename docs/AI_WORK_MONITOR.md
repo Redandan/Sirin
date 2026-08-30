@@ -2,6 +2,8 @@
 
 Windows 本機 AI 工作監控，整合在 Sirin 既有 daemon、tray、`/ui/`，並提供 Windows 11 Widgets Board 原生小工具。
 
+AI Monitor 另外顯示 [Codex Work Supervisor](CODEX_WORK_SUPERVISOR.md) 的本機分類快照。原有 Token／程序採樣仍只代表活動與資源證據；工作是否完成、是否需要授權及 UI／真機驗收缺口，必須由 Codex heartbeat 的最新回合證據判定。
+
 ## 開啟方式
 
 - Sirin UI 側欄：`AI 工作監控`

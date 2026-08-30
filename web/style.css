@@ -1633,6 +1633,34 @@ button { font-family: inherit; cursor: pointer; }
 .task-monitor-row:first-child { border-top: 0; }
 .task-monitor-title { color: var(--value); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .task-token { color: var(--accent); text-align: right; font-variant-numeric: tabular-nums; }
+.supervisor-task-list { padding-bottom: 0; }
+.supervisor-task-card {
+  padding: var(--sp-md) 0;
+  border-top: 1px solid var(--border);
+}
+.supervisor-task-card:first-of-type { border-top: 0; }
+.supervisor-reasons {
+  margin-top: var(--sp-xs);
+  color: var(--text-dim);
+}
+.supervisor-coverage {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-xs);
+  margin-top: var(--sp-sm);
+}
+.coverage-pill {
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.coverage-pass { color: var(--accent); }
+.coverage-fail { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 42%, var(--border)); }
+.coverage-gap { color: var(--yellow); border-color: color-mix(in srgb, var(--yellow) 42%, var(--border)); }
+.coverage-na { color: var(--text-dim); }
 .monitor-safety {
   padding: var(--sp-sm) var(--sp-md);
   border: 1px solid var(--border);

@@ -55,11 +55,41 @@ impl ToolDef {
     /// Render the tool definition into the JSON shape that
     /// `tools/list` returns.
     pub fn to_json(&self) -> Value {
-        json!({
+        let mut definition = json!({
             "name":        self.name,
             "description": self.description,
             "inputSchema": self.input_schema,
-        })
+        });
+
+        match self.name {
+            "codex_supervisor_snapshot" => {
+                definition["annotations"] = json!({
+                    "readOnlyHint": true,
+                    "destructiveHint": false,
+                    "idempotentHint": true,
+                    "openWorldHint": false
+                });
+            }
+            "codex_supervisor_report" => {
+                definition["annotations"] = json!({
+                    "readOnlyHint": false,
+                    "destructiveHint": false,
+                    "idempotentHint": true,
+                    "openWorldHint": false
+                });
+            }
+            "codex_supervisor_claim" | "codex_supervisor_complete_action" => {
+                definition["annotations"] = json!({
+                    "readOnlyHint": false,
+                    "destructiveHint": false,
+                    "idempotentHint": false,
+                    "openWorldHint": false
+                });
+            }
+            _ => {}
+        }
+
+        definition
     }
 }
 
@@ -163,6 +193,96 @@ pub fn is_populated() -> bool {
 // Migrations land in batches — see #257 for the running checklist.
 
 fn seed_default(m: &mut RegistryMap) {
+    m.insert("codex_supervisor_snapshot", ToolDef {
+        name: "codex_supervisor_snapshot",
+        description: "讀取 Sirin 本機 Codex 工作督導快照。顯示證據分類、驗收面缺口、可安全續推候選與人工介入項；不讀 prompt/回覆全文、不傳送訊息、不授權、不 fork。",
+        input_schema: json!({"type": "object", "properties": {}}),
+        handler: ToolHandler::SyncJson(crate::codex_supervisor::call_snapshot),
+    });
+
+    m.insert("codex_supervisor_report", ToolDef {
+        name: "codex_supervisor_report",
+        description: "由 Codex heartbeat 回報一個任務的最小化結構證據，讓 Sirin 本機分類健康、完成、正常等待、需決策、授權不明、疑似停滯或可恢復中斷。只接受不含對話原文的 opaque key；不傳送任務訊息。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "threadId": {"type": "string", "description": "Codex task/thread id"},
+                "hostId": {"type": "string", "description": "可選：Codex host id"},
+                "latestUserTurnKey": {"type": "string", "description": "最新 user turn 的 hash/cursor；禁止放原文"},
+                "unfinishedScopeKey": {"type": "string", "description": "未完成範圍的 hash/key；禁止放原文"},
+                "latestTurnStatus": {"type": "string", "enum": ["ACTIVE", "COMPLETED", "FAILED", "INTERRUPTED", "WAITING", "UNKNOWN"]},
+                "readable": {"type": "boolean"},
+                "freshProgress": {"type": "boolean"},
+                "activeOperation": {"type": "boolean"},
+                "finalAnswerFulfills": {"type": "boolean"},
+                "objectiveUnfinished": {"type": "boolean"},
+                "waitingCorrectTime": {"type": "boolean"},
+                "needsUserDecision": {"type": "boolean"},
+                "needsNewApproval": {"type": "boolean"},
+                "highRiskNextAction": {"type": "boolean"},
+                "exactAuthorityPresent": {"type": "boolean"},
+                "boundedObservationUnchanged": {"type": "boolean"},
+                "toolResultGap": {"type": "boolean"},
+                "assistantDeclaredIncomplete": {"type": "boolean"},
+                "continuationAlreadyVisible": {"type": "boolean"},
+                "controlStateMismatch": {"type": "boolean"},
+                "readErrorCode": {"type": "string", "description": "可選：穩定錯誤碼，不得放 raw output"},
+                "contract": {
+                    "type": "object",
+                    "properties": {
+                        "intent": {"type": "string", "enum": ["ANALYZE", "CHANGE", "DEEP_CHECK", "UNKNOWN"]},
+                        "authorizedActions": {"type": "array", "items": {"type": "string", "enum": ["READ", "EDIT", "TEST", "COMMIT", "PUSH", "DEPLOY", "DEVICE_INSPECT", "DEVICE_CONTROL", "EXTERNAL_MESSAGE"]}},
+                        "deepCheckRequested": {"type": "boolean"},
+                        "readOnly": {"type": "boolean"}
+                    }
+                },
+                "coverage": {
+                    "type": "array",
+                    "maxItems": 16,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "surface": {"type": "string", "enum": ["CODE", "UNIT_TEST", "INTEGRATION", "RUNTIME", "WEB_UI", "MOBILE_UI", "SIMULATOR", "PHYSICAL_DEVICE", "DEPLOYMENT"]},
+                            "status": {"type": "string", "enum": ["PASS", "FAIL", "PENDING", "MISSING_PROOF", "NOT_APPLICABLE", "UNKNOWN"]},
+                            "required": {"type": "boolean"},
+                            "humanRequired": {"type": "boolean"},
+                            "observedAtMs": {"type": "integer"}
+                        },
+                        "required": ["surface", "status", "required"]
+                    }
+                }
+            },
+            "required": ["threadId", "latestUserTurnKey", "latestTurnStatus"]
+        }),
+        handler: ToolHandler::SyncJson(crate::codex_supervisor::call_report),
+    });
+
+    m.insert("codex_supervisor_claim", ToolDef {
+        name: "codex_supervisor_claim",
+        description: "領取至多一筆仍新鮮、通過權限與去重門檻的 Codex 續推候選。只建立 10 分鐘 Sirin 本機 claim 並回傳 scope-preserving prompt；不會直接呼叫 Codex 或傳送訊息。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "threadId": {"type": "string", "description": "可選：只領取指定 task"}
+            }
+        }),
+        handler: ToolHandler::SyncJson(crate::codex_supervisor::call_claim),
+    });
+
+    m.insert("codex_supervisor_complete_action", ToolDef {
+        name: "codex_supervisor_complete_action",
+        description: "Codex heartbeat 嘗試續推後，將 ACCEPTED/NOT_SENT/FAILED/TARGET_RUNNING 回寫 Sirin 本機去重 ledger。只更新本機 metadata。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "claimId": {"type": "string"},
+                "outcome": {"type": "string", "enum": ["ACCEPTED", "NOT_SENT", "FAILED", "TARGET_RUNNING"]}
+            },
+            "required": ["claimId", "outcome"]
+        }),
+        handler: ToolHandler::SyncJson(crate::codex_supervisor::call_complete_action),
+    });
+
     // Domain: AI-facing discovery — first thing other AIs see when they
     // call `tools/list`, so the description spells out what Sirin is + the
     // help URL.  Returning the URL inline lets curl-only callers skip the
@@ -1756,6 +1876,10 @@ mod tests {
         assert!(get("research_sentinel_inbox").is_some());
         assert!(get("research_sentinel_ack").is_some());
         assert!(get("research_sentinel_review").is_some());
+        assert!(get("codex_supervisor_snapshot").is_some());
+        assert!(get("codex_supervisor_report").is_some());
+        assert!(get("codex_supervisor_claim").is_some());
+        assert!(get("codex_supervisor_complete_action").is_some());
 
         // Un-migrated tools must NOT be in the registry yet.  Only one tool
         // is permanently un-migrated: `browser_exec`.  It's the sole authz
@@ -1767,6 +1891,28 @@ mod tests {
         // (rather than e.g. always returning a default).
         assert!(get("browser_exec").is_none());
         assert!(get("definitely_not_a_real_tool").is_none());
+    }
+
+    #[test]
+    fn codex_supervisor_tools_are_seeded_with_narrow_safety_annotations() {
+        let snapshot = get("codex_supervisor_snapshot")
+            .expect("seeded supervisor snapshot")
+            .to_json();
+        assert_eq!(snapshot["annotations"]["readOnlyHint"], true);
+        assert_eq!(snapshot["annotations"]["openWorldHint"], false);
+
+        let report = get("codex_supervisor_report")
+            .expect("seeded supervisor report")
+            .to_json();
+        assert_eq!(report["annotations"]["idempotentHint"], true);
+
+        for name in ["codex_supervisor_claim", "codex_supervisor_complete_action"] {
+            let tool = get(name).expect("seeded supervisor mutation tool").to_json();
+            assert_eq!(tool["annotations"]["readOnlyHint"], false);
+            assert_eq!(tool["annotations"]["destructiveHint"], false);
+            assert_eq!(tool["annotations"]["idempotentHint"], false);
+            assert_eq!(tool["annotations"]["openWorldHint"], false);
+        }
     }
 
     #[test]

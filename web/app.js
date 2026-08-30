@@ -56,7 +56,6 @@ window.sirin = function () {
     runFilter:     'all',  // 'all' | 'passed' | 'failed'
     runTextFilter: '',
     lastLaunch:    null,   // status string after launch attempt
-
     // AI Work Monitor — the dedicated snapshot is refreshed only while this
     // view is visible. The normal dashboard WebSocket is paused meanwhile.
     aiMonitor: null,
@@ -459,6 +458,45 @@ window.sirin = function () {
 
     aiEvidenceClass(level) {
       return `evidence-${String(level || 'MISSING_PROOF').toLowerCase().replace('_', '-')}`;
+    },
+
+    codexSupervisorStatusClass(status) {
+      if (['HEALTHY', 'HEALTHY_RUNNING', 'COMPLETED'].includes(status)) return 'status-passed';
+      if (['RECOVERABLE', 'RECOVERABLE_INTERRUPTION'].includes(status)) return 'status-running';
+      if (['MISSING_PROOF', 'HIGH_RISK_AUTH_UNCLEAR', 'CONTROL_STATE_MISMATCH', 'UNREADABLE_OR_TIMEOUT'].includes(status)) return 'status-failed';
+      if (['WAITING_FOR_HEARTBEAT', 'WAITING_CORRECT_TIME', 'SUSPECTED_STALL', 'UNKNOWN'].includes(status)) return 'status-idle';
+      return 'status-timeout';
+    },
+
+    codexSupervisorActionLabel(action) {
+      return {
+        NONE: '不動作',
+        OBSERVE_AGAIN: '下輪再觀察',
+        CONTINUE_ONCE: '可續推一次',
+        NOTIFY_USER: '需要你',
+        FAIL_CLOSED: '停止並回報',
+      }[action] || '不動作';
+    },
+
+    codexCoverageLabel(surface) {
+      return {
+        CODE: '程式碼',
+        UNIT_TEST: '單元測試',
+        INTEGRATION: '整合',
+        RUNTIME: '運行',
+        WEB_UI: 'Web UI',
+        MOBILE_UI: '手機 UI',
+        SIMULATOR: '模擬器',
+        PHYSICAL_DEVICE: '真機',
+        DEPLOYMENT: '部署',
+      }[surface] || surface;
+    },
+
+    codexCoverageClass(status) {
+      if (status === 'PASS') return 'coverage-pass';
+      if (status === 'FAIL') return 'coverage-fail';
+      if (status === 'NOT_APPLICABLE') return 'coverage-na';
+      return 'coverage-gap';
     },
 
     formatCompactNumber(value) {

@@ -87,6 +87,7 @@ KB_MCP_BEARER=<paste-token-from-~/.claude.json>
 |----------|---------|-------------|
 | `SIRIN_AI_MONITOR_TREND_PATH` | `%LOCALAPPDATA%\Sirin\tracking\ai_monitor_token_trend.jsonl` | Internal test/deployment override for the local Token trend snapshot. Production should normally leave it unset. |
 | `SIRIN_AI_MONITOR_DISABLE_AWAKE_GUARD` | `0` | Set to `1` only for isolated candidate smoke tests or troubleshooting. Disables Sirin's conditional Windows execution request without disabling observation. |
+| `SIRIN_CODEX_SUPERVISOR_STATE_PATH` | `%LOCALAPPDATA%\Sirin\tracking\codex_supervisor.json` | Internal test/deployment override for the Codex supervisor evidence and dedupe ledger. Production should normally leave it unset. |
 
 ## Data Paths (Windows)
 

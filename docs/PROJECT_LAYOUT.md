@@ -114,6 +114,11 @@ src/mcp_server.rs            MCP HTTP server (:7700/mcp) — 65+ tools exposed
                              suggest_allowlist, list/add/remove_allow, save_point,
                              create/list/mark_done task, session_cost,
                              create_handoff, get_latest_handoff, kb_stats, kb_diff…)
+src/ai_monitor.rs            Local AI activity, resource, power, recovery, and
+                             acceptance snapshot exposed through `/api/snapshot`.
+src/codex_supervisor.rs      Codex desktop task supervision — structured
+                             evidence classification, task contract, coverage
+                             matrix, local dedupe ledger, and claim protocol.
 src/multi_agent/             PM/Engineer/Tester squad — persistent sessions via
                              `claude --continue`; SQLite task queue (JSONL);
                              multi-worker pool (spawn_n); GitHub issue loop-closure;

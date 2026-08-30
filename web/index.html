@@ -575,6 +575,92 @@
             </template>
 
             <div class="monitor-section-title">
+              <span>Codex 工作督導</span>
+              <span class="evidence-badge"
+                    :class="aiEvidenceClass(aiMonitor.codex_supervisor?.evidence)"
+                    x-text="aiEvidenceLabel(aiMonitor.codex_supervisor?.evidence)"></span>
+            </div>
+
+            <div class="monitor-callout monitor-callout-warning"
+                 x-show="aiMonitor.codex_supervisor?.status === 'WAITING_FOR_HEARTBEAT'">
+              <strong>等待 Codex heartbeat</strong>
+              <span class="dim small">分類核心已就緒；收到第一份最新回合證據前，不會用 Token 或時間戳猜測任務是否卡住。</span>
+            </div>
+            <div class="monitor-callout monitor-callout-error"
+                 x-show="aiMonitor.codex_supervisor?.status === 'MISSING_PROOF'">
+              <strong>督導資料不可讀</strong>
+              <span class="dim small" x-text="aiMonitor.codex_supervisor?.sourceError || 'MISSING_PROOF'"></span>
+            </div>
+
+            <div class="monitor-grid monitor-grid-ai">
+              <div class="card monitor-card">
+                <div class="monitor-card-title row">
+                  <span>督導狀態</span><span class="row-spacer"></span>
+                  <span class="status-chip"
+                        :class="codexSupervisorStatusClass(aiMonitor.codex_supervisor?.status)"
+                        x-text="aiMonitor.codex_supervisor?.status || 'WAITING_FOR_HEARTBEAT'"></span>
+                </div>
+                <div class="token-hero mono" x-text="aiMonitor.codex_supervisor?.taskCount || 0"></div>
+                <div class="dim small">有最新回合結構證據的工作</div>
+                <div class="monitor-kv mono small mt-md">
+                  <span>可安全續推</span><span x-text="aiMonitor.codex_supervisor?.actionableCount || 0"></span>
+                  <span>需要你</span><span x-text="aiMonitor.codex_supervisor?.userInterventionCount || 0"></span>
+                  <span>last report</span><span x-text="aiMonitor.codex_supervisor?.lastReportedAtMs ? new Date(aiMonitor.codex_supervisor.lastReportedAtMs).toLocaleString('zh-TW', { hour12: false }) : 'MISSING_PROOF'"></span>
+                </div>
+              </div>
+
+              <div class="card monitor-card">
+                <div class="monitor-card-title">低開銷預算</div>
+                <div class="token-hero mono" x-text="(aiMonitor.codex_supervisor?.policy?.scanIntervalSecs || 1800) / 60 + ' min'"></div>
+                <div class="dim small">每輪只深讀強候選，不掃完整歷史</div>
+                <div class="monitor-kv mono small mt-md">
+                  <span>deep reads</span><span x-text="aiMonitor.codex_supervisor?.policy?.deepReadCandidateLimit || 2"></span>
+                  <span>max continue</span><span x-text="aiMonitor.codex_supervisor?.policy?.maxContinuationsPerScan || 1"></span>
+                  <span>dedupe</span><span x-text="Math.floor((aiMonitor.codex_supervisor?.policy?.dedupeWindowSecs || 21600) / 3600) + ' h'"></span>
+                </div>
+              </div>
+
+              <div class="card monitor-card">
+                <div class="monitor-card-title">安全邊界</div>
+                <div class="token-hero mono">FAIL CLOSED</div>
+                <div class="dim small">Sirin 不能授權或直接傳訊；claim 只供 Codex heartbeat 再確認後續推。</div>
+                <div class="monitor-kv mono small mt-md">
+                  <span>conversation body</span><span>NOT STORED</span>
+                  <span>auto fork</span><span>OFF</span>
+                  <span>grant approval</span><span>NO</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="card monitor-card supervisor-task-list">
+              <div class="monitor-card-title row">
+                <span>任務分類與驗收面</span><span class="row-spacer"></span>
+                <span class="dim small">最新回合證據優先於列表狀態</span>
+              </div>
+              <template x-for="task in (aiMonitor.codex_supervisor?.tasks || [])" :key="task.threadId">
+                <div class="supervisor-task-card">
+                  <div class="row gap-sm wrap">
+                    <strong x-text="task.displayName"></strong>
+                    <span class="status-chip" :class="codexSupervisorStatusClass(task.classification)" x-text="task.classification"></span>
+                    <span class="status-chip status-idle" x-text="codexSupervisorActionLabel(task.recommendedAction)"></span>
+                    <span class="row-spacer"></span>
+                    <span class="dim tiny mono" x-text="task.ageSecs + ' s ago'"></span>
+                  </div>
+                  <div class="supervisor-reasons mono tiny" x-text="(task.reasonCodes || []).join(' · ')"></div>
+                  <div class="supervisor-coverage" x-show="(task.coverage || []).length">
+                    <template x-for="surface in task.coverage" :key="surface.surface">
+                      <span class="coverage-pill"
+                            :class="codexCoverageClass(surface.status)"
+                            x-text="codexCoverageLabel(surface.surface) + ' · ' + surface.status"></span>
+                    </template>
+                  </div>
+                  <div class="dim tiny mono" x-show="task.claimActive">CONTINUATION CLAIM ACTIVE</div>
+                </div>
+              </template>
+              <div class="card-empty" x-show="(aiMonitor.codex_supervisor?.tasks || []).length === 0">MISSING_PROOF — 尚未收到 Codex heartbeat 回報</div>
+            </div>
+
+            <div class="monitor-section-title">
               <span>Codex 運行健康</span>
               <span class="evidence-badge"
                     :class="aiEvidenceClass(aiMonitor.codex_health?.evidence)"

@@ -4,6 +4,7 @@
 mod adk;
 #[allow(dead_code)] mod agent_config;
 pub mod ai_monitor;
+#[allow(dead_code)] mod codex_supervisor;
 mod authz;
 #[cfg(test)] mod devex;
 #[cfg(test)] mod mcp_parity_tests;

@@ -975,6 +975,54 @@ keep the Monitor visible when running guarded tests.
 
 ---
 
+## Codex Work Supervisor
+
+### `codex_supervisor_report` / `codex_supervisor_snapshot`
+
+The Codex desktop heartbeat reports minimal recent-turn evidence to Sirin; the
+supervisor classifies the task without persisting prompts, assistant messages,
+titles, credentials, or command output. `latestUserTurnKey` and
+`unfinishedScopeKey` must be opaque hashes/cursors, not natural-language text.
+
+```json
+{"name":"codex_supervisor_report","arguments":{"threadId":"01a...","hostId":"local","latestUserTurnKey":"turn-a1","unfinishedScopeKey":"scope-a1","latestTurnStatus":"INTERRUPTED","objectiveUnfinished":true,"contract":{"intent":"CHANGE","authorizedActions":["READ","EDIT","TEST"]},"coverage":[{"surface":"CODE","status":"PASS","required":true},{"surface":"WEB_UI","status":"MISSING_PROOF","required":true,"humanRequired":false}]}}
+```
+
+Read the local dashboard state with:
+
+```json
+{"name":"codex_supervisor_snapshot","arguments":{}}
+```
+
+Reports older than 15 minutes remain available to the local ledger for
+retention and dedupe, but are excluded from the current snapshot. With no
+fresh reports, the snapshot returns `WAITING_FOR_HEARTBEAT` instead of
+presenting stale classifications as current evidence.
+
+### `codex_supervisor_claim` / `codex_supervisor_complete_action`
+
+`codex_supervisor_claim` reserves at most one fresh, dedupe-safe
+`RECOVERABLE_INTERRUPTION` for ten minutes and returns a scope-preserving
+continuation prompt. It does not call Codex or grant approval.
+
+```json
+{"name":"codex_supervisor_claim","arguments":{}}
+```
+
+After the Codex heartbeat re-reads the target and attempts
+`send_message_to_thread`, it records the result locally:
+
+```json
+{"name":"codex_supervisor_complete_action","arguments":{"claimId":"<claim id>","outcome":"ACCEPTED"}}
+```
+
+Allowed outcomes are `ACCEPTED`, `NOT_SENT`, `FAILED`, and `TARGET_RUNNING`.
+Only `ACCEPTED` starts the six-hour fingerprint dedupe window. See
+[`CODEX_WORK_SUPERVISOR.md`](CODEX_WORK_SUPERVISOR.md) for the classification,
+coverage, privacy, and heartbeat rules.
+
+---
+
 ## Safety Guarantees
 
 - Ad-hoc runs persist to SQLite but skip auto-fix verification (no YAML to re-run)

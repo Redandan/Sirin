@@ -61,6 +61,7 @@ pub struct AiMonitorSnapshot {
     pub network: NetworkSnapshot,
     pub ai_work: AiWorkSnapshot,
     pub codex_health: CodexHealthView,
+    pub codex_supervisor: crate::codex_supervisor::SupervisorSnapshot,
     pub power: PowerSnapshot,
     pub recovery: RecoverySnapshot,
     pub acceptance: MonitorAcceptanceView,
@@ -560,6 +561,7 @@ pub fn snapshot() -> AiMonitorSnapshot {
         network,
         ai_work,
         codex_health,
+        codex_supervisor: crate::codex_supervisor::snapshot(),
         power,
         recovery,
         acceptance,
@@ -2090,7 +2092,7 @@ fn process_group_running(processes: &[ProcessGroupView], app: &str) -> bool {
 }
 
 fn collect_codex_tasks() -> (Vec<CodexTaskView>, Option<String>) {
-    let Some(home) = local_user_home_dir() else {
+    let Some(home) = crate::platform::user_home_dir() else {
         return (
             Vec::new(),
             Some("Cannot resolve the local user home directory".into()),
@@ -2151,13 +2153,6 @@ fn collect_codex_tasks() -> (Vec<CodexTaskView>, Option<String>) {
         }
     }
     (tasks, None)
-}
-
-fn local_user_home_dir() -> Option<std::path::PathBuf> {
-    std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .filter(|value| !value.is_empty())
-        .map(std::path::PathBuf::from)
 }
 
 fn update_token_trend(
