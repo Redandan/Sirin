@@ -73,6 +73,8 @@ Heartbeat 從最新使用者要求建立最小任務契約：
 
 Codex heartbeat 回報一個任務的結構證據。`latestUserTurnKey` 與 `unfinishedScopeKey` 必須是 hash、cursor 或 opaque key，只允許安全鍵字元；放入自然語言會被拒絕。
 
+每輪掃描結束後，即使沒有強候選，也必須用保留的 `threadId=sirin-supervisor-scan` 回報一次掃描心跳。成功掃描使用 `latestTurnStatus=COMPLETED`，掃描失敗使用 `FAILED` 並只附穩定的 `readErrorCode`。掃描心跳只更新 freshness，不會出現在任務清單，也不會被 claim；成功且沒有任務證據時快照為 `HEALTHY_IDLE`，超過 15 分鐘未更新才回到 `WAITING_FOR_HEARTBEAT`。
+
 ### `codex_supervisor_snapshot`
 
 讀取分類、驗收缺口、介入數量、可續推數量、最近派送結果與安全邊界。超過 15 分鐘的舊回報仍可保留在 ledger 供歷史與去重使用，但不再算作目前快照證據；若沒有新鮮回報，UI 回到 `WAITING_FOR_HEARTBEAT`。
@@ -100,6 +102,7 @@ Codex 端嘗試 `send_message_to_thread` 後回寫：
 - 每個候選先讀最近 3 回合；只有授權／完成狀態不清楚時才擴到 6 回合。
 - 活躍但不明的任務只做一次 bounded wait snapshot。
 - 每輪最多 claim／續推 1 個任務。
+- 每輪結束固定回報一次 `sirin-supervisor-scan`；沒有候選不等於沒有 heartbeat。
 - 沒有恢復、人工介入或掃描錯誤時保持靜默。
 - 不自動 fork，不建立平行任務，不讓兩個任務同時修改同一工作樹。
 

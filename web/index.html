@@ -609,6 +609,7 @@
                 <div class="monitor-kv mono small mt-md">
                   <span>可安全續推</span><span x-text="aiMonitor.codex_supervisor?.actionableCount || 0"></span>
                   <span>需要你</span><span x-text="aiMonitor.codex_supervisor?.userInterventionCount || 0"></span>
+                  <span>last scan</span><span x-text="aiMonitor.codex_supervisor?.lastScanAtMs ? (aiMonitor.codex_supervisor.scanStatus + ' · ' + new Date(aiMonitor.codex_supervisor.lastScanAtMs).toLocaleString('zh-TW', { hour12: false })) : 'MISSING_PROOF'"></span>
                   <span>last report</span><span x-text="aiMonitor.codex_supervisor?.lastReportedAtMs ? new Date(aiMonitor.codex_supervisor.lastReportedAtMs).toLocaleString('zh-TW', { hour12: false }) : 'MISSING_PROOF'"></span>
                 </div>
               </div>

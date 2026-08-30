@@ -999,6 +999,12 @@ retention and dedupe, but are excluded from the current snapshot. With no
 fresh reports, the snapshot returns `WAITING_FOR_HEARTBEAT` instead of
 presenting stale classifications as current evidence.
 
+Every scan also reports through this same tool with the reserved
+`threadId=sirin-supervisor-scan`. A successful empty scan uses
+`latestTurnStatus=COMPLETED` and produces `HEALTHY_IDLE`; the scan record is
+freshness metadata only, is hidden from the task list, and can never be claimed.
+Failed scans use `FAILED` plus a stable `readErrorCode` and remain fail closed.
+
 ### `codex_supervisor_claim` / `codex_supervisor_complete_action`
 
 `codex_supervisor_claim` reserves at most one fresh, dedupe-safe

@@ -4,8 +4,9 @@ Inspect, verify, deploy, or explicitly roll back the Sirin Windows daemon.
 
 Deploy verifies an exact candidate SHA-256, starts the candidate in the
 side-effect-minimized --ai-monitor-only mode on an alternate loopback port,
-backs up the current binary and scheduled-task action, then replaces only the
-task-owned executable. A failed live contract check restores both automatically.
+backs up the current binary and scheduled-task action, then either replaces the
+task-owned executable or atomically redirects the task to an immutable versioned
+deployment directory. A failed live contract check restores both automatically.
 #>
 
 [CmdletBinding()]
@@ -14,9 +15,11 @@ param(
     [string]$Action = 'Status',
     [string]$Repo = '',
     [string]$TaskName = 'Sirin Local Ops Daemon',
+    [string]$LiveBinary = '',
     [string]$CandidateBinary = '',
     [string]$ExpectedCandidateSha256 = '',
     [string]$BackupBinary = '',
+    [string]$DeploymentRoot = '',
     [int]$LivePort = 7700,
     [int]$SmokePort = 17700,
     [int]$TimeoutSeconds = 30
@@ -30,7 +33,16 @@ if ([string]::IsNullOrWhiteSpace($Repo)) {
     $Repo = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 }
 $Repo = [System.IO.Path]::GetFullPath($Repo)
-$liveBinary = Join-Path $Repo 'target\release\sirin.exe'
+$defaultLiveBinary = Join-Path $Repo 'target\release\sirin.exe'
+if ([string]::IsNullOrWhiteSpace($LiveBinary)) {
+    $existingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    $existingAction = if ($existingTask) { @($existingTask.Actions) | Select-Object -First 1 } else { $null }
+    $LiveBinary = if ($existingAction -and -not [string]::IsNullOrWhiteSpace([string]$existingAction.Execute)) {
+        [string]$existingAction.Execute
+    }
+    else { $defaultLiveBinary }
+}
+$liveBinary = [System.IO.Path]::GetFullPath($LiveBinary)
 $backupDir = Join-Path $env:LOCALAPPDATA 'Sirin\releases\backups'
 $liveBase = "http://127.0.0.1:$LivePort"
 
@@ -174,7 +186,14 @@ function Test-MonitorContract([string]$BaseUrl) {
     }
     $tools = Invoke-Mcp $BaseUrl 2 'tools/list' $null
     $names = @($tools.result.tools | ForEach-Object { $_.name })
-    $requiredTools = @('help', 'ai_monitor_speed_test')
+    $requiredTools = @(
+        'help',
+        'ai_monitor_speed_test',
+        'codex_supervisor_snapshot',
+        'codex_supervisor_report',
+        'codex_supervisor_claim',
+        'codex_supervisor_complete_action'
+    )
     $missing = @($requiredTools | Where-Object { $_ -notin $names })
     if ($missing.Count -gt 0) {
         throw "candidate is missing required tools: $($missing -join ', ')"
@@ -273,6 +292,44 @@ function Test-MonitorContract([string]$BaseUrl) {
     }
 }
 
+function Test-SupervisorEmptyScanContract([string]$BaseUrl, [string]$Nonce) {
+    $reportResponse = Invoke-Mcp $BaseUrl 71 'tools/call' @{
+        name = 'codex_supervisor_report'
+        arguments = @{
+            threadId = 'sirin-supervisor-scan'
+            latestUserTurnKey = "scan-contract-$Nonce"
+            latestTurnStatus = 'COMPLETED'
+        }
+    }
+    $reportText = [string](@($reportResponse.result.content) | Select-Object -First 1).text
+    $report = $reportText | ConvertFrom-Json
+    if ([string]$report.status -ne 'SCAN_RECORDED' -or
+        [string]$report.scanStatus -ne 'SUCCESS') {
+        throw 'supervisor scan heartbeat was not recorded'
+    }
+
+    $snapshotResponse = Invoke-Mcp $BaseUrl 72 'tools/call' @{
+        name = 'codex_supervisor_snapshot'
+        arguments = @{}
+    }
+    $snapshotText = [string](@($snapshotResponse.result.content) | Select-Object -First 1).text
+    $snapshot = $snapshotText | ConvertFrom-Json
+    if ([string]$snapshot.status -ne 'HEALTHY_IDLE' -or
+        [int]$snapshot.taskCount -ne 0 -or
+        [string]$snapshot.scanStatus -ne 'SUCCESS' -or
+        $null -eq $snapshot.lastScanAtMs) {
+        throw 'successful empty scan did not produce HEALTHY_IDLE'
+    }
+
+    [pscustomobject]@{
+        report_status = [string]$report.status
+        snapshot_status = [string]$snapshot.status
+        task_count = [int]$snapshot.taskCount
+        scan_status = [string]$snapshot.scanStatus
+        last_scan_at_ms = [int64]$snapshot.lastScanAtMs
+    }
+}
+
 function Test-Candidate([string]$Path) {
     if (Get-NetTCPConnection -LocalPort $SmokePort -State Listen -ErrorAction SilentlyContinue) {
         throw "candidate smoke port is already in use: $SmokePort"
@@ -300,7 +357,10 @@ function Test-Candidate([string]$Path) {
             -PassThru
         $baseUrl = "http://127.0.0.1:$SmokePort"
         Wait-Mcp $baseUrl $TimeoutSeconds | Out-Null
-        Test-MonitorContract $baseUrl
+        $proof = Test-MonitorContract $baseUrl
+        $supervisorProof = Test-SupervisorEmptyScanContract $baseUrl $nonce
+        $proof | Add-Member -NotePropertyName supervisor_empty_scan -NotePropertyValue $supervisorProof
+        $proof
     }
     finally {
         if ($process) {
@@ -340,58 +400,86 @@ function Get-LiveStatus {
         Get-Process -Id $listener.OwningProcess -ErrorAction SilentlyContinue
     } else { $null }
     $taskAction = if ($task) { @($task.Actions) | Select-Object -First 1 } else { $null }
+    $effectiveBinary = if ($taskAction -and -not [string]::IsNullOrWhiteSpace([string]$taskAction.Execute)) {
+        [System.IO.Path]::GetFullPath([string]$taskAction.Execute)
+    }
+    else { $liveBinary }
     $proof = $null
     $toolCount = $null
+    $toolError = $null
+    $proofError = $null
     try {
         $tools = Invoke-Mcp $liveBase 81 'tools/list' $null
         $toolCount = @($tools.result.tools).Count
     }
-    catch {}
+    catch { $toolError = $_.Exception.Message }
     try {
         $proof = Test-MonitorContract $liveBase
     }
-    catch {}
+    catch { $proofError = $_.Exception.Message }
     [pscustomobject]@{
         task_installed = $null -ne $task
         task_state = if ($task) { [string]$task.State } else { 'MISSING' }
-        binary = $liveBinary
-        binary_exists = Test-Path -LiteralPath $liveBinary -PathType Leaf
-        binary_sha256 = if (Test-Path -LiteralPath $liveBinary -PathType Leaf) {
-            Get-Hash $liveBinary
+        binary = $effectiveBinary
+        binary_exists = Test-Path -LiteralPath $effectiveBinary -PathType Leaf
+        binary_sha256 = if (Test-Path -LiteralPath $effectiveBinary -PathType Leaf) {
+            Get-Hash $effectiveBinary
         } else { $null }
         listener_pid = if ($listener) { $listener.OwningProcess } else { $null }
         listener_path = if ($process) { $process.Path } else { $null }
         task_binary_same_file = if ($taskAction) {
-            Test-SameFilePath ([string]$taskAction.Execute) $liveBinary
+            Test-SameFilePath ([string]$taskAction.Execute) $effectiveBinary
         } else { $false }
         listener_binary_same_file = if ($process) {
-            Test-SameFilePath ([string]$process.Path) $liveBinary
+            Test-SameFilePath ([string]$process.Path) $effectiveBinary
         } else { $false }
         tool_count = $toolCount
+        tool_error = $toolError
         monitor_ready = $null -ne $proof
+        monitor_error = $proofError
         monitor_proof = $proof
     }
 }
 
-function Stop-LiveTask {
+function Stop-LiveTask([string]$ExpectedBinary) {
     Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop | Out-Null
-    Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-    $deadline = (Get-Date).AddSeconds(10)
-    do {
-        $processes = @(Get-Process sirin -ErrorAction SilentlyContinue | Where-Object {
-            try { Test-SameFilePath $_.Path $liveBinary } catch { $false }
-        })
-        if ($processes.Count -eq 0) {
-            return
+    $listener = Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort $LivePort -State Listen `
+        -ErrorAction SilentlyContinue | Select-Object -First 1
+    $processId = if ($listener) { [int]$listener.OwningProcess } else { 0 }
+    if ($processId -gt 0) {
+        $process = Get-Process -Id $processId -ErrorAction Stop
+        if (-not (Test-SameFilePath $process.Path $ExpectedBinary)) {
+            throw "refusing to stop unexpected live process: $($process.Path)"
         }
-        Start-Sleep -Milliseconds 250
-    } while ((Get-Date) -lt $deadline)
-    throw "scheduled task did not stop the exact Sirin binary: $liveBinary"
+    }
+    Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if ($processId -eq 0) { return }
+    Wait-Process -Id $processId -Timeout 12 -ErrorAction SilentlyContinue
+    if (Get-Process -Id $processId -ErrorAction SilentlyContinue) {
+        Stop-Process -Id $processId -Force
+        Wait-Process -Id $processId -Timeout 5 -ErrorAction SilentlyContinue
+    }
+    if (Get-Process -Id $processId -ErrorAction SilentlyContinue) {
+        throw "scheduled task did not stop verified PID ${processId}: $ExpectedBinary"
+    }
 }
 
-function Start-And-VerifyLive {
+function Start-And-VerifyLive([string]$ExpectedBinary) {
     Start-ScheduledTask -TaskName $TaskName
     Wait-Mcp $liveBase $TimeoutSeconds | Out-Null
+    $listener = Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort $LivePort -State Listen `
+        -ErrorAction Stop | Select-Object -First 1
+    if (-not $listener) {
+        throw "live listener missing after scheduled-task start: $liveBase"
+    }
+    $process = Get-Process -Id ([int]$listener.OwningProcess) -ErrorAction Stop
+    if (-not (Test-SameFilePath $process.Path $ExpectedBinary)) {
+        throw "live listener PID $($listener.OwningProcess) does not own expected binary: $ExpectedBinary"
+    }
+    $taskAction = Get-TaskActionSnapshot
+    if (-not (Test-SameFilePath ([string]$taskAction.execute) $ExpectedBinary)) {
+        throw "scheduled-task action drifted after start: $($taskAction.execute)"
+    }
     Test-MonitorContract $liveBase
 }
 
@@ -409,8 +497,18 @@ function Restore-Backup([string]$Path) {
         throw "scheduled-task action snapshot is missing: $actionSnapshotPath"
     }
     $actionSnapshot = Get-Content -LiteralPath $actionSnapshotPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    Stop-LiveTask
-    Copy-Item -LiteralPath $resolvedBackup -Destination $liveBinary -Force
+    $currentAction = Get-TaskActionSnapshot
+    Stop-LiveTask ([string]$currentAction.execute)
+    $restoreBinary = [System.IO.Path]::GetFullPath([string]$actionSnapshot.execute)
+    $restoreDirectory = Split-Path -Parent $restoreBinary
+    if (-not (Test-Path -LiteralPath $restoreDirectory -PathType Container)) {
+        New-Item -ItemType Directory -Force -Path $restoreDirectory | Out-Null
+    }
+    $restoreMatches = (Test-Path -LiteralPath $restoreBinary -PathType Leaf) -and
+        ((Get-Hash $restoreBinary) -eq (Get-Hash $resolvedBackup))
+    if (-not $restoreMatches) {
+        Copy-Item -LiteralPath $resolvedBackup -Destination $restoreBinary -Force
+    }
     Set-TaskActionFromSnapshot $actionSnapshot
     Start-ScheduledTask -TaskName $TaskName
     Wait-Mcp $liveBase $TimeoutSeconds | Out-Null
@@ -450,7 +548,8 @@ $toolRegression = $liveToolCount -gt 0 -and
 
 if ($Action -eq 'Verify') {
     [pscustomobject]@{
-        status = 'VERIFIED_NOT_DEPLOYED'
+        status = if ($toolRegression) { 'BLOCKED_TOOL_REGRESSION' } else { 'VERIFIED_NOT_DEPLOYED' }
+        candidate_deployable = -not $toolRegression
         candidate = (Resolve-Path -LiteralPath $CandidateBinary).Path
         candidate_sha256 = $candidateHash
         tool_count_regression = $toolRegression
@@ -479,12 +578,55 @@ Copy-Item -LiteralPath $liveBinary -Destination $backup
 $taskActionBackup = "$backup.task-action.json"
 $taskAction | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $taskActionBackup -Encoding UTF8
 
+$deploymentMode = 'in_place'
+$deployedBinary = $liveBinary
+$deploymentAction = $taskAction
+if (-not [string]::IsNullOrWhiteSpace($DeploymentRoot)) {
+    $deploymentMode = 'versioned_directory'
+    $resolvedDeploymentRoot = [System.IO.Path]::GetFullPath($DeploymentRoot)
+    New-Item -ItemType Directory -Force -Path $resolvedDeploymentRoot | Out-Null
+    $deploymentDirectory = Join-Path $resolvedDeploymentRoot "sirin-$($candidateHash.Substring(0, 12))"
+    $deployedBinary = Join-Path $deploymentDirectory 'sirin.exe'
+    if (Test-Path -LiteralPath $deploymentDirectory) {
+        if (-not (Test-Path -LiteralPath $deploymentDirectory -PathType Container)) {
+            throw "versioned deployment path is not a directory: $deploymentDirectory"
+        }
+        if (-not (Test-Path -LiteralPath $deployedBinary -PathType Leaf)) {
+            throw "existing versioned deployment is incomplete: $deployedBinary"
+        }
+        $existingDeploymentHash = Get-Hash $deployedBinary
+        if ($existingDeploymentHash -ne $candidateHash) {
+            throw "immutable deployment hash mismatch: expected $candidateHash, got $existingDeploymentHash"
+        }
+    }
+    else {
+        New-Item -ItemType Directory -Path $deploymentDirectory | Out-Null
+        Copy-Item -LiteralPath $CandidateBinary -Destination $deployedBinary
+        $deployedHash = Get-Hash $deployedBinary
+        if ($deployedHash -ne $candidateHash) {
+            throw "copied deployment hash mismatch: expected $candidateHash, got $deployedHash"
+        }
+    }
+    $deploymentAction = [pscustomobject]@{
+        execute = $deployedBinary
+        arguments = [string]$taskAction.arguments
+        working_directory = $deploymentDirectory
+    }
+}
+
 try {
-    Stop-LiveTask
-    Copy-Item -LiteralPath $CandidateBinary -Destination $liveBinary -Force
-    $liveProof = Start-And-VerifyLive
+    Stop-LiveTask $liveBinary
+    if ($deploymentMode -eq 'versioned_directory') {
+        Set-TaskActionFromSnapshot $deploymentAction
+    }
+    else {
+        Copy-Item -LiteralPath $CandidateBinary -Destination $liveBinary -Force
+    }
+    $liveProof = Start-And-VerifyLive $deployedBinary
     [pscustomobject]@{
         status = 'DEPLOYED'
+        deployment_mode = $deploymentMode
+        deployed_binary = $deployedBinary
         candidate_sha256 = $candidateHash
         backup = $backup
         task_action_backup = $taskActionBackup

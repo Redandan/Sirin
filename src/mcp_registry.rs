@@ -202,11 +202,11 @@ fn seed_default(m: &mut RegistryMap) {
 
     m.insert("codex_supervisor_report", ToolDef {
         name: "codex_supervisor_report",
-        description: "由 Codex heartbeat 回報一個任務的最小化結構證據，讓 Sirin 本機分類健康、完成、正常等待、需決策、授權不明、疑似停滯或可恢復中斷。只接受不含對話原文的 opaque key；不傳送任務訊息。",
+        description: "由 Codex heartbeat 回報最小化結構證據。一般 threadId 用於任務分類；保留 threadId=sirin-supervisor-scan 用於每輪掃描 freshness，成功且無候選時顯示 HEALTHY_IDLE。只接受不含對話原文的 opaque key；不傳送任務訊息。",
         input_schema: json!({
             "type": "object",
             "properties": {
-                "threadId": {"type": "string", "description": "Codex task/thread id"},
+                "threadId": {"type": "string", "description": "Codex task/thread id；掃描心跳固定使用 sirin-supervisor-scan"},
                 "hostId": {"type": "string", "description": "可選：Codex host id"},
                 "latestUserTurnKey": {"type": "string", "description": "最新 user turn 的 hash/cursor；禁止放原文"},
                 "unfinishedScopeKey": {"type": "string", "description": "未完成範圍的 hash/key；禁止放原文"},

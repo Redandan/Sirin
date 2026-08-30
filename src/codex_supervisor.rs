@@ -24,6 +24,7 @@ const DEDUPE_WINDOW_SECS: i64 = 6 * 60 * 60;
 const CLAIM_LEASE_SECS: i64 = 10 * 60;
 const REPORT_STALE_SECS: i64 = 15 * 60;
 const MAX_KEY_LEN: usize = 160;
+const SCAN_THREAD_ID: &str = "sirin-supervisor-scan";
 const CONTINUATION_PROMPT: &str = "先重新閱讀本任務的原始對話與最新回合。只延續仍未完成、且原本已獲使用者要求的範圍；不要重做已完成工作，也不得擴大權限。若工作其實已完成、正在等待正確時點，或下一步需要使用者決策、核准、憑證或新增權限，請立即停止並在本任務說明。否則請從最後一個已驗證的進度點繼續，完成必要驗證後交付結果。";
 
 static FILE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -291,10 +292,21 @@ struct TaskRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ScanRecord {
+    reported_at_ms: i64,
+    status: TurnStatus,
+    #[serde(default)]
+    error_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct SupervisorState {
     version: u32,
     updated_at_ms: i64,
     records: Vec<TaskRecord>,
+    #[serde(default)]
+    last_scan: Option<ScanRecord>,
 }
 
 impl Default for SupervisorState {
@@ -303,6 +315,7 @@ impl Default for SupervisorState {
             version: STATE_VERSION,
             updated_at_ms: 0,
             records: Vec::new(),
+            last_scan: None,
         }
     }
 }
@@ -381,6 +394,9 @@ pub struct SupervisorSnapshot {
     pub evidence: String,
     pub captured_at: String,
     pub last_reported_at_ms: Option<i64>,
+    pub last_scan_at_ms: Option<i64>,
+    pub scan_status: Option<String>,
+    pub scan_error_code: Option<String>,
     pub task_count: usize,
     pub actionable_count: usize,
     pub user_intervention_count: usize,
@@ -804,6 +820,18 @@ pub(crate) fn call_report(args: Value) -> Result<Value, String> {
         .map_err(|error| format!("invalid supervisor report: {error}"))?;
     validate_report(&report)?;
     with_state_mut(|state, now| {
+        if report.thread_id == SCAN_THREAD_ID {
+            state.last_scan = Some(ScanRecord {
+                reported_at_ms: now,
+                status: report.latest_turn_status,
+                error_code: report.read_error_code,
+            });
+            return Ok(json!({
+                "status": "SCAN_RECORDED",
+                "scanStatus": scan_status_label(report.latest_turn_status),
+                "boundary": "Sirin stored only scan freshness and a stable error code; no task was messaged, approved, forked, committed, pushed, or deployed."
+            }));
+        }
         let existing = state
             .records
             .iter()
@@ -954,6 +982,46 @@ pub(crate) fn call_complete_action(args: Value) -> Result<Value, String> {
 
 // ── Snapshot projection ─────────────────────────────────────────────────────
 
+fn scan_status_label(status: TurnStatus) -> &'static str {
+    match status {
+        TurnStatus::Completed => "SUCCESS",
+        TurnStatus::Failed | TurnStatus::Interrupted => "FAILED",
+        TurnStatus::Active | TurnStatus::Waiting | TurnStatus::Unknown => "PARTIAL",
+    }
+}
+
+fn summary_status(
+    source_error: bool,
+    intervention: usize,
+    actionable: usize,
+    tasks_empty: bool,
+    fresh_scan: Option<TurnStatus>,
+) -> &'static str {
+    if source_error {
+        "MISSING_PROOF"
+    } else if matches!(
+        fresh_scan,
+        Some(TurnStatus::Failed | TurnStatus::Interrupted)
+    ) {
+        "SCAN_FAILED"
+    } else if matches!(
+        fresh_scan,
+        Some(TurnStatus::Active | TurnStatus::Waiting | TurnStatus::Unknown)
+    ) {
+        "SCAN_PARTIAL"
+    } else if intervention > 0 {
+        "NEEDS_USER"
+    } else if actionable > 0 {
+        "RECOVERABLE"
+    } else if tasks_empty && fresh_scan == Some(TurnStatus::Completed) {
+        "HEALTHY_IDLE"
+    } else if tasks_empty {
+        "WAITING_FOR_HEARTBEAT"
+    } else {
+        "HEALTHY"
+    }
+}
+
 pub fn snapshot() -> SupervisorSnapshot {
     let now = now_ms();
     let loaded = {
@@ -969,6 +1037,7 @@ pub fn snapshot() -> SupervisorSnapshot {
     let mut actionable = 0;
     let mut intervention = 0;
     let mut tasks = Vec::new();
+    let last_scan = state.last_scan.clone();
     for record in state.records {
         if !report_is_fresh(record.reported_at_ms, now) {
             continue;
@@ -1013,26 +1082,41 @@ pub fn snapshot() -> SupervisorSnapshot {
         });
     }
     tasks.sort_by_key(|task| Reverse(task.reported_at_ms));
-    let status = if source_error.is_some() {
-        "MISSING_PROOF"
-    } else if intervention > 0 {
-        "NEEDS_USER"
-    } else if actionable > 0 {
-        "RECOVERABLE"
-    } else if tasks.is_empty() {
-        "WAITING_FOR_HEARTBEAT"
-    } else {
-        "HEALTHY"
-    };
+    let fresh_scan = last_scan
+        .as_ref()
+        .and_then(|scan| report_is_fresh(scan.reported_at_ms, now).then_some(scan.status));
+    let status = summary_status(
+        source_error.is_some(),
+        intervention,
+        actionable,
+        tasks.is_empty(),
+        fresh_scan,
+    );
+    let last_scan_at_ms = last_scan.as_ref().map(|scan| scan.reported_at_ms);
+    let scan_status = last_scan
+        .as_ref()
+        .map(|scan| scan_status_label(scan.status).to_string());
+    let scan_error_code = last_scan.as_ref().and_then(|scan| scan.error_code.clone());
+    let last_reported_at_ms = tasks
+        .iter()
+        .map(|task| task.reported_at_ms)
+        .chain(last_scan_at_ms)
+        .max();
     SupervisorSnapshot {
         status: status.to_string(),
-        evidence: if source_error.is_some() || tasks.is_empty() {
+        evidence: if matches!(
+            status,
+            "MISSING_PROOF" | "WAITING_FOR_HEARTBEAT" | "SCAN_FAILED" | "SCAN_PARTIAL"
+        ) {
             "MISSING_PROOF".to_string()
         } else {
             "INFERRED".to_string()
         },
         captured_at: Utc::now().to_rfc3339(),
-        last_reported_at_ms: tasks.iter().map(|task| task.reported_at_ms).max(),
+        last_reported_at_ms,
+        last_scan_at_ms,
+        scan_status,
+        scan_error_code,
         task_count: tasks.len(),
         actionable_count: actionable,
         user_intervention_count: intervention,
@@ -1210,6 +1294,28 @@ mod tests {
         let now = 10_000_000;
         assert!(report_is_fresh(now - REPORT_STALE_SECS * 1_000, now));
         assert!(!report_is_fresh(now - REPORT_STALE_SECS * 1_000 - 1, now));
+    }
+
+    #[test]
+    fn successful_empty_scan_is_healthy_idle() {
+        assert_eq!(
+            summary_status(false, 0, 0, true, Some(TurnStatus::Completed)),
+            "HEALTHY_IDLE"
+        );
+        assert_eq!(scan_status_label(TurnStatus::Completed), "SUCCESS");
+    }
+
+    #[test]
+    fn missing_or_failed_scan_fails_closed() {
+        assert_eq!(
+            summary_status(false, 0, 0, true, None),
+            "WAITING_FOR_HEARTBEAT"
+        );
+        assert_eq!(
+            summary_status(false, 0, 0, true, Some(TurnStatus::Failed)),
+            "SCAN_FAILED"
+        );
+        assert_eq!(scan_status_label(TurnStatus::Unknown), "PARTIAL");
     }
 
     #[test]

@@ -468,10 +468,10 @@ window.sirin = function () {
     },
 
     codexSupervisorStatusClass(status) {
-      if (['HEALTHY', 'HEALTHY_RUNNING', 'COMPLETED'].includes(status)) return 'status-passed';
+      if (['HEALTHY', 'HEALTHY_IDLE', 'HEALTHY_RUNNING', 'COMPLETED'].includes(status)) return 'status-passed';
       if (['RECOVERABLE', 'RECOVERABLE_INTERRUPTION'].includes(status)) return 'status-running';
-      if (['MISSING_PROOF', 'HIGH_RISK_AUTH_UNCLEAR', 'CONTROL_STATE_MISMATCH', 'UNREADABLE_OR_TIMEOUT'].includes(status)) return 'status-failed';
-      if (['WAITING_FOR_HEARTBEAT', 'WAITING_CORRECT_TIME', 'SUSPECTED_STALL', 'UNKNOWN'].includes(status)) return 'status-idle';
+      if (['MISSING_PROOF', 'SCAN_FAILED', 'HIGH_RISK_AUTH_UNCLEAR', 'CONTROL_STATE_MISMATCH', 'UNREADABLE_OR_TIMEOUT'].includes(status)) return 'status-failed';
+      if (['WAITING_FOR_HEARTBEAT', 'SCAN_PARTIAL', 'WAITING_CORRECT_TIME', 'SUSPECTED_STALL', 'UNKNOWN'].includes(status)) return 'status-idle';
       return 'status-timeout';
     },
 
