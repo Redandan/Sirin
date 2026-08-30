@@ -100,7 +100,8 @@
 
       <div class="sidebar-section-label" x-show="!sidebarCollapsed">主視圖</div>
       <button class="nav-row" :class="view === 'dashboard' ? 'active' : ''"
-              @click="view = 'dashboard'" :title="sidebarCollapsed ? '儀表板' : ''">
+              @click="view = 'dashboard'" aria-label="儀表板"
+              :title="sidebarCollapsed ? '儀表板' : ''">
         <svg class="nav-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
           <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
           <rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
@@ -108,7 +109,8 @@
         <span x-show="!sidebarCollapsed">儀表板</span>
       </button>
       <button class="nav-row" :class="view === 'testing' ? 'active' : ''"
-              @click="view = 'testing'" :title="sidebarCollapsed ? '測試' : ''">
+              @click="view = 'testing'" aria-label="測試"
+              :title="sidebarCollapsed ? '測試' : ''">
         <svg class="nav-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
           <polyline points="9 11 12 14 22 4"/>
           <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
@@ -116,7 +118,8 @@
         <span x-show="!sidebarCollapsed">測試</span>
       </button>
       <button class="nav-row" :class="view === 'ai-monitor' ? 'active' : ''"
-              @click="view = 'ai-monitor'" :title="sidebarCollapsed ? 'AI 工作監控' : ''">
+              @click="view = 'ai-monitor'" aria-label="AI 工作監控"
+              :title="sidebarCollapsed ? 'AI 工作監控' : ''">
         <svg class="nav-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
           <path d="M4 19V9"/><path d="M10 19V5"/><path d="M16 19v-7"/><path d="M22 19V3"/>
           <path d="M2 19h22"/>
@@ -128,6 +131,7 @@
       <template x-for="(agent, i) in state.agents" :key="agent.id">
         <button class="nav-row" :class="view === 'workspace:' + i ? 'active' : ''"
                 @click="view = 'workspace:' + i"
+                :aria-label="agent.name"
                 :title="sidebarCollapsed ? agent.name : ''">
           <span class="agent-dot" :class="'agent-' + agent.live_status"></span>
           <span x-show="!sidebarCollapsed" x-text="agent.name"></span>
@@ -285,10 +289,10 @@
                               class="badge-soft badge-soft-warn"
                               x-text="'flaky ' + Math.round(run.pass_rate * 100) + '%'"></span>
                         <span class="row-spacer"></span>
-                        <span x-show="run.cost_usd !== null && run.cost_usd > 0"
+                        <span x-show="Number.isFinite(run.cost_usd) && run.cost_usd > 0"
                               class="dim mono small ml-md"
                               :title="'tokens: ' + (run.prompt_tokens || 0) + ' in / ' + (run.completion_tokens || 0) + ' out' + (run.cached_tokens > 0 ? ' (' + run.cached_tokens + ' cached)' : '')"
-                              x-text="'$' + (run.cost_usd >= 0.01 ? run.cost_usd.toFixed(2) : run.cost_usd.toFixed(4))"></span>
+                              x-text="Number.isFinite(run.cost_usd) ? '$' + (run.cost_usd >= 0.01 ? run.cost_usd.toFixed(2) : run.cost_usd.toFixed(4)) : ''"></span>
                         <span class="dim mono small" x-show="run.duration_ms"
                               x-text="(run.duration_ms / 1000).toFixed(1) + 's'"></span>
                         <span class="dim small ml-md" x-text="timeAgo(run.started_at)"></span>
@@ -1119,10 +1123,10 @@
                       class="badge-soft badge-soft-warn"
                       x-text="'flaky ' + Math.round(run.pass_rate * 100) + '%'"></span>
                 <span class="row-spacer"></span>
-                <span x-show="run.cost_usd !== null && run.cost_usd > 0"
+                <span x-show="Number.isFinite(run.cost_usd) && run.cost_usd > 0"
                       class="dim mono small ml-md"
                       :title="'tokens: ' + (run.prompt_tokens || 0) + ' in / ' + (run.completion_tokens || 0) + ' out' + (run.cached_tokens > 0 ? ' (' + run.cached_tokens + ' cached)' : '')"
-                      x-text="'$' + (run.cost_usd >= 0.01 ? run.cost_usd.toFixed(2) : run.cost_usd.toFixed(4))"></span>
+                      x-text="Number.isFinite(run.cost_usd) ? '$' + (run.cost_usd >= 0.01 ? run.cost_usd.toFixed(2) : run.cost_usd.toFixed(4)) : ''"></span>
                 <span class="dim mono small" x-show="run.duration_ms"
                       x-text="(run.duration_ms / 1000).toFixed(1) + 's'"></span>
                 <span class="dim small ml-md" x-text="timeAgo(run.started_at)"></span>

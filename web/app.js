@@ -56,6 +56,8 @@ window.sirin = function () {
     runFilter:     'all',  // 'all' | 'passed' | 'failed'
     runTextFilter: '',
     lastLaunch:    null,   // status string after launch attempt
+    expandedRunDetail: null,
+    expandedRunLoading: false,
     // AI Work Monitor — the dedicated snapshot is refreshed only while this
     // view is visible. The normal dashboard WebSocket is paused meanwhile.
     aiMonitor: null,
@@ -113,6 +115,11 @@ window.sirin = function () {
       ],
       pending_counts: { a1: 0, a2: 0 },
       active_runs: [],
+      queue: {
+        queued_count: 0,
+        estimated_drain_secs: 0,
+        median_test_secs_last_50: 0,
+      },
       recent_runs: [
         { test_id: 'agora_pickup_time_picker',  status: 'passed',  duration_ms: 12300, started_at: '2026-05-02T10:00Z' },
         { test_id: 'agora_pickup_time_picker',  status: 'passed',  duration_ms: 11800, started_at: '2026-05-02T09:50Z' },
