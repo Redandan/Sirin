@@ -81,10 +81,7 @@ pub enum ServerEvent {
     },
 
     /// The browser navigated to a new URL.
-    UrlChange {
-        ts: DateTime<Utc>,
-        url: String,
-    },
+    UrlChange { ts: DateTime<Utc>, url: String },
 
     /// A browser console log entry.
     Console {
@@ -115,9 +112,7 @@ pub enum ServerEvent {
     },
 
     /// Sent when the Sirin session ends or the WS connection is closing.
-    Goodbye {
-        ts: DateTime<Utc>,
-    },
+    Goodbye { ts: DateTime<Utc> },
 }
 
 impl ServerEvent {
@@ -160,9 +155,7 @@ pub enum ClientCommand {
     /// Immediately reject all subsequent actions for this session.
     Abort {},
     /// Subscribe/unsubscribe from specific event channels (WS only).
-    Subscribe {
-        channels: Vec<SubscribeChannel>,
-    },
+    Subscribe { channels: Vec<SubscribeChannel> },
 }
 
 /// The set of decisions available when resolving an authz ask.
@@ -368,9 +361,15 @@ mod tests {
             url: "https://x.com".into(),
         })
         .unwrap();
-        assert!(json.contains(r#""type":"url_change""#), "missing type tag: {json}");
+        assert!(
+            json.contains(r#""type":"url_change""#),
+            "missing type tag: {json}"
+        );
 
         let json = to_string(&ClientCommand::Pause {}).unwrap();
-        assert!(json.contains(r#""type":"pause""#), "missing type tag: {json}");
+        assert!(
+            json.contains(r#""type":"pause""#),
+            "missing type tag: {json}"
+        );
     }
 }

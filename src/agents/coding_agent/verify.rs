@@ -277,7 +277,10 @@ mod tests {
         let captured = mock.captured.lock().unwrap();
         assert_eq!(captured[0].0, LlmKind::Coding);
         // The fix prompt must include the cargo error excerpt.
-        assert!(captured[0].1.contains("error[E0308]"), "prompt must surface cargo error");
+        assert!(
+            captured[0].1.contains("error[E0308]"),
+            "prompt must surface cargo error"
+        );
     }
 
     #[tokio::test]
@@ -293,13 +296,24 @@ mod tests {
 
         run_fix_iterations(&ctx, "ctx", "build error", &mut state).await;
 
-        assert!(state.had_tool_errors, "invalid JSON must flip the error flag");
         assert!(
-            state.last_tool_error.as_deref().unwrap_or("").contains("Invalid JSON"),
+            state.had_tool_errors,
+            "invalid JSON must flip the error flag"
+        );
+        assert!(
+            state
+                .last_tool_error
+                .as_deref()
+                .unwrap_or("")
+                .contains("Invalid JSON"),
             "last_tool_error should mention Invalid JSON, got: {:?}",
             state.last_tool_error
         );
-        assert_eq!(mock.call_count(), 2, "loop must continue past invalid JSON to DONE");
+        assert_eq!(
+            mock.call_count(),
+            2,
+            "loop must continue past invalid JSON to DONE"
+        );
     }
 
     #[tokio::test]
@@ -329,10 +343,22 @@ mod tests {
         let mock = Arc::new(MockLlmCaller::with_responses(vec![
             // Use an action that isn't a write tool so the patch-error
             // circuit breaker doesn't trip.
-            Ok(r#"{"thought":"step 1","action":"local_file_read","action_input":{"path":"foo"}}"#.into()),
-            Ok(r#"{"thought":"step 2","action":"local_file_read","action_input":{"path":"foo"}}"#.into()),
-            Ok(r#"{"thought":"step 3","action":"local_file_read","action_input":{"path":"foo"}}"#.into()),
-            Ok(r#"{"thought":"step 4","action":"local_file_read","action_input":{"path":"foo"}}"#.into()),
+            Ok(
+                r#"{"thought":"step 1","action":"local_file_read","action_input":{"path":"foo"}}"#
+                    .into(),
+            ),
+            Ok(
+                r#"{"thought":"step 2","action":"local_file_read","action_input":{"path":"foo"}}"#
+                    .into(),
+            ),
+            Ok(
+                r#"{"thought":"step 3","action":"local_file_read","action_input":{"path":"foo"}}"#
+                    .into(),
+            ),
+            Ok(
+                r#"{"thought":"step 4","action":"local_file_read","action_input":{"path":"foo"}}"#
+                    .into(),
+            ),
         ]));
         let ctx = ctx_with_mock(Arc::clone(&mock));
         let mut state = RunState::default();

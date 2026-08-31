@@ -9,6 +9,7 @@ url: "https://redandan.github.io/?__test_role=delivery"
 max_iterations: 20
 timeout_secs: 360
 max_retries: 1
+fixture_only: true
 
 # Fixture: 兩階段 deterministic goto，跑在 LLM ReAct 之前（top-level url 已是 stage 1）
 fixture:
@@ -16,6 +17,18 @@ fixture:
     - {action: "wait", target: "8000"}                                       # 等 stage 1 auto-login + redirect
     - {action: "goto", target: "https://redandan.github.io/#/delivery"}      # stage 2：JWT 已 cached，落 dashboard
     - {action: "wait", target: "3000"}                                       # 等 dashboard render
+    - {action: "enable_a11y"}
+    - {action: "wait_for_ax_ready", min_nodes: 40, timeout_ms: 10000}
+    - {action: "assert_ax_contains", target: "外送首頁"}
+    - {action: "assert_ax_contains", target: "工作狀態"}
+    - {action: "assert_ax_contains", target: "訂單"}
+    - {action: "assert_ax_contains", target: "收入"}
+    - {action: "assert_ax_contains", target: "我的"}
+    - {action: "shadow_click", role: "tab", name_regex: "^訂單$"}
+    - {action: "wait", target: "2000"}
+    - {action: "enable_a11y"}
+    - {action: "wait_for_ax_ready", min_nodes: 10, timeout_ms: 10000}
+    - {action: "assert_ax_contains", target: "訂單"}
 
 # H5 mobile viewport — 外送員後台是手機版
 viewport:
@@ -28,6 +41,8 @@ locale: zh-TW
 
 goal: |
   目標：驗證外送員儀表板已正常載入並顯示核心資訊。
+
+  ⚠️ fixture_only=true；fixture.setup 全部成功即通過，不進 LLM ReAct loop。
 
   fixture.setup 已完成兩階段 navigation（auto-login + 落 #/delivery），
   LLM 開始時頁面應該已經在 delivery dashboard。

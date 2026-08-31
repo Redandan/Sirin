@@ -6,6 +6,7 @@ url: "https://redandan.github.io/?__test_role=buyer"
 max_iterations: 22
 timeout_secs: 500  # Local LLM (Gemma 4) needs more wall-time per ReAct iter
 max_retries: 1  # H5 Flutter 偶發 Chrome 初始化延遲，自動重試一次
+fixture_only: true
 
 # H5 mobile viewport — AgoraMarket 會員端是手機版 App，必須用手機 viewport 測試
 viewport:
@@ -17,8 +18,28 @@ viewport:
 
 locale: zh-TW
 
+fixture:
+  setup:
+    - {action: "wait", target: "5000"}
+    - {action: "dismiss_passkey_prompt"}
+    - {action: "wait", target: "1000"}
+    - {action: "enable_a11y"}
+    - {action: "wait_for_ax_ready", min_nodes: 10, timeout_ms: 10000}
+    - {action: "agora_nav_click", target: "訂單"}
+    - {action: "wait", target: "2500"}
+    - {action: "enable_a11y"}
+    - {action: "wait_for_ax_ready", min_nodes: 10, timeout_ms: 10000}
+    - {action: "assert_ax_contains", target: "全部"}
+    - {action: "assert_ax_contains", target: "待出貨"}
+    - {action: "shadow_click", role: "tab", name_regex: "^待出貨$"}
+    - {action: "wait", target: "1500"}
+    - {action: "enable_a11y"}
+    - {action: "assert_ax_contains", target: "待出貨"}
+
 goal: |
   目標：確認買家訂單管理頁可正常進入，並驗證訂單分類 tab 可切換。
+
+  ⚠️ fixture_only=true；fixture.setup 全部成功即通過，不進 LLM ReAct loop。
 
   ⚠️ 訂單頂部分類 tab 包含：全部/待出貨/待收貨/已完成（「不成立」等分類可能因帳號
   無相關訂單而不顯示，不列為必要條件）。

@@ -1,0 +1,4 @@
+interface:
+  display_name: "KB MCP"
+  short_description: "Use project knowledge through Sirin"
+  default_prompt: "Use Sirin KB tools to search, fetch, or explicitly update project knowledge without routing local AI through the external connector."

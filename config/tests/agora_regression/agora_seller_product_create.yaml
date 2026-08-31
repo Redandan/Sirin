@@ -3,7 +3,8 @@ name: "AgoraMarket 賣家新增商品表單驗證"
 url: "https://redandan.github.io/?__test_role=seller"
 
 max_iterations: 25
-timeout_secs: 600
+timeout_secs: 180
+fixture_only: true
 
 # Seller 後台是 H5 手機版，與 Buyer 相同 viewport
 viewport:
@@ -14,50 +15,52 @@ viewport:
 
 locale: zh-TW
 
-# 2026-05-05 perf — moved deterministic boot steps from goal to fixture.setup
-# (saves ~30s LLM time per LLM-mode run; scripted = 0 LLM cost).
+# 2026-06-03: AgoraMarket now may show Passkey onboarding before tabs.
+# Keep boot deterministic and no-op dismiss the prompt when it is absent.
 fixture:
   setup:
-    - {action: "wait", target: "3000"}
-    - {action: "enable_a11y"}
+    - {action: "clear_state"}
+    - {action: "goto", target: "https://redandan.github.io/?__test_role=seller"}
+    - {action: "wait", target: "5000"}
+    - {action: "wait_for_flutter_semantics", timeout: 15000, min_roles: 2}
+    - {action: "dismiss_passkey_prompt"}
+    - {action: "goto", target: "https://redandan.github.io/?__test_role=seller"}
+    - {action: "wait", target: "7000"}
+    - {action: "wait_for_flutter_semantics", timeout: 25000, min_roles: 8}
+    - {action: "agora_nav_click", target: "商品"}
+    - {action: "wait", target: "2500"}
+    - {action: "wait_for_flutter_semantics", timeout: 12000, min_roles: 8}
+    - {action: "shadow_find", role: "button", name_regex: "^新增商品$"}
+    - {action: "shadow_click", role: "button", name_regex: "^新增商品$"}
+    - {action: "wait", target: "4000"}
+    - {action: "wait_for_flutter_semantics", timeout: 12000, min_roles: 8}
+    - {action: "flutter_scroll_until_visible", role: "button", name_regex: "出貨設定|物流設定"}
+    - {action: "shadow_click", role: "button", name_regex: "出貨設定|物流設定"}
     - {action: "wait", target: "1500"}
+    - {action: "enable_a11y"}
+    - {action: "wait", target: "800"}
+    - {action: "wait_for_flutter_semantics", timeout: 12000, min_roles: 8}
+    - {action: "shadow_find", role: "button", name_regex: "平台配送設定|使用賣家自行配送"}
 
 goal: |
-  目標：確認賣家可正常進入「新增商品」頁面，表單欄位和物流設定預設值正確。
+  目標：fixture-only smoke，確認賣家可正常進入「新增商品」頁面並到達出貨/物流設定入口。
 
-  起始狀態：以賣家身份登入，已在賣家儀表板首頁（URL auto-login via __test_role=seller）。
-  fixture.setup 已完成 3s 等待 + enable_a11y + 1.5s 等待，AX tree 已就緒。
+  起始狀態：fixture.setup 已完成 clear_state、seller URL 導航、Passkey prompt dismiss、
+  點擊底部商品分頁、進入新增商品頁、打開出貨/物流設定，並確認平台配送設定入口可見。
 
-  ⚠️ 賣家首頁是儀表板（賣場設定/批量導入商品），不是商品列表。
-    必須先點底部「商品」tab 才能進入商品管理列表。
-  ⚠️ 商品管理列表頂部有「新增商品」按鈕，用 shadow_click 點擊。
-  ⚠️ 新增商品頁面的「物流設定」按鈕位於頁面下方，需先 flutter_scroll_until_visible 捲到可見。
-  ⚠️ 物流設定是 ExpansionTile（Flutter AX role=group），展開後加 enable_a11y + wait 800 再截圖。
-  ⚠️ 新增商品預設：宅配到府 ON + 7-ELEVEN ON，其餘 OFF。
-  ⚠️ Flutter app：所有 UI 判斷用 screenshot_analyze。
-  ⚠️ 不論任何步驟失敗，都必須繼續執行到步驟 14 才能輸出 done=true。嚴禁提早終止。
+  ⚠️ 新版 UI 可能顯示「出貨設定」，舊版/部分文件仍稱「物流設定」；selector 必須同時容忍兩者。
+  ⚠️ 目前 shadow tree 將「出貨設定」「物流設定」暴露為 button；不要依舊文件假設 role=group。
+  ⚠️ 本測試不判斷宅配/7-ELEVEN 預設開關值或運費數字；那些需要進一步展開平台配送設定後再另開深測。
+  ⚠️ fixture_only=true；fixture.setup 全部成功即通過，不進 LLM ReAct loop。
 
-  步驟（線性，步驟 14 無條件 done=true，不得提早）：
-  1. shadow_click role=tab name_regex="^商品$"（點底部商品 tab，進入商品管理列表）
-  2. wait 2500（等商品管理列表載入）
-  3. enable_a11y（重新初始化 Flutter semantics）
-  4. wait 1000
-  5. shadow_click role=button name_regex="^新增商品$"（點新增商品按鈕）
-  6. wait 4000（等新增商品頁面完整載入）
-  7. flutter_scroll_until_visible role=button name_regex="物流設定"（捲動到物流設定按鈕）
-  8. shadow_click role=button name_regex="^物流設定$"（展開物流設定區塊）
-  9. wait 1500
-  10. enable_a11y（展開後重建 AX tree）
-  11. wait 800
-  12. scroll y=200（捲動讓宅配+7-ELEVEN 開關都進入視窗）
-  13. screenshot_analyze "截圖。宅配到府開關是開還是關？預設運費是多少？7-ELEVEN 開關是開還是關？運費是多少？（只需回答這兩項，簡短即可）"
-  14. done=true
+  fixture 驗證：
+  - 商品列表可找到「新增商品」
+  - 新增商品頁可找到並打開「出貨設定」或「物流設定」
+  - 打開後可找到「平台配送設定」或「使用賣家自行配送」
 
 success_criteria:
   - "成功從商品管理列表點擊新增商品並進入新增頁面"
-  - "展開物流設定並看到至少宅配到府和 7-ELEVEN 兩個物流服務的開關（新增商品預設 ON）"
-  - "物流服務運費欄位有非零值（宅配和 7-ELEVEN 的運費欄位不是空白）"
+  - "成功打開出貨/物流設定區塊"
+  - "看到平台配送設定入口或使用賣家自行配送狀態"
 
-tags: [regression, product, seller, create, agora]
-
-
+tags: [regression, deep-regression, product, seller, create, agora]

@@ -20,7 +20,7 @@ pub mod browser_client;
 
 // Re-exported for future UI integration (Teams poller start button).
 #[allow(unused_imports)]
-pub use browser_client::{SessionStatus, session_status};
+pub use browser_client::{session_status, SessionStatus};
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -29,11 +29,10 @@ use tokio::sync::mpsc as tmpsc;
 use tokio::time::Duration;
 
 use crate::events::{publish, AgentEvent};
-use crate::pending_reply::{PendingReply, PendingStatus, append_pending, update_status};
+use crate::pending_reply::{append_pending, update_status, PendingReply, PendingStatus};
 
 /// Seconds between sweeps of stale approved replies.
 const APPROVED_SWEEP_INTERVAL_SECS: u64 = 60;
-
 
 // ── P1：即時核准通道 ──────────────────────────────────────────────────────────
 
@@ -50,11 +49,15 @@ pub fn notify_approved(reply_id: String) {
 
 fn pick_ack(msg: &str) -> &'static str {
     let lower = msg.to_lowercase();
-    if ["urgent", "緊急", "asap", "急"].iter().any(|k| lower.contains(k)) {
+    if ["urgent", "緊急", "asap", "急"]
+        .iter()
+        .any(|k| lower.contains(k))
+    {
         "已收到，我現在處理，盡快回覆！"
     } else if ['?', '？'].iter().any(|c| lower.contains(*c))
         || ["嗎", "how", "what", "when", "who", "why", "where"]
-            .iter().any(|k| lower.contains(k))
+            .iter()
+            .any(|k| lower.contains(k))
     {
         "收到！稍等一下，我確認後回覆你 🙏"
     } else {
@@ -72,21 +75,30 @@ pub async fn run_poller() {
 
     // ── 啟動瀏覽器 + 等待登入 ────────────────────────────────────────────────
     let (client, sync_rx) = match tokio::task::spawn_blocking(|| {
-        let c = browser_client::TeamsClient::launch_and_login()
-            .map_err(|e| format!("launch: {e}"))?;
+        let c =
+            browser_client::TeamsClient::launch_and_login().map_err(|e| format!("launch: {e}"))?;
         eprintln!("[teams] Browser open — please log in (5 min timeout)");
         if !c.wait_for_login(300) {
             return Err("login timeout".to_string());
         }
         eprintln!("[teams] Logged in ✓  Installing event listener…");
-        let rx = c.install_event_listener()
+        let rx = c
+            .install_event_listener()
             .map_err(|e| format!("listener: {e}"))?;
         eprintln!("[teams] MutationObserver active — zero-poll mode");
         Ok((c, rx))
-    }).await {
+    })
+    .await
+    {
         Ok(Ok(pair)) => pair,
-        Ok(Err(e))   => { eprintln!("[teams] Setup failed: {e}"); return; }
-        Err(e)       => { eprintln!("[teams] spawn_blocking: {e}"); return; }
+        Ok(Err(e)) => {
+            eprintln!("[teams] Setup failed: {e}");
+            return;
+        }
+        Err(e) => {
+            eprintln!("[teams] spawn_blocking: {e}");
+            return;
+        }
     };
 
     let client = Arc::new(Mutex::new(client));
@@ -103,7 +115,7 @@ pub async fn run_poller() {
     });
 
     // 本 session 內已處理過的 chat_id（避免重複送稍等）
-    let mut acked:   HashSet<String> = HashSet::new();
+    let mut acked: HashSet<String> = HashSet::new();
     let mut drafted: HashSet<String> = HashSet::new();
 
     loop {
@@ -180,16 +192,26 @@ pub async fn run_poller() {
 
 async fn send_one_approved(client: &Arc<Mutex<browser_client::TeamsClient>>, reply_id: &str) {
     let pending = crate::pending_reply::load_pending("teams");
-    let Some(reply) = pending.into_iter().find(|r| r.id == reply_id && r.status == PendingStatus::Approved)
-    else { return };
+    let Some(reply) = pending
+        .into_iter()
+        .find(|r| r.id == reply_id && r.status == PendingStatus::Approved)
+    else {
+        return;
+    };
 
-    let Some(chat_id) = reply.chat_id.clone() else { return };
-    let text     = reply.draft_reply.clone();
+    let Some(chat_id) = reply.chat_id.clone() else {
+        return;
+    };
+    let text = reply.draft_reply.clone();
     let id_owned = reply.id.clone();
-    let c        = Arc::clone(client);
+    let c = Arc::clone(client);
 
     tokio::task::spawn_blocking(move || {
-        match c.lock().unwrap_or_else(|e| e.into_inner()).send_message(&text) {
+        match c
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .send_message(&text)
+        {
             Ok(()) => {
                 update_status("teams", &id_owned, PendingStatus::Rejected);
                 eprintln!("[teams] Instant send → {chat_id}");
@@ -208,13 +230,19 @@ async fn send_approved_replies(client: &Arc<Mutex<browser_client::TeamsClient>>)
         .collect();
 
     for reply in approved {
-        let Some(chat_id) = reply.chat_id.clone() else { continue };
-        let text     = reply.draft_reply.clone();
+        let Some(chat_id) = reply.chat_id.clone() else {
+            continue;
+        };
+        let text = reply.draft_reply.clone();
         let reply_id = reply.id.clone();
-        let c        = Arc::clone(client);
+        let c = Arc::clone(client);
 
         tokio::task::spawn_blocking(move || {
-            match c.lock().unwrap_or_else(|e| e.into_inner()).send_message(&text) {
+            match c
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .send_message(&text)
+            {
                 Ok(()) => {
                     update_status("teams", &reply_id, PendingStatus::Rejected);
                     eprintln!("[teams] Approved reply sent → {chat_id}");
@@ -230,7 +258,7 @@ async fn send_approved_replies(client: &Arc<Mutex<browser_client::TeamsClient>>)
 /// Generate a draft reply using the ChatAgent AI pipeline.
 /// Falls back to a simple template if AI generation fails.
 async fn generate_draft_ai(msg: &str, peer_name: &str) -> String {
-    use crate::agents::chat_agent::{ChatRequest, run_chat_via_adk_with_tracker};
+    use crate::agents::chat_agent::{run_chat_via_adk_with_tracker, ChatRequest};
 
     // Search memory for relevant context about this peer.
     let context_block = crate::memory::memory_search(peer_name, 3, "")
@@ -260,8 +288,10 @@ async fn generate_draft_ai(msg: &str, peer_name: &str) -> String {
 fn generate_draft_fallback(msg: &str) -> String {
     let lower = msg.to_lowercase();
     if lower.contains("作業") || lower.contains("報告") || lower.contains("deadline") {
-        format!("關於「{}⋯」我確認進度後回覆你！",
-            msg.chars().take(20).collect::<String>())
+        format!(
+            "關於「{}⋯」我確認進度後回覆你！",
+            msg.chars().take(20).collect::<String>()
+        )
     } else if lower.contains("會議") || lower.contains("meeting") || lower.contains("時間") {
         "我看一下行事曆，確認後回覆你！".to_string()
     } else {

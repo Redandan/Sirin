@@ -40,14 +40,17 @@ fn optional_string_field(input: &Value, key: &str) -> Option<String> {
             Value::Number(n) => n.to_string(),
             _ => return None,
         };
-        if s.is_empty() { None } else { Some(s) }
+        if s.is_empty() {
+            None
+        } else {
+            Some(s)
+        }
     })
 }
 
 fn required_string_field(input: &Value, key: &str) -> Result<String, String> {
     optional_string_field(input, key).ok_or_else(|| format!("Missing '{key}' string"))
 }
-
 
 /// Register all discovered external MCP tools into a registry.
 fn register_mcp_tools(registry: ToolRegistry) -> ToolRegistry {
@@ -324,8 +327,8 @@ pub(super) fn build_full_registry() -> ToolRegistry {
             let bytes = content.len();
             std::fs::write(&safe_path, content)
                 .map_err(|e| format!("Write failed: {e}"))?;
-            if let Err(e) = crate::memory::refresh_codebase_index() {
-                eprintln!("[tool] codebase index refresh failed: {e}");
+            if let Err(e) = crate::memory::refresh_codebase_file(&safe_path) {
+                eprintln!("[tool] incremental codebase index refresh failed: {e}");
             }
             Ok(json!({
                 "path": safe_path.display().to_string(),
@@ -482,8 +485,8 @@ pub(super) fn build_full_registry() -> ToolRegistry {
             let bytes = content.len();
             std::fs::write(&safe_path, &content)
                 .map_err(|e| format!("Write failed: {e}"))?;
-            if let Err(e) = crate::memory::refresh_codebase_index() {
-                eprintln!("[tool] codebase index refresh failed: {e}");
+            if let Err(e) = crate::memory::refresh_codebase_file(&safe_path) {
+                eprintln!("[tool] incremental codebase index refresh failed: {e}");
             }
             Ok(json!({
                 "path": safe_path.display().to_string(),
@@ -753,7 +756,7 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                
+
                 // P1.1 optimization: Prepare SoM (Set-of-Mark) visual labels
                 // if AX tree is available (interactive elements → numbered labels)
                 let run_id = ctx.metadata.get("test_run_id");
@@ -761,13 +764,13 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                     if let Some(run_id_str) = run_id {
                     if let Some(recent_ax_nodes) = crate::test_runner::runs::get_recent_ax_nodes(run_id_str) {
                         let som_renderer = crate::test_runner::som_renderer::SoMRenderer::with_defaults();
-                        
+
                         // Prepare label map (label_id → x,y coordinates)
                         match som_renderer.prepare_label_map(&recent_ax_nodes) {
                             Ok(label_map) if !label_map.is_empty() => {
                                 // Store label map for potential execution phase (e.g., "click label 5")
                                 crate::test_runner::runs::set_som_label_map(run_id_str, label_map.clone());
-                                
+
                                 // Render labels on screenshot (MVP: no-op, but API ready)
                                 match som_renderer.render_labels(&screenshot_b64, &label_map) {
                                     Ok(marked_img) => {
@@ -801,7 +804,7 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                 let url = tokio::task::spawn_blocking(|| {
                     crate::browser::get_current_url().unwrap_or_default()
                 }).await.unwrap_or_default();
-                
+
                 // Build the FINAL prompt (with terseness directive) up-front so
                 // the cache key can hash it.  Directive added to mitigate
                 // Gemini Vision mid-response truncation (batch 4/5 pickup
@@ -906,7 +909,7 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                         }
                     }
                 }
-                
+
                 return Ok(json!({
                     "analysis": analysis.unwrap_or_default(),
                     "size_bytes": size_bytes,
@@ -986,8 +989,20 @@ pub(super) fn build_full_registry() -> ToolRegistry {
                 "name": t.name,
                 "url": t.url,
                 "tags": t.tags,
+                "docs_refs": t.docs_refs,
+                "kb_refs": t.kb_refs,
+                "has_fixture": t.fixture.is_some(),
+                "fixture_only": t.fixture_only,
+                "preserve_origin_state": t.preserve_origin_state,
+                "viewport": t.viewport,
             })).collect();
             Ok(json!({ "count": items.len(), "tests": items }))
+        })
+        .register_fn("script_health", |input| async move {
+            crate::mcp_server::call_script_health(input)
+        })
+        .register_fn("test_analytics", |input| async move {
+            crate::mcp_server::call_test_analytics(input)
         })
         .register_fn("claude_session", |input| async move {
             // Spawn a Claude Code CLI session to fix bugs in another repo.

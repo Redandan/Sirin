@@ -15,6 +15,10 @@ pub enum FailureCategory {
     Flaky,
     Env,
     Obsolete,
+    /// The test intentionally tracks an upstream/product issue or an
+    /// operations prerequisite. Sirin should report or wait on the external
+    /// lane instead of auto-fixing a repo.
+    ExternalIssue,
     /// Browser rendered a completely black frame — typically Chrome crashed
     /// mid-test and recovered in headless mode, preventing Flutter/WebGL from
     /// painting.  NOT a code bug; auto-fix must NOT be triggered.
@@ -25,13 +29,14 @@ pub enum FailureCategory {
 impl FailureCategory {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::UiBug            => "ui_bug",
-            Self::ApiBug           => "api_bug",
-            Self::Flaky            => "flaky",
-            Self::Env              => "env",
-            Self::Obsolete         => "obsolete",
+            Self::UiBug => "ui_bug",
+            Self::ApiBug => "api_bug",
+            Self::Flaky => "flaky",
+            Self::Env => "env",
+            Self::Obsolete => "obsolete",
+            Self::ExternalIssue => "external_issue",
             Self::RenderingFailure => "rendering_failure",
-            Self::Unknown          => "unknown",
+            Self::Unknown => "unknown",
         }
     }
 
@@ -40,7 +45,7 @@ impl FailureCategory {
     /// not a code bug; spawning claude_session would waste tokens.
     pub fn fix_repo(&self) -> Option<&'static str> {
         match self {
-            Self::UiBug  => Some("frontend"),
+            Self::UiBug => Some("frontend"),
             Self::ApiBug => Some("backend"),
             _ => None,
         }
@@ -89,6 +94,19 @@ pub async fn triage(
         };
     }
 
+    // 2b. Operations tests tagged with `external-issue` / `issue-*` often
+    // deliberately validate whether an upstream blocker has been cleared. If
+    // their fixture cannot establish the precondition, classify that as an
+    // external issue instead of asking the LLM to guess and possibly spawning
+    // an unrelated frontend/backend fix.
+    if let Some(reason) = external_issue_fixture_failure_reason(test, result) {
+        return TriageOutcome {
+            category: FailureCategory::ExternalIssue,
+            reason,
+            auto_fix_triggered: false,
+        };
+    }
+
     // 3. Rendering failure — all-black / near-black screenshot means Chrome
     //    crashed and recovered before Flutter finished rendering (Flutter HTML
     //    renderer initialises asynchronously; a crash mid-init leaves a dark
@@ -110,7 +128,8 @@ pub async fn triage(
                 category: FailureCategory::RenderingFailure,
                 reason: "failure screenshot is all-black — Chrome likely recovered in headless \
                          mode during the test; Flutter/WebGL cannot render headless. \
-                         Re-run the test; if it fails again check Chrome stability.".into(),
+                         Re-run the test; if it fails again check Chrome stability."
+                    .into(),
                 auto_fix_triggered: false,
             };
         }
@@ -133,20 +152,27 @@ pub async fn triage(
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|m| m.get("level").and_then(|l| l.as_str()) == Some("error"))
-                .take(10)  // cap at 10 to avoid prompt bloat
-                .filter_map(|m| m.get("text").and_then(|t| t.as_str()).map(|t| {
-                    format!("  [console.error] {}", &t[..t.len().min(200)])
-                }))
+                .take(10) // cap at 10 to avoid prompt bloat
+                .filter_map(|m| {
+                    m.get("text")
+                        .and_then(|t| t.as_str())
+                        .map(|t| format!("  [console.error] {}", &t[..t.len().min(200)]))
+                })
                 .collect();
             if msgs.is_empty() {
                 String::new()
             } else {
-                format!("\n\nBrowser Console Errors ({} captured):\n{}", msgs.len(), msgs.join("\n"))
+                format!(
+                    "\n\nBrowser Console Errors ({} captured):\n{}",
+                    msgs.len(),
+                    msgs.join("\n")
+                )
             }
         })
         .unwrap_or_default();
 
-    let prompt = format!(r#"{header}
+    let prompt = format!(
+        r#"{header}
 
 Categories:
 {cats}
@@ -155,7 +181,7 @@ Categories:
 
 Output strictly valid JSON (no markdown fence):
 {{
-  "category": "ui_bug | api_bug | flaky | env | obsolete | rendering_failure",
+  "category": "ui_bug | api_bug | flaky | env | obsolete | external_issue | rendering_failure",
   "reason": "<{lang} {reason_hint}>",
   "suggested_repo": "frontend | backend | none"
 }}
@@ -170,11 +196,13 @@ Output strictly valid JSON (no markdown fence):
 
     let raw = match crate::llm::call_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), prompt).await {
         Ok(s) => s,
-        Err(e) => return TriageOutcome {
-            category: FailureCategory::Unknown,
-            reason: format!("LLM triage failed: {e}"),
-            auto_fix_triggered: false,
-        },
+        Err(e) => {
+            return TriageOutcome {
+                category: FailureCategory::Unknown,
+                reason: format!("LLM triage failed: {e}"),
+                auto_fix_triggered: false,
+            }
+        }
     };
 
     let analysis = parse_triage(&raw);
@@ -184,7 +212,7 @@ Output strictly valid JSON (no markdown fence):
     TriageOutcome {
         category,
         reason,
-        auto_fix_triggered: false,  // set by trigger_auto_fix if caller wants
+        auto_fix_triggered: false, // set by trigger_auto_fix if caller wants
     }
 }
 
@@ -198,8 +226,15 @@ Output strictly valid JSON (no markdown fence):
 ///
 /// **Outcome tracking**: the spawned thread calls `complete_fix(fix_id, ...)`
 /// when claude_session returns, so future callers can query `recent_fixes()`.
-pub async fn trigger_auto_fix(test: &TestGoal, result: &TestResult, outcome: &TriageOutcome, run_id: Option<&str>) -> bool {
-    let Some(repo) = outcome.category.fix_repo() else { return false; };
+pub async fn trigger_auto_fix(
+    test: &TestGoal,
+    result: &TestResult,
+    outcome: &TriageOutcome,
+    run_id: Option<&str>,
+) -> bool {
+    let Some(repo) = outcome.category.fix_repo() else {
+        return false;
+    };
     let Some(cwd) = crate::claude_session::repo_path(repo) else {
         tracing::warn!("auto_fix: repo alias '{repo}' not found");
         return false;
@@ -231,9 +266,7 @@ pub async fn trigger_auto_fix(test: &TestGoal, result: &TestResult, outcome: &Tr
             &category,
             "last 3 auto-fix attempts all failed — giving up",
         );
-        tracing::warn!(
-            "[test_runner] auto_fix for {test_id}: SKIPPED (3 consecutive failures)"
-        );
+        tracing::warn!("[test_runner] auto_fix for {test_id}: SKIPPED (3 consecutive failures)");
         return false;
     }
 
@@ -253,12 +286,7 @@ pub async fn trigger_auto_fix(test: &TestGoal, result: &TestResult, outcome: &Tr
     );
 
     // Record as pending BEFORE spawning so concurrent callers see it
-    let fix_id = match super::store::record_pending_fix(
-        &test_id,
-        run_id,
-        &category,
-        &bug_prompt,
-    ) {
+    let fix_id = match super::store::record_pending_fix(&test_id, run_id, &category, &bug_prompt) {
         Ok(id) => id,
         Err(e) => {
             tracing::error!("[test_runner] record_pending_fix failed: {e}");
@@ -281,7 +309,8 @@ pub async fn trigger_auto_fix(test: &TestGoal, result: &TestResult, outcome: &Tr
             Ok(r) => {
                 tracing::info!(
                     "[test_runner] auto_fix[{fix_id}] for {test_id}: exit={}, output chars={}",
-                    r.exit_code, r.output.len()
+                    r.exit_code,
+                    r.output.len()
                 );
                 (r.exit_code as i64, r.output)
             }
@@ -308,9 +337,7 @@ pub async fn trigger_auto_fix(test: &TestGoal, result: &TestResult, outcome: &Tr
             return;
         }
 
-        tracing::info!(
-            "[test_runner] auto_fix[{fix_id}]: spawning verification run for {test_id}"
-        );
+        tracing::info!("[test_runner] auto_fix[{fix_id}]: spawning verification run for {test_id}");
         match super::spawn_run_async(test_id.clone(), false /* no nested auto_fix */) {
             Err(e) => {
                 tracing::error!("[test_runner] verification spawn failed: {e}");
@@ -329,7 +356,10 @@ pub async fn trigger_auto_fix(test: &TestGoal, result: &TestResult, outcome: &Tr
                     match super::runs::get(&ver_run_id) {
                         Some(state) => match state.phase {
                             super::runs::RunPhase::Complete(r) => {
-                                break Some(matches!(r.status, super::executor::TestStatus::Passed));
+                                break Some(matches!(
+                                    r.status,
+                                    super::executor::TestStatus::Passed
+                                ));
                             }
                             super::runs::RunPhase::Error(e) => {
                                 tracing::warn!(
@@ -340,9 +370,7 @@ pub async fn trigger_auto_fix(test: &TestGoal, result: &TestResult, outcome: &Tr
                             _ => continue,
                         },
                         None => {
-                            tracing::warn!(
-                                "[test_runner] verification[{fix_id}]: run_id pruned"
-                            );
+                            tracing::warn!("[test_runner] verification[{fix_id}]: run_id pruned");
                             break None;
                         }
                     }
@@ -378,8 +406,8 @@ pub fn render_kb_entry(
     reason: &str,
 ) -> (String, String, String, String) {
     let topic_key = format!("sirin-triage-{test_id}");
-    let title     = format!("[TRIAGE] {test_id} → {category}");
-    let content   = format!(
+    let title = format!("[TRIAGE] {test_id} → {category}");
+    let content = format!(
         "triage: {category}\n\
          auto_fix_attempted: {auto_fix}\n\
          reason: {reason}"
@@ -415,10 +443,21 @@ fn format_recent_fix_context(test_id: &str) -> String {
 // ── Internals ────────────────────────────────────────────────────────────────
 
 fn collect_failure_context(test: &TestGoal, result: &TestResult) -> String {
-    let last_steps: Vec<String> = result.history.iter().rev().take(5).rev().enumerate()
-        .map(|(i, s)| format!("  {}. action={} obs={}", i + 1,
-            truncate(&s.action.to_string(), 120),
-            truncate(&s.observation, 200)))
+    let last_steps: Vec<String> = result
+        .history
+        .iter()
+        .rev()
+        .take(5)
+        .rev()
+        .enumerate()
+        .map(|(i, s)| {
+            format!(
+                "  {}. action={} obs={}",
+                i + 1,
+                truncate(&s.action.to_string(), 120),
+                truncate(&s.observation, 200)
+            )
+        })
         .collect();
 
     format!(
@@ -433,8 +472,9 @@ fn collect_failure_context(test: &TestGoal, result: &TestResult) -> String {
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max { s.to_string() }
-    else {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
         let head: String = s.chars().take(max).collect();
         format!("{head}...")
     }
@@ -452,15 +492,20 @@ fn parse_triage(raw: &str) -> ParsedTriage {
         Ok(v) => {
             let cat = v.get("category").and_then(Value::as_str).unwrap_or("");
             let category = match cat {
-                "ui_bug"            => FailureCategory::UiBug,
-                "api_bug"           => FailureCategory::ApiBug,
-                "flaky"             => FailureCategory::Flaky,
-                "env"               => FailureCategory::Env,
-                "obsolete"          => FailureCategory::Obsolete,
+                "ui_bug" => FailureCategory::UiBug,
+                "api_bug" => FailureCategory::ApiBug,
+                "flaky" => FailureCategory::Flaky,
+                "env" => FailureCategory::Env,
+                "obsolete" => FailureCategory::Obsolete,
+                "external_issue" => FailureCategory::ExternalIssue,
                 "rendering_failure" => FailureCategory::RenderingFailure,
-                _                   => FailureCategory::Unknown,
+                _ => FailureCategory::Unknown,
             };
-            let reason = v.get("reason").and_then(Value::as_str).unwrap_or("").to_string();
+            let reason = v
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
             ParsedTriage { category, reason }
         }
         Err(_) => ParsedTriage {
@@ -481,9 +526,46 @@ fn strip_fences(raw: &str) -> String {
         }
     }
     if let (Some(s), Some(e)) = (t.find('{'), t.rfind('}')) {
-        if e > s { return t[s..=e].to_string(); }
+        if e > s {
+            return t[s..=e].to_string();
+        }
     }
     t.to_string()
+}
+
+fn external_issue_fixture_failure_reason(test: &TestGoal, result: &TestResult) -> Option<String> {
+    let has_external_tag = test
+        .tags
+        .iter()
+        .any(|tag| tag == "external-issue" || tag.starts_with("issue-"));
+    if !has_external_tag || result.iterations != 0 {
+        return None;
+    }
+
+    let err = result.error_message.as_deref().unwrap_or("");
+    let err_lower = err.to_ascii_lowercase();
+    if !err_lower.contains("fixture setup failed") {
+        return None;
+    }
+
+    let issue_tags: Vec<&str> = test
+        .tags
+        .iter()
+        .filter(|tag| tag.starts_with("issue-"))
+        .map(String::as_str)
+        .collect();
+    let issue_label = if issue_tags.is_empty() {
+        "external-issue".to_string()
+    } else {
+        issue_tags.join(",")
+    };
+
+    Some(format!(
+        "fixture failed before the LLM flow for an externally tracked ops test ({issue_label}); \
+         treat this as an upstream blocker or missing live precondition, not an auto-fixable \
+         Sirin/frontend/backend defect. Error: {}",
+        truncate(err, 180)
+    ))
 }
 
 #[cfg(test)]
@@ -519,8 +601,48 @@ mod tests {
         assert_eq!(FailureCategory::Flaky.fix_repo(), None);
         assert_eq!(FailureCategory::Env.fix_repo(), None);
         assert_eq!(FailureCategory::Obsolete.fix_repo(), None);
+        assert_eq!(FailureCategory::ExternalIssue.fix_repo(), None);
         // RenderingFailure must NOT trigger auto-fix — not a code bug
         assert_eq!(FailureCategory::RenderingFailure.fix_repo(), None);
+    }
+
+    #[test]
+    fn parse_external_issue_category() {
+        let raw = r#"{"category":"external_issue","reason":"tracked upstream blocker","suggested_repo":"none"}"#;
+        let p = parse_triage(raw);
+        assert_eq!(p.category, FailureCategory::ExternalIssue);
+    }
+
+    #[test]
+    fn external_issue_fixture_failure_is_rule_classified() {
+        let test: TestGoal = serde_yaml::from_str(
+            r#"
+id: agora_makro_th_checkout_dry
+name: Makro dry-run
+url: https://example.test/cart
+goal: verify cart
+tags: [agora, ops, external-issue, issue-257]
+"#,
+        )
+        .unwrap();
+        let result = TestResult {
+            test_id: test.id.clone(),
+            status: TestStatus::Error,
+            iterations: 0,
+            duration_ms: 1000,
+            error_message: Some(
+                "fixture setup failed: assert_ax_contains target not found".to_string(),
+            ),
+            screenshot_path: None,
+            screenshot_error: None,
+            history: vec![],
+            final_analysis: None,
+            dispute: None,
+        };
+
+        let reason = external_issue_fixture_failure_reason(&test, &result).unwrap();
+        assert!(reason.contains("issue-257"), "got: {reason}");
+        assert!(reason.contains("not an auto-fixable"), "got: {reason}");
     }
 
     #[test]
@@ -532,7 +654,10 @@ mod tests {
 
     #[test]
     fn rendering_failure_as_str() {
-        assert_eq!(FailureCategory::RenderingFailure.as_str(), "rendering_failure");
+        assert_eq!(
+            FailureCategory::RenderingFailure.as_str(),
+            "rendering_failure"
+        );
     }
 
     #[test]
@@ -563,9 +688,12 @@ mod tests {
             render_kb_entry("agora-pickup-flow", "ui_bug", true, "按鈕沒渲染");
         assert_eq!(topic, "sirin-triage-agora-pickup-flow");
         assert_eq!(title, "[TRIAGE] agora-pickup-flow → ui_bug");
-        assert!(content.contains("triage: ui_bug"),         "got: {content}");
-        assert!(content.contains("auto_fix_attempted: true"), "got: {content}");
-        assert!(content.contains("reason: 按鈕沒渲染"),       "got: {content}");
+        assert!(content.contains("triage: ui_bug"), "got: {content}");
+        assert!(
+            content.contains("auto_fix_attempted: true"),
+            "got: {content}"
+        );
+        assert!(content.contains("reason: 按鈕沒渲染"), "got: {content}");
         assert_eq!(tags, "triage,ui_bug");
     }
 
@@ -573,7 +701,10 @@ mod tests {
     fn render_kb_entry_no_auto_fix() {
         let (_topic, _title, content, tags) =
             render_kb_entry("flaky-test", "flaky", false, "<70% pass rate");
-        assert!(content.contains("auto_fix_attempted: false"), "got: {content}");
+        assert!(
+            content.contains("auto_fix_attempted: false"),
+            "got: {content}"
+        );
         assert_eq!(tags, "triage,flaky");
     }
 
@@ -581,8 +712,12 @@ mod tests {
     fn render_kb_entry_rendering_failure_no_auto_fix() {
         // RenderingFailure must never trigger auto-fix — the tag must reflect
         // the category accurately so kbSearch("rendering_failure") finds it.
-        let (_topic, title, content, tags) =
-            render_kb_entry("k14-exact", "rendering_failure", false, "all-black screenshot");
+        let (_topic, title, content, tags) = render_kb_entry(
+            "k14-exact",
+            "rendering_failure",
+            false,
+            "all-black screenshot",
+        );
         assert!(title.contains("rendering_failure"));
         assert!(content.contains("auto_fix_attempted: false"));
         assert_eq!(tags, "triage,rendering_failure");
@@ -611,4 +746,6 @@ fn is_screenshot_all_black(path: &str) -> bool {
 
 // Remove unused json! import warning
 #[allow(dead_code)]
-fn _uses_json_import() -> Value { json!({}) }
+fn _uses_json_import() -> Value {
+    json!({})
+}

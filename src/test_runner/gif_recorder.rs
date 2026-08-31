@@ -17,17 +17,17 @@
 //! Single-frame failure screenshot (the legacy `screenshot_path` field of
 //! `TestResult`) is preserved unchanged for back-compat.
 
-use image::{Rgba, RgbaImage};
 use image::codecs::gif::{GifEncoder, Repeat};
-use image::Frame as ImgFrame;
 use image::Delay;
+use image::Frame as ImgFrame;
+use image::{Rgba, RgbaImage};
 use std::path::PathBuf;
 use std::time::Instant;
 
 const MAX_FRAMES: usize = 60;
-const FRAME_DELAY_MS: u32 = 800;          // ~1.25 fps — slow enough to read labels
-const LABEL_BG: Rgba<u8>   = Rgba([26, 26, 26, 230]);   // #1A1A1A
-const LABEL_TEXT: Rgba<u8> = Rgba([0, 255, 163, 255]);  // #00FFA3 — Sirin accent
+const FRAME_DELAY_MS: u32 = 800; // ~1.25 fps — slow enough to read labels
+const LABEL_BG: Rgba<u8> = Rgba([26, 26, 26, 230]); // #1A1A1A
+const LABEL_TEXT: Rgba<u8> = Rgba([0, 255, 163, 255]); // #00FFA3 — Sirin accent
 
 /// One captured frame: raw screenshot PNG bytes + the action that produced it.
 #[derive(Debug, Clone)]
@@ -45,7 +45,11 @@ pub struct TimelineBuffer {
 }
 
 impl TimelineBuffer {
-    pub fn new() -> Self { Self { frames: std::collections::VecDeque::with_capacity(MAX_FRAMES) } }
+    pub fn new() -> Self {
+        Self {
+            frames: std::collections::VecDeque::with_capacity(MAX_FRAMES),
+        }
+    }
 
     pub fn push(&mut self, f: TimelineFrame) {
         if self.frames.len() >= MAX_FRAMES {
@@ -54,8 +58,12 @@ impl TimelineBuffer {
         self.frames.push_back(f);
     }
 
-    pub fn len(&self) -> usize { self.frames.len() }
-    pub fn is_empty(&self) -> bool { self.frames.is_empty() }
+    pub fn len(&self) -> usize {
+        self.frames.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.frames.is_empty()
+    }
 
     /// Encode buffered frames into a GIF at `out_path`.  On any I/O or codec
     /// error returns Err(String); caller must log + continue (never abort
@@ -67,12 +75,11 @@ impl TimelineBuffer {
             return Err("no frames to encode".into());
         }
         if let Some(parent) = out_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("mkdir {parent:?}: {e}"))?;
+            std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {parent:?}: {e}"))?;
         }
-        let file = std::fs::File::create(out_path)
-            .map_err(|e| format!("create {out_path:?}: {e}"))?;
-        let mut enc = GifEncoder::new_with_speed(file, 30);  // 1=best, 30=fastest
+        let file =
+            std::fs::File::create(out_path).map_err(|e| format!("create {out_path:?}: {e}"))?;
+        let mut enc = GifEncoder::new_with_speed(file, 30); // 1=best, 30=fastest
         enc.set_repeat(Repeat::Infinite)
             .map_err(|e| format!("set_repeat: {e}"))?;
 
@@ -90,7 +97,8 @@ impl TimelineBuffer {
             let labelled = annotate(img, f.step, &f.action, &f.target);
             let frame = ImgFrame::from_parts(
                 labelled,
-                0, 0,
+                0,
+                0,
                 Delay::from_numer_denom_ms(FRAME_DELAY_MS, 1),
             );
             enc.encode_frame(frame)
@@ -101,7 +109,8 @@ impl TimelineBuffer {
         if elapsed.as_secs() > 5 {
             tracing::warn!(
                 "[gif_recorder] GIF encode took {}ms ({} frames) — slow but finished",
-                elapsed.as_millis(), self.frames.len()
+                elapsed.as_millis(),
+                self.frames.len()
             );
         }
         Ok(())
@@ -156,7 +165,8 @@ fn draw_text(img: &mut RgbaImage, x: i32, y: i32, text: &str, color: Rgba<u8>) {
                         for dx in 0..scale {
                             let px = cursor + col * scale + dx;
                             let py = y + row_idx as i32 * scale + dy;
-                            if px >= 0 && py >= 0
+                            if px >= 0
+                                && py >= 0
                                 && (px as u32) < img.width()
                                 && (py as u32) < img.height()
                             {
@@ -167,7 +177,7 @@ fn draw_text(img: &mut RgbaImage, x: i32, y: i32, text: &str, color: Rgba<u8>) {
                 }
             }
         }
-        cursor += 6 * scale;  // 5px glyph + 1px gap
+        cursor += 6 * scale; // 5px glyph + 1px gap
     }
 }
 
@@ -176,60 +186,146 @@ fn draw_text(img: &mut RgbaImage, x: i32, y: i32, text: &str, color: Rgba<u8>) {
 /// Source: hand-rolled subset; covers letters, digits, common punctuation.
 fn font5x7(ch: char) -> [u8; 7] {
     match ch {
-        ' ' => [0,0,0,0,0,0,0],
-        '0' => [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
-        '1' => [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
-        '2' => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111],
-        '3' => [0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110],
-        '4' => [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
-        '5' => [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110],
-        '6' => [0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110],
-        '7' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
-        '8' => [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
-        '9' => [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100],
-        ':' => [0,0b00100,0,0,0,0b00100,0],
-        '.' => [0,0,0,0,0,0b00100,0b00100],
-        ',' => [0,0,0,0,0,0b00100,0b01000],
-        '-' => [0,0,0,0b01110,0,0,0],
-        '_' => [0,0,0,0,0,0,0b11111],
-        '/' => [0b00001,0b00010,0b00010,0b00100,0b01000,0b01000,0b10000],
-        '#' => [0b01010,0b01010,0b11111,0b01010,0b11111,0b01010,0b01010],
-        '(' => [0b00010,0b00100,0b01000,0b01000,0b01000,0b00100,0b00010],
-        ')' => [0b01000,0b00100,0b00010,0b00010,0b00010,0b00100,0b01000],
-        '<' => [0b00010,0b00100,0b01000,0b10000,0b01000,0b00100,0b00010],
-        '>' => [0b01000,0b00100,0b00010,0b00001,0b00010,0b00100,0b01000],
-        '=' => [0,0,0b11111,0,0b11111,0,0],
-        '!' => [0b00100,0b00100,0b00100,0b00100,0b00100,0,0b00100],
-        '?' => [0b01110,0b10001,0b00001,0b00010,0b00100,0,0b00100],
-        '\'' => [0b00100,0b00100,0,0,0,0,0],
-        '"' => [0b01010,0b01010,0,0,0,0,0],
-        'A'|'a' => [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
-        'B'|'b' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110],
-        'C'|'c' => [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110],
-        'D'|'d' => [0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110],
-        'E'|'e' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
-        'F'|'f' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000],
-        'G'|'g' => [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01110],
-        'H'|'h' => [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
-        'I'|'i' => [0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
-        'J'|'j' => [0b00111, 0b00010, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100],
-        'K'|'k' => [0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001],
-        'L'|'l' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
-        'M'|'m' => [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001],
-        'N'|'n' => [0b10001, 0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001],
-        'O'|'o' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
-        'P'|'p' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
-        'Q'|'q' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101],
-        'R'|'r' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
-        'S'|'s' => [0b01110, 0b10001, 0b10000, 0b01110, 0b00001, 0b10001, 0b01110],
-        'T'|'t' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
-        'U'|'u' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
-        'V'|'v' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
-        'W'|'w' => [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001],
-        'X'|'x' => [0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001],
-        'Y'|'y' => [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100],
-        'Z'|'z' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111],
-        _ => [0b11111,0b10001,0b10001,0b10001,0b10001,0b10001,0b11111],  // hollow box
+        ' ' => [0, 0, 0, 0, 0, 0, 0],
+        '0' => [
+            0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110,
+        ],
+        '1' => [
+            0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
+        ],
+        '2' => [
+            0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111,
+        ],
+        '3' => [
+            0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110,
+        ],
+        '4' => [
+            0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010,
+        ],
+        '5' => [
+            0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110,
+        ],
+        '6' => [
+            0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110,
+        ],
+        '7' => [
+            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000,
+        ],
+        '8' => [
+            0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110,
+        ],
+        '9' => [
+            0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100,
+        ],
+        ':' => [0, 0b00100, 0, 0, 0, 0b00100, 0],
+        '.' => [0, 0, 0, 0, 0, 0b00100, 0b00100],
+        ',' => [0, 0, 0, 0, 0, 0b00100, 0b01000],
+        '-' => [0, 0, 0, 0b01110, 0, 0, 0],
+        '_' => [0, 0, 0, 0, 0, 0, 0b11111],
+        '/' => [
+            0b00001, 0b00010, 0b00010, 0b00100, 0b01000, 0b01000, 0b10000,
+        ],
+        '#' => [
+            0b01010, 0b01010, 0b11111, 0b01010, 0b11111, 0b01010, 0b01010,
+        ],
+        '(' => [
+            0b00010, 0b00100, 0b01000, 0b01000, 0b01000, 0b00100, 0b00010,
+        ],
+        ')' => [
+            0b01000, 0b00100, 0b00010, 0b00010, 0b00010, 0b00100, 0b01000,
+        ],
+        '<' => [
+            0b00010, 0b00100, 0b01000, 0b10000, 0b01000, 0b00100, 0b00010,
+        ],
+        '>' => [
+            0b01000, 0b00100, 0b00010, 0b00001, 0b00010, 0b00100, 0b01000,
+        ],
+        '=' => [0, 0, 0b11111, 0, 0b11111, 0, 0],
+        '!' => [0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0, 0b00100],
+        '?' => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0, 0b00100],
+        '\'' => [0b00100, 0b00100, 0, 0, 0, 0, 0],
+        '"' => [0b01010, 0b01010, 0, 0, 0, 0, 0],
+        'A' | 'a' => [
+            0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
+        ],
+        'B' | 'b' => [
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110,
+        ],
+        'C' | 'c' => [
+            0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110,
+        ],
+        'D' | 'd' => [
+            0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110,
+        ],
+        'E' | 'e' => [
+            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111,
+        ],
+        'F' | 'f' => [
+            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000,
+        ],
+        'G' | 'g' => [
+            0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01110,
+        ],
+        'H' | 'h' => [
+            0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
+        ],
+        'I' | 'i' => [
+            0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
+        ],
+        'J' | 'j' => [
+            0b00111, 0b00010, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100,
+        ],
+        'K' | 'k' => [
+            0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001,
+        ],
+        'L' | 'l' => [
+            0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111,
+        ],
+        'M' | 'm' => [
+            0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001,
+        ],
+        'N' | 'n' => [
+            0b10001, 0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001,
+        ],
+        'O' | 'o' => [
+            0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
+        ],
+        'P' | 'p' => [
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000,
+        ],
+        'Q' | 'q' => [
+            0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101,
+        ],
+        'R' | 'r' => [
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001,
+        ],
+        'S' | 's' => [
+            0b01110, 0b10001, 0b10000, 0b01110, 0b00001, 0b10001, 0b01110,
+        ],
+        'T' | 't' => [
+            0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100,
+        ],
+        'U' | 'u' => [
+            0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
+        ],
+        'V' | 'v' => [
+            0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100,
+        ],
+        'W' | 'w' => [
+            0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001,
+        ],
+        'X' | 'x' => [
+            0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001,
+        ],
+        'Y' | 'y' => [
+            0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100,
+        ],
+        'Z' | 'z' => [
+            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111,
+        ],
+        _ => [
+            0b11111, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11111,
+        ], // hollow box
     }
 }
 
@@ -285,7 +381,11 @@ mod tests {
         buf.encode_to_gif(&out).expect("encode ok");
         let meta = std::fs::metadata(&out).expect("file exists");
         // GIF87a/89a header is 6 bytes; a 3-frame valid GIF will be well > 100 bytes.
-        assert!(meta.len() > 100, "gif file size {} must be > 100", meta.len());
+        assert!(
+            meta.len() > 100,
+            "gif file size {} must be > 100",
+            meta.len()
+        );
         // Verify it actually starts with the GIF magic.
         let bytes = std::fs::read(&out).unwrap();
         assert_eq!(&bytes[..6], b"GIF89a", "must have GIF89a header");

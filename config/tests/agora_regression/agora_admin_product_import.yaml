@@ -4,6 +4,7 @@ url: "https://redandan.github.io/?__test_role=admin"
 
 max_iterations: 18
 timeout_secs: 300
+fixture_only: true
 # Admin 後台是 PC 桌面版，使用標準桌面 viewport
 viewport:
   width: 1280
@@ -17,42 +18,45 @@ locale: zh-TW
 # (saves ~10-30s LLM time per LLM-mode run; scripted = 0 LLM cost).
 fixture:
   setup:
+    - {action: "clear_state"}
+    - {action: "goto", target: "https://redandan.github.io/?__test_role=admin"}
     - {action: "wait", target: "3000"}
+    - {action: "wait_for_flutter_semantics", timeout: 15000, min_roles: 2}
+    - {action: "dismiss_passkey_prompt"}
+    - {action: "goto", target: "https://redandan.github.io/?__test_role=admin"}
+    - {action: "wait", target: "5000"}
+    - {action: "wait_for_flutter_semantics", timeout: 25000, min_roles: 8}
+    - {action: "shadow_click", role: "button", name_regex: "^商品與電商(\\n商品與電商)?$"}
+    - {action: "wait", target: "3000"}
+    - {action: "wait_for_flutter_semantics", timeout: 12000, min_roles: 20}
+    - {action: "shadow_find", name_regex: "總產品數|上架中"}
+    - {action: "shadow_find", name_regex: "3M Scotch|商品|產品分類"}
+    - {action: "shadow_find", role: "button", name_regex: "^請選擇產品分類$"}
+    - {action: "shadow_click", role: "button", name_regex: "^請選擇產品分類$"}
+    - {action: "wait", target: "1500"}
+    - {action: "wait_for_flutter_semantics", timeout: 12000, min_roles: 20}
+    - {action: "shadow_find", name_regex: "電子產品|手機|服飾|家居|食品|全部"}
 
 goal: |
-  目標：以管理員身份在「商品與電商」頁驗證商品列表載入、狀態 chip 顯示、分類篩選功能，
-  覆蓋 Issue #70 子問題 #4（分類篩選）、#20（AX tree 折疊）、#22（狀態 chip 色碼）。
+  目標：fixture-only 驗證管理員「商品與電商」頁商品列表載入與分類篩選入口。
+  覆蓋 Issue #70 子問題 #4（分類篩選）與 #20（AX tree 不折疊）。
 
   ⚠️ 注意：商品匯入功能（#49）在目前 Admin UI 中尚未提供入口，本測試不驗證匯入功能。
+  ⚠️ 本 deterministic 版本不使用 screenshot_analyze；#22 狀態 chip 色碼仍需另開視覺測試覆蓋。
 
-  起始狀態：URL `?__test_role=admin` 自動登入後落在 `/admin/statistics`，fixture.setup 已等待儀表板載入。
-  Flutter CanvasKit app — 所有 UI 判斷一律用 screenshot_analyze。
+  fixture.setup 已完成：
+  - clear_state + admin URL 導航
+  - Passkey prompt dismiss
+  - 點擊「商品與電商」
+  - 確認商品列表文字/產品分類按鈕存在
+  - 點擊「請選擇產品分類」
+  - 確認分類 dropdown 或分類選項出現
 
-  ✅ 已確認 AX 資訊（嚴格遵守，不要嘗試別名）：
-  - 導航按鈕名稱：「商品與電商」（不是「商品管理」、不是「商品」）
-  - 分類篩選按鈕：role=button name="請選擇產品分類"（不是 combobox）
-  - Flutter 頁面切換需 wait 3000 才能完成
-
-  ⚠️ 線性步驟，不寫 if/else，不提早終止。done=true 固定在步驟 9。
-  ⚠️ 任何步驟失敗也要繼續走完，由 success_criteria 判斷通過與否。
-
-  步驟（按序執行，不可跳過）：
-  1. shadow_click role=button name_regex="^商品與電商(\\n商品與電商)?$"
-  2. wait 3000（Flutter 頁面切換動畫）
-  3. screenshot_analyze "現在是商品與電商頁嗎？看到商品列表了嗎？商品狀態 chip 是灰色還是有顏色（綠/黃/紅）？記錄頁面頂部的按鈕有哪些。"
-  4. shadow_click role=button name_regex="^請選擇產品分類$"
-  5. wait 1500（等 dropdown 展開）
-  6. screenshot_analyze "分類篩選 dropdown 是否展開？看到哪些分類選項（列出最多 5 個）？或者保持收合狀態？"
-  7. screenshot_analyze "AX tree / 頁面是否仍然完整可見（沒有 collapse 成空白）？商品列表還在嗎？"
-  8. wait 500
-  9. done=true
-
-  ⚠️ 步驟 3、6、7 三次 screenshot_analyze 必須執行，不可合併或跳過。
-  ⚠️ 步驟 9 無條件 done=true，即使前面 shadow_click 失敗也要走到。
+  fixture_only=true；fixture.setup 全部成功即通過，不進 LLM ReAct loop。
 
 success_criteria:
   - "商品與電商頁可開啟並看到商品列表（有商品資料，頁面正常載入）"
-  - "至少一個商品狀態 chip 是彩色（非全灰），代表 #22 修復未回歸"
-  - "點擊「請選擇產品分類」按鈕後，dropdown 展開或頁面有變化（覆蓋 #4），且 AX tree 沒有 collapse 成空白（覆蓋 #20）"
+  - "點擊「請選擇產品分類」按鈕後，dropdown 展開或分類選項可見（覆蓋 #4）"
+  - "分類操作後 shadow tree 仍有足夠節點且商品列表沒有消失（覆蓋 #20）"
 
 tags: [agora, regression, admin, product, import, category-filter, issue-70, critical]

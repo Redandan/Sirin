@@ -104,6 +104,22 @@ pub struct TestGoal {
     /// Optional fixture: setup steps (before test) and cleanup steps (after).
     #[serde(default)]
     pub fixture: Option<Fixture>,
+    /// Preserve browser origin storage before the first navigation.
+    ///
+    /// Default false keeps regression tests isolated. Set true only for
+    /// operations dry-runs that intentionally validate existing live user
+    /// state, such as a pre-seeded first-order cart.
+    #[serde(default)]
+    pub preserve_origin_state: bool,
+    /// When true, fixture.setup is the whole test: if every fixture step
+    /// succeeds, the run passes without entering the LLM ReAct loop.
+    ///
+    /// Use this for deterministic smoke/canary tests where fixture steps
+    /// include explicit assertions such as `assert_url_matches` or
+    /// `shadow_find`.  This keeps frequently scheduled checks fast and avoids
+    /// spending a local/remote LLM call just to say `done=true`.
+    #[serde(default)]
+    pub fixture_only: bool,
     /// Documents that MUST be read before running or interpreting this test.
     ///
     /// Shown in `list_tests` output and included in the `run_test_async` MCP
@@ -250,9 +266,13 @@ pub struct TestViewport {
     pub mobile: bool,
 }
 
-fn default_scale() -> f64 { 1.0 }
+fn default_scale() -> f64 {
+    1.0
+}
 
-fn default_record_timeline_gif() -> bool { false }
+fn default_record_timeline_gif() -> bool {
+    false
+}
 
 impl TestGoal {
     /// Return the navigation URL with `url_query` appended as query string.
@@ -286,7 +306,13 @@ impl TestGoal {
         }
         let qs = params
             .iter()
-            .map(|(k, v)| if v.is_empty() { k.clone() } else { format!("{k}={v}") })
+            .map(|(k, v)| {
+                if v.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{k}={v}")
+                }
+            })
             .collect::<Vec<_>>()
             .join("&");
         format!("{base}?{qs}")
@@ -296,10 +322,18 @@ impl TestGoal {
 /// Default iteration ceiling.  20 gives Flutter/SPA tests enough room for
 /// multi-step flows without per-test YAML overrides.  Complex flows (checkout,
 /// OAuth, multi-page wizards) should still set `max_iterations: 30` in YAML.
-fn default_max_iter() -> u32 { 20 }
-fn default_timeout() -> u64 { 120 }
-fn default_parse_retries() -> u32 { 5 }
-fn default_locale() -> String { "zh-TW".into() }
+fn default_max_iter() -> u32 {
+    20
+}
+fn default_timeout() -> u64 {
+    120
+}
+fn default_parse_retries() -> u32 {
+    5
+}
+fn default_locale() -> String {
+    "zh-TW".into()
+}
 
 /// Directory containing YAML test definitions.
 fn tests_dir() -> PathBuf {
@@ -309,7 +343,9 @@ fn tests_dir() -> PathBuf {
 /// Load all YAML tests from `config/tests/` and any subdirectories.
 pub fn load_all() -> Vec<TestGoal> {
     let dir = tests_dir();
-    if !dir.exists() { return Vec::new(); }
+    if !dir.exists() {
+        return Vec::new();
+    }
     let mut out = Vec::new();
     load_dir_recursive(&dir, &mut out);
     out
@@ -323,14 +359,19 @@ pub fn load_all() -> Vec<TestGoal> {
 /// State is keyed `(PathBuf, error_string)` so a file that's still broken
 /// but with a *different* error (user edited but didn't fix) re-warns once.
 /// State persists for the Sirin process lifetime; restart resets it.
-fn warned_parse_errors() -> &'static std::sync::Mutex<std::collections::HashSet<(std::path::PathBuf, String)>> {
-    static S: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<(std::path::PathBuf, String)>>> = std::sync::OnceLock::new();
+fn warned_parse_errors(
+) -> &'static std::sync::Mutex<std::collections::HashSet<(std::path::PathBuf, String)>> {
+    static S: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashSet<(std::path::PathBuf, String)>>,
+    > = std::sync::OnceLock::new();
     S.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
 }
 
 /// Recursively walk `dir`, loading every `.yaml` / `.yml` file found.
 fn load_dir_recursive(dir: &std::path::Path, out: &mut Vec<TestGoal>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let p = entry.path();
         if p.is_dir() {
@@ -338,13 +379,17 @@ fn load_dir_recursive(dir: &std::path::Path, out: &mut Vec<TestGoal>) {
             continue;
         }
         let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
-        if ext != "yaml" && ext != "yml" { continue; }
+        if ext != "yaml" && ext != "yml" {
+            continue;
+        }
         match load_file(&p) {
             Ok(g) => out.push(g),
             Err(e) => {
                 // Dedup by (path, error) — same broken file logged once.
                 let key = (p.clone(), e.clone());
-                let mut set = warned_parse_errors().lock().unwrap_or_else(|p| p.into_inner());
+                let mut set = warned_parse_errors()
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
                 if set.insert(key) {
                     tracing::warn!("Failed to load test {p:?}: {e}");
                 }
@@ -355,10 +400,8 @@ fn load_dir_recursive(dir: &std::path::Path, out: &mut Vec<TestGoal>) {
 
 /// Load a single test file.
 pub fn load_file(path: &std::path::Path) -> Result<TestGoal, String> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("read {path:?}: {e}"))?;
-    serde_yaml::from_str::<TestGoal>(&content)
-        .map_err(|e| format!("parse {path:?}: {e}"))
+    let content = std::fs::read_to_string(path).map_err(|e| format!("read {path:?}: {e}"))?;
+    serde_yaml::from_str::<TestGoal>(&content).map_err(|e| format!("parse {path:?}: {e}"))
 }
 
 /// Find a test by ID.
@@ -434,31 +477,38 @@ mod tests {
             return;
         }
         let committed = std::fs::read_to_string(&path).expect("read schema");
-        let committed_json: serde_json::Value = serde_json::from_str(&committed)
-            .expect("committed schema must be valid JSON");
+        let committed_json: serde_json::Value =
+            serde_json::from_str(&committed).expect("committed schema must be valid JSON");
         let regen = schemars::schema_for!(TestGoal);
-        let regen_json: serde_json::Value = serde_json::from_str(
-            &serde_json::to_string(&regen).unwrap()
-        ).unwrap();
+        let regen_json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&regen).unwrap()).unwrap();
 
         if committed_json != regen_json {
             // Find the first differing top-level key for actionable error msg.
             let committed_obj = committed_json.as_object().expect("schema is object");
             let regen_obj = regen_json.as_object().expect("schema is object");
             let mut diffs = Vec::new();
-            for k in committed_obj.keys().chain(regen_obj.keys())
+            for k in committed_obj
+                .keys()
+                .chain(regen_obj.keys())
                 .collect::<std::collections::BTreeSet<_>>()
             {
                 if committed_obj.get(k) != regen_obj.get(k) {
                     diffs.push(format!(
                         "  - {k}: committed={} regen={}",
-                        committed_obj.get(k).map(|v| v.to_string().chars().take(80).collect::<String>())
+                        committed_obj
+                            .get(k)
+                            .map(|v| v.to_string().chars().take(80).collect::<String>())
                             .unwrap_or("(missing)".into()),
-                        regen_obj.get(k).map(|v| v.to_string().chars().take(80).collect::<String>())
+                        regen_obj
+                            .get(k)
+                            .map(|v| v.to_string().chars().take(80).collect::<String>())
                             .unwrap_or("(missing)".into()),
                     ));
                 }
-                if diffs.len() >= 5 { break; }
+                if diffs.len() >= 5 {
+                    break;
+                }
             }
             panic!(
                 "config/test-schema.json is stale — run `cargo run --bin gen-schema` \
@@ -483,18 +533,36 @@ mod tests {
         let real = schemars::schema_for!(crate::perception::PerceptionMode);
         let json = serde_json::to_value(&real).unwrap();
         // Must serialise as a string enum of exactly these 3 lowercase variants.
-        let variants = json["oneOf"].as_array()
+        let variants = json["oneOf"]
+            .as_array()
             .or_else(|| json["enum"].as_array())
             .or_else(|| json["definitions"]["PerceptionMode"]["enum"].as_array())
             .expect("PerceptionMode schema should expose its variants");
-        let names: Vec<String> = variants.iter().filter_map(|v|
-            v.as_str().map(|s| s.to_string())
-                .or_else(|| v["enum"].as_array().and_then(|a| a.first().and_then(|x| x.as_str().map(String::from))))
-                .or_else(|| v["const"].as_str().map(String::from))
-        ).collect();
-        assert!(names.contains(&"text".to_string()),   "missing 'text': {variants:?}");
-        assert!(names.contains(&"vision".to_string()), "missing 'vision': {variants:?}");
-        assert!(names.contains(&"auto".to_string()),   "missing 'auto': {variants:?}");
+        let names: Vec<String> = variants
+            .iter()
+            .filter_map(|v| {
+                v.as_str()
+                    .map(|s| s.to_string())
+                    .or_else(|| {
+                        v["enum"]
+                            .as_array()
+                            .and_then(|a| a.first().and_then(|x| x.as_str().map(String::from)))
+                    })
+                    .or_else(|| v["const"].as_str().map(String::from))
+            })
+            .collect();
+        assert!(
+            names.contains(&"text".to_string()),
+            "missing 'text': {variants:?}"
+        );
+        assert!(
+            names.contains(&"vision".to_string()),
+            "missing 'vision': {variants:?}"
+        );
+        assert!(
+            names.contains(&"auto".to_string()),
+            "missing 'auto': {variants:?}"
+        );
         assert_eq!(names.len(), 3, "unexpected extra variants: {names:?}");
     }
 
@@ -530,7 +598,10 @@ tags: [auth, smoke, critical]
         let g: TestGoal = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(g.max_iterations, 8);
         assert_eq!(g.success_criteria.len(), 2);
-        assert_eq!(g.tags, vec!["auth".to_string(), "smoke".into(), "critical".into()]);
+        assert_eq!(
+            g.tags,
+            vec!["auth".to_string(), "smoke".into(), "critical".into()]
+        );
     }
 
     #[test]
@@ -568,23 +639,28 @@ fixture:
 
     #[test]
     fn full_url_without_query_params_unchanged() {
-        let g: TestGoal = serde_yaml::from_str(
-            "id: x\nname: y\nurl: https://example.com\ngoal: g",
-        ).unwrap();
+        let g: TestGoal =
+            serde_yaml::from_str("id: x\nname: y\nurl: https://example.com\ngoal: g").unwrap();
         assert_eq!(g.full_url(), "https://example.com");
     }
 
     #[test]
     fn full_url_appends_url_query() {
-        let g: TestGoal = serde_yaml::from_str(r#"
+        let g: TestGoal = serde_yaml::from_str(
+            r#"
 id: flutter_test
 name: "Flutter test"
 url: "https://app.example.com/"
 goal: "test it"
 url_query:
   flutter-web-renderer: html
-"#).unwrap();
-        assert_eq!(g.full_url(), "https://app.example.com/?flutter-web-renderer=html");
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            g.full_url(),
+            "https://app.example.com/?flutter-web-renderer=html"
+        );
     }
 
     #[test]
@@ -693,7 +769,8 @@ kb_refs:
 
     #[test]
     fn full_url_merges_with_existing_query() {
-        let g: TestGoal = serde_yaml::from_str(r#"
+        let g: TestGoal = serde_yaml::from_str(
+            r#"
 id: x
 name: y
 url: "https://app.com/?foo=1&bar=2"
@@ -701,10 +778,15 @@ goal: g
 url_query:
   flutter-web-renderer: html
   foo: OVERRIDE
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         let url = g.full_url();
         assert!(url.contains("foo=OVERRIDE"), "override should win: {url}");
-        assert!(url.contains("bar=2"), "existing non-conflicting param kept: {url}");
+        assert!(
+            url.contains("bar=2"),
+            "existing non-conflicting param kept: {url}"
+        );
         assert!(url.contains("flutter-web-renderer=html"));
     }
 
@@ -754,9 +836,94 @@ url_query:
             "agora_notification_delete", // wait + enable_a11y warm-up only
             "agora_pickup_time_picker",  // wait + enable_a11y warm-up only
         ];
+        const DETERMINISTIC_FIXTURE_ALLOWLIST: &[&str] = &[
+            // Reviewed fixture-only navigation/assertion flows. URL auto-login
+            // remains mandatory and no credential/payment/order action is allowed.
+            "agora_admin_category_filter",
+            "agora_navigation_breadcrumb",
+            "agora_search_keyword",
+        ];
         for id in &expected_ids {
             let test = all.iter().find(|t| t.id == *id).unwrap();
             let id_ref: &str = *id;
+            if DETERMINISTIC_FIXTURE_ALLOWLIST.contains(&id_ref) {
+                assert!(
+                    test.fixture_only,
+                    "test '{id_ref}' must remain fixture_only when using a full deterministic fixture"
+                );
+                let fixture = test
+                    .fixture
+                    .as_ref()
+                    .expect("deterministic fixture allowlist entry must have fixture.setup");
+                assert!(
+                    fixture.cleanup.is_empty(),
+                    "test '{id_ref}' deterministic fixture must not mutate state during cleanup"
+                );
+                let expected_role = if id_ref == "agora_admin_category_filter" {
+                    "admin"
+                } else {
+                    "buyer"
+                };
+                assert!(
+                    test.url.contains(&format!("__test_role={expected_role}")),
+                    "test '{id_ref}' must keep the reviewed {expected_role} auto-login URL"
+                );
+                if fixture
+                    .setup
+                    .iter()
+                    .any(|step| step.action == "clear_state")
+                {
+                    assert!(
+                        fixture.setup.iter().any(|step| {
+                            step.action == "goto"
+                                && step.target.contains("redandan.github.io")
+                                && step
+                                    .target
+                                    .contains(&format!("__test_role={expected_role}"))
+                        }),
+                        "test '{id_ref}' fixture must re-enter the {expected_role} auto-login URL after clear_state"
+                    );
+                }
+                for step in &fixture.setup {
+                    assert!(
+                        matches!(
+                            step.action.as_str(),
+                            "clear_state"
+                                | "goto"
+                                | "wait"
+                                | "wait_for_flutter_semantics"
+                                | "dismiss_passkey_prompt"
+                                | "enable_a11y"
+                                | "wait_for_ax_ready"
+                                | "assert_ax_contains"
+                                | "shadow_click"
+                                | "shadow_find"
+                                | "wait_for_url"
+                                | "assert_url_matches"
+                                | "eval"
+                        ),
+                        "test '{id_ref}' deterministic fixture contains unsafe/unreviewed action '{}'",
+                        step.action
+                    );
+                    if step.action == "goto" {
+                        assert!(
+                            step.target.contains("redandan.github.io")
+                                && step
+                                    .target
+                                    .contains(&format!("__test_role={expected_role}")),
+                            "test '{id_ref}' deterministic fixture goto escaped the reviewed {expected_role} auto-login URL"
+                        );
+                    }
+                    if step.action == "eval" {
+                        assert_eq!(
+                            step.target.trim(),
+                            "window.history.back()",
+                            "test '{id_ref}' deterministic fixture eval must remain navigation-only"
+                        );
+                    }
+                }
+                continue;
+            }
             if FIXTURE_ALLOWLIST.contains(&id_ref) {
                 // The whitelisted tests must keep their fixture lean: only
                 // wait / enable_a11y / clear_state — no shadow_click login
@@ -786,12 +953,14 @@ url_query:
             assert!(
                 test.url.contains("redandan.github.io"),
                 "test '{}' url '{}' should target redandan.github.io",
-                id, test.url
+                id,
+                test.url
             );
             assert!(
                 test.url.contains("__test_role="),
                 "test '{}' url '{}' must contain __test_role= for auto-login",
-                id, test.url
+                id,
+                test.url
             );
         }
 
@@ -816,31 +985,41 @@ url_query:
             assert!(
                 test.max_iterations >= 1,
                 "test '{}' max_iterations={} must be at least 1",
-                id, test.max_iterations
+                id,
+                test.max_iterations
             );
         }
 
         // Correct login role per test (via __test_role= URL param)
-        let buyer_tests  = ["agora_search_keyword", "agora_logout_flow",
-            "agora_navigation_breadcrumb", "agora_cart_add_remove",
+        let buyer_tests = [
+            "agora_search_keyword",
+            "agora_logout_flow",
+            "agora_navigation_breadcrumb",
+            "agora_cart_add_remove",
             "agora_checkout_dry",
-            "agora_notification_delete", "agora_webrtc_permission"];
+            "agora_notification_delete",
+            "agora_webrtc_permission",
+        ];
         // agora_pickup_time_picker edits seller product-form pickup settings → seller role
-        let seller_tests = ["agora_pickup_checkboxes_restore", "agora_pickup_service_default",
-            "agora_pickup_time_picker"];
-        let admin_tests  = ["agora_admin_status_chip", "agora_admin_category_filter"];
+        let seller_tests = [
+            "agora_pickup_checkboxes_restore",
+            "agora_pickup_service_default",
+            "agora_pickup_time_picker",
+        ];
+        let admin_tests = ["agora_admin_status_chip", "agora_admin_category_filter"];
 
         for (ids, role) in [
-            (buyer_tests.as_slice(),  "buyer"),
+            (buyer_tests.as_slice(), "buyer"),
             (seller_tests.as_slice(), "seller"),
-            (admin_tests.as_slice(),  "admin"),
+            (admin_tests.as_slice(), "admin"),
         ] {
             for id in ids {
                 let test = all.iter().find(|t| t.id == *id).unwrap();
                 assert!(
                     test.url.contains(&format!("__test_role={role}")),
                     "test '{}' url '{}' should contain __test_role={role}",
-                    id, test.url
+                    id,
+                    test.url
                 );
             }
         }
@@ -855,7 +1034,8 @@ url_query:
         let all = load_all();
         for test in &all {
             // Extract step numbers from goal text: match lines like "  1. " or "  12. "
-            let mut step_numbers: Vec<u32> = test.goal
+            let mut step_numbers: Vec<u32> = test
+                .goal
                 .lines()
                 .filter_map(|line| {
                     let trimmed = line.trim_start();
@@ -881,7 +1061,8 @@ url_query:
                 assert!(
                     seen.insert(n),
                     "test '{}' has duplicate step number {} in goal",
-                    test.id, n
+                    test.id,
+                    n
                 );
             }
 
@@ -917,10 +1098,15 @@ url_query:
                 continue;
             }
 
-            let steps: Vec<&str> = test.goal.lines()
+            let steps: Vec<&str> = test
+                .goal
+                .lines()
                 .filter(|l| {
                     let t = l.trim_start();
-                    t.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false)
+                    t.chars()
+                        .next()
+                        .map(|c| c.is_ascii_digit())
+                        .unwrap_or(false)
                         && t.contains(". ")
                 })
                 .collect();
@@ -935,7 +1121,8 @@ url_query:
                     if !has_reauth {
                         violations.push(format!(
                             "'{}' step {}: clear_state without goto ?__test_role= in next 5 steps",
-                            test.id, i + 1
+                            test.id,
+                            i + 1
                         ));
                     }
                 }

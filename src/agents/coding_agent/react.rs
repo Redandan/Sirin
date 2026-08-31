@@ -245,16 +245,14 @@ pub(super) async fn run_react_iterations(
                 );
                 format!("[Already read at iteration {cached_iter} — content unchanged, using cache]\n{cached}")
             } else {
-                let outcome =
-                    super::step::execute_tool(ctx, &step.action, tool_input, true).await;
+                let outcome = super::step::execute_tool(ctx, &step.action, tool_input, true).await;
                 if !path_key.is_empty() && !outcome.observation.starts_with("ERROR:") {
                     file_read_cache.insert(path_key, (iteration, outcome.observation.clone()));
                 }
                 outcome.observation
             }
         } else {
-            let outcome =
-                super::step::execute_tool(ctx, &step.action, tool_input, false).await;
+            let outcome = super::step::execute_tool(ctx, &step.action, tool_input, false).await;
             for path in outcome.files_modified {
                 if !state.files_modified.contains(&path) {
                     state.files_modified.push(path);
@@ -380,10 +378,10 @@ mod tests {
 
     fn empty_request() -> CodingRequest {
         CodingRequest {
-            task:           "trivial test task".to_string(),
+            task: "trivial test task".to_string(),
             max_iterations: Some(1),
-            dry_run:        false,
-            context_block:  None,
+            dry_run: false,
+            context_block: None,
         }
     }
 
@@ -399,7 +397,15 @@ mod tests {
         let mut state = RunState::default();
 
         let result = run_react_iterations(
-            &ctx, &request, &config, "project context", "plan", false, false, 5, &mut state,
+            &ctx,
+            &request,
+            &config,
+            "project context",
+            "plan",
+            false,
+            false,
+            5,
+            &mut state,
         )
         .await;
 
@@ -415,8 +421,14 @@ mod tests {
         assert_eq!(captured[0].0, LlmKind::Coding);
         // The prompt must include the task and the project context block.
         let prompt = &captured[0].1;
-        assert!(prompt.contains("trivial test task"), "prompt must include task");
-        assert!(prompt.contains("project context"), "prompt must include project ctx");
+        assert!(
+            prompt.contains("trivial test task"),
+            "prompt must include task"
+        );
+        assert!(
+            prompt.contains("project context"),
+            "prompt must include project ctx"
+        );
     }
 
     #[tokio::test]
@@ -462,8 +474,7 @@ mod tests {
         assert!(result.is_ok(), "fail-fast is a clean break, not an Err");
         assert!(state.had_tool_errors, "errors must be recorded");
         assert!(
-            state.final_answer.contains("fail-fast")
-                || state.final_answer.contains("無效"),
+            state.final_answer.contains("fail-fast") || state.final_answer.contains("無效"),
             "final_answer should mention fail-fast: {}",
             state.final_answer
         );

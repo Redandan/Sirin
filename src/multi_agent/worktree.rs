@@ -12,6 +12,8 @@
 use std::path::Path;
 use std::process::Command;
 
+use crate::platform::NoWindow;
+
 /// Create an isolated git worktree for a task.
 ///
 /// Returns the absolute path to the worktree root (where cwd will be).
@@ -46,11 +48,13 @@ pub fn create_worktree(repo_cwd: &str, task_id: &str) -> Result<String, String> 
 
     // Remove stale branch from a previous failed run (ignore errors)
     let _ = Command::new("git")
+        .no_window()
         .args(["branch", "-D", &branch_name])
         .current_dir(repo_cwd)
         .output();
 
     let output = Command::new("git")
+        .no_window()
         .arg("worktree")
         .arg("add")
         .arg("-b")
@@ -87,6 +91,7 @@ pub fn cleanup_worktree(repo_cwd: &str, task_id: &str) -> Result<(), String> {
 
     // Remove the worktree
     let output = Command::new("git")
+        .no_window()
         .arg("worktree")
         .arg("remove")
         .arg("--force")
@@ -106,6 +111,7 @@ pub fn cleanup_worktree(repo_cwd: &str, task_id: &str) -> Result<(), String> {
     // Also delete the task branch so it doesn't accumulate across many tasks
     let branch_name = format!("task/{}", task_id);
     let _ = Command::new("git")
+        .no_window()
         .args(["branch", "-D", &branch_name])
         .current_dir(repo_cwd)
         .output();
@@ -124,6 +130,7 @@ pub fn merge_task_branch(repo_cwd: &str, task_id: &str) -> Result<(), String> {
     let branch_name = format!("task/{}", task_id);
 
     let output = Command::new("git")
+        .no_window()
         .arg("merge")
         .arg("--ff-only")
         .arg(&branch_name)
@@ -133,7 +140,9 @@ pub fn merge_task_branch(repo_cwd: &str, task_id: &str) -> Result<(), String> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("git merge {branch_name} failed (not a fast-forward?): {stderr}"));
+        return Err(format!(
+            "git merge {branch_name} failed (not a fast-forward?): {stderr}"
+        ));
     }
 
     tracing::info!(target: "sirin",
@@ -141,6 +150,7 @@ pub fn merge_task_branch(repo_cwd: &str, task_id: &str) -> Result<(), String> {
 
     // Clean up the branch reference
     let _ = Command::new("git")
+        .no_window()
         .arg("branch")
         .arg("-d")
         .arg(&branch_name)
@@ -159,7 +169,7 @@ fn sanitize_task_id(task_id: &str) -> String {
         .replace(":", "_")
         .replace(" ", "_")
         .chars()
-        .take(60)  // Limit path length
+        .take(60) // Limit path length
         .collect()
 }
 
@@ -168,13 +178,13 @@ fn sanitize_task_id(task_id: &str) -> String {
 /// preview before committing (`dry_run=true`) or audit the deletes after.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct StaleWorktree {
-    pub path:       String,
-    pub branch:     Option<String>,
-    pub age_hours:  u64,
-    pub deleted:    bool,
+    pub path: String,
+    pub branch: Option<String>,
+    pub age_hours: u64,
+    pub deleted: bool,
     /// Populated only when `deleted == false` and `dry_run == false`,
     /// explaining why the cleanup couldn't proceed.
-    pub error:      Option<String>,
+    pub error: Option<String>,
 }
 
 /// Reap any `sirin-task-*` worktrees older than `older_than_hours` whose
@@ -216,8 +226,7 @@ pub fn cleanup_stale_worktrees(
 
     let mut results = Vec::new();
 
-    let entries = std::fs::read_dir(parent)
-        .map_err(|e| format!("read_dir {parent:?}: {e}"))?;
+    let entries = std::fs::read_dir(parent).map_err(|e| format!("read_dir {parent:?}: {e}"))?;
 
     for entry in entries.flatten() {
         let path = entry.path();
@@ -244,7 +253,7 @@ pub fn cleanup_stale_worktrees(
         let modified = metadata.modified().unwrap_or(now);
         let age = now.duration_since(modified).unwrap_or_default();
         if age < threshold {
-            continue;  // too young
+            continue; // too young
         }
         let age_hours = age.as_secs() / 3600;
 
@@ -253,11 +262,11 @@ pub fn cleanup_stale_worktrees(
 
         if dry_run {
             results.push(StaleWorktree {
-                path:      path_str,
-                branch:    Some(branch_name),
+                path: path_str,
+                branch: Some(branch_name),
                 age_hours,
-                deleted:   false,
-                error:     None,
+                deleted: false,
+                error: None,
             });
             continue;
         }
@@ -265,6 +274,7 @@ pub fn cleanup_stale_worktrees(
         // Hard remove via git first (handles index lock cleanly), fall
         // back to plain rm if git refuses.  Then drop the task branch.
         let git_remove = Command::new("git")
+            .no_window()
             .args(["worktree", "remove", "--force"])
             .arg(path_str.as_str())
             .current_dir(repo_cwd)
@@ -299,16 +309,17 @@ pub fn cleanup_stale_worktrees(
         if removed {
             // Best-effort branch deletion — silent on failure.
             let _ = Command::new("git")
+                .no_window()
                 .args(["branch", "-D", &branch_name])
                 .current_dir(repo_cwd)
                 .output();
         }
 
         results.push(StaleWorktree {
-            path:      path_str,
-            branch:    Some(branch_name),
+            path: path_str,
+            branch: Some(branch_name),
             age_hours,
-            deleted:   removed,
+            deleted: removed,
             error,
         });
     }
@@ -337,12 +348,12 @@ mod tests {
         let cwd = std::env::current_dir().expect("cwd");
         let target = cwd.join("target");
         if !target.exists() {
-            return;  // Cargo build hasn't created target/ yet — skip silently.
+            return; // Cargo build hasn't created target/ yet — skip silently.
         }
         let result = cleanup_stale_worktrees(
             target.to_string_lossy().as_ref(),
             24,
-            true,  // dry_run
+            true, // dry_run
         );
         assert!(result.is_ok(), "expected Ok, got {result:?}");
         let rows = result.unwrap();
@@ -350,8 +361,11 @@ mod tests {
         // normal build; if a developer's worktree DID stick around we
         // tolerate it (just confirm the function returned without error).
         for row in &rows {
-            assert!(row.path.contains("sirin-task-"),
-                "row matched non-sirin-task path: {}", row.path);
+            assert!(
+                row.path.contains("sirin-task-"),
+                "row matched non-sirin-task path: {}",
+                row.path
+            );
         }
     }
 

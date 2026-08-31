@@ -37,20 +37,18 @@ fn extract_text_from_html(html: &str) -> String {
             r"(?si)<script[^>]*>.*?</script>|<style[^>]*>.*?</style>|<noscript[^>]*>.*?</noscript>|<head[^>]*>.*?</head>",
         ).unwrap()
     });
-    let strip_tags = STRIP_TAGS.get_or_init(|| {
-        Regex::new(r"<[^>]+>").unwrap()
-    });
+    let strip_tags = STRIP_TAGS.get_or_init(|| Regex::new(r"<[^>]+>").unwrap());
 
     let cleaned = strip_elem.replace_all(html, " ");
-    let plain   = strip_tags.replace_all(&cleaned, " ");
+    let plain = strip_tags.replace_all(&cleaned, " ");
 
     // Basic HTML entity decoding.
     let plain = plain
-        .replace("&amp;",  "&")
-        .replace("&lt;",   "<")
-        .replace("&gt;",   ">")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
         .replace("&nbsp;", " ")
-        .replace("&#39;",  "'")
+        .replace("&#39;", "'")
         .replace("&quot;", "\"");
 
     let mut seen = std::collections::HashSet::new();

@@ -12,25 +12,25 @@
 //! 每個 session 使用 `claude -p ... --continue` 保持對話連續性。
 //! session_id 存在磁碟，使用者可隨時 `claude --resume <id>` 查看對話。
 
-mod roles;
-mod session;
 pub mod github_adapter;
 pub mod knowledge;
 pub mod queue;
+mod roles;
+mod session;
 pub mod usage;
 pub mod worker;
 pub mod worktree;
 
-pub use session::PersistentSession;
 pub use queue::TaskStatus;
 use serde::Serialize;
+pub use session::PersistentSession;
 
 // ── AgentTeam ─────────────────────────────────────────────────────────────────
 
 pub struct AgentTeam {
-    pub pm:       PersistentSession,
+    pub pm: PersistentSession,
     pub engineer: PersistentSession,
-    pub tester:   PersistentSession,
+    pub tester: PersistentSession,
 }
 
 impl AgentTeam {
@@ -57,13 +57,25 @@ impl AgentTeam {
     pub fn load_for_worker_project(cwd: &str, worker_id: usize, project_key: &str) -> Self {
         Self {
             pm: PersistentSession::load_for_worker_project(
-                "pm",       worker_id, project_key, cwd, roles::PM,
+                "pm",
+                worker_id,
+                project_key,
+                cwd,
+                roles::PM,
             ),
             engineer: PersistentSession::load_for_worker_project(
-                "engineer", worker_id, project_key, cwd, roles::ENGINEER,
+                "engineer",
+                worker_id,
+                project_key,
+                cwd,
+                roles::ENGINEER,
             ),
             tester: PersistentSession::load_for_worker_project(
-                "tester",   worker_id, project_key, cwd, roles::TESTER,
+                "tester",
+                worker_id,
+                project_key,
+                cwd,
+                roles::TESTER,
             ),
         }
     }
@@ -77,9 +89,9 @@ impl AgentTeam {
     /// 不會持久化；reload 後重置為空。每個任務開始前由 worker 呼叫一次，
     /// 結束後再以 `&[]` 清掉。
     pub fn set_extra_tools(&mut self, extra: &[String]) {
-        self.pm.extra_tools       = extra.to_vec();
+        self.pm.extra_tools = extra.to_vec();
         self.engineer.extra_tools = extra.to_vec();
-        self.tester.extra_tools   = extra.to_vec();
+        self.tester.extra_tools = extra.to_vec();
     }
 
     /// 為下一個任務啟用/停用 dry-run 驗證模式（套用於 PM / Engineer / Tester
@@ -88,9 +100,9 @@ impl AgentTeam {
     /// 不會持久化；reload 後重置為 `false`。每個任務開始前由 worker 呼叫一次，
     /// 結束後再以 `false` 清掉。
     pub fn set_dry_run(&mut self, dry_run: bool) {
-        self.pm.dry_run       = dry_run;
+        self.pm.dry_run = dry_run;
         self.engineer.dry_run = dry_run;
-        self.tester.dry_run   = dry_run;
+        self.tester.dry_run = dry_run;
     }
 
     /// Per-task Cargo target dir hint. Empty string clears the hint.
@@ -115,22 +127,25 @@ impl AgentTeam {
     /// - Engineer session 每輪重置（避免 --continue 累積歷史爆 context window）
     /// - 傳入各 session 的訊息截斷至 MAX_MSG_CHARS
     pub fn assign_task(&mut self, task: &str) -> Result<String, String> {
-        const MAX_ITER:      usize = 5;      // was 3; UI/multi-file tasks need more room
+        const MAX_ITER: usize = 5; // was 3; UI/multi-file tasks need more room
         const MAX_MSG_CHARS: usize = 120_000; // Gemini 1M window — 可以處理更長的 context
 
         // 安全截斷 helper（找 max_bytes 內最後一個 char boundary）
         fn trunc(s: &str, max: usize) -> &str {
             let end = s.len().min(max);
-            let b = (0..=end).rev().find(|&i| s.is_char_boundary(i)).unwrap_or(0);
+            let b = (0..=end)
+                .rev()
+                .find(|&i| s.is_char_boundary(i))
+                .unwrap_or(0);
             &s[..b]
         }
 
         // 1. PM 分析任務、拆解指令（注入歷史知識）
         let lessons = knowledge::relevant_lessons(task, 5);
         let knowledge_prefix = knowledge::format_knowledge_prefix(&lessons);
-        let plan = self.pm.send(
-            &format!("{knowledge_prefix}新任務：{task}\n\n請拆解成具體步驟，給出明確指令讓工程師執行。")
-        )?;
+        let plan = self.pm.send(&format!(
+            "{knowledge_prefix}新任務：{task}\n\n請拆解成具體步驟，給出明確指令讓工程師執行。"
+        ))?;
         let plan_short = trunc(&plan, MAX_MSG_CHARS);
 
         let mut last_review = String::new();
@@ -176,7 +191,9 @@ impl AgentTeam {
         if last_review.is_empty() {
             Err(format!("assign_task: {MAX_ITER} 輪後 PM 仍未核准"))
         } else {
-            Err(format!("assign_task: {MAX_ITER} 輪後 PM 仍未核准\n最後 review：\n{last_review}"))
+            Err(format!(
+                "assign_task: {MAX_ITER} 輪後 PM 仍未核准\n最後 review：\n{last_review}"
+            ))
         }
     }
 
@@ -187,9 +204,9 @@ impl AgentTeam {
     ///     file lock 衝突（cargo 使用排他鎖，重入會造成死鎖）。
     pub fn test_cycle(&mut self) -> Result<String, String> {
         // 1. Tester 驗證編譯
-        let test_result = self.tester.send(
-            "請執行 cargo check 驗證編譯，回報結果（0 errors = 通過）。"
-        )?;
+        let test_result = self
+            .tester
+            .send("請執行 cargo check 驗證編譯，回報結果（0 errors = 通過）。")?;
 
         // 2. 有失敗 → 工程師修
         // 偵測模式涵蓋：cargo check 錯誤、cargo test 失敗、Tester 回報格式
@@ -198,17 +215,17 @@ impl AgentTeam {
             || test_result.contains("❌")
             || test_result.contains("error[")     // Rust 編譯錯誤 (e.g. error[E0308])
             || test_result.contains("error: ")    // Rust linker / proc-macro 錯誤
-            || test_result.contains("编译失败");   // Tester 中文回報
+            || test_result.contains("编译失败"); // Tester 中文回報
 
         if has_failure {
-            let fix = self.engineer.send(
-                &format!("Tester 回報測試失敗：\n{test_result}\n\n請修復失敗的測試。")
-            )?;
+            let fix = self.engineer.send(&format!(
+                "Tester 回報測試失敗：\n{test_result}\n\n請修復失敗的測試。"
+            ))?;
 
             // 3. PM 記錄這次的錯誤與修復
-            self.pm.send(
-                &format!("測試失敗紀錄：\n失敗：{test_result}\n修復：{fix}\n\n請記錄這次的錯誤與修復方式。")
-            )?;
+            self.pm.send(&format!(
+                "測試失敗紀錄：\n失敗：{test_result}\n修復：{fix}\n\n請記錄這次的錯誤與修復方式。"
+            ))?;
 
             // 4. Tester 重新驗證
             let retest = self.tester.send("請重新執行測試，確認修復是否成功。")?;
@@ -229,52 +246,60 @@ impl AgentTeam {
     /// `sirin_cwd` 是 Sirin repo 根目錄（例如 `C:/repos/Sirin`）。
     /// `test_id` 是 YAML 的 `id` 欄位（不含 `.yaml`）。
     pub fn yaml_test_cycle(&mut self, sirin_cwd: &str, test_id: &str) -> Result<String, String> {
-        use std::time::{Duration, Instant};
-        use crate::test_runner::{AdhocRunRequest, TestStatus};
         use crate::test_runner::runs::RunPhase;
+        use crate::test_runner::{AdhocRunRequest, TestStatus};
+        use std::time::{Duration, Instant};
 
-        const MAX_ATTEMPTS:       usize    = 2;
-        const POLL_INTERVAL:      Duration = Duration::from_secs(5);
-        const TEST_TIMEOUT_SECS:  u64      = 300;
+        const MAX_ATTEMPTS: usize = 2;
+        const POLL_INTERVAL: Duration = Duration::from_secs(5);
+        const TEST_TIMEOUT_SECS: u64 = 300;
 
         // 遞迴搜尋 {sirin_cwd}/config/tests/**/{test_id}.yaml
         fn find_yaml(dir: &std::path::Path, test_id: &str) -> Option<std::path::PathBuf> {
             let direct = dir.join(format!("{test_id}.yaml"));
-            if direct.exists() { return Some(direct); }
+            if direct.exists() {
+                return Some(direct);
+            }
             if let Ok(entries) = std::fs::read_dir(dir) {
                 for e in entries.flatten() {
                     let p = e.path();
                     if p.is_dir() {
-                        if let Some(f) = find_yaml(&p, test_id) { return Some(f); }
+                        if let Some(f) = find_yaml(&p, test_id) {
+                            return Some(f);
+                        }
                     }
                 }
             }
             None
         }
 
-        let yaml_dir = std::path::PathBuf::from(sirin_cwd).join("config").join("tests");
+        let yaml_dir = std::path::PathBuf::from(sirin_cwd)
+            .join("config")
+            .join("tests");
 
         for attempt in 0..MAX_ATTEMPTS {
             // 1. 載入 YAML（每次 attempt 都重載，讓 Engineer 修完後能看到新版本）
             let yaml_path = match find_yaml(&yaml_dir, test_id) {
                 Some(p) => p,
-                None => return Err(format!(
-                    "yaml_test_cycle: `{test_id}.yaml` 不在 {yaml_dir:?} 或子目錄"
-                )),
+                None => {
+                    return Err(format!(
+                        "yaml_test_cycle: `{test_id}.yaml` 不在 {yaml_dir:?} 或子目錄"
+                    ))
+                }
             };
             let goal = crate::test_runner::parser::load_file(&yaml_path)
                 .map_err(|e| format!("yaml_test_cycle: load YAML 失敗: {e}"))?;
 
             // 2. 執行 adhoc run（不需先 sync 到 LocalAppData）
             let req = AdhocRunRequest {
-                url:              goal.url.clone(),
-                goal:             goal.goal.clone(),
+                url: goal.url.clone(),
+                goal: goal.goal.clone(),
                 success_criteria: goal.success_criteria.clone(),
-                locale:           Some(goal.locale.clone()),
-                max_iterations:   Some(goal.max_iterations),
-                timeout_secs:     Some(goal.timeout_secs),
+                locale: Some(goal.locale.clone()),
+                max_iterations: Some(goal.max_iterations),
+                timeout_secs: Some(goal.timeout_secs),
                 browser_headless: goal.browser_headless,
-                llm_backend:      goal.llm_backend.clone(),
+                llm_backend: goal.llm_backend.clone(),
                 ..Default::default()
             };
             let run_id = crate::test_runner::spawn_adhoc_run(req)
@@ -294,7 +319,7 @@ impl AgentTeam {
                 };
                 match state.phase {
                     RunPhase::Complete(r) => break r,
-                    RunPhase::Error(e)    => return Err(format!("yaml_test_cycle: run errored: {e}")),
+                    RunPhase::Error(e) => return Err(format!("yaml_test_cycle: run errored: {e}")),
                     _ if Instant::now() >= deadline => {
                         return Err(format!(
                             "yaml_test_cycle: `{test_id}` 超時（{TEST_TIMEOUT_SECS}s）"
@@ -312,9 +337,9 @@ impl AgentTeam {
                     result.iterations,
                     result.duration_ms as f64 / 1000.0
                 );
-                let _ = self.tester.send(&format!(
-                    "YAML 驗證結果：{summary}。測試通過，任務完成。"
-                ));
+                let _ = self
+                    .tester
+                    .send(&format!("YAML 驗證結果：{summary}。測試通過，任務完成。"));
                 let _ = self.pm.send(&format!(
                     "YAML 自動驗證結果：{summary}\n\
                      [📝 學到: YAML test `{test_id}` 在 {} iterations 內通過，目前 YAML 設計正確]",
@@ -325,7 +350,9 @@ impl AgentTeam {
 
             // 5. 失敗 → Engineer 修 YAML（若還有下一輪）
             if attempt + 1 < MAX_ATTEMPTS {
-                let failure_info = result.error_message.as_deref()
+                let failure_info = result
+                    .error_message
+                    .as_deref()
                     .or(result.final_analysis.as_deref())
                     .unwrap_or("（無具體錯誤訊息）");
 
@@ -359,18 +386,18 @@ impl AgentTeam {
     /// 取得三個 session 的摘要資訊（給 MCP / UI 顯示）。
     pub fn status(&self) -> TeamStatus {
         TeamStatus {
-            pm:       session_info(&self.pm),
+            pm: session_info(&self.pm),
             engineer: session_info(&self.engineer),
-            tester:   session_info(&self.tester),
+            tester: session_info(&self.tester),
         }
     }
 
     /// 重置指定角色的 session（開新對話）。
     pub fn reset_role(&mut self, role: &str) {
         match role {
-            "pm"       => self.pm.reset(),
+            "pm" => self.pm.reset(),
             "engineer" => self.engineer.reset(),
-            "tester"   => self.tester.reset(),
+            "tester" => self.tester.reset(),
             _ => {}
         }
     }
@@ -380,16 +407,16 @@ impl AgentTeam {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TeamStatus {
-    pub pm:       SessionInfo,
+    pub pm: SessionInfo,
     pub engineer: SessionInfo,
-    pub tester:   SessionInfo,
+    pub tester: SessionInfo,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionInfo {
-    pub role:       String,
+    pub role: String,
     pub session_id: Option<String>,
-    pub turns:      u32,
+    pub turns: u32,
     pub resume_cmd: String,
 }
 
@@ -397,12 +424,12 @@ fn session_info(s: &PersistentSession) -> SessionInfo {
     let sid = s.session_id().map(|s| s.to_string());
     let resume = match &sid {
         Some(id) => format!("claude --resume {id}"),
-        None     => "(尚未開始)".into(),
+        None => "(尚未開始)".into(),
     };
     SessionInfo {
-        role:       s.role.clone(),
+        role: s.role.clone(),
         session_id: sid,
-        turns:      s.turns(),
+        turns: s.turns(),
         resume_cmd: resume,
     }
 }
@@ -473,9 +500,9 @@ mod tests {
         team.reset_role("pm");
         team.reset_role("engineer");
 
-        let review = team.assign_task(
-            "在 src/multi_agent/mod.rs 的 session_info() 函數加一行註解說明它的用途"
-        ).expect("assign_task");
+        let review = team
+            .assign_task("在 src/multi_agent/mod.rs 的 session_info() 函數加一行註解說明它的用途")
+            .expect("assign_task");
         println!("PM review: {review}");
         assert!(!review.is_empty());
     }
@@ -524,7 +551,10 @@ mod tests {
                     // 安全截斷：尋找 300 bytes 內最後一個有效 char boundary
                     let end = {
                         let max = review.len().min(300);
-                        (0..=max).rev().find(|&i| review.is_char_boundary(i)).unwrap_or(0)
+                        (0..=max)
+                            .rev()
+                            .find(|&i| review.is_char_boundary(i))
+                            .unwrap_or(0)
                     };
                     println!("[✓ 完成]\n{}", &review[..end]);
                     queue::update_status(&task.id, queue::TaskStatus::Done, Some(review));
@@ -536,7 +566,9 @@ mod tests {
                 }
             }
             // Engineer context 保護
-            if team.engineer.turns() > 20 { team.engineer.reset(); }
+            if team.engineer.turns() > 20 {
+                team.engineer.reset();
+            }
         }
 
         // 印最終佇列狀態

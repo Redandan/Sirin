@@ -84,13 +84,7 @@ pub(super) fn list_directory_tree(dir: &str, max_depth: usize) -> Result<Vec<Str
     Ok(result)
 }
 
-fn walk_dir(
-    root: &Path,
-    current: &Path,
-    depth: usize,
-    max_depth: usize,
-    result: &mut Vec<String>,
-) {
+fn walk_dir(root: &Path, current: &Path, depth: usize, max_depth: usize, result: &mut Vec<String>) {
     if depth > max_depth {
         return;
     }
@@ -138,10 +132,18 @@ mod tests {
     #[test]
     fn safe_project_path_rejects_path_traversal() {
         let result = safe_project_path("../../etc/passwd");
-        assert!(result.is_err(), "path traversal should be rejected, got: {:?}", result);
+        assert!(
+            result.is_err(),
+            "path traversal should be rejected, got: {:?}",
+            result
+        );
 
         let result2 = safe_project_path("../../../Windows/System32/config/sam");
-        assert!(result2.is_err(), "deep traversal should be rejected, got: {:?}", result2);
+        assert!(
+            result2.is_err(),
+            "deep traversal should be rejected, got: {:?}",
+            result2
+        );
     }
 
     #[test]

@@ -28,8 +28,8 @@
 
 use serde_json::Value;
 use std::time::Duration;
-use tokio::net::TcpStream;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 
 /// Open Claude MCP client configuration
 #[derive(Clone, Debug)]
@@ -220,10 +220,7 @@ impl OpenClaudeClient {
     pub async fn get_page_text(&self, tab_id: Option<u64>) -> Result<String, String> {
         let tid = self.ensure_tab_id(tab_id).await?;
         let result = self
-            .send_tool_request(
-                "get_page_text",
-                serde_json::json!({ "tabId": tid }),
-            )
+            .send_tool_request("get_page_text", serde_json::json!({ "tabId": tid }))
             .await?;
         Self::extract_primary_text(&result)
             .ok_or_else(|| "get_page_text returned no text content".to_string())
@@ -286,7 +283,11 @@ impl OpenClaudeClient {
     }
 
     /// Execute JavaScript in the current page and return textual result.
-    pub async fn javascript_exec(&self, tab_id: Option<u64>, script: &str) -> Result<String, String> {
+    pub async fn javascript_exec(
+        &self,
+        tab_id: Option<u64>,
+        script: &str,
+    ) -> Result<String, String> {
         let tid = self.ensure_tab_id(tab_id).await?;
         let result = self
             .send_tool_request(
@@ -323,11 +324,8 @@ impl OpenClaudeClient {
     /// Navigate to a URL in the given tab (or auto-selects first available tab).
     pub async fn navigate_url(&self, url: &str, tab_id: Option<u64>) -> Result<Value, String> {
         let tid = self.ensure_tab_id(tab_id).await?;
-        self.send_tool_request(
-            "navigate",
-            serde_json::json!({ "url": url, "tabId": tid }),
-        )
-        .await
+        self.send_tool_request("navigate", serde_json::json!({ "url": url, "tabId": tid }))
+            .await
     }
 
     /// Take a screenshot of the given tab (or auto-selects first available tab).
@@ -482,8 +480,7 @@ impl OpenClaudeClient {
             buf.push(byte[0]);
         }
 
-        String::from_utf8(buf)
-            .map_err(|e| format!("Non-UTF8 in mcp-server response: {}", e))
+        String::from_utf8(buf).map_err(|e| format!("Non-UTF8 in mcp-server response: {}", e))
     }
 }
 

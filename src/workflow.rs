@@ -14,12 +14,36 @@ pub struct StageInfo {
 }
 
 pub const STAGES: &[StageInfo] = &[
-    StageInfo { id: "define", label: "Define", desc: "規格撰寫"  },
-    StageInfo { id: "plan",   label: "Plan",   desc: "任務拆解"  },
-    StageInfo { id: "build",  label: "Build",  desc: "TDD 實作"  },
-    StageInfo { id: "verify", label: "Verify", desc: "系統驗證"  },
-    StageInfo { id: "review", label: "Review", desc: "程式碼審查" },
-    StageInfo { id: "ship",   label: "Ship",   desc: "上線發布"  },
+    StageInfo {
+        id: "define",
+        label: "Define",
+        desc: "規格撰寫",
+    },
+    StageInfo {
+        id: "plan",
+        label: "Plan",
+        desc: "任務拆解",
+    },
+    StageInfo {
+        id: "build",
+        label: "Build",
+        desc: "TDD 實作",
+    },
+    StageInfo {
+        id: "verify",
+        label: "Verify",
+        desc: "系統驗證",
+    },
+    StageInfo {
+        id: "review",
+        label: "Review",
+        desc: "程式碼審查",
+    },
+    StageInfo {
+        id: "ship",
+        label: "Ship",
+        desc: "上線發布",
+    },
 ];
 
 pub fn stage_by_id(id: &str) -> Option<&'static StageInfo> {
@@ -100,7 +124,10 @@ impl WorkflowState {
         if !self.completed.contains(&self.current_stage) {
             self.completed.push(self.current_stage.clone());
         }
-        let idx = STAGES.iter().position(|s| s.id == self.current_stage).unwrap_or(0);
+        let idx = STAGES
+            .iter()
+            .position(|s| s.id == self.current_stage)
+            .unwrap_or(0);
         if idx + 1 < STAGES.len() {
             self.current_stage = STAGES[idx + 1].id.to_string();
             self.save();
@@ -161,7 +188,9 @@ pub fn stage_context(
 
     // M1: For Review, inject the actual script from disk (overrides stale AI output)
     if stage_id == "review" {
-        let script_path = crate::platform::config_dir().join("scripts").join(format!("{skill_id}.rhai"));
+        let script_path = crate::platform::config_dir()
+            .join("scripts")
+            .join(format!("{skill_id}.rhai"));
         if let Ok(code) = std::fs::read_to_string(&script_path) {
             parts.push(format!(
                 "\n## 待審查腳本（磁碟最新版，以此為準）\n```rhai\n{code}\n```"
@@ -303,4 +332,3 @@ pub fn extract_code_block(text: &str, lang: &str) -> Option<String> {
     let end = rest.find("```")?;
     Some(rest[..end].trim().to_string())
 }
-

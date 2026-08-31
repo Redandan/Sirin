@@ -48,6 +48,4 @@ success_criteria:
   - "「下單」按鈕存在且可點擊（非 disabled 狀態）"
   - "無 console error 或 'Something went wrong' 訊息"
 
-tags: [checkout, agora, issue-70, regression, refactor-verification]
-
-
+tags: [checkout, agora, issue-70, regression, refactor-verification, selector-risk, needs-manual-verification]

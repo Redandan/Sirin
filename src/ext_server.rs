@@ -39,10 +39,10 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use axum::{
-    Router,
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
     response::IntoResponse,
     routing::get,
+    Router,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -51,11 +51,11 @@ use serde_json::Value;
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct TabInfo {
-    pub tab_id:    i64,
-    pub url:       Option<String>,
-    pub title:     Option<String>,
-    pub status:    Option<String>,
-    pub active:    bool,
+    pub tab_id: i64,
+    pub url: Option<String>,
+    pub title: Option<String>,
+    pub status: Option<String>,
+    pub active: bool,
     pub window_id: Option<i64>,
     /// Monotonic timestamp of the last event that touched this tab (ms since
     /// process start). Used to detect "is this tab info recent?"
@@ -64,15 +64,15 @@ pub struct TabInfo {
 
 #[derive(Default)]
 struct ExtState {
-    connected:      bool,
-    connected_at:   Option<Instant>,
-    last_event_at:  Option<Instant>,
-    event_count:    u64,
+    connected: bool,
+    connected_at: Option<Instant>,
+    last_event_at: Option<Instant>,
+    event_count: u64,
     chrome_version: Option<String>,
-    ext_version:    Option<String>,
-    tabs:           HashMap<i64, TabInfo>,
+    ext_version: Option<String>,
+    tabs: HashMap<i64, TabInfo>,
     /// Last activated tab_id (extension pushes `tab.event=activated`).
-    active_tab:     Option<i64>,
+    active_tab: Option<i64>,
 }
 
 fn state() -> &'static Mutex<ExtState> {
@@ -91,27 +91,27 @@ fn epoch_ms() -> u64 {
 /// Lightweight status snapshot for the `diagnose` MCP tool.
 #[derive(Debug, Clone, Serialize)]
 pub struct ExtStatus {
-    pub connected:           bool,
-    pub uptime_secs:         Option<u64>,
+    pub connected: bool,
+    pub uptime_secs: Option<u64>,
     pub last_event_age_secs: Option<u64>,
-    pub event_count:         u64,
-    pub tab_count:           usize,
-    pub active_tab_id:       Option<i64>,
-    pub chrome_version:      Option<String>,
-    pub ext_version:         Option<String>,
+    pub event_count: u64,
+    pub tab_count: usize,
+    pub active_tab_id: Option<i64>,
+    pub chrome_version: Option<String>,
+    pub ext_version: Option<String>,
 }
 
 pub fn status() -> ExtStatus {
     let s = state().lock().unwrap_or_else(|e| e.into_inner());
     ExtStatus {
-        connected:           s.connected,
-        uptime_secs:         s.connected_at.map(|t| t.elapsed().as_secs()),
+        connected: s.connected,
+        uptime_secs: s.connected_at.map(|t| t.elapsed().as_secs()),
         last_event_age_secs: s.last_event_at.map(|t| t.elapsed().as_secs()),
-        event_count:         s.event_count,
-        tab_count:           s.tabs.len(),
-        active_tab_id:       s.active_tab,
-        chrome_version:      s.chrome_version.clone(),
-        ext_version:         s.ext_version.clone(),
+        event_count: s.event_count,
+        tab_count: s.tabs.len(),
+        active_tab_id: s.active_tab,
+        chrome_version: s.chrome_version.clone(),
+        ext_version: s.ext_version.clone(),
     }
 }
 
@@ -193,8 +193,11 @@ fn handle_message(raw: &str) -> Result<(), String> {
 
     match ty {
         "hello" => {
-            s.ext_version    = v.get("version").and_then(Value::as_str).map(String::from);
-            s.chrome_version = v.get("chrome_version").and_then(Value::as_str).map(String::from);
+            s.ext_version = v.get("version").and_then(Value::as_str).map(String::from);
+            s.chrome_version = v
+                .get("chrome_version")
+                .and_then(Value::as_str)
+                .map(String::from);
             tracing::info!(
                 "[ext] hello — ext v{} chrome={}",
                 s.ext_version.as_deref().unwrap_or("?"),
@@ -203,24 +206,41 @@ fn handle_message(raw: &str) -> Result<(), String> {
         }
         "pong" => { /* keep-alive — already updated last_event_at above */ }
         "tab" => {
-            let event  = v.get("event").and_then(Value::as_str).unwrap_or("");
+            let event = v.get("event").and_then(Value::as_str).unwrap_or("");
             let tab_id = v.get("tab_id").and_then(Value::as_i64);
-            let Some(id) = tab_id else { return Ok(()); };
+            let Some(id) = tab_id else {
+                return Ok(());
+            };
             match event {
                 "removed" => {
                     s.tabs.remove(&id);
-                    if s.active_tab == Some(id) { s.active_tab = None; }
+                    if s.active_tab == Some(id) {
+                        s.active_tab = None;
+                    }
                 }
                 "activated" => {
                     s.active_tab = Some(id);
                 }
                 _ => {
-                    let entry = s.tabs.entry(id).or_insert_with(|| TabInfo { tab_id: id, ..Default::default() });
-                    if let Some(u) = v.get("url").and_then(Value::as_str)    { entry.url    = Some(u.into()); }
-                    if let Some(t) = v.get("title").and_then(Value::as_str)  { entry.title  = Some(t.into()); }
-                    if let Some(st) = v.get("status").and_then(Value::as_str){ entry.status = Some(st.into()); }
-                    if let Some(a) = v.get("active").and_then(Value::as_bool){ entry.active = a; }
-                    if let Some(w) = v.get("window_id").and_then(Value::as_i64){ entry.window_id = Some(w); }
+                    let entry = s.tabs.entry(id).or_insert_with(|| TabInfo {
+                        tab_id: id,
+                        ..Default::default()
+                    });
+                    if let Some(u) = v.get("url").and_then(Value::as_str) {
+                        entry.url = Some(u.into());
+                    }
+                    if let Some(t) = v.get("title").and_then(Value::as_str) {
+                        entry.title = Some(t.into());
+                    }
+                    if let Some(st) = v.get("status").and_then(Value::as_str) {
+                        entry.status = Some(st.into());
+                    }
+                    if let Some(a) = v.get("active").and_then(Value::as_bool) {
+                        entry.active = a;
+                    }
+                    if let Some(w) = v.get("window_id").and_then(Value::as_i64) {
+                        entry.window_id = Some(w);
+                    }
                     entry.last_seen_ms = epoch_ms();
                 }
             }
@@ -230,11 +250,15 @@ fn handle_message(raw: &str) -> Result<(), String> {
             // payoff for the whole extension (catches about:blank reset,
             // hash changes, history pushState that CDP misses).
             let tab_id = v.get("tab_id").and_then(Value::as_i64);
-            let url    = v.get("url").and_then(Value::as_str);
-            let frame  = v.get("frame_id").and_then(Value::as_i64).unwrap_or(0);
+            let url = v.get("url").and_then(Value::as_str);
+            let frame = v.get("frame_id").and_then(Value::as_i64).unwrap_or(0);
             if let (Some(id), Some(u)) = (tab_id, url) {
-                if frame == 0 {  // main frame only
-                    let entry = s.tabs.entry(id).or_insert_with(|| TabInfo { tab_id: id, ..Default::default() });
+                if frame == 0 {
+                    // main frame only
+                    let entry = s.tabs.entry(id).or_insert_with(|| TabInfo {
+                        tab_id: id,
+                        ..Default::default()
+                    });
                     entry.url = Some(u.into());
                     entry.last_seen_ms = epoch_ms();
                     tracing::debug!("[ext] nav tab={id} url={u}");
@@ -251,17 +275,24 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn fresh_state() {
+    static EXT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn fresh_state() -> std::sync::MutexGuard<'static, ()> {
+        let guard = EXT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut s = state().lock().unwrap_or_else(|e| e.into_inner());
         *s = ExtState::default();
+        guard
     }
 
     #[test]
     fn handles_hello_records_versions() {
-        fresh_state();
-        let _ = handle_message(&json!({
-            "type": "hello", "version": "0.1.0", "chrome_version": "Chrome/147"
-        }).to_string());
+        let _guard = fresh_state();
+        let _ = handle_message(
+            &json!({
+                "type": "hello", "version": "0.1.0", "chrome_version": "Chrome/147"
+            })
+            .to_string(),
+        );
         let st = status();
         assert_eq!(st.ext_version.as_deref(), Some("0.1.0"));
         assert_eq!(st.chrome_version.as_deref(), Some("Chrome/147"));
@@ -270,66 +301,96 @@ mod tests {
 
     #[test]
     fn handles_tab_updated_then_removed() {
-        fresh_state();
-        let _ = handle_message(&json!({
-            "type": "tab", "event": "updated", "tab_id": 42,
-            "url": "https://example.com/foo", "title": "Foo", "active": true
-        }).to_string());
-        assert_eq!(authoritative_url(Some(42)).as_deref(), Some("https://example.com/foo"));
+        let _guard = fresh_state();
+        let _ = handle_message(
+            &json!({
+                "type": "tab", "event": "updated", "tab_id": 42,
+                "url": "https://example.com/foo", "title": "Foo", "active": true
+            })
+            .to_string(),
+        );
+        assert_eq!(
+            authoritative_url(Some(42)).as_deref(),
+            Some("https://example.com/foo")
+        );
         assert_eq!(authoritative_title(Some(42)).as_deref(), Some("Foo"));
         assert_eq!(list_tabs().len(), 1);
 
-        let _ = handle_message(&json!({
-            "type": "tab", "event": "removed", "tab_id": 42
-        }).to_string());
+        let _ = handle_message(
+            &json!({
+                "type": "tab", "event": "removed", "tab_id": 42
+            })
+            .to_string(),
+        );
         assert_eq!(list_tabs().len(), 0);
         assert!(authoritative_url(Some(42)).is_none());
     }
 
     #[test]
     fn nav_event_updates_url_immediately() {
-        fresh_state();
+        let _guard = fresh_state();
         // Initial state from tab.updated
-        let _ = handle_message(&json!({
-            "type": "tab", "event": "updated", "tab_id": 7,
-            "url": "https://app.example.com/#/dashboard"
-        }).to_string());
+        let _ = handle_message(
+            &json!({
+                "type": "tab", "event": "updated", "tab_id": 7,
+                "url": "https://app.example.com/#/dashboard"
+            })
+            .to_string(),
+        );
         // Page resets to about:blank (the #23 scenario)
-        let _ = handle_message(&json!({
-            "type": "nav", "event": "committed", "tab_id": 7,
-            "frame_id": 0, "url": "about:blank"
-        }).to_string());
+        let _ = handle_message(
+            &json!({
+                "type": "nav", "event": "committed", "tab_id": 7,
+                "frame_id": 0, "url": "about:blank"
+            })
+            .to_string(),
+        );
         // Authoritative URL must reflect the reset, not the cached SPA URL
         assert_eq!(authoritative_url(Some(7)).as_deref(), Some("about:blank"));
     }
 
     #[test]
     fn activated_event_sets_active_tab() {
-        fresh_state();
-        let _ = handle_message(&json!({
-            "type": "tab", "event": "updated", "tab_id": 1, "url": "https://a"
-        }).to_string());
-        let _ = handle_message(&json!({
-            "type": "tab", "event": "updated", "tab_id": 2, "url": "https://b"
-        }).to_string());
-        let _ = handle_message(&json!({
-            "type": "tab", "event": "activated", "tab_id": 2
-        }).to_string());
+        let _guard = fresh_state();
+        let _ = handle_message(
+            &json!({
+                "type": "tab", "event": "updated", "tab_id": 1, "url": "https://a"
+            })
+            .to_string(),
+        );
+        let _ = handle_message(
+            &json!({
+                "type": "tab", "event": "updated", "tab_id": 2, "url": "https://b"
+            })
+            .to_string(),
+        );
+        let _ = handle_message(
+            &json!({
+                "type": "tab", "event": "activated", "tab_id": 2
+            })
+            .to_string(),
+        );
         // No tab_id → use active
         assert_eq!(authoritative_url(None).as_deref(), Some("https://b"));
     }
 
     #[test]
     fn nav_in_subframe_does_not_change_top_url() {
-        fresh_state();
-        let _ = handle_message(&json!({
-            "type": "tab", "event": "updated", "tab_id": 9, "url": "https://main"
-        }).to_string());
+        let _guard = fresh_state();
+        let _ = handle_message(
+            &json!({
+                "type": "tab", "event": "updated", "tab_id": 9, "url": "https://main"
+            })
+            .to_string(),
+        );
         // Subframe navigation should NOT clobber the top-level URL
-        let _ = handle_message(&json!({
-            "type": "nav", "event": "committed", "tab_id": 9, "frame_id": 12,
-            "url": "https://ad-subframe.example.com"
-        }).to_string());
+        let _ = handle_message(
+            &json!({
+                "type": "nav", "event": "committed", "tab_id": 9, "frame_id": 12,
+                "url": "https://ad-subframe.example.com"
+            })
+            .to_string(),
+        );
         assert_eq!(authoritative_url(Some(9)).as_deref(), Some("https://main"));
     }
 }

@@ -292,19 +292,18 @@ DOM elements.  Use these actions (not `ax_*`) for most Flutter interaction:
 |--------|-------------|
 | `shadow_click role=<role> name_regex=<regex>` | Click a Flutter semantic element by role + name pattern |
 | `shadow_dump` | List all `flt-semantics` elements with role + name — use for exploration |
-| `flutter_type text=<ascii>` | Type ASCII text into the focused Flutter text field |
+| `flutter_type text=<text>` | Type ASCII or Unicode/CJK text into the focused Flutter text field |
 | `flutter_enter` | Press Enter in a Flutter text field (triggers `onSubmitted`) |
 
 **`shadow_click` uses JS PointerEvent**, not CDP `Input.dispatchMouseEvent`.
 The CDP version caused Flutter navigation to jump to `about:blank`.
 
-**`flutter_type` is ASCII-only.**  CJK characters silently fail (no keycode).
-Always use ASCII in test goals:
+`flutter_type` automatically keeps the per-key fast path for ASCII and switches
+to Flutter paste / CDP `Input.InsertText` for Unicode. CJK and mixed strings are
+supported:
 ```yaml
-# ❌ fails silently
 flutter_type text="你好"
-# ✅ works
-flutter_type text="hello"
+flutter_type text="order 測試 123"
 ```
 
 ---

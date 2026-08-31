@@ -47,4 +47,4 @@ success_criteria:
   - "有聊天或聯繫賣家功能入口"
   - "有店家評分或基本資訊"
 
-tags: [c2c, buyer, store, seller-profile, regression, core-flow]
+tags: [c2c, buyer, store, seller-profile, regression, core-flow, selector-risk, needs-manual-verification]

@@ -76,4 +76,4 @@ success_criteria:
   - "成功點擊「啟用平台配送」switch"
   - "ax_find 找到取貨結束時間欄位 + ax_focus + flutter_type 三個動作都成功執行（不驗證最終值）"
 
-tags: [agora, regression, pickup, time-picker, ax-focus, v12]
+tags: [agora, regression, obsolete, pickup, time-picker, ax-focus, v12]

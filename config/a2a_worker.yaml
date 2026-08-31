@@ -1,0 +1,26 @@
+# Sirin server-side A2A worker.
+#
+# Keep disabled until the server exposes matching MCP task tools:
+# - claimAiTask
+# - updateAiTaskStatus
+# Supported worker task types:
+# - SIRIN_RESEARCH_SENTINEL_RUN_ONCE
+# - AGORA_MARKET_OPS_DAILY_BRIEF (read-only; returns NEEDS_REVIEW)
+# - AGORA_MARKET_ISSUE_SCOUT (read-only; emits issue_candidates for review)
+# - SIRIN_AGORA_TEST_HEALTH_SCOUT (local-only; inspects Sirin test/replay health)
+#
+# Runtime env overrides:
+# - SIRIN_A2A_WORKER_ENABLED=1
+# - SIRIN_A2A_SERVER_URL=https://.../api/mcp
+# - SIRIN_A2A_BEARER=...
+# - SIRIN_A2A_WORKER_ID=sirin-local-redan
+# - SIRIN_A2A_POLL_SECS=60
+
+enabled: false
+worker_id: sirin-local
+server_url: ""
+bearer_env: KB_MCP_BEARER
+poll_interval_seconds: 60
+assignee_type: SIRIN
+claim_tool: claimAiTask
+update_tool: updateAiTaskStatus

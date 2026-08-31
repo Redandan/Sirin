@@ -135,7 +135,9 @@ impl Agent for CodingAgent {
             let request: CodingRequest = serde_json::from_value(input)
                 .map_err(|e| format!("Invalid coding request payload: {e}"))?;
 
-            let config = Persona::cached().map(|p| p.coding_agent).unwrap_or_default();
+            let config = Persona::cached()
+                .map(|p| p.coding_agent)
+                .unwrap_or_default();
 
             if !config.enabled {
                 return Err("Coding agent is disabled in persona config.".to_string());
@@ -336,9 +338,7 @@ pub async fn run_coding_via_adk(
 
 #[cfg(test)]
 mod tests {
-    use super::helpers::{
-        extract_path_hints_from_task, file_read_cache_key, truncate_to_bytes,
-    };
+    use super::helpers::{extract_path_hints_from_task, file_read_cache_key, truncate_to_bytes};
     use super::prompt::parse_react_step;
     use super::verdict::{
         build_change_summary, build_fail_fast_outcome, derive_result_status, overall_verified,

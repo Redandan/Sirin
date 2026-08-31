@@ -70,7 +70,9 @@ pub fn decide(
         }
         Mode::Strict => {
             if is_mutating(action) {
-                return Decision::Ask("strict mode — all mutating actions require approval".to_string());
+                return Decision::Ask(
+                    "strict mode — all mutating actions require approval".to_string(),
+                );
             }
             return Decision::Allow("strict mode readonly".to_string());
         }
@@ -169,7 +171,9 @@ pub fn rule_matches(
         let name_text = extract_name_text(args);
         let name_lower = name_text.to_lowercase();
         // The rule matches (fires) if any forbidden word is found in the name.
-        let any_forbidden = rule.not_name_matches.iter()
+        let any_forbidden = rule
+            .not_name_matches
+            .iter()
             .any(|s| name_lower.contains(&s.to_lowercase()));
         if !any_forbidden {
             return false;
@@ -264,8 +268,17 @@ fn extract_name_text(args: &JsonValue) -> String {
 pub fn is_mutating(action: &str) -> bool {
     // Explicitly non-mutating
     const READONLY: &[&str] = &[
-        "ax_tree", "ax_find", "ax_value", "screenshot", "url", "title",
-        "console", "network", "exists", "attr", "read",
+        "ax_tree",
+        "ax_find",
+        "ax_value",
+        "screenshot",
+        "url",
+        "title",
+        "console",
+        "network",
+        "exists",
+        "attr",
+        "read",
     ];
     if READONLY.contains(&action) {
         return false;
@@ -290,9 +303,7 @@ mod engine_test {
     fn selective_config_with_allow(allow: Vec<Rule>) -> AuthzConfig {
         AuthzConfig {
             mode: Mode::Selective,
-            readonly_allow: vec![
-                "ax_tree".into(), "screenshot".into(), "url".into(),
-            ],
+            readonly_allow: vec!["ax_tree".into(), "screenshot".into(), "url".into()],
             allow,
             deny: vec![],
             ask: vec![],
@@ -321,9 +332,11 @@ mod engine_test {
     // ── 2. deny priority over allow ───────────────────────────────────────────
     #[test]
     fn deny_priority_over_allow() {
-        let mut cfg = selective_config_with_allow(vec![
-            Rule { action: Some("goto".into()), url_pattern: Some("**".into()), ..Default::default() },
-        ]);
+        let mut cfg = selective_config_with_allow(vec![Rule {
+            action: Some("goto".into()),
+            url_pattern: Some("**".into()),
+            ..Default::default()
+        }]);
         cfg.deny.push(Rule {
             url_pattern: Some("https://**paypal**/**".into()),
             ..Default::default()
@@ -378,7 +391,13 @@ mod engine_test {
             audit: AuditConfig::default(),
             blocked_url_patterns: Vec::new(),
         };
-        let d = decide("test@1.0", "goto", &json!({ "target": "https://example.com/" }), &None, &cfg);
+        let d = decide(
+            "test@1.0",
+            "goto",
+            &json!({ "target": "https://example.com/" }),
+            &None,
+            &cfg,
+        );
         assert_eq!(d, Decision::Allow("permissive mode".to_string()));
     }
 
@@ -389,7 +408,13 @@ mod engine_test {
             mode: Mode::Plan,
             ..AuthzConfig::default()
         };
-        let d = decide("test@1.0", "goto", &json!({ "target": "https://example.com/" }), &None, &cfg);
+        let d = decide(
+            "test@1.0",
+            "goto",
+            &json!({ "target": "https://example.com/" }),
+            &None,
+            &cfg,
+        );
         assert!(matches!(d, Decision::Deny(_)), "got {d:?}");
     }
 
@@ -440,7 +465,13 @@ mod engine_test {
             audit: AuditConfig::default(),
             blocked_url_patterns: Vec::new(),
         };
-        let d = decide("test@1.0", "goto", &json!({ "target": "https://example.com/" }), &None, &cfg);
+        let d = decide(
+            "test@1.0",
+            "goto",
+            &json!({ "target": "https://example.com/" }),
+            &None,
+            &cfg,
+        );
         assert!(matches!(d, Decision::Ask(_)), "got {d:?}");
     }
 
@@ -465,13 +496,11 @@ mod engine_test {
     // ── 6. Mode::Selective allow rule ────────────────────────────────────────
     #[test]
     fn selective_allow_url_match() {
-        let cfg = selective_config_with_allow(vec![
-            Rule {
-                action: Some("goto".into()),
-                url_pattern: Some("https://redandan.github.io/**".into()),
-                ..Default::default()
-            },
-        ]);
+        let cfg = selective_config_with_allow(vec![Rule {
+            action: Some("goto".into()),
+            url_pattern: Some("https://redandan.github.io/**".into()),
+            ..Default::default()
+        }]);
         let d = decide(
             "test@1.0",
             "goto",
@@ -484,13 +513,11 @@ mod engine_test {
 
     #[test]
     fn selective_allow_action_wildcard_ax_star() {
-        let cfg = selective_config_with_allow(vec![
-            Rule {
-                action: Some("ax_*".into()),
-                url_pattern: Some("http://localhost:*/**".into()),
-                ..Default::default()
-            },
-        ]);
+        let cfg = selective_config_with_allow(vec![Rule {
+            action: Some("ax_*".into()),
+            url_pattern: Some("http://localhost:*/**".into()),
+            ..Default::default()
+        }]);
         let d = decide(
             "test@1.0",
             "ax_click",
@@ -509,13 +536,11 @@ mod engine_test {
             readonly_allow: vec![],
             deny: vec![],
             allow: vec![],
-            ask: vec![
-                Rule {
-                    action: Some("goto".into()),
-                    url_pattern: Some("https://**.google.com/**".into()),
-                    ..Default::default()
-                },
-            ],
+            ask: vec![Rule {
+                action: Some("goto".into()),
+                url_pattern: Some("https://**.google.com/**".into()),
+                ..Default::default()
+            }],
             clients: HashMap::new(),
             learn: LearnConfig::default(),
             audit: AuditConfig::default(),
@@ -541,11 +566,20 @@ mod engine_test {
             allow: vec![],
             ask: vec![],
             clients: HashMap::new(),
-            learn: LearnConfig { enabled: true, ..LearnConfig::default() },
+            learn: LearnConfig {
+                enabled: true,
+                ..LearnConfig::default()
+            },
             audit: AuditConfig::default(),
             blocked_url_patterns: Vec::new(),
         };
-        let d = decide("test@1.0", "goto", &json!({ "target": "https://new.example.com/" }), &None, &cfg);
+        let d = decide(
+            "test@1.0",
+            "goto",
+            &json!({ "target": "https://new.example.com/" }),
+            &None,
+            &cfg,
+        );
         assert_eq!(d, Decision::AskWithLearn);
     }
 
@@ -553,7 +587,13 @@ mod engine_test {
     #[test]
     fn default_deny_no_rule() {
         let cfg = selective_config_with_allow(vec![]);
-        let d = decide("test@1.0", "goto", &json!({ "target": "https://unknown.example/" }), &None, &cfg);
+        let d = decide(
+            "test@1.0",
+            "goto",
+            &json!({ "target": "https://unknown.example/" }),
+            &None,
+            &cfg,
+        );
         assert!(matches!(d, Decision::Deny(_)), "got {d:?}");
     }
 
@@ -579,9 +619,11 @@ mod engine_test {
 
     #[test]
     fn deny_not_name_matches_does_not_fire_for_safe_name() {
-        let mut cfg = selective_config_with_allow(vec![
-            Rule { action: Some("ax_type".into()), url_pattern: Some("**".into()), ..Default::default() },
-        ]);
+        let mut cfg = selective_config_with_allow(vec![Rule {
+            action: Some("ax_type".into()),
+            url_pattern: Some("**".into()),
+            ..Default::default()
+        }]);
         cfg.deny.push(Rule {
             action: Some("ax_type*".into()),
             not_name_matches: vec!["password".into()],
@@ -602,7 +644,12 @@ mod engine_test {
     #[test]
     fn client_policy_permissive_overrides_selective() {
         let mut clients = HashMap::new();
-        clients.insert("claude-code@*".into(), ClientPolicy { mode: Some(Mode::Permissive) });
+        clients.insert(
+            "claude-code@*".into(),
+            ClientPolicy {
+                mode: Some(Mode::Permissive),
+            },
+        );
         let cfg = AuthzConfig {
             mode: Mode::Selective,
             readonly_allow: vec![],
@@ -614,28 +661,46 @@ mod engine_test {
             audit: AuditConfig::default(),
             blocked_url_patterns: Vec::new(),
         };
-        let d = decide("claude-code@0.3.2", "goto", &json!({ "target": "https://anywhere.com/" }), &None, &cfg);
+        let d = decide(
+            "claude-code@0.3.2",
+            "goto",
+            &json!({ "target": "https://anywhere.com/" }),
+            &None,
+            &cfg,
+        );
         assert_eq!(d, Decision::Allow("permissive mode".to_string()));
     }
 
     // ── Glob matching edge cases ──────────────────────────────────────────────
     #[test]
     fn glob_double_star_matches_deep_path() {
-        assert!(glob_matches("https://redandan.github.io/**", "https://redandan.github.io/app/#/wallet/withdraw"));
+        assert!(glob_matches(
+            "https://redandan.github.io/**",
+            "https://redandan.github.io/app/#/wallet/withdraw"
+        ));
     }
 
     #[test]
     fn glob_single_star_port_wildcard() {
-        assert!(glob_matches("http://localhost:*/**", "http://localhost:3000/dashboard"));
+        assert!(glob_matches(
+            "http://localhost:*/**",
+            "http://localhost:3000/dashboard"
+        ));
     }
 
     #[test]
     fn glob_no_match() {
-        assert!(!glob_matches("https://safe.example.com/**", "https://evil.example.com/page"));
+        assert!(!glob_matches(
+            "https://safe.example.com/**",
+            "https://evil.example.com/page"
+        ));
     }
 
     #[test]
     fn glob_double_star_paypal() {
-        assert!(glob_matches("https://**paypal**/**", "https://www.paypal.com/login"));
+        assert!(glob_matches(
+            "https://**paypal**/**",
+            "https://www.paypal.com/login"
+        ));
     }
 }

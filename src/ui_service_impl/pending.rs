@@ -15,19 +15,31 @@ pub(super) fn load_pending(_svc: &RealService, agent_id: &str) -> Vec<PendingRep
         .into_iter()
         .filter(|r| r.status == crate::pending_reply::PendingStatus::Pending)
         .map(|r| PendingReplyView {
-            id: r.id, agent_id: r.agent_id, peer_name: r.peer_name,
-            original_message: r.original_message, draft_reply: r.draft_reply, created_at: r.created_at,
+            id: r.id,
+            agent_id: r.agent_id,
+            peer_name: r.peer_name,
+            original_message: r.original_message,
+            draft_reply: r.draft_reply,
+            created_at: r.created_at,
         })
         .collect()
 }
 
 pub(super) fn approve_reply(svc: &RealService, agent_id: &str, reply_id: &str) {
-    crate::pending_reply::update_status(agent_id, reply_id, crate::pending_reply::PendingStatus::Approved);
+    crate::pending_reply::update_status(
+        agent_id,
+        reply_id,
+        crate::pending_reply::PendingStatus::Approved,
+    );
     svc.push_toast(ToastLevel::Success, "已核准");
 }
 
 pub(super) fn reject_reply(_svc: &RealService, agent_id: &str, reply_id: &str) {
-    crate::pending_reply::update_status(agent_id, reply_id, crate::pending_reply::PendingStatus::Rejected);
+    crate::pending_reply::update_status(
+        agent_id,
+        reply_id,
+        crate::pending_reply::PendingStatus::Rejected,
+    );
 }
 
 pub(super) fn edit_draft(_svc: &RealService, agent_id: &str, reply_id: &str, new_text: &str) {

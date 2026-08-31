@@ -39,6 +39,7 @@
 
 mod backends;
 pub mod caller;
+mod local_service;
 mod probe;
 pub mod usage;
 
@@ -48,6 +49,7 @@ pub mod usage;
 #[allow(unused_imports)]
 pub use caller::{LlmCaller, LlmKind, MockLlmCaller, RealLlmCaller};
 
+pub(crate) use local_service::ensure_lmstudio_server;
 pub use probe::probe_and_build_fleet;
 #[allow(unused_imports)]
 pub(crate) use probe::{init_agent_fleet, shared_fleet, ModelCapability};
@@ -62,10 +64,10 @@ use backends::{
 };
 
 const OLLAMA_BASE_URL: &str = "http://localhost:11434";
-const LM_STUDIO_BASE_URL:  &str = "http://localhost:1234/v1";
-const GEMINI_BASE_URL:     &str = "https://generativelanguage.googleapis.com/v1beta/openai";
-const ANTHROPIC_BASE_URL:  &str = "https://api.anthropic.com/v1";
-const DEFAULT_MODEL:       &str = "llama3.2";
+const LM_STUDIO_BASE_URL: &str = "http://localhost:1234/v1";
+const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
+const ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com/v1";
+const DEFAULT_MODEL: &str = "llama3.2";
 const DEFAULT_GEMINI_MODEL: &str = "gemini-2.0-flash";
 const DEFAULT_CLAUDE_MODEL: &str = "claude-sonnet-4-6";
 
@@ -228,7 +230,9 @@ impl LlmUiConfig {
 
     pub fn save(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let p = Self::path();
-        if let Some(parent) = p.parent() { let _ = std::fs::create_dir_all(parent); }
+        if let Some(parent) = p.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         let content = serde_yaml::to_string(self)?;
         std::fs::write(&p, content)?;
         Ok(())
@@ -401,8 +405,11 @@ impl LlmConfig {
                     .unwrap_or_else(|_| DEFAULT_MODEL.to_string()),
                 api_key: std::env::var("LM_STUDIO_API_KEY")
                     .or_else(|_| std::env::var("OPENAI_API_KEY"))
-                    .ok().filter(|v| !v.trim().is_empty()),
-                coding_model: None, router_model: None, large_model: None,
+                    .ok()
+                    .filter(|v| !v.trim().is_empty()),
+                coding_model: None,
+                router_model: None,
+                large_model: None,
             },
             "gemini" | "google" => Self {
                 backend: LlmBackend::Gemini,
@@ -411,8 +418,11 @@ impl LlmConfig {
                 model: std::env::var("GEMINI_MODEL")
                     .unwrap_or_else(|_| DEFAULT_GEMINI_MODEL.to_string()),
                 api_key: std::env::var("GEMINI_API_KEY")
-                    .ok().filter(|v| !v.trim().is_empty()),
-                coding_model: None, router_model: None, large_model: None,
+                    .ok()
+                    .filter(|v| !v.trim().is_empty()),
+                coding_model: None,
+                router_model: None,
+                large_model: None,
             },
             "anthropic" | "claude" => Self {
                 backend: LlmBackend::Anthropic,
@@ -421,22 +431,28 @@ impl LlmConfig {
                 model: std::env::var("ANTHROPIC_MODEL")
                     .unwrap_or_else(|_| DEFAULT_CLAUDE_MODEL.to_string()),
                 api_key: std::env::var("ANTHROPIC_API_KEY")
-                    .ok().filter(|v| !v.trim().is_empty()),
-                coding_model: None, router_model: None, large_model: None,
+                    .ok()
+                    .filter(|v| !v.trim().is_empty()),
+                coding_model: None,
+                router_model: None,
+                large_model: None,
             },
             "ollama" => Self {
                 backend: LlmBackend::Ollama,
                 base_url: std::env::var("OLLAMA_BASE_URL")
                     .unwrap_or_else(|_| OLLAMA_BASE_URL.to_string()),
-                model: std::env::var("OLLAMA_MODEL")
-                    .unwrap_or_else(|_| DEFAULT_MODEL.to_string()),
+                model: std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_string()),
                 api_key: None,
-                coding_model: None, router_model: None, large_model: None,
+                coding_model: None,
+                router_model: None,
+                large_model: None,
             },
-            other => return Err(format!(
-                "LlmOverride: unknown provider '{other}' \
+            other => {
+                return Err(format!(
+                    "LlmOverride: unknown provider '{other}' \
                  (expected one of: lmstudio, gemini, anthropic, ollama)"
-            )),
+                ))
+            }
         };
         std::env::remove_var("__SIRIN_OVERRIDE_PROVIDER_PROBE");
 
@@ -535,11 +551,44 @@ impl LlmConfig {
     /// Short label for logging (e.g. `"ollama"` or `"lmstudio"`).
     pub fn backend_name(&self) -> &'static str {
         match self.backend {
-            LlmBackend::Ollama     => "ollama",
-            LlmBackend::LmStudio   => "lmstudio",
-            LlmBackend::Gemini     => "gemini",
-            LlmBackend::Anthropic  => "anthropic",
+            LlmBackend::Ollama => "ollama",
+            LlmBackend::LmStudio => "lmstudio",
+            LlmBackend::Gemini => "gemini",
+            LlmBackend::Anthropic => "anthropic",
         }
+    }
+
+    /// Best-effort indication that the effective runtime model can accept
+    /// image input. Cloud Gemini/Anthropic backends support the multimodal
+    /// request shape directly; local/OpenAI-compatible backends still depend
+    /// on the selected model, so use conservative name-based detection.
+    pub fn supports_vision_hint(&self) -> bool {
+        if matches!(self.backend, LlmBackend::Gemini | LlmBackend::Anthropic) {
+            return true;
+        }
+
+        let model = self.model.to_ascii_lowercase();
+        [
+            "vision",
+            "llava",
+            "bakllava",
+            "moondream",
+            "minicpm-v",
+            "qwen-vl",
+            "qwen2.5-vl",
+            "qwen2-vl",
+            "internvl",
+            "cogvlm",
+            "gemma-3",
+            "gemma-4",
+            "gemma3",
+            "gemma4",
+            "phi-3.5-vision",
+            "phi-4",
+            "gpt-4o",
+        ]
+        .iter()
+        .any(|tag| model.contains(tag))
     }
 
     /// Returns true when this config points to a cloud/remote backend.
@@ -557,9 +606,9 @@ impl LlmConfig {
     pub fn for_override(backend: &str, model: &str, api_key: Option<String>) -> Self {
         let (b, base_url) = match backend.to_lowercase().as_str() {
             "anthropic" | "claude" => (LlmBackend::Anthropic, ANTHROPIC_BASE_URL.to_string()),
-            "lmstudio" | "openai"  => (LlmBackend::LmStudio,  LM_STUDIO_BASE_URL.to_string()),
-            "gemini" | "google"    => (LlmBackend::Gemini,     GEMINI_BASE_URL.to_string()),
-            _                      => (LlmBackend::Ollama,     OLLAMA_BASE_URL.to_string()),
+            "lmstudio" | "openai" => (LlmBackend::LmStudio, LM_STUDIO_BASE_URL.to_string()),
+            "gemini" | "google" => (LlmBackend::Gemini, GEMINI_BASE_URL.to_string()),
+            _ => (LlmBackend::Ollama, OLLAMA_BASE_URL.to_string()),
         };
         Self {
             backend: b,
@@ -568,7 +617,7 @@ impl LlmConfig {
             api_key,
             coding_model: None,
             router_model: None,
-            large_model:  None,
+            large_model: None,
         }
     }
 
@@ -748,6 +797,18 @@ pub(crate) fn is_rate_limit_err(e: &(dyn std::error::Error + Send + Sync)) -> bo
     s.contains("429") || s.contains("Too Many Requests") || s.contains("rate-limited: max retries")
 }
 
+async fn ensure_backend_ready(
+    client: &reqwest::Client,
+    llm: &LlmConfig,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if matches!(llm.backend, LlmBackend::LmStudio) {
+        local_service::ensure_lmstudio_server(client, &llm.base_url, llm.api_key.as_deref())
+            .await
+            .map_err(std::io::Error::other)?;
+    }
+    Ok(())
+}
+
 /// Inner helper: call an OpenAI-compatible endpoint with an explicit optional
 /// fallback config.  On 429 from primary, switches to fallback immediately.
 ///
@@ -761,7 +822,14 @@ pub(crate) async fn call_openai_with_fallback(
     fallback: Option<&LlmConfig>,
     prompt: String,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    let result = call_openai(client, primary_url, primary_model, primary_key, prompt.clone()).await;
+    let result = call_openai(
+        client,
+        primary_url,
+        primary_model,
+        primary_key,
+        prompt.clone(),
+    )
+    .await;
     if let Err(ref e) = result {
         if is_rate_limit_err(e.as_ref()) {
             if let Some(fb) = fallback {
@@ -804,14 +872,18 @@ pub async fn call_prompt(
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let prompt = prompt.into();
     match llm.backend {
-        LlmBackend::Ollama => {
-            call_ollama(client, &llm.base_url, &llm.model, prompt, None).await
-        }
+        LlmBackend::Ollama => call_ollama(client, &llm.base_url, &llm.model, prompt, None).await,
         LlmBackend::LmStudio | LlmBackend::Gemini | LlmBackend::Anthropic => {
+            ensure_backend_ready(client, llm).await?;
             call_openai_with_fallback(
-                client, &llm.base_url, &llm.model, llm.api_key.as_deref(),
-                fallback_llm().as_deref(), prompt,
-            ).await
+                client,
+                &llm.base_url,
+                &llm.model,
+                llm.api_key.as_deref(),
+                fallback_llm().as_deref(),
+                prompt,
+            )
+            .await
         }
     }
 }
@@ -830,14 +902,18 @@ pub async fn call_coding_prompt(
     let prompt = prompt.into();
     let model = llm.effective_coding_model();
     match llm.backend {
-        LlmBackend::Ollama => {
-            call_ollama(client, &llm.base_url, model, prompt, None).await
-        }
+        LlmBackend::Ollama => call_ollama(client, &llm.base_url, model, prompt, None).await,
         LlmBackend::LmStudio | LlmBackend::Gemini | LlmBackend::Anthropic => {
+            ensure_backend_ready(client, llm).await?;
             call_openai_with_fallback(
-                client, &llm.base_url, model, llm.api_key.as_deref(),
-                fallback_llm().as_deref(), prompt,
-            ).await
+                client,
+                &llm.base_url,
+                model,
+                llm.api_key.as_deref(),
+                fallback_llm().as_deref(),
+                prompt,
+            )
+            .await
         }
     }
 }
@@ -865,6 +941,7 @@ pub async fn call_router_prompt(
             .await
         }
         LlmBackend::LmStudio | LlmBackend::Gemini | LlmBackend::Anthropic => {
+            ensure_backend_ready(client, llm).await?;
             call_openai(client, &llm.base_url, model, llm.api_key.as_deref(), prompt).await
         }
     }
@@ -882,6 +959,7 @@ pub async fn call_large_prompt(
     match llm.backend {
         LlmBackend::Ollama => call_ollama(client, &llm.base_url, model, prompt, None).await,
         LlmBackend::LmStudio | LlmBackend::Gemini | LlmBackend::Anthropic => {
+            ensure_backend_ready(client, llm).await?;
             call_openai(client, &llm.base_url, model, llm.api_key.as_deref(), prompt).await
         }
     }
@@ -908,6 +986,7 @@ where
             stream_ollama(client, &llm.base_url, &llm.model, prompt, on_token).await
         }
         LlmBackend::LmStudio | LlmBackend::Gemini | LlmBackend::Anthropic => {
+            ensure_backend_ready(client, llm).await?;
             stream_openai(
                 client,
                 &llm.base_url,
@@ -943,6 +1022,7 @@ pub async fn call_prompt_messages(
             call_ollama(client, &llm.base_url, &llm.model, prompt, None).await
         }
         LlmBackend::LmStudio | LlmBackend::Gemini | LlmBackend::Anthropic => {
+            ensure_backend_ready(client, llm).await?;
             let openai_msgs: Vec<OpenAiMessage> = messages
                 .iter()
                 .map(|m| OpenAiMessage::text(m.role.as_str(), &m.content))
@@ -960,7 +1040,8 @@ pub async fn call_prompt_messages(
                     &llm.model,
                     llm.api_key.as_deref(),
                     openai_msgs,
-                ).await;
+                )
+                .await;
             }
             call_openai_messages(
                 client,
@@ -998,10 +1079,12 @@ pub async fn call_vision(
                 "stream": false,
             });
             let url = format!("{}/api/generate", llm.base_url.trim_end_matches('/'));
-            let resp: serde_json::Value = client.post(&url).json(&body).send().await?.json().await?;
+            let resp: serde_json::Value =
+                client.post(&url).json(&body).send().await?.json().await?;
             Ok(resp["response"].as_str().unwrap_or("").trim().to_string())
         }
         LlmBackend::LmStudio | LlmBackend::Gemini | LlmBackend::Anthropic => {
+            ensure_backend_ready(client, llm).await?;
             let msg = OpenAiMessage::with_image("user", prompt, image_base64, mime);
             call_openai_messages(
                 client,
@@ -1009,7 +1092,8 @@ pub async fn call_vision(
                 &llm.model,
                 llm.api_key.as_deref(),
                 vec![msg],
-            ).await
+            )
+            .await
         }
     }
 }
@@ -1038,10 +1122,16 @@ pub(crate) fn base64_encode_bytes(input: &[u8]) -> String {
         let triple = (b0 << 16) | (b1 << 8) | b2;
         out.push(CHARS[((triple >> 18) & 0x3F) as usize] as char);
         out.push(CHARS[((triple >> 12) & 0x3F) as usize] as char);
-        if chunk.len() > 1 { out.push(CHARS[((triple >> 6) & 0x3F) as usize] as char); }
-        else { out.push('='); }
-        if chunk.len() > 2 { out.push(CHARS[(triple & 0x3F) as usize] as char); }
-        else { out.push('='); }
+        if chunk.len() > 1 {
+            out.push(CHARS[((triple >> 6) & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(CHARS[(triple & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
     }
     out
 }
@@ -1117,6 +1207,28 @@ mod tests {
     }
 
     #[test]
+    fn vision_hint_uses_effective_backend_and_model() {
+        let gemini = LlmConfig {
+            backend: LlmBackend::Gemini,
+            model: "custom-model-alias".into(),
+            ..ollama_cfg()
+        };
+        assert!(gemini.supports_vision_hint());
+
+        let local_vision = LlmConfig {
+            model: "qwen2.5-vl-7b".into(),
+            ..ollama_cfg()
+        };
+        assert!(local_vision.supports_vision_hint());
+
+        let local_text = LlmConfig {
+            model: "llama3.2".into(),
+            ..ollama_cfg()
+        };
+        assert!(!local_text.supports_vision_hint());
+    }
+
+    #[test]
     fn task_log_summary_lists_effective_models() {
         let cfg = LlmConfig {
             coding_model: Some("qwen2.5-coder".to_string()),
@@ -1126,18 +1238,39 @@ mod tests {
         };
 
         let summary = cfg.task_log_summary();
-        assert!(summary.contains("backend=ollama"), "unexpected summary: {summary}");
-        assert!(summary.contains("chat=ollama/llama3.2"), "unexpected summary: {summary}");
-        assert!(summary.contains("router=") && summary.contains("phi3-mini"), "unexpected summary: {summary}");
-        assert!(summary.contains("coding=ollama/qwen2.5-coder"), "unexpected summary: {summary}");
-        assert!(summary.contains("large=ollama/llama3:70b"), "unexpected summary: {summary}");
+        assert!(
+            summary.contains("backend=ollama"),
+            "unexpected summary: {summary}"
+        );
+        assert!(
+            summary.contains("chat=ollama/llama3.2"),
+            "unexpected summary: {summary}"
+        );
+        assert!(
+            summary.contains("router=") && summary.contains("phi3-mini"),
+            "unexpected summary: {summary}"
+        );
+        assert!(
+            summary.contains("coding=ollama/qwen2.5-coder"),
+            "unexpected summary: {summary}"
+        );
+        assert!(
+            summary.contains("large=ollama/llama3:70b"),
+            "unexpected summary: {summary}"
+        );
     }
 
     #[test]
     fn from_env_succeeds_without_panicking() {
         let cfg = LlmConfig::from_env();
-        assert!(!cfg.model.is_empty(), "model must not be empty after from_env");
-        assert!(!cfg.base_url.is_empty(), "base_url must not be empty after from_env");
+        assert!(
+            !cfg.model.is_empty(),
+            "model must not be empty after from_env"
+        );
+        assert!(
+            !cfg.base_url.is_empty(),
+            "base_url must not be empty after from_env"
+        );
     }
 
     // ── MessageRole ───────────────────────────────────────────────────────────
@@ -1166,10 +1299,10 @@ mod tests {
     fn vision_llm_config_reads_env_vars() {
         // Scope env-var changes so they don't leak into other tests.
         // (Tests within the same binary share the process environment.)
-        std::env::set_var("LLM_VISION_BACKEND",  "lmstudio");
+        std::env::set_var("LLM_VISION_BACKEND", "lmstudio");
         std::env::set_var("LLM_VISION_BASE_URL", "https://openrouter.ai/api/v1");
-        std::env::set_var("LLM_VISION_MODEL",    "qwen/qwen2.5-vl-7b-instruct");
-        std::env::set_var("LLM_VISION_API_KEY",  "sk-test-key");
+        std::env::set_var("LLM_VISION_MODEL", "qwen/qwen2.5-vl-7b-instruct");
+        std::env::set_var("LLM_VISION_API_KEY", "sk-test-key");
 
         let cfg = super::vision_llm_config();
 
@@ -1189,9 +1322,9 @@ mod tests {
     #[test]
     fn vision_llm_config_returns_none_if_incomplete() {
         // Only set three of the four required vars — should return None.
-        std::env::set_var("LLM_VISION_BACKEND",  "gemini");
+        std::env::set_var("LLM_VISION_BACKEND", "gemini");
         std::env::set_var("LLM_VISION_BASE_URL", "https://example.com");
-        std::env::set_var("LLM_VISION_MODEL",    "gemini-vision");
+        std::env::set_var("LLM_VISION_MODEL", "gemini-vision");
         // LLM_VISION_API_KEY intentionally omitted.
         std::env::remove_var("LLM_VISION_API_KEY");
 
@@ -1201,16 +1334,19 @@ mod tests {
         std::env::remove_var("LLM_VISION_BASE_URL");
         std::env::remove_var("LLM_VISION_MODEL");
 
-        assert!(result.is_none(), "should return None when API key is missing");
+        assert!(
+            result.is_none(),
+            "should return None when API key is missing"
+        );
     }
 
     #[test]
     fn vision_llm_config_warns_when_base_url_set_but_key_empty() {
         // Arrange: base_url + backend + model are set, but api_key is empty string.
-        std::env::set_var("LLM_VISION_BACKEND",  "lmstudio");
+        std::env::set_var("LLM_VISION_BACKEND", "lmstudio");
         std::env::set_var("LLM_VISION_BASE_URL", "https://openrouter.ai/api/v1");
-        std::env::set_var("LLM_VISION_MODEL",    "qwen/qwen2.5-vl-7b-instruct");
-        std::env::set_var("LLM_VISION_API_KEY",  "");
+        std::env::set_var("LLM_VISION_MODEL", "qwen/qwen2.5-vl-7b-instruct");
+        std::env::set_var("LLM_VISION_API_KEY", "");
 
         let result = super::vision_llm_config();
 
@@ -1236,25 +1372,40 @@ mod tests {
         // Standard HTTP error string from reqwest
         let e: Box<dyn std::error::Error + Send + Sync> =
             "HTTP status client error (429 Too Many Requests)".into();
-        assert!(super::is_rate_limit_err(e.as_ref()), "should detect HTTP 429 status");
+        assert!(
+            super::is_rate_limit_err(e.as_ref()),
+            "should detect HTTP 429 status"
+        );
 
         // Our custom message from backends.rs after max retries
         let e: Box<dyn std::error::Error + Send + Sync> =
             "429 rate-limited: max retries exceeded for model=models/gemini-2.5-flash".into();
-        assert!(super::is_rate_limit_err(e.as_ref()), "should detect custom rate-limit message");
+        assert!(
+            super::is_rate_limit_err(e.as_ref()),
+            "should detect custom rate-limit message"
+        );
 
         // Plain 429 substring
         let e: Box<dyn std::error::Error + Send + Sync> = "429".into();
-        assert!(super::is_rate_limit_err(e.as_ref()), "should detect bare 429");
+        assert!(
+            super::is_rate_limit_err(e.as_ref()),
+            "should detect bare 429"
+        );
 
         // OpenAI error body
         let e: Box<dyn std::error::Error + Send + Sync> =
             "error: Too Many Requests, please slow down".into();
-        assert!(super::is_rate_limit_err(e.as_ref()), "should detect Too Many Requests");
+        assert!(
+            super::is_rate_limit_err(e.as_ref()),
+            "should detect Too Many Requests"
+        );
 
         // Non-429 errors must NOT match
         let e: Box<dyn std::error::Error + Send + Sync> = "connection refused".into();
-        assert!(!super::is_rate_limit_err(e.as_ref()), "connection refused is not 429");
+        assert!(
+            !super::is_rate_limit_err(e.as_ref()),
+            "connection refused is not 429"
+        );
 
         let e: Box<dyn std::error::Error + Send + Sync> =
             "HTTP status client error (401 Unauthorized)".into();
@@ -1285,8 +1436,11 @@ mod tests {
     async fn spawn_mock_server(
         status: u16,
         body: &'static str,
-    ) -> (std::net::SocketAddr, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
-        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+    ) -> (
+        std::net::SocketAddr,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        use std::sync::{atomic::AtomicUsize, Arc};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
 
@@ -1294,7 +1448,11 @@ mod tests {
         let hits2 = Arc::clone(&hits);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let reason = if status == 429 { "Too Many Requests" } else { "OK" };
+        let reason = if status == 429 {
+            "Too Many Requests"
+        } else {
+            "OK"
+        };
 
         tokio::spawn(async move {
             // Accept up to 10 connections so retry loops are served correctly.
@@ -1355,17 +1513,30 @@ mod tests {
 
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-        assert!(result.is_ok(), "call should succeed via fallback; got: {result:?}");
-        assert_eq!(result.unwrap(), "pong", "fallback response should be 'pong'");
+        assert!(
+            result.is_ok(),
+            "call should succeed via fallback; got: {result:?}"
+        );
+        assert_eq!(
+            result.unwrap(),
+            "pong",
+            "fallback response should be 'pong'"
+        );
         // primary hit 4× (initial + 3 retries, check fires on attempt 3):
         //   attempt 0 → 429 (sleep 0s, rate_limit_attempt=1)
         //   attempt 1 → 429 (sleep 0s, rate_limit_attempt=2)
         //   attempt 2 → 429 (sleep 0s, rate_limit_attempt=3)
         //   attempt 3 → 429, rate_limit_attempt >= 3 → return Err
-        assert_eq!(primary_hits.load(std::sync::atomic::Ordering::SeqCst), 4,
-            "primary must receive initial + 3 retry attempts (4 total)");
-        assert_eq!(fallback_hits.load(std::sync::atomic::Ordering::SeqCst), 1,
-            "fallback must be hit exactly once");
+        assert_eq!(
+            primary_hits.load(std::sync::atomic::Ordering::SeqCst),
+            4,
+            "primary must receive initial + 3 retry attempts (4 total)"
+        );
+        assert_eq!(
+            fallback_hits.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "fallback must be hit exactly once"
+        );
     }
 
     #[tokio::test]
@@ -1385,7 +1556,10 @@ mod tests {
         )
         .await;
 
-        assert!(result.is_err(), "should return Err when no fallback is configured");
+        assert!(
+            result.is_err(),
+            "should return Err when no fallback is configured"
+        );
         let err_str = result.unwrap_err().to_string();
         let err_box: Box<dyn std::error::Error + Send + Sync> = err_str.clone().into();
         assert!(
@@ -1400,9 +1574,9 @@ mod tests {
     fn override_unknown_provider_returns_err() {
         let o = super::LlmOverride {
             provider: "made-up-provider".into(),
-            model:    "x".into(),
+            model: "x".into(),
             base_url: None,
-            api_key:  None,
+            api_key: None,
         };
         let r = super::LlmConfig::from_override(&o);
         assert!(r.is_err());
@@ -1413,9 +1587,9 @@ mod tests {
     fn override_lmstudio_uses_provider_defaults_when_optional_fields_empty() {
         let o = super::LlmOverride {
             provider: "lmstudio".into(),
-            model:    "gemma-4-e4b-it".into(),
+            model: "gemma-4-e4b-it".into(),
             base_url: None,
-            api_key:  None,
+            api_key: None,
         };
         let cfg = super::LlmConfig::from_override(&o).expect("build");
         assert!(matches!(cfg.backend, super::LlmBackend::LmStudio));
@@ -1429,9 +1603,9 @@ mod tests {
     fn override_explicit_base_url_overrides_provider_default() {
         let o = super::LlmOverride {
             provider: "anthropic".into(),
-            model:    "claude-3-5-sonnet".into(),
+            model: "claude-3-5-sonnet".into(),
             base_url: Some("https://my-proxy.example.com/v1".into()),
-            api_key:  Some("fake-test-key".into()),
+            api_key: Some("fake-test-key".into()),
         };
         let cfg = super::LlmConfig::from_override(&o).expect("build");
         assert!(matches!(cfg.backend, super::LlmBackend::Anthropic));
@@ -1447,9 +1621,9 @@ mod tests {
         // documented on LlmOverride.
         let o = super::LlmOverride {
             provider: "gemini".into(),
-            model:    "models/gemini-2.5-flash".into(),
-            base_url: Some("   ".into()),  // whitespace = omitted
-            api_key:  Some("".into()),       // empty = omitted
+            model: "models/gemini-2.5-flash".into(),
+            base_url: Some("   ".into()), // whitespace = omitted
+            api_key: Some("".into()),     // empty = omitted
         };
         let cfg = super::LlmConfig::from_override(&o).expect("build");
         assert!(matches!(cfg.backend, super::LlmBackend::Gemini));
@@ -1462,13 +1636,12 @@ mod tests {
         for variant in ["LMSTUDIO", "LmStudio", "lmstudio", "lm_studio"] {
             let o = super::LlmOverride {
                 provider: variant.into(),
-                model:    "any".into(),
+                model: "any".into(),
                 base_url: None,
-                api_key:  None,
+                api_key: None,
             };
-            let cfg = super::LlmConfig::from_override(&o).unwrap_or_else(|e|
-                panic!("variant {variant} should parse: {e}")
-            );
+            let cfg = super::LlmConfig::from_override(&o)
+                .unwrap_or_else(|e| panic!("variant {variant} should parse: {e}"));
             assert!(matches!(cfg.backend, super::LlmBackend::LmStudio));
         }
     }

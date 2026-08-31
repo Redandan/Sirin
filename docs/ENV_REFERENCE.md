@@ -13,6 +13,10 @@ Set in `.env` or system environment.
 | `LM_STUDIO_BASE_URL` | `http://localhost:1234/v1` | LM Studio / OpenAI-compatible endpoint |
 | `LM_STUDIO_MODEL` | `llama3.2` | Model name for LM Studio |
 | `LM_STUDIO_API_KEY` | *(empty)* | Optional Bearer token |
+| `SIRIN_LMSTUDIO_AUTOSTART` | `1` | When LM Studio is configured on localhost but `/v1/models` is unreachable, Sirin tries `lms server start` and then the LM Studio app before retrying. Set `0`/`false`/`off` to disable. |
+| `SIRIN_LMSTUDIO_AUTOSTART_WAIT_SECS` | `20` | Max seconds to wait for the LM Studio local server after auto-start. |
+| `LMS_CLI` / `LM_STUDIO_CLI` | `lms` | Optional explicit path to the LM Studio CLI used for `lms server start`. |
+| `LM_STUDIO_APP_PATH` | auto-detect | Optional explicit path to `LM Studio.exe` when the CLI is not on `PATH`. |
 | `GEMINI_API_KEY` | | Google Gemini API key |
 | `GEMINI_MODEL` | `gemini-2.0-flash` | Gemini model |
 | `ANTHROPIC_API_KEY` | | Anthropic Claude API key |
@@ -29,16 +33,29 @@ Set in `.env` or system environment.
 |----------|---------|-------------|
 | `KB_ENABLED` | `0` | Master switch for KB integration.  Set `1`/`true`/`yes`/`on` to enable.  When off, all `kb_client` helpers short-circuit (no MCP traffic).  Off by default so dev setups without the agora-trading MCP service reachable don't see error spam. |
 | `KB_MCP_URL` | `http://localhost:3001/mcp` | MCP endpoint for the KB.  For the **hosted agora-trading service** (the one Claude Code already uses) set to `https://agoramarketapi.purrtechllc.com/api/mcp`. |
-| `KB_MCP_BEARER` | *(none)* | Optional `Bearer <token>` for the KB endpoint.  Hosted KBs gate access.  Read the existing token from `~/.claude.json` → `mcpServers.agora-trading.headers.Authorization` and strip the `Bearer ` prefix. |
+| `KB_MCP_BEARER` | *(none)* | Legacy bearer fallback for KB reads when no OPS authorization is available. Sirin manual and telemetry writes do not use it. |
 | `KB_PROJECT` | `sirin` | Default project slug for KB writes from runtime (convergence guard raw notes, etc).  Reads pass project explicitly. |
+| `SIRIN_AGORA_OPS_AUTHORIZATION` | *(none)* | Optional explicit OPS authorization value for AgoraMarket read-only operations and KB reads. Sirin strips a leading `Bearer ` before sending this as `X-OPS-Authorization`, so read-only checks do not require external-AI Telegram approval. If unset, Sirin tries `MCP_OPS_KEY`, then `~/.claude.json` `mcpServers.agora-ops.headers.X-OPS-Authorization`. It intentionally does not use `mcpServers.agora-ops.headers.Authorization` as an OPS fallback because that value may be an external-AI bearer. |
+| `SIRIN_KB_SSH_HOST` / `AGORA_SSH_HOST` | *(none)* | SSH host used only by Sirin's fixed server-local `kbWrite` path. The Sirin-specific name wins. |
+| `SIRIN_KB_SSH_KEY` / `AGORA_SSH_KEY` | *(none)* | Existing absolute SSH private-key path for the fixed KB write path. The key stays on Windows; the AgoraMarketAPI MCP credential stays on the remote host. |
 
 **Quick setup against the hosted KB:**
 ```bash
 # .env
 KB_ENABLED=1
 KB_MCP_URL=https://agoramarketapi.purrtechllc.com/api/mcp
-KB_MCP_BEARER=<paste-token-from-~/.claude.json>
+# Read-only kb_get/kb_search prefer the existing agora-ops X-OPS authorization.
+AGORA_SSH_HOST=<existing-ssh-host>
+AGORA_SSH_KEY=<existing-absolute-key-path>
 ```
+
+Local AI sessions must use Sirin's `kb_write` for explicitly requested KB
+updates. Sirin validates the live upstream `kbWrite` policy, obtains the
+running service credential only inside the remote host, and calls the fixed
+server-local MCP endpoint. It never routes local writes through the broad
+external-AI connector and therefore does not request per-call Telegram
+approval. `KB_WRITE_TELEMETRY` controls only automatic raw/draft notes; it does
+not disable manual `kb_write` calls.
 
 **Auto-features when enabled:**
 - `TestGoal.docs_refs` entries are auto-resolved at run start: filesystem paths read with `std::fs`; kebab-case keys (no `/` `\` and no extension) fetched via `kbGet`.  Content is spliced into the LLM prompt under "Required reading".
@@ -67,6 +84,7 @@ KB_MCP_BEARER=<paste-token-from-~/.claude.json>
 |----------|---------|-------------|
 | `SIRIN_PROJECT_ROOT` | *(cwd)* | Root directory for file operations (path traversal guard) |
 | `SIRIN_ALLOWED_COMMANDS` | | Additional shell commands (comma-separated) added to coding agent whitelist |
+| `SIRIN_MCP_TOOL_PROFILE` | `full` | Default `tools/list` discovery profile: `full`, `core`, `testing`, `ios`, or `ops`. An explicit `tools/list` `params.profile` overrides it. Compact profiles reduce AI context only; they do not restrict `tools/call` or change authorization. |
 | `FOLLOWUP_INTERVAL_SECS` | `20` | Follow-up worker polling interval |
 
 ## Browser / Test Runner
@@ -74,6 +92,7 @@ KB_MCP_BEARER=<paste-token-from-~/.claude.json>
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SIRIN_BROWSER_HEADLESS` | `true` | Chrome mode. Set `false` / `0` / `no` to run visible — **required for Flutter CanvasKit / WebGL apps** which won't paint headless. **As of cb49ea5 all 22 Agora YAML tests have removed their per-test `browser_headless` field — set this once in `.env` instead.** Per-test YAML `browser_headless` still overrides at the `TestGoal` level if explicitly set. |
+| `SIRIN_BROWSER_OPERATION_TIMEOUT_SECS` | `120` | Hard deadline for one synchronous CDP operation; values are clamped to 10–600 seconds. A timeout returns an explicit error and invalidates only the stale browser-session generation so the next operation can rebuild Chrome. This is separate from headless_chrome's shared idle/event-loop timeout. |
 | `BATCH_START_STAGGER_MS` | `5000` | Delay (ms) between consecutive `run_test_batch` test starts.  Each test waits `idx * stagger_ms` before acquiring the concurrency semaphore.  Mitigates Chrome-process state races when multiple batch tests share localStorage / cookies / `?__test_role=` SPA flags.  Default raised 2s → 5s after batch 7-9 showed Flutter SPA auto-login needed ~3-5s to settle before the next test could safely navigate to the same auth-required URL.  In addition, batch start now does a synchronous `about:blank` pre-warm so Chrome is fully cold-launched before idx=0 begins.  Set `0` to disable for tests on independent domains. |
 | `SIRIN_RPC_PORT` | `7700` | Port for the WebSocket + MCP HTTP server. Change when port 7700 is stuck in TCP TIME_WAIT from a recently-killed Sirin, or when running multiple instances. |
 | `SIRIN_REPO_BACKEND` | `~/IdeaProjects/AgoraMarketAPI` | Repo path for auto-fix spawning (backend bugs) |

@@ -60,8 +60,8 @@ fn install_windows_job() -> Result<(), String> {
 
     unsafe {
         // Create an unnamed job object.
-        let job: HANDLE = CreateJobObjectW(None, None)
-            .map_err(|e| format!("CreateJobObjectW: {e}"))?;
+        let job: HANDLE =
+            CreateJobObjectW(None, None).map_err(|e| format!("CreateJobObjectW: {e}"))?;
 
         // Configure: kill all members when job handle closes.
         let info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION {

@@ -77,5 +77,4 @@ success_criteria:
   - "輸入 hello 並發送，4 秒內在聊天記錄中顯示（截圖確認）"
   - "無嚴重 SSE 錯誤（console 無 Failed to handle new message）"
 
-tags: [regression, chat, sse, agora, issue-9]
-
+tags: [regression, chat, sse, agora, issue-9, mutating, requires-operator-approval]

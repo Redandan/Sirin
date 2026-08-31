@@ -1,0 +1,66 @@
+id: agoramarket
+target: AgoraMarket
+default_timeout_ms: 15000
+surfaces:
+  - id: buyer_home
+    role: buyer
+    url: "https://redandan.github.io/?__test_role=buyer"
+    viewport:
+      width: 390
+      height: 844
+      mobile: true
+    expected_any: ["搜尋", "購物車", "商品", "首頁"]
+    forbidden_any: ["數據總覽", "批量導入"]
+
+  - id: seller_home
+    role: seller
+    url: "https://redandan.github.io/?__test_role=seller"
+    viewport:
+      width: 390
+      height: 844
+      mobile: true
+    expected_any: ["今日", "賣場設定", "批量導入", "新增商品"]
+    forbidden_any: ["購物車", "數據總覽"]
+
+  - id: admin_home
+    role: admin
+    url: "https://redandan.github.io/?__test_role=admin"
+    viewport:
+      width: 1280
+      height: 800
+      mobile: false
+    expected_any: ["數據總覽", "用戶", "管理", "訂單"]
+    forbidden_any: ["購物車", "賣場設定"]
+
+  - id: seller_products
+    role: seller
+    url: "https://redandan.github.io/?__test_role=seller"
+    nav_target: "商品"
+    viewport:
+      width: 390
+      height: 844
+      mobile: true
+    expected_any: ["新增商品", "重新載入", "批量導入", "商品"]
+    forbidden_any: ["購物車", "數據總覽"]
+
+  - id: seller_orders
+    role: seller
+    url: "https://redandan.github.io/?__test_role=seller"
+    nav_target: "訂單"
+    viewport:
+      width: 390
+      height: 844
+      mobile: true
+    expected_any: ["全部", "待處理", "運送中", "已完成", "訂單"]
+    forbidden_any: ["購物車", "數據總覽"]
+
+  - id: seller_wallet
+    role: seller
+    url: "https://redandan.github.io/?__test_role=seller"
+    nav_target: "錢包"
+    viewport:
+      width: 390
+      height: 844
+      mobile: true
+    expected_any: ["總餘額", "可用餘額", "充值", "提現", "錢包"]
+    forbidden_any: ["購物車", "數據總覽"]

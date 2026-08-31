@@ -55,7 +55,6 @@ pub fn recent(n: usize) -> Vec<String> {
         .unwrap_or_default()
 }
 
-
 /// Clear the in-memory ring buffer.
 pub fn clear() {
     if let Ok(mut b) = buf().lock() {

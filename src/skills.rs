@@ -206,11 +206,11 @@ fn parse_ddg_html_cards(html: &str) -> Vec<SearchResult> {
 fn first_link_in(text: &str) -> (String, String) {
     let href_start = match text.find("href=\"") {
         Some(i) => i + 6,
-        None    => return (String::new(), String::new()),
+        None => return (String::new(), String::new()),
     };
     let href_end = match text[href_start..].find('"') {
         Some(i) => href_start + i,
-        None    => return (String::new(), String::new()),
+        None => return (String::new(), String::new()),
     };
     let href = &text[href_start..href_end];
     if href.is_empty() || href.starts_with('#') {
@@ -220,11 +220,11 @@ fn first_link_in(text: &str) -> (String, String) {
     let after = &text[href_end..];
     let gt = match after.find('>') {
         Some(i) => href_end + i + 1,
-        None    => return (href.to_string(), String::new()),
+        None => return (href.to_string(), String::new()),
     };
     let end = match text[gt..].find("</a>") {
         Some(i) => gt + i,
-        None    => return (href.to_string(), String::new()),
+        None => return (href.to_string(), String::new()),
     };
     let title = strip_inline_tags(&text[gt..end]).trim().to_string();
     (href.to_string(), title)
@@ -234,17 +234,19 @@ fn first_link_in(text: &str) -> (String, String) {
 fn class_text_in(chunk: &str, class_name: &str) -> String {
     let marker = match chunk.find(class_name) {
         Some(i) => i,
-        None    => return String::new(),
+        None => return String::new(),
     };
     let content_start = match chunk[marker..].find('>') {
         Some(i) => marker + i + 1,
-        None    => return String::new(),
+        None => return String::new(),
     };
     let content_end = match chunk[content_start..].find("</") {
         Some(i) => content_start + i,
-        None    => return String::new(),
+        None => return String::new(),
     };
-    strip_inline_tags(&chunk[content_start..content_end]).trim().to_string()
+    strip_inline_tags(&chunk[content_start..content_end])
+        .trim()
+        .to_string()
 }
 
 /// Remove HTML tags from a short string (titles, snippets).
@@ -255,7 +257,11 @@ fn strip_inline_tags(s: &str) -> String {
         match c {
             '<' => in_tag = true,
             '>' => in_tag = false,
-            _   => if !in_tag { out.push(c) },
+            _ => {
+                if !in_tag {
+                    out.push(c)
+                }
+            }
         }
     }
     out
@@ -375,7 +381,7 @@ mod tests {
 
     #[test]
     fn recommended_skills_respects_available_filter() {
-        use crate::skills::{SkillDefinition, recommended_skills};
+        use crate::skills::{recommended_skills, SkillDefinition};
         // Build a minimal fake skill with example_prompts
         let fake = SkillDefinition {
             id: "test_skill".to_string(),
@@ -419,7 +425,9 @@ mod tests {
 
     #[tokio::test]
     async fn browser_test_skill_unknown_id_guides_user() {
-        let out = execute_browser_test("nonexistent_test_xyz").await.expect("unknown");
+        let out = execute_browser_test("nonexistent_test_xyz")
+            .await
+            .expect("unknown");
         assert!(out.contains("未找到") || out.contains("not found"));
         assert!(out.contains("nonexistent_test_xyz"));
     }
@@ -429,6 +437,45 @@ mod tests {
         let skills = list_skills();
         let has_bt = skills.iter().any(|s| s.id == "browser-test");
         assert!(has_bt, "browser-test skill must be in list_skills()");
+    }
+
+    #[tokio::test]
+    async fn replay_health_skill_is_approval_scoped_and_non_destructive() {
+        crate::skill_loader::invalidate_cache();
+        let skills = list_skills();
+        let skill = skills
+            .iter()
+            .find(|skill| skill.id == "test-health-repair")
+            .expect("test-health-repair skill must be loaded from YAML");
+        assert!(skill.requires_approval);
+        assert!(skill
+            .backed_by_tools
+            .iter()
+            .any(|tool| tool == "script_health"));
+        assert!(!skill
+            .backed_by_tools
+            .iter()
+            .any(|tool| tool == "delete_saved_script"));
+
+        let registered = crate::adk::tool::default_tool_registry().names();
+        for tool in &skill.backed_by_tools {
+            assert!(
+                registered.contains(tool),
+                "skill references unregistered internal tool: {tool}"
+            );
+        }
+
+        let context = build_skill_context(&[skill.id.clone()]).expect("skill context");
+        assert!(context.contains("技能被推薦不等於使用者已授權"));
+        assert!(context.contains("通用 skill_execute 會拒絕執行"));
+        assert!(context.contains("不呼叫 delete_saved_script"));
+        assert!(context.contains("最近三筆皆為 replay"));
+
+        let error = execute_skill(&skill.id, "修復這個測試", Some("test-agent"))
+            .await
+            .expect_err("approval-gated skills must fail closed in the generic executor");
+        assert!(error.starts_with("APPROVAL_REQUIRED:"), "error: {error}");
+        assert!(error.contains(&skill.id), "error: {error}");
     }
 }
 
@@ -468,8 +515,12 @@ pub struct SkillDefinition {
     pub script_timeout_secs: u64,
 }
 
-fn skill_enabled_default() -> bool { true }
-fn default_script_timeout() -> u64 { 30 }
+fn skill_enabled_default() -> bool {
+    true
+}
+fn default_script_timeout() -> u64 {
+    30
+}
 
 // ── Built-in skill: browser-test ─────────────────────────────────────────────
 
@@ -488,7 +539,8 @@ async fn execute_browser_test(user_input: &str) -> Result<String, String> {
     if trimmed.is_empty()
         || trimmed.eq_ignore_ascii_case("list")
         || trimmed.eq_ignore_ascii_case("ls")
-        || trimmed == "列出" || trimmed == "所有"
+        || trimmed == "列出"
+        || trimmed == "所有"
     {
         let tests = crate::test_runner::list_tests();
         if tests.is_empty() {
@@ -496,9 +548,15 @@ async fn execute_browser_test(user_input: &str) -> Result<String, String> {
         }
         let mut out = format!("可用測試 ({}):\n\n", tests.len());
         for t in &tests {
-            let tags = if t.tags.is_empty() { String::new() }
-                else { format!(" [{}]", t.tags.join(",")) };
-            out.push_str(&format!("• {} — {}{}\n  url: {}\n", t.id, t.name, tags, t.url));
+            let tags = if t.tags.is_empty() {
+                String::new()
+            } else {
+                format!(" [{}]", t.tags.join(","))
+            };
+            out.push_str(&format!(
+                "• {} — {}{}\n  url: {}\n",
+                t.id, t.name, tags, t.url
+            ));
         }
         out.push_str("\n執行範例: browser-test <test_id>");
         return Ok(out);
@@ -531,10 +589,10 @@ async fn execute_browser_test(user_input: &str) -> Result<String, String> {
 
     let elapsed_s = started.elapsed().as_secs_f64();
     let status_label = match result.status {
-        crate::test_runner::TestStatus::Passed   => "✓ PASSED",
-        crate::test_runner::TestStatus::Failed   => "✗ FAILED",
-        crate::test_runner::TestStatus::Timeout  => "⏱ TIMEOUT",
-        crate::test_runner::TestStatus::Error    => "✗ ERROR",
+        crate::test_runner::TestStatus::Passed => "✓ PASSED",
+        crate::test_runner::TestStatus::Failed => "✗ FAILED",
+        crate::test_runner::TestStatus::Timeout => "⏱ TIMEOUT",
+        crate::test_runner::TestStatus::Error => "✗ ERROR",
         crate::test_runner::TestStatus::Disputed => "⚠ DISPUTED",
     };
 
@@ -566,12 +624,16 @@ async fn execute_browser_test(user_input: &str) -> Result<String, String> {
 
 /// Infer the script interpreter from the file extension.
 fn infer_interpreter(path: &str) -> &'static str {
-    if path.ends_with(".py")  { "python3" }
-    else if path.ends_with(".sh")  { "bash" }
-    else if path.ends_with(".js")  { "node" }
-    else { "sh" }
+    if path.ends_with(".py") {
+        "python3"
+    } else if path.ends_with(".sh") {
+        "bash"
+    } else if path.ends_with(".js") {
+        "node"
+    } else {
+        "sh"
+    }
 }
-
 
 pub fn list_skills() -> Vec<SkillDefinition> {
     let mut skills = hardcoded_skills();
@@ -591,26 +653,37 @@ fn hardcoded_skills() -> Vec<SkillDefinition> {
 fn score_skill_for_query(skill: &SkillDefinition, query: &str) -> i32 {
     let lower = query.to_lowercase();
     // Trigger keywords — high weight, any match is a strong signal
-    let trigger_score: i32 = skill.trigger_keywords.iter()
+    let trigger_score: i32 = skill
+        .trigger_keywords
+        .iter()
         .filter(|kw| !kw.is_empty() && lower.contains(kw.to_lowercase().as_str()))
-        .count() as i32 * 8;
+        .count() as i32
+        * 8;
     // Name match bonus
-    let name_score = if lower.contains(&skill.name.to_lowercase()) { 5 } else { 0 };
+    let name_score = if lower.contains(&skill.name.to_lowercase()) {
+        5
+    } else {
+        0
+    };
     // Example prompt word overlap
-    let prompt_score: i32 = skill.example_prompts.iter()
+    let prompt_score: i32 = skill
+        .example_prompts
+        .iter()
         .map(|p| {
             p.split_whitespace()
                 .filter(|w| w.len() >= 2 && lower.contains(&w.to_lowercase()))
                 .count() as i32
         })
-        .sum::<i32>() * 3;
+        .sum::<i32>()
+        * 3;
     trigger_score + name_score + prompt_score
 }
 
 /// 從給定技能清單中，根據 query 關鍵字推薦最相關的技能（最多 4 個）。
 /// `available` 已經過 per-agent 白名單過濾。
 pub fn recommended_skills(query: &str, available: &[SkillDefinition]) -> Vec<SkillDefinition> {
-    let mut scored: Vec<(i32, &SkillDefinition)> = available.iter()
+    let mut scored: Vec<(i32, &SkillDefinition)> = available
+        .iter()
         .filter_map(|skill| {
             let score = score_skill_for_query(skill, query);
             (score > 0).then_some((score, skill))
@@ -635,7 +708,9 @@ pub fn build_skill_context(planner_skill_ids: &[String]) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
 
     for id in planner_skill_ids {
-        let Some(skill) = all.iter().find(|s| &s.id == id) else { continue };
+        let Some(skill) = all.iter().find(|s| &s.id == id) else {
+            continue;
+        };
 
         let instruction = if skill.script_file.is_some() {
             format!(
@@ -649,7 +724,12 @@ pub fn build_skill_context(planner_skill_ids: &[String]) -> Option<String> {
         } else {
             continue;
         };
-        parts.push(instruction);
+        let approval_boundary = if skill.requires_approval {
+            "⚠ 此技能需要授權：技能被推薦不等於使用者已授權。可以先做唯讀盤點；在執行測試、寫入資料或其他改變狀態的步驟前，必須先列出具體範圍並取得使用者明確同意。通用 skill_execute 會拒絕執行此技能；授權後只能改用範圍明確的專用工具或流程，不得繞過此保護。\n"
+        } else {
+            ""
+        };
+        parts.push(format!("{approval_boundary}{instruction}"));
     }
 
     if parts.is_empty() {
@@ -661,6 +741,24 @@ pub fn build_skill_context(planner_skill_ids: &[String]) -> Option<String> {
     ))
 }
 
+/// Enforce the fail-closed boundary shared by every generic skill executor.
+///
+/// `requires_approval` is metadata, not an approval receipt. Generic entry
+/// points cannot prove that a human approved the exact action and scope, so
+/// they must refuse these skills. A domain-specific workflow may perform the
+/// action only after enforcing its own scoped approval contract.
+pub(crate) fn guard_generic_skill_execution(skill_id: &str) -> Result<(), String> {
+    match list_skills().into_iter().find(|skill| skill.id == skill_id) {
+        Some(skill) if skill.requires_approval => Err(format!(
+            "APPROVAL_REQUIRED: skill '{skill_id}' cannot run through the generic executor; use a scoped, approval-gated workflow"
+        )),
+        Some(_) => Ok(()),
+        // These built-ins remain available for recovery if their YAML catalog
+        // entry is temporarily unavailable in an installed configuration.
+        None if matches!(skill_id, "config-check" | "browser-test") => Ok(()),
+        None => Err(format!("Unknown skill: {skill_id}")),
+    }
+}
 
 /// Execute a skill's external script.
 ///
@@ -675,6 +773,8 @@ pub async fn execute_skill(
     user_input: &str,
     agent_id: Option<&str>,
 ) -> Result<String, String> {
+    guard_generic_skill_execution(skill_id)?;
+
     // ── Built-in skills (no script_file required) ────────────────────────────
     if skill_id == "config-check" {
         let issues = tokio::task::spawn_blocking(crate::config_check::run_diagnostics)
@@ -692,9 +792,10 @@ pub async fn execute_skill(
         .find(|s| s.id == skill_id)
         .ok_or_else(|| format!("Unknown skill: {skill_id}"))?;
 
-    let script_path = skill.script_file.as_deref().ok_or_else(|| {
-        format!("Skill '{skill_id}' has no script_file configured")
-    })?;
+    let script_path = skill
+        .script_file
+        .as_deref()
+        .ok_or_else(|| format!("Skill '{skill_id}' has no script_file configured"))?;
 
     if !std::path::Path::new(script_path).exists() {
         return Err(format!("Script not found: {script_path}"));
@@ -731,10 +832,10 @@ pub async fn execute_skill(
     let stdin_bytes =
         serde_json::to_vec(&stdin_payload).map_err(|e| format!("Serialize error: {e}"))?;
 
+    use crate::platform::NoWindow;
     use std::process::Stdio;
     use tokio::io::AsyncWriteExt;
     use tokio::process::Command;
-    use crate::platform::NoWindow;
 
     let mut child = Command::new(interpreter)
         .no_window()
@@ -757,7 +858,12 @@ pub async fn execute_skill(
         child.wait_with_output(),
     )
     .await
-    .map_err(|_| format!("Script '{skill_id}' timed out after {}s", skill.script_timeout_secs))?
+    .map_err(|_| {
+        format!(
+            "Script '{skill_id}' timed out after {}s",
+            skill.script_timeout_secs
+        )
+    })?
     .map_err(|e| format!("Script execution error: {e}"))?;
 
     let stderr = String::from_utf8_lossy(&output.stderr);

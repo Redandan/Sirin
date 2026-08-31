@@ -1,0 +1,47 @@
+id: agora_seller_product_list
+name: "AgoraMarket 賣家商品管理列表 smoke"
+url: "https://redandan.github.io/?__test_role=seller"
+
+max_iterations: 4
+timeout_secs: 120
+fixture_only: true
+
+viewport:
+  width: 390
+  height: 844
+  scale: 2.0
+  mobile: true
+
+locale: zh-TW
+
+fixture:
+  setup:
+    - {action: "clear_state"}
+    - {action: "goto", target: "https://redandan.github.io/?__test_role=seller"}
+    - {action: "wait_for_flutter_semantics", timeout: 15000, min_roles: 2}
+    - {action: "dismiss_passkey_prompt"}
+    - {action: "goto", target: "https://redandan.github.io/?__test_role=seller"}
+    - {action: "wait_for_flutter_semantics", timeout: 25000, min_roles: 8}
+    - {action: "agora_nav_click", target: "商品"}
+    - {action: "wait_for_flutter_semantics", timeout: 12000, min_roles: 8}
+    - {action: "assert_url_matches", target: "#/seller"}
+    - {action: "shadow_find", role: "button", name_regex: "^新增商品$"}
+    - {action: "shadow_find", role: "tab", name_regex: "^全部$"}
+    - {action: "shadow_find", name_regex: "商品操作|編輯|上架"}
+
+goal: |
+  目標：確認新版賣家首頁可切到商品管理列表，且列表核心操作可見。
+
+  起始狀態：fixture.setup 已完成 seller URL 導航、Passkey prompt dismiss、
+  點擊底部商品分頁、wait_for_flutter_semantics；應位於商品管理列表。
+
+  步驟：
+  1. shadow_dump（應看到新增商品、重新載入、批量導入、商品分類 tab、商品卡片）
+  2. done=true
+
+success_criteria:
+  - "看到新增商品按鈕"
+  - "看到商品管理分類 tab（全部/上架/下架/售完/已刪除任一組）"
+  - "看到至少一個商品卡片或商品操作"
+
+tags: [regression, smoke, active-smoke, seller, product, agora, seller-tab-ui]

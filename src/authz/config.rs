@@ -29,8 +29,7 @@ pub enum Mode {
 // ─── Rule ────────────────────────────────────────────────────────────────────
 
 /// A single allow / deny / ask rule.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Rule {
     /// Action name (supports `*` suffix like `ax_*`, or `*` for all).
     #[serde(default)]
@@ -121,9 +120,15 @@ impl Default for LearnConfig {
     }
 }
 
-fn bool_false() -> bool { false }
-fn default_write_back() -> String { "repo".to_string() }
-fn default_max_asks() -> u32 { 20 }
+fn bool_false() -> bool {
+    false
+}
+fn default_write_back() -> String {
+    "repo".to_string()
+}
+fn default_max_asks() -> u32 {
+    20
+}
 
 // ─── AuditConfig ─────────────────────────────────────────────────────────────
 
@@ -149,9 +154,15 @@ impl Default for AuditConfig {
     }
 }
 
-fn default_log_path() -> String { ".sirin/audit.ndjson".to_string() }
-fn default_max_size_mb() -> u64 { 10 }
-fn default_max_backups() -> u32 { 5 }
+fn default_log_path() -> String {
+    ".sirin/audit.ndjson".to_string()
+}
+fn default_max_size_mb() -> u64 {
+    10
+}
+fn default_max_backups() -> u32 {
+    5
+}
 
 // ─── AuthzConfig ─────────────────────────────────────────────────────────────
 
@@ -202,10 +213,17 @@ pub struct AuthzConfig {
 
 fn default_readonly_allow() -> Vec<String> {
     vec![
-        "ax_tree".into(), "ax_find".into(), "ax_value".into(),
-        "screenshot".into(), "url".into(), "title".into(),
-        "console".into(), "network".into(), "exists".into(),
-        "attr".into(), "read".into(),
+        "ax_tree".into(),
+        "ax_find".into(),
+        "ax_value".into(),
+        "screenshot".into(),
+        "url".into(),
+        "title".into(),
+        "console".into(),
+        "network".into(),
+        "exists".into(),
+        "attr".into(),
+        "read".into(),
     ]
 }
 
@@ -255,18 +273,46 @@ pub fn defaults() -> AuthzConfig {
         clients: std::collections::HashMap::new(),
         allow: vec![],
         deny: vec![
-            Rule { url_pattern: Some("file:///**".into()), ..Default::default() },
-            Rule { url_pattern: Some("chrome://**".into()), ..Default::default() },
-            Rule { url_pattern: Some("chrome-extension://**".into()), ..Default::default() },
-            Rule { action: Some("eval".into()), js_contains: Some("document.cookie".into()), ..Default::default() },
-            Rule { action: Some("eval".into()), js_contains: Some("window.ethereum".into()), ..Default::default() },
-            Rule { action: Some("eval".into()), js_contains: Some("navigator.credentials".into()), ..Default::default() },
-            Rule { action: Some("eval".into()), js_contains: Some("indexedDB.open".into()), ..Default::default() },
+            Rule {
+                url_pattern: Some("file:///**".into()),
+                ..Default::default()
+            },
+            Rule {
+                url_pattern: Some("chrome://**".into()),
+                ..Default::default()
+            },
+            Rule {
+                url_pattern: Some("chrome-extension://**".into()),
+                ..Default::default()
+            },
+            Rule {
+                action: Some("eval".into()),
+                js_contains: Some("document.cookie".into()),
+                ..Default::default()
+            },
+            Rule {
+                action: Some("eval".into()),
+                js_contains: Some("window.ethereum".into()),
+                ..Default::default()
+            },
+            Rule {
+                action: Some("eval".into()),
+                js_contains: Some("navigator.credentials".into()),
+                ..Default::default()
+            },
+            Rule {
+                action: Some("eval".into()),
+                js_contains: Some("indexedDB.open".into()),
+                ..Default::default()
+            },
             Rule {
                 action: Some("ax_type*".into()),
                 not_name_matches: vec![
-                    "password".into(), "密碼".into(),
-                    "private key".into(), "seed phrase".into(), "助記詞".into(),
+                    "password".into(),
+                    "密碼".into(),
+                    "private key".into(),
+                    "seed phrase".into(),
+                    "助記詞".into(),
                 ],
                 ..Default::default()
             },
@@ -277,7 +323,6 @@ pub fn defaults() -> AuthzConfig {
         blocked_url_patterns: Vec::new(),
     }
 }
-
 
 // ─── Loader ──────────────────────────────────────────────────────────────────
 
@@ -372,7 +417,11 @@ fn dirs_home() -> Option<std::path::PathBuf> {
     std::env::var("HOME")
         .ok()
         .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var("USERPROFILE").ok().map(std::path::PathBuf::from))
+        .or_else(|| {
+            std::env::var("USERPROFILE")
+                .ok()
+                .map(std::path::PathBuf::from)
+        })
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -388,8 +437,7 @@ mod config_test {
 
     fn tmp_dir() -> PathBuf {
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let d = std::env::temp_dir()
-            .join(format!("authz_cfg_{}_{}", std::process::id(), n));
+        let d = std::env::temp_dir().join(format!("authz_cfg_{}_{}", std::process::id(), n));
         fs::create_dir_all(&d).unwrap();
         d
     }
@@ -440,9 +488,15 @@ deny:
         write_yaml(&dir, "authz.yaml", yaml);
         let cfg = load(Some(&dir));
         // Repo rule prepended
-        assert_eq!(cfg.deny[0].url_pattern.as_deref(), Some("https://evil.example/**"));
+        assert_eq!(
+            cfg.deny[0].url_pattern.as_deref(),
+            Some("https://evil.example/**")
+        );
         // Built-in defaults still present
-        let has_file_deny = cfg.deny.iter().any(|r| r.url_pattern.as_deref() == Some("file:///**"));
+        let has_file_deny = cfg
+            .deny
+            .iter()
+            .any(|r| r.url_pattern.as_deref() == Some("file:///**"));
         assert!(has_file_deny, "built-in file:// deny should survive merge");
     }
 
@@ -456,9 +510,10 @@ allow:
         write_yaml(&dir, "authz.yaml", yaml);
         let cfg = load(Some(&dir));
         // defaults() has empty allow; repo rule is present
-        let has_local = cfg.allow.iter().any(|r| {
-            r.url_pattern.as_deref() == Some("http://localhost:3000/**")
-        });
+        let has_local = cfg
+            .allow
+            .iter()
+            .any(|r| r.url_pattern.as_deref() == Some("http://localhost:3000/**"));
         assert!(has_local);
     }
 

@@ -63,9 +63,7 @@ impl UrlBlocker {
                     matcher: g.compile_matcher(),
                 }),
                 Err(e) => {
-                    tracing::warn!(
-                        "[authz::url_blocker] skipping invalid pattern {src:?}: {e}"
-                    );
+                    tracing::warn!("[authz::url_blocker] skipping invalid pattern {src:?}: {e}");
                 }
             }
         }
@@ -86,10 +84,14 @@ impl UrlBlocker {
     }
 
     /// Number of compiled patterns.  Mostly for diagnostics / `list_blocked_patterns`.
-    pub fn len(&self) -> usize { self.patterns.len() }
+    pub fn len(&self) -> usize {
+        self.patterns.len()
+    }
 
     /// `true` if no patterns were compiled (e.g. blocklist disabled).
-    pub fn is_empty(&self) -> bool { self.patterns.is_empty() }
+    pub fn is_empty(&self) -> bool {
+        self.patterns.is_empty()
+    }
 
     /// Iterate the original pattern strings — for diagnostics / MCP exposure.
     pub fn sources(&self) -> impl Iterator<Item = &str> {

@@ -308,7 +308,7 @@ mod tests {
     async fn extract_search_query_strips_surrounding_quotes() {
         // Models often wrap the query in quotes despite being told not to.
         let mock = Arc::new(MockLlmCaller::with_responses(vec![Ok(
-            "\"hello world\"".to_string(),
+            "\"hello world\"".to_string()
         )]));
         let ctx = ctx_with_mock(Arc::clone(&mock));
 
@@ -319,7 +319,7 @@ mod tests {
     #[tokio::test]
     async fn extract_search_query_falls_back_to_truncated_text_on_llm_error() {
         let mock = Arc::new(MockLlmCaller::with_responses(vec![Err(
-            "simulated 500".to_string(),
+            "simulated 500".to_string()
         )]));
         let ctx = ctx_with_mock(Arc::clone(&mock));
 
@@ -335,13 +335,15 @@ mod tests {
     async fn extract_search_query_falls_back_when_response_is_empty_after_trim() {
         // Whitespace-only / quote-only response → cleaned == "" → fallback path.
         let mock = Arc::new(MockLlmCaller::with_responses(vec![Ok(
-            "  \"\"  ".to_string(),
+            "  \"\"  ".to_string()
         )]));
         let ctx = ctx_with_mock(Arc::clone(&mock));
 
         let q = extract_search_query_via_caller(&ctx, "what is rust").await;
-        assert_eq!(q, "what is rust",
-            "empty cleaned response must fall back to the raw user text");
+        assert_eq!(
+            q, "what is rust",
+            "empty cleaned response must fall back to the raw user text"
+        );
     }
 
     #[tokio::test]
@@ -354,8 +356,11 @@ mod tests {
 
         extract_search_query_via_caller(&ctx, "anything").await;
         let captured = mock.captured.lock().unwrap();
-        assert_eq!(captured[0].0, LlmKind::Router,
-            "extract_search_query_via_caller must use the router endpoint");
+        assert_eq!(
+            captured[0].0,
+            LlmKind::Router,
+            "extract_search_query_via_caller must use the router endpoint"
+        );
     }
 
     // ── resolve_search_context short-circuit paths ─────────────────────────
@@ -392,8 +397,11 @@ mod tests {
 
         let out = resolve_search_context(&request, &ctx, /* direct_answer_request */ false).await;
         assert!(out.is_none());
-        assert_eq!(mock.call_count(), 0,
-            "no LLM call when should_search rejects the query");
+        assert_eq!(
+            mock.call_count(),
+            0,
+            "no LLM call when should_search rejects the query"
+        );
     }
 
     // ── format_search_results (pre-existing pure helper, no #263 LLM) ──────

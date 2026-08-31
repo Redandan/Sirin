@@ -34,8 +34,8 @@ pub enum AuthScope {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeetingAuth {
     pub from_agent: String,
-    pub to_agent:   String,
-    pub scope:      AuthScope,
+    pub to_agent: String,
+    pub scope: AuthScope,
 }
 
 /// Grants `reader_agent_id` read access to `owner_agent_id`'s private memories
@@ -43,7 +43,7 @@ pub struct MeetingAuth {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryShare {
     pub reader_agent_id: String,
-    pub owner_agent_id:  String,
+    pub owner_agent_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -56,30 +56,30 @@ pub enum RequestStatus {
 /// A runtime request from an agent to read another agent's private memories.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryAccessRequest {
-    pub id:           String,
+    pub id: String,
     pub requester_id: String,
-    pub owner_id:     String,
+    pub owner_id: String,
     /// Short hint from the LLM about what it was looking for.
-    pub query_hint:   String,
-    pub status:       RequestStatus,
+    pub query_hint: String,
+    pub status: RequestStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeetingTurn {
-    pub speaker:   String,
-    pub text:      String,
+    pub speaker: String,
+    pub text: String,
     pub timestamp: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeetingSession {
-    pub id:              String,
-    pub participants:    Vec<String>,
-    pub auths:           Vec<MeetingAuth>,
-    pub memory_shares:   Vec<MemoryShare>,
+    pub id: String,
+    pub participants: Vec<String>,
+    pub auths: Vec<MeetingAuth>,
+    pub memory_shares: Vec<MemoryShare>,
     pub access_requests: Vec<MemoryAccessRequest>,
-    pub turns:           Vec<MeetingTurn>,
-    pub started_at:      String,
+    pub turns: Vec<MeetingTurn>,
+    pub started_at: String,
 }
 
 // ── Singleton ─────────────────────────────────────────────────────────────────
@@ -99,11 +99,11 @@ pub fn start_meeting(participants: Vec<String>) -> String {
     *state().lock().unwrap_or_else(|e| e.into_inner()) = Some(MeetingSession {
         id: id.clone(),
         participants,
-        auths:           vec![],
-        memory_shares:   vec![],
+        auths: vec![],
+        memory_shares: vec![],
         access_requests: vec![],
-        turns:           vec![],
-        started_at:      Utc::now().to_rfc3339(),
+        turns: vec![],
+        started_at: Utc::now().to_rfc3339(),
     });
     id
 }
@@ -118,10 +118,14 @@ pub fn end_meeting() {
 pub fn grant_auth(from: &str, to: &str, scope: AuthScope) {
     if let Some(s) = state().lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
         // Avoid duplicates
-        if !s.auths.iter().any(|a| a.from_agent == from && a.to_agent == to) {
+        if !s
+            .auths
+            .iter()
+            .any(|a| a.from_agent == from && a.to_agent == to)
+        {
             s.auths.push(MeetingAuth {
                 from_agent: from.to_string(),
-                to_agent:   to.to_string(),
+                to_agent: to.to_string(),
                 scope,
             });
         }
@@ -131,7 +135,8 @@ pub fn grant_auth(from: &str, to: &str, scope: AuthScope) {
 /// Revoke a previously granted auth pair.
 pub fn revoke_auth(from: &str, to: &str) {
     if let Some(s) = state().lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
-        s.auths.retain(|a| !(a.from_agent == from && a.to_agent == to));
+        s.auths
+            .retain(|a| !(a.from_agent == from && a.to_agent == to));
     }
 }
 
@@ -139,8 +144,8 @@ pub fn revoke_auth(from: &str, to: &str) {
 pub fn append_turn(speaker: &str, text: &str) {
     if let Some(s) = state().lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
         s.turns.push(MeetingTurn {
-            speaker:   speaker.to_string(),
-            text:      text.to_string(),
+            speaker: speaker.to_string(),
+            text: text.to_string(),
             timestamp: Utc::now().to_rfc3339(),
         });
     }
@@ -148,9 +153,16 @@ pub fn append_turn(speaker: &str, text: &str) {
 
 /// Get all turns from the current meeting as (speaker, text) pairs.
 pub fn get_turns() -> Vec<(String, String)> {
-    state().lock().unwrap_or_else(|e| e.into_inner())
+    state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
         .as_ref()
-        .map(|s| s.turns.iter().map(|t| (t.speaker.clone(), t.text.clone())).collect())
+        .map(|s| {
+            s.turns
+                .iter()
+                .map(|t| (t.speaker.clone(), t.text.clone()))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -160,7 +172,11 @@ pub fn check_meeting_auth(from: &str, to: &str) -> bool {
         .lock()
         .unwrap()
         .as_ref()
-        .map(|s| s.auths.iter().any(|a| a.from_agent == from && a.to_agent == to))
+        .map(|s| {
+            s.auths
+                .iter()
+                .any(|a| a.from_agent == from && a.to_agent == to)
+        })
         .unwrap_or(false)
 }
 
@@ -170,10 +186,14 @@ pub fn check_meeting_auth(from: &str, to: &str) -> bool {
 /// for the lifetime of this session.
 pub fn grant_memory_share(reader: &str, owner: &str) {
     if let Some(s) = state().lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
-        if !s.memory_shares.iter().any(|ms| ms.reader_agent_id == reader && ms.owner_agent_id == owner) {
+        if !s
+            .memory_shares
+            .iter()
+            .any(|ms| ms.reader_agent_id == reader && ms.owner_agent_id == owner)
+        {
             s.memory_shares.push(MemoryShare {
                 reader_agent_id: reader.to_string(),
-                owner_agent_id:  owner.to_string(),
+                owner_agent_id: owner.to_string(),
             });
         }
     }
@@ -182,7 +202,8 @@ pub fn grant_memory_share(reader: &str, owner: &str) {
 /// Revoke a previously granted memory-share.
 pub fn revoke_memory_share(reader: &str, owner: &str) {
     if let Some(s) = state().lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
-        s.memory_shares.retain(|ms| !(ms.reader_agent_id == reader && ms.owner_agent_id == owner));
+        s.memory_shares
+            .retain(|ms| !(ms.reader_agent_id == reader && ms.owner_agent_id == owner));
     }
 }
 
@@ -193,7 +214,11 @@ pub fn can_read_memory(reader: &str, owner: &str) -> bool {
         .lock()
         .unwrap()
         .as_ref()
-        .map(|s| s.memory_shares.iter().any(|ms| ms.reader_agent_id == reader && ms.owner_agent_id == owner))
+        .map(|s| {
+            s.memory_shares
+                .iter()
+                .any(|ms| ms.reader_agent_id == reader && ms.owner_agent_id == owner)
+        })
         .unwrap_or(false)
 }
 
@@ -222,17 +247,15 @@ pub fn request_memory_access(requester: &str, owner: &str, hint: &str) -> String
     let id = format!("req-{}", Utc::now().timestamp_millis());
     if let Some(s) = state().lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
         let already = s.access_requests.iter().any(|r| {
-            r.requester_id == requester
-                && r.owner_id == owner
-                && r.status == RequestStatus::Pending
+            r.requester_id == requester && r.owner_id == owner && r.status == RequestStatus::Pending
         });
         if !already {
             s.access_requests.push(MemoryAccessRequest {
                 id: id.clone(),
                 requester_id: requester.to_string(),
-                owner_id:     owner.to_string(),
-                query_hint:   hint.to_string(),
-                status:       RequestStatus::Pending,
+                owner_id: owner.to_string(),
+                query_hint: hint.to_string(),
+                status: RequestStatus::Pending,
             });
         }
     }
@@ -245,7 +268,11 @@ pub fn resolve_access_request(request_id: &str, approved: bool) {
     let mut share: Option<(String, String)> = None;
     if let Some(s) = state().lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
         if let Some(req) = s.access_requests.iter_mut().find(|r| r.id == request_id) {
-            req.status = if approved { RequestStatus::Approved } else { RequestStatus::Denied };
+            req.status = if approved {
+                RequestStatus::Approved
+            } else {
+                RequestStatus::Denied
+            };
             if approved {
                 share = Some((req.requester_id.clone(), req.owner_id.clone()));
             }
@@ -281,7 +308,11 @@ pub fn with_session<T>(f: impl FnOnce(Option<&MeetingSession>) -> T) -> T {
 
 /// Returns the current meeting ID, or `None` if no meeting is active.
 pub fn current_meeting_id() -> Option<String> {
-    state().lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|s| s.id.clone())
+    state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .map(|s| s.id.clone())
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -323,8 +354,14 @@ mod tests {
         start_meeting(vec!["a1".into(), "a2".into()]);
         assert!(!check_meeting_auth("a1", "a2"), "no auth before grant");
         grant_auth("a1", "a2", AuthScope::SessionOnly);
-        assert!(check_meeting_auth("a1", "a2"), "auth should be active after grant");
-        assert!(!check_meeting_auth("a2", "a1"), "reverse direction must remain unauthorized");
+        assert!(
+            check_meeting_auth("a1", "a2"),
+            "auth should be active after grant"
+        );
+        assert!(
+            !check_meeting_auth("a2", "a1"),
+            "reverse direction must remain unauthorized"
+        );
         end_meeting();
     }
 
@@ -336,7 +373,10 @@ mod tests {
         grant_auth("a1", "a2", AuthScope::SessionOnly);
         assert!(check_meeting_auth("a1", "a2"));
         revoke_auth("a1", "a2");
-        assert!(!check_meeting_auth("a1", "a2"), "auth must be gone after revoke");
+        assert!(
+            !check_meeting_auth("a1", "a2"),
+            "auth must be gone after revoke"
+        );
         end_meeting();
     }
 
@@ -347,9 +387,7 @@ mod tests {
         start_meeting(vec!["a1".into(), "a2".into()]);
         grant_auth("a1", "a2", AuthScope::SessionOnly);
         grant_auth("a1", "a2", AuthScope::SessionOnly); // duplicate
-        let count = with_session(|s| {
-            s.map(|sess| sess.auths.len()).unwrap_or(0)
-        });
+        let count = with_session(|s| s.map(|sess| sess.auths.len()).unwrap_or(0));
         assert_eq!(count, 1, "duplicate grant should not add a second entry");
         end_meeting();
     }
@@ -367,9 +405,7 @@ mod tests {
         end_meeting();
         start_meeting(vec!["a1".into()]);
         append_turn("a1", "hello from a1");
-        let turns = with_session(|s| {
-            s.map(|sess| sess.turns.clone()).unwrap_or_default()
-        });
+        let turns = with_session(|s| s.map(|sess| sess.turns.clone()).unwrap_or_default());
         assert_eq!(turns.len(), 1);
         assert_eq!(turns[0].speaker, "a1");
         assert_eq!(turns[0].text, "hello from a1");
@@ -384,7 +420,10 @@ mod tests {
         end_meeting();
         // After ending, auth must be gone even if we somehow start a new meeting.
         start_meeting(vec!["a1".into(), "a2".into()]);
-        assert!(!check_meeting_auth("a1", "a2"), "new meeting starts with no auths");
+        assert!(
+            !check_meeting_auth("a1", "a2"),
+            "new meeting starts with no auths"
+        );
         end_meeting();
     }
 }

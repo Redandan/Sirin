@@ -54,10 +54,7 @@ fn state() -> &'static Mutex<UpdateStatus> {
 }
 
 pub fn get_status() -> UpdateStatus {
-    state()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone()
+    state().lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 fn set_status(s: UpdateStatus) {
@@ -67,7 +64,7 @@ fn set_status(s: UpdateStatus) {
 // ── GitHub coordinates ────────────────────────────────────────────────────────
 
 const OWNER: &str = "Redandan";
-const REPO:  &str = "Sirin";
+const REPO: &str = "Sirin";
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -85,9 +82,9 @@ pub fn release_page_url() -> String {
 /// Used on non-Windows only (Windows uses the installer flow).
 #[cfg(any(test, not(target_os = "windows")))]
 fn check_binary_writable() -> Result<(), String> {
-    let exe = std::env::current_exe()
-        .map_err(|e| format!("current_exe: {e}"))?;
-    let dir = exe.parent()
+    let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    let dir = exe
+        .parent()
         .ok_or_else(|| format!("binary has no parent dir: {exe:?}"))?;
     let probe = dir.join(".sirin_update_probe");
     match std::fs::write(&probe, b"x") {
@@ -97,7 +94,8 @@ fn check_binary_writable() -> Result<(), String> {
         }
         Err(e) => Err(format!(
             "Sirin 安裝在 {} — 自動更新需要該資料夾的寫入權限。失敗原因：{}",
-            dir.display(), e
+            dir.display(),
+            e
         )),
     }
 }
@@ -106,12 +104,10 @@ fn check_binary_writable() -> Result<(), String> {
 /// Non-blocking — call at startup, poll `get_status()` in the UI loop.
 pub fn spawn_check() {
     set_status(UpdateStatus::Checking);
-    std::thread::spawn(|| {
-        match check_once() {
-            Ok(Some(info)) => set_status(UpdateStatus::Available(info.version)),
-            Ok(None)        => set_status(UpdateStatus::UpToDate),
-            Err(e)          => set_status(UpdateStatus::CheckFailed(e)),
-        }
+    std::thread::spawn(|| match check_once() {
+        Ok(Some(info)) => set_status(UpdateStatus::Available(info.version)),
+        Ok(None) => set_status(UpdateStatus::UpToDate),
+        Err(e) => set_status(UpdateStatus::CheckFailed(e)),
     });
 }
 
@@ -175,7 +171,8 @@ fn download_and_run_installer(version: &str) -> Result<(), String> {
         .build()
         .map_err(|e| format!("build http client: {e}"))?;
 
-    let resp = client.get(&url)
+    let resp = client
+        .get(&url)
         .send()
         .map_err(|e| format!("download installer: {e}"))?;
 
@@ -186,11 +183,11 @@ fn download_and_run_installer(version: &str) -> Result<(), String> {
         ));
     }
 
-    let bytes = resp.bytes()
+    let bytes = resp
+        .bytes()
         .map_err(|e| format!("read installer body: {e}"))?;
 
-    let installer_path = std::env::temp_dir()
-        .join(format!("SirinSetup-{version}.exe"));
+    let installer_path = std::env::temp_dir().join(format!("SirinSetup-{version}.exe"));
     std::fs::write(&installer_path, &bytes)
         .map_err(|e| format!("write installer to {}: {e}", installer_path.display()))?;
 
@@ -227,9 +224,7 @@ fn friendlier_io_error(raw: &str) -> String {
 /// Returns `Ok(Some(info))` when a newer release exists, `Ok(None)` when
 /// already up to date.  No `self_update` dependency — pure reqwest + serde_json.
 fn check_once() -> Result<Option<UpdateInfo>, String> {
-    let url = format!(
-        "https://api.github.com/repos/{OWNER}/{REPO}/releases/latest"
-    );
+    let url = format!("https://api.github.com/repos/{OWNER}/{REPO}/releases/latest");
 
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
@@ -237,7 +232,8 @@ fn check_once() -> Result<Option<UpdateInfo>, String> {
         .build()
         .map_err(|e| format!("build http client: {e}"))?;
 
-    let resp = client.get(&url)
+    let resp = client
+        .get(&url)
         .send()
         .map_err(|e| format!("fetch releases: {e}"))?;
 
@@ -245,7 +241,8 @@ fn check_once() -> Result<Option<UpdateInfo>, String> {
         return Err(format!("GitHub API returned HTTP {}", resp.status()));
     }
 
-    let json: serde_json::Value = resp.json()
+    let json: serde_json::Value = resp
+        .json()
         .map_err(|e| format!("parse release JSON: {e}"))?;
 
     let tag = json["tag_name"]

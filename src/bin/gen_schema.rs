@@ -45,10 +45,7 @@ mod perception {
     use serde::{Deserialize, Serialize};
 
     /// How the executor should observe the page before each LLM turn.
-    #[derive(
-        Debug, Clone, Copy, PartialEq, Eq,
-        Serialize, Deserialize, Default, JsonSchema,
-    )]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
     #[serde(rename_all = "lowercase")]
     pub enum PerceptionMode {
         /// Legacy text-only observation.  No screenshot, no vision LLM call.
@@ -82,7 +79,9 @@ mod platform {
 // definition only), but the symbol still needs to resolve.
 #[allow(dead_code)]
 mod lint {
-    pub fn lint<T>(_g: &T) -> Vec<()> { Vec::new() }
+    pub fn lint<T>(_g: &T) -> Vec<()> {
+        Vec::new()
+    }
     pub fn log_issues<T>(_g: &T, _issues: &[()]) {}
 }
 
@@ -92,8 +91,7 @@ mod parser;
 
 fn main() -> std::io::Result<()> {
     let schema = schema_for!(parser::TestGoal);
-    let json = serde_json::to_string_pretty(&schema)
-        .expect("schema serialisation should not fail");
+    let json = serde_json::to_string_pretty(&schema).expect("schema serialisation should not fail");
     let out_path = std::path::Path::new("config").join("test-schema.json");
 
     // Trailing newline so editors don't fight us on save.

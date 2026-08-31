@@ -14,7 +14,7 @@ use headless_chrome::protocol::cdp::Runtime::AddBinding;
 use headless_chrome::{Browser, LaunchOptions, Tab};
 use std::sync::Arc;
 
-const TEAMS_URL: &str    = "https://teams.microsoft.com";
+const TEAMS_URL: &str = "https://teams.microsoft.com";
 const BINDING_NAME: &str = "sirinCallback";
 
 /// 持久化 Chrome profile 路徑（保存 cookie / session）。
@@ -74,7 +74,8 @@ const JS_OBSERVER: &str = r#"
 fn js_send_message(text: &str) -> String {
     // JSON-encode the text so it's safe to embed in JS string literal.
     let text_json = serde_json::to_string(text).unwrap_or_else(|_| format!("\"{}\"", text));
-    format!(r#"
+    format!(
+        r#"
 (function() {{
     // 找到 CKEditor contenteditable 輸入框（多個 selector fallback）
     const input = document.querySelector(
@@ -110,25 +111,42 @@ fn js_send_message(text: &str) -> String {
     }}));
     return 'SENT_VIA_ENTER';
 }})()
-"#, text_json = text_json)
+"#,
+        text_json = text_json
+    )
 }
 
 // ── Session 狀態 ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum SessionStatus { NotStarted, WaitingForLogin, Running, Error(String) }
+pub enum SessionStatus {
+    NotStarted,
+    WaitingForLogin,
+    Running,
+    Error(String),
+}
 
 static STATUS: std::sync::OnceLock<Mutex<SessionStatus>> = std::sync::OnceLock::new();
 fn status_cell() -> &'static Mutex<SessionStatus> {
     STATUS.get_or_init(|| Mutex::new(SessionStatus::NotStarted))
 }
-pub fn session_status() -> SessionStatus { status_cell().lock().unwrap_or_else(|e| e.into_inner()).clone() }
-fn set_status(s: SessionStatus) { *status_cell().lock().unwrap_or_else(|e| e.into_inner()) = s; }
+pub fn session_status() -> SessionStatus {
+    status_cell()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+fn set_status(s: SessionStatus) {
+    *status_cell().lock().unwrap_or_else(|e| e.into_inner()) = s;
+}
 
 // ── 資料結構 ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
-pub struct UnreadChat { pub chat_id: String, pub peer_name: String }
+pub struct UnreadChat {
+    pub chat_id: String,
+    pub peer_name: String,
+}
 
 // ── TeamsClient ───────────────────────────────────────────────────────────────
 
@@ -149,20 +167,25 @@ impl TeamsClient {
         let browser = Browser::new(
             LaunchOptions::default_builder()
                 .headless(false)
-                .user_data_dir(Some(profile))   // P0：持久化 profile
+                .user_data_dir(Some(profile)) // P0：持久化 profile
                 .build()
                 .map_err(|e| format!("LaunchOptions: {e}"))?,
         )?;
         let tab = browser.new_tab()?;
         tab.navigate_to(TEAMS_URL)?.wait_until_navigated()?;
-        Ok(Self { _browser: browser, tab })
+        Ok(Self {
+            _browser: browser,
+            tab,
+        })
     }
 
     /// 等待 URL 離開 microsoftonline.com（已有 session 時幾乎立即通過）。
     pub fn wait_for_login(&self, timeout_secs: u64) -> bool {
         let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
         loop {
-            if std::time::Instant::now() > deadline { return false; }
+            if std::time::Instant::now() > deadline {
+                return false;
+            }
             let url = self.tab.get_url();
             if !url.contains("login.microsoftonline") && !url.contains("login.live") {
                 set_status(SessionStatus::Running);
@@ -180,25 +203,33 @@ impl TeamsClient {
         self.tab.enable_runtime()?;
         self.tab.call_method(AddBinding {
             name: BINDING_NAME.to_string(),
-            execution_context_id:   None,
+            execution_context_id: None,
             execution_context_name: None,
         })?;
 
         let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<UnreadChat>>(32);
 
         self.tab.add_event_listener(Arc::new(move |event: &Event| {
-            let Event::RuntimeBindingCalled(ev) = event else { return };
-            if ev.params.name != BINDING_NAME { return; }
+            let Event::RuntimeBindingCalled(ev) = event else {
+                return;
+            };
+            if ev.params.name != BINDING_NAME {
+                return;
+            }
             let chats: Vec<UnreadChat> =
                 serde_json::from_str::<Vec<serde_json::Value>>(&ev.params.payload)
                     .unwrap_or_default()
                     .into_iter()
-                    .filter_map(|obj| Some(UnreadChat {
-                        chat_id:   obj["convid"].as_str()?.to_string(),
-                        peer_name: obj["title"].as_str().unwrap_or("未知").to_string(),
-                    }))
+                    .filter_map(|obj| {
+                        Some(UnreadChat {
+                            chat_id: obj["convid"].as_str()?.to_string(),
+                            peer_name: obj["title"].as_str().unwrap_or("未知").to_string(),
+                        })
+                    })
                     .collect();
-            if !chats.is_empty() { let _ = tx.try_send(chats); }
+            if !chats.is_empty() {
+                let _ = tx.try_send(chats);
+            }
         }))?;
 
         self.tab.evaluate(JS_OBSERVER, false)?;
@@ -219,12 +250,16 @@ impl TeamsClient {
         self.tab.evaluate(&js, false).ok()?;
         std::thread::sleep(Duration::from_millis(600));
 
-        self.tab.evaluate(r#"(function(){
+        self.tab
+            .evaluate(
+                r#"(function(){
             const bs = document.querySelectorAll(
                 "[data-tid='message-body-content'], [class*='messageBody']"
             );
             return bs.length ? bs[bs.length-1].innerText.trim() : '';
-        })()"#, false)
+        })()"#,
+                false,
+            )
             .ok()
             .and_then(|v| v.value)
             .and_then(|v| v.as_str().map(|s| s.to_string()))
@@ -235,7 +270,8 @@ impl TeamsClient {
     pub fn send_message(&self, text: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let js = js_send_message(text);
         let result = self.tab.evaluate(&js, false)?;
-        let status = result.value
+        let status = result
+            .value
             .and_then(|v| v.as_str().map(|s| s.to_string()))
             .unwrap_or_default();
 

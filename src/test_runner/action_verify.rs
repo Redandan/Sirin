@@ -41,9 +41,7 @@ impl PageStateHash {
 #[derive(Debug, Clone)]
 pub enum ActionEffect {
     /// Page state changed (screenshot hash or AXTree diff).
-    Success {
-        elapsed_ms: u64,
-    },
+    Success { elapsed_ms: u64 },
 
     /// Page state did NOT change after timeout.
     NoChange {
@@ -53,9 +51,7 @@ pub enum ActionEffect {
     },
 
     /// Error during verification (screenshot capture failed, etc.).
-    Error {
-        reason: String,
-    },
+    Error { reason: String },
 }
 
 impl ActionEffect {
@@ -113,10 +109,7 @@ impl ActionVerifier {
     ///     Ok(PageStateHash::from_bytes(&screenshot))
     /// }).await;
     /// ```
-    pub async fn wait_for_effect<F, Fut>(
-        &self,
-        mut fetch_state: F,
-    ) -> ActionEffect
+    pub async fn wait_for_effect<F, Fut>(&self, mut fetch_state: F) -> ActionEffect
     where
         F: FnMut() -> Fut,
         Fut: std::future::Future<Output = Result<PageStateHash, String>>,
@@ -147,8 +140,7 @@ impl ActionVerifier {
                         };
                     }
                     // No change yet, wait before retrying
-                    tokio::time::sleep(Duration::from_millis(self.check_interval_ms))
-                        .await;
+                    tokio::time::sleep(Duration::from_millis(self.check_interval_ms)).await;
                 }
                 Err(e) => {
                     return ActionEffect::Error { reason: e };
@@ -245,9 +237,7 @@ mod tests {
 
     #[test]
     fn test_action_effect_classification() {
-        let success = ActionEffect::Success {
-            elapsed_ms: 500,
-        };
+        let success = ActionEffect::Success { elapsed_ms: 500 };
         assert!(success.is_success());
         assert!(!success.is_no_change());
 
@@ -266,9 +256,7 @@ mod tests {
 
         // Simulate 3 successful actions
         for _ in 0..3 {
-            stats.record(&ActionEffect::Success {
-                elapsed_ms: 500,
-            });
+            stats.record(&ActionEffect::Success { elapsed_ms: 500 });
         }
 
         // Simulate 1 no-change timeout

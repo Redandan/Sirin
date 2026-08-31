@@ -277,21 +277,21 @@ mod tests {
 
     fn read_entry(path: &str) -> HistoryEntry {
         HistoryEntry {
-            thought:      String::new(),
-            action:       "local_file_read".into(),
+            thought: String::new(),
+            action: "local_file_read".into(),
             action_input: json!({ "path": path }),
-            observation:  "// file contents".into(),
-            pinned:       false,
+            observation: "// file contents".into(),
+            pinned: false,
         }
     }
 
     fn err_entry() -> HistoryEntry {
         HistoryEntry {
-            thought:      String::new(),
-            action:       "local_file_read".into(),
+            thought: String::new(),
+            action: "local_file_read".into(),
             action_input: json!({ "path": "x.rs" }),
-            observation:  "ERROR: not found".into(),
-            pinned:       false,
+            observation: "ERROR: not found".into(),
+            pinned: false,
         }
     }
 
@@ -302,11 +302,13 @@ mod tests {
         assert!(!has_sufficient_analysis_evidence(&[]));
         assert!(!has_sufficient_analysis_evidence(&[read_entry("a.rs")]));
         assert!(has_sufficient_analysis_evidence(&[
-            read_entry("a.rs"), read_entry("b.rs"),
+            read_entry("a.rs"),
+            read_entry("b.rs"),
         ]));
         // Errored reads don't count.
         assert!(!has_sufficient_analysis_evidence(&[
-            read_entry("a.rs"), err_entry(),
+            read_entry("a.rs"),
+            err_entry(),
         ]));
     }
 
@@ -316,7 +318,7 @@ mod tests {
             read_entry("src/foo.rs"),
             read_entry("src/foo.rs"), // duplicate
             read_entry("src/bar.rs"),
-            read_entry(""),           // empty path skipped
+            read_entry(""), // empty path skipped
         ];
         let paths = inspected_paths_from_history(&h);
         assert_eq!(paths, vec!["src/foo.rs", "src/bar.rs"]);
@@ -327,8 +329,8 @@ mod tests {
     #[test]
     fn overall_verified_blocks_dry_run() {
         // dry_run always blocks the verified=true outcome.
-        assert!(!overall_verified(true,  true,  false, 0, false));
-        assert!(!overall_verified(true,  true,  true,  3, false));
+        assert!(!overall_verified(true, true, false, 0, false));
+        assert!(!overall_verified(true, true, true, 3, false));
     }
 
     #[test]
@@ -439,8 +441,11 @@ mod tests {
     #[test]
     fn change_summary_lists_first_three_files_and_truncates() {
         let files = vec![
-            "a.rs".to_string(), "b.rs".into(), "c.rs".into(),
-            "d.rs".into(), "e.rs".into(),
+            "a.rs".to_string(),
+            "b.rs".into(),
+            "c.rs".into(),
+            "d.rs".into(),
+            "e.rs".into(),
         ];
         let s = build_change_summary(&files, true, false, false, "outcome text");
         assert!(s.contains("已變更 5 個檔案"));

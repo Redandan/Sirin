@@ -42,18 +42,34 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon";  Description: "{cm:CreateDesktopIcon}";  GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 Name: "startupentry"; Description: "自動登入時啟動 Sirin (Start with Windows)"; GroupDescription: "開機行為"
+Name: "iphoneusb"; Description: "安裝 Sirin 實體 iPhone USB 驗收能力（Driver、常駐任務、Codex MCP/Skill）"; GroupDescription: "裝置驗收"; Flags: unchecked
 
 [Files]
 ; Main binary — always fresh copy
 Source: "target\release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 
-; Default env template — only copy if user doesn't have one yet
-; (user's actual .env lives in %LOCALAPPDATA%\Sirin\.env, managed by the app)
-Source: ".env.example"; DestDir: "{localappdata}\Sirin"; DestName: ".env.example"; Flags: ignoreversion onlyifdoesntexist; Check: AlwaysTrue
+; Sirin-owned physical-iPhone component. The public entry is
+; scripts\install-sirin-ios.ps1; the other scripts are private implementation.
+Source: "scripts\install-sirin-ios.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
+Source: "scripts\install-ios-driver-runtime.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
+Source: "scripts\install-ios-driver-task.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
+Source: "scripts\install-sirin-daemon-task.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
+Source: "scripts\install-codex-ios-integration.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
+Source: "scripts\soak-ios-device.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
+Source: "scripts\switch-sirin-daemon.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
+Source: "scripts\verify-sirin-ios-physical.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
+Source: "integrations\ios-driver\README.md"; DestDir: "{app}\integrations\ios-driver"; Flags: ignoreversion
+Source: "integrations\ios-driver\THIRD_PARTY_LICENSE"; DestDir: "{app}\integrations\ios-driver"; Flags: ignoreversion
+Source: "integrations\ios-driver\requirements.txt"; DestDir: "{app}\integrations\ios-driver"; Flags: ignoreversion
+Source: "integrations\ios-driver\scripts\unattended_host.py"; DestDir: "{app}\integrations\ios-driver\scripts"; Flags: ignoreversion
+Source: "integrations\ios-driver\src\phone_harness\*"; DestDir: "{app}\integrations\ios-driver\src\phone_harness"; Excludes: "__pycache__\*,*.pyc"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "integrations\codex\skills\iphone-usb-validation\*"; DestDir: "{app}\integrations\codex\skills\iphone-usb-validation"; Flags: ignoreversion recursesubdirs createallsubdirs
 
-; Default config files — only install if missing (preserves user edits on upgrade)
-Source: "config\agents.yaml";   DestDir: "{localappdata}\Sirin\config"; Flags: ignoreversion onlyifdoesntexist
-Source: "config\persona.yaml";  DestDir: "{localappdata}\Sirin\config"; Flags: ignoreversion onlyifdoesntexist
+; App-managed defaults. The Sirin post-install entry copies these into the
+; original user's profile only when missing, so upgrades preserve user edits.
+Source: ".env.example"; DestDir: "{app}\defaults"; DestName: ".env.example"; Flags: ignoreversion
+Source: "config\agents.yaml";  DestDir: "{app}\defaults\config"; Flags: ignoreversion
+Source: "config\persona.yaml"; DestDir: "{app}\defaults\config"; Flags: ignoreversion
 
 ; Bundled YAML skills (overwrite on upgrade — these are app-managed, not user-editable)
 ; Source: "config\skills\*"; DestDir: "{localappdata}\Sirin\config\skills"; Flags: ignoreversion recursesubdirs
@@ -63,13 +79,6 @@ Name: "{group}\{#MyAppName}";         Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{commondesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
-[Registry]
-; Auto-start entry (created only if task "startupentry" selected)
-Root: HKCU; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Run"; \
-  ValueType: string; ValueName: "{#MyAppName}"; \
-  ValueData: """{app}\{#MyAppExeName}"""; \
-  Tasks: startupentry; Flags: uninsdeletevalue
-
 [Run]
 ; Auto-launch after install — runs in both interactive and silent modes.
 ; Silent mode is used by Sirin's in-app self-update flow, so we MUST relaunch
@@ -77,10 +86,57 @@ Root: HKCU; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Run"; \
 ; "skipifsilent" enables this; "runasoriginaluser" ensures we drop back from
 ; the elevated installer context to the user's normal session.
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; \
-  Flags: nowait postinstall runasoriginaluser
+  Tasks: not iphoneusb; Flags: nowait postinstall runasoriginaluser
+
+[UninstallRun]
+; Remove only Sirin-owned tasks. Evidence, local runtime, Codex configuration and
+; installer backups remain recoverable under the user's profile.
+Filename: "powershell.exe"; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\scripts\install-sirin-ios.ps1"" -Action Remove -Repo ""{app}"" -Binary ""{app}\{#MyAppExeName}"""; \
+  Flags: runhidden waituntilterminated; RunOnceId: "SirinIosTasks"
 
 [Code]
-function AlwaysTrue: Boolean;
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ResultCode: Integer;
+  PowerShellPath: String;
+  Parameters: String;
 begin
-  Result := True; // always run — the actual guard is the onlyifdoesntexist flag
+  if CurStep = ssPostInstall then
+  begin
+    PowerShellPath := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+    if WizardIsTaskSelected('iphoneusb') then
+      Parameters :=
+        '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' +
+        ExpandConstant('{app}\scripts\install-sirin-ios.ps1') +
+        '" -Action Install -Repo "' + ExpandConstant('{app}') +
+        '" -Binary "' + ExpandConstant('{app}\{#MyAppExeName}') +
+        '" -RunNow -MigrateLegacySideTap'
+    else
+    begin
+      Parameters :=
+        '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' +
+        ExpandConstant('{app}\scripts\install-sirin-ios.ps1') +
+        '" -Action InitializeUser -Repo "' + ExpandConstant('{app}') +
+        '" -Binary "' + ExpandConstant('{app}\{#MyAppExeName}') + '"';
+      if WizardIsTaskSelected('startupentry') then
+        Parameters := Parameters + ' -EnableStartup';
+    end;
+
+    { [Run] only waits; ExecAsOriginalUser lets Setup enforce the child result. }
+    if not ExecAsOriginalUser(
+      PowerShellPath,
+      Parameters,
+      ExpandConstant('{app}'),
+      SW_HIDE,
+      ewWaitUntilTerminated,
+      ResultCode
+    ) then
+      RaiseException('Could not start the Sirin post-install process.')
+    else if ResultCode <> 0 then
+      RaiseException(
+        'Sirin post-install readiness failed with exit code ' +
+        IntToStr(ResultCode) + '. Any changed scheduled tasks were restored.'
+      );
+  end;
 end;

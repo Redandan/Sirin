@@ -11,10 +11,7 @@ use std::path::Path;
 /// Short canonical names allowed in AI-proposed fixes.
 /// The LLM outputs these names (see the prompt template below).
 /// `resolve_config_fix_path()` maps them to absolute paths at runtime.
-const ALLOWED_FILES: &[&str] = &[
-    "config/llm.yaml",
-    "config/persona.yaml",
-];
+const ALLOWED_FILES: &[&str] = &["config/llm.yaml", "config/persona.yaml"];
 
 /// Resolve a short canonical config name to its absolute path.
 fn resolve_config_fix_path(name: &str) -> std::path::PathBuf {
@@ -36,18 +33,18 @@ pub enum Severity {
 impl Severity {
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Ok      => "OK",
-            Self::Info    => "INFO",
+            Self::Ok => "OK",
+            Self::Info => "INFO",
             Self::Warning => "WARN",
-            Self::Error   => "ERROR",
+            Self::Error => "ERROR",
         }
     }
     pub fn icon(&self) -> &'static str {
         match self {
-            Self::Ok      => "[OK]",
-            Self::Info    => "[i]",
+            Self::Ok => "[OK]",
+            Self::Info => "[i]",
             Self::Warning => "[!]",
-            Self::Error   => "[X]",
+            Self::Error => "[X]",
         }
     }
 }
@@ -82,17 +79,16 @@ pub fn run_diagnostics() -> Vec<ConfigIssue> {
 // ── Individual checks ────────────────────────────────────────────────────────
 
 fn check_config_files(issues: &mut Vec<ConfigIssue>) {
-    for (rel, name) in [
-        ("persona.yaml", "Persona"),
-        ("agents.yaml", "Agents"),
-    ] {
+    for (rel, name) in [("persona.yaml", "Persona"), ("agents.yaml", "Agents")] {
         let path = crate::platform::config_path(rel);
         if !path.exists() {
             issues.push(ConfigIssue {
                 severity: Severity::Error,
                 category: "Config",
                 message: format!("{name} config not found: {}", path.display()),
-                suggestion: Some("Run Sirin once to generate default config, or create manually.".into()),
+                suggestion: Some(
+                    "Run Sirin once to generate default config, or create manually.".into(),
+                ),
             });
         } else {
             issues.push(ConfigIssue {
@@ -115,6 +111,7 @@ fn check_llm_config(issues: &mut Vec<ConfigIssue>) {
 
     // Check llm.yaml override conflict
     let yaml = crate::llm::LlmUiConfig::load();
+    let effective = crate::llm::shared_llm();
     if !yaml.main_model.is_empty() && !env_model.is_empty() && yaml.main_model != env_model {
         issues.push(ConfigIssue {
             severity: Severity::Warning,
@@ -125,41 +122,60 @@ fn check_llm_config(issues: &mut Vec<ConfigIssue>) {
             ),
             suggestion: Some(format!(
                 "Edit config/llm.yaml and clear main_model, or update .env to match. \
-                 Currently using: {}",
-                yaml.main_model
+                 Effective runtime: {}/{}",
+                effective.backend_name(),
+                effective.model
             )),
         });
     }
 
     // Check if using expensive model without role split
-    let effective_main = if !yaml.main_model.is_empty() { &yaml.main_model } else { &env_model };
+    let effective_main = effective.model.as_str();
     let is_expensive = effective_main.contains("pro") || effective_main.contains("opus");
-    if is_expensive && yaml.coding_model.is_empty() && yaml.large_model.is_empty() {
+    if is_expensive && effective.coding_model.is_none() && effective.large_model.is_none() {
         issues.push(ConfigIssue {
             severity: Severity::Warning,
             category: "LLM",
-            message: format!("Using expensive model '{effective_main}' for ALL roles (chat/coding/large)"),
+            message: format!(
+                "Using expensive model '{effective_main}' for ALL roles (chat/coding/large)"
+            ),
             suggestion: Some(
                 "Set coding_model to a cheaper model (e.g. gemini-2.5-flash) in llm.yaml. \
-                 Reserve the expensive model for large_model only.".into()
+                 Reserve the expensive model for large_model only."
+                    .into(),
             ),
         });
     }
 
-    // Check API key
-    if env_provider == "gemini" {
-        if std::env::var("GEMINI_API_KEY").unwrap_or_default().is_empty() {
+    // Report the same process-wide provider/model used by diagnose and actual
+    // LLM calls. This includes startup fleet selection and llm.yaml overrides.
+    match effective.backend {
+        crate::llm::LlmBackend::Gemini | crate::llm::LlmBackend::Anthropic
+            if effective.api_key.is_none() =>
+        {
             issues.push(ConfigIssue {
                 severity: Severity::Error,
                 category: "LLM",
-                message: "GEMINI_API_KEY not set but LLM_PROVIDER=gemini".into(),
-                suggestion: Some("Add GEMINI_API_KEY to .env file.".into()),
+                message: format!(
+                    "Effective LLM {}/{} has no API key",
+                    effective.backend_name(),
+                    effective.model
+                ),
+                suggestion: Some(format!(
+                    "Configure the API key required by the {} backend.",
+                    effective.backend_name()
+                )),
             });
-        } else {
+        }
+        _ => {
             issues.push(ConfigIssue {
                 severity: Severity::Ok,
                 category: "LLM",
-                message: format!("Gemini configured: {effective_main}"),
+                message: format!(
+                    "Effective LLM: {}/{}",
+                    effective.backend_name(),
+                    effective.model
+                ),
                 suggestion: None,
             });
         }
@@ -182,8 +198,9 @@ fn check_router(issues: &mut Vec<ConfigIssue>) {
 
     // Check if the local backend is reachable
     let base_url = match router_provider.as_str() {
-        "ollama" => std::env::var("OLLAMA_BASE_URL")
-            .unwrap_or_else(|_| "http://localhost:11434".into()),
+        "ollama" => {
+            std::env::var("OLLAMA_BASE_URL").unwrap_or_else(|_| "http://localhost:11434".into())
+        }
         "lmstudio" | "lm_studio" => std::env::var("LM_STUDIO_BASE_URL")
             .unwrap_or_else(|_| "http://localhost:1234/v1".into()),
         _ => return,
@@ -192,7 +209,8 @@ fn check_router(issues: &mut Vec<ConfigIssue>) {
     let reachable = std::net::TcpStream::connect_timeout(
         &url_to_addr(&base_url).unwrap_or_else(|| "127.0.0.1:11434".parse().unwrap()),
         std::time::Duration::from_secs(2),
-    ).is_ok();
+    )
+    .is_ok();
 
     let router_model = std::env::var("ROUTER_MODEL")
         .or_else(|_| std::env::var("LM_STUDIO_MODEL"))
@@ -220,10 +238,27 @@ fn check_router(issues: &mut Vec<ConfigIssue>) {
 }
 
 fn check_vision(issues: &mut Vec<ConfigIssue>) {
+    let effective = crate::llm::shared_llm();
+    if effective.supports_vision_hint() {
+        issues.push(ConfigIssue {
+            severity: Severity::Ok,
+            category: "Vision",
+            message: format!(
+                "Effective LLM supports vision: {}/{}",
+                effective.backend_name(),
+                effective.model
+            ),
+            suggestion: None,
+        });
+        return;
+    }
+
     // Check if any vision-capable model is available via the fleet
     let fleet = crate::llm::shared_fleet();
     if fleet.has_capability(&crate::llm::ModelCapability::Vision) {
-        let names: Vec<&str> = fleet.classified_models.iter()
+        let names: Vec<&str> = fleet
+            .classified_models
+            .iter()
             .filter(|m| m.has(&crate::llm::ModelCapability::Vision))
             .map(|m| m.info.name.as_str())
             .collect();
@@ -233,7 +268,7 @@ fn check_vision(issues: &mut Vec<ConfigIssue>) {
             message: format!("Vision models available: {}", names.join(", ")),
             suggestion: None,
         });
-    } else if std::env::var("LLM_PROVIDER").unwrap_or_default() != "gemini" {
+    } else {
         issues.push(ConfigIssue {
             severity: Severity::Warning,
             category: "Vision",
@@ -244,40 +279,30 @@ fn check_vision(issues: &mut Vec<ConfigIssue>) {
             ),
         });
     }
-
-    // Check if current main model has vision (Gemini/GPT-4o do, Ollama text models don't)
-    let provider = std::env::var("LLM_PROVIDER").unwrap_or_default();
-    if provider == "gemini" {
-        issues.push(ConfigIssue {
-            severity: Severity::Ok,
-            category: "Vision",
-            message: "Gemini backend supports vision natively (screenshot_analyze available)".into(),
-            suggestion: None,
-        });
-    }
 }
 
 fn check_model_roles(issues: &mut Vec<ConfigIssue>) {
-    let yaml = crate::llm::LlmUiConfig::load();
-    let coding = std::env::var("CODING_MODEL").ok()
-        .or_else(|| if yaml.coding_model.is_empty() { None } else { Some(yaml.coding_model.clone()) });
-    let large = std::env::var("LARGE_MODEL").ok()
-        .or_else(|| if yaml.large_model.is_empty() { None } else { Some(yaml.large_model.clone()) });
+    let effective = crate::llm::shared_llm();
 
-    if coding.is_none() {
+    if effective.coding_model.is_none() {
         issues.push(ConfigIssue {
             severity: Severity::Info,
             category: "Roles",
             message: "No dedicated coding model — using main model for code tasks".into(),
-            suggestion: Some("Set CODING_MODEL in .env or coding_model in llm.yaml for better cost control.".into()),
+            suggestion: Some(
+                "Set CODING_MODEL in .env or coding_model in llm.yaml for better cost control."
+                    .into(),
+            ),
         });
     }
-    if large.is_none() {
+    if effective.large_model.is_none() {
         issues.push(ConfigIssue {
             severity: Severity::Info,
             category: "Roles",
             message: "No dedicated large model — using main model for deep reasoning".into(),
-            suggestion: Some("Set LARGE_MODEL in .env or large_model in llm.yaml (e.g. gemini-2.5-pro).".into()),
+            suggestion: Some(
+                "Set LARGE_MODEL in .env or large_model in llm.yaml (e.g. gemini-2.5-pro).".into(),
+            ),
         });
     }
 }
@@ -290,7 +315,9 @@ fn check_persona(issues: &mut Vec<ConfigIssue>) {
                     severity: Severity::Info,
                     category: "Persona",
                     message: "No persona objectives set".into(),
-                    suggestion: Some("Add objectives in config/persona.yaml to guide agent behavior.".into()),
+                    suggestion: Some(
+                        "Add objectives in config/persona.yaml to guide agent behavior.".into(),
+                    ),
                 });
             }
             let roi = &p.roi_thresholds;
@@ -321,8 +348,14 @@ fn check_coding_agent(issues: &mut Vec<ConfigIssue>) {
             issues.push(ConfigIssue {
                 severity: Severity::Info,
                 category: "Coding",
-                message: format!("Coding agent has only {} allowed commands", ca.allowed_commands.len()),
-                suggestion: Some("Add more commands to coding_agent.allowed_commands in persona.yaml if needed.".into()),
+                message: format!(
+                    "Coding agent has only {} allowed commands",
+                    ca.allowed_commands.len()
+                ),
+                suggestion: Some(
+                    "Add more commands to coding_agent.allowed_commands in persona.yaml if needed."
+                        .into(),
+                ),
             });
         }
         if ca.enabled {
@@ -331,7 +364,8 @@ fn check_coding_agent(issues: &mut Vec<ConfigIssue>) {
                 category: "Coding",
                 message: format!(
                     "Coding agent: enabled, max_iterations={}, {} commands",
-                    ca.max_iterations, ca.allowed_commands.len()
+                    ca.max_iterations,
+                    ca.allowed_commands.len()
                 ),
                 suggestion: None,
             });
@@ -345,23 +379,46 @@ fn check_external_tools(issues: &mut Vec<ConfigIssue>) {
         || Path::new("C:/Program Files/Google/Chrome/Application/chrome.exe").exists()
         || Path::new("C:/Program Files (x86)/Google/Chrome/Application/chrome.exe").exists();
     issues.push(ConfigIssue {
-        severity: if chrome_ok { Severity::Ok } else { Severity::Info },
+        severity: if chrome_ok {
+            Severity::Ok
+        } else {
+            Severity::Info
+        },
         category: "Tools",
-        message: if chrome_ok { "Chrome: found".into() } else { "Chrome: not found (browser features unavailable)".into() },
-        suggestion: if chrome_ok { None } else { Some("Install Google Chrome for browser automation.".into()) },
+        message: if chrome_ok {
+            "Chrome: found".into()
+        } else {
+            "Chrome: not found (browser features unavailable)".into()
+        },
+        suggestion: if chrome_ok {
+            None
+        } else {
+            Some("Install Google Chrome for browser automation.".into())
+        },
     });
 
     // Claude CLI
     let claude_ok = crate::claude_session::cli_available();
     issues.push(ConfigIssue {
-        severity: if claude_ok { Severity::Ok } else { Severity::Info },
+        severity: if claude_ok {
+            Severity::Ok
+        } else {
+            Severity::Info
+        },
         category: "Tools",
         message: if claude_ok {
-            format!("Claude CLI: {}", crate::claude_session::cli_version().unwrap_or_default())
+            format!(
+                "Claude CLI: {}",
+                crate::claude_session::cli_version().unwrap_or_default()
+            )
         } else {
             "Claude CLI: not found (cross-repo bug fixing unavailable)".into()
         },
-        suggestion: if claude_ok { None } else { Some("Install Claude Code: npm install -g @anthropic-ai/claude-code".into()) },
+        suggestion: if claude_ok {
+            None
+        } else {
+            Some("Install Claude Code: npm install -g @anthropic-ai/claude-code".into())
+        },
     });
 }
 
@@ -369,11 +426,19 @@ fn check_external_tools(issues: &mut Vec<ConfigIssue>) {
 
 pub fn format_report(issues: &[ConfigIssue]) -> String {
     let mut out = String::from("=== Sirin Config Check ===\n\n");
-    let errors = issues.iter().filter(|i| i.severity == Severity::Error).count();
-    let warnings = issues.iter().filter(|i| i.severity == Severity::Warning).count();
+    let errors = issues
+        .iter()
+        .filter(|i| i.severity == Severity::Error)
+        .count();
+    let warnings = issues
+        .iter()
+        .filter(|i| i.severity == Severity::Warning)
+        .count();
     let oks = issues.iter().filter(|i| i.severity == Severity::Ok).count();
 
-    out.push_str(&format!("Summary: {oks} OK, {warnings} warnings, {errors} errors\n\n"));
+    out.push_str(&format!(
+        "Summary: {oks} OK, {warnings} warnings, {errors} errors\n\n"
+    ));
 
     for issue in issues {
         out.push_str(&format!(
@@ -391,12 +456,24 @@ pub fn format_report(issues: &[ConfigIssue]) -> String {
 
 /// Log issues to stderr (startup use).  Only prints if there are warnings or errors.
 pub fn log_startup(issues: &[ConfigIssue]) {
-    let has_problems = issues.iter().any(|i| matches!(i.severity, Severity::Warning | Severity::Error));
-    if !has_problems { return; }
+    let has_problems = issues
+        .iter()
+        .any(|i| matches!(i.severity, Severity::Warning | Severity::Error));
+    if !has_problems {
+        return;
+    }
 
     eprintln!("[config] Diagnostics:");
-    for issue in issues.iter().filter(|i| !matches!(i.severity, Severity::Ok)) {
-        eprintln!("  {} [{}] {}", issue.severity.icon(), issue.category, issue.message);
+    for issue in issues
+        .iter()
+        .filter(|i| !matches!(i.severity, Severity::Ok))
+    {
+        eprintln!(
+            "  {} [{}] {}",
+            issue.severity.icon(),
+            issue.category,
+            issue.message
+        );
         if let Some(s) = &issue.suggestion {
             eprintln!("       -> {s}");
         }
@@ -540,7 +617,10 @@ pub fn apply_fixes(fixes: &[ConfigFix]) -> Result<Vec<String>, String> {
             .map_err(|e| format!("Failed to write {abs_str}: {e}"))?;
 
         for fix in &file_fixes {
-            applied.push(format!("{}::{} = {}", fix.file, fix.field_path, fix.new_value));
+            applied.push(format!(
+                "{}::{} = {}",
+                fix.file, fix.field_path, fix.new_value
+            ));
         }
     }
 
@@ -569,7 +649,11 @@ fn extract_json(raw: &str) -> String {
 }
 
 /// Set a YAML value by dot-notation path.  Creates intermediate maps as needed.
-fn set_field_by_path(root: &mut serde_yaml::Value, path: &str, new_value: &str) -> Result<(), String> {
+fn set_field_by_path(
+    root: &mut serde_yaml::Value,
+    path: &str,
+    new_value: &str,
+) -> Result<(), String> {
     let parts: Vec<&str> = path.split('.').collect();
     if parts.is_empty() {
         return Err("empty field_path".into());
@@ -584,7 +668,10 @@ fn set_field_by_path(root: &mut serde_yaml::Value, path: &str, new_value: &str) 
         let map = current.as_mapping_mut().unwrap();
         let key = serde_yaml::Value::String(part.to_string());
         if !map.contains_key(&key) {
-            map.insert(key.clone(), serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+            map.insert(
+                key.clone(),
+                serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+            );
         }
         current = map.get_mut(&key).unwrap();
     }
@@ -604,7 +691,9 @@ fn set_field_by_path(root: &mut serde_yaml::Value, path: &str, new_value: &str) 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 fn url_to_addr(url: &str) -> Option<std::net::SocketAddr> {
-    let url = url.trim_start_matches("http://").trim_start_matches("https://");
+    let url = url
+        .trim_start_matches("http://")
+        .trim_start_matches("https://");
     let url = url.trim_end_matches('/');
     // Split host:port
     if let Some((host, port)) = url.rsplit_once(':') {
@@ -634,14 +723,27 @@ mod tests {
     #[test]
     fn diagnostics_returns_nonempty() {
         let issues = run_diagnostics();
-        assert!(!issues.is_empty(), "should have at least config file checks");
+        assert!(
+            !issues.is_empty(),
+            "should have at least config file checks"
+        );
     }
 
     #[test]
     fn format_report_includes_summary() {
         let issues = vec![
-            ConfigIssue { severity: Severity::Ok, category: "Test", message: "good".into(), suggestion: None },
-            ConfigIssue { severity: Severity::Warning, category: "Test", message: "warn".into(), suggestion: Some("fix it".into()) },
+            ConfigIssue {
+                severity: Severity::Ok,
+                category: "Test",
+                message: "good".into(),
+                suggestion: None,
+            },
+            ConfigIssue {
+                severity: Severity::Warning,
+                category: "Test",
+                message: "warn".into(),
+                suggestion: Some("fix it".into()),
+            },
         ];
         let report = format_report(&issues);
         assert!(report.contains("1 OK"));
@@ -669,7 +771,7 @@ mod tests {
     #[test]
     fn apply_fixes_rejects_files_outside_allowlist() {
         let fix = ConfigFix {
-            file: "config/hackme.yaml".into(),  // NOT in allowlist
+            file: "config/hackme.yaml".into(), // NOT in allowlist
             field_path: "foo".into(),
             current_value: "".into(),
             new_value: "bar".into(),

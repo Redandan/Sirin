@@ -42,7 +42,17 @@ pub struct LogLine {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum LogLevel { Error, Warn, Info, Telegram, Research, Followup, Coding, Teams, Normal }
+pub enum LogLevel {
+    Error,
+    Warn,
+    Info,
+    Telegram,
+    Research,
+    Followup,
+    Coding,
+    Teams,
+    Normal,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LlmInfo {
@@ -96,7 +106,11 @@ pub struct StageView {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum StageStatusView { Done, Current, Pending }
+pub enum StageStatusView {
+    Done,
+    Current,
+    Pending,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentDetailView {
@@ -134,7 +148,11 @@ pub struct ToastEvent {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ToastLevel { Info, Success, Error }
+pub enum ToastLevel {
+    Info,
+    Success,
+    Error,
+}
 
 /// Config-check issue for the UI.
 #[derive(Debug, Clone, PartialEq)]
@@ -146,7 +164,12 @@ pub struct ConfigIssueView {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConfigSeverity { Ok, Info, Warning, Error }
+pub enum ConfigSeverity {
+    Ok,
+    Info,
+    Warning,
+    Error,
+}
 
 /// AI-proposed single field change.
 #[derive(Debug, Clone, PartialEq)]
@@ -172,7 +195,7 @@ pub struct AiAdviceView {
 pub struct TeamTaskView {
     pub id: String,
     pub description: String,
-    pub status: String,           // "queued" | "running" | "done" | "failed"
+    pub status: String, // "queued" | "running" | "done" | "failed"
     pub result: Option<String>,
     pub created_at: String,
     pub finished_at: Option<String>,
@@ -190,15 +213,15 @@ pub struct TeamMemberView {
 /// Live token burn snapshot from the last N seconds of squad worker sessions.
 #[derive(Debug, Clone, Default)]
 pub struct TokenUsageView {
-    pub window_secs:     u64,
-    pub api_calls:       u64,
-    pub tokens_per_min:  u64,
-    pub input_per_min:   u64,
-    pub output_per_min:  u64,
+    pub window_secs: u64,
+    pub api_calls: u64,
+    pub tokens_per_min: u64,
+    pub input_per_min: u64,
+    pub output_per_min: u64,
     pub cache_r_per_min: u64,
     pub cache_w_per_min: u64,
-    pub cost_per_hour:   f64,
-    pub cache_hit_pct:   f64,
+    pub cost_per_hour: f64,
+    pub cache_hit_pct: f64,
 }
 
 /// 整個小隊的即時狀態快照。
@@ -217,97 +240,97 @@ pub struct TeamDashView {
 /// One saved dry-run preview (would-be GitHub comment) for the panel list.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DryRunPreviewView {
-    pub task_id:   String,
+    pub task_id: String,
     pub issue_url: String,
-    pub success:   bool,
-    pub saved_at:  String,
-    pub body:      String,
+    pub success: bool,
+    pub saved_at: String,
+    pub body: String,
 }
 
 /// Read-only snapshot of a GitHub issue for the verification form's preview.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GhIssueView {
-    pub title:  String,
-    pub body:   String,
+    pub title: String,
+    pub body: String,
     pub labels: Vec<String>,
-    pub url:    String,
+    pub url: String,
 }
 
 /// One test run row for the Test Dashboard panel.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TestRunView {
     /// YAML test id (or "adhoc_…" for ad-hoc runs).
-    pub test_id:     String,
+    pub test_id: String,
     /// "passed" | "failed" | "timeout" | "error" | "running" | "queued"
-    pub status:      String,
+    pub status: String,
     /// RFC-3339 timestamp of when the run started.
-    pub started_at:  String,
+    pub started_at: String,
     /// Wall-clock duration in milliseconds (None for still-active runs).
     pub duration_ms: Option<u64>,
     /// Short AI analysis or current action (truncated by UI).
-    pub analysis:    Option<String>,
+    pub analysis: Option<String>,
     /// Current step index (only populated for active `RunPhase::Running`).
     /// Drives the live progress indicator on the dashboard.
-    pub step:              Option<u32>,
+    pub step: Option<u32>,
     /// Triage category for failed runs (e.g. "selector_not_found",
     /// "timeout", "ai_assertion_failed").  None for passed/active runs.
-    pub failure_category:  Option<String>,
+    pub failure_category: Option<String>,
     /// Pass rate for this `test_id` over the recent history window
     /// (0.0..=1.0).  Populated only by `recent_test_runs` so the UI
     /// can flag flaky tests (< 70%).  None for active rows or single-run
     /// histories.
-    pub pass_rate:         Option<f32>,
+    pub pass_rate: Option<f32>,
     /// Number of browser console error-level messages captured during the run.
     /// Zero means clean console.  None for active/queued runs.  (#222)
-    pub console_errors:    Option<u32>,
+    pub console_errors: Option<u32>,
     /// Number of browser console warnings captured.  (#222)
-    pub console_warnings:  Option<u32>,
+    pub console_warnings: Option<u32>,
     /// Aggregate prompt-input tokens charged for this run's LLM calls (#240).
     /// `None` for active/queued runs and for old rows recorded before token
     /// telemetry shipped. `Some(0)` for runs that did not call any LLM
     /// (script replays, errors before iteration 0, local Ollama backends
     /// that don't emit `usage`).
-    pub prompt_tokens:     Option<u32>,
+    pub prompt_tokens: Option<u32>,
     /// Aggregate completion / output tokens for this run.
     pub completion_tokens: Option<u32>,
     /// Cached input tokens — billed at a discounted rate by the provider.
     /// Anthropic emits these as `cache_read_input_tokens`; OpenAI as
     /// `prompt_tokens_details.cached_tokens`.
-    pub cached_tokens:     Option<u32>,
+    pub cached_tokens: Option<u32>,
     /// Estimated USD cost using the per-model rate table in
     /// `crate::llm::usage::price_per_million`.  `None` rules same as above.
-    pub cost_usd:          Option<f32>,
+    pub cost_usd: Option<f32>,
     /// ReAct iteration count (#279 click-to-expand).  None for legacy rows.
-    pub iterations:        Option<u32>,
+    pub iterations: Option<u32>,
     /// True when this run was deterministic-script replay.  False for LLM
     /// ReAct runs.  Always `false` for active/queued runs (mode unknown until
     /// the executor's replay-vs-llm decision fires).
-    pub is_replay:         bool,
+    pub is_replay: bool,
     /// Run id assigned at spawn — required for the dashboard's expand-row
     /// to fetch the full step history via `get_test_result` MCP.
-    pub run_id:            Option<String>,
+    pub run_id: Option<String>,
     // ── #279 tier 1: live-progress fields (Phase A/B telemetry surfaced) ─
     /// How many seconds since the executor last bumped `phase` (set_phase /
     /// set_subphase).  None for queued / completed rows; Some(N) for active
     /// running rows so the dashboard can show "stuck Ns" banners.
-    pub idle_secs:               Option<u64>,
+    pub idle_secs: Option<u64>,
     /// Same elapsed time but in milliseconds — lets the UI distinguish a
     /// 200 ms inter-action gap from a 12 s LLM wait.
-    pub last_action_age_ms:      Option<u64>,
+    pub last_action_age_ms: Option<u64>,
     /// Phase B sub-phase: "llm_call" | "browser_action" | "replay" | "verify".
     /// None when between sub-phases or when the run is not currently active.
-    pub current_subphase:        Option<String>,
+    pub current_subphase: Option<String>,
     /// How long the executor has been in `current_subphase` (ms).  Snapshot
     /// uses this to fire a red "stuck >60 s in llm_call" warning per #279.
-    pub subphase_age_ms:         Option<u64>,
+    pub subphase_age_ms: Option<u64>,
     /// Number of `TestStep` entries mirrored into the live-trace ring buffer.
     /// Equals "iterations completed so far" mid-run; differs from `iterations`
     /// (which is final, set on completion).
-    pub recent_steps_count:      Option<u32>,
+    pub recent_steps_count: Option<u32>,
     /// Raw replay mode string ("script" / "llm") — None if executor hasn't
     /// chosen yet.  More expressive than `is_replay` (which collapses the
     /// not-yet-decided state to false).
-    pub replay_mode:             Option<String>,
+    pub replay_mode: Option<String>,
     /// Best-effort ETA in seconds: `(elapsed × median_total / current_step) − elapsed`.
     /// None when current_step is 0 or no median is available yet.  Pure UI
     /// hint — frontend may also recompute from snapshot if it wants smoother
@@ -334,7 +357,15 @@ pub trait AgentService: Send + Sync + 'static {
     fn add_objective(&self, agent_id: &str, text: &str);
     fn remove_objective(&self, agent_id: &str, index: usize);
     fn set_remote_ai(&self, agent_id: &str, allowed: bool);
-    fn set_behavior(&self, agent_id: &str, enabled: bool, min_delay: u64, max_delay: u64, max_hour: u32, max_day: u32);
+    fn set_behavior(
+        &self,
+        agent_id: &str,
+        enabled: bool,
+        min_delay: u64,
+        max_delay: u64,
+        max_hour: u32,
+        max_day: u32,
+    );
     fn toggle_skill(&self, agent_id: &str, skill_id: &str, enabled: bool);
     fn disabled_skills(&self, agent_id: &str) -> Vec<String>;
 }
@@ -406,6 +437,11 @@ pub trait SystemService: Send + Sync + 'static {
 
     fn system_status(&self) -> SystemStatus;
 
+    /// Read-only, on-demand Windows network + AI work telemetry. The
+    /// implementation owns a short cache so the global 2-second dashboard
+    /// snapshot remains unaffected.
+    fn ai_monitor_snapshot(&self) -> crate::ai_monitor::AiMonitorSnapshot;
+
     fn search_memory(&self, query: &str, limit: usize) -> Vec<String>;
 
     fn persona_name(&self) -> String;
@@ -434,9 +470,6 @@ pub trait SystemService: Send + Sync + 'static {
     /// Apply approved fixes.  Backs up each file to .bak.TIMESTAMP first.
     /// Returns list of applied fix descriptions or Err on failure.
     fn config_apply_fixes(&self, fixes: Vec<ConfigFixView>) -> Result<Vec<String>, String>;
-
-    /// Local-only, read-only Windows network and AI work snapshot.
-    fn ai_monitor_snapshot(&self) -> crate::ai_monitor::AiMonitorSnapshot;
 }
 
 /// 開發小隊狀態感知 — 佇列讀寫、Worker 控制、成員重置。
@@ -465,11 +498,11 @@ pub trait MultiAgentService: Send + Sync + 'static {
     /// `gh issue comment` is invoked when the worker finishes.
     fn dev_team_enqueue_issue(
         &self,
-        project_key:  &str,
-        gh_repo:      &str,
+        project_key: &str,
+        gh_repo: &str,
         issue_number: u32,
-        dry_run:      bool,
-        priority:     u8,
+        dry_run: bool,
+        priority: u8,
     ) -> Result<String, String>;
     /// List all saved dry-run previews (newest first).
     fn dev_team_list_previews(&self) -> Vec<DryRunPreviewView>;
@@ -505,10 +538,10 @@ pub trait BrowserService: Send + Sync + 'static {
 /// Coverage data for a single feature (from `config/coverage/agora_market.yaml`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CoverageFeatureView {
-    pub id:       String,
-    pub name:     String,
+    pub id: String,
+    pub name: String,
     /// "confirmed" | "partial" | "missing"
-    pub status:   String,
+    pub status: String,
     /// YAML test_ids explicitly linked to this feature.
     pub test_ids: Vec<String>,
 }
@@ -516,12 +549,15 @@ pub struct CoverageFeatureView {
 /// Coverage data for one feature group (e.g. "Buyer：結帳 & 訂單").
 #[derive(Debug, Clone, PartialEq)]
 pub struct CoverageGroupView {
-    pub id:       String,
-    pub name:     String,
-    pub role:     String,
+    pub id: String,
+    pub name: String,
+    pub role: String,
     /// How many features in this group are confirmed/partial (not missing).
-    pub covered:  usize,
-    pub total:    usize,
+    pub covered: usize,
+    pub confirmed: usize,
+    pub partial: usize,
+    pub missing: usize,
+    pub total: usize,
     pub features: Vec<CoverageFeatureView>,
 }
 
@@ -549,16 +585,19 @@ pub enum DiscoveryStatus {
 ///                       decision-making to deterministic replay scripts
 #[derive(Debug, Clone, PartialEq)]
 pub struct CoverageData {
-    pub product:        String,
-    pub version:        String,
-    pub total_covered:  usize,
+    pub product: String,
+    pub version: String,
+    pub total_covered: usize,
+    pub total_confirmed: usize,
+    pub total_partial: usize,
+    pub total_missing: usize,
     pub total_features: usize,
-    pub groups:         Vec<CoverageGroupView>,
+    pub groups: Vec<CoverageGroupView>,
     /// Auto-discovery total — for the scaffold, equals total_features (mock).
-    pub discovered:     usize,
+    pub discovered: usize,
     /// Covered features whose tests are deterministic scripts (no-LLM replay).
     /// Heuristic in commit 2: counts features with status == "confirmed".
-    pub scripted:       usize,
+    pub scripted: usize,
     pub discovery_status: DiscoveryStatus,
 }
 
@@ -567,22 +606,22 @@ pub struct CoverageData {
 /// "Discovery Gaps" list in the Coverage panel.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DiscoveredFeatureView {
-    pub route:     String,
-    pub label:     String,
+    pub route: String,
+    pub label: String,
     /// "button" | "link" | "form_input" | "page" | "tab" | "menuitem"
-    pub kind:      String,
-    pub selector:  Option<String>,
+    pub kind: String,
+    pub selector: Option<String>,
     pub last_seen: String,
 }
 
 /// Top-level discovery snapshot — Issue #247.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DiscoveryDataView {
-    pub status:        DiscoveryStatus,
-    pub total:         u32,
-    pub features:      Vec<DiscoveredFeatureView>,
+    pub status: DiscoveryStatus,
+    pub total: u32,
+    pub features: Vec<DiscoveredFeatureView>,
     /// RFC-3339 timestamp of the last completed run, if any.
-    pub last_run_at:   Option<String>,
+    pub last_run_at: Option<String>,
 }
 
 /// Test runner data for the Test Dashboard panel — recent history + active runs.
@@ -622,18 +661,25 @@ pub struct ReplayHealthView {
     pub window_days: u32,
     pub total_runs: usize,
     pub passed_via_replay: usize,
+    pub passed_via_fixture_only: usize,
+    pub passed_deterministic: usize,
     pub passed_via_llm: usize,
     pub failed: usize,
     pub success_rate_replay: f64,
+    pub success_rate_deterministic: f64,
     pub previous_success_rate_replay: Option<f64>,
+    pub previous_success_rate_deterministic: Option<f64>,
     pub drift: Option<f64>,
+    pub deterministic_drift: Option<f64>,
+    pub latest_run_at: Option<String>,
+    pub has_recent_data: bool,
 }
 
 /// Per-test replay classification (#266).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TestReplayStatusView {
     pub test_id: String,
-    /// One of: "healthy" | "stale_fallback" | "llm_only" | "untested"
+    /// One of: "fixture_only" | "healthy" | "stale_fallback" | "llm_only" | "untested"
     pub status: String,
     pub has_script: bool,
     /// Last 3 runs' is_replay flags, most-recent first.
@@ -645,8 +691,14 @@ pub struct TestReplayStatusView {
 /// Any type that implements all eight sub-traits automatically gets
 /// `AppService` via the blanket impl below — no separate impl block required.
 pub trait AppService:
-    AgentService + PendingReplyService + WorkflowService + IntegrationService
-    + SystemService + BrowserService + MultiAgentService + TestRunnerService
+    AgentService
+    + PendingReplyService
+    + WorkflowService
+    + IntegrationService
+    + SystemService
+    + BrowserService
+    + MultiAgentService
+    + TestRunnerService
 {
 }
 

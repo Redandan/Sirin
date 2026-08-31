@@ -63,20 +63,22 @@ impl TraceWriter {
         }
 
         let file = open_append(&path)?;
-        let bytes_written = file
-            .metadata()
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let bytes_written = file.metadata().map(|m| m.len()).unwrap_or(0);
 
-        Ok(Self { path, file, bytes_written, size_limit })
+        Ok(Self {
+            path,
+            file,
+            bytes_written,
+            size_limit,
+        })
     }
 
     /// Serialize `event` as a JSON line and append it to the trace file.
     ///
     /// Rotates the file first if the current size would exceed `size_limit`.
     pub fn write_event(&mut self, event: &ServerEvent) -> Result<(), String> {
-        let line = serde_json::to_string(event)
-            .map_err(|e| format!("trace_writer: serialize: {e}"))?;
+        let line =
+            serde_json::to_string(event).map_err(|e| format!("trace_writer: serialize: {e}"))?;
 
         // Rotate before writing if the new line would push us over the limit.
         // (We compare against the current size before appending.)
@@ -85,8 +87,7 @@ impl TraceWriter {
             self.rotate()?;
         }
 
-        writeln!(self.file, "{}", line)
-            .map_err(|e| format!("trace_writer: write: {e}"))?;
+        writeln!(self.file, "{}", line).map_err(|e| format!("trace_writer: write: {e}"))?;
         self.file
             .flush()
             .map_err(|e| format!("trace_writer: flush: {e}"))?;
@@ -170,10 +171,14 @@ mod tests {
     fn test_dir(name: &str) -> PathBuf {
         let base = std::env::temp_dir()
             .join("sirin_monitor_tests")
-            .join(format!("{}_{}", name, std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .subsec_nanos()));
+            .join(format!(
+                "{}_{}",
+                name,
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .subsec_nanos()
+            ));
         fs::create_dir_all(&base).unwrap();
         base
     }
@@ -249,8 +254,15 @@ mod tests {
         w.write_event(&sample_event()).unwrap(); // triggers rotation before writing
 
         // The live file should have the second line; .1 should have the first
-        assert!(rotated_path(&path, 1).exists(), ".1 must exist after rotation");
-        assert_eq!(line_count(&path), 1, "live file should have 1 line after rotation");
+        assert!(
+            rotated_path(&path, 1).exists(),
+            ".1 must exist after rotation"
+        );
+        assert_eq!(
+            line_count(&path),
+            1,
+            "live file should have 1 line after rotation"
+        );
         assert_eq!(
             line_count(&rotated_path(&path, 1)),
             1,
@@ -293,11 +305,13 @@ mod tests {
         // No file beyond .MAX_ROTATIONS should exist
         assert!(
             !rotated_path(&path, MAX_ROTATIONS + 1).exists(),
-            ".{} must not exist", MAX_ROTATIONS + 1
+            ".{} must not exist",
+            MAX_ROTATIONS + 1
         );
         assert!(
             rotated_path(&path, MAX_ROTATIONS).exists(),
-            ".{} must exist", MAX_ROTATIONS
+            ".{} must exist",
+            MAX_ROTATIONS
         );
     }
 

@@ -27,7 +27,7 @@ with the others.
 | File | Lines | Responsibility |
 |------|------:|----------------|
 | `mod.rs` | 365 | SQLite FTS5 store: `memory_store`, `memory_search`, `memory_list_recent`; JSONL → SQLite migration on first startup; agent-memory isolation |
-| `codebase.rs` | ~1 050 | Project file traversal, symbol extraction, TF scoring, `search_codebase`, `list_project_files`, `inspect_project_file_range`, `ensure_codebase_index` / `refresh_codebase_index` |
+| `codebase.rs` | ~1 250 | Project file traversal, symbol extraction, TF scoring, `search_codebase`, `list_project_files`, `inspect_project_file_range`, initial full build plus per-file and periodic external-delta refresh |
 | `context.rs` | 97 | Per-peer ring-log: `append_context`, `load_recent_context`, `collect_reply_samples` |
 
 ---
@@ -70,7 +70,9 @@ One JSON object per line (one per indexed file):
   "kind":    "rust-source",
   "summary": "Persistent memory for Sirin.",
   "symbols": ["memory_db", "memory_store", "memory_search", "memory_list_recent"],
-  "text":    "File: src/memory/mod.rs\nKind: rust-source\nRole: ...\nSymbols: ...\n\nExcerpt:\n..."
+  "text":    "File: src/memory/mod.rs\nKind: rust-source\nRole: ...\nSymbols: ...\n\nExcerpt:\n...",
+  "size_bytes": 12345,
+  "modified_unix_nanos": 1787548800000000000
 }
 ```
 
@@ -144,10 +146,10 @@ memory_list_recent(limit, caller_agent_id)             mod.rs:170
 ### 4c. Codebase search
 
 ```
-search_codebase(query, limit)                          codebase.rs:634
+search_codebase(query, limit)                          codebase.rs:731
         │
         ├── ensure_codebase_index()
-        │     └── refresh if codebase_index.jsonl is stale (> 10 min old)
+        │     └── metadata delta scan if codebase_index.jsonl is stale (> 10 min old)
         │
         ├── tokenize(query)  →  lowercase tokens, CJK split per character
         │
@@ -160,6 +162,14 @@ search_codebase(query, limit)                          codebase.rs:634
         └── top-1 result: append 1-hop call-graph context
               (callers / callees from code_graph module)
 ```
+
+`file_write` and `file_patch` call `refresh_codebase_file(path)` after a
+successful write. If the JSONL index is present and younger than 10 minutes,
+Sirin replaces only that file's codebase entry and Rust call-graph entries. A
+missing index still takes the full refresh path. A stale index compares file
+size + nanosecond mtime for the candidate tree, then reparses only changed/new
+files, removes deleted entries, and batches Rust call-graph updates into one
+snapshot write.
 
 ### 4d. Per-peer context load
 
@@ -184,10 +194,10 @@ to inject recent dialogue into the LLM system prompt.
 | **`OnceLock<Mutex<Connection>>` for DB** | Per-call `Connection::open` | SQLite WAL + single-writer; re-opening per call is slow and risks "database is locked" errors under concurrent agents; global Mutex serialises writes |
 | **`unicode61` tokenizer in FTS5** | Default (ascii) | Handles CJK, accented Latin, and full-width characters correctly without custom code |
 | **`sanitize_fts5_query` wraps tokens in quotes** | Pass raw query | FTS5 MATCH syntax treats `(`, `)`, `AND`, `OR`, `NOT`, `*`, `^` as operators — raw user queries would cause parse errors or unexpected boolean logic |
-| **JSONL ring-log for codebase index** (overwrite on refresh) | SQLite table | Full repo scan rebuilds the whole index; a single sequential overwrite is simpler and faster than diffing an existing table |
+| **JSONL codebase index with per-file replacement** | SQLite table | Coding-tool writes re-parse only the changed file. Initial creation scans the repo once; later stale checks compare cheap metadata and parse only external deltas. Snapshot replacement is atomic and protected by a process lock. |
 | **Per-file per-peer context JSONL** | Single shared context table | Files are independent → no cross-peer lock contention; `collect_reply_samples` can scan the directory by filename prefix without a query planner |
 | **CJK tokenization: one character per token** | Word segmentation library (jieba etc.) | Zero dependencies; single CJK character is the minimal meaningful unit for TF scoring; avoids a large optional dependency |
-| **`ensure_codebase_index` with 10-min staleness** | Always refresh | Rebuilding the index blocks the calling request; 10 min is short enough that edits are reflected promptly, long enough to avoid per-call rebuilds |
+| **`ensure_codebase_index` with 10-min staleness** | Always refresh | A metadata-only tree scan is much cheaper than reparsing every file; 10 min is short enough that external edits are reflected promptly without per-call traversal |
 | **`agent_memories` LIKE search (not FTS5)** | Second FTS5 virtual table | `agent_memories` is expected to be small (single-agent private notes); LIKE is sufficient and avoids maintaining a second FTS5 index |
 | **Meeting-shared reads via `meeting::readable_owners`** | Explicit caller list | Decouples memory from meeting topology; memory module only reads the owner list, doesn't manage meeting state |
 
@@ -205,9 +215,10 @@ to inject recent dialogue into the LLM system prompt.
   equivalent for the SQL store. Long-running instances will accumulate entries
   indefinitely; query latency increases as the table grows.
 
-- **Codebase index is a full overwrite** — every `refresh_codebase_index()` call
-  re-scans the entire repo and rewrites the JSONL. On large repos (>10 000 files)
-  this can take several seconds; there is no incremental/delta update.
+- **Incremental refresh still rewrites the JSONL snapshot** — coding-tool writes
+  and external-delta scans avoid the expensive full repo parse, but persisting
+  the updated entry remains O(index size). External edits are detected on the
+  10-minute cadence rather than immediately by a filesystem watcher.
 
 - **`codebase_index.jsonl` excluded dirs are hardcoded** — `.git`, `target`,
   `node_modules`, `.next`, `dist`, `build`. Any project with non-standard build
@@ -234,7 +245,8 @@ to inject recent dialogue into the LLM system prompt.
 
 - **Eviction policy for `memories_fts`**: keep the N most-recent entries or
   entries within the last X days; expose as a Sirin MCP tool.
-- **Incremental codebase index**: track file mtimes; only re-index changed files.
+- **External-edit delta refresh**: track file mtimes so the 10-minute stale path
+  can re-index only files changed outside Sirin instead of rescanning the repo.
 - **IDF weighting**: pre-compute document frequencies at index-build time and
   apply them in `score_entry` for better relevance ranking.
 - **Context ring-log size cap**: auto-trim per-peer JSONL to a configurable max

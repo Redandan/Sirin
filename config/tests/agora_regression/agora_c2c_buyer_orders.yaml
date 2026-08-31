@@ -5,6 +5,7 @@ url: "https://redandan.github.io/?__test_role=buyer"
 max_iterations: 18
 timeout_secs: 240
 max_retries: 1
+fixture_only: true
 
 # H5 mobile viewport
 viewport:
@@ -15,8 +16,33 @@ viewport:
 
 locale: zh-TW
 
+fixture:
+  setup:
+    - {action: "wait", target: "5000"}
+    - {action: "dismiss_passkey_prompt"}
+    - {action: "wait", target: "1000"}
+    - {action: "enable_a11y"}
+    - {action: "wait_for_ax_ready", min_nodes: 10, timeout_ms: 10000}
+    - {action: "agora_nav_click", target: "訂單"}
+    - {action: "wait", target: "2500"}
+    - {action: "enable_a11y"}
+    - {action: "wait_for_ax_ready", min_nodes: 10, timeout_ms: 10000}
+    - {action: "assert_ax_contains", target: "全部"}
+    - {action: "assert_ax_contains", target: "待收貨"}
+    - {action: "assert_ax_contains", target: "已完成"}
+    - {action: "shadow_click", role: "tab", name_regex: "^待收貨$"}
+    - {action: "wait", target: "1500"}
+    - {action: "enable_a11y"}
+    - {action: "assert_ax_contains", target: "待收貨"}
+    - {action: "shadow_click", role: "tab", name_regex: "^已完成$"}
+    - {action: "wait", target: "1500"}
+    - {action: "enable_a11y"}
+    - {action: "assert_ax_contains", target: "已完成"}
+
 goal: |
   目標：驗證買家訂單管理頁可正常載入，各狀態 tab 可正常切換。
+
+  ⚠️ fixture_only=true；fixture.setup 全部成功即通過，不進 LLM ReAct loop。
 
   起始狀態：買家已 auto-login，在首頁。
 

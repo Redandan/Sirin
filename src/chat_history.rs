@@ -16,8 +16,8 @@ use rusqlite::params;
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChatMessage {
     /// "user" | "agent"
-    pub role:       String,
-    pub text:       String,
+    pub role: String,
+    pub text: String,
     /// RFC-3339 UTC timestamp.
     pub created_at: String,
 }
@@ -34,7 +34,8 @@ pub fn append(agent_id: &str, role: &str, text: &str) -> Result<(), String> {
         "INSERT INTO chat_messages (agent_id, role, text, created_at) \
          VALUES (?1, ?2, ?3, ?4)",
         params![agent_id, role, text, chrono::Utc::now().to_rfc3339()],
-    ).map_err(|e| format!("insert chat_messages: {e}"))?;
+    )
+    .map_err(|e| format!("insert chat_messages: {e}"))?;
     Ok(())
 }
 
@@ -42,20 +43,23 @@ pub fn append(agent_id: &str, role: &str, text: &str) -> Result<(), String> {
 /// `for…of` directly). Pass a generous limit (e.g. 200); the UI virtualizes.
 pub fn history(agent_id: &str, limit: usize) -> Result<Vec<ChatMessage>, String> {
     let conn = db().lock().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare(
-        "SELECT role, text, created_at FROM chat_messages \
+    let mut stmt = conn
+        .prepare(
+            "SELECT role, text, created_at FROM chat_messages \
          WHERE agent_id = ?1 \
          ORDER BY id DESC LIMIT ?2",
-    ).map_err(|e| format!("prepare history: {e}"))?;
-    let rows = stmt.query_map(params![agent_id, limit as i64], |r| {
-        Ok(ChatMessage {
-            role:       r.get(0)?,
-            text:       r.get(1)?,
-            created_at: r.get(2)?,
+        )
+        .map_err(|e| format!("prepare history: {e}"))?;
+    let rows = stmt
+        .query_map(params![agent_id, limit as i64], |r| {
+            Ok(ChatMessage {
+                role: r.get(0)?,
+                text: r.get(1)?,
+                created_at: r.get(2)?,
+            })
         })
-    }).map_err(|e| format!("query history: {e}"))?;
-    let mut out: Vec<ChatMessage> = rows.collect::<Result<_, _>>()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("query history: {e}"))?;
+    let mut out: Vec<ChatMessage> = rows.collect::<Result<_, _>>().map_err(|e| e.to_string())?;
     // Reverse so oldest is first (we queried DESC for the LIMIT).
     out.reverse();
     Ok(out)
@@ -68,7 +72,8 @@ pub fn clear(agent_id: &str) -> Result<(), String> {
     conn.execute(
         "DELETE FROM chat_messages WHERE agent_id = ?1",
         params![agent_id],
-    ).map_err(|e| format!("clear: {e}"))?;
+    )
+    .map_err(|e| format!("clear: {e}"))?;
     Ok(())
 }
 
@@ -79,7 +84,7 @@ mod tests {
     #[test]
     fn append_and_history_roundtrip() {
         let _ = clear("test_a");
-        append("test_a", "user",  "hello").unwrap();
+        append("test_a", "user", "hello").unwrap();
         append("test_a", "agent", "hi there").unwrap();
         let h = history("test_a", 100).unwrap();
         assert_eq!(h.len(), 2);

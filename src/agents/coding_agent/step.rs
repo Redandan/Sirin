@@ -100,7 +100,10 @@ mod tests {
     #[test]
     fn extract_paths_from_file_write() {
         let v = json!({"path": "src/main.rs", "bytes_written": 1234});
-        assert_eq!(extract_modified_paths("file_write", &v), vec!["src/main.rs"]);
+        assert_eq!(
+            extract_modified_paths("file_write", &v),
+            vec!["src/main.rs"]
+        );
     }
 
     #[test]
@@ -170,6 +173,9 @@ mod tests {
             ]
         });
         // Only step 3's path should be collected.
-        assert_eq!(extract_modified_paths("plan_execute", &v), vec!["src/ok.rs"]);
+        assert_eq!(
+            extract_modified_paths("plan_execute", &v),
+            vec!["src/ok.rs"]
+        );
     }
 }

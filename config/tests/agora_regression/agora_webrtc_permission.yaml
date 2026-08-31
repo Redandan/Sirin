@@ -46,6 +46,5 @@ success_criteria:
   - "記錄系統回應：進入聊天室、permission dialog 出現、功能不存在、或錯誤訊息"
   - "沒有顯示 camera/microphone 永久 denied 或授權永遠失敗的錯誤"
 
-tags: [regression, webrtc, agora, critical, issue-70]
-
+tags: [regression, webrtc, agora, critical, issue-70, interactive-media, requires-operator-approval]
 

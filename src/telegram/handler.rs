@@ -62,15 +62,17 @@ where
     let route = if let Some(disabled) = agent_disabled_skills {
         let all_skills = crate::skills::list_skills();
         // ok = at least one skill of this category is NOT in the disabled list
-        let research_ok = all_skills.iter()
+        let research_ok = all_skills
+            .iter()
             .filter(|s| s.category == "research")
             .any(|s| !disabled.contains(&s.id));
-        let coding_ok = all_skills.iter()
+        let coding_ok = all_skills
+            .iter()
             .filter(|s| s.category == "coding")
             .any(|s| !disabled.contains(&s.id));
         match raw_route {
             "research" if !research_ok => "chat",
-            "coding"   if !coding_ok  => "chat",
+            "coding" if !coding_ok => "chat",
             other => other,
         }
     } else {

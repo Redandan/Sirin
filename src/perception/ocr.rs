@@ -10,6 +10,8 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::platform::NoWindow;
+
 /// Find target text on the current browser screenshot using local Windows OCR.
 ///
 /// Returns raw OCR JSON, including any matched bounding boxes and center points.
@@ -19,17 +21,18 @@ pub fn find_text_on_current_page(needle: &str, max_results: usize) -> Result<Val
     }
 
     let png = crate::browser::screenshot()?;
-    let tmp_dir = crate::platform::app_data_dir().join("tmp").join("perception_ocr");
-    std::fs::create_dir_all(&tmp_dir)
-        .map_err(|e| format!("create tmp dir failed: {e}"))?;
+    let tmp_dir = crate::platform::app_data_dir()
+        .join("tmp")
+        .join("perception_ocr");
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("create tmp dir failed: {e}"))?;
 
     let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S_%3f");
     let png_path = tmp_dir.join(format!("ocr_input_{stamp}.png"));
-    std::fs::write(&png_path, &png)
-        .map_err(|e| format!("write screenshot failed: {e}"))?;
+    std::fs::write(&png_path, &png).map_err(|e| format!("write screenshot failed: {e}"))?;
 
     let script_path = resolve_script_path()?;
     let output = Command::new(resolve_powershell_exe())
+        .no_window()
         .arg("-NoProfile")
         .arg("-ExecutionPolicy")
         .arg("Bypass")
@@ -122,7 +125,13 @@ fn resolve_script_path() -> Result<PathBuf, String> {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
             candidates.push(exe_dir.join("scripts").join("ocr_windows_find_text.ps1"));
-            candidates.push(exe_dir.join("..").join("..").join("scripts").join("ocr_windows_find_text.ps1"));
+            candidates.push(
+                exe_dir
+                    .join("..")
+                    .join("..")
+                    .join("scripts")
+                    .join("ocr_windows_find_text.ps1"),
+            );
         }
     }
 

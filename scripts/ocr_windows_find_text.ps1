@@ -1,7 +1,9 @@
 param(
   [Parameter(Mandatory = $true)][string]$ImagePath,
   [Parameter(Mandatory = $true)][string]$Needle,
-  [int]$MaxResults = 5
+  [int]$MaxResults = 5,
+  [string]$NeedlesJson = "",
+  [string]$NeedlesBase64 = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -99,6 +101,98 @@ function Await-WinRT {
   $task.GetAwaiter().GetResult()
 }
 
+function Find-OcrMatches {
+  param(
+    [Parameter(Mandatory = $true)]$Ocr,
+    [Parameter(Mandatory = $true)][string]$SearchNeedle,
+    [Parameter(Mandatory = $true)][int]$Limit
+  )
+
+  $needleCmp = $SearchNeedle.Trim()
+  $needleNorm = Normalize-Text $needleCmp
+  $matches = @()
+
+  foreach ($line in $Ocr.Lines) {
+    $lineText = [string]$line.Text
+    if ([string]::IsNullOrWhiteSpace($lineText)) { continue }
+
+    $lineNorm = Normalize-Text $lineText
+    if ($lineText.IndexOf($needleCmp, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+      ($needleNorm.Length -gt 0 -and $lineNorm.Contains($needleNorm))) {
+      $rects = @($line.Words | ForEach-Object { $_.BoundingRect })
+      if ($rects.Count -gt 0) {
+        $minX = [double]::PositiveInfinity
+        $minY = [double]::PositiveInfinity
+        $maxX = [double]::NegativeInfinity
+        $maxY = [double]::NegativeInfinity
+
+        foreach ($r in $rects) {
+          $x = [double]$r.X
+          $y = [double]$r.Y
+          $w = [double]$r.Width
+          $h = [double]$r.Height
+          if ($x -lt $minX) { $minX = $x }
+          if ($y -lt $minY) { $minY = $y }
+          if (($x + $w) -gt $maxX) { $maxX = $x + $w }
+          if (($y + $h) -gt $maxY) { $maxY = $y + $h }
+        }
+
+        $width = [Math]::Max(0, $maxX - $minX)
+        $height = [Math]::Max(0, $maxY - $minY)
+        $matches += [PSCustomObject]@{
+          text = $lineText
+          x = [Math]::Round($minX, 2)
+          y = [Math]::Round($minY, 2)
+          width = [Math]::Round($width, 2)
+          height = [Math]::Round($height, 2)
+          centerX = [Math]::Round($minX + ($width / 2), 2)
+          centerY = [Math]::Round($minY + ($height / 2), 2)
+          score = 1.0
+          source = "line"
+        }
+      }
+    }
+
+    if ($matches.Count -ge $Limit) { break }
+  }
+
+  if ($matches.Count -lt $Limit) {
+    foreach ($line in $Ocr.Lines) {
+      foreach ($word in $line.Words) {
+        $wordText = [string]$word.Text
+        if ([string]::IsNullOrWhiteSpace($wordText)) { continue }
+        $wordNorm = Normalize-Text $wordText
+        if ($wordText.IndexOf($needleCmp, [System.StringComparison]::OrdinalIgnoreCase) -lt 0 -and
+          -not ($needleNorm.Length -gt 0 -and $wordNorm.Contains($needleNorm))) { continue }
+
+        $r = $word.BoundingRect
+        $x = [double]$r.X
+        $y = [double]$r.Y
+        $w = [double]$r.Width
+        $h = [double]$r.Height
+
+        $matches += [PSCustomObject]@{
+          text = $wordText
+          x = [Math]::Round($x, 2)
+          y = [Math]::Round($y, 2)
+          width = [Math]::Round($w, 2)
+          height = [Math]::Round($h, 2)
+          centerX = [Math]::Round($x + ($w / 2), 2)
+          centerY = [Math]::Round($y + ($h / 2), 2)
+          score = 0.8
+          source = "word"
+        }
+
+        if ($matches.Count -ge $Limit) { break }
+      }
+
+      if ($matches.Count -ge $Limit) { break }
+    }
+  }
+
+  return @($matches)
+}
+
 try {
   Add-Type -AssemblyName System.Runtime.WindowsRuntime
   $null = [Windows.Storage.StorageFile, Windows.Storage, ContentType = WindowsRuntime]
@@ -162,83 +256,25 @@ try {
   $ocr = Await-WinRT -AsyncOperation $ocrOp -ResultType ([Windows.Media.Ocr.OcrResult])
   $needleCmp = $Needle.Trim()
   $needleNorm = Normalize-Text $needleCmp
-  $matches = @()
-
-  foreach ($line in $ocr.Lines) {
-    $lineText = [string]$line.Text
-    if ([string]::IsNullOrWhiteSpace($lineText)) { continue }
-
-    $lineNorm = Normalize-Text $lineText
-    if ($lineText.IndexOf($needleCmp, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
-      ($needleNorm.Length -gt 0 -and $lineNorm.Contains($needleNorm))) {
-      $rects = @($line.Words | ForEach-Object { $_.BoundingRect })
-      if ($rects.Count -gt 0) {
-        $minX = [double]::PositiveInfinity
-        $minY = [double]::PositiveInfinity
-        $maxX = [double]::NegativeInfinity
-        $maxY = [double]::NegativeInfinity
-
-        foreach ($r in $rects) {
-          $x = [double]$r.X
-          $y = [double]$r.Y
-          $w = [double]$r.Width
-          $h = [double]$r.Height
-          if ($x -lt $minX) { $minX = $x }
-          if ($y -lt $minY) { $minY = $y }
-          if (($x + $w) -gt $maxX) { $maxX = $x + $w }
-          if (($y + $h) -gt $maxY) { $maxY = $y + $h }
-        }
-
-        $width = [Math]::Max(0, $maxX - $minX)
-        $height = [Math]::Max(0, $maxY - $minY)
-        $matches += [PSCustomObject]@{
-          text = $lineText
-          x = [Math]::Round($minX, 2)
-          y = [Math]::Round($minY, 2)
-          width = [Math]::Round($width, 2)
-          height = [Math]::Round($height, 2)
-          centerX = [Math]::Round($minX + ($width / 2), 2)
-          centerY = [Math]::Round($minY + ($height / 2), 2)
-          score = 1.0
-          source = "line"
-        }
-      }
-    }
-
-    if ($matches.Count -ge $MaxResults) { break }
+  $matches = @(Find-OcrMatches -Ocr $ocr -SearchNeedle $needleCmp -Limit $MaxResults)
+  $matchesByNeedle = [ordered]@{}
+  $requestedNeedles = @()
+  if (-not [string]::IsNullOrWhiteSpace($NeedlesBase64)) {
+    $decodedNeedles = [System.Text.Encoding]::UTF8.GetString(
+      [System.Convert]::FromBase64String($NeedlesBase64)
+    )
+    $requestedNeedles = $decodedNeedles | ConvertFrom-Json
   }
-
-  if ($matches.Count -lt $MaxResults) {
-    foreach ($line in $ocr.Lines) {
-      foreach ($word in $line.Words) {
-        $wordText = [string]$word.Text
-        if ([string]::IsNullOrWhiteSpace($wordText)) { continue }
-        $wordNorm = Normalize-Text $wordText
-        if ($wordText.IndexOf($needleCmp, [System.StringComparison]::OrdinalIgnoreCase) -lt 0 -and
-          -not ($needleNorm.Length -gt 0 -and $wordNorm.Contains($needleNorm))) { continue }
-
-        $r = $word.BoundingRect
-        $x = [double]$r.X
-        $y = [double]$r.Y
-        $w = [double]$r.Width
-        $h = [double]$r.Height
-
-        $matches += [PSCustomObject]@{
-          text = $wordText
-          x = [Math]::Round($x, 2)
-          y = [Math]::Round($y, 2)
-          width = [Math]::Round($w, 2)
-          height = [Math]::Round($h, 2)
-          centerX = [Math]::Round($x + ($w / 2), 2)
-          centerY = [Math]::Round($y + ($h / 2), 2)
-          score = 0.8
-          source = "word"
-        }
-
-        if ($matches.Count -ge $MaxResults) { break }
-      }
-
-      if ($matches.Count -ge $MaxResults) { break }
+  elseif (-not [string]::IsNullOrWhiteSpace($NeedlesJson)) {
+    $requestedNeedles = $NeedlesJson | ConvertFrom-Json
+  }
+  if ($requestedNeedles.Count -gt 0) {
+    foreach ($requestedNeedle in $requestedNeedles) {
+      $value = [string]$requestedNeedle
+      if ([string]::IsNullOrWhiteSpace($value)) { continue }
+      $matchesByNeedle[$value] = @(
+        Find-OcrMatches -Ocr $ocr -SearchNeedle $value -Limit $MaxResults
+      )
     }
   }
 
@@ -253,6 +289,7 @@ try {
     textPreview = (([string]$ocr.Text) -replace "\s+", " ").Trim().Substring(0, [Math]::Min(120, (([string]$ocr.Text) -replace "\s+", " ").Trim().Length))
     matchCount = $matches.Count
     matches = $matches
+    matchesByNeedle = $matchesByNeedle
   }
 
   Emit-Json $out

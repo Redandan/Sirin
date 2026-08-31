@@ -10,9 +10,9 @@
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Locale {
-    ZhTw,  // default — 繁體中文
+    ZhTw, // default — 繁體中文
     En,
-    ZhCn,  // 简体中文
+    ZhCn, // 简体中文
 }
 
 impl Locale {
@@ -28,7 +28,7 @@ impl Locale {
     pub fn code(&self) -> &'static str {
         match self {
             Self::ZhTw => "zh-TW",
-            Self::En   => "en",
+            Self::En => "en",
             Self::ZhCn => "zh-CN",
         }
     }
@@ -37,7 +37,7 @@ impl Locale {
     pub fn reasoning_language(&self) -> &'static str {
         match self {
             Self::ZhTw => "繁體中文",
-            Self::En   => "English",
+            Self::En => "English",
             Self::ZhCn => "简体中文",
         }
     }
@@ -46,7 +46,7 @@ impl Locale {
     pub fn default_criteria(&self) -> &'static str {
         match self {
             Self::ZhTw => "- 頁面正常載入，目標描述的動作成功執行",
-            Self::En   => "- The page loads successfully and the described action completes",
+            Self::En => "- The page loads successfully and the described action completes",
             Self::ZhCn => "- 页面正常加载，目标描述的动作成功执行",
         }
     }
@@ -55,7 +55,7 @@ impl Locale {
     pub fn evaluate_default_criteria(&self) -> &'static str {
         match self {
             Self::ZhTw => "- 目標描述的動作成功執行",
-            Self::En   => "- The described action in the goal was completed successfully",
+            Self::En => "- The described action in the goal was completed successfully",
             Self::ZhCn => "- 目标描述的动作成功执行",
         }
     }
@@ -64,7 +64,7 @@ impl Locale {
     pub fn evaluate_prompt_header(&self) -> &'static str {
         match self {
             Self::ZhTw => "判斷這個瀏覽器測試是否通過。",
-            Self::En   => "Judge whether this browser test passed.",
+            Self::En => "Judge whether this browser test passed.",
             Self::ZhCn => "判断这个浏览器测试是否通过。",
         }
     }
@@ -73,7 +73,7 @@ impl Locale {
     pub fn evaluate_judgment_hint(&self) -> &'static str {
         match self {
             Self::ZhTw => "根據 criteria 嚴格判斷，回傳 JSON:",
-            Self::En   => "Judge strictly against the criteria and reply with JSON:",
+            Self::En => "Judge strictly against the criteria and reply with JSON:",
             Self::ZhCn => "根据 criteria 严格判断，返回 JSON:",
         }
     }
@@ -81,7 +81,7 @@ impl Locale {
     pub fn evaluate_reason_hint(&self) -> &'static str {
         match self {
             Self::ZhTw => "1-3 句解釋",
-            Self::En   => "1-3 sentence explanation",
+            Self::En => "1-3 sentence explanation",
             Self::ZhCn => "1-3 句解释",
         }
     }
@@ -89,7 +89,7 @@ impl Locale {
     pub fn triage_prompt_header(&self) -> &'static str {
         match self {
             Self::ZhTw => "分析下面瀏覽器測試失敗屬於哪一類，輸出 JSON。",
-            Self::En   => "Classify the browser test failure below. Output JSON.",
+            Self::En => "Classify the browser test failure below. Output JSON.",
             Self::ZhCn => "分析下面浏览器测试失败属于哪一类，输出 JSON。",
         }
     }
@@ -104,6 +104,7 @@ impl Locale {
 - flaky:             偶發、時序、非確定性 (但歷史上不常失敗)
 - env:               瀏覽器崩潰、網路 timeout、DNS 失敗等基礎設施
 - obsolete:          Selector 找不到元素、UI 改版，測試本身需要更新
+- external_issue:    已標記外部 issue 或運營前置條件失敗；只開單/等待，不觸發自動修復
 - rendering_failure: 截圖全黑 — Flutter CanvasKit 在 SwiftShader 上嘗試渲染失敗，或 Chrome headless 模式下 WebGL 無法輸出；非代碼問題，不觸發修復",
             Self::En => "\
 - ui_bug:            Frontend UI error (element not rendering, unresponsive button, blank page, JS error)
@@ -111,6 +112,7 @@ impl Locale {
 - flaky:             Intermittent, timing-related (not historically frequent)
 - env:               Browser crash, network timeout, DNS failure, infrastructure
 - obsolete:          Selector not found, UI changed — the test itself needs update
+- external_issue:    Tagged external issue or operations prerequisite failure; open/update a ticket or wait, no auto-fix.
 - rendering_failure: Screenshot is all-black — Flutter CanvasKit attempted on SwiftShader and failed, or Chrome headless + WebGL produced no output. Not a code bug, no auto-fix.",
             Self::ZhCn => "\
 - ui_bug:            前端 UI 错误 (元素未渲染、按钮无反应、页面空白、JS error)
@@ -118,6 +120,7 @@ impl Locale {
 - flaky:             偶发、时序、非确定性 (但历史上不常失败)
 - env:               浏览器崩溃、网络 timeout、DNS 失败等基础设施
 - obsolete:          Selector 找不到元素、UI 改版，测试本身需要更新
+- external_issue:    已标记外部 issue 或运营前置条件失败；只开单/等待，不触发自动修复
 - rendering_failure: 截图全黑 — Flutter CanvasKit 在 SwiftShader 上尝试渲染失败，或 Chrome headless 下 WebGL 无法输出；非代码问题，不触发修复",
         }
     }
@@ -125,7 +128,7 @@ impl Locale {
     pub fn triage_reason_hint(&self) -> &'static str {
         match self {
             Self::ZhTw => "1-2 句解釋",
-            Self::En   => "1-2 sentence explanation",
+            Self::En => "1-2 sentence explanation",
             Self::ZhCn => "1-2 句解释",
         }
     }
@@ -144,8 +147,8 @@ mod tests {
         assert_eq!(Locale::from_yaml("zh_cn"), Locale::ZhCn);
         assert_eq!(Locale::from_yaml("zh-hans"), Locale::ZhCn);
         assert_eq!(Locale::from_yaml("zh-TW"), Locale::ZhTw);
-        assert_eq!(Locale::from_yaml(""), Locale::ZhTw);  // default
-        assert_eq!(Locale::from_yaml("xx"), Locale::ZhTw);  // unknown → default
+        assert_eq!(Locale::from_yaml(""), Locale::ZhTw); // default
+        assert_eq!(Locale::from_yaml("xx"), Locale::ZhTw); // unknown → default
     }
 
     #[test]

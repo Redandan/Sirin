@@ -20,11 +20,11 @@
 //! │ (computer tool)     │
 //! └─────────────────────┘
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
 use serde_json::{json, Value};
 use std::io::{BufReader, Read, Write};
-use tracing::{info, warn, error};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tracing::{error, info, warn};
 
 /// Chrome Native Messaging protocol wrapper
 pub struct ChromeNativeMessaging;
@@ -40,9 +40,7 @@ impl ChromeNativeMessaging {
     }
 
     /// Decode message from Chrome (read 4-byte length, then payload)
-    pub fn decode_message(
-        reader: &mut BufReader<std::io::Stdin>,
-    ) -> Result<Value, String> {
+    pub fn decode_message(reader: &mut BufReader<std::io::Stdin>) -> Result<Value, String> {
         let mut len_bytes = [0u8; 4];
         reader
             .read_exact(&mut len_bytes)
@@ -58,11 +56,10 @@ impl ChromeNativeMessaging {
             .read_exact(&mut buf)
             .map_err(|e| format!("Failed to read message payload: {}", e))?;
 
-        let json_str = String::from_utf8(buf)
-            .map_err(|e| format!("Invalid UTF-8 in message: {}", e))?;
+        let json_str =
+            String::from_utf8(buf).map_err(|e| format!("Invalid UTF-8 in message: {}", e))?;
 
-        serde_json::from_str(&json_str)
-            .map_err(|e| format!("Failed to parse JSON: {}", e))
+        serde_json::from_str(&json_str).map_err(|e| format!("Failed to parse JSON: {}", e))
     }
 }
 
@@ -117,7 +114,13 @@ async fn handle_client(mut socket: TcpStream) {
                     }
                 };
 
-                info!("Bridge: Request from Sirin: {}", request.get("method").and_then(|m| m.as_str()).unwrap_or("unknown"));
+                info!(
+                    "Bridge: Request from Sirin: {}",
+                    request
+                        .get("method")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("unknown")
+                );
 
                 // 2. Send to Chrome via Native Messaging (length-prefixed)
                 let encoded = ChromeNativeMessaging::encode_message(&request);

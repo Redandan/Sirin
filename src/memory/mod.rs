@@ -26,7 +26,7 @@ mod context;
 
 pub use codebase::{
     ensure_codebase_index, inspect_project_file_range, list_project_files, looks_like_code_query,
-    refresh_codebase_index, search_codebase,
+    refresh_codebase_file, search_codebase,
 };
 pub use context::{append_context, load_recent_context};
 
@@ -41,12 +41,16 @@ use serde::{Deserialize, Serialize};
 // ── Memory store (SQLite FTS5 backend) ───────────────────────────────────────
 
 fn memory_db_path() -> PathBuf {
-    crate::platform::app_data_dir().join("memory").join("memories.db")
+    crate::platform::app_data_dir()
+        .join("memory")
+        .join("memories.db")
 }
 
 /// Legacy JSONL path — used only for one-time migration on first startup.
 fn memory_index_path() -> PathBuf {
-    crate::platform::app_data_dir().join("memory").join("index.jsonl")
+    crate::platform::app_data_dir()
+        .join("memory")
+        .join("index.jsonl")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -174,9 +178,7 @@ pub fn memory_list_recent(
     let conn = memory_db()
         .lock()
         .map_err(|e| format!("memory DB lock poisoned: {e}"))?;
-    let mut stmt = conn.prepare(
-        "SELECT text FROM memories_fts ORDER BY rowid DESC LIMIT ?1",
-    )?;
+    let mut stmt = conn.prepare("SELECT text FROM memories_fts ORDER BY rowid DESC LIMIT ?1")?;
     let mut results: Vec<String> = stmt
         .query_map(rusqlite::params![limit as i64], |row| row.get(0))?
         .filter_map(|r| r.ok())
@@ -188,7 +190,9 @@ pub fn memory_list_recent(
              ORDER BY id DESC LIMIT ?2",
         )?;
         let agent_results: Vec<String> = stmt2
-            .query_map(rusqlite::params![caller_agent_id, limit as i64], |row| row.get(0))?
+            .query_map(rusqlite::params![caller_agent_id, limit as i64], |row| {
+                row.get(0)
+            })?
             .filter_map(|r| r.ok())
             .collect();
         results.extend(agent_results);
@@ -254,10 +258,9 @@ pub fn memory_search(
                  LIMIT ?3",
             )?;
             let shared: Vec<String> = stmt3
-                .query_map(
-                    rusqlite::params![owner, pattern, limit as i64],
-                    |row| row.get(0),
-                )?
+                .query_map(rusqlite::params![owner, pattern, limit as i64], |row| {
+                    row.get(0)
+                })?
                 .filter_map(|r| r.ok())
                 .collect();
             results.extend(shared);
@@ -295,70 +298,90 @@ mod tests {
     /// Confidential memory is NOT visible to anonymous callers (MCP / RPC path).
     #[test]
     fn confidential_hidden_from_anonymous() {
-        let unique = format!("confidential_test_anon_{}", std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos());
+        let unique = format!(
+            "confidential_test_anon_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        );
         memory_store(&unique, "test", "agent_isolation_a", "confidential")
             .expect("store should succeed");
 
-        let found = memory_search(&unique, 5, "")
-            .expect("search should succeed");
+        let found = memory_search(&unique, 5, "").expect("search should succeed");
         assert!(
             !found.iter().any(|r| r.contains(&unique)),
-            "anonymous search must NOT see confidential memory: {:?}", found
+            "anonymous search must NOT see confidential memory: {:?}",
+            found
         );
     }
 
     /// Owner agent can retrieve its own confidential memory.
     #[test]
     fn owner_can_read_confidential() {
-        let unique = format!("confidential_test_owner_{}", std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos());
+        let unique = format!(
+            "confidential_test_owner_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        );
         memory_store(&unique, "test", "agent_isolation_b", "confidential")
             .expect("store should succeed");
 
-        let found = memory_search(&unique, 5, "agent_isolation_b")
-            .expect("search should succeed");
+        let found = memory_search(&unique, 5, "agent_isolation_b").expect("search should succeed");
         assert!(
             found.iter().any(|r| r.contains(&unique)),
-            "owner must see its own confidential memory: {:?}", found
+            "owner must see its own confidential memory: {:?}",
+            found
         );
     }
 
     /// A different agent cannot read another agent's confidential memory.
     #[test]
     fn other_agent_cannot_read_confidential() {
-        let unique = format!("confidential_test_other_{}", std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos());
+        let unique = format!(
+            "confidential_test_other_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        );
         memory_store(&unique, "test", "agent_isolation_c", "confidential")
             .expect("store should succeed");
 
-        let found = memory_search(&unique, 5, "agent_isolation_d")
-            .expect("search should succeed");
+        let found = memory_search(&unique, 5, "agent_isolation_d").expect("search should succeed");
         assert!(
             !found.iter().any(|r| r.contains(&unique)),
-            "other agent must NOT see this confidential memory: {:?}", found
+            "other agent must NOT see this confidential memory: {:?}",
+            found
         );
     }
 
     /// Shared memory (empty owner_agent_id) is visible to everyone including anonymous.
     #[test]
     fn shared_memory_visible_to_all() {
-        let unique = format!("shared_test_visible_{}", std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos());
-        memory_store(&unique, "test", "", "shared")
-            .expect("store should succeed");
+        let unique = format!(
+            "shared_test_visible_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        );
+        memory_store(&unique, "test", "", "shared").expect("store should succeed");
 
-        let found_anon = memory_search(&unique, 5, "")
-            .expect("search should succeed");
+        let found_anon = memory_search(&unique, 5, "").expect("search should succeed");
         assert!(
             found_anon.iter().any(|r| r.contains(&unique)),
-            "anonymous must see shared memory: {:?}", found_anon
+            "anonymous must see shared memory: {:?}",
+            found_anon
         );
-        let found_agent = memory_search(&unique, 5, "agent_isolation_e")
-            .expect("search should succeed");
+        let found_agent =
+            memory_search(&unique, 5, "agent_isolation_e").expect("search should succeed");
         assert!(
             found_agent.iter().any(|r| r.contains(&unique)),
-            "agent must also see shared memory: {:?}", found_agent
+            "agent must also see shared memory: {:?}",
+            found_agent
         );
     }
 }

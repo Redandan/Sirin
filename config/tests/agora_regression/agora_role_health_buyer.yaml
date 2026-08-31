@@ -1,0 +1,42 @@
+id: agora_role_health_buyer
+name: "AgoraMarket 角色健康檢查 — buyer"
+url: "https://redandan.github.io/?__test_role=buyer"
+
+max_iterations: 4
+timeout_secs: 120
+fixture_only: true
+
+viewport:
+  width: 390
+  height: 844
+  scale: 2.0
+  mobile: true
+
+locale: zh-TW
+
+fixture:
+  setup:
+    - {action: "clear_state"}
+    - {action: "goto", target: "https://redandan.github.io/?__test_role=buyer"}
+    - {action: "wait_for_flutter_semantics", timeout: 15000, min_roles: 2}
+    - {action: "dismiss_passkey_prompt"}
+    - {action: "goto", target: "https://redandan.github.io/?__test_role=buyer"}
+    - {action: "wait_for_flutter_semantics", timeout: 25000, min_roles: 2}
+    - {action: "assert_url_matches", target: "#/home"}
+    - {action: "shadow_find", name_regex: "購物車"}
+    - {action: "shadow_find", name_regex: "商品|分類|加入購物車"}
+
+goal: |
+  目標：確認 buyer 測試角色會落在買家商城首頁，而不是 seller/admin surface。
+
+  步驟：
+  1. url
+  2. shadow_dump
+  3. done=true
+
+success_criteria:
+  - "URL 不應落在 #/seller"
+  - "看到買家商城內容，例如商品搜尋、商品卡、收藏、購物車、訊息、或底部商品/訂單/錢包/我的"
+  - "不應顯示賣家管理操作，例如新增商品、批量導入、批量上架、待出貨營運任務"
+
+tags: [regression, smoke, active-smoke, role-health, buyer, agora]

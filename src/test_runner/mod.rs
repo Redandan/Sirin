@@ -11,26 +11,26 @@
 //! - [`triage`]   — failure classification + auto-fix spawning
 //! - [`store`]    — SQLite history + learned knowledge
 
-pub mod parser;
-pub mod executor;
-pub mod triage;
-pub mod store;
-pub mod runs;
-pub mod i18n;
-pub mod notify;
-pub mod screenshot_cache;
-pub mod ax_diff_context;
-pub mod som_renderer;
-pub mod idle_close;
 pub mod action_verify;
-pub mod gif_recorder;
+pub mod ax_diff_context;
 pub mod discovery;
-pub mod retry_policy;
+pub mod executor;
+pub mod gif_recorder;
+pub mod i18n;
+pub mod idle_close;
 pub mod lint;
+pub mod notify;
+pub mod parser;
+pub mod retry_policy;
+pub mod runs;
 pub mod scaffold;
+pub mod screenshot_cache;
+pub mod som_renderer;
+pub mod store;
+pub mod triage;
 
-pub use parser::{TestGoal, Fixture};
 pub use executor::{TestResult, TestStatus};
+pub use parser::{Fixture, TestGoal};
 
 /// Issue #98 — serialize concurrent `run_test_async` callers.
 ///
@@ -90,7 +90,10 @@ fn preflight_claude_cli(cwd: &str) -> Result<(), String> {
         .map_err(|e| format!("claude_cli preflight spawn failed: {e}"))?;
     if !probe.success {
         let msg: String = probe.output.chars().take(300).collect();
-        return Err(format!("claude_cli preflight failed (exit {}): {}", probe.exit_code, msg));
+        return Err(format!(
+            "claude_cli preflight failed (exit {}): {}",
+            probe.exit_code, msg
+        ));
     }
     if !probe.output.contains("SIRIN_LLM_READY") {
         let msg: String = probe.output.chars().take(300).collect();
@@ -100,7 +103,8 @@ fn preflight_claude_cli(cwd: &str) -> Result<(), String> {
 }
 
 fn preflight_local_llm(cfg: &crate::llm::LlmConfig, provider: &str) -> Result<(), String> {
-    fn preflight_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>> {
+    fn preflight_cache(
+    ) -> &'static std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>> {
         use std::collections::HashMap;
         use std::sync::{Mutex, OnceLock};
         static CACHE: OnceLock<Mutex<HashMap<String, std::time::Instant>>> = OnceLock::new();
@@ -125,15 +129,17 @@ fn preflight_local_llm(cfg: &crate::llm::LlmConfig, provider: &str) -> Result<()
     }
 
     let run_probe = |cfg: crate::llm::LlmConfig| -> Result<_, String> {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| format!("preflight runtime error: {e}"))?;
+        let rt =
+            tokio::runtime::Runtime::new().map_err(|e| format!("preflight runtime error: {e}"))?;
         Ok(rt.block_on(async move {
             tokio::time::timeout(
                 std::time::Duration::from_secs(30),
                 crate::llm::call_prompt_messages(
                     &crate::llm::shared_http(),
                     &cfg,
-                    &[crate::llm::LlmMessage::user("Reply with exactly: SIRIN_LLM_READY")],
+                    &[crate::llm::LlmMessage::user(
+                        "Reply with exactly: SIRIN_LLM_READY",
+                    )],
                 ),
             )
             .await
@@ -164,8 +170,18 @@ fn preflight_local_llm(cfg: &crate::llm::LlmConfig, provider: &str) -> Result<()
             };
             match ping2 {
                 Ok(Ok(v)) => v,
-                Ok(Err(e2)) => return Err(format!("{} preflight call failed (after retry): {e2}; first error: {e1}", provider)),
-                Err(_) => return Err(format!("{} preflight timeout at {} (after retry)", provider, cfg.base_url)),
+                Ok(Err(e2)) => {
+                    return Err(format!(
+                        "{} preflight call failed (after retry): {e2}; first error: {e1}",
+                        provider
+                    ))
+                }
+                Err(_) => {
+                    return Err(format!(
+                        "{} preflight timeout at {} (after retry)",
+                        provider, cfg.base_url
+                    ))
+                }
             }
         }
         Err(_) => {
@@ -180,14 +196,27 @@ fn preflight_local_llm(cfg: &crate::llm::LlmConfig, provider: &str) -> Result<()
             };
             match ping2 {
                 Ok(Ok(v)) => v,
-                Ok(Err(e2)) => return Err(format!("{} preflight call failed after timeout retry: {e2}", provider)),
-                Err(_) => return Err(format!("{} preflight timeout at {} (after retry)", provider, cfg.base_url)),
+                Ok(Err(e2)) => {
+                    return Err(format!(
+                        "{} preflight call failed after timeout retry: {e2}",
+                        provider
+                    ))
+                }
+                Err(_) => {
+                    return Err(format!(
+                        "{} preflight timeout at {} (after retry)",
+                        provider, cfg.base_url
+                    ))
+                }
             }
         }
     };
     if !out.contains("SIRIN_LLM_READY") {
         let head: String = out.chars().take(240).collect();
-        return Err(format!("{} preflight unexpected output: {}", provider, head));
+        return Err(format!(
+            "{} preflight unexpected output: {}",
+            provider, head
+        ));
     }
     preflight_cache()
         .lock()
@@ -196,16 +225,18 @@ fn preflight_local_llm(cfg: &crate::llm::LlmConfig, provider: &str) -> Result<()
     Ok(())
 }
 
-fn preflight_llm_readiness(test: &TestGoal, llm_override: Option<&crate::llm::LlmConfig>) -> Result<(), String> {
+fn preflight_llm_readiness(
+    test: &TestGoal,
+    llm_override: Option<&crate::llm::LlmConfig>,
+) -> Result<(), String> {
     let backend = resolved_test_llm_backend(test);
     if matches!(backend.as_str(), "claude_cli" | "claude") {
-        let cwd = crate::claude_session::repo_path("sirin")
-            .unwrap_or_else(|| {
-                std::env::current_dir()
-                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
-                    .to_string_lossy()
-                    .to_string()
-            });
+        let cwd = crate::claude_session::repo_path("sirin").unwrap_or_else(|| {
+            std::env::current_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                .to_string_lossy()
+                .to_string()
+        });
         return preflight_claude_cli(&cwd);
     }
 
@@ -217,7 +248,8 @@ fn preflight_llm_readiness(test: &TestGoal, llm_override: Option<&crate::llm::Ll
             model: ov.model.clone(),
             base_url: ov.base_url.clone(),
             api_key: ov.api_key.clone(),
-        }).map_err(|e| format!("invalid yaml llm_override: {e}"))?
+        })
+        .map_err(|e| format!("invalid yaml llm_override: {e}"))?
     } else {
         (*crate::llm::shared_llm()).clone()
     };
@@ -292,11 +324,14 @@ async fn run_test_with_run_id(
                 model: ov.model.clone(),
                 base_url: ov.base_url.clone(),
                 api_key: ov.api_key.clone(),
-            }).map_err(|e| format!("invalid test llm_override: {e}"))?;
+            })
+            .map_err(|e| format!("invalid test llm_override: {e}"))?;
             let cfg = std::sync::Arc::new(cfg);
             tracing::info!(
                 "[test_runner] '{}' using YAML llm_override: provider={:?} model={}",
-                test.id, cfg.backend, cfg.model
+                test.id,
+                cfg.backend,
+                cfg.model
             );
             ctx_with_run = ctx_with_run
                 .with_llm(cfg)
@@ -317,14 +352,18 @@ async fn run_test_with_run_id(
         )
         .await
         .unwrap_or_else(|_| {
-            tracing::warn!("[test_runner] '{}' triage timed out (60s) — using Unknown category", test.id);
+            tracing::warn!(
+                "[test_runner] '{}' triage timed out (60s) — using Unknown category",
+                test.id
+            );
             triage::TriageOutcome {
                 category: triage::FailureCategory::Unknown,
                 reason: "triage timed out".to_string(),
                 auto_fix_triggered: false,
             }
         });
-        let triggered = auto_fix && triage::trigger_auto_fix(&test, &result, &outcome, run_id).await;
+        let triggered =
+            auto_fix && triage::trigger_auto_fix(&test, &result, &outcome, run_id).await;
 
         // Issue #34: persist triage classification to KB so future sessions can
         // run `kbSearch("UiBug", project="sirin")` instead of reaching for
@@ -333,18 +372,18 @@ async fn run_test_with_run_id(
         // Uses a distinct topic key (`sirin-triage-{test_id}`) so it does not
         // race with the failure writer that already targets
         // `sirin-failure-{test_id}` from `runs.rs`.
-        let test_id_kb  = test.id.clone();
+        let test_id_kb = test.id.clone();
         let category_kb = outcome.category.as_str().to_string();
-        let reason_kb   = outcome.reason.clone();
+        let reason_kb = outcome.reason.clone();
         let auto_fix_kb = triggered;
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
                 let (topic_key, title, content, tags) =
                     triage::render_kb_entry(&test_id_kb, &category_kb, auto_fix_kb, &reason_kb);
                 let _ = crate::kb_client::write_raw_to_project(
-                    "sirin", &topic_key, &title, &content,
-                    "testing", &tags, "",
-                ).await;
+                    "sirin", &topic_key, &title, &content, "testing", &tags, "",
+                )
+                .await;
             });
         }
 
@@ -375,7 +414,10 @@ async fn run_test_with_run_id(
             let has_error = serde_json::from_str::<serde_json::Value>(log)
                 .ok()
                 .and_then(|v| v.as_array().cloned())
-                .map(|msgs| msgs.iter().any(|m| m.get("level").and_then(|l| l.as_str()) == Some("error")))
+                .map(|msgs| {
+                    msgs.iter()
+                        .any(|m| m.get("level").and_then(|l| l.as_str()) == Some("error"))
+                })
                 .unwrap_or(false);
             if has_error {
                 tracing::warn!("[test_runner] '{}' overridden to failed: console errors found (fail_on_console_errors=true)", test.id);
@@ -408,10 +450,10 @@ async fn run_test_with_run_id(
         started_at: &started,
         duration_ms: Some(result.duration_ms as i64),
         status: match effective_result_status {
-            TestStatus::Passed   => "passed",
-            TestStatus::Failed   => "failed",
-            TestStatus::Timeout  => "timeout",
-            TestStatus::Error    => "error",
+            TestStatus::Passed => "passed",
+            TestStatus::Failed => "failed",
+            TestStatus::Timeout => "timeout",
+            TestStatus::Error => "error",
             TestStatus::Disputed => "disputed",
         },
         failure_category: category.as_deref(),
@@ -423,7 +465,10 @@ async fn run_test_with_run_id(
         iterations: Some(result.iterations),
         dispute_reason: result.dispute.as_ref().map(|d| d.reason.as_str()),
         dispute_suspected_step: result.dispute.as_ref().and_then(|d| d.suspected_step),
-        dispute_suggested_fix: result.dispute.as_ref().and_then(|d| d.suggested_fix.as_deref()),
+        dispute_suggested_fix: result
+            .dispute
+            .as_ref()
+            .and_then(|d| d.suggested_fix.as_deref()),
         is_replay: was_replay,
         console_log: console_json.as_deref(),
     });
@@ -465,7 +510,9 @@ pub fn spawn_run_async_with_override(
     // Validate + materialise override eagerly so caller gets fast feedback
     // on bad provider names (vs discovering it inside the spawned thread).
     let resolved_llm: Option<std::sync::Arc<crate::llm::LlmConfig>> = match llm_override {
-        Some(o) => Some(std::sync::Arc::new(crate::llm::LlmConfig::from_override(&o)?)),
+        Some(o) => Some(std::sync::Arc::new(crate::llm::LlmConfig::from_override(
+            &o,
+        )?)),
         None => None,
     };
     let run_id = runs::new_run(&test_id);
@@ -478,9 +525,10 @@ pub fn spawn_run_async_with_override(
         let rt = match tokio::runtime::Runtime::new() {
             Ok(r) => r,
             Err(e) => {
-                runs::set_phase(&run_id_clone, runs::RunPhase::Error(
-                    format!("failed to create runtime: {e}")
-                ));
+                runs::set_phase(
+                    &run_id_clone,
+                    runs::RunPhase::Error(format!("failed to create runtime: {e}")),
+                );
                 return;
             }
         };
@@ -539,7 +587,9 @@ pub fn spawn_run_async_with_override(
                                 if idle > IDLE_THRESHOLD_SECS {
                                     tracing::warn!(
                                         "[watchdog] '{}' idle {}s > {}s — auto-killing",
-                                        watch_id, idle, IDLE_THRESHOLD_SECS
+                                        watch_id,
+                                        idle,
+                                        IDLE_THRESHOLD_SECS
                                     );
                                     let _ = runs::kill_run(&watch_id);
                                     break;
@@ -561,7 +611,9 @@ pub fn spawn_run_async_with_override(
                 ctx = ctx.with_metadata("llm_override_source", "mcp");
                 tracing::info!(
                     "[test_runner] '{}' using override LLM: provider={:?} model={}",
-                    test_id_clone, llm.backend, llm.model
+                    test_id_clone,
+                    llm.backend,
+                    llm.model
                 );
             }
 
@@ -581,112 +633,125 @@ pub fn spawn_run_async_with_override(
             let run_id_for_loop = run_id_clone.clone();
             let test_id_for_loop = test_id_clone.clone();
             let (_, usage_records) = crate::llm::usage::with_recording(async move {
-            let test_id_clone = test_id_for_loop;
-            let run_id_clone  = run_id_for_loop;
-            let mut attempt = 0u32;
-            loop {
-                match run_test_with_run_id(&ctx, &test_id_clone, auto_fix, Some(&run_id_clone)).await {
-                    Ok(r) => {
-                        // Look up failure classification from SQLite if it was
-                        // already triaged (run row recorded by run_test_with_run_id).
-                        let last_category = store::recent_runs(&test_id_clone, 1)
-                            .first()
-                            .and_then(|row| row.failure_category.clone());
+                let test_id_clone = test_id_for_loop;
+                let run_id_clone = run_id_for_loop;
+                let mut attempt = 0u32;
+                loop {
+                    match run_test_with_run_id(&ctx, &test_id_clone, auto_fix, Some(&run_id_clone))
+                        .await
+                    {
+                        Ok(r) => {
+                            // Look up failure classification from SQLite if it was
+                            // already triaged (run row recorded by run_test_with_run_id).
+                            let last_category = store::recent_runs(&test_id_clone, 1)
+                                .first()
+                                .and_then(|row| row.failure_category.clone());
 
-                        let decision = retry_policy::decide(
-                            &test_id_clone,
-                            attempt,
-                            yaml_max_retries,
-                            r.status,
-                            r.error_message.as_deref(),
-                            last_category.as_deref(),
-                        );
+                            let decision = retry_policy::decide(
+                                &test_id_clone,
+                                attempt,
+                                yaml_max_retries,
+                                r.status,
+                                r.error_message.as_deref(),
+                                last_category.as_deref(),
+                            );
 
-                        // Successful runs: just complete, don't bother decoding policy.
-                        if matches!(r.status, TestStatus::Passed) {
-                            if attempt > 0 {
-                                tracing::info!(
-                                    "[test_runner] '{}' recovered on attempt {}/{}",
-                                    test_id_clone, attempt + 1, yaml_max_retries + 1
+                            // Successful runs: just complete, don't bother decoding policy.
+                            if matches!(r.status, TestStatus::Passed) {
+                                if attempt > 0 {
+                                    tracing::info!(
+                                        "[test_runner] '{}' recovered on attempt {}/{}",
+                                        test_id_clone,
+                                        attempt + 1,
+                                        yaml_max_retries + 1
+                                    );
+                                }
+                                runs::set_phase(&run_id_clone, runs::RunPhase::Complete(r));
+                                break;
+                            }
+
+                            // Quarantine: log + complete with the failed result.
+                            // Test stays failed but the dashboard shows the flaky
+                            // badge (via pass_rate < threshold) instead of looping.
+                            if decision.quarantined {
+                                tracing::warn!(
+                                    "[test_runner] '{}' QUARANTINED — {} (no retry)",
+                                    test_id_clone,
+                                    decision.reason
                                 );
+                                runs::set_phase(&run_id_clone, runs::RunPhase::Complete(r));
+                                break;
                             }
+
+                            if decision.should_retry {
+                                tracing::warn!(
+                                    "[test_runner] '{}' status={:?} — {} — retrying",
+                                    test_id_clone,
+                                    r.status,
+                                    decision.reason
+                                );
+                                if decision.sleep_ms > 0 {
+                                    tokio::time::sleep(std::time::Duration::from_millis(
+                                        decision.sleep_ms,
+                                    ))
+                                    .await;
+                                }
+                                if decision.recover_browser {
+                                    let _ = tokio::task::spawn_blocking(|| {
+                                        if let Err(e) = crate::browser::clear_browser_state() {
+                                            tracing::warn!(
+                                                "[test_runner] clear_browser_state failed: {e}"
+                                            );
+                                        }
+                                    })
+                                    .await;
+                                }
+                                attempt += 1;
+                                continue;
+                            }
+
                             runs::set_phase(&run_id_clone, runs::RunPhase::Complete(r));
                             break;
                         }
-
-                        // Quarantine: log + complete with the failed result.
-                        // Test stays failed but the dashboard shows the flaky
-                        // badge (via pass_rate < threshold) instead of looping.
-                        if decision.quarantined {
-                            tracing::warn!(
-                                "[test_runner] '{}' QUARANTINED — {} (no retry)",
-                                test_id_clone, decision.reason
+                        Err(e) => {
+                            // Hard error from the runner — treat as TestStatus::Error
+                            // for policy purposes.  No category available.
+                            let decision = retry_policy::decide(
+                                &test_id_clone,
+                                attempt,
+                                yaml_max_retries,
+                                TestStatus::Error,
+                                Some(&e),
+                                None,
                             );
-                            runs::set_phase(&run_id_clone, runs::RunPhase::Complete(r));
+                            if decision.should_retry {
+                                tracing::warn!(
+                                    "[test_runner] '{}' Err — {} — retrying: {e}",
+                                    test_id_clone,
+                                    decision.reason
+                                );
+                                if decision.sleep_ms > 0 {
+                                    tokio::time::sleep(std::time::Duration::from_millis(
+                                        decision.sleep_ms,
+                                    ))
+                                    .await;
+                                }
+                                if decision.recover_browser {
+                                    let _ = tokio::task::spawn_blocking(|| {
+                                        let _ = crate::browser::clear_browser_state();
+                                    })
+                                    .await;
+                                }
+                                attempt += 1;
+                                continue;
+                            }
+                            runs::set_phase(&run_id_clone, runs::RunPhase::Error(e));
                             break;
                         }
-
-                        if decision.should_retry {
-                            tracing::warn!(
-                                "[test_runner] '{}' status={:?} — {} — retrying",
-                                test_id_clone, r.status, decision.reason
-                            );
-                            if decision.sleep_ms > 0 {
-                                tokio::time::sleep(
-                                    std::time::Duration::from_millis(decision.sleep_ms)
-                                ).await;
-                            }
-                            if decision.recover_browser {
-                                let _ = tokio::task::spawn_blocking(|| {
-                                    if let Err(e) = crate::browser::clear_browser_state() {
-                                        tracing::warn!(
-                                            "[test_runner] clear_browser_state failed: {e}"
-                                        );
-                                    }
-                                }).await;
-                            }
-                            attempt += 1;
-                            continue;
-                        }
-
-                        runs::set_phase(&run_id_clone, runs::RunPhase::Complete(r));
-                        break;
-                    }
-                    Err(e) => {
-                        // Hard error from the runner — treat as TestStatus::Error
-                        // for policy purposes.  No category available.
-                        let decision = retry_policy::decide(
-                            &test_id_clone,
-                            attempt,
-                            yaml_max_retries,
-                            TestStatus::Error,
-                            Some(&e),
-                            None,
-                        );
-                        if decision.should_retry {
-                            tracing::warn!(
-                                "[test_runner] '{}' Err — {} — retrying: {e}",
-                                test_id_clone, decision.reason
-                            );
-                            if decision.sleep_ms > 0 {
-                                tokio::time::sleep(
-                                    std::time::Duration::from_millis(decision.sleep_ms)
-                                ).await;
-                            }
-                            if decision.recover_browser {
-                                let _ = tokio::task::spawn_blocking(|| {
-                                    let _ = crate::browser::clear_browser_state();
-                                }).await;
-                            }
-                            attempt += 1;
-                            continue;
-                        }
-                        runs::set_phase(&run_id_clone, runs::RunPhase::Error(e));
-                        break;
                     }
                 }
-            }
-            }).await;
+            })
+            .await;
 
             // Drain the per-run usage tally and persist to SQLite.  No-op when
             // no LLM calls were made (script replays, runs that error before
@@ -696,9 +761,13 @@ pub fn spawn_run_async_with_override(
                 let micro_usd = store::tokens_to_micro_usd(&agg);
                 tracing::info!(
                     "[test_runner] '{}' run_id={} tokens p={} c={} cached={} cost=${:.4} model={}",
-                    test_id_clone, run_id_clone,
-                    agg.prompt_tokens, agg.completion_tokens, agg.cached_tokens,
-                    agg.cost_usd(), agg.model,
+                    test_id_clone,
+                    run_id_clone,
+                    agg.prompt_tokens,
+                    agg.completion_tokens,
+                    agg.cached_tokens,
+                    agg.cost_usd(),
+                    agg.model,
                 );
                 store::record_run_usage(
                     &run_id_clone,
@@ -706,7 +775,11 @@ pub fn spawn_run_async_with_override(
                     agg.completion_tokens,
                     agg.cached_tokens,
                     micro_usd,
-                    if agg.model.is_empty() { None } else { Some(&agg.model) },
+                    if agg.model.is_empty() {
+                        None
+                    } else {
+                        Some(&agg.model)
+                    },
                 );
             }
 
@@ -715,7 +788,8 @@ pub fn spawn_run_async_with_override(
             // activity and leaves a blank tab instead of the last test URL.
             let _ = tokio::task::spawn_blocking(|| {
                 let _ = crate::browser::navigate("about:blank");
-            }).await;
+            })
+            .await;
         });
     });
 
@@ -752,19 +826,20 @@ pub fn spawn_adhoc_run(req: AdhocRunRequest) -> Result<String, String> {
         success_criteria: req.success_criteria,
         tags: vec!["adhoc".into()],
         fixture: req.fixture,
-        docs_refs: vec![],  // ad-hoc runs have no pre-defined required reading
-        kb_refs:   vec![],  // ad-hoc runs don't reference KB topic keys
+        preserve_origin_state: false,
+        fixture_only: false,
+        docs_refs: vec![], // ad-hoc runs have no pre-defined required reading
+        kb_refs: vec![],   // ad-hoc runs don't reference KB topic keys
         perception: Default::default(),
-        mask_sensitive: None,  // None → executor defaults to fail-secure on
+        mask_sensitive: None, // None → executor defaults to fail-secure on
         blocked_url_patterns: req.blocked_url_patterns.clone().unwrap_or_default(),
         record_timeline_gif: false, // adhoc runs default-off to reduce overhead; opt in when debugging
-        show_action_indicator: false,  // Issue #75: opt-in only; ad-hoc keeps clean DOM
-        max_retries: 0,  // ad-hoc runs don't retry by default
-        viewport: None,  // ad-hoc uses process default viewport
-        fail_on_console_errors: false,  // ad-hoc runs never auto-fail on console errors
+        show_action_indicator: false, // Issue #75: opt-in only; ad-hoc keeps clean DOM
+        max_retries: 0,             // ad-hoc runs don't retry by default
+        viewport: None,             // ad-hoc uses process default viewport
+        fail_on_console_errors: false, // ad-hoc runs never auto-fail on console errors
     };
-    preflight_llm_readiness(&test, None)
-        .map_err(|e| format!("LLM preflight failed: {e}"))?;
+    preflight_llm_readiness(&test, None).map_err(|e| format!("LLM preflight failed: {e}"))?;
 
     let run_id = runs::new_run(&test_id);
     // Attach the synthetic TestGoal to the run state so persist_adhoc_run
@@ -777,9 +852,10 @@ pub fn spawn_adhoc_run(req: AdhocRunRequest) -> Result<String, String> {
         let rt = match tokio::runtime::Runtime::new() {
             Ok(r) => r,
             Err(e) => {
-                runs::set_phase(&run_id_clone, runs::RunPhase::Error(
-                    format!("failed to create runtime: {e}")
-                ));
+                runs::set_phase(
+                    &run_id_clone,
+                    runs::RunPhase::Error(format!("failed to create runtime: {e}")),
+                );
                 return;
             }
         };
@@ -798,15 +874,16 @@ pub fn spawn_adhoc_run(req: AdhocRunRequest) -> Result<String, String> {
             }
 
             let started = chrono::Local::now().to_rfc3339();
-            let result = executor::execute_test_tracked(&ctx, &test_clone, Some(&run_id_clone), None).await;
+            let result =
+                executor::execute_test_tracked(&ctx, &test_clone, Some(&run_id_clone), None).await;
 
             // Persist to SQLite — ad-hoc runs are still worth recording
             let history_json = serde_json::to_string(&result.history).ok();
             let status_str = match result.status {
-                TestStatus::Passed   => "passed",
-                TestStatus::Failed   => "failed",
-                TestStatus::Timeout  => "timeout",
-                TestStatus::Error    => "error",
+                TestStatus::Passed => "passed",
+                TestStatus::Failed => "failed",
+                TestStatus::Timeout => "timeout",
+                TestStatus::Error => "error",
                 TestStatus::Disputed => "disputed",
             };
             // Persist the goal too so persist_adhoc_run can recover after
@@ -828,7 +905,10 @@ pub fn spawn_adhoc_run(req: AdhocRunRequest) -> Result<String, String> {
                 iterations: Some(result.iterations),
                 dispute_reason: result.dispute.as_ref().map(|d| d.reason.as_str()),
                 dispute_suspected_step: result.dispute.as_ref().and_then(|d| d.suspected_step),
-                dispute_suggested_fix: result.dispute.as_ref().and_then(|d| d.suggested_fix.as_deref()),
+                dispute_suggested_fix: result
+                    .dispute
+                    .as_ref()
+                    .and_then(|d| d.suggested_fix.as_deref()),
                 is_replay: false,
                 console_log: console_json_adhoc.as_deref(),
             });
@@ -840,17 +920,20 @@ pub fn spawn_adhoc_run(req: AdhocRunRequest) -> Result<String, String> {
             // leaves a blank tab rather than the last visited URL.
             let _ = tokio::task::spawn_blocking(|| {
                 let _ = crate::browser::navigate("about:blank");
-            }).await;
+            })
+            .await;
         });
     });
 
     Ok(run_id)
 }
 
-/// Spawn N test runs in parallel, each on its own dedicated chrome tab
-/// (`session_id = batch_<batch_id>_<idx>`).  `max_concurrency` caps the number
-/// of tests running simultaneously via a [`tokio::sync::Semaphore`]; the rest
-/// queue up and start as permits free.
+/// Spawn N test runs and serialize execution through [`TEST_RUN_LOCK`].
+///
+/// Each run still gets its own named chrome session id for trace/debugging, but
+/// the browser singleton is process-wide.  Running multiple Flutter tests at
+/// once corrupts session state and can reset Chrome mid-navigation, so batch
+/// execution must obey the same single-run lock as `run_test_async`.
 ///
 /// Returns one `run_id` per test in the same order as the input — callers can
 /// poll [`runs::get`] to track each independently.
@@ -888,7 +971,7 @@ pub fn spawn_batch_run(
     // before ANY test starts navigating.  Failures are non-fatal — log and
     // continue (worst case = same lazy-launch behaviour as before).
     match crate::browser::navigate("about:blank") {
-        Ok(_)  => tracing::debug!("[batch] Chrome pre-warm complete"),
+        Ok(_) => tracing::debug!("[batch] Chrome pre-warm complete"),
         Err(e) => tracing::warn!("[batch] Chrome pre-warm failed (continuing): {e}"),
     }
 
@@ -947,9 +1030,8 @@ pub fn spawn_batch_run(
             rt.block_on(async {
                 // Per-index stagger to avoid Chrome-state races at startup.
                 if idx > 0 && stagger_ms > 0 {
-                    tokio::time::sleep(
-                        std::time::Duration::from_millis(stagger_ms * idx as u64),
-                    ).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(stagger_ms * idx as u64))
+                        .await;
                 }
                 // Wait for a slot — Semaphore::acquire is fair (FIFO).
                 let _permit = match sem_clone.acquire().await {
@@ -982,18 +1064,23 @@ pub fn spawn_batch_run(
                     }
                 }
 
+                let _run_guard = TEST_RUN_LOCK.lock().await;
                 let started = chrono::Local::now().to_rfc3339();
                 let result = executor::execute_test_tracked(
-                    &ctx, &test, Some(&run_id_clone), Some(&session_id)
-                ).await;
+                    &ctx,
+                    &test,
+                    Some(&run_id_clone),
+                    Some(&session_id),
+                )
+                .await;
 
                 // Persist to SQLite — same shape as spawn_run_async.
                 let history_json = serde_json::to_string(&result.history).ok();
                 let status_str = match result.status {
-                    TestStatus::Passed   => "passed",
-                    TestStatus::Failed   => "failed",
-                    TestStatus::Timeout  => "timeout",
-                    TestStatus::Error    => "error",
+                    TestStatus::Passed => "passed",
+                    TestStatus::Failed => "failed",
+                    TestStatus::Timeout => "timeout",
+                    TestStatus::Error => "error",
                     TestStatus::Disputed => "disputed",
                 };
                 let goal_json = serde_json::to_string(&test).ok();
@@ -1013,7 +1100,10 @@ pub fn spawn_batch_run(
                     iterations: Some(result.iterations),
                     dispute_reason: result.dispute.as_ref().map(|d| d.reason.as_str()),
                     dispute_suspected_step: result.dispute.as_ref().and_then(|d| d.suspected_step),
-                    dispute_suggested_fix: result.dispute.as_ref().and_then(|d| d.suggested_fix.as_deref()),
+                    dispute_suggested_fix: result
+                        .dispute
+                        .as_ref()
+                        .and_then(|d| d.suggested_fix.as_deref()),
                     is_replay: false,
                     console_log: console_json_batch.as_deref(),
                 });
@@ -1024,8 +1114,12 @@ pub fn spawn_batch_run(
                 let reason = if passed {
                     None
                 } else {
-                    Some(result.error_message.clone()
-                        .unwrap_or_else(|| status_str.to_string()))
+                    Some(
+                        result
+                            .error_message
+                            .clone()
+                            .unwrap_or_else(|| status_str.to_string()),
+                    )
                 };
                 runs::set_phase(&run_id_clone, runs::RunPhase::Complete(result));
                 emit(passed, reason);
@@ -1049,7 +1143,8 @@ pub fn spawn_batch_run(
                         std::thread::sleep(std::time::Duration::from_millis(1500));
                     }
                     let _ = crate::browser::close_session(&sid);
-                }).await;
+                })
+                .await;
             });
         });
     }
@@ -1061,19 +1156,21 @@ pub fn spawn_batch_run(
     // (Issue #38).  Runs in its own OS thread so the caller returns
     // immediately with the run_ids.
     std::thread::spawn(move || {
-        let mut collected: Vec<(String, bool, Option<String>)> =
-            Vec::with_capacity(total_tests);
+        let mut collected: Vec<(String, bool, Option<String>)> = Vec::with_capacity(total_tests);
         while let Ok(line) = digest_rx.recv() {
             collected.push(line);
-            if collected.len() >= total_tests { break; }
+            if collected.len() >= total_tests {
+                break;
+            }
         }
-        let lines: Vec<notify::BatchResultLine<'_>> = collected.iter().map(|(tid, passed, reason)| {
-            notify::BatchResultLine {
+        let lines: Vec<notify::BatchResultLine<'_>> = collected
+            .iter()
+            .map(|(tid, passed, reason)| notify::BatchResultLine {
                 test_id: tid.as_str(),
                 passed: *passed,
                 reason: reason.as_deref(),
-            }
-        }).collect();
+            })
+            .collect();
         notify::notify_batch_complete(&lines);
     });
 
@@ -1117,10 +1214,7 @@ pub fn spawn_pipeline_run(
     let total = stage_ids.len();
 
     // Allocate run_ids up-front so callers can track them immediately.
-    let run_ids: Vec<String> = stage_ids
-        .iter()
-        .map(|id| runs::new_run(id))
-        .collect();
+    let run_ids: Vec<String> = stage_ids.iter().map(|id| runs::new_run(id)).collect();
 
     let pipeline_id_clone = pipeline_id.clone();
     let run_ids_clone = run_ids.clone();
@@ -1131,9 +1225,10 @@ pub fn spawn_pipeline_run(
             Ok(r) => r,
             Err(e) => {
                 for rid in &run_ids_clone {
-                    runs::set_phase(rid, runs::RunPhase::Error(
-                        format!("pipeline runtime init failed: {e}")
-                    ));
+                    runs::set_phase(
+                        rid,
+                        runs::RunPhase::Error(format!("pipeline runtime init failed: {e}")),
+                    );
                 }
                 return;
             }
@@ -1141,7 +1236,9 @@ pub fn spawn_pipeline_run(
         rt.block_on(async {
             tracing::info!(
                 "[pipeline] '{}' starting {} stages (stop_on_failure={})",
-                pipeline_id_clone, total, stop_on_failure
+                pipeline_id_clone,
+                total,
+                stop_on_failure
             );
             let mut aborted = false;
             for (idx, (stage_id, run_id)) in
@@ -1157,7 +1254,10 @@ pub fn spawn_pipeline_run(
 
                 tracing::info!(
                     "[pipeline] '{}' stage {}/{}: '{}'",
-                    pipeline_id_clone, idx + 1, total, stage_id
+                    pipeline_id_clone,
+                    idx + 1,
+                    total,
+                    stage_id
                 );
 
                 // Wait for TEST_RUN_LOCK then execute stage.
@@ -1172,22 +1272,21 @@ pub fn spawn_pipeline_run(
                     &parser::find(stage_id).unwrap(),
                     Some(run_id),
                     None,
-                ).await;
+                )
+                .await;
 
                 let passed = matches!(result.status, TestStatus::Passed);
                 let status_str = match result.status {
-                    TestStatus::Passed   => "passed",
-                    TestStatus::Failed   => "failed",
-                    TestStatus::Timeout  => "timeout",
-                    TestStatus::Error    => "error",
+                    TestStatus::Passed => "passed",
+                    TestStatus::Failed => "failed",
+                    TestStatus::Timeout => "timeout",
+                    TestStatus::Error => "error",
                     TestStatus::Disputed => "disputed",
                 };
 
                 // Persist stage result.
                 let history_json = serde_json::to_string(&result.history).ok();
-                let goal_json = serde_json::to_string(
-                    &parser::find(stage_id).unwrap()
-                ).ok();
+                let goal_json = serde_json::to_string(&parser::find(stage_id).unwrap()).ok();
                 // Issue #220: capture console log (pipeline stage path).
                 let console_json_stage = crate::browser::console_messages(500).ok();
                 let _ = store::record_run(store::NewRun {
@@ -1204,7 +1303,10 @@ pub fn spawn_pipeline_run(
                     iterations: Some(result.iterations),
                     dispute_reason: result.dispute.as_ref().map(|d| d.reason.as_str()),
                     dispute_suspected_step: result.dispute.as_ref().and_then(|d| d.suspected_step),
-                    dispute_suggested_fix: result.dispute.as_ref().and_then(|d| d.suggested_fix.as_deref()),
+                    dispute_suggested_fix: result
+                        .dispute
+                        .as_ref()
+                        .and_then(|d| d.suggested_fix.as_deref()),
                     is_replay: false,
                     console_log: console_json_stage.as_deref(),
                 });
@@ -1214,7 +1316,9 @@ pub fn spawn_pipeline_run(
                 if stop_on_failure && !passed {
                     tracing::warn!(
                         "[pipeline] '{}' stage '{}'={} — stopping (stop_on_failure=true)",
-                        pipeline_id_clone, stage_id, status_str
+                        pipeline_id_clone,
+                        stage_id,
+                        status_str
                     );
                     aborted = true;
                 }
@@ -1222,10 +1326,15 @@ pub fn spawn_pipeline_run(
                 // Brief recovery between stages.
                 let _ = tokio::task::spawn_blocking(|| {
                     let _ = crate::browser::navigate("about:blank");
-                }).await;
+                })
+                .await;
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
-            tracing::info!("[pipeline] '{}' all {} stages done", pipeline_id_clone, total);
+            tracing::info!(
+                "[pipeline] '{}' all {} stages done",
+                pipeline_id_clone,
+                total
+            );
         });
     });
 
@@ -1242,7 +1351,9 @@ pub async fn run_all(
     let mut out = Vec::with_capacity(tests.len());
     for test in tests {
         if let Some(t) = tag {
-            if !test.tags.iter().any(|x| x == t) { continue; }
+            if !test.tags.iter().any(|x| x == t) {
+                continue;
+            }
         }
         match run_test(ctx, &test.id, auto_fix).await {
             Ok(r) => out.push(r),
@@ -1313,7 +1424,11 @@ pub fn persist_adhoc_run(p: PersistAdhocParams) -> Result<PersistAdhocResult, St
     if p.test_id.is_empty() {
         return Err("test_id must not be empty".into());
     }
-    if !p.test_id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
+    if !p
+        .test_id
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    {
         return Err(format!(
             "test_id '{}' invalid — must match [a-z0-9_]+ (lowercase, digits, underscore)",
             p.test_id
@@ -1321,8 +1436,11 @@ pub fn persist_adhoc_run(p: PersistAdhocParams) -> Result<PersistAdhocResult, St
     }
     // Block path traversal and YAML id collisions with reserved prefixes.
     if p.test_id.starts_with("adhoc_") {
-        return Err("test_id must not start with 'adhoc_' — that prefix is reserved \
-                    for in-flight runs.  Use a permanent name like 'login_flow'".into());
+        return Err(
+            "test_id must not start with 'adhoc_' — that prefix is reserved \
+                    for in-flight runs.  Use a permanent name like 'login_flow'"
+                .into(),
+        );
     }
 
     // Two-tier recovery: fast path (in-memory registry, set within the
@@ -1332,26 +1450,37 @@ pub fn persist_adhoc_run(p: PersistAdhocParams) -> Result<PersistAdhocResult, St
     // were committed to disk at run completion.
     let (goal, iterations_used, status_passed) = if let Some(state) = runs::get(&p.run_id) {
         // Fast path — read directly from in-memory state.
-        let goal = state.test_goal.clone().ok_or_else(|| format!(
-            "run_id '{}' has no stored TestGoal.  This usually means the run \
+        let goal = state.test_goal.clone().ok_or_else(|| {
+            format!(
+                "run_id '{}' has no stored TestGoal.  This usually means the run \
              was started before Sirin was upgraded to support persist — \
              re-run the exploration to capture the goal.",
-            p.run_id
-        ))?;
+                p.run_id
+            )
+        })?;
         let (iters, passed) = match &state.phase {
             runs::RunPhase::Complete(r) => (
                 r.iterations,
                 matches!(r.status, executor::TestStatus::Passed),
             ),
-            runs::RunPhase::Queued => return Err(format!(
-                "run '{}' is still queued — wait for completion before persisting", p.run_id
-            )),
-            runs::RunPhase::Running { step, .. } => return Err(format!(
-                "run '{}' is still running (step {step}) — wait for completion", p.run_id
-            )),
-            runs::RunPhase::Error(e) => return Err(format!(
-                "run '{}' errored — refusing to persist a broken test: {e}", p.run_id
-            )),
+            runs::RunPhase::Queued => {
+                return Err(format!(
+                    "run '{}' is still queued — wait for completion before persisting",
+                    p.run_id
+                ))
+            }
+            runs::RunPhase::Running { step, .. } => {
+                return Err(format!(
+                    "run '{}' is still running (step {step}) — wait for completion",
+                    p.run_id
+                ))
+            }
+            runs::RunPhase::Error(e) => {
+                return Err(format!(
+                    "run '{}' errored — refusing to persist a broken test: {e}",
+                    p.run_id
+                ))
+            }
         };
         if !passed {
             return Err(format!(
@@ -1364,14 +1493,15 @@ pub fn persist_adhoc_run(p: PersistAdhocParams) -> Result<PersistAdhocResult, St
         (goal, iters, true)
     } else {
         // Slow path — in-memory state pruned, but the SQLite row survives.
-        let (goal_json, status, iters) = store::find_run_by_run_id(&p.run_id)
-            .ok_or_else(|| format!(
+        let (goal_json, status, iters) = store::find_run_by_run_id(&p.run_id).ok_or_else(|| {
+            format!(
                 "run_id '{}' not found in either in-memory registry or SQLite \
                  history — either the run never happened, or it predates \
                  Sirin v0.4.0 (which added SQLite goal persistence).  Re-run \
                  the exploration to capture the goal.",
                 p.run_id
-            ))?;
+            )
+        })?;
         if status != "passed" {
             return Err(format!(
                 "run '{}' has SQLite status='{}' — refusing to persist a regression \
@@ -1393,7 +1523,9 @@ pub fn persist_adhoc_run(p: PersistAdhocParams) -> Result<PersistAdhocResult, St
     //     more variance than the original exploration did)
     //   - tags → "adhoc" stripped, "adhoc-derived" added (or caller override)
     let mut tags = p.tags.unwrap_or_else(|| {
-        let mut t: Vec<String> = goal.tags.iter()
+        let mut t: Vec<String> = goal
+            .tags
+            .iter()
             .filter(|s| s.as_str() != "adhoc")
             .cloned()
             .collect();
@@ -1416,7 +1548,10 @@ pub fn persist_adhoc_run(p: PersistAdhocParams) -> Result<PersistAdhocResult, St
         name: p.name.unwrap_or_else(|| {
             // The synthetic ad-hoc name is "Ad-hoc: <40-char goal preview>" —
             // strip the prefix when promoting so persisted YAML reads naturally.
-            goal.name.strip_prefix("Ad-hoc: ").unwrap_or(&goal.name).to_string()
+            goal.name
+                .strip_prefix("Ad-hoc: ")
+                .unwrap_or(&goal.name)
+                .to_string()
         }),
         url: goal.url.clone(),
         goal: goal.goal.clone(),
@@ -1431,8 +1566,10 @@ pub fn persist_adhoc_run(p: PersistAdhocParams) -> Result<PersistAdhocResult, St
         success_criteria: goal.success_criteria.clone(),
         tags: tags.clone(),
         fixture: goal.fixture.clone(),
-        docs_refs: goal.docs_refs.clone(),  // propagate required-reading from source run
-        kb_refs:   goal.kb_refs.clone(),    // propagate KB topic-key refs too
+        preserve_origin_state: goal.preserve_origin_state,
+        fixture_only: goal.fixture_only,
+        docs_refs: goal.docs_refs.clone(), // propagate required-reading from source run
+        kb_refs: goal.kb_refs.clone(),     // propagate KB topic-key refs too
         perception: goal.perception,
         mask_sensitive: goal.mask_sensitive,
         blocked_url_patterns: goal.blocked_url_patterns.clone(),
@@ -1446,12 +1583,11 @@ pub fn persist_adhoc_run(p: PersistAdhocParams) -> Result<PersistAdhocResult, St
     // Serialize and write.  serde_yaml uses 2-space indent and never
     // emits surprises for our simple struct — round-trip via parse_yaml
     // unit test catches any future field that doesn't survive.
-    let yaml = serde_yaml::to_string(&permanent)
-        .map_err(|e| format!("YAML serialization failed: {e}"))?;
+    let yaml =
+        serde_yaml::to_string(&permanent).map_err(|e| format!("YAML serialization failed: {e}"))?;
 
     let dir = crate::platform::config_dir().join("tests");
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("create_dir_all {dir:?}: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create_dir_all {dir:?}: {e}"))?;
     let path = dir.join(format!("{}.yaml", p.test_id));
 
     if path.exists() && !p.overwrite {
@@ -1461,8 +1597,7 @@ pub fn persist_adhoc_run(p: PersistAdhocParams) -> Result<PersistAdhocResult, St
         ));
     }
 
-    std::fs::write(&path, &yaml)
-        .map_err(|e| format!("write {path:?}: {e}"))?;
+    std::fs::write(&path, &yaml).map_err(|e| format!("write {path:?}: {e}"))?;
 
     tracing::info!(target: "sirin",
         "[test_runner] persisted ad-hoc run '{}' as test '{}' at {}",
@@ -1499,6 +1634,8 @@ mod persist_tests {
             success_criteria: vec!["URL contains /dashboard".into()],
             tags: vec!["adhoc".into()],
             fixture: None,
+            preserve_origin_state: false,
+            fixture_only: false,
             docs_refs: vec![],
             kb_refs: vec![],
             perception: Default::default(),
@@ -1506,9 +1643,9 @@ mod persist_tests {
             blocked_url_patterns: Vec::new(),
             record_timeline_gif: true,
             show_action_indicator: false,
-        max_retries: 0,
-        fail_on_console_errors: false,
-        viewport: None,
+            max_retries: 0,
+            fail_on_console_errors: false,
+            viewport: None,
         };
         let run_id = runs::new_run(test_id);
         runs::set_goal(&run_id, goal.clone());
@@ -1576,37 +1713,45 @@ mod persist_tests {
     #[test]
     fn rejects_running_run() {
         let run_id = runs::new_run("adhoc_running");
-        runs::set_goal(&run_id, TestGoal {
-            id: "adhoc_running".into(),
-            name: "x".into(),
-            url: "https://x".into(),
-            goal: "y".into(),
-            max_iterations: 10,
-            timeout_secs: 60,
-            retry_on_parse_error: 3,
-            locale: "en".into(),
-            url_query: Default::default(),
-            browser_headless: None,
-            llm_backend: None,
-            llm_override: None,
-            success_criteria: vec![],
-            tags: vec![],
-            fixture: None,
-            docs_refs: vec![],
-            kb_refs: vec![],
-            perception: Default::default(),
-            mask_sensitive: None,
-            blocked_url_patterns: Vec::new(),
-            record_timeline_gif: false,  // synthetic placeholder — never executes
-            show_action_indicator: false,
-        max_retries: 0,
-        fail_on_console_errors: false,
-        viewport: None,
-        });
-        runs::set_phase(&run_id, runs::RunPhase::Running {
-            step: 2,
-            current_action: "click".into(),
-        });
+        runs::set_goal(
+            &run_id,
+            TestGoal {
+                id: "adhoc_running".into(),
+                name: "x".into(),
+                url: "https://x".into(),
+                goal: "y".into(),
+                max_iterations: 10,
+                timeout_secs: 60,
+                retry_on_parse_error: 3,
+                locale: "en".into(),
+                url_query: Default::default(),
+                browser_headless: None,
+                llm_backend: None,
+                llm_override: None,
+                success_criteria: vec![],
+                tags: vec![],
+                fixture: None,
+                preserve_origin_state: false,
+                fixture_only: false,
+                docs_refs: vec![],
+                kb_refs: vec![],
+                perception: Default::default(),
+                mask_sensitive: None,
+                blocked_url_patterns: Vec::new(),
+                record_timeline_gif: false, // synthetic placeholder — never executes
+                show_action_indicator: false,
+                max_retries: 0,
+                fail_on_console_errors: false,
+                viewport: None,
+            },
+        );
+        runs::set_phase(
+            &run_id,
+            runs::RunPhase::Running {
+                step: 2,
+                current_action: "click".into(),
+            },
+        );
         let result = persist_adhoc_run(PersistAdhocParams {
             run_id,
             test_id: "login_flow".into(),
@@ -1632,7 +1777,8 @@ mod persist_tests {
             tags: Some(vec!["smoke".into(), "auth".into()]),
             bump_iterations: true,
             overwrite: false,
-        }).expect("persist should succeed");
+        })
+        .expect("persist should succeed");
 
         assert_eq!(result.test_id, unique_id);
         assert_eq!(result.iterations_used, 4);
@@ -1647,7 +1793,10 @@ mod persist_tests {
         assert_eq!(loaded.url, "https://example.com/login");
         assert_eq!(loaded.locale, "en");
         assert_eq!(loaded.browser_headless, Some(false));
-        assert_eq!(loaded.success_criteria, vec!["URL contains /dashboard".to_string()]);
+        assert_eq!(
+            loaded.success_criteria,
+            vec!["URL contains /dashboard".to_string()]
+        );
         // Tags should be sorted + deduped + NOT include "adhoc"
         assert!(!loaded.tags.iter().any(|t| t == "adhoc"));
         // bump_iterations=true → max(used+5, original) = max(9, 10) = 10
@@ -1682,6 +1831,8 @@ mod persist_tests {
             success_criteria: vec!["Recovered OK".into()],
             tags: vec!["adhoc".into()],
             fixture: None,
+            preserve_origin_state: false,
+            fixture_only: false,
             docs_refs: vec![],
             kb_refs: vec![],
             perception: Default::default(),
@@ -1689,9 +1840,9 @@ mod persist_tests {
             blocked_url_patterns: Vec::new(),
             record_timeline_gif: true,
             show_action_indicator: false,
-        max_retries: 0,
-        fail_on_console_errors: false,
-        viewport: None,
+            max_retries: 0,
+            fail_on_console_errors: false,
+            viewport: None,
         };
         // Insert directly into SQLite — simulates the row that
         // record_run wrote at the original run completion.
@@ -1713,7 +1864,8 @@ mod persist_tests {
             dispute_suggested_fix: None,
             is_replay: false,
             console_log: None,
-        }).unwrap();
+        })
+        .unwrap();
 
         // NOTE: we deliberately do NOT call runs::new_run() — the in-memory
         // state is absent, so persist_adhoc_run must hit the SQLite fallback.
@@ -1724,13 +1876,14 @@ mod persist_tests {
             tags: None,
             bump_iterations: true,
             overwrite: false,
-        }).expect("recovery via SQLite must succeed");
+        })
+        .expect("recovery via SQLite must succeed");
         assert_eq!(result.test_id, test_id);
         assert_eq!(result.iterations_used, 6);
 
         // Round-trip the persisted YAML
-        let loaded = parser::load_file(std::path::Path::new(&result.yaml_path))
-            .expect("YAML parseable");
+        let loaded =
+            parser::load_file(std::path::Path::new(&result.yaml_path)).expect("YAML parseable");
         assert_eq!(loaded.url, "https://example.com/recovery");
         assert_eq!(loaded.success_criteria, vec!["Recovered OK".to_string()]);
         // bump_iterations=true → max(used+5, original) = max(11, 10) = 11
@@ -1741,7 +1894,10 @@ mod persist_tests {
 
     #[test]
     fn refuses_to_overwrite_without_flag() {
-        let unique_id = format!("persist_overwrite_{}", chrono::Local::now().format("%H%M%S%3f"));
+        let unique_id = format!(
+            "persist_overwrite_{}",
+            chrono::Local::now().format("%H%M%S%3f")
+        );
 
         // First write succeeds
         let run_id = fake_passed_run("adhoc_first");
@@ -1752,7 +1908,8 @@ mod persist_tests {
             tags: None,
             bump_iterations: true,
             overwrite: false,
-        }).expect("first write must succeed");
+        })
+        .expect("first write must succeed");
 
         // Second write to the same path without overwrite=true must fail
         let run_id2 = fake_passed_run("adhoc_second");
@@ -1797,10 +1954,7 @@ mod batch_tests {
     #[test]
     fn rejects_unknown_test_id() {
         // Even a single bogus id should abort the entire batch — fail fast.
-        let result = spawn_batch_run(
-            vec!["this_test_does_not_exist_xyz_999".into()],
-            3,
-        );
+        let result = spawn_batch_run(vec!["this_test_does_not_exist_xyz_999".into()], 3);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("not found"), "err was: {err}");
@@ -1810,10 +1964,7 @@ mod batch_tests {
     fn aborts_when_any_id_unknown() {
         // wiki_smoke does exist (ships in config/tests), but the second is bogus.
         // The whole call must be rejected without spawning anything.
-        let result = spawn_batch_run(
-            vec!["wiki_smoke".into(), "totally_bogus_xyz_999".into()],
-            3,
-        );
+        let result = spawn_batch_run(vec!["wiki_smoke".into(), "totally_bogus_xyz_999".into()], 3);
         assert!(result.is_err(), "any unknown id must abort entire batch");
     }
 }
@@ -1833,14 +1984,14 @@ mod run_test_async_serialization_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn run_test_async_serializes_across_concurrent_callers() {
         let in_flight = Arc::new(AtomicUsize::new(0));
-        let max_seen  = Arc::new(AtomicUsize::new(0));
-        let order     = Arc::new(tokio::sync::Mutex::new(Vec::<usize>::new()));
+        let max_seen = Arc::new(AtomicUsize::new(0));
+        let order = Arc::new(tokio::sync::Mutex::new(Vec::<usize>::new()));
 
         let mut handles = Vec::new();
         for i in 0..5 {
             let in_flight = in_flight.clone();
-            let max_seen  = max_seen.clone();
-            let order     = order.clone();
+            let max_seen = max_seen.clone();
+            let order = order.clone();
             handles.push(tokio::spawn(async move {
                 // Stagger spawn order so all 5 contend for the lock.
                 tokio::time::sleep(Duration::from_millis(5 * i as u64)).await;
@@ -1854,11 +2005,16 @@ mod run_test_async_serialization_tests {
                 in_flight.fetch_sub(1, Ordering::SeqCst);
             }));
         }
-        for h in handles { h.await.unwrap(); }
+        for h in handles {
+            h.await.unwrap();
+        }
 
         // The whole point: never more than one holder at once.
         let max = max_seen.load(Ordering::SeqCst);
-        assert_eq!(max, 1, "TEST_RUN_LOCK let {max} concurrent holders in — Issue #98 regression");
+        assert_eq!(
+            max, 1,
+            "TEST_RUN_LOCK let {max} concurrent holders in — Issue #98 regression"
+        );
         // All 5 callers must have run (none queued indefinitely / deadlocked).
         assert_eq!(order.lock().await.len(), 5);
     }
@@ -1898,7 +2054,10 @@ mod run_test_async_serialization_tests {
 
         match result {
             Ok(run_id) => {
-                assert!(run_id.starts_with("run_"), "unexpected run_id shape: {run_id}");
+                assert!(
+                    run_id.starts_with("run_"),
+                    "unexpected run_id shape: {run_id}"
+                );
                 assert!(
                     spawn_latency < Duration::from_secs(1),
                     "spawn_run_async blocked {:?} under lock contention — caller-side mutex regression",

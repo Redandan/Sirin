@@ -41,8 +41,8 @@ pub struct ControlState {
 impl ControlState {
     pub fn new() -> Self {
         Self {
-            paused:  AtomicBool::new(false),
-            step:    AtomicBool::new(false),
+            paused: AtomicBool::new(false),
+            step: AtomicBool::new(false),
             aborted: AtomicBool::new(false),
         }
     }
@@ -82,22 +82,24 @@ impl ControlState {
     /// Current state snapshot for UI / WS emission.
     pub fn snapshot(&self) -> ControlSnapshot {
         ControlSnapshot {
-            paused:  self.paused.load(Relaxed),
-            step:    self.step.load(Relaxed),
+            paused: self.paused.load(Relaxed),
+            step: self.step.load(Relaxed),
             aborted: self.aborted.load(Relaxed),
         }
     }
 }
 
 impl Default for ControlState {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Immutable snapshot of `ControlState` suitable for JSON serialisation.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ControlSnapshot {
-    pub paused:  bool,
-    pub step:    bool,
+    pub paused: bool,
+    pub step: bool,
     pub aborted: bool,
 }
 

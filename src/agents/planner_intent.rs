@@ -171,10 +171,14 @@ mod tests {
     #[test]
     fn repo_file_reference_picks_up_src_paths() {
         assert!(looks_like_repo_file_reference("看看 src/llm/mod.rs 那段"));
-        assert!(looks_like_repo_file_reference("docs/architecture.md 提到的 X"));
+        assert!(looks_like_repo_file_reference(
+            "docs/architecture.md 提到的 X"
+        ));
         assert!(looks_like_repo_file_reference("解釋 `Cargo.toml`"));
         // Path-like string with backslashes is normalised.
-        assert!(looks_like_repo_file_reference("C:\\Users\\Redan\\src\\foo.rs"));
+        assert!(looks_like_repo_file_reference(
+            "C:\\Users\\Redan\\src\\foo.rs"
+        ));
     }
 
     #[test]
@@ -192,7 +196,9 @@ mod tests {
         assert!(looks_like_project_overview_query("這個專案怎麼運作？"));
         assert!(looks_like_project_overview_query("項目架構介紹一下"));
         assert!(looks_like_project_overview_query("解釋 codebase"));
-        assert!(looks_like_project_overview_query("how is this Architecture organised"));
+        assert!(looks_like_project_overview_query(
+            "how is this Architecture organised"
+        ));
         // Negatives — no overview keyword.
         assert!(!looks_like_project_overview_query("修這個 bug"));
     }
@@ -274,10 +280,7 @@ mod tests {
     fn classify_code_analysis_via_recommended_skill() {
         // No analysis keyword in the prompt, but the skill recommender said
         // "grounded_fix" — that's enough to route to CodeAnalysis.
-        let f = classify_intent_family(
-            "fix it",
-            &["grounded_fix".to_string()],
-        );
+        let f = classify_intent_family("fix it", &["grounded_fix".to_string()]);
         assert_eq!(f, IntentFamily::CodeAnalysis);
     }
 

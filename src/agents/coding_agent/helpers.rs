@@ -105,7 +105,11 @@ pub(super) fn format_tool_output_large(v: &Value) -> String {
 
 // ── Cache-key helpers ─────────────────────────────────────────────────────────
 
-pub(super) fn step_fingerprint(action_name: &str, action_input: &Value, observation: &str) -> String {
+pub(super) fn step_fingerprint(
+    action_name: &str,
+    action_input: &Value,
+    observation: &str,
+) -> String {
     format!(
         "{}|{}|{}",
         action_name,
@@ -303,7 +307,7 @@ mod tests {
     #[test]
     fn extract_json_body_strips_markdown_fence() {
         assert_eq!(extract_json_body("```json\n{\"k\":1}\n```"), "{\"k\":1}");
-        assert_eq!(extract_json_body("```\n{\"k\":1}\n```"),     "{\"k\":1}");
+        assert_eq!(extract_json_body("```\n{\"k\":1}\n```"), "{\"k\":1}");
     }
 
     #[test]
@@ -316,7 +320,7 @@ mod tests {
     #[test]
     fn extract_json_body_returns_input_when_no_braces() {
         assert_eq!(extract_json_body("plain text"), "plain text");
-        assert_eq!(extract_json_body(""),            "");
+        assert_eq!(extract_json_body(""), "");
     }
 
     #[test]
@@ -330,7 +334,7 @@ mod tests {
     #[test]
     fn truncate_to_bytes_no_change_when_under_limit() {
         assert_eq!(truncate_to_bytes("hello", 10), "hello");
-        assert_eq!(truncate_to_bytes("",      10), "");
+        assert_eq!(truncate_to_bytes("", 10), "");
     }
 
     #[test]
@@ -345,7 +349,7 @@ mod tests {
         let s = "你好世界";
         let out = truncate_to_bytes(s, 5);
         assert_eq!(out, "你"); // exactly one char, 3 bytes
-        // limit=8 → still mid-char (3rd char starts at 6, 4th at 9 → can't end at 8)
+                               // limit=8 → still mid-char (3rd char starts at 6, 4th at 9 → can't end at 8)
         assert_eq!(truncate_to_bytes(s, 8), "你好"); // 6 bytes
     }
 
@@ -481,17 +485,18 @@ mod tests {
 
     #[test]
     fn path_hints_caps_at_three_results() {
-        let hints = extract_path_hints_from_task(
-            "src/a.rs src/b.rs src/c.rs src/d.rs src/e.rs",
-        );
+        let hints = extract_path_hints_from_task("src/a.rs src/b.rs src/c.rs src/d.rs src/e.rs");
         assert!(hints.len() <= 3);
     }
 
     #[test]
     fn path_hints_strips_chinese_punctuation() {
         let hints = extract_path_hints_from_task("看看 `src/main.rs`，再分析一下");
-        assert!(hints.contains(&"src/main.rs".to_string()),
-            "must strip Chinese comma and backticks; got {:?}", hints);
+        assert!(
+            hints.contains(&"src/main.rs".to_string()),
+            "must strip Chinese comma and backticks; got {:?}",
+            hints
+        );
     }
 
     #[test]
@@ -547,8 +552,10 @@ mod tests {
         // contain "patch" and trigger asks_to_change → not classified as
         // read-only despite "explain" being present.  Future #263 follow-up
         // could switch to whole-word matching.
-        assert!(!is_read_only_analysis_task("explain how the dispatcher works"),
-            "'dispatcher' contains 'patch' → currently fails the read-only check");
+        assert!(
+            !is_read_only_analysis_task("explain how the dispatcher works"),
+            "'dispatcher' contains 'patch' → currently fails the read-only check"
+        );
     }
 
     #[test]
@@ -561,7 +568,9 @@ mod tests {
     #[test]
     fn read_only_forbid_phrase_overrides_change_words() {
         // Even if "fix" appears, "do not modify" should win.
-        assert!(is_read_only_analysis_task("do not modify, just suggest a fix"));
+        assert!(is_read_only_analysis_task(
+            "do not modify, just suggest a fix"
+        ));
     }
 
     // ── describe_tools ───────────────────────────────────────────────
@@ -571,9 +580,19 @@ mod tests {
         let out = describe_tools();
         // Spot-check: every tool name should appear in the output.
         for name in [
-            "file_list", "local_file_read", "file_write", "file_patch", "file_diff",
-            "shell_exec", "codebase_search", "symbol_search", "call_graph_query",
-            "plan_execute", "git_status", "git_log", "memory_search",
+            "file_list",
+            "local_file_read",
+            "file_write",
+            "file_patch",
+            "file_diff",
+            "shell_exec",
+            "codebase_search",
+            "symbol_search",
+            "call_graph_query",
+            "plan_execute",
+            "git_status",
+            "git_log",
+            "memory_search",
         ] {
             assert!(out.contains(name), "missing tool: {name}");
         }
@@ -603,10 +622,7 @@ mod tests {
     fn enrich_only_for_path_relevant_actions() {
         let obs = "ERROR: cannot read 'foo.rs'".to_string();
         // shell_exec is NOT in the gated list — pass through unchanged.
-        assert_eq!(
-            maybe_enrich_tool_error("shell_exec", obs.clone()),
-            obs
-        );
+        assert_eq!(maybe_enrich_tool_error("shell_exec", obs.clone()), obs);
     }
 
     #[test]
@@ -630,8 +646,10 @@ mod tests {
         ];
         for p in phrases {
             let out = maybe_enrich_tool_error("file_patch", p.to_string());
-            assert!(out.contains("Hint: verify the real path"),
-                "phrase should trigger hint: {p}");
+            assert!(
+                out.contains("Hint: verify the real path"),
+                "phrase should trigger hint: {p}"
+            );
         }
     }
 }

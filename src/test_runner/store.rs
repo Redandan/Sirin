@@ -13,7 +13,9 @@ use std::sync::{Mutex, OnceLock};
 // ── DB init ──────────────────────────────────────────────────────────────────
 
 fn db_path() -> PathBuf {
-    crate::platform::app_data_dir().join("memory").join("test_memory.db")
+    crate::platform::app_data_dir()
+        .join("memory")
+        .join("test_memory.db")
 }
 
 /// Shared DB accessor used by sibling modules (discovery, chat_history,
@@ -30,8 +32,7 @@ fn db() -> &'static Mutex<rusqlite::Connection> {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let conn = rusqlite::Connection::open(&path)
-            .expect("Failed to open test_memory.db");
+        let conn = rusqlite::Connection::open(&path).expect("Failed to open test_memory.db");
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS test_runs ( \
                 id INTEGER PRIMARY KEY AUTOINCREMENT, \
@@ -78,8 +79,14 @@ fn db() -> &'static Mutex<rusqlite::Connection> {
 
         // Migration: pre-verification DBs are missing the new columns.
         // Ignore errors since they will fail "duplicate column" on fresh DBs.
-        let _ = conn.execute("ALTER TABLE auto_fix_history ADD COLUMN verification_run_id TEXT", []);
-        let _ = conn.execute("ALTER TABLE auto_fix_history ADD COLUMN verified_at TEXT", []);
+        let _ = conn.execute(
+            "ALTER TABLE auto_fix_history ADD COLUMN verification_run_id TEXT",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE auto_fix_history ADD COLUMN verified_at TEXT",
+            [],
+        );
 
         // Migration: pre-v0.4.0 DBs are missing test_runs columns added for
         // persist_adhoc_run SQLite-fallback recovery.  Ignore the
@@ -90,9 +97,18 @@ fn db() -> &'static Mutex<rusqlite::Connection> {
         // Migration: Issue #103 — dispute_yaml action.  Three nullable columns
         // for the LLM-supplied dispute metadata written when status='disputed'.
         let _ = conn.execute("ALTER TABLE test_runs ADD COLUMN dispute_reason TEXT", []);
-        let _ = conn.execute("ALTER TABLE test_runs ADD COLUMN dispute_suspected_step INTEGER", []);
-        let _ = conn.execute("ALTER TABLE test_runs ADD COLUMN dispute_suggested_fix TEXT", []);
-        let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_tr_runid ON test_runs(run_id)", []);
+        let _ = conn.execute(
+            "ALTER TABLE test_runs ADD COLUMN dispute_suspected_step INTEGER",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE test_runs ADD COLUMN dispute_suggested_fix TEXT",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tr_runid ON test_runs(run_id)",
+            [],
+        );
         // Single-column index on `started_at` for `recent_runs_all` —
         // Test Dashboard polls `ORDER BY started_at DESC LIMIT 30` every 3s.
         // The existing compound `idx_tr_test (test_id, started_at)` doesn't
@@ -128,22 +144,31 @@ fn db() -> &'static Mutex<rusqlite::Connection> {
         );
         // Migration: Issue #220 — save browser console log per test run.
         // Stores JSON array of {level, text} objects captured by install_capture.
-        let _ = conn.execute(
-            "ALTER TABLE test_runs ADD COLUMN console_log TEXT",
-            [],
-        );
+        let _ = conn.execute("ALTER TABLE test_runs ADD COLUMN console_log TEXT", []);
 
         // Migration: Issue #240 — per-run LLM token + cost telemetry.
         // Populated by `record_run_usage()` after the runner drains its
         // task-local TokenUsage collector; defaults to 0 for old rows and
         // for runs that don't traverse any LLM call (script replays, etc.).
-        let _ = conn.execute("ALTER TABLE test_runs ADD COLUMN prompt_tokens INTEGER DEFAULT 0", []);
-        let _ = conn.execute("ALTER TABLE test_runs ADD COLUMN completion_tokens INTEGER DEFAULT 0", []);
-        let _ = conn.execute("ALTER TABLE test_runs ADD COLUMN cached_tokens INTEGER DEFAULT 0", []);
+        let _ = conn.execute(
+            "ALTER TABLE test_runs ADD COLUMN prompt_tokens INTEGER DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE test_runs ADD COLUMN completion_tokens INTEGER DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE test_runs ADD COLUMN cached_tokens INTEGER DEFAULT 0",
+            [],
+        );
         // Stored as USD * 1_000_000 (microcents-ish) so we keep precision in
         // an INTEGER column without floating-point round-trips.  ~0.000001 USD
         // resolution; can represent up to ~$2k per run before INT overflow.
-        let _ = conn.execute("ALTER TABLE test_runs ADD COLUMN cost_micro_usd INTEGER DEFAULT 0", []);
+        let _ = conn.execute(
+            "ALTER TABLE test_runs ADD COLUMN cost_micro_usd INTEGER DEFAULT 0",
+            [],
+        );
         // Resolved model name(s) — may be a comma-joined list when fallback
         // kicked in mid-run.  Optional; null for rows without LLM calls.
         let _ = conn.execute("ALTER TABLE test_runs ADD COLUMN llm_model TEXT", []);
@@ -223,18 +248,21 @@ pub struct RunRecord {
     /// Aggregate prompt tokens charged for this run's LLM calls (Issue #240).
     /// 0 for old rows, replays, or runs that never called an LLM that
     /// emits `usage`.
-    pub prompt_tokens:     u32,
+    pub prompt_tokens: u32,
     pub completion_tokens: u32,
-    pub cached_tokens:     u32,
+    pub cached_tokens: u32,
     /// Cost in micro-USD (USD * 1_000_000).  See `cost_micro_usd` column.
-    pub cost_micro_usd:    i64,
+    pub cost_micro_usd: i64,
     /// ReAct iteration count.  None on legacy rows that pre-date the column;
     /// Some(0) for replay-mode runs that never called the LLM loop.
-    pub iterations:        Option<u32>,
+    pub iterations: Option<u32>,
     /// Run id assigned by `runs::new_run()` — used by the dashboard's
     /// click-to-expand to fetch the full step history via `get_test_result` MCP.
     /// None on rows recorded before `run_id` column existed.
-    pub run_id:            Option<String>,
+    pub run_id: Option<String>,
+    /// Serialized TestGoal, when present.  Used by health summaries to
+    /// distinguish fixture-only deterministic runs from LLM runs.
+    pub goal_json: Option<String>,
 }
 
 // ── API ──────────────────────────────────────────────────────────────────────
@@ -284,13 +312,25 @@ pub fn record_run(r: NewRun<'_>) -> Result<i64, String> {
                                dispute_suggested_fix, is_replay, console_log) \
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
         rusqlite::params![
-            r.test_id, r.started_at, r.duration_ms, r.status,
-            r.failure_category, r.ai_analysis, r.screenshot_path, r.history_json,
-            r.goal_json, r.run_id, r.iterations,
-            r.dispute_reason, r.dispute_suspected_step, r.dispute_suggested_fix,
-            r.is_replay as i32, r.console_log,
+            r.test_id,
+            r.started_at,
+            r.duration_ms,
+            r.status,
+            r.failure_category,
+            r.ai_analysis,
+            r.screenshot_path,
+            r.history_json,
+            r.goal_json,
+            r.run_id,
+            r.iterations,
+            r.dispute_reason,
+            r.dispute_suspected_step,
+            r.dispute_suggested_fix,
+            r.is_replay as i32,
+            r.console_log,
         ],
-    ).map_err(|e| format!("insert run: {e}"))?;
+    )
+    .map_err(|e| format!("insert run: {e}"))?;
     let row_id = conn.last_insert_rowid();
     // Note: Telegram failure notification is fired by runs::set_phase()
     // (in-memory registry) when the run transitions to Complete — that
@@ -311,12 +351,12 @@ pub fn record_run(r: NewRun<'_>) -> Result<i64, String> {
 /// are logged but never propagated; missing telemetry shouldn't fail
 /// the run.
 pub fn record_run_usage(
-    run_id:            &str,
-    prompt_tokens:     u32,
+    run_id: &str,
+    prompt_tokens: u32,
     completion_tokens: u32,
-    cached_tokens:     u32,
-    cost_micro_usd:    i64,
-    llm_model:         Option<&str>,
+    cached_tokens: u32,
+    cost_micro_usd: i64,
+    llm_model: Option<&str>,
 ) {
     let conn = db().lock().unwrap_or_else(|e| e.into_inner());
     if let Err(e) = conn.execute(
@@ -382,13 +422,17 @@ pub fn get_console_log(run_id: &str) -> Option<String> {
 /// Parse console_log JSON and return (error_count, warning_count).
 fn console_counts(log_json: Option<&str>) -> (u32, u32) {
     let Some(json) = log_json else { return (0, 0) };
-    let Ok(arr) = serde_json::from_str::<serde_json::Value>(json) else { return (0, 0) };
-    let Some(msgs) = arr.as_array() else { return (0, 0) };
+    let Ok(arr) = serde_json::from_str::<serde_json::Value>(json) else {
+        return (0, 0);
+    };
+    let Some(msgs) = arr.as_array() else {
+        return (0, 0);
+    };
     let mut errors = 0u32;
     let mut warnings = 0u32;
     for m in msgs {
         match m.get("level").and_then(|l| l.as_str()) {
-            Some("error")   => errors   += 1,
+            Some("error") => errors += 1,
             Some("warning") => warnings += 1,
             _ => {}
         }
@@ -405,38 +449,39 @@ pub fn recent_runs_all(limit: usize) -> Vec<RunRecord> {
          screenshot_path, console_log, COALESCE(is_replay, 0), \
          COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), \
          COALESCE(cached_tokens, 0), COALESCE(cost_micro_usd, 0), \
-         COALESCE(iterations, 0), run_id \
+         COALESCE(iterations, 0), run_id, goal_json \
          FROM test_runs ORDER BY started_at DESC LIMIT ?1",
     ) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
-    let rows = stmt.query_map(
-        rusqlite::params![limit as i64],
-        |row| {
-            let log: Option<String> = row.get(8)?;
-            let (ce, cw) = console_counts(log.as_deref());
-            Ok(RunRecord {
-                id: row.get(0)?,
-                test_id: row.get(1)?,
-                started_at: row.get(2)?,
-                duration_ms: row.get(3)?,
-                status: row.get(4)?,
-                failure_category: row.get(5)?,
-                ai_analysis: row.get(6)?,
-                screenshot_path: row.get(7)?,
-                console_errors: ce,
-                console_warnings: cw,
-                is_replay: row.get::<_, i64>(9).unwrap_or(0) != 0,
-                prompt_tokens:     row.get::<_, i64>(10).unwrap_or(0).max(0) as u32,
-                completion_tokens: row.get::<_, i64>(11).unwrap_or(0).max(0) as u32,
-                cached_tokens:     row.get::<_, i64>(12).unwrap_or(0).max(0) as u32,
-                cost_micro_usd:    row.get::<_, i64>(13).unwrap_or(0),
-                iterations:        row.get::<_, Option<i64>>(14).unwrap_or(Some(0)).map(|v| v.max(0) as u32),
-                run_id:            row.get::<_, Option<String>>(15).unwrap_or(None),
-            })
-        },
-    );
+    let rows = stmt.query_map(rusqlite::params![limit as i64], |row| {
+        let log: Option<String> = row.get(8)?;
+        let (ce, cw) = console_counts(log.as_deref());
+        Ok(RunRecord {
+            id: row.get(0)?,
+            test_id: row.get(1)?,
+            started_at: row.get(2)?,
+            duration_ms: row.get(3)?,
+            status: row.get(4)?,
+            failure_category: row.get(5)?,
+            ai_analysis: row.get(6)?,
+            screenshot_path: row.get(7)?,
+            console_errors: ce,
+            console_warnings: cw,
+            is_replay: row.get::<_, i64>(9).unwrap_or(0) != 0,
+            prompt_tokens: row.get::<_, i64>(10).unwrap_or(0).max(0) as u32,
+            completion_tokens: row.get::<_, i64>(11).unwrap_or(0).max(0) as u32,
+            cached_tokens: row.get::<_, i64>(12).unwrap_or(0).max(0) as u32,
+            cost_micro_usd: row.get::<_, i64>(13).unwrap_or(0),
+            iterations: row
+                .get::<_, Option<i64>>(14)
+                .unwrap_or(Some(0))
+                .map(|v| v.max(0) as u32),
+            run_id: row.get::<_, Option<String>>(15).unwrap_or(None),
+            goal_json: row.get::<_, Option<String>>(16).unwrap_or(None),
+        })
+    });
     match rows {
         Ok(iter) => iter.filter_map(Result::ok).collect(),
         Err(_) => Vec::new(),
@@ -454,7 +499,13 @@ pub fn recent_runs_all(limit: usize) -> Vec<RunRecord> {
 /// history (last 5 steps extracted from history_json), and console_log.
 pub fn find_full_context_by_run_id(
     run_id: &str,
-) -> Option<(String, Option<String>, Option<String>, Option<String>, Option<String>)> {
+) -> Option<(
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+)> {
     // Returns (status, failure_category, ai_analysis, last_steps_summary, console_log)
     let conn = db().lock().unwrap_or_else(|e| e.into_inner());
     conn.query_row(
@@ -469,9 +520,15 @@ pub fn find_full_context_by_run_id(
             let console: Option<String> = row.get(4)?;
             // Extract last 5 steps from history_json for context.
             let steps_summary: Option<String> = history.as_deref().and_then(|h| {
-                let arr = serde_json::from_str::<serde_json::Value>(h).ok()
+                let arr = serde_json::from_str::<serde_json::Value>(h)
+                    .ok()
                     .and_then(|v| v.as_array().cloned())?;
-                let lines: Vec<String> = arr.iter().rev().take(5).rev().enumerate()
+                let lines: Vec<String> = arr
+                    .iter()
+                    .rev()
+                    .take(5)
+                    .rev()
+                    .enumerate()
                     .map(|(i, s)| {
                         let action = s.get("action").and_then(|a| a.as_str()).unwrap_or("?");
                         let obs = s.get("observation").and_then(|o| o.as_str()).unwrap_or("");
@@ -483,12 +540,11 @@ pub fn find_full_context_by_run_id(
             });
             Ok((status, cat, ai, steps_summary, console))
         },
-    ).ok()
+    )
+    .ok()
 }
 
-pub fn find_history_by_run_id(
-    run_id: &str,
-) -> Option<(String, String, String, Option<String>)> {
+pub fn find_history_by_run_id(run_id: &str) -> Option<(String, String, String, Option<String>)> {
     let conn = db().lock().unwrap_or_else(|e| e.into_inner());
     conn.query_row(
         "SELECT test_id, started_at, status, history_json FROM test_runs \
@@ -501,7 +557,8 @@ pub fn find_history_by_run_id(
             let history_json: Option<String> = row.get(3)?;
             Ok((test_id, started_at, status, history_json))
         },
-    ).ok()
+    )
+    .ok()
 }
 
 #[derive(Debug, Clone)]
@@ -533,7 +590,8 @@ pub fn find_run_perf_by_run_id(run_id: &str) -> Option<RunPerfRecord> {
                 history_json: row.get::<_, Option<String>>(6)?,
             })
         },
-    ).ok()
+    )
+    .ok()
 }
 
 /// Find the most recent failed (or timed-out) run for a given test_id.
@@ -546,14 +604,14 @@ pub fn find_run_perf_by_run_id(run_id: &str) -> Option<RunPerfRecord> {
 pub fn last_failed_run(
     test_id: &str,
 ) -> Option<(
-    String,           // run_id
-    String,           // started_at
-    Option<i64>,      // duration_ms
-    Option<String>,   // failure_category
-    Option<String>,   // ai_analysis
-    Option<i64>,      // iterations
-    Option<String>,   // history_json
-    Option<String>,   // console_log
+    String,         // run_id
+    String,         // started_at
+    Option<i64>,    // duration_ms
+    Option<String>, // failure_category
+    Option<String>, // ai_analysis
+    Option<i64>,    // iterations
+    Option<String>, // history_json
+    Option<String>, // console_log
 )> {
     let conn = db().lock().unwrap_or_else(|e| e.into_inner());
     conn.query_row(
@@ -585,38 +643,39 @@ pub fn recent_runs(test_id: &str, limit: usize) -> Vec<RunRecord> {
          screenshot_path, console_log, COALESCE(is_replay, 0), \
          COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), \
          COALESCE(cached_tokens, 0), COALESCE(cost_micro_usd, 0), \
-         COALESCE(iterations, 0), run_id \
+         COALESCE(iterations, 0), run_id, goal_json \
          FROM test_runs WHERE test_id = ?1 ORDER BY started_at DESC LIMIT ?2",
     ) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
-    let rows = stmt.query_map(
-        rusqlite::params![test_id, limit as i64],
-        |row| {
-            let log: Option<String> = row.get(8)?;
-            let (ce, cw) = console_counts(log.as_deref());
-            Ok(RunRecord {
-                id: row.get(0)?,
-                test_id: row.get(1)?,
-                started_at: row.get(2)?,
-                duration_ms: row.get(3)?,
-                status: row.get(4)?,
-                failure_category: row.get(5)?,
-                ai_analysis: row.get(6)?,
-                screenshot_path: row.get(7)?,
-                console_errors: ce,
-                console_warnings: cw,
-                is_replay: row.get::<_, i64>(9).unwrap_or(0) != 0,
-                prompt_tokens:     row.get::<_, i64>(10).unwrap_or(0).max(0) as u32,
-                completion_tokens: row.get::<_, i64>(11).unwrap_or(0).max(0) as u32,
-                cached_tokens:     row.get::<_, i64>(12).unwrap_or(0).max(0) as u32,
-                cost_micro_usd:    row.get::<_, i64>(13).unwrap_or(0),
-                iterations:        row.get::<_, Option<i64>>(14).unwrap_or(Some(0)).map(|v| v.max(0) as u32),
-                run_id:            row.get::<_, Option<String>>(15).unwrap_or(None),
-            })
-        },
-    );
+    let rows = stmt.query_map(rusqlite::params![test_id, limit as i64], |row| {
+        let log: Option<String> = row.get(8)?;
+        let (ce, cw) = console_counts(log.as_deref());
+        Ok(RunRecord {
+            id: row.get(0)?,
+            test_id: row.get(1)?,
+            started_at: row.get(2)?,
+            duration_ms: row.get(3)?,
+            status: row.get(4)?,
+            failure_category: row.get(5)?,
+            ai_analysis: row.get(6)?,
+            screenshot_path: row.get(7)?,
+            console_errors: ce,
+            console_warnings: cw,
+            is_replay: row.get::<_, i64>(9).unwrap_or(0) != 0,
+            prompt_tokens: row.get::<_, i64>(10).unwrap_or(0).max(0) as u32,
+            completion_tokens: row.get::<_, i64>(11).unwrap_or(0).max(0) as u32,
+            cached_tokens: row.get::<_, i64>(12).unwrap_or(0).max(0) as u32,
+            cost_micro_usd: row.get::<_, i64>(13).unwrap_or(0),
+            iterations: row
+                .get::<_, Option<i64>>(14)
+                .unwrap_or(Some(0))
+                .map(|v| v.max(0) as u32),
+            run_id: row.get::<_, Option<String>>(15).unwrap_or(None),
+            goal_json: row.get::<_, Option<String>>(16).unwrap_or(None),
+        })
+    });
     match rows {
         Ok(iter) => iter.filter_map(Result::ok).collect(),
         Err(_) => Vec::new(),
@@ -626,7 +685,9 @@ pub fn recent_runs(test_id: &str, limit: usize) -> Vec<RunRecord> {
 /// Ratio of passed runs over the last `limit` runs (0.0–1.0).
 pub fn success_rate(test_id: &str, limit: usize) -> f64 {
     let runs = recent_runs(test_id, limit);
-    if runs.is_empty() { return 1.0; }
+    if runs.is_empty() {
+        return 1.0;
+    }
     let passed = runs.iter().filter(|r| r.status == "passed").count();
     passed as f64 / runs.len() as f64
 }
@@ -634,7 +695,9 @@ pub fn success_rate(test_id: &str, limit: usize) -> f64 {
 /// A test is considered flaky if it fails sometimes but not always over recent runs.
 pub fn is_flaky(test_id: &str) -> bool {
     let runs = recent_runs(test_id, 10);
-    if runs.len() < 3 { return false; }
+    if runs.len() < 3 {
+        return false;
+    }
     let passed = runs.iter().filter(|r| r.status == "passed").count();
     let failed = runs.len() - passed;
     // Flaky = both passes and fails exist within last 10 runs, with <70% pass rate
@@ -676,6 +739,11 @@ pub struct ReplayHealth {
     /// Subset where status='passed' AND is_replay=1 — i.e. test passed using
     /// the saved deterministic script, no LLM cost.
     pub passed_via_replay: usize,
+    /// Subset where status='passed' AND fixture_only=true — deterministic
+    /// fixture assertions, no LLM cost and no saved script required.
+    pub passed_via_fixture_only: usize,
+    /// Deterministic pass count, i.e. replay + fixture_only.
+    pub passed_deterministic: usize,
     /// Subset where status='passed' AND is_replay=0 — i.e. test passed via
     /// LLM ReAct (either no script, or script was stale and LLM rescued).
     pub passed_via_llm: usize,
@@ -683,18 +751,34 @@ pub struct ReplayHealth {
     pub failed: usize,
     /// passed_via_replay / total_runs.  0.0 when total_runs == 0.
     pub success_rate_replay: f64,
+    /// (passed_via_replay + passed_via_fixture_only) / total_runs.
+    pub success_rate_deterministic: f64,
     /// Same metric for the previous window (used by drift detection).
     /// None when there's not enough history for two windows.
     pub previous_success_rate_replay: Option<f64>,
+    /// Deterministic-pass metric for the previous comparison window.
+    pub previous_success_rate_deterministic: Option<f64>,
     /// success_rate_replay - previous_success_rate_replay, if both available.
     /// Negative = drift down (replays getting flakier).
     pub drift: Option<f64>,
+    /// success_rate_deterministic - previous_success_rate_deterministic.
+    pub deterministic_drift: Option<f64>,
+    /// Most recent matching run across all history. This remains populated
+    /// when the selected window is empty so callers can distinguish stale data
+    /// from a project that has never run.
+    pub latest_run_at: Option<String>,
+    /// True when at least one matching run exists in the recent half-window.
+    pub has_recent_data: bool,
 }
 
 /// Per-test replay status — one of 4 categories from #266 acceptance criteria.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReplayStatus {
+    /// Latest run passed as fixture_only=true — deterministic fixture, no saved
+    /// script required.
+    /// UI shows ✅ / fixture.
+    FixtureOnly,
     /// Saved script exists AND last 3 runs were all is_replay=1.
     /// UI shows ✅.
     Healthy,
@@ -719,35 +803,90 @@ pub enum ReplayStatus {
 /// Excludes `adhoc_*` test_ids — those are one-shot exploratory runs, not
 /// regression scripts.
 pub fn replay_health(window_days: u32) -> ReplayHealth {
+    replay_health_scoped(window_days, None)
+}
+
+/// Compute replay health for an explicit set of tests. This keeps suite/tag
+/// filtering in the query while preserving run-based time-window semantics.
+pub fn replay_health_for_tests(window_days: u32, test_ids: &[String]) -> ReplayHealth {
+    replay_health_scoped(window_days, Some(test_ids))
+}
+
+fn replay_health_scoped(window_days: u32, test_ids: Option<&[String]>) -> ReplayHealth {
     let conn = db().lock().unwrap_or_else(|e| e.into_inner());
     let now = chrono::Local::now();
     let half_days = (window_days as i64 / 2).max(1);
     let recent_cutoff = (now - chrono::Duration::days(half_days)).to_rfc3339();
     let older_cutoff = (now - chrono::Duration::days(half_days * 2)).to_rfc3339();
 
-    // (passed_replay, passed_llm, failed) for a date range.
-    let count_in_range = |from: &str, to: &str| -> (usize, usize, usize) {
-        let row: Result<(i64, i64, i64), _> = conn.query_row(
+    // (passed_replay, passed_fixture_only, passed_llm, failed) for a date range.
+    let count_in_range = |from: &str, to: &str| -> (usize, usize, usize, usize) {
+        if test_ids.is_some_and(|ids| ids.is_empty()) {
+            return (0, 0, 0, 0);
+        }
+        let mut sql = String::from(
             "SELECT \
                 SUM(CASE WHEN status='passed' AND COALESCE(is_replay,0)=1 THEN 1 ELSE 0 END), \
-                SUM(CASE WHEN status='passed' AND COALESCE(is_replay,0)=0 THEN 1 ELSE 0 END), \
+                SUM(CASE WHEN status='passed' AND COALESCE(is_replay,0)=0 \
+                    AND COALESCE(goal_json,'') LIKE '%\"fixture_only\":true%' THEN 1 ELSE 0 END), \
+                SUM(CASE WHEN status='passed' AND COALESCE(is_replay,0)=0 \
+                    AND COALESCE(goal_json,'') NOT LIKE '%\"fixture_only\":true%' THEN 1 ELSE 0 END), \
                 SUM(CASE WHEN status<>'passed' THEN 1 ELSE 0 END) \
              FROM test_runs \
              WHERE test_id NOT LIKE 'adhoc_%' \
-               AND started_at >= ?1 AND started_at < ?2",
-            rusqlite::params![from, to],
-            |r| Ok((r.get(0).unwrap_or(0), r.get(1).unwrap_or(0), r.get(2).unwrap_or(0))),
+               AND started_at >= ? AND started_at < ?",
         );
-        let (a, b, c) = row.unwrap_or((0, 0, 0));
-        (a as usize, b as usize, c as usize)
+        let mut params = vec![
+            rusqlite::types::Value::Text(from.to_string()),
+            rusqlite::types::Value::Text(to.to_string()),
+        ];
+        if let Some(ids) = test_ids {
+            sql.push_str(" AND test_id IN (");
+            sql.push_str(&vec!["?"; ids.len()].join(","));
+            sql.push(')');
+            params.extend(ids.iter().cloned().map(rusqlite::types::Value::Text));
+        }
+        let row: Result<(i64, i64, i64, i64), _> =
+            conn.query_row(&sql, rusqlite::params_from_iter(params.iter()), |r| {
+                Ok((
+                    r.get(0).unwrap_or(0),
+                    r.get(1).unwrap_or(0),
+                    r.get(2).unwrap_or(0),
+                    r.get(3).unwrap_or(0),
+                ))
+            });
+        let (a, b, c, d) = row.unwrap_or((0, 0, 0, 0));
+        (a as usize, b as usize, c as usize, d as usize)
+    };
+
+    let latest_run_at = if test_ids.is_some_and(|ids| ids.is_empty()) {
+        None
+    } else {
+        let mut sql =
+            String::from("SELECT MAX(started_at) FROM test_runs WHERE test_id NOT LIKE 'adhoc_%'");
+        let mut params = Vec::new();
+        if let Some(ids) = test_ids {
+            sql.push_str(" AND test_id IN (");
+            sql.push_str(&vec!["?"; ids.len()].join(","));
+            sql.push(')');
+            params.extend(ids.iter().cloned().map(rusqlite::types::Value::Text));
+        }
+        conn.query_row(&sql, rusqlite::params_from_iter(params.iter()), |row| {
+            row.get::<_, Option<String>>(0)
+        })
+        .unwrap_or(None)
     };
 
     let now_str = now.to_rfc3339();
-    let (recent_replay, recent_llm, recent_fail) = count_in_range(&recent_cutoff, &now_str);
-    let (older_replay, older_llm, older_fail)    = count_in_range(&older_cutoff, &recent_cutoff);
+    let (recent_replay, recent_fixture, recent_llm, recent_fail) =
+        count_in_range(&recent_cutoff, &now_str);
+    let (older_replay, older_fixture, older_llm, older_fail) =
+        count_in_range(&older_cutoff, &recent_cutoff);
 
-    let recent_total = recent_replay + recent_llm + recent_fail;
-    let older_total  = older_replay + older_llm + older_fail;
+    let recent_deterministic = recent_replay + recent_fixture;
+    let older_deterministic = older_replay + older_fixture;
+    let recent_total = recent_deterministic + recent_llm + recent_fail;
+    let older_total = older_deterministic + older_llm + older_fail;
 
     let success_rate_replay = if recent_total == 0 {
         0.0
@@ -760,24 +899,46 @@ pub fn replay_health(window_days: u32) -> ReplayHealth {
     } else {
         Some(older_replay as f64 / older_total as f64)
     };
+    let previous_success_rate_deterministic = if older_total == 0 {
+        None
+    } else {
+        Some(older_deterministic as f64 / older_total as f64)
+    };
+    let success_rate_deterministic = if recent_total == 0 {
+        0.0
+    } else {
+        recent_deterministic as f64 / recent_total as f64
+    };
 
     let drift = previous_success_rate_replay.map(|p| success_rate_replay - p);
+    let deterministic_drift =
+        previous_success_rate_deterministic.map(|p| success_rate_deterministic - p);
 
     ReplayHealth {
         window_days: half_days as u32, // the metric represents one-half window
         total_runs: recent_total,
         passed_via_replay: recent_replay,
+        passed_via_fixture_only: recent_fixture,
+        passed_deterministic: recent_deterministic,
         passed_via_llm: recent_llm,
         failed: recent_fail,
         success_rate_replay,
+        success_rate_deterministic,
         previous_success_rate_replay,
+        previous_success_rate_deterministic,
         drift,
+        deterministic_drift,
+        latest_run_at,
+        has_recent_data: recent_total > 0,
     }
 }
 
 /// Classify the replay health of a single test (#266 acceptance criteria).
 /// Combines saved_scripts table presence with recent_replay_modes history.
 pub fn test_replay_status(test_id: &str) -> ReplayStatus {
+    if latest_passed_fixture_only(test_id) {
+        return ReplayStatus::FixtureOnly;
+    }
     let has_script = script_info(test_id).is_some();
     let history = recent_replay_modes(test_id, 3);
 
@@ -793,6 +954,23 @@ pub fn test_replay_status(test_id: &str) -> ReplayStatus {
             }
         }
     }
+}
+
+fn latest_passed_fixture_only(test_id: &str) -> bool {
+    let conn = db().lock().unwrap_or_else(|e| e.into_inner());
+    conn.query_row(
+        "SELECT status, COALESCE(goal_json, '') FROM test_runs \
+         WHERE test_id = ?1 \
+         ORDER BY started_at DESC \
+         LIMIT 1",
+        rusqlite::params![test_id],
+        |row| {
+            let status: String = row.get(0)?;
+            let goal_json: String = row.get(1)?;
+            Ok(status == "passed" && goal_json.contains("\"fixture_only\":true"))
+        },
+    )
+    .unwrap_or(false)
 }
 
 /// Issue #267 — return the last `n` runs' `is_replay` flag for a test,
@@ -816,10 +994,9 @@ pub fn recent_replay_modes(test_id: &str, n: usize) -> Vec<bool> {
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
-    stmt.query_map(
-        rusqlite::params![test_id, n as i64],
-        |row| row.get::<_, i64>(0).map(|v| v != 0),
-    )
+    stmt.query_map(rusqlite::params![test_id, n as i64], |row| {
+        row.get::<_, i64>(0).map(|v| v != 0)
+    })
     .map(|rows| rows.filter_map(Result::ok).collect())
     .unwrap_or_default()
 }
@@ -868,7 +1045,10 @@ pub fn test_stats(test_id: &str) -> TestStats {
             *cat_counts.entry(c.clone()).or_insert(0) += 1;
         }
     }
-    let top_failure_category = cat_counts.into_iter().max_by_key(|(_, n)| *n).map(|(c, _)| c);
+    let top_failure_category = cat_counts
+        .into_iter()
+        .max_by_key(|(_, n)| *n)
+        .map(|(c, _)| c);
 
     TestStats {
         test_id: test_id.to_string(),
@@ -892,30 +1072,124 @@ pub fn test_stats(test_id: &str) -> TestStats {
 const ANALYTICS_MIN_RUNS: usize = 3;
 
 pub fn all_test_stats() -> Vec<TestStats> {
+    analytics_stats(None, None)
+}
+
+/// Bulk analytics used by the MCP endpoint. One window-function query returns
+/// at most 30 rows per test, replacing the previous 5-6 SQLite queries per id.
+/// `test_ids=None` includes historical ids; `window_days=None` includes all
+/// dates. Explicit empty ids always return an empty result.
+pub fn analytics_stats(test_ids: Option<&[String]>, window_days: Option<u32>) -> Vec<TestStats> {
+    if test_ids.is_some_and(|ids| ids.is_empty()) {
+        return Vec::new();
+    }
+
     let conn = db().lock().unwrap_or_else(|e| e.into_inner());
-    // Exclude adhoc_* (one-shot, not regression tests) and tests with too few
-    // runs to draw conclusions.  COUNT(*) filter applied here for efficiency.
-    let mut stmt = match conn.prepare(
-        "SELECT test_id FROM test_runs \
-         WHERE test_id NOT LIKE 'adhoc_%' \
-         GROUP BY test_id \
-         HAVING COUNT(*) >= ?1",
-    ) {
+    let mut inner_where = String::from("test_id NOT LIKE 'adhoc_%'");
+    let mut params = Vec::new();
+    if let Some(days) = window_days {
+        inner_where.push_str(" AND started_at >= ?");
+        params.push(rusqlite::types::Value::Text(
+            (chrono::Local::now() - chrono::Duration::days(days.max(1) as i64)).to_rfc3339(),
+        ));
+    }
+    if let Some(ids) = test_ids {
+        inner_where.push_str(" AND test_id IN (");
+        inner_where.push_str(&vec!["?"; ids.len()].join(","));
+        inner_where.push(')');
+        params.extend(ids.iter().cloned().map(rusqlite::types::Value::Text));
+    }
+
+    let sql = format!(
+        "SELECT test_id, status, failure_category, iterations, duration_ms \
+         FROM ( \
+           SELECT test_id, status, failure_category, iterations, duration_ms, \
+                  ROW_NUMBER() OVER (PARTITION BY test_id ORDER BY started_at DESC) AS rn \
+           FROM test_runs WHERE {inner_where} \
+         ) WHERE rn <= 30 ORDER BY test_id, rn"
+    );
+    let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
-    let ids: Vec<String> = stmt
-        .query_map(
-            rusqlite::params![ANALYTICS_MIN_RUNS as i64],
-            |row| row.get::<_, String>(0),
-        )
-        .map(|it| it.filter_map(Result::ok).collect())
-        .unwrap_or_default();
-    drop(stmt);
-    drop(conn);
+    let rows = match stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, Option<i64>>(3)?,
+            row.get::<_, Option<i64>>(4)?,
+        ))
+    }) {
+        Ok(rows) => rows,
+        Err(_) => return Vec::new(),
+    };
 
-    let mut stats: Vec<TestStats> = ids.iter().map(|id| test_stats(id)).collect();
-    stats.sort_by(|a, b| a.pass_rate_7d.partial_cmp(&b.pass_rate_7d).unwrap_or(std::cmp::Ordering::Equal));
+    type AnalyticsSample = (String, Option<String>, Option<i64>, Option<i64>);
+    let mut grouped: std::collections::HashMap<String, Vec<AnalyticsSample>> =
+        std::collections::HashMap::new();
+    for row in rows.filter_map(Result::ok) {
+        grouped
+            .entry(row.0)
+            .or_default()
+            .push((row.1, row.2, row.3, row.4));
+    }
+
+    let mut stats = Vec::with_capacity(grouped.len());
+    for (test_id, samples) in grouped {
+        if samples.len() < ANALYTICS_MIN_RUNS {
+            continue;
+        }
+        let recent10 = &samples[..samples.len().min(10)];
+        let passed10 = recent10
+            .iter()
+            .filter(|sample| sample.0 == "passed")
+            .count();
+        let passed30 = samples.iter().filter(|sample| sample.0 == "passed").count();
+        let pass_rate_7d = passed10 as f64 / recent10.len() as f64;
+        let pass_rate_30d = passed30 as f64 / samples.len() as f64;
+        let is_flaky = passed10 > 0 && passed10 < recent10.len() && pass_rate_7d < 0.70;
+
+        let iterations: Vec<i64> = samples.iter().filter_map(|sample| sample.2).collect();
+        let durations: Vec<i64> = samples.iter().filter_map(|sample| sample.3).collect();
+        let avg_iterations = if iterations.is_empty() {
+            0.0
+        } else {
+            iterations.iter().sum::<i64>() as f64 / iterations.len() as f64
+        };
+        let avg_duration_ms = if durations.is_empty() {
+            0
+        } else {
+            durations.iter().sum::<i64>() / durations.len() as i64
+        };
+
+        let mut categories: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        for category in samples.iter().filter_map(|sample| sample.1.as_ref()) {
+            *categories.entry(category.clone()).or_insert(0) += 1;
+        }
+        let top_failure_category = categories
+            .into_iter()
+            .max_by_key(|(_, count)| *count)
+            .map(|(category, _)| category);
+
+        stats.push(TestStats {
+            test_id,
+            total_runs: samples.len(),
+            pass_rate_7d,
+            pass_rate_30d,
+            is_flaky,
+            avg_iterations,
+            avg_duration_ms,
+            top_failure_category,
+        })
+    }
+
+    stats.sort_by(|a, b| {
+        a.pass_rate_7d
+            .partial_cmp(&b.pass_rate_7d)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     stats
 }
 
@@ -927,7 +1201,9 @@ pub fn pass_count(test_id: &str) -> usize {
         "SELECT COUNT(*) FROM test_runs WHERE test_id = ?1 AND status = 'passed'",
         rusqlite::params![test_id],
         |row| row.get::<_, i64>(0),
-    ).map(|n| n as usize).unwrap_or(0)
+    )
+    .map(|n| n as usize)
+    .unwrap_or(0)
 }
 
 pub fn store_knowledge(test_id: &str, key: &str, value: &str) -> Result<(), String> {
@@ -948,7 +1224,8 @@ pub fn get_knowledge(test_id: &str, key: &str) -> Option<String> {
         "SELECT value FROM test_knowledge WHERE test_id=?1 AND key=?2",
         rusqlite::params![test_id, key],
         |row| row.get(0),
-    ).ok()
+    )
+    .ok()
 }
 
 // ── Auto-fix history ─────────────────────────────────────────────────────────
@@ -995,13 +1272,13 @@ pub fn record_pending_fix(
 /// Outcomes:
 /// - exit=0 → `fix_attempted` (awaiting verification re-run)
 /// - exit!=0 → `failed` (claude_session itself errored)
-pub fn complete_fix(
-    fix_id: i64,
-    exit_code: i64,
-    output: &str,
-) -> Result<(), String> {
+pub fn complete_fix(fix_id: i64, exit_code: i64, output: &str) -> Result<(), String> {
     let now = chrono::Local::now().to_rfc3339();
-    let outcome = if exit_code == 0 { "fix_attempted" } else { "failed" };
+    let outcome = if exit_code == 0 {
+        "fix_attempted"
+    } else {
+        "failed"
+    };
     let trimmed: String = output.chars().take(2000).collect();
     let conn = db().lock().unwrap_or_else(|e| e.into_inner());
     conn.execute(
@@ -1026,7 +1303,8 @@ pub fn record_verification(
         "UPDATE auto_fix_history SET verification_run_id=?1, verified_at=?2, outcome=?3 \
          WHERE id=?4",
         rusqlite::params![verification_run_id, now, outcome, fix_id],
-    ).map_err(|e| format!("record_verification: {e}"))?;
+    )
+    .map_err(|e| format!("record_verification: {e}"))?;
     Ok(())
 }
 
@@ -1040,7 +1318,9 @@ pub fn has_pending_fix(test_id: &str, minutes: i64) -> bool {
          WHERE test_id=?1 AND outcome='pending' AND triggered_at > ?2",
         rusqlite::params![test_id, cutoff],
         |row| row.get::<_, i64>(0),
-    ).map(|n| n > 0).unwrap_or(false)
+    )
+    .map(|n| n > 0)
+    .unwrap_or(false)
 }
 
 const FIX_COLS: &str = "id, test_id, run_id, category, triggered_at, \
@@ -1066,10 +1346,12 @@ fn map_fix_row(row: &rusqlite::Row) -> rusqlite::Result<FixRecord> {
 /// Return most recent fix attempts across ALL tests.
 pub fn recent_fixes_all(limit: usize) -> Vec<FixRecord> {
     let conn = db().lock().unwrap_or_else(|e| e.into_inner());
-    let sql = format!(
-        "SELECT {FIX_COLS} FROM auto_fix_history ORDER BY triggered_at DESC LIMIT ?1"
-    );
-    let mut stmt = match conn.prepare(&sql) { Ok(s) => s, Err(_) => return Vec::new() };
+    let sql =
+        format!("SELECT {FIX_COLS} FROM auto_fix_history ORDER BY triggered_at DESC LIMIT ?1");
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
     let rows = stmt.query_map(rusqlite::params![limit as i64], map_fix_row);
     match rows {
         Ok(iter) => iter.filter_map(Result::ok).collect(),
@@ -1083,7 +1365,10 @@ pub fn recent_fixes(test_id: &str, limit: usize) -> Vec<FixRecord> {
     let sql = format!(
         "SELECT {FIX_COLS} FROM auto_fix_history WHERE test_id=?1 ORDER BY triggered_at DESC LIMIT ?2"
     );
-    let mut stmt = match conn.prepare(&sql) { Ok(s) => s, Err(_) => return Vec::new() };
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
     let rows = stmt.query_map(rusqlite::params![test_id, limit as i64], map_fix_row);
     match rows {
         Ok(iter) => iter.filter_map(Result::ok).collect(),
@@ -1121,7 +1406,10 @@ pub fn save_script(test_id: &str, actions: &[serde_json::Value], recorded_viewpo
     let conn = db().lock().unwrap_or_else(|e| e.into_inner());
     let json = match serde_json::to_string(actions) {
         Ok(s) => s,
-        Err(e) => { tracing::warn!("[scripts] save_script: serialise failed: {e}"); return; }
+        Err(e) => {
+            tracing::warn!("[scripts] save_script: serialise failed: {e}");
+            return;
+        }
     };
     let now = chrono::Local::now().to_rfc3339();
     let r = conn.execute(
@@ -1137,7 +1425,9 @@ pub fn save_script(test_id: &str, actions: &[serde_json::Value], recorded_viewpo
     match r {
         Ok(_) => tracing::info!(
             "[scripts] saved {} actions for '{}' (viewport={})",
-            actions.len(), test_id, recorded_viewport
+            actions.len(),
+            test_id,
+            recorded_viewport
         ),
         Err(e) => tracing::warn!("[scripts] save_script failed: {e}"),
     }
@@ -1195,7 +1485,9 @@ pub fn load_script_checked(
                     tracing::warn!(
                         "[scripts] '{}' viewport mismatch: recorded='{}' current='{}' — \
                          deleting stale script, next run will regenerate",
-                        test_id, rec, current_viewport
+                        test_id,
+                        rec,
+                        current_viewport
                     );
                     // Drop conn before calling delete_script (which re-acquires)
                     drop(conn);
@@ -1238,8 +1530,27 @@ pub fn script_info(test_id: &str) -> Option<(String, u32, u32)> {
     conn.query_row(
         "SELECT saved_at, success_count, fail_count FROM saved_scripts WHERE test_id = ?1",
         rusqlite::params![test_id],
-        |row| Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?, row.get::<_, u32>(2)?)),
-    ).ok()
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, u32>(1)?,
+                row.get::<_, u32>(2)?,
+            ))
+        },
+    )
+    .ok()
+}
+
+/// Fetch all saved-script test ids in one query for bulk analytics responses.
+pub fn saved_script_test_ids() -> std::collections::HashSet<String> {
+    let conn = db().lock().unwrap_or_else(|e| e.into_inner());
+    let mut stmt = match conn.prepare("SELECT test_id FROM saved_scripts") {
+        Ok(stmt) => stmt,
+        Err(_) => return std::collections::HashSet::new(),
+    };
+    stmt.query_map([], |row| row.get::<_, String>(0))
+        .map(|rows| rows.filter_map(Result::ok).collect())
+        .unwrap_or_default()
 }
 
 /// Returns recorded_viewport for a saved script, if any.
@@ -1249,7 +1560,9 @@ pub fn script_viewport(test_id: &str) -> Option<String> {
         "SELECT recorded_viewport FROM saved_scripts WHERE test_id = ?1",
         rusqlite::params![test_id],
         |row| row.get::<_, Option<String>>(0),
-    ).ok().flatten()
+    )
+    .ok()
+    .flatten()
 }
 
 #[cfg(test)]
@@ -1276,7 +1589,8 @@ mod tests {
                 dispute_suggested_fix: None,
                 is_replay: false,
                 console_log: None,
-            }).unwrap();
+            })
+            .unwrap();
             // Small delay so started_at ordering is deterministic
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
@@ -1303,7 +1617,8 @@ mod tests {
                 dispute_suggested_fix: None,
                 is_replay,
                 console_log: None,
-            }).unwrap();
+            })
+            .unwrap();
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
     }
@@ -1330,9 +1645,10 @@ mod tests {
             dispute_reason: None,
             dispute_suspected_step: None,
             dispute_suggested_fix: None,
-                is_replay: false,
-                console_log: None,
-        }).unwrap();
+            is_replay: false,
+            console_log: None,
+        })
+        .unwrap();
         let recovered = find_run_by_run_id(&rid).expect("must find by run_id");
         assert_eq!(recovered.0, goal_json);
         assert_eq!(recovered.1, "passed");
@@ -1344,7 +1660,10 @@ mod tests {
 
     #[test]
     fn record_and_retrieve_runs() {
-        let tid = format!("test_record_{}", chrono::Local::now().timestamp_nanos_opt().unwrap_or(0));
+        let tid = format!(
+            "test_record_{}",
+            chrono::Local::now().timestamp_nanos_opt().unwrap_or(0)
+        );
         insert_many(&tid, &["passed", "failed", "passed"]);
         let runs = recent_runs(&tid, 10);
         assert_eq!(runs.len(), 3);
@@ -1354,7 +1673,10 @@ mod tests {
 
     #[test]
     fn success_rate_calculation() {
-        let tid = format!("test_rate_{}", chrono::Local::now().timestamp_nanos_opt().unwrap_or(0));
+        let tid = format!(
+            "test_rate_{}",
+            chrono::Local::now().timestamp_nanos_opt().unwrap_or(0)
+        );
         insert_many(&tid, &["passed", "passed", "failed", "passed"]);
         let rate = success_rate(&tid, 10);
         assert!((rate - 0.75).abs() < 0.01, "expected 0.75, got {rate}");
@@ -1362,28 +1684,44 @@ mod tests {
 
     #[test]
     fn flaky_detection() {
-        let tid_flaky = format!("test_flaky_{}", chrono::Local::now().timestamp_nanos_opt().unwrap_or(0));
-        insert_many(&tid_flaky, &["passed", "failed", "passed", "failed", "failed"]);
+        let tid_flaky = format!(
+            "test_flaky_{}",
+            chrono::Local::now().timestamp_nanos_opt().unwrap_or(0)
+        );
+        insert_many(
+            &tid_flaky,
+            &["passed", "failed", "passed", "failed", "failed"],
+        );
         assert!(is_flaky(&tid_flaky), "should be flaky with mixed results");
 
-        let tid_stable = format!("test_stable_{}", chrono::Local::now().timestamp_nanos_opt().unwrap_or(0) + 1);
+        let tid_stable = format!(
+            "test_stable_{}",
+            chrono::Local::now().timestamp_nanos_opt().unwrap_or(0) + 1
+        );
         insert_many(&tid_stable, &["passed", "passed", "passed", "passed"]);
         assert!(!is_flaky(&tid_stable), "all-pass should not be flaky");
     }
 
     #[test]
     fn fix_history_lifecycle() {
-        let tid = format!("test_fix_{}", chrono::Local::now().timestamp_nanos_opt().unwrap_or(0));
+        let tid = format!(
+            "test_fix_{}",
+            chrono::Local::now().timestamp_nanos_opt().unwrap_or(0)
+        );
         // Initially no pending fix
         assert!(!has_pending_fix(&tid, 60));
 
         // Record pending
-        let fix_id = record_pending_fix(&tid, Some("run_abc"), "ui_bug", "test bug prompt").unwrap();
+        let fix_id =
+            record_pending_fix(&tid, Some("run_abc"), "ui_bug", "test bug prompt").unwrap();
         assert!(has_pending_fix(&tid, 60), "should detect pending fix");
 
         // Claude returned successfully
         complete_fix(fix_id, 0, "all good").unwrap();
-        assert!(!has_pending_fix(&tid, 60), "fix_attempted shouldn't count as pending");
+        assert!(
+            !has_pending_fix(&tid, 60),
+            "fix_attempted shouldn't count as pending"
+        );
 
         // After complete_fix, outcome is 'fix_attempted' (awaiting verification)
         let fixes = recent_fixes(&tid, 10);
@@ -1402,7 +1740,10 @@ mod tests {
 
     #[test]
     fn fix_history_regression_outcome() {
-        let tid = format!("test_regr_{}", chrono::Local::now().timestamp_nanos_opt().unwrap_or(0));
+        let tid = format!(
+            "test_regr_{}",
+            chrono::Local::now().timestamp_nanos_opt().unwrap_or(0)
+        );
         let fix_id = record_pending_fix(&tid, None, "ui_bug", "bug").unwrap();
         complete_fix(fix_id, 0, "claude said done").unwrap();
         record_verification(fix_id, "ver_run_z", false).unwrap();
@@ -1424,22 +1765,29 @@ mod tests {
 
         // ── Path A: happy path — verified ─────────────────────────────────
         let tid_a = format!("demo_verified_{}", base);
-        let fix_a = record_pending_fix(&tid_a, Some("run_xyz"), "ui_bug",
-            "Test failed: button missing").unwrap();
+        let fix_a = record_pending_fix(
+            &tid_a,
+            Some("run_xyz"),
+            "ui_bug",
+            "Test failed: button missing",
+        )
+        .unwrap();
         let r = recent_fixes(&tid_a, 1);
         assert_eq!(r[0].outcome, "pending", "spawn started");
 
         // claude_session returned exit=0 (claimed the fix is done)
         complete_fix(fix_a, 0, "I added the missing button").unwrap();
         let r = recent_fixes(&tid_a, 1);
-        assert_eq!(r[0].outcome, "fix_attempted", "claude returned successfully");
+        assert_eq!(
+            r[0].outcome, "fix_attempted",
+            "claude returned successfully"
+        );
         assert!(r[0].verification_run_id.is_none(), "no verification yet");
 
         // Sirin spawned a verification run, it passed
         record_verification(fix_a, "ver_run_aaa", true).unwrap();
         let r = recent_fixes(&tid_a, 1);
-        assert_eq!(r[0].outcome, "verified",
-            "test passed after fix → verified");
+        assert_eq!(r[0].outcome, "verified", "test passed after fix → verified");
         assert_eq!(r[0].verification_run_id.as_deref(), Some("ver_run_aaa"));
 
         // ── Path B: regression — claude "fixed" but test still fails ─────
@@ -1448,24 +1796,27 @@ mod tests {
         complete_fix(fix_b, 0, "Updated handler").unwrap();
         record_verification(fix_b, "ver_run_bbb", false).unwrap();
         let r = recent_fixes(&tid_b, 1);
-        assert_eq!(r[0].outcome, "regressed",
-            "verified=false → regressed (escalate to human)");
+        assert_eq!(
+            r[0].outcome, "regressed",
+            "verified=false → regressed (escalate to human)"
+        );
 
         // ── Path C: claude_session itself failed ─────────────────────────
         let tid_c = format!("demo_failed_{}", base + 2);
         let fix_c = record_pending_fix(&tid_c, None, "ui_bug", "x").unwrap();
         complete_fix(fix_c, 1, "compile error in claude's patch").unwrap();
         let r = recent_fixes(&tid_c, 1);
-        assert_eq!(r[0].outcome, "failed",
-            "exit!=0 → failed (no verification attempted)");
+        assert_eq!(
+            r[0].outcome, "failed",
+            "exit!=0 → failed (no verification attempted)"
+        );
         assert!(r[0].verification_run_id.is_none());
 
         // ── Path D: dedupe — second spawn while first is in flight ───────
         let tid_d = format!("demo_dedupe_{}", base + 3);
         let _fix_d1 = record_pending_fix(&tid_d, None, "ui_bug", "first").unwrap();
         assert!(has_pending_fix(&tid_d, 30));
-        record_skipped_fix(&tid_d, None, "ui_bug",
-            "another fix pending in last 30min").unwrap();
+        record_skipped_fix(&tid_d, None, "ui_bug", "another fix pending in last 30min").unwrap();
         let fixes = recent_fixes(&tid_d, 10);
         assert_eq!(fixes.len(), 2, "both pending and skipped recorded");
         assert!(fixes.iter().any(|f| f.outcome == "skipped_dedupe"));
@@ -1474,7 +1825,10 @@ mod tests {
 
     #[test]
     fn fix_history_failed_outcome() {
-        let tid = format!("test_fix_fail_{}", chrono::Local::now().timestamp_nanos_opt().unwrap_or(0));
+        let tid = format!(
+            "test_fix_fail_{}",
+            chrono::Local::now().timestamp_nanos_opt().unwrap_or(0)
+        );
         let fix_id = record_pending_fix(&tid, None, "api_bug", "bug").unwrap();
         complete_fix(fix_id, 1, "claude failed").unwrap();
         let fixes = recent_fixes(&tid, 10);
@@ -1484,7 +1838,10 @@ mod tests {
 
     #[test]
     fn fix_history_skipped_dedupe() {
-        let tid = format!("test_skip_{}", chrono::Local::now().timestamp_nanos_opt().unwrap_or(0));
+        let tid = format!(
+            "test_skip_{}",
+            chrono::Local::now().timestamp_nanos_opt().unwrap_or(0)
+        );
         record_pending_fix(&tid, None, "ui_bug", "first").unwrap();
         record_skipped_fix(&tid, None, "ui_bug", "already pending").unwrap();
         let fixes = recent_fixes(&tid, 10);
@@ -1494,7 +1851,10 @@ mod tests {
 
     #[test]
     fn has_pending_fix_respects_time_window() {
-        let tid = format!("test_window_{}", chrono::Local::now().timestamp_nanos_opt().unwrap_or(0));
+        let tid = format!(
+            "test_window_{}",
+            chrono::Local::now().timestamp_nanos_opt().unwrap_or(0)
+        );
         record_pending_fix(&tid, None, "ui_bug", "bug").unwrap();
         // Very short window means nothing counts
         // Use 0 minutes (cutoff = now → anything triggered before now is too old)
@@ -1505,7 +1865,10 @@ mod tests {
 
     #[test]
     fn recent_replay_modes_returns_most_recent_first() {
-        let tid = format!("test_rrm_{}", chrono::Local::now().timestamp_nanos_opt().unwrap_or(0));
+        let tid = format!(
+            "test_rrm_{}",
+            chrono::Local::now().timestamp_nanos_opt().unwrap_or(0)
+        );
         // 5 runs: [false, true, true, false, true]  (most recent last when inserted,
         // most recent first in result).
         insert_runs_with_replay(&tid, &[false, true, true, false, true]);
@@ -1525,7 +1888,10 @@ mod tests {
 
     #[test]
     fn recent_replay_modes_zero_window_returns_empty() {
-        let tid = format!("test_rrm_zw_{}", chrono::Local::now().timestamp_nanos_opt().unwrap_or(0));
+        let tid = format!(
+            "test_rrm_zw_{}",
+            chrono::Local::now().timestamp_nanos_opt().unwrap_or(0)
+        );
         insert_runs_with_replay(&tid, &[true]);
         assert!(recent_replay_modes(&tid, 0).is_empty());
     }
@@ -1536,33 +1902,43 @@ mod tests {
 
         // (a) No history → conservative, needs LLM
         let tid_new = format!("test_nllm_new_{suffix}");
-        assert!(test_needs_llm_predictively(&tid_new, 3),
-            "no history must classify as needs-LLM (conservative)");
+        assert!(
+            test_needs_llm_predictively(&tid_new, 3),
+            "no history must classify as needs-LLM (conservative)"
+        );
 
         // (b) All recent runs were replay → safe, replay-only
         let tid_replay = format!("test_nllm_replay_{suffix}");
         insert_runs_with_replay(&tid_replay, &[true, true, true]);
-        assert!(!test_needs_llm_predictively(&tid_replay, 3),
-            "all-replay history must classify as replay-only");
+        assert!(
+            !test_needs_llm_predictively(&tid_replay, 3),
+            "all-replay history must classify as replay-only"
+        );
 
         // (c) Any recent run used LLM → needs LLM
         let tid_mixed = format!("test_nllm_mixed_{suffix}");
         insert_runs_with_replay(&tid_mixed, &[true, true, false]); // most recent = LLM
-        assert!(test_needs_llm_predictively(&tid_mixed, 3),
-            "any LLM run in window must classify as needs-LLM");
+        assert!(
+            test_needs_llm_predictively(&tid_mixed, 3),
+            "any LLM run in window must classify as needs-LLM"
+        );
 
         // (d) All-LLM → needs LLM
         let tid_llm = format!("test_nllm_llm_{suffix}");
         insert_runs_with_replay(&tid_llm, &[false, false]);
-        assert!(test_needs_llm_predictively(&tid_llm, 3),
-            "all-LLM history must classify as needs-LLM");
+        assert!(
+            test_needs_llm_predictively(&tid_llm, 3),
+            "all-LLM history must classify as needs-LLM"
+        );
 
         // (e) Old LLM run outside window doesn't poison classification
         let tid_old = format!("test_nllm_old_{suffix}");
         // Insert old LLM run, then 5 replay runs — only last 3 matter
         insert_runs_with_replay(&tid_old, &[false, true, true, true, true, true]);
-        assert!(!test_needs_llm_predictively(&tid_old, 3),
-            "old LLM run outside last-3 window must not affect classification");
+        assert!(
+            !test_needs_llm_predictively(&tid_old, 3),
+            "old LLM run outside last-3 window must not affect classification"
+        );
     }
 
     // ── Replay health (#266) ───────────────────────────────────────────
@@ -1583,18 +1959,57 @@ mod tests {
         // (c) Script + all-replay history → Healthy
         let tid_h = format!("test_rs_healthy_{suffix}");
         insert_runs_with_replay(&tid_h, &[true, true, true]);
-        save_script(&tid_h, &[serde_json::json!({"action":"goto"})], "1280x800:1.0:desktop");
+        save_script(
+            &tid_h,
+            &[serde_json::json!({"action":"goto"})],
+            "1280x800:1.0:desktop",
+        );
         assert_eq!(test_replay_status(&tid_h), ReplayStatus::Healthy);
 
         // (d) Script + recent LLM rescue → StaleFallback
         let tid_s = format!("test_rs_stale_{suffix}");
         insert_runs_with_replay(&tid_s, &[true, true, false]); // most recent = LLM
-        save_script(&tid_s, &[serde_json::json!({"action":"goto"})], "1280x800:1.0:desktop");
+        save_script(
+            &tid_s,
+            &[serde_json::json!({"action":"goto"})],
+            "1280x800:1.0:desktop",
+        );
         assert_eq!(test_replay_status(&tid_s), ReplayStatus::StaleFallback);
+
+        // (e) Latest fixture_only pass is deterministic health even if an old
+        // saved script exists and replay flags are false.
+        let tid_f = format!("test_rs_fixture_{suffix}");
+        let now = chrono::Local::now().to_rfc3339();
+        record_run(NewRun {
+            test_id: &tid_f,
+            started_at: &now,
+            duration_ms: Some(100),
+            status: "passed",
+            failure_category: None,
+            ai_analysis: None,
+            screenshot_path: None,
+            history_json: None,
+            goal_json: Some(r#"{"id":"fixture","fixture_only":true}"#),
+            run_id: None,
+            iterations: Some(0),
+            dispute_reason: None,
+            dispute_suspected_step: None,
+            dispute_suggested_fix: None,
+            is_replay: false,
+            console_log: None,
+        })
+        .unwrap();
+        save_script(
+            &tid_f,
+            &[serde_json::json!({"action":"old"})],
+            "1280x800:1.0:desktop",
+        );
+        assert_eq!(test_replay_status(&tid_f), ReplayStatus::FixtureOnly);
 
         // Cleanup
         delete_script(&tid_h);
         delete_script(&tid_s);
+        delete_script(&tid_f);
     }
 
     #[test]
@@ -1605,36 +2020,69 @@ mod tests {
 
         // 3 replay-pass + 1 LLM-pass + 1 fail across 2 tests (all in last few ms,
         // well within any reasonable window).
-        insert_runs_with_replay(&tid_a, &[true, true]);            // 2 replay-pass
-        insert_runs_with_replay(&tid_b, &[true]);                  // 1 replay-pass
-        // Insert 1 LLM-pass and 1 fail directly via record_run
+        insert_runs_with_replay(&tid_a, &[true, true]); // 2 replay-pass
+        insert_runs_with_replay(&tid_b, &[true]); // 1 replay-pass
+                                                  // Insert 1 LLM-pass and 1 fail directly via record_run
         let now = chrono::Local::now().to_rfc3339();
         record_run(NewRun {
-            test_id: &tid_a, started_at: &now, duration_ms: Some(100),
-            status: "passed", failure_category: None, ai_analysis: None,
-            screenshot_path: None, history_json: None, goal_json: None,
-            run_id: None, iterations: None, dispute_reason: None,
-            dispute_suspected_step: None, dispute_suggested_fix: None,
-            is_replay: false, console_log: None,
-        }).unwrap();
+            test_id: &tid_a,
+            started_at: &now,
+            duration_ms: Some(100),
+            status: "passed",
+            failure_category: None,
+            ai_analysis: None,
+            screenshot_path: None,
+            history_json: None,
+            goal_json: None,
+            run_id: None,
+            iterations: None,
+            dispute_reason: None,
+            dispute_suspected_step: None,
+            dispute_suggested_fix: None,
+            is_replay: false,
+            console_log: None,
+        })
+        .unwrap();
         record_run(NewRun {
-            test_id: &tid_b, started_at: &now, duration_ms: Some(100),
-            status: "failed", failure_category: None, ai_analysis: None,
-            screenshot_path: None, history_json: None, goal_json: None,
-            run_id: None, iterations: None, dispute_reason: None,
-            dispute_suspected_step: None, dispute_suggested_fix: None,
-            is_replay: false, console_log: None,
-        }).unwrap();
+            test_id: &tid_b,
+            started_at: &now,
+            duration_ms: Some(100),
+            status: "failed",
+            failure_category: None,
+            ai_analysis: None,
+            screenshot_path: None,
+            history_json: None,
+            goal_json: None,
+            run_id: None,
+            iterations: None,
+            dispute_reason: None,
+            dispute_suspected_step: None,
+            dispute_suggested_fix: None,
+            is_replay: false,
+            console_log: None,
+        })
+        .unwrap();
 
         // Long window (60 days) — should pick up everything just inserted
         // in the last ~10ms.
         let h = replay_health(60);
-        assert!(h.passed_via_replay >= 3, "expected >=3 replay passes, got {}", h.passed_via_replay);
-        assert!(h.passed_via_llm >= 1,    "expected >=1 LLM pass, got {}", h.passed_via_llm);
-        assert!(h.failed >= 1,            "expected >=1 fail, got {}", h.failed);
+        assert!(
+            h.passed_via_replay >= 3,
+            "expected >=3 replay passes, got {}",
+            h.passed_via_replay
+        );
+        assert!(
+            h.passed_via_llm >= 1,
+            "expected >=1 LLM pass, got {}",
+            h.passed_via_llm
+        );
+        assert!(h.failed >= 1, "expected >=1 fail, got {}", h.failed);
         assert!(h.total_runs >= 5);
-        assert!(h.success_rate_replay >= 0.0 && h.success_rate_replay <= 1.0,
-            "rate must be in [0,1], got {}", h.success_rate_replay);
+        assert!(
+            h.success_rate_replay >= 0.0 && h.success_rate_replay <= 1.0,
+            "rate must be in [0,1], got {}",
+            h.success_rate_replay
+        );
     }
 
     #[test]
@@ -1650,8 +2098,90 @@ mod tests {
     }
 
     #[test]
+    fn replay_health_scopes_runs_and_reports_stale_history() {
+        let suffix = chrono::Local::now().timestamp_nanos_opt().unwrap_or(0);
+        let recent_id = format!("test_rh_scoped_recent_{suffix}");
+        let other_id = format!("test_rh_scoped_other_{suffix}");
+        let stale_id = format!("test_rh_scoped_stale_{suffix}");
+        insert_runs_with_replay(&recent_id, &[true, true]);
+        insert_runs_with_replay(&other_id, &[false, false, false]);
+
+        let scoped = replay_health_for_tests(14, std::slice::from_ref(&recent_id));
+        assert_eq!(scoped.total_runs, 2);
+        assert_eq!(scoped.passed_via_replay, 2);
+        assert_eq!(scoped.passed_via_llm, 0);
+        assert!(scoped.has_recent_data);
+        assert!(scoped.latest_run_at.is_some());
+
+        let stale_at = (chrono::Local::now() - chrono::Duration::days(90)).to_rfc3339();
+        record_run(NewRun {
+            test_id: &stale_id,
+            started_at: &stale_at,
+            duration_ms: Some(100),
+            status: "passed",
+            failure_category: None,
+            ai_analysis: None,
+            screenshot_path: None,
+            history_json: None,
+            goal_json: None,
+            run_id: None,
+            iterations: Some(1),
+            dispute_reason: None,
+            dispute_suspected_step: None,
+            dispute_suggested_fix: None,
+            is_replay: true,
+            console_log: None,
+        })
+        .unwrap();
+        let stale = replay_health_for_tests(14, &[stale_id]);
+        assert_eq!(stale.total_runs, 0);
+        assert!(!stale.has_recent_data);
+        assert_eq!(stale.latest_run_at.as_deref(), Some(stale_at.as_str()));
+    }
+
+    #[test]
+    fn analytics_stats_filters_ids_and_time_in_one_bulk_result() {
+        let suffix = chrono::Local::now().timestamp_nanos_opt().unwrap_or(0);
+        let recent_id = format!("test_bulk_recent_{suffix}");
+        let stale_id = format!("test_bulk_stale_{suffix}");
+        insert_many(&recent_id, &["passed", "failed", "passed"]);
+
+        let stale_at = (chrono::Local::now() - chrono::Duration::days(90)).to_rfc3339();
+        for status in ["passed", "failed", "passed"] {
+            record_run(NewRun {
+                test_id: &stale_id,
+                started_at: &stale_at,
+                duration_ms: Some(100),
+                status,
+                failure_category: None,
+                ai_analysis: None,
+                screenshot_path: None,
+                history_json: None,
+                goal_json: None,
+                run_id: None,
+                iterations: Some(1),
+                dispute_reason: None,
+                dispute_suspected_step: None,
+                dispute_suggested_fix: None,
+                is_replay: false,
+                console_log: None,
+            })
+            .unwrap();
+        }
+
+        let ids = vec![recent_id.clone(), stale_id];
+        let stats = analytics_stats(Some(&ids), Some(30));
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].test_id, recent_id);
+        assert_eq!(stats[0].total_runs, 3);
+    }
+
+    #[test]
     fn test_stats_aggregates() {
-        let tid = format!("test_stats_{}", chrono::Local::now().timestamp_nanos_opt().unwrap_or(0));
+        let tid = format!(
+            "test_stats_{}",
+            chrono::Local::now().timestamp_nanos_opt().unwrap_or(0)
+        );
         // 3 passes, 2 fails, mixed → flaky candidate at 60% pass rate
         insert_many(&tid, &["passed", "failed", "passed", "failed", "passed"]);
         let stats = test_stats(&tid);
@@ -1661,13 +2191,18 @@ mod tests {
         assert!(stats.is_flaky, "60% pass with mixed outcomes is flaky");
         // duration_ms == 100 in insert_many → avg ~= 100
         assert!(stats.avg_duration_ms >= 90 && stats.avg_duration_ms <= 110);
-        assert!(stats.top_failure_category.is_none(),
-            "no failure_category recorded → None");
+        assert!(
+            stats.top_failure_category.is_none(),
+            "no failure_category recorded → None"
+        );
     }
 
     #[test]
     fn pass_count_counts_only_passed() {
-        let tid = format!("test_pc_{}", chrono::Local::now().timestamp_nanos_opt().unwrap_or(0));
+        let tid = format!(
+            "test_pc_{}",
+            chrono::Local::now().timestamp_nanos_opt().unwrap_or(0)
+        );
         insert_many(&tid, &["passed", "failed", "passed", "passed"]);
         assert_eq!(pass_count(&tid), 3);
     }
@@ -1676,25 +2211,37 @@ mod tests {
     fn all_test_stats_sorted_worst_first() {
         let suffix = chrono::Local::now().timestamp_nanos_opt().unwrap_or(0);
         let tid_good = format!("zz_good_{suffix}");
-        let tid_bad  = format!("zz_bad_{suffix}");
+        let tid_bad = format!("zz_bad_{suffix}");
         insert_many(&tid_good, &["passed", "passed", "passed"]);
-        insert_many(&tid_bad,  &["failed", "failed", "passed"]);
+        insert_many(&tid_bad, &["failed", "failed", "passed"]);
         let stats = all_test_stats();
         let pos_good = stats.iter().position(|s| s.test_id == tid_good);
-        let pos_bad  = stats.iter().position(|s| s.test_id == tid_bad);
+        let pos_bad = stats.iter().position(|s| s.test_id == tid_bad);
         if let (Some(g), Some(b)) = (pos_good, pos_bad) {
-            assert!(b < g, "worst (bad) must come before best (good): bad={b} good={g}");
+            assert!(
+                b < g,
+                "worst (bad) must come before best (good): bad={b} good={g}"
+            );
         }
     }
 
     #[test]
     fn knowledge_upsert() {
-        let tid = format!("test_kn_{}", chrono::Local::now().timestamp_nanos_opt().unwrap_or(0));
+        let tid = format!(
+            "test_kn_{}",
+            chrono::Local::now().timestamp_nanos_opt().unwrap_or(0)
+        );
         store_knowledge(&tid, "selector_login", "#login-btn").unwrap();
-        assert_eq!(get_knowledge(&tid, "selector_login"), Some("#login-btn".into()));
+        assert_eq!(
+            get_knowledge(&tid, "selector_login"),
+            Some("#login-btn".into())
+        );
         // Upsert replaces
         store_knowledge(&tid, "selector_login", "button[aria-label=登入]").unwrap();
-        assert_eq!(get_knowledge(&tid, "selector_login"), Some("button[aria-label=登入]".into()));
+        assert_eq!(
+            get_knowledge(&tid, "selector_login"),
+            Some("button[aria-label=登入]".into())
+        );
         assert_eq!(get_knowledge(&tid, "nonexistent"), None);
     }
 
@@ -1727,7 +2274,8 @@ mod tests {
             dispute_suggested_fix: None,
             is_replay: false,
             console_log: None,
-        }).unwrap();
+        })
+        .unwrap();
 
         // Verify the run_id lookup returns status "disputed" — that's what
         // `get_test_result` surfaces via the in-memory registry's TestStatus::Disputed.

@@ -50,10 +50,9 @@ pub async fn run(state: Arc<MonitorState>, interval_ms: u64) {
 
         // screenshot_jpeg is synchronous — run in blocking thread
         let state_clone = Arc::clone(&state);
-        let result = tokio::task::spawn_blocking(move || {
-            crate::browser::screenshot_jpeg(JPEG_QUALITY)
-        })
-        .await;
+        let result =
+            tokio::task::spawn_blocking(move || crate::browser::screenshot_jpeg(JPEG_QUALITY))
+                .await;
 
         match result {
             Ok(Ok(jpeg_bytes)) => {

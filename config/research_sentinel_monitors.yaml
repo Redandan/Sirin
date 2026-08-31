@@ -1,0 +1,26 @@
+monitors:
+  - id: agoramarketapi-official-investment
+    enabled: true
+    topic: "AgoraMarketAPI auto trading official investment monitor"
+    focus: "official announcements and investment market data that may affect automated trading guardrails: volatility, liquidity, exchange operations, stablecoin risk, ETF flow, regulation, SEC CFTC Federal Reserve macro calendar"
+    keywords:
+      - BTC
+      - Bitcoin
+      - ETH
+      - USDT
+      - USDC
+      - SEC
+      - CFTC
+      - Federal Reserve
+      - FOMC
+      - CPI
+      - ETF
+      - liquidity
+      - volatility
+      - stablecoin
+      - Binance
+      - Coinbase
+    interval_minutes: 60
+    lookback_hours: 72
+    max_results: 12
+    publish_to_kb: false

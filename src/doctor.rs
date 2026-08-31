@@ -21,7 +21,12 @@ use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub enum CheckStatus { Pass, Warn, Fail, Skip }
+pub enum CheckStatus {
+    Pass,
+    Warn,
+    Fail,
+    Skip,
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CheckResult {
@@ -53,17 +58,21 @@ impl DoctorSection {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DoctorReport {
-    pub version:  String,
+    pub version: String,
     pub sections: Vec<DoctorSection>,
-    pub passed:   u32,
+    pub passed: u32,
     pub warnings: u32,
-    pub failed:   u32,
-    pub skipped:  u32,
+    pub failed: u32,
+    pub skipped: u32,
 }
 
 impl DoctorReport {
     pub fn exit_code(&self) -> i32 {
-        if self.failed > 0 { 1 } else { 0 }
+        if self.failed > 0 {
+            1
+        } else {
+            0
+        }
     }
 }
 
@@ -80,8 +89,10 @@ pub fn run() -> DoctorReport {
         section_action_registry(),
     ];
 
-    let mut passed = 0u32; let mut warnings = 0u32;
-    let mut failed = 0u32; let mut skipped = 0u32;
+    let mut passed = 0u32;
+    let mut warnings = 0u32;
+    let mut failed = 0u32;
+    let mut skipped = 0u32;
     for s in &sections {
         for c in &s.checks {
             match c.status {
@@ -95,7 +106,11 @@ pub fn run() -> DoctorReport {
 
     DoctorReport {
         version: env!("CARGO_PKG_VERSION").to_string(),
-        sections, passed, warnings, failed, skipped,
+        sections,
+        passed,
+        warnings,
+        failed,
+        skipped,
     }
 }
 
@@ -105,21 +120,27 @@ fn section_llm_keys() -> DoctorSection {
 
     let provider = std::env::var("LLM_PROVIDER").unwrap_or_default();
     checks.push(if provider.is_empty() {
-        CheckResult { label: "LLM_PROVIDER".into(), status: CheckStatus::Fail,
-                      message: "not set in .env".into() }
+        CheckResult {
+            label: "LLM_PROVIDER".into(),
+            status: CheckStatus::Fail,
+            message: "not set in .env".into(),
+        }
     } else {
-        CheckResult { label: "LLM_PROVIDER".into(), status: CheckStatus::Pass,
-                      message: provider.clone() }
+        CheckResult {
+            label: "LLM_PROVIDER".into(),
+            status: CheckStatus::Pass,
+            message: provider.clone(),
+        }
     });
 
     let key_for = |provider: &str| -> (&'static str, usize) {
         match provider {
-            "gemini"    => ("GEMINI_API_KEY",     30),
-            "anthropic" => ("ANTHROPIC_API_KEY",  50),
-            "lmstudio"  => ("LM_STUDIO_API_KEY",  4),  // local-only, often "lm-studio"
-            "deepseek"  => ("DEEPSEEK_API_KEY",   30),
-            "openai"    => ("OPENAI_API_KEY",     30),
-            _           => ("",                    0),
+            "gemini" => ("GEMINI_API_KEY", 30),
+            "anthropic" => ("ANTHROPIC_API_KEY", 50),
+            "lmstudio" => ("LM_STUDIO_API_KEY", 4), // local-only, often "lm-studio"
+            "deepseek" => ("DEEPSEEK_API_KEY", 30),
+            "openai" => ("OPENAI_API_KEY", 30),
+            _ => ("", 0),
         }
     };
     let (var, min_len) = key_for(provider.as_str());
@@ -128,11 +149,24 @@ fn section_llm_keys() -> DoctorSection {
         let status = if val.is_empty() {
             (CheckStatus::Fail, format!("{var} EMPTY"))
         } else if val.len() < min_len {
-            (CheckStatus::Fail, format!("{var} too short ({} chars, expected >={min_len})", val.len()))
+            (
+                CheckStatus::Fail,
+                format!(
+                    "{var} too short ({} chars, expected >={min_len})",
+                    val.len()
+                ),
+            )
         } else {
-            (CheckStatus::Pass, format!("{var} set ({} chars)", val.len()))
+            (
+                CheckStatus::Pass,
+                format!("{var} set ({} chars)", val.len()),
+            )
         };
-        checks.push(CheckResult { label: var.to_string(), status: status.0, message: status.1 });
+        checks.push(CheckResult {
+            label: var.to_string(),
+            status: status.0,
+            message: status.1,
+        });
     }
 
     // Fallback chain
@@ -140,22 +174,28 @@ fn section_llm_keys() -> DoctorSection {
     let fb_key = std::env::var("LLM_FALLBACK_API_KEY").unwrap_or_default();
     if fb_url.is_empty() {
         checks.push(CheckResult {
-            label: "LLM_FALLBACK".into(), status: CheckStatus::Warn,
+            label: "LLM_FALLBACK".into(),
+            status: CheckStatus::Warn,
             message: "not configured — 429 retries will stall 35s+".into(),
         });
     } else if fb_key.len() < 20 {
         checks.push(CheckResult {
-            label: "LLM_FALLBACK".into(), status: CheckStatus::Fail,
+            label: "LLM_FALLBACK".into(),
+            status: CheckStatus::Fail,
             message: format!("URL set but API key empty/short ({} chars)", fb_key.len()),
         });
     } else {
         checks.push(CheckResult {
-            label: "LLM_FALLBACK".into(), status: CheckStatus::Pass,
+            label: "LLM_FALLBACK".into(),
+            status: CheckStatus::Pass,
             message: format!("{fb_url} ({} chars key)", fb_key.len()),
         });
     }
 
-    DoctorSection { name: "1. Core LLM keys".into(), checks }
+    DoctorSection {
+        name: "1. Core LLM keys".into(),
+        checks,
+    }
 }
 
 // ─── 2. Sirin gateway HTTP probe ────────────────────────────────────────────
@@ -168,18 +208,22 @@ fn section_sirin_gateway() -> DoctorSection {
         .build()
     {
         Ok(c) => c,
-        Err(e) => return DoctorSection {
-            name: "2. Sirin process".into(),
-            checks: vec![CheckResult {
-                label: "HTTP client init".into(), status: CheckStatus::Fail,
-                message: format!("reqwest builder error: {e}"),
-            }],
-        },
+        Err(e) => {
+            return DoctorSection {
+                name: "2. Sirin process".into(),
+                checks: vec![CheckResult {
+                    label: "HTTP client init".into(),
+                    status: CheckStatus::Fail,
+                    message: format!("reqwest builder error: {e}"),
+                }],
+            }
+        }
     };
 
     let check = match client.get(&url).send() {
         Ok(r) if r.status().as_u16() == 200 => CheckResult {
-            label: "Gateway HTTP 200".into(), status: CheckStatus::Pass,
+            label: "Gateway HTTP 200".into(),
+            status: CheckStatus::Pass,
             message: url.clone(),
         },
         Ok(r) => CheckResult {
@@ -188,11 +232,15 @@ fn section_sirin_gateway() -> DoctorSection {
             message: format!("{url} returned non-200"),
         },
         Err(e) => CheckResult {
-            label: "Gateway unreachable".into(), status: CheckStatus::Fail,
+            label: "Gateway unreachable".into(),
+            status: CheckStatus::Fail,
             message: format!("{url}: {e} (Sirin not running?)"),
         },
     };
-    DoctorSection { name: "2. Sirin process".into(), checks: vec![check] }
+    DoctorSection {
+        name: "2. Sirin process".into(),
+        checks: vec![check],
+    }
 }
 
 // ─── 3. Vision specialist smoke ─────────────────────────────────────────────
@@ -205,7 +253,8 @@ fn section_vision_smoke() -> DoctorSection {
         return DoctorSection {
             name: "3. Vision smoke".into(),
             checks: vec![CheckResult {
-                label: "Vision specialist".into(), status: CheckStatus::Skip,
+                label: "Vision specialist".into(),
+                status: CheckStatus::Skip,
                 message: "LLM_VISION_BASE_URL not set — using main LLM for vision".into(),
             }],
         };
@@ -214,7 +263,8 @@ fn section_vision_smoke() -> DoctorSection {
         return DoctorSection {
             name: "3. Vision smoke".into(),
             checks: vec![CheckResult {
-                label: "Vision API key".into(), status: CheckStatus::Fail,
+                label: "Vision API key".into(),
+                status: CheckStatus::Fail,
                 message: format!("LLM_VISION_API_KEY too short ({} chars)", key.len()),
             }],
         };
@@ -239,23 +289,28 @@ fn section_vision_smoke() -> DoctorSection {
         .build()
     {
         Ok(c) => c,
-        Err(e) => return DoctorSection {
-            name: "3. Vision smoke".into(),
-            checks: vec![CheckResult {
-                label: "HTTP client init".into(), status: CheckStatus::Fail,
-                message: format!("reqwest builder error: {e}"),
-            }],
-        },
+        Err(e) => {
+            return DoctorSection {
+                name: "3. Vision smoke".into(),
+                checks: vec![CheckResult {
+                    label: "HTTP client init".into(),
+                    status: CheckStatus::Fail,
+                    message: format!("reqwest builder error: {e}"),
+                }],
+            }
+        }
     };
 
-    let result = client.post(&endpoint)
+    let result = client
+        .post(&endpoint)
         .header("Authorization", format!("Bearer {key}"))
         .json(&body)
         .send();
 
     let check = match result {
         Ok(r) if r.status().as_u16() == 200 => CheckResult {
-            label: format!("Vision {model}"), status: CheckStatus::Pass,
+            label: format!("Vision {model}"),
+            status: CheckStatus::Pass,
             message: "1×1 PNG round-trip OK".into(),
         },
         Ok(r) => CheckResult {
@@ -264,24 +319,28 @@ fn section_vision_smoke() -> DoctorSection {
             message: format!("{endpoint} returned {}", r.status().as_u16()),
         },
         Err(e) => CheckResult {
-            label: "Vision request error".into(), status: CheckStatus::Fail,
+            label: "Vision request error".into(),
+            status: CheckStatus::Fail,
             message: format!("{e}"),
         },
     };
-    DoctorSection { name: "3. Vision smoke".into(), checks: vec![check] }
+    DoctorSection {
+        name: "3. Vision smoke".into(),
+        checks: vec![check],
+    }
 }
 
 // ─── 4. YAML config sync (repo vs LOCALAPPDATA) ─────────────────────────────
 fn section_yaml_sync() -> DoctorSection {
     let mut checks = Vec::new();
     let probe = "config/tests/agora_regression/agora_pickup_time_picker.yaml";
-    let repo_path  = std::path::PathBuf::from(probe);
+    let repo_path = std::path::PathBuf::from(probe);
     let local_path = crate::platform::app_data_dir().join(probe);
 
     let exists = (repo_path.exists(), local_path.exists());
     match exists {
         (true, true) => {
-            let repo  = std::fs::read_to_string(&repo_path).unwrap_or_default();
+            let repo = std::fs::read_to_string(&repo_path).unwrap_or_default();
             let local = std::fs::read_to_string(&local_path).unwrap_or_default();
             // Normalise Windows CRLF → LF before compare so LF-only repo files
             // don't false-positive against CRLF-converted LOCALAPPDATA copies.
@@ -289,27 +348,37 @@ fn section_yaml_sync() -> DoctorSection {
             let l = local.replace("\r\n", "\n");
             if r == l {
                 checks.push(CheckResult {
-                    label: "pickup_time_picker.yaml".into(), status: CheckStatus::Pass,
+                    label: "pickup_time_picker.yaml".into(),
+                    status: CheckStatus::Pass,
                     message: "repo == LOCALAPPDATA".into(),
                 });
             } else {
                 checks.push(CheckResult {
-                    label: "pickup_time_picker.yaml".into(), status: CheckStatus::Fail,
+                    label: "pickup_time_picker.yaml".into(),
+                    status: CheckStatus::Fail,
                     message: "repo != LOCALAPPDATA — call MCP sync_config or copy manually".into(),
                 });
             }
         }
         (true, false) => checks.push(CheckResult {
-            label: "LOCALAPPDATA missing".into(), status: CheckStatus::Warn,
-            message: format!("{} doesn't exist — run Sirin once to populate", local_path.display()),
+            label: "LOCALAPPDATA missing".into(),
+            status: CheckStatus::Warn,
+            message: format!(
+                "{} doesn't exist — run Sirin once to populate",
+                local_path.display()
+            ),
         }),
         (false, _) => checks.push(CheckResult {
-            label: "Repo probe missing".into(), status: CheckStatus::Skip,
+            label: "Repo probe missing".into(),
+            status: CheckStatus::Skip,
             message: "Run from Sirin repo root for YAML sync check".into(),
         }),
     }
 
-    DoctorSection { name: "4. YAML config sync".into(), checks }
+    DoctorSection {
+        name: "4. YAML config sync".into(),
+        checks,
+    }
 }
 
 // ─── 5. Recent Chrome stability ─────────────────────────────────────────────
@@ -319,13 +388,16 @@ fn section_chrome_stability() -> DoctorSection {
     let mut found_any = false;
     for p in log_paths {
         let path = std::path::Path::new(p);
-        if !path.exists() { continue; }
+        if !path.exists() {
+            continue;
+        }
         found_any = true;
         let content = std::fs::read_to_string(path).unwrap_or_default();
 
         // Last 24h cutoff in ISO-8601 (matches preflight.sh awk regex).
         let cutoff = (chrono::Utc::now() - chrono::Duration::hours(24))
-            .format("%Y-%m-%dT%H:%M").to_string();
+            .format("%Y-%m-%dT%H:%M")
+            .to_string();
 
         let mut crashes = 0u32;
         let mut launches = 0u32;
@@ -343,10 +415,14 @@ fn section_chrome_stability() -> DoctorSection {
                 .find(|c: char| c == 'T')
                 .and_then(|t| ts_window.get(t.saturating_sub(10)..t + 6))
                 .map(|w| w >= cutoff.as_str())
-                .unwrap_or(true);  // if we can't parse, count it (conservative)
-            if !in_window { continue; }
+                .unwrap_or(true); // if we can't parse, count it (conservative)
+            if !in_window {
+                continue;
+            }
 
-            if line.contains("Chrome crashed") || line.contains("connection closed") && line.contains("recovering") {
+            if line.contains("Chrome crashed")
+                || line.contains("connection closed") && line.contains("recovering")
+            {
                 crashes += 1;
             }
             if line.contains("launched Chrome") {
@@ -367,11 +443,15 @@ fn section_chrome_stability() -> DoctorSection {
     }
     if !found_any {
         checks.push(CheckResult {
-            label: "Sirin log files".into(), status: CheckStatus::Skip,
+            label: "Sirin log files".into(),
+            status: CheckStatus::Skip,
             message: "Run from Sirin run directory to inspect logs".into(),
         });
     }
-    DoctorSection { name: "5. Chrome stability".into(), checks }
+    DoctorSection {
+        name: "5. Chrome stability".into(),
+        checks,
+    }
 }
 
 // ─── 6. Action registry consistency ─────────────────────────────────────────
@@ -381,16 +461,58 @@ fn section_action_registry() -> DoctorSection {
     // (Drift between the two is itself a smell — both should reference the
     // same source of truth eventually; for now we keep them in sync manually.)
     let browser_actions = [
-        "goto", "screenshot", "screenshot_analyze", "click", "click_point", "type",
-        "read", "eval", "wait", "exists", "attr", "scroll", "key", "console",
-        "network", "url", "title", "close", "set_viewport", "enable_a11y",
-        "ax_tree", "ax_find", "ax_value", "ax_click", "ax_focus", "ax_type",
-        "ax_type_verified", "ax_snapshot", "ax_diff", "wait_for_ax_change",
-        "wait_for_url", "wait_for_ax_ready", "wait_for_network_idle",
-        "assert_ax_contains", "assert_url_matches", "shadow_find", "shadow_click",
-        "shadow_dump", "flutter_type", "flutter_enter", "shadow_type_flutter",
-        "go_back", "clear_state", "reset_session", "wait_new_tab", "wait_request",
-        "list_sessions", "close_session", "dom_snapshot",
+        "goto",
+        "screenshot",
+        "screenshot_analyze",
+        "click",
+        "click_point",
+        "type",
+        "read",
+        "eval",
+        "wait",
+        "exists",
+        "attr",
+        "scroll",
+        "key",
+        "console",
+        "network",
+        "url",
+        "title",
+        "close",
+        "set_viewport",
+        "enable_a11y",
+        "wait_for_flutter_semantics",
+        "ax_tree",
+        "ax_find",
+        "ax_value",
+        "ax_click",
+        "ax_focus",
+        "ax_type",
+        "ax_type_verified",
+        "ax_snapshot",
+        "ax_diff",
+        "wait_for_ax_change",
+        "wait_for_url",
+        "wait_for_ax_ready",
+        "wait_for_network_idle",
+        "assert_ax_contains",
+        "assert_url_matches",
+        "shadow_find",
+        "shadow_click",
+        "dismiss_passkey_prompt",
+        "agora_nav_click",
+        "shadow_dump",
+        "flutter_type",
+        "flutter_enter",
+        "shadow_type_flutter",
+        "go_back",
+        "clear_state",
+        "reset_session",
+        "wait_new_tab",
+        "wait_request",
+        "list_sessions",
+        "close_session",
+        "dom_snapshot",
     ];
     let candidates = [
         std::path::PathBuf::from("src/adk/tool/builtins.rs"),
@@ -404,10 +526,14 @@ fn section_action_registry() -> DoctorSection {
         .join("\n");
     if combined.is_empty() {
         checks.push(CheckResult {
-            label: "Action registry source".into(), status: CheckStatus::Skip,
+            label: "Action registry source".into(),
+            status: CheckStatus::Skip,
             message: "Run from Sirin repo root for registry check".into(),
         });
-        return DoctorSection { name: "6. Action registry".into(), checks };
+        return DoctorSection {
+            name: "6. Action registry".into(),
+            checks,
+        };
     }
 
     let mut missing = Vec::new();
@@ -419,16 +545,21 @@ fn section_action_registry() -> DoctorSection {
     }
     if missing.is_empty() {
         checks.push(CheckResult {
-            label: "Browser actions".into(), status: CheckStatus::Pass,
+            label: "Browser actions".into(),
+            status: CheckStatus::Pass,
             message: format!("all {} registered", browser_actions.len()),
         });
     } else {
         checks.push(CheckResult {
-            label: "Browser actions".into(), status: CheckStatus::Fail,
+            label: "Browser actions".into(),
+            status: CheckStatus::Fail,
             message: format!("missing: {}", missing.join(", ")),
         });
     }
-    DoctorSection { name: "6. Action registry".into(), checks }
+    DoctorSection {
+        name: "6. Action registry".into(),
+        checks,
+    }
 }
 
 // ─── Output formatting ──────────────────────────────────────────────────────
@@ -439,24 +570,33 @@ pub fn print_text(r: &DoctorReport) {
     println!("=========================================");
     for s in &r.sections {
         let glyph = match s.status() {
-            CheckStatus::Pass => "✓", CheckStatus::Warn => "⚠", CheckStatus::Fail => "✗",
+            CheckStatus::Pass => "✓",
+            CheckStatus::Warn => "⚠",
+            CheckStatus::Fail => "✗",
             CheckStatus::Skip => "·",
         };
         println!("\n{glyph} {}", s.name);
         for c in &s.checks {
             let g = match c.status {
-                CheckStatus::Pass => "  [OK] ", CheckStatus::Warn => "  [!]  ",
-                CheckStatus::Fail => "  [X]  ", CheckStatus::Skip => "  [-]  ",
+                CheckStatus::Pass => "  [OK] ",
+                CheckStatus::Warn => "  [!]  ",
+                CheckStatus::Fail => "  [X]  ",
+                CheckStatus::Skip => "  [-]  ",
             };
             println!("{g}{}: {}", c.label, c.message);
         }
     }
-    println!("\nSummary: {} passed, {} warnings, {} failed, {} skipped",
-        r.passed, r.warnings, r.failed, r.skipped);
+    println!(
+        "\nSummary: {} passed, {} warnings, {} failed, {} skipped",
+        r.passed, r.warnings, r.failed, r.skipped
+    );
 }
 
 pub fn print_json(r: &DoctorReport) {
-    println!("{}", serde_json::to_string_pretty(r).unwrap_or_else(|_| "{}".into()));
+    println!(
+        "{}",
+        serde_json::to_string_pretty(r).unwrap_or_else(|_| "{}".into())
+    );
 }
 
 #[cfg(test)]
@@ -466,30 +606,49 @@ mod tests {
     fn mk_section(name: &str, checks: Vec<(&str, CheckStatus)>) -> DoctorSection {
         DoctorSection {
             name: name.to_string(),
-            checks: checks.into_iter().map(|(label, status)| CheckResult {
-                label: label.to_string(),
-                status,
-                message: "".into(),
-            }).collect(),
+            checks: checks
+                .into_iter()
+                .map(|(label, status)| CheckResult {
+                    label: label.to_string(),
+                    status,
+                    message: "".into(),
+                })
+                .collect(),
         }
     }
 
     #[test]
     fn section_status_picks_worst() {
         // Pure pass
-        let s = mk_section("a", vec![("x", CheckStatus::Pass), ("y", CheckStatus::Pass)]);
+        let s = mk_section(
+            "a",
+            vec![("x", CheckStatus::Pass), ("y", CheckStatus::Pass)],
+        );
         assert_eq!(s.status(), CheckStatus::Pass);
 
         // Mixed pass/warn → warn
-        let s = mk_section("b", vec![("x", CheckStatus::Pass), ("y", CheckStatus::Warn)]);
+        let s = mk_section(
+            "b",
+            vec![("x", CheckStatus::Pass), ("y", CheckStatus::Warn)],
+        );
         assert_eq!(s.status(), CheckStatus::Warn);
 
         // Any fail → fail (even with passes)
-        let s = mk_section("c", vec![("x", CheckStatus::Pass), ("y", CheckStatus::Warn), ("z", CheckStatus::Fail)]);
+        let s = mk_section(
+            "c",
+            vec![
+                ("x", CheckStatus::Pass),
+                ("y", CheckStatus::Warn),
+                ("z", CheckStatus::Fail),
+            ],
+        );
         assert_eq!(s.status(), CheckStatus::Fail);
 
         // All-skip → skip
-        let s = mk_section("d", vec![("x", CheckStatus::Skip), ("y", CheckStatus::Skip)]);
+        let s = mk_section(
+            "d",
+            vec![("x", CheckStatus::Skip), ("y", CheckStatus::Skip)],
+        );
         assert_eq!(s.status(), CheckStatus::Skip);
     }
 
@@ -498,14 +657,20 @@ mod tests {
         let r = DoctorReport {
             version: "test".into(),
             sections: vec![],
-            passed: 5, warnings: 0, failed: 1, skipped: 0,
+            passed: 5,
+            warnings: 0,
+            failed: 1,
+            skipped: 0,
         };
         assert_eq!(r.exit_code(), 1);
 
         let r = DoctorReport {
             version: "test".into(),
             sections: vec![],
-            passed: 5, warnings: 3, failed: 0, skipped: 1,
+            passed: 5,
+            warnings: 3,
+            failed: 0,
+            skipped: 1,
         };
         assert_eq!(r.exit_code(), 0);
     }
@@ -514,13 +679,19 @@ mod tests {
     fn json_serialisation_uses_lowercase_status() {
         let r = DoctorReport {
             version: "test".into(),
-            sections: vec![mk_section("x", vec![
-                ("p", CheckStatus::Pass),
-                ("w", CheckStatus::Warn),
-                ("f", CheckStatus::Fail),
-                ("s", CheckStatus::Skip),
-            ])],
-            passed: 1, warnings: 1, failed: 1, skipped: 1,
+            sections: vec![mk_section(
+                "x",
+                vec![
+                    ("p", CheckStatus::Pass),
+                    ("w", CheckStatus::Warn),
+                    ("f", CheckStatus::Fail),
+                    ("s", CheckStatus::Skip),
+                ],
+            )],
+            passed: 1,
+            warnings: 1,
+            failed: 1,
+            skipped: 1,
         };
         let j = serde_json::to_string(&r).unwrap();
         assert!(j.contains("\"status\":\"pass\""));

@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sirin iOS 位置回報</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #05070a;
+      --panel: #0b1117;
+      --line: #1d2a35;
+      --text: #d6dde6;
+      --muted: #71808f;
+      --accent: #62d6a4;
+      --warn: #e7b451;
+      --error: #ff6b6b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      letter-spacing: 0;
+    }
+    main {
+      width: min(100%, 720px);
+      margin: 0 auto;
+      padding: 28px 18px 36px;
+    }
+    h1 {
+      margin: 0 0 10px;
+      font-size: 22px;
+      font-weight: 700;
+    }
+    p {
+      margin: 0 0 18px;
+      color: var(--muted);
+    }
+    .panel {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 6px;
+      padding: 16px;
+    }
+    button {
+      width: 100%;
+      min-height: 48px;
+      border: 1px solid #2a493b;
+      border-radius: 4px;
+      background: #0d2119;
+      color: var(--accent);
+      font: inherit;
+      font-weight: 700;
+    }
+    button:disabled {
+      opacity: .55;
+    }
+    .kv {
+      display: grid;
+      grid-template-columns: 108px 1fr;
+      gap: 8px;
+      padding: 9px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .kv:last-child { border-bottom: 0; }
+    .label { color: var(--muted); }
+    .value { overflow-wrap: anywhere; }
+    .status {
+      margin-top: 14px;
+      color: var(--muted);
+      min-height: 22px;
+    }
+    .ok { color: var(--accent); }
+    .warn { color: var(--warn); }
+    .error { color: var(--error); }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Sirin iOS 位置回報</h1>
+    <p>在測試用 iPhone 開啟此頁，允許瀏覽器定位後回報目前座標給本機 Sirin。</p>
+    <div class="panel">
+      <button id="reportBtn" type="button">讀取並回報目前位置</button>
+      <div id="status" class="status">等待操作</div>
+      <div class="kv"><span class="label">lat</span><span id="lat" class="value">-</span></div>
+      <div class="kv"><span class="label">lng</span><span id="lng" class="value">-</span></div>
+      <div class="kv"><span class="label">accuracy</span><span id="accuracy" class="value">-</span></div>
+      <div class="kv"><span class="label">received</span><span id="received" class="value">-</span></div>
+    </div>
+  </main>
+  <script>
+    const btn = document.getElementById('reportBtn');
+    const statusEl = document.getElementById('status');
+    const fields = {
+      lat: document.getElementById('lat'),
+      lng: document.getElementById('lng'),
+      accuracy: document.getElementById('accuracy'),
+      received: document.getElementById('received'),
+    };
+
+    function setStatus(text, cls = '') {
+      statusEl.className = `status ${cls}`.trim();
+      statusEl.textContent = text;
+    }
+
+    btn.addEventListener('click', () => {
+      if (!navigator.geolocation) {
+        setStatus('此瀏覽器不支援 geolocation', 'error');
+        return;
+      }
+      btn.disabled = true;
+      setStatus('讀取 GPS 中...');
+      navigator.geolocation.getCurrentPosition(async (pos) => {
+        const payload = {
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          accuracyMeters: pos.coords.accuracy,
+          source: 'ios_browser_geolocation',
+          reportedAt: new Date().toISOString(),
+          note: 'ios-location-report-page',
+        };
+        fields.lat.textContent = payload.lat.toFixed(7);
+        fields.lng.textContent = payload.lng.toFixed(7);
+        fields.accuracy.textContent = `${Math.round(payload.accuracyMeters)} m`;
+        try {
+          setStatus('回報給 Sirin 中...');
+          const res = await fetch('/api/ios-location-report', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || res.statusText);
+          fields.received.textContent = data.report?.receivedAt || '-';
+          setStatus('已回報，回到 Sirin iOS 定位頁讀取最新回報', 'ok');
+        } catch (error) {
+          setStatus(error.message || String(error), 'error');
+        } finally {
+          btn.disabled = false;
+        }
+      }, (error) => {
+        btn.disabled = false;
+        setStatus(error.message || 'GPS 讀取失敗', 'warn');
+      }, {
+        enableHighAccuracy: true,
+        timeout: 20000,
+        maximumAge: 0,
+      });
+    });
+  </script>
+</body>
+</html>

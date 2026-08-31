@@ -125,23 +125,14 @@ impl SoMRenderer {
     /// 5. Return HashMap: label_id → (x, y)
     ///
     /// For now, returns a stub label map (empty).
-    pub fn prepare_label_map(
-        &self,
-        ax_nodes: &[Value],
-    ) -> Result<SoMLabelMap, String> {
+    pub fn prepare_label_map(&self, ax_nodes: &[Value]) -> Result<SoMLabelMap, String> {
         let mut label_map = SoMLabelMap::new();
         let mut label_id = 1u32;
 
         for node in ax_nodes {
             // Parse node role and name
-            let role = node
-                .get("role")
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            let _name = node
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or("");
+            let role = node.get("role").and_then(Value::as_str).unwrap_or("");
+            let _name = node.get("name").and_then(Value::as_str).unwrap_or("");
             let backend_id = node
                 .get("backend_id")
                 .and_then(Value::as_u64)

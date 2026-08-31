@@ -29,8 +29,18 @@ mod tests {
     fn excluded_env_vars() -> BTreeSet<&'static str> {
         [
             // OS-provided
-            "HOME", "APPDATA", "LOCALAPPDATA", "USERPROFILE", "XDG_DATA_HOME",
-        ].into_iter().collect()
+            "HOME",
+            "APPDATA",
+            "LOCALAPPDATA",
+            "USERPROFILE",
+            "XDG_DATA_HOME",
+            "COMPUTERNAME",
+            "HOSTNAME",
+            "PROGRAMFILES",
+            "PROGRAMFILES(X86)",
+        ]
+        .into_iter()
+        .collect()
     }
 
     /// Walk a directory recursively and call `cb(path, content)` for every
@@ -62,7 +72,9 @@ mod tests {
     #[test]
     fn env_vars_documented() {
         let src = Path::new("src");
-        if !src.exists() { return; }
+        if !src.exists() {
+            return;
+        }
 
         let env_example = match std::fs::read_to_string(".env.example") {
             Ok(s) => s,
@@ -86,7 +98,8 @@ mod tests {
         });
 
         let excluded = excluded_env_vars();
-        let undocumented: Vec<String> = found.into_iter()
+        let undocumented: Vec<String> = found
+            .into_iter()
             .filter(|name| !excluded.contains(name.as_str()))
             .filter(|name| !env_example.contains(name))
             .collect();
@@ -98,8 +111,11 @@ mod tests {
                  `excluded_env_vars()` in src/devex.rs if they really shouldn't \
                  be exposed (OS-builtin, test-only, etc.).",
                 undocumented.len(),
-                undocumented.iter().map(|n| format!("  - {n}"))
-                    .collect::<Vec<_>>().join("\n"),
+                undocumented
+                    .iter()
+                    .map(|n| format!("  - {n}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
             );
         }
     }
@@ -109,7 +125,9 @@ mod tests {
     #[test]
     fn scripts_index() {
         let dir = Path::new("scripts");
-        if !dir.exists() { return; }
+        if !dir.exists() {
+            return;
+        }
 
         let readme = match std::fs::read_to_string("scripts/README.md") {
             Ok(s) => s,
@@ -125,7 +143,8 @@ mod tests {
             }
             // .example files mirror an installed script — describe in the
             // README under the canonical name (e.g. fetch-handoff.sh.example).
-            let filename = path.file_name()
+            let filename = path
+                .file_name()
                 .and_then(|s| s.to_str())
                 .map(String::from)
                 .unwrap_or_default();
@@ -139,8 +158,11 @@ mod tests {
                  Add a row to the table in scripts/README.md describing what each does \
                  and when to run it.",
                 undocumented.len(),
-                undocumented.iter().map(|n| format!("  - {n}"))
-                    .collect::<Vec<_>>().join("\n"),
+                undocumented
+                    .iter()
+                    .map(|n| format!("  - {n}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
             );
         }
     }

@@ -11,65 +11,108 @@ use crate::ui_service::*;
 ///
 /// Mutation paths (rename / toggle / add objective / etc.) call
 /// `invalidate_agents_cache()` after `save()` so writes show up immediately.
-fn agents_file_cache()
--> &'static std::sync::Mutex<(std::time::Instant, Option<crate::agent_config::AgentsFile>)> {
+fn agents_file_cache(
+) -> &'static std::sync::Mutex<(std::time::Instant, Option<crate::agent_config::AgentsFile>)> {
     static CACHE: std::sync::OnceLock<
-        std::sync::Mutex<(std::time::Instant, Option<crate::agent_config::AgentsFile>)>
+        std::sync::Mutex<(std::time::Instant, Option<crate::agent_config::AgentsFile>)>,
     > = std::sync::OnceLock::new();
-    CACHE.get_or_init(|| std::sync::Mutex::new(
-        (std::time::Instant::now() - std::time::Duration::from_secs(60), None)
-    ))
+    CACHE.get_or_init(|| {
+        std::sync::Mutex::new((
+            std::time::Instant::now() - std::time::Duration::from_secs(60),
+            None,
+        ))
+    })
 }
 
 fn cached_agents_file() -> crate::agent_config::AgentsFile {
     const TTL: std::time::Duration = std::time::Duration::from_secs(1);
     {
-        let g = agents_file_cache().lock().unwrap_or_else(|e| e.into_inner());
+        let g = agents_file_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if let Some(v) = &g.1 {
-            if g.0.elapsed() < TTL { return v.clone(); }
+            if g.0.elapsed() < TTL {
+                return v.clone();
+            }
         }
     }
     let v = crate::agent_config::AgentsFile::load().unwrap_or_default();
-    let mut g = agents_file_cache().lock().unwrap_or_else(|e| e.into_inner());
+    let mut g = agents_file_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     *g = (std::time::Instant::now(), Some(v.clone()));
     v
 }
 
 /// Drop the cache so the next read re-parses agents.yaml. Call after save().
 fn invalidate_agents_cache() {
-    let mut g = agents_file_cache().lock().unwrap_or_else(|e| e.into_inner());
-    *g = (std::time::Instant::now() - std::time::Duration::from_secs(60), None);
+    let mut g = agents_file_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    *g = (
+        std::time::Instant::now() - std::time::Duration::from_secs(60),
+        None,
+    );
 }
 
 pub(super) fn list_agents(svc: &RealService) -> Vec<AgentSummary> {
     let file = cached_agents_file();
-    file.agents.iter().map(|a| {
-        let platform = if a.channel.as_ref().and_then(|c| c.telegram.as_ref()).is_some() {
-            "telegram"
-        } else if a.channel.as_ref().and_then(|c| c.teams.as_ref()).is_some() {
-            "teams"
-        } else { "ui_only" };
-        let live_status = if !a.enabled { "idle" }
-            else if platform == "telegram" {
+    file.agents
+        .iter()
+        .map(|a| {
+            let platform = if a
+                .channel
+                .as_ref()
+                .and_then(|c| c.telegram.as_ref())
+                .is_some()
+            {
+                "telegram"
+            } else if a.channel.as_ref().and_then(|c| c.teams.as_ref()).is_some() {
+                "teams"
+            } else {
+                "ui_only"
+            };
+            let live_status = if !a.enabled {
+                "idle"
+            } else if platform == "telegram" {
                 match svc.tg_auth.status() {
                     crate::telegram_auth::TelegramStatus::Connected => "connected",
                     crate::telegram_auth::TelegramStatus::Disconnected { .. } => "reconnecting",
                     _ => "waiting",
                 }
-            } else { "idle" };
-        AgentSummary { id: a.id.clone(), name: a.identity.name.clone(), enabled: a.enabled,
-            platform: platform.to_string(), live_status: live_status.to_string() }
-    }).collect()
+            } else {
+                "idle"
+            };
+            AgentSummary {
+                id: a.id.clone(),
+                name: a.identity.name.clone(),
+                enabled: a.enabled,
+                platform: platform.to_string(),
+                live_status: live_status.to_string(),
+            }
+        })
+        .collect()
 }
 
 pub(super) fn agent_detail(_svc: &RealService, agent_id: &str) -> Option<AgentDetailView> {
     let file = cached_agents_file();
     let a = file.agents.iter().find(|a| a.id == agent_id)?;
-    let platform = if a.channel.as_ref().and_then(|c| c.telegram.as_ref()).is_some() { "telegram" }
-    else if a.channel.as_ref().and_then(|c| c.teams.as_ref()).is_some() { "teams" }
-    else { "ui_only" };
+    let platform = if a
+        .channel
+        .as_ref()
+        .and_then(|c| c.telegram.as_ref())
+        .is_some()
+    {
+        "telegram"
+    } else if a.channel.as_ref().and_then(|c| c.teams.as_ref()).is_some() {
+        "teams"
+    } else {
+        "ui_only"
+    };
     Some(AgentDetailView {
-        id: a.id.clone(), name: a.identity.name.clone(), enabled: a.enabled,
+        id: a.id.clone(),
+        name: a.identity.name.clone(),
+        enabled: a.enabled,
         platform: platform.to_string(),
         professional_tone: format!("{:?}", a.identity.professional_tone),
         disable_remote_ai: a.disable_remote_ai,
@@ -79,7 +122,12 @@ pub(super) fn agent_detail(_svc: &RealService, agent_id: &str) -> Option<AgentDe
         max_reply_delay: a.human_behavior.max_reply_delay_secs,
         max_per_hour: a.human_behavior.max_messages_per_hour,
         max_per_day: a.human_behavior.max_messages_per_day,
-        kpi_labels: a.kpi.metrics.iter().map(|m| (m.label.clone(), m.unit.clone())).collect(),
+        kpi_labels: a
+            .kpi
+            .metrics
+            .iter()
+            .map(|m| (m.label.clone(), m.unit.clone()))
+            .collect(),
     })
 }
 
@@ -193,7 +241,9 @@ pub(super) fn toggle_skill(_svc: &RealService, agent_id: &str, skill_id: &str, e
 
 pub(super) fn disabled_skills(_svc: &RealService, agent_id: &str) -> Vec<String> {
     cached_agents_file()
-        .agents.iter().find(|a| a.id == agent_id)
+        .agents
+        .iter()
+        .find(|a| a.id == agent_id)
         .map(|a| a.disabled_skills.clone())
         .unwrap_or_default()
 }

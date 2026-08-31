@@ -1,9 +1,10 @@
 id: agora_seller_wallet
-name: "AgoraMarket 賣家錢包頁面驗證 v2 (AM#117 fix)"
+name: "AgoraMarket 賣家錢包頁面驗證 v3 (seller tab UI)"
 url: "https://redandan.github.io/?__test_role=seller"
 
-max_iterations: 20
-timeout_secs: 300
+max_iterations: 4
+timeout_secs: 120
+fixture_only: true
 
 # Seller 後台是 H5 手機版，與 Buyer 相同 viewport
 viewport:
@@ -14,35 +15,38 @@ viewport:
 
 locale: zh-TW
 
+fixture:
+  setup:
+    - {action: "clear_state"}
+    - {action: "goto", target: "https://redandan.github.io/?__test_role=seller"}
+    - {action: "wait_for_flutter_semantics", timeout: 15000, min_roles: 2}
+    - {action: "dismiss_passkey_prompt"}
+    - {action: "goto", target: "https://redandan.github.io/?__test_role=seller"}
+    - {action: "wait_for_flutter_semantics", timeout: 25000, min_roles: 8}
+    - {action: "agora_nav_click", target: "錢包"}
+    - {action: "wait_for_flutter_semantics", timeout: 12000, min_roles: 8}
+    - {action: "assert_url_matches", target: "#/seller"}
+    - {action: "shadow_find", name_regex: "總餘額|可用餘額"}
+    - {action: "shadow_find", role: "button", name_regex: "^充值$"}
+    - {action: "shadow_find", role: "button", name_regex: "^提現$"}
+
 goal: |
-  目標：確認賣家可從儀表板點擊「賣家錢包」進入錢包頁，並看到餘額與操作按鈕。
+  目標：確認賣家可從新版底部「錢包」tab 進入錢包頁，並看到餘額與操作按鈕。
 
-  ✅ AgoraMarket #117 已修復 AppCard InkWell Semantics，
-     shadow_click role=button name_regex="賣家錢包" 可正常導航到 #/seller/wallet。
+  起始狀態：fixture.setup 已完成 clear_state、seller URL 導航、Passkey prompt dismiss、
+  點擊底部錢包分頁、enable_a11y；應位於賣家錢包頁。
 
-  ⚠️ Flutter app：所有 UI 判斷用 screenshot_analyze。
-  ⚠️ 步驟 14 無條件 done=true，嚴禁提早終止。
+  ⚠️ 新版賣家首頁使用 #/seller 單一路由承載首頁/商品/訂單/錢包 tab；
+     URL 不變不代表 tab 沒切換，必須以 shadow_dump 內容判斷。
+  ⚠️ 步驟 2 無條件 done=true，嚴禁提早終止。
 
-  步驟（線性，步驟 14 done=true）：
-  1. goto target="https://redandan.github.io/?__test_role=seller"（確保 seller 登入）
-  2. wait 5000（等 auto-login + Flutter 賣家儀表板載入）
-  3. enable_a11y
-  4. wait 2000
-  5. screenshot_analyze "賣家儀表板首頁：看到哪些快速操作卡片（賣場設定/批量導入商品/賣家錢包）？"
-  6. shadow_click role=button name_regex="賣家錢包"（點擊錢包卡片進入 #/seller/wallet）
-  7. wait 3000（等錢包頁載入）
-  8. enable_a11y
-  9. wait 1500
-  10. screenshot_analyze "錢包頁截圖：看到 USDT 餘額嗎？有哪些操作按鈕（儲值/提現/轉帳等）？顯示哪些資訊？"
-  11. shadow_dump（列出錢包頁所有可見節點）
-  12. scroll y=300（確認下方有無更多資訊）
-  13. screenshot_analyze "捲動後：有沒有交易歷史或其他錢包資訊？"
-  14. done=true
+  步驟（線性，步驟 2 done=true）：
+  1. shadow_dump（應看到總餘額、可用餘額、充值、提現、質押、交易記錄）
+  2. done=true
 
 success_criteria:
-  - "成功從儀表板點擊「賣家錢包」卡片並導航到錢包頁（#/seller/wallet）"
-  - "錢包頁顯示 USDT 餘額（數字或 0）"
-  - "有操作按鈕（儲值/提現/轉帳或類似功能）"
+  - "成功點擊底部錢包 tab"
+  - "錢包頁顯示總餘額或可用餘額"
+  - "有操作按鈕（充值/提現/質押或類似功能）"
 
-tags: [regression, wallet, seller, agora, am-117-verified]
-
+tags: [regression, smoke, active-smoke, wallet, seller, agora, seller-tab-ui]

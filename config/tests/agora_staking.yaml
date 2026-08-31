@@ -82,5 +82,4 @@ success_criteria:
   - "質押功能已驗證：錢包頁面顯示質押金額大於 0 USDT，OR 取消質押按鈕可見"
   - "無嚴重錯誤（401/500 API 錯誤等）"
 
-tags: [staking, agora, issue-34, regression]
-
+tags: [staking, agora, issue-34, regression, mutating, requires-operator-approval]

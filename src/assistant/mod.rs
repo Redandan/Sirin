@@ -83,21 +83,31 @@ pub async fn run_task(
         let _obs = build_observation(ctx, &screenshot_b64).await;
 
         // Trim history to last 16 entries (8 turns) to control context size.
-        if history.len() > 16 { history.drain(0..4); }
+        if history.len() > 16 {
+            history.drain(0..4);
+        }
 
         // Add a "hurry up" nudge when approaching the step limit.
         let nudge = if step >= MAX_ASSISTANT_ITER.saturating_sub(3) {
-            format!("\n\n⚠️ 只剩 {} 步！如果已有足夠資訊，現在就輸出 done=true。",
-                MAX_ASSISTANT_ITER - step)
-        } else { String::new() };
+            format!(
+                "\n\n⚠️ 只剩 {} 步！如果已有足夠資訊，現在就輸出 done=true。",
+                MAX_ASSISTANT_ITER - step
+            )
+        } else {
+            String::new()
+        };
 
         // Ask LLM what to do next.
         let prompt = format!(
             "{}\n\n## 目前步驟 {}/{}{}",
-            system_prompt, step + 1, MAX_ASSISTANT_ITER, nudge
+            system_prompt,
+            step + 1,
+            MAX_ASSISTANT_ITER,
+            nudge
         );
 
-        let raw = match call_assistant_llm(ctx, &prompt, &history, screenshot_b64.as_deref()).await {
+        let raw = match call_assistant_llm(ctx, &prompt, &history, screenshot_b64.as_deref()).await
+        {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!("[assistant] LLM error at step {step}: {e}");
@@ -121,7 +131,8 @@ pub async fn run_task(
             }
             AssistantStep::Action(action_input) => {
                 history.push(json!({ "role": "assistant", "content": raw }));
-                let label = action_input.get("action")
+                let label = action_input
+                    .get("action")
                     .and_then(Value::as_str)
                     .unwrap_or("?");
                 tracing::info!("[assistant] step {} — {}", step + 1, label);
@@ -166,7 +177,8 @@ fn build_system_prompt(request: &str, start_url: Option<&str>) -> String {
         .map(|u| format!("\n起始頁面：{u}"))
         .unwrap_or_default();
 
-    format!(r#"你是 Sirin 助理，負責操作瀏覽器完成用戶的任務。
+    format!(
+        r#"你是 Sirin 助理，負責操作瀏覽器完成用戶的任務。
 
 ## 任務
 {request}{url_hint}
@@ -201,7 +213,9 @@ fn build_system_prompt(request: &str, start_url: Option<&str>) -> String {
 3. 如果頁面已有所需資訊，立即輸出 done=true
 4. 使用 eval 提取文字比截圖更高效
 5. 最多執行 {max} 步，到達上限前確保輸出 done=true
-"#, max = MAX_ASSISTANT_ITER)
+"#,
+        max = MAX_ASSISTANT_ITER
+    )
 }
 
 async fn build_observation(
@@ -209,7 +223,9 @@ async fn build_observation(
     _screenshot_b64: &Option<String>,
 ) -> String {
     // Get current URL for context.
-    let url = ctx.call_tool("web_navigate", json!({ "action": "url" })).await
+    let url = ctx
+        .call_tool("web_navigate", json!({ "action": "url" }))
+        .await
         .ok()
         .and_then(|v| v.get("url").and_then(Value::as_str).map(String::from))
         .unwrap_or_else(|| "unknown".to_string());
@@ -217,8 +233,14 @@ async fn build_observation(
 }
 
 async fn take_screenshot_b64(ctx: &crate::adk::context::AgentContext) -> Option<String> {
-    let result = ctx.call_tool("web_navigate", json!({ "action": "screenshot" })).await.ok()?;
-    result.get("bytes_base64").and_then(Value::as_str).map(String::from)
+    let result = ctx
+        .call_tool("web_navigate", json!({ "action": "screenshot" }))
+        .await
+        .ok()?;
+    result
+        .get("bytes_base64")
+        .and_then(Value::as_str)
+        .map(String::from)
 }
 
 /// Two-stage LLM call:
@@ -240,8 +262,11 @@ async fn call_assistant_llm(
     // Stage 1: Vision observation (if screenshot available and vision configured).
     let visual_desc = if let Some(b64) = screenshot_b64 {
         if let Some(vision_cfg) = crate::llm::vision_llm_config() {
-            let vision_prompt = "簡短描述截圖上看到的頁面內容（50字以內）：標題、主要元素、頁面狀態。";
-            crate::llm::call_vision(&http, &vision_cfg, vision_prompt, b64, "image/png").await.ok()
+            let vision_prompt =
+                "簡短描述截圖上看到的頁面內容（50字以內）：標題、主要元素、頁面狀態。";
+            crate::llm::call_vision(&http, &vision_cfg, vision_prompt, b64, "image/png")
+                .await
+                .ok()
         } else {
             None
         }
@@ -251,8 +276,13 @@ async fn call_assistant_llm(
 
     // Stage 2: Main LLM decides action.
     // Include recent history so LLM can see previous eval results and decide.
-    let history_str: String = history.iter().rev().take(8).collect::<Vec<_>>()
-        .into_iter().rev()
+    let history_str: String = history
+        .iter()
+        .rev()
+        .take(8)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
         .filter_map(|msg| {
             let role = msg.get("role").and_then(Value::as_str)?;
             let content = msg.get("content").and_then(Value::as_str)?;
@@ -264,21 +294,31 @@ async fn call_assistant_llm(
     let full_prompt = format!(
         "{}\n\n## 行動記錄（最近）\n{}\n\n## 視覺觀察\n{}",
         prompt,
-        if history_str.is_empty() { "（無）".to_string() } else { history_str },
+        if history_str.is_empty() {
+            "（無）".to_string()
+        } else {
+            history_str
+        },
         visual_desc.as_deref().unwrap_or("（截圖分析不可用）")
     );
 
-    crate::llm::call_coding_prompt(&http, &llm, full_prompt).await.map_err(|e| e.to_string())
+    crate::llm::call_coding_prompt(&http, &llm, full_prompt)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 enum AssistantStep {
-    Done { summary: String, data: Option<Value> },
+    Done {
+        summary: String,
+        data: Option<Value>,
+    },
     Action(Value),
     ParseError,
 }
 
 fn parse_assistant_step(raw: &str) -> AssistantStep {
-    let cleaned = raw.trim()
+    let cleaned = raw
+        .trim()
         .trim_start_matches("```json")
         .trim_start_matches("```")
         .trim_end_matches("```")
@@ -304,7 +344,8 @@ fn parse_assistant_step(raw: &str) -> AssistantStep {
 
 fn parse_assistant_step_value(v: Value) -> AssistantStep {
     if v.get("done").and_then(Value::as_bool) == Some(true) {
-        let summary = v.get("summary")
+        let summary = v
+            .get("summary")
             .and_then(Value::as_str)
             .unwrap_or("完成")
             .to_string();
@@ -324,7 +365,8 @@ fn truncate(s: &str, max: usize) -> &str {
         s
     } else {
         // Find a valid char boundary at or before `max` bytes.
-        let boundary = s.char_indices()
+        let boundary = s
+            .char_indices()
             .map(|(i, _)| i)
             .take_while(|&i| i <= max)
             .last()

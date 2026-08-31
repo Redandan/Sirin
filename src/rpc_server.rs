@@ -22,10 +22,10 @@
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 
 use axum::{
-    Router,
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
     response::IntoResponse,
     routing::get,
+    Router,
 };
 use serde_json::{json, Value};
 
@@ -54,7 +54,11 @@ pub fn is_running() -> bool {
 #[allow(dead_code)]
 pub fn active_port() -> Option<u16> {
     let p = ACTIVE_PORT.load(Ordering::Relaxed);
-    if p == 0 { None } else { Some(p) }
+    if p == 0 {
+        None
+    } else {
+        Some(p)
+    }
 }
 
 /// Bind the WebSocket + MCP server and serve forever. Spawn this as a Tokio task.
@@ -136,10 +140,12 @@ async fn bind_with_zombie_kill(port: u16) -> Result<tokio::net::TcpListener, Str
 /// don't silently kill unrelated processes) or if no holder is found.
 #[cfg(target_os = "windows")]
 fn kill_zombie_on_port(port: u16) -> Result<(), String> {
+    use crate::platform::NoWindow;
     use std::process::Command;
 
     // 1. netstat -ano → parse out PID for the LISTENING line on our port.
     let netstat = Command::new("netstat")
+        .no_window()
         .args(["-ano", "-p", "TCP"])
         .output()
         .map_err(|e| format!("netstat spawn failed: {e}"))?;
@@ -171,6 +177,7 @@ fn kill_zombie_on_port(port: u16) -> Result<(), String> {
 
     // 2. tasklist /fi "pid eq <pid>" /fo csv /nh → check it's sirin.exe.
     let tasklist = Command::new("tasklist")
+        .no_window()
         .args(["/fi", &format!("pid eq {pid}"), "/fo", "csv", "/nh"])
         .output()
         .map_err(|e| format!("tasklist spawn failed: {e}"))?;
@@ -202,6 +209,7 @@ fn kill_zombie_on_port(port: u16) -> Result<(), String> {
         "[rpc] Killing zombie sirin.exe PID {pid} holding port {port}"
     );
     let killed = Command::new("taskkill")
+        .no_window()
         .args(["/pid", &pid.to_string(), "/f"])
         .output()
         .map_err(|e| format!("taskkill spawn failed: {e}"))?;
@@ -300,11 +308,13 @@ async fn handle_call_graph_query(params: Value) -> Result<Value, String> {
 
     tokio::task::spawn_blocking(move || {
         crate::code_graph::query_call_graph(&symbol, hops)
-            .map(|r| json!({
-                "defined_in": r.defined_in,
-                "callers": r.callers,
-                "callees": r.callees,
-            }))
+            .map(|r| {
+                json!({
+                    "defined_in": r.defined_in,
+                    "callers": r.callers,
+                    "callees": r.callees,
+                })
+            })
             .map_err(|e| e.to_string())
     })
     .await
@@ -322,7 +332,10 @@ async fn handle_trigger_research(params: Value) -> Result<Value, String> {
         .and_then(Value::as_str)
         .map(|s| s.to_string());
 
-    crate::events::publish(crate::events::AgentEvent::ResearchRequested { topic: topic.clone(), url });
+    crate::events::publish(crate::events::AgentEvent::ResearchRequested {
+        topic: topic.clone(),
+        url,
+    });
     Ok(json!({ "status": "triggered", "topic": topic }))
 }
 
@@ -341,7 +354,9 @@ mod tests {
         let orig = std::env::var("SIRIN_RPC_PORT").ok();
         std::env::remove_var("SIRIN_RPC_PORT");
         assert_eq!(configured_port(), DEFAULT_RPC_PORT);
-        if let Some(v) = orig { std::env::set_var("SIRIN_RPC_PORT", v); }
+        if let Some(v) = orig {
+            std::env::set_var("SIRIN_RPC_PORT", v);
+        }
     }
 
     #[test]
@@ -352,8 +367,11 @@ mod tests {
         // Invalid falls back to default
         std::env::set_var("SIRIN_RPC_PORT", "not-a-port");
         assert_eq!(configured_port(), DEFAULT_RPC_PORT);
-        if let Some(v) = orig { std::env::set_var("SIRIN_RPC_PORT", v); }
-        else { std::env::remove_var("SIRIN_RPC_PORT"); }
+        if let Some(v) = orig {
+            std::env::set_var("SIRIN_RPC_PORT", v);
+        } else {
+            std::env::remove_var("SIRIN_RPC_PORT");
+        }
     }
 
     /// `bind_with_zombie_kill` succeeds on a free port without touching

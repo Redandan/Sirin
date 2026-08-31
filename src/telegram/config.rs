@@ -56,7 +56,9 @@ pub struct TelegramConfig {
 pub fn resolve_env_refs(s: &str) -> String {
     let mut result = s.to_string();
     while let Some(start) = result.find("${") {
-        let Some(rel_end) = result[start..].find('}') else { break };
+        let Some(rel_end) = result[start..].find('}') else {
+            break;
+        };
         let end = start + rel_end;
         let var_name = &result[start + 2..end];
         let value = env::var(var_name).unwrap_or_default();
@@ -217,10 +219,12 @@ impl TelegramConfig {
         ch: &crate::agent_config::TelegramChannelConfig,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let api_id_str = resolve_env_refs(&ch.api_id);
-        let api_id: i32 = api_id_str
-            .trim()
-            .parse()
-            .map_err(|e| format!("agent channel api_id '{}' is not an integer: {e}", api_id_str))?;
+        let api_id: i32 = api_id_str.trim().parse().map_err(|e| {
+            format!(
+                "agent channel api_id '{}' is not an integer: {e}",
+                api_id_str
+            )
+        })?;
 
         let api_hash = resolve_env_refs(&ch.api_hash);
         if api_hash.trim().is_empty() || api_hash.starts_with("${") {

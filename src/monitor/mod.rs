@@ -73,7 +73,9 @@ pub fn init(config: MonitorConfig) -> Arc<MonitorState> {
     // TraceWriter uses synchronous file I/O.  The task receives events via
     // a channel and writes them serially — no lock contention on the hot path.
     let trace_dir = config.trace_dir.clone();
-    let size_limit = config.trace_size_limit.unwrap_or(trace_writer::DEFAULT_SIZE_LIMIT);
+    let size_limit = config
+        .trace_size_limit
+        .unwrap_or(trace_writer::DEFAULT_SIZE_LIMIT);
 
     std::thread::Builder::new()
         .name("monitor-trace-writer".into())

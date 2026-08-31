@@ -1,64 +1,106 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![recursion_limit = "512"]
 
+#[allow(dead_code)]
+mod a2a_worker;
 mod adk;
-#[allow(dead_code)] mod agent_config;
+#[allow(dead_code)]
+mod agent_config;
+#[allow(dead_code)]
+mod agents;
 pub mod ai_monitor;
-#[allow(dead_code)] mod codex_supervisor;
+#[allow(dead_code)]
+mod assistant;
+#[allow(dead_code)]
+mod audit_engine;
 mod authz;
-#[cfg(test)] mod devex;
-#[cfg(test)] mod mcp_parity_tests;
-pub mod error;
-mod platform;
-#[allow(dead_code)] mod browser;
-#[allow(dead_code)] mod browser_ax;
-#[allow(dead_code)] mod browser_exec;
-#[allow(dead_code)] mod claude_session;
-#[allow(dead_code)] mod multi_agent;
-#[allow(dead_code)] mod config_check;
+#[allow(dead_code)]
+mod browser;
+#[allow(dead_code)]
+mod browser_ax;
+#[allow(dead_code)]
+mod browser_exec;
+pub mod chat_history;
+#[allow(dead_code)]
+mod claude_session;
+mod code_graph;
+#[allow(dead_code)]
+mod codex_supervisor;
+#[allow(dead_code)]
+mod config_check;
+#[cfg(test)]
+mod devex;
+#[allow(dead_code)]
+mod device_geo;
 mod diagnose;
 mod doctor;
-mod ext_server;
-#[allow(dead_code)] mod test_runner;
-#[allow(dead_code)] mod agents;
-mod code_graph;
+pub mod error;
 mod events;
+mod ext_server;
 mod followup;
 mod human_behavior;
+#[allow(dead_code)]
+mod integrations;
+#[allow(dead_code)]
+mod ios_device;
+#[allow(dead_code)]
+mod ios_location;
 mod jsonl_log;
-mod log_subscriber;
-#[allow(dead_code)] mod llm;
+#[allow(dead_code)]
+mod kb_client;
+#[allow(dead_code)]
+mod llm;
 mod log_buffer;
-#[allow(dead_code)] mod memory;
-#[allow(dead_code)] mod pending_reply;
-#[allow(dead_code)] mod persona;
-#[allow(dead_code)] mod researcher;
-#[allow(dead_code)] mod research_sentinel;
-#[allow(dead_code)] mod mcp_client;
-#[allow(dead_code)] mod kb_client;
-#[allow(dead_code)] mod integrations;
-#[allow(dead_code)] mod assistant;
-#[allow(dead_code)] mod perception;
+mod log_subscriber;
+#[allow(dead_code)]
+mod mcp_client;
 mod mcp_gateway;
-#[allow(dead_code)] mod mcp_registry;
+#[cfg(test)]
+mod mcp_parity_tests;
+#[allow(dead_code)]
+mod mcp_registry;
 mod mcp_server;
+#[allow(dead_code)]
+mod meeting;
+#[allow(dead_code)]
+mod memory;
 pub mod monitor;
+#[allow(dead_code)]
+mod multi_agent;
+mod ops_action_ledger;
+#[allow(dead_code)]
+mod ops_schedule;
+#[allow(dead_code)]
+mod pending_reply;
+#[allow(dead_code)]
+mod perception;
+#[allow(dead_code)]
+mod persona;
+mod platform;
 mod process_group;
+#[allow(dead_code)]
+mod research_sentinel;
+#[allow(dead_code)]
+mod researcher;
 mod rhai_engine;
 mod rpc_server;
-pub mod updater;
-#[allow(dead_code)] mod teams;
-#[allow(dead_code)] mod skill_loader;
+#[allow(dead_code)]
+mod skill_loader;
 mod skills;
-#[allow(dead_code)] mod meeting;
-#[allow(dead_code)] mod workflow;
+#[allow(dead_code)]
+mod teams;
 mod telegram;
 mod telegram_auth;
+#[allow(dead_code)]
+mod test_runner;
 mod trading_guardian;
-#[cfg(windows)] mod tray;
+#[cfg(windows)]
+mod tray;
 pub mod ui_service;
 mod ui_service_impl;
-pub mod chat_history;
+pub mod updater;
+#[allow(dead_code)]
+mod workflow;
 // (egui shell + ui_test_bus removed in Phase 7 — UI is now a web app
 //  served by mcp_server at http://127.0.0.1:7700/ui/)
 
@@ -77,8 +119,16 @@ fn ensure_first_run_dirs() {
     use std::fs;
 
     let data = platform::app_data_dir();
-    for sub in &["tracking", "memory", "code_graph", "context",
-                 "pending_replies", "sessions", "teams_profile", "test_failures"] {
+    for sub in &[
+        "tracking",
+        "memory",
+        "code_graph",
+        "context",
+        "pending_replies",
+        "sessions",
+        "teams_profile",
+        "test_failures",
+    ] {
         let _ = fs::create_dir_all(data.join(sub));
     }
 
@@ -138,7 +188,9 @@ fn sync_repo_config_to_appdata(appdata_config: &std::path::Path) {
             .unwrap_or_default(),
     ];
 
-    let repo_config = candidates.iter().find(|p| p.is_dir() && p != &appdata_config);
+    let repo_config = candidates
+        .iter()
+        .find(|p| p.is_dir() && p != &appdata_config);
     let Some(repo_cfg) = repo_config else { return };
 
     let mut synced = 0usize;
@@ -150,14 +202,20 @@ fn sync_repo_config_to_appdata(appdata_config: &std::path::Path) {
 
 fn sync_dir_recursive(src: &std::path::Path, dst: &std::path::Path, count: &mut usize) {
     use std::fs;
-    let Ok(entries) = fs::read_dir(src) else { return };
+    let Ok(entries) = fs::read_dir(src) else {
+        return;
+    };
     let _ = fs::create_dir_all(dst);
     for entry in entries.flatten() {
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
         if src_path.is_dir() {
             sync_dir_recursive(&src_path, &dst_path, count);
-        } else if src_path.extension().map(|e| e == "yaml" || e == "yml").unwrap_or(false) {
+        } else if src_path
+            .extension()
+            .map(|e| e == "yaml" || e == "yml")
+            .unwrap_or(false)
+        {
             // Only copy if src is newer than dst (or dst doesn't exist).
             let should_copy = {
                 let dst_mtime = dst_path.metadata().and_then(|m| m.modified()).ok();
@@ -167,10 +225,9 @@ fn sync_dir_recursive(src: &std::path::Path, dst: &std::path::Path, count: &mut 
                     _ => true, // dst missing or can't stat → copy
                 }
             };
-            if should_copy
-                && fs::copy(&src_path, &dst_path).is_ok() {
-                    *count += 1;
-                }
+            if should_copy && fs::copy(&src_path, &dst_path).is_ok() {
+                *count += 1;
+            }
         }
     }
 }
@@ -195,8 +252,8 @@ fn init_tracing() {
     // Default filter: everything from sirin at info, everything else at warn —
     // keeps reqwest / hyper / tokio internals from flooding the UI.
     // Override with `RUST_LOG=sirin=debug,reqwest=info` etc.
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("sirin=info,warn"));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("sirin=info,warn"));
 
     tracing_subscriber::registry()
         .with(filter)
@@ -214,15 +271,45 @@ fn init_tracing() {
 /// `http://127.0.0.1:7700/ui/` if the user navigates there manually.
 fn is_headless() -> bool {
     std::env::args().any(|a| a == "--headless")
-        || std::env::var("SIRIN_HEADLESS").map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        || std::env::var("SIRIN_HEADLESS")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false)
 }
 
-/// Acceptance mode for the local AI Work Monitor. It exposes only the
-/// loopback AppService/MCP surface and deliberately skips every background
-/// worker, browser, updater, LLM probe, scheduler, and Telegram listener.
+/// Start only the loopback RPC/MCP transport. This is a deployment smoke mode:
+/// it deliberately skips LLM discovery, Telegram listeners, workers, schedules,
+/// browser startup, updater checks, and the web UI service registration. It lets
+/// a candidate binary prove its MCP contract on an alternate port without
+/// duplicating the live Sirin daemon's side effects.
+fn is_mcp_only() -> bool {
+    std::env::args().any(|a| a == "--mcp-only")
+}
+
+/// Acceptance mode for the local AI Work Monitor UI. It registers the normal
+/// read-only AppService surface but deliberately skips Telegram, schedulers,
+/// LLM discovery, browser startup, updater checks, and every background worker.
 fn is_ai_monitor_only() -> bool {
     std::env::args().any(|a| a == "--ai-monitor-only")
+}
+
+fn load_runtime_env() {
+    // Prefer the installed per-user settings in both normal and MCP-only
+    // modes. Candidate smoke must exercise the same integration configuration
+    // as the scheduled daemon; loading variables does not start integrations.
+    let env_file = platform::app_data_dir().join(".env");
+    if env_file.exists() {
+        match dotenvy::from_path(&env_file) {
+            Ok(_) => tracing::info!(target: "sirin", "[main] Loaded .env from {env_file:?}"),
+            // .env load failure is meaningful — surface as warn so it lands in diagnose.recent_errors
+            Err(e) => tracing::warn!(target: "sirin", "[main] .env load error: {e}"),
+        }
+    } else {
+        match dotenvy::dotenv() {
+            Ok(path) => tracing::info!(target: "sirin", "[main] Loaded .env from {path:?}"),
+            // Common in fresh/installed mode — info is enough
+            Err(e) => tracing::info!(target: "sirin", "[main] .env not loaded: {e}"),
+        }
+    }
 }
 
 fn main() {
@@ -233,8 +320,11 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "doctor" || a == "--check") {
         let env_file = platform::app_data_dir().join(".env");
-        if env_file.exists() { let _ = dotenvy::from_path(&env_file); }
-        else { let _ = dotenvy::dotenv(); }
+        if env_file.exists() {
+            let _ = dotenvy::from_path(&env_file);
+        } else {
+            let _ = dotenvy::dotenv();
+        }
         let report = doctor::run();
         if args.iter().any(|a| a == "--format=json") {
             doctor::print_json(&report);
@@ -258,25 +348,7 @@ fn main() {
     // crash / taskkill / panic.  Prevents orphan claude.exe accumulation.
     process_group::install();
 
-    diagnose::record_startup();
-
-    // Try app_data_dir/.env first (installed mode), then CWD (dev mode)
-    let env_file = platform::app_data_dir().join(".env");
-    if env_file.exists() {
-        match dotenvy::from_path(&env_file) {
-            Ok(_)  => tracing::info!(target: "sirin", "[main] Loaded .env from {env_file:?}"),
-            // .env load failure is meaningful — surface as warn so it lands in diagnose.recent_errors
-            Err(e) => tracing::warn!(target: "sirin", "[main] .env load error: {e}"),
-        }
-    } else {
-        match dotenvy::dotenv() {
-            Ok(path) => tracing::info!(target: "sirin", "[main] Loaded .env from {path:?}"),
-            // Common in fresh/installed mode — info is enough
-            Err(e)   => tracing::info!(target: "sirin", "[main] .env not loaded: {e}"),
-        }
-    }
-
-    ensure_first_run_dirs();
+    load_runtime_env();
 
     if is_ai_monitor_only() {
         ai_monitor::spawn_sampler();
@@ -284,7 +356,6 @@ fn main() {
         let tg_auth = TelegramAuthState::new();
         let svc = StdArc::new(ui_service_impl::RealService::new(tracker, tg_auth));
         mcp_server::register_app_service(svc as StdArc<dyn ui_service::AppService>);
-
         let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
         {
             let _guard = rt.enter();
@@ -292,13 +363,33 @@ fn main() {
         }
         std::mem::forget(rt);
         tracing::info!(target: "sirin",
-            "[main] AI-monitor-only mode on 127.0.0.1:{}; background integrations are disabled.",
+            "[main] AI-monitor-only acceptance mode on 127.0.0.1:{}; all background integrations are disabled.",
             std::env::var("SIRIN_RPC_PORT").unwrap_or_else(|_| "7700".into())
         );
         loop {
             std::thread::park();
         }
     }
+
+    if is_mcp_only() {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+        {
+            let _guard = rt.enter();
+            rt.spawn(rpc_server::start_rpc_server());
+        }
+        std::mem::forget(rt);
+        tracing::info!(target: "sirin",
+            "[main] MCP-only smoke mode on 127.0.0.1:{}; background integrations are disabled.",
+            std::env::var("SIRIN_RPC_PORT").unwrap_or_else(|_| "7700".into())
+        );
+        loop {
+            std::thread::park();
+        }
+    }
+
+    diagnose::record_startup();
+
+    ensure_first_run_dirs();
 
     // ── Privacy mask default (Issue #80) ─────────────────────────────────────
     // Read SIRIN_PRIVACY_MASK once .env is loaded.  Default = on (fail-secure).
@@ -327,7 +418,9 @@ fn main() {
     }
 
     match memory::ensure_codebase_index() {
-        Ok(count) if count > 0 => tracing::info!(target: "sirin", "[main] Refreshed codebase index ({count} files)"),
+        Ok(count) if count > 0 => {
+            tracing::info!(target: "sirin", "[main] Refreshed codebase index ({count} files)")
+        }
         Ok(_) => {}
         // Index failure should surface — code_graph features quietly degrade otherwise
         Err(e) => tracing::warn!(target: "sirin", "[main] Codebase index refresh skipped: {e}"),
@@ -411,6 +504,10 @@ fn main() {
 
         rt.spawn(followup::run_worker(tracker.clone()));
         rt.spawn(rpc_server::start_rpc_server());
+        ios_device::spawn_driver_manager_loop();
+        research_sentinel::spawn_monitor_loop();
+        a2a_worker::spawn_worker_loop();
+        ops_schedule::spawn_runner_loop();
         // Background LLM reachability probe — feeds diagnose.llm.reachable.
         // Cheap (one HTTP GET every 30s); ensures stale "model configured but
         // Ollama is down" cases get reported truthfully via the MCP tool.

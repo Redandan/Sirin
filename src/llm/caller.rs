@@ -29,8 +29,7 @@ use super::{call_coding_prompt, call_large_prompt, call_prompt, call_router_prom
 /// lifetime is tied to `&self` so impls can borrow internal state
 /// (HTTP client, mock state) for the duration of the call without
 /// requiring `'static`.
-pub type BoxLlmFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>>;
+pub type BoxLlmFuture<'a> = Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>>;
 
 /// Abstraction over the LLM call surface used by agents.
 ///
@@ -78,10 +77,10 @@ pub trait LlmCaller: Send + Sync {
 /// applied to all four methods — that's what `#269 llm_override` wants
 /// (one config drives every agent call in that test).
 pub struct RealLlmCaller {
-    pub http:       Arc<reqwest::Client>,
-    pub llm:        Arc<LlmConfig>,
+    pub http: Arc<reqwest::Client>,
+    pub llm: Arc<LlmConfig>,
     pub router_llm: Arc<LlmConfig>,
-    pub large_llm:  Arc<LlmConfig>,
+    pub large_llm: Arc<LlmConfig>,
 }
 
 impl RealLlmCaller {
@@ -91,9 +90,9 @@ impl RealLlmCaller {
     pub fn new(http: Arc<reqwest::Client>, llm: Arc<LlmConfig>) -> Self {
         Self {
             http,
-            llm:        Arc::clone(&llm),
+            llm: Arc::clone(&llm),
             router_llm: Arc::clone(&llm),
-            large_llm:  llm,
+            large_llm: llm,
         }
     }
 
@@ -101,10 +100,10 @@ impl RealLlmCaller {
     /// singletons so call_router doesn't accidentally use the main LLM.
     pub fn from_globals() -> Self {
         Self {
-            http:       super::shared_http(),
-            llm:        super::shared_llm(),
+            http: super::shared_http(),
+            llm: super::shared_llm(),
             router_llm: super::shared_router_llm(),
-            large_llm:  super::shared_large_llm(),
+            large_llm: super::shared_large_llm(),
         }
     }
 }
@@ -188,7 +187,7 @@ impl MockLlmCaller {
     pub fn with_responses(responses: Vec<Result<String, String>>) -> Self {
         Self {
             responses: std::sync::Mutex::new(responses.into_iter().collect()),
-            captured:  std::sync::Mutex::new(Vec::new()),
+            captured: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -252,10 +251,7 @@ mod tests {
 
     #[tokio::test]
     async fn mock_serves_responses_in_order() {
-        let mock = MockLlmCaller::with_responses(vec![
-            Ok("first".into()),
-            Ok("second".into()),
-        ]);
+        let mock = MockLlmCaller::with_responses(vec![Ok("first".into()), Ok("second".into())]);
         assert_eq!(mock.call_coding("p1".into()).await.unwrap(), "first");
         assert_eq!(mock.call_router("p2".into()).await.unwrap(), "second");
         assert_eq!(mock.call_count(), 2);
@@ -263,10 +259,7 @@ mod tests {
 
     #[tokio::test]
     async fn mock_records_prompts_and_kinds() {
-        let mock = MockLlmCaller::with_responses(vec![
-            Ok("a".into()),
-            Ok("b".into()),
-        ]);
+        let mock = MockLlmCaller::with_responses(vec![Ok("a".into()), Ok("b".into())]);
         mock.call_coding("prompt-c".into()).await.unwrap();
         mock.call_router("prompt-r".into()).await.unwrap();
         let captured = mock.captured.lock().unwrap();
@@ -290,10 +283,7 @@ mod tests {
 
     #[test]
     fn mock_prompts_returns_in_order() {
-        let mock = MockLlmCaller::with_responses(vec![
-            Ok("r1".into()),
-            Ok("r2".into()),
-        ]);
+        let mock = MockLlmCaller::with_responses(vec![Ok("r1".into()), Ok("r2".into())]);
         // futures::executor would work, but tokio::runtime::Handle::current()
         // isn't available in a sync test — use a small block_on instead.
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -301,6 +291,9 @@ mod tests {
             mock.call_coding("first".into()).await.unwrap();
             mock.call_router("second".into()).await.unwrap();
         });
-        assert_eq!(mock.prompts(), vec!["first".to_string(), "second".to_string()]);
+        assert_eq!(
+            mock.prompts(),
+            vec!["first".to_string(), "second".to_string()]
+        );
     }
 }

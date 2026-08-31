@@ -60,16 +60,41 @@ pub fn git_commit() -> &'static str {
     option_env!("SIRIN_GIT_COMMIT").unwrap_or("unknown")
 }
 
+/// Whether the source tree contained tracked or untracked changes when this
+/// binary was built. `None` means git was unavailable, so callers must not
+/// assume the build came from a clean checkout.
+pub fn git_dirty() -> Option<bool> {
+    match option_env!("SIRIN_GIT_DIRTY") {
+        Some("true") => Some(true),
+        Some("false") => Some(false),
+        _ => None,
+    }
+}
+
+/// Human-readable build identity that never hides an unknown or dirty source
+/// state behind an otherwise valid commit SHA.
+pub fn build_identity() -> String {
+    match git_dirty() {
+        Some(true) => format!("{}-dirty", git_commit()),
+        Some(false) => git_commit().to_string(),
+        None => format!("{}-source-state-unknown", git_commit()),
+    }
+}
+
 /// Unix epoch seconds at build time.  Used to derive `build_date` in the
 /// snapshot; we keep it as a number here so the runtime side can format it
 /// however it pleases (chrono is a runtime dep, not a build-script dep).
 pub fn build_epoch() -> u64 {
-    option_env!("SIRIN_BUILD_EPOCH").and_then(|s| s.parse().ok()).unwrap_or(0)
+    option_env!("SIRIN_BUILD_EPOCH")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0)
 }
 
 fn build_date_iso() -> String {
     let secs = build_epoch();
-    if secs == 0 { return "unknown".into(); }
+    if secs == 0 {
+        return "unknown".into();
+    }
     chrono::DateTime::<chrono::Utc>::from_timestamp(secs as i64, 0)
         .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
         .unwrap_or_else(|| "unknown".into())
@@ -85,6 +110,8 @@ pub fn snapshot() -> Value {
         "name":         "sirin",
         "version":      env!("CARGO_PKG_VERSION"),
         "git_commit":   git_commit(),
+        "git_dirty":    git_dirty(),
+        "build_identity": build_identity(),
         "build_date":   build_date_iso(),
         "binary_path":  current_exe_path(),
         "platform":     format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
@@ -114,8 +141,10 @@ pub fn snapshot() -> Value {
                                    else { json!("session_held but CDP unresponsive — Chrome likely crashed") },
             })
         }
-        Ok(None)       => json!({ "running": false, "session_held": false, "reason": "no browser session open" }),
-        Err(e)         => json!({ "running": false, "session_held": false, "error": e }),
+        Ok(None) => {
+            json!({ "running": false, "session_held": false, "reason": "no browser session open" })
+        }
+        Err(e) => json!({ "running": false, "session_held": false, "error": e }),
     };
 
     let llm = llm_snapshot();
@@ -142,15 +171,33 @@ pub fn snapshot() -> Value {
          \n\
          ## Recent Sirin errors\n\
          ```\n{errors_str}\n```\n",
-        ver       = env!("CARGO_PKG_VERSION"),
-        commit    = git_commit(),
-        built     = build_date_iso(),
-        platform  = platform_str,
-        uptime    = uptime_secs(),
-        chrome_v  = chrome.get("version").and_then(|v| v.as_str()).unwrap_or("(not running)"),
-        llm_l     = llm.get("provider").and_then(|v| v.as_str()).unwrap_or("(unknown)"),
-        update    = updates.get("state").and_then(|v| v.as_str()).unwrap_or("idle"),
-        errors_str = if errors.is_empty() { "(none)".to_string() } else { errors.join("\n") },
+        ver = env!("CARGO_PKG_VERSION"),
+        commit = build_identity(),
+        built = build_date_iso(),
+        platform = platform_str,
+        uptime = uptime_secs(),
+        chrome_v = chrome
+            .get("version")
+            .and_then(|v| v.as_str())
+            .unwrap_or("(not running)"),
+        llm_l = format!(
+            "{}/{}",
+            llm.get("provider")
+                .and_then(|v| v.as_str())
+                .unwrap_or("(unknown)"),
+            llm.get("model")
+                .and_then(|v| v.as_str())
+                .unwrap_or("(unknown)")
+        ),
+        update = updates
+            .get("state")
+            .and_then(|v| v.as_str())
+            .unwrap_or("idle"),
+        errors_str = if errors.is_empty() {
+            "(none)".to_string()
+        } else {
+            errors.join("\n")
+        },
     );
 
     json!({
@@ -185,27 +232,19 @@ fn rpc_port() -> u16 {
 }
 
 fn llm_snapshot() -> Value {
-    // Read .env-derived runtime config without forcing a probe round-trip
-    // (the snapshot must be fast).  Provider + model are the most useful
-    // bits for diagnosis.  We additionally include a *cached* reachability
-    // hint refreshed every 30s by [`refresh_llm_reachability`], so the
-    // calling AI can distinguish "model not configured" from "model
-    // configured but Ollama is down".
-    let provider = std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "(unset)".into());
-    let model = std::env::var("OLLAMA_MODEL")
-        .or_else(|_| std::env::var("OPENAI_MODEL"))
-        .or_else(|_| std::env::var("LLM_MODEL"))
-        .unwrap_or_else(|_| "(unset)".into());
+    // Report the process-wide effective config, not a second reconstruction
+    // from env vars. Startup probing and llm.yaml overrides may select a
+    // different provider/model than the raw environment contains.
+    let llm = crate::llm::shared_llm();
+    let provider = llm.backend_name();
+    let model = llm.model.clone();
 
     let reachability = llm_reachability_cached();
 
     json!({
         "provider": provider,
         "model":    model,
-        // Heuristic: model names containing 'vision', 'vl', 'gemma3', 'llava',
-        // 'qwen-vl', 'gemini' are typically vision-capable.  Used by Tier-1 AI
-        // to decide whether to suggest a different model for canvas testing.
-        "vision_capable_hint": is_vision_model(&model),
+        "vision_capable_hint": llm.supports_vision_hint(),
         // Cheap reachability check — `null` if never probed, `true`/`false`
         // otherwise.  Updated by background task every ~30s.
         "reachable":            reachability.reachable,
@@ -223,16 +262,16 @@ fn llm_snapshot() -> Value {
 
 #[derive(Clone, Default)]
 struct LlmReachability {
-    reachable:            Option<bool>,
-    checked_at:           Option<Instant>,
-    error:                Option<String>,
+    reachable: Option<bool>,
+    checked_at: Option<Instant>,
+    error: Option<String>,
 }
 
 #[derive(Serialize, Default)]
 struct LlmReachabilityView {
-    reachable:                       Option<bool>,
-    checked_at_secs_ago:             Option<u64>,
-    error:                           Option<String>,
+    reachable: Option<bool>,
+    checked_at_secs_ago: Option<u64>,
+    error: Option<String>,
 }
 
 static LLM_REACH: OnceLock<std::sync::Mutex<LlmReachability>> = OnceLock::new();
@@ -275,29 +314,36 @@ pub fn spawn_reachability_probe() {
 }
 
 async fn probe_llm_once() -> (bool, Option<String>) {
-    let provider = std::env::var("LLM_PROVIDER")
-        .unwrap_or_else(|_| "ollama".to_string())
-        .to_lowercase();
+    let llm = crate::llm::shared_llm();
 
-    let url = match provider.as_str() {
-        "lmstudio" | "lm_studio" | "openai" => {
-            let base = std::env::var("LM_STUDIO_BASE_URL")
-                .or_else(|_| std::env::var("OPENAI_BASE_URL"))
-                .unwrap_or_else(|_| "http://127.0.0.1:1234/v1".to_string());
+    let url = match llm.backend {
+        crate::llm::LlmBackend::LmStudio => {
+            let base = llm.base_url.clone();
+            let client = reqwest::Client::new();
+            if let Err(e) =
+                crate::llm::ensure_lmstudio_server(&client, &base, llm.api_key.as_deref()).await
+            {
+                crate::sirin_log!("[diagnose] LM Studio auto-start failed: {e}");
+            }
             format!("{}/models", base.trim_end_matches('/'))
         }
-        "gemini" | "google" => {
+        crate::llm::LlmBackend::Gemini => {
             // Gemini doesn't expose a cheap unauthenticated health endpoint;
             // probing models requires the API key.  Skip — return reachable=true
             // so we don't false-flag working remote configs.
-            return (true, Some("(skipped: gemini has no anonymous health endpoint)".to_string()));
+            return (
+                true,
+                Some("(skipped: gemini has no anonymous health endpoint)".to_string()),
+            );
         }
-        "anthropic" | "claude" => {
-            return (true, Some("(skipped: anthropic has no anonymous health endpoint)".to_string()));
+        crate::llm::LlmBackend::Anthropic => {
+            return (
+                true,
+                Some("(skipped: anthropic has no anonymous health endpoint)".to_string()),
+            );
         }
-        _ => {
-            let base = std::env::var("OLLAMA_BASE_URL")
-                .unwrap_or_else(|_| "http://127.0.0.1:11434".to_string());
+        crate::llm::LlmBackend::Ollama => {
+            let base = llm.base_url.clone();
             format!("{}/api/tags", base.trim_end_matches('/'))
         }
     };
@@ -315,32 +361,32 @@ async fn probe_llm_once() -> (bool, Option<String>) {
     }
 }
 
-fn is_vision_model(model: &str) -> bool {
-    let m = model.to_lowercase();
-    ["vision", "vl", "llava", "gemma3", "gemini", "qwen2.5-vl", "claude-3"]
-        .iter()
-        .any(|tag| m.contains(tag))
-}
-
 fn update_snapshot() -> Value {
-    use crate::updater::UpdateStatus;
     let status = crate::updater::get_status();
-    let (state, latest) = match &status {
-        UpdateStatus::Idle              => ("idle",         None),
-        UpdateStatus::Checking          => ("checking",     None),
-        UpdateStatus::Available(v)      => ("update_available", Some(v.clone())),
-        UpdateStatus::UpToDate          => ("up_to_date",   None),
-        UpdateStatus::CheckFailed(_)    => ("check_failed", None),
-        UpdateStatus::Applying          => ("applying",     None),
-        UpdateStatus::RestartRequired   => ("restart_required", None),
-        UpdateStatus::ApplyFailed(_)    => ("apply_failed", None),
-    };
+    let (state, latest, error) = update_status_fields(&status);
     json!({
         "state":              state,
         "current":            env!("CARGO_PKG_VERSION"),
         "latest":             latest,
+        "error":              error,
         "release_notes_url":  "https://github.com/Redandan/Sirin/releases",
     })
+}
+
+fn update_status_fields(
+    status: &crate::updater::UpdateStatus,
+) -> (&'static str, Option<String>, Option<String>) {
+    use crate::updater::UpdateStatus;
+    match status {
+        UpdateStatus::Idle => ("idle", None, None),
+        UpdateStatus::Checking => ("checking", None, None),
+        UpdateStatus::Available(version) => ("update_available", Some(version.clone()), None),
+        UpdateStatus::UpToDate => ("up_to_date", None, None),
+        UpdateStatus::CheckFailed(error) => ("check_failed", None, Some(error.clone())),
+        UpdateStatus::Applying => ("applying", None, None),
+        UpdateStatus::RestartRequired => ("restart_required", None, None),
+        UpdateStatus::ApplyFailed(error) => ("apply_failed", None, Some(error.clone())),
+    }
 }
 
 /// Tail the last `limit` ERROR / WARN lines from the running log.  We read
@@ -384,9 +430,9 @@ fn recent_errors(limit: usize) -> Vec<String> {
 #[allow(dead_code)]
 pub struct Diagnose {
     pub identity: Value,
-    pub chrome:   Value,
-    pub llm:      Value,
-    pub update:   Value,
+    pub chrome: Value,
+    pub llm: Value,
+    pub update: Value,
     pub recent_errors: Vec<String>,
     pub report_issue_template: Value,
 }
@@ -399,7 +445,14 @@ mod tests {
     fn snapshot_returns_required_top_level_keys() {
         // record_startup may not have been called; uptime should still be 0
         let snap = snapshot();
-        for key in ["identity", "chrome", "llm", "update", "recent_errors", "report_issue_template"] {
+        for key in [
+            "identity",
+            "chrome",
+            "llm",
+            "update",
+            "recent_errors",
+            "report_issue_template",
+        ] {
             assert!(snap.get(key).is_some(), "missing key: {key}");
         }
     }
@@ -413,21 +466,58 @@ mod tests {
     }
 
     #[test]
-    fn vision_model_heuristic() {
-        assert!(is_vision_model("gemma3:12b"));
-        assert!(is_vision_model("gemini-1.5-pro"));
-        assert!(is_vision_model("qwen2.5-vl-7b"));
-        assert!(is_vision_model("llava:34b"));
-        assert!(!is_vision_model("qwen2.5:7b"));
-        assert!(!is_vision_model("llama3.2"));
+    fn identity_never_hides_dirty_or_unknown_source_state() {
+        let snap = snapshot();
+        let identity = &snap["identity"];
+        let build_identity = identity["build_identity"].as_str().unwrap();
+        assert!(build_identity.starts_with(git_commit()));
+
+        match git_dirty() {
+            Some(true) => {
+                assert_eq!(identity["git_dirty"], Value::Bool(true));
+                assert!(build_identity.ends_with("-dirty"));
+            }
+            Some(false) => {
+                assert_eq!(identity["git_dirty"], Value::Bool(false));
+                assert_eq!(build_identity, git_commit());
+            }
+            None => {
+                assert!(identity["git_dirty"].is_null());
+                assert!(build_identity.ends_with("-source-state-unknown"));
+            }
+        }
+    }
+
+    #[test]
+    fn llm_snapshot_matches_the_effective_runtime_config() {
+        let effective = crate::llm::shared_llm();
+        let snap = llm_snapshot();
+        assert_eq!(snap["provider"], effective.backend_name());
+        assert_eq!(snap["model"], effective.model);
+        assert_eq!(
+            snap["vision_capable_hint"],
+            effective.supports_vision_hint()
+        );
+    }
+
+    #[test]
+    fn update_failures_keep_the_actionable_error() {
+        let (state, latest, error) = update_status_fields(
+            &crate::updater::UpdateStatus::CheckFailed("network timeout".to_string()),
+        );
+        assert_eq!(state, "check_failed");
+        assert_eq!(latest, None);
+        assert_eq!(error.as_deref(), Some("network timeout"));
     }
 
     #[test]
     fn report_template_contains_environment_block() {
         let snap = snapshot();
         let body = snap["report_issue_template"]["body"].as_str().unwrap();
+        let effective = crate::llm::shared_llm();
         assert!(body.contains("## Environment"));
         assert!(body.contains("Sirin version"));
+        assert!(body.contains(&format!("{}/{}", effective.backend_name(), effective.model)));
         assert!(body.contains("## Reproduction"));
         assert!(body.contains("## What the calling AI already tried"));
     }
@@ -436,7 +526,7 @@ mod tests {
     fn record_startup_is_idempotent() {
         record_startup();
         let first = uptime_secs();
-        record_startup();  // should not reset
+        record_startup(); // should not reset
         std::thread::sleep(std::time::Duration::from_millis(10));
         let second = uptime_secs();
         assert!(second >= first, "uptime regressed: {first} -> {second}");
@@ -455,16 +545,26 @@ mod tests {
         crate::log_buffer::push("plain info line".to_string());
 
         let errors = recent_errors(20);
-        assert!(errors.iter().any(|l| l == "[ERROR] real error here"),
-            "missing [ERROR] line, got: {errors:?}");
-        assert!(errors.iter().any(|l| l == "[WARN] real warning here"),
-            "missing [WARN] line, got: {errors:?}");
-        assert!(!errors.iter().any(|l| l.contains("no ERROR detected")),
-            "leaked benign ERROR mention: {errors:?}");
-        assert!(!errors.iter().any(|l| l.contains("warning shown to user")),
-            "leaked benign warning mention: {errors:?}");
-        assert!(!errors.iter().any(|l| l == "plain info line"),
-            "leaked plain info: {errors:?}");
+        assert!(
+            errors.iter().any(|l| l == "[ERROR] real error here"),
+            "missing [ERROR] line, got: {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|l| l == "[WARN] real warning here"),
+            "missing [WARN] line, got: {errors:?}"
+        );
+        assert!(
+            !errors.iter().any(|l| l.contains("no ERROR detected")),
+            "leaked benign ERROR mention: {errors:?}"
+        );
+        assert!(
+            !errors.iter().any(|l| l.contains("warning shown to user")),
+            "leaked benign warning mention: {errors:?}"
+        );
+        assert!(
+            !errors.iter().any(|l| l == "plain info line"),
+            "leaked plain info: {errors:?}"
+        );
     }
 
     #[test]
@@ -487,9 +587,15 @@ mod tests {
         let snap = snapshot();
         let chrome = &snap["chrome"];
         // session_held = false because we never opened a browser
-        assert_eq!(chrome["session_held"], serde_json::Value::Bool(false),
-            "expected session_held=false in unit test, got {chrome}");
-        assert_eq!(chrome["running"], serde_json::Value::Bool(false),
-            "expected running=false when no session, got {chrome}");
+        assert_eq!(
+            chrome["session_held"],
+            serde_json::Value::Bool(false),
+            "expected session_held=false in unit test, got {chrome}"
+        );
+        assert_eq!(
+            chrome["running"],
+            serde_json::Value::Bool(false),
+            "expected running=false when no session, got {chrome}"
+        );
     }
 }

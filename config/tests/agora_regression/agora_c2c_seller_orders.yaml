@@ -4,6 +4,7 @@ url: "https://redandan.github.io/?__test_role=seller"
 
 max_iterations: 12
 timeout_secs: 180
+fixture_only: true
 max_retries: 0
 
 # H5 mobile viewport — Seller 後台是手機版
@@ -14,35 +15,50 @@ viewport:
   mobile: true
 
 locale: zh-TW
-llm_override:
-  provider: lmstudio
-  model: gemma-3-1b-it
+
+# AgoraMarket may show Passkey onboarding before seller tabs.
+# Keep this smoke deterministic; C2C order content can be empty and still valid.
+fixture:
+  setup:
+    - {action: "clear_state"}
+    - {action: "goto", target: "https://redandan.github.io/?__test_role=seller"}
+    - {action: "wait", target: "5000"}
+    - {action: "wait_for_flutter_semantics", timeout: 15000, min_roles: 2}
+    - {action: "dismiss_passkey_prompt"}
+    - {action: "goto", target: "https://redandan.github.io/?__test_role=seller"}
+    - {action: "wait", target: "7000"}
+    - {action: "wait_for_flutter_semantics", timeout: 25000, min_roles: 8}
+    - {action: "agora_nav_click", target: "訂單"}
+    - {action: "wait", target: "2500"}
+    - {action: "wait_for_flutter_semantics", timeout: 12000, min_roles: 8}
+    - {action: "assert_url_matches", target: "#/seller"}
+    - {action: "shadow_find", role: "tab", name_regex: "^全部$"}
+    - {action: "shadow_find", role: "tab", name_regex: "^待處理$"}
+    - {action: "shadow_find", role: "tab", name_regex: "^運送中$"}
+    - {action: "shadow_find", role: "tab", name_regex: "^已完成$"}
+    - {action: "shadow_click", role: "tab", name_regex: "^待處理$|^運送中$"}
+    - {action: "wait_for_flutter_semantics", timeout: 12000, min_roles: 8}
 
 goal: |
-  目標：驗證賣家訂單管理頁可正常載入，所有訂單狀態分類 tab 顯示正確。
+  目標：fixture-only smoke，驗證賣家訂單管理頁可正常載入，所有訂單狀態分類 tab 顯示正確。
 
-  起始狀態：賣家已 auto-login，在賣家儀表板首頁。
+  起始狀態：fixture.setup 已完成 clear_state、seller URL 導航、Passkey prompt dismiss、
+  點擊底部訂單分頁，並驗證訂單狀態分類 tab 可見。
 
   已知資訊：
   - 底部有 4 個 tab：商品、訂單、錢包、我的
   - 目前訂單頁狀態 tab 為：全部、待處理、運送中、已完成
   - 無訂單時顯示「暫無訂單」或空列表（正常現象）
+  - 新版賣家首頁使用 #/seller 單一路由承載首頁/商品/訂單/錢包 tab；
+    URL 不變不代表 tab 沒切換，必須以 shadow tree 內容判斷。
 
-  ⚠️ 步驟 12 無條件 done=true。
+  ⚠️ fixture_only=true；fixture.setup 全部成功即通過，不進 LLM ReAct loop。
 
-  步驟（線性，步驟 12 done=true）：
-  1. wait 3000
-  2. enable_a11y
-  3. wait 1500
-  4. shadow_click role=tab name_regex="^訂單$"（點底部訂單 tab）
-  5. wait 2500
-  6. enable_a11y
-  7. wait 1000
-  8. shadow_dump（確認訂單管理頁已載入，找到 tab 列表）
-  9. shadow_click role=tab name_regex="^待處理$|^運送中$"（切換到可操作中的訂單 tab）
-  10. wait 1500
-  11. shadow_dump（確認已切換到目標 tab，允許空列表）
-  12. done=true
+  fixture 驗證：
+  - cold-load 後等待 Flutter semantics ready
+  - 成功進入賣家訂單管理頁
+  - 找到全部/待處理/運送中/已完成四個訂單狀態分類
+  - 可切換到待處理或運送中 tab
 
 success_criteria:
   - "成功進入賣家訂單管理頁"

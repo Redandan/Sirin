@@ -1,0 +1,4 @@
+interface:
+  display_name: "iPhone USB Device Validation"
+  short_description: "Validate and control a USB iPhone through Sirin"
+  default_prompt: "Use $iphone-usb-validation to perform a read-only physical iPhone acceptance test through Sirin."

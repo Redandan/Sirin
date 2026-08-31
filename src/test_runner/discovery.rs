@@ -20,26 +20,26 @@ use rusqlite::params;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DiscoveredFeature {
-    pub route:     String,
-    pub label:     String,
+    pub route: String,
+    pub label: String,
     /// "button" | "link" | "form_input" | "page" | "tab" | "menuitem"
-    pub kind:      String,
-    pub selector:  Option<String>,
+    pub kind: String,
+    pub selector: Option<String>,
     pub last_seen: String,
-    pub run_id:    Option<String>,
+    pub run_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DiscoveryRun {
-    pub run_id:        String,
-    pub started_at:    String,
-    pub finished_at:   Option<String>,
+    pub run_id: String,
+    pub started_at: String,
+    pub finished_at: Option<String>,
     /// "running" | "done" | "failed"
-    pub status:        String,
+    pub status: String,
     pub total_widgets: Option<u32>,
-    pub error:         Option<String>,
-    pub seed_url:      Option<String>,
-    pub max_depth:     Option<u32>,
+    pub error: Option<String>,
+    pub seed_url: Option<String>,
+    pub max_depth: Option<u32>,
 }
 
 // ── DB access ─────────────────────────────────────────────────────────────────
@@ -56,24 +56,32 @@ pub fn begin_run(run_id: &str, seed_url: &str, max_depth: u32) -> Result<(), Str
         "INSERT INTO discovery_runs (run_id, started_at, status, seed_url, max_depth) \
          VALUES (?1, ?2, 'running', ?3, ?4)",
         params![run_id, now_rfc3339(), seed_url, max_depth as i64],
-    ).map_err(|e| format!("insert discovery_run: {e}"))?;
+    )
+    .map_err(|e| format!("insert discovery_run: {e}"))?;
     Ok(())
 }
 
 /// Mark a run finished — status either "done" or "failed".
 pub fn finish_run(
-    run_id:        &str,
-    status:        &str,
+    run_id: &str,
+    status: &str,
     total_widgets: Option<u32>,
-    error:         Option<&str>,
+    error: Option<&str>,
 ) -> Result<(), String> {
     let conn = db().lock().map_err(|e| e.to_string())?;
     conn.execute(
         "UPDATE discovery_runs \
          SET finished_at = ?1, status = ?2, total_widgets = ?3, error = ?4 \
          WHERE run_id = ?5",
-        params![now_rfc3339(), status, total_widgets.map(|n| n as i64), error, run_id],
-    ).map_err(|e| format!("update discovery_run: {e}"))?;
+        params![
+            now_rfc3339(),
+            status,
+            total_widgets.map(|n| n as i64),
+            error,
+            run_id
+        ],
+    )
+    .map_err(|e| format!("update discovery_run: {e}"))?;
     Ok(())
 }
 
@@ -89,65 +97,79 @@ pub fn record_feature(feat: &DiscoveredFeature) -> Result<(), String> {
             run_id    = excluded.run_id, \
             selector  = COALESCE(excluded.selector, selector)",
         params![
-            feat.route, feat.label, feat.kind,
-            feat.selector, feat.last_seen, feat.run_id,
+            feat.route,
+            feat.label,
+            feat.kind,
+            feat.selector,
+            feat.last_seen,
+            feat.run_id,
         ],
-    ).map_err(|e| format!("upsert feature: {e}"))?;
+    )
+    .map_err(|e| format!("upsert feature: {e}"))?;
     Ok(())
 }
 
 /// List all discovered features (newest last_seen first).
 pub fn list_features() -> Result<Vec<DiscoveredFeature>, String> {
     let conn = db().lock().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare(
-        "SELECT route, label, kind, selector, last_seen, run_id \
+    let mut stmt = conn
+        .prepare(
+            "SELECT route, label, kind, selector, last_seen, run_id \
          FROM discovered_features \
          ORDER BY last_seen DESC",
-    ).map_err(|e| format!("prepare list_features: {e}"))?;
-    let rows = stmt.query_map([], |r| {
-        Ok(DiscoveredFeature {
-            route:     r.get(0)?,
-            label:     r.get(1)?,
-            kind:      r.get(2)?,
-            selector:  r.get(3)?,
-            last_seen: r.get(4)?,
-            run_id:    r.get(5)?,
+        )
+        .map_err(|e| format!("prepare list_features: {e}"))?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(DiscoveredFeature {
+                route: r.get(0)?,
+                label: r.get(1)?,
+                kind: r.get(2)?,
+                selector: r.get(3)?,
+                last_seen: r.get(4)?,
+                run_id: r.get(5)?,
+            })
         })
-    }).map_err(|e| format!("query list_features: {e}"))?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        .map_err(|e| format!("query list_features: {e}"))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 /// Total distinct features ever discovered.
 pub fn feature_count() -> Result<u32, String> {
     let conn = db().lock().map_err(|e| e.to_string())?;
-    let n: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM discovered_features", [], |r| r.get(0),
-    ).map_err(|e| format!("count features: {e}"))?;
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM discovered_features", [], |r| r.get(0))
+        .map_err(|e| format!("count features: {e}"))?;
     Ok(n.max(0) as u32)
 }
 
 /// Latest discovery run (any status), or None when none exist yet.
 pub fn latest_run() -> Result<Option<DiscoveryRun>, String> {
     let conn = db().lock().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare(
-        "SELECT run_id, started_at, finished_at, status, total_widgets, \
+    let mut stmt = conn
+        .prepare(
+            "SELECT run_id, started_at, finished_at, status, total_widgets, \
                 error, seed_url, max_depth \
          FROM discovery_runs \
          ORDER BY started_at DESC LIMIT 1",
-    ).map_err(|e| format!("prepare latest_run: {e}"))?;
+        )
+        .map_err(|e| format!("prepare latest_run: {e}"))?;
     let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
     if let Some(r) = rows.next().map_err(|e| e.to_string())? {
         Ok(Some(DiscoveryRun {
-            run_id:        r.get(0).map_err(|e| e.to_string())?,
-            started_at:    r.get(1).map_err(|e| e.to_string())?,
-            finished_at:   r.get(2).map_err(|e| e.to_string())?,
-            status:        r.get(3).map_err(|e| e.to_string())?,
-            total_widgets: r.get::<_, Option<i64>>(4)
+            run_id: r.get(0).map_err(|e| e.to_string())?,
+            started_at: r.get(1).map_err(|e| e.to_string())?,
+            finished_at: r.get(2).map_err(|e| e.to_string())?,
+            status: r.get(3).map_err(|e| e.to_string())?,
+            total_widgets: r
+                .get::<_, Option<i64>>(4)
                 .map_err(|e| e.to_string())?
                 .map(|n| n.max(0) as u32),
-            error:         r.get(5).map_err(|e| e.to_string())?,
-            seed_url:      r.get(6).map_err(|e| e.to_string())?,
-            max_depth:     r.get::<_, Option<i64>>(7)
+            error: r.get(5).map_err(|e| e.to_string())?,
+            seed_url: r.get(6).map_err(|e| e.to_string())?,
+            max_depth: r
+                .get::<_, Option<i64>>(7)
                 .map_err(|e| e.to_string())?
                 .map(|n| n.max(0) as u32),
         }))
@@ -161,9 +183,8 @@ pub fn latest_run() -> Result<Option<DiscoveryRun>, String> {
 #[allow(dead_code)]
 pub fn clear_all() -> Result<(), String> {
     let conn = db().lock().map_err(|e| e.to_string())?;
-    conn.execute_batch(
-        "DELETE FROM discovered_features; DELETE FROM discovery_runs;",
-    ).map_err(|e| format!("clear: {e}"))?;
+    conn.execute_batch("DELETE FROM discovered_features; DELETE FROM discovery_runs;")
+        .map_err(|e| format!("clear: {e}"))?;
     Ok(())
 }
 
@@ -204,15 +225,20 @@ pub fn crawl_app(seed_url: &str, max_depth: u32, run_id: &str) -> Result<u32, St
 
     for el in elements {
         let name = el["name"].as_str().unwrap_or("").trim().to_string();
-        if name.is_empty() { continue; }
+        if name.is_empty() {
+            continue;
+        }
         let role = el["role"].as_str().unwrap_or("generic");
-        let tag  = el["tag"].as_str().unwrap_or("");
+        let tag = el["tag"].as_str().unwrap_or("");
         let href = el["href"].as_str().map(String::from);
-        let ref_id = el["ref"].as_str()
+        let ref_id = el["ref"]
+            .as_str()
             .map(|s| format!("[data-sirin-ref=\"{s}\"]"));
 
         let kind = role_to_kind(role, tag);
-        if kind == "generic" { continue; }
+        if kind == "generic" {
+            continue;
+        }
 
         // For links, the *destination* is the more useful "route" — it
         // tells us a future page exists. For everything else, current route.
@@ -251,12 +277,12 @@ pub fn crawl_app(seed_url: &str, max_depth: u32, run_id: &str) -> Result<u32, St
             }
             // Map Flutter ARIA roles → discovery kinds.
             let kind = match role.as_str() {
-                "button"                       => "button",
-                "link"                         => "link",
-                "tab" | "menuitem"             => role.as_str(),
-                "textbox" | "combobox"         => "form_input",
-                "checkbox" | "radio"           => "form_input",
-                _                              => continue, // skip generic/text
+                "button" => "button",
+                "link" => "link",
+                "tab" | "menuitem" => role.as_str(),
+                "textbox" | "combobox" => "form_input",
+                "checkbox" | "radio" => "form_input",
+                _ => continue, // skip generic/text
             };
             let feat = DiscoveredFeature {
                 route: route.clone(),
@@ -297,17 +323,17 @@ fn extract_route(url: &str) -> String {
 
 fn role_to_kind(role: &str, tag: &str) -> &'static str {
     match role {
-        "button"                       => "button",
-        "link"                         => "link",
-        "textbox" | "combobox"         => "form_input",
-        "tab"                          => "tab",
-        "menuitem"                     => "menuitem",
-        "checkbox" | "radio"           => "form_input",
+        "button" => "button",
+        "link" => "link",
+        "textbox" | "combobox" => "form_input",
+        "tab" => "tab",
+        "menuitem" => "menuitem",
+        "checkbox" | "radio" => "form_input",
         _ => match tag {
-            "a"      => "link",
+            "a" => "link",
             "button" => "button",
             "input" | "select" | "textarea" => "form_input",
-            _        => "generic",
+            _ => "generic",
         },
     }
 }
@@ -324,20 +350,26 @@ fn now_rfc3339() -> String {
 mod tests {
     use super::*;
 
-    fn fresh() {
-        let _ = clear_all();
+    static DISCOVERY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn fresh() -> std::sync::MutexGuard<'static, ()> {
+        let guard = DISCOVERY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        clear_all().expect("clear discovery test state");
+        guard
     }
 
     #[test]
     fn record_and_list() {
-        fresh();
+        let _guard = fresh();
         let f = DiscoveredFeature {
-            route:     "/buyer/checkout".into(),
-            label:     "Place Order".into(),
-            kind:      "button".into(),
-            selector:  Some("[data-test='place-order']".into()),
+            route: "/buyer/checkout".into(),
+            label: "Place Order".into(),
+            kind: "button".into(),
+            selector: Some("[data-test='place-order']".into()),
             last_seen: now_rfc3339(),
-            run_id:    Some("disc_test_1".into()),
+            run_id: Some("disc_test_1".into()),
         };
         record_feature(&f).expect("record");
         let all = list_features().expect("list");
@@ -346,14 +378,14 @@ mod tests {
 
     #[test]
     fn upsert_dedups_by_route_label_kind() {
-        fresh();
+        let _guard = fresh();
         let f = DiscoveredFeature {
-            route:     "/seller/products".into(),
-            label:     "Add Product".into(),
-            kind:      "button".into(),
-            selector:  None,
+            route: "/seller/products".into(),
+            label: "Add Product".into(),
+            kind: "button".into(),
+            selector: None,
             last_seen: now_rfc3339(),
-            run_id:    Some("disc_a".into()),
+            run_id: Some("disc_a".into()),
         };
         record_feature(&f).expect("first");
         let mut g = f.clone();
@@ -361,7 +393,8 @@ mod tests {
         g.selector = Some(".btn-add".into());
         record_feature(&g).expect("second");
         let all = list_features().expect("list");
-        let matches: Vec<_> = all.iter()
+        let matches: Vec<_> = all
+            .iter()
             .filter(|x| x.route == "/seller/products" && x.label == "Add Product")
             .collect();
         assert_eq!(matches.len(), 1, "should dedup on (route,label,kind)");
@@ -371,7 +404,7 @@ mod tests {
 
     #[test]
     fn run_lifecycle() {
-        fresh();
+        let _guard = fresh();
         begin_run("disc_lifecycle_1", "http://localhost:3000", 3).expect("begin");
         let latest = latest_run().expect("latest").expect("some");
         assert_eq!(latest.status, "running");

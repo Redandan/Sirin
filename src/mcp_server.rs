@@ -18,7 +18,7 @@
 //! | 方法 | 說明 |
 //! |------|------|
 //! | `initialize` | MCP 握手 |
-//! | `tools/list` | 列出所有可用工具 |
+//! | `tools/list` | 列出工具；可用 `profile` 精簡 AI 發現清單 |
 //! | `tools/call` | 呼叫工具 |
 //!
 //! # 暴露的工具
@@ -107,7 +107,9 @@ fn sessions() -> &'static Mutex<HashMap<String, String>> {
 }
 
 fn remember_client_id(user_agent: &str, client_id: &str) {
-    sessions().lock().unwrap_or_else(|e| e.into_inner())
+    sessions()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
         .insert(user_agent.to_string(), client_id.to_string());
 }
 
@@ -115,7 +117,9 @@ fn remember_client_id(user_agent: &str, client_id: &str) {
 /// itself when the client hasn't yet called `initialize` (e.g. curl probes,
 /// sirin-call ad-hoc calls) — better than a stale global or empty string.
 fn resolve_client_id(user_agent: &str) -> String {
-    sessions().lock().unwrap_or_else(|e| e.into_inner())
+    sessions()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
         .get(user_agent)
         .cloned()
         .unwrap_or_else(|| user_agent.to_string())
@@ -188,32 +192,39 @@ pub fn mcp_router() -> Router {
         // rpc_server.rs (Sirin pre-:7700/ws compat).  Use `/welcome` for
         // the human/AI-readable landing instead — still typeable, doesn't
         // conflict, listed in /llms.txt and the help_html response.
-        .route("/welcome",   get(root_index))
-        .route("/ui",        get(|| async { Redirect::permanent("/ui/") }))
-        .route("/ui/",       get(ui_index))
+        .route("/welcome", get(root_index))
+        .route("/ui", get(|| async { Redirect::permanent("/ui/") }))
+        .route("/ui/", get(ui_index))
         .route("/ui/{file}", get(ui_static))
+        .route("/ios-location-report", get(ios_location_report_page))
         // Convenience aliases — `/help` is what other AIs are likely to
         // type / link to without thinking about the /ui/ prefix.
-        .route("/help",      get(|| async { Redirect::permanent("/ui/help.html") }))
-        .route("/help/",     get(|| async { Redirect::permanent("/ui/help.html") }))
+        .route(
+            "/help",
+            get(|| async { Redirect::permanent("/ui/help.html") }),
+        )
+        .route(
+            "/help/",
+            get(|| async { Redirect::permanent("/ui/help.html") }),
+        )
         // AI discovery — llmstxt.org convention. Markdown at root level
         // means crawlers find it without any path guessing.
-        .route("/llms.txt",  get(llms_txt))
+        .route("/llms.txt", get(llms_txt))
         // /api/snapshot — single combined JSON read for the dashboard. Polled
         // every ~5s by the web UI; cheap aggregate of read-only AppService calls.
         .route("/api/snapshot", get(api_snapshot))
-        // Dedicated local-only monitor endpoint. Kept separate from the global
-        // dashboard snapshot so network probes never slow the 2-second feed.
         .route("/api/ai-monitor", get(api_ai_monitor))
+        .route("/api/ios-location-share", get(api_ios_location_share))
         // /api/browser_screenshot — raw PNG bytes of the controlled Chrome
         // session. Used by the Browser tab + Dashboard browser card to show
         // a live preview. Returns 503 when no Chrome is open.
         .route("/api/browser_screenshot", get(api_browser_screenshot))
+        .route("/api/ios-location-report", post(api_ios_location_report))
         // /api/chat — Workspace 對話 tab → svc.chat_send(agent_id, message).
         // POST persists user msg + agent reply to chat_history (v0.5.3).
         // GET /api/chat/{agent_id} returns the persisted thread for hydration
         // when the user re-opens the workspace.
-        .route("/api/chat",            post(api_chat))
+        .route("/api/chat", post(api_chat))
         .route("/api/chat/{agent_id}", get(api_chat_history))
         // ── v0.5.2 mutating endpoints (Workspace 設定 / 待確認 / Settings) ─
         // /api/persona/name — POST { name } updates persona display name.
@@ -225,7 +236,10 @@ pub fn mcp_router() -> Router {
         .route("/api/agent/{id}", get(api_agent_get).post(api_agent_action))
         // /api/pending/{agent_id} — GET list of draft replies waiting on
         // human review. POST { reply_id, action: approve|reject|edit, text? }.
-        .route("/api/pending/{agent_id}", get(api_pending_list).post(api_pending_action))
+        .route(
+            "/api/pending/{agent_id}",
+            get(api_pending_list).post(api_pending_action),
+        )
         // ── v0.5.4: WebSocket push channel ──────────────────────────────
         // /ws — long-lived connection that streams snapshot JSON every 2s.
         // Replaces the 5s HTTP poll for connected clients (each open tab
@@ -234,8 +248,8 @@ pub fn mcp_router() -> Router {
         // On-demand modal endpoints (split out from /api/snapshot in
         // v0.5.4 — these block on slow ops like config_check probing
         // lmstudio over the network).
-        .route("/api/health",         get(api_health))
-        .route("/api/logs",           get(api_logs))
+        .route("/api/health", get(api_health))
+        .route("/api/logs", get(api_logs))
         .route("/api/team_dashboard", get(api_team_dashboard))
         .layer(cors_layer())
         .layer(TimeoutLayer::with_status_code(
@@ -274,18 +288,99 @@ async fn llms_txt() -> impl IntoResponse {
     )
 }
 
+async fn ios_location_report_page() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        include_str!("../web/ios_location_report.html"),
+    )
+}
+
 async fn ui_static(Path(file): Path<String>) -> impl IntoResponse {
     // Each branch returns include_bytes! at compile time — no filesystem I/O,
     // no path-traversal risk. Adding a new file is a one-line patch here.
     let (mime, body): (&'static str, &'static [u8]) = match file.as_str() {
-        "index.html"    => ("text/html; charset=utf-8",    include_bytes!("../web/index.html")),
-        "help.html"     => ("text/html; charset=utf-8",    include_bytes!("../web/help.html")),
-        "style.css"     => ("text/css; charset=utf-8",     include_bytes!("../web/style.css")),
-        "app.js"        => ("application/javascript",      include_bytes!("../web/app.js")),
-        "alpine.min.js" => ("application/javascript",      include_bytes!("../web/alpine.min.js")),
+        "index.html" => (
+            "text/html; charset=utf-8",
+            include_bytes!("../web/index.html"),
+        ),
+        "help.html" => (
+            "text/html; charset=utf-8",
+            include_bytes!("../web/help.html"),
+        ),
+        "style.css" => (
+            "text/css; charset=utf-8",
+            include_bytes!("../web/style.css"),
+        ),
+        "app.js" => ("application/javascript", include_bytes!("../web/app.js")),
+        "alpine.min.js" => (
+            "application/javascript",
+            include_bytes!("../web/alpine.min.js"),
+        ),
         _ => return (StatusCode::NOT_FOUND, "not found").into_response(),
     };
     ([(header::CONTENT_TYPE, mime)], body).into_response()
+}
+
+async fn api_ios_location_report(headers: HeaderMap, Json(body): Json<Value>) -> impl IntoResponse {
+    let user_agent = headers
+        .get(header::USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    match crate::ios_location::ingest_ios_location_report(body, user_agent) {
+        Ok(report) => (
+            StatusCode::OK,
+            Json(json!({ "status": "REPORT_RECEIVED", "report": report })),
+        )
+            .into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "status": "REPORT_REJECTED", "error": error })),
+        )
+            .into_response(),
+    }
+}
+
+async fn api_ios_location_share(headers: HeaderMap) -> impl IntoResponse {
+    let host = headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("127.0.0.1:7700");
+    let port = host
+        .rsplit_once(':')
+        .map(|(_, port)| port)
+        .filter(|port| port.chars().all(|c| c.is_ascii_digit()))
+        .unwrap_or("7700");
+    let lan_ip = local_lan_ip();
+    let lan_url = lan_ip
+        .as_ref()
+        .map(|ip| format!("http://{ip}:{port}/ios-location-report"));
+    (
+        StatusCode::OK,
+        Json(json!({
+            "status": if lan_url.is_some() { "LAN_URL_AVAILABLE" } else { "LAN_URL_UNAVAILABLE" },
+            "loopbackUrl": format!("http://127.0.0.1:{port}/ios-location-report"),
+            "lanIp": lan_ip,
+            "lanUrl": lan_url,
+            "nextAction": if lan_url.is_some() {
+                "Open lanUrl from the iPhone while it is on the same network as this Windows machine."
+            } else {
+                "Open Windows network settings to find this machine's LAN IP, then use http://<LAN-IP>:7700/ios-location-report from the iPhone."
+            }
+        })),
+    )
+        .into_response()
+}
+
+fn local_lan_ip() -> Option<String> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("8.8.8.8:80").ok()?;
+    let addr = socket.local_addr().ok()?;
+    let ip = addr.ip();
+    if ip.is_loopback() || ip.is_unspecified() {
+        None
+    } else {
+        Some(ip.to_string())
+    }
 }
 
 /// Workspace 對話 tab → `chat_send` proxy + persists both user message
@@ -293,14 +388,30 @@ async fn ui_static(Path(file): Path<String>) -> impl IntoResponse {
 async fn api_chat(Json(body): Json<Value>) -> impl IntoResponse {
     let svc = match app_service() {
         Some(s) => s,
-        None => return (StatusCode::SERVICE_UNAVAILABLE,
-            axum::Json(json!({"error": "service unavailable"}))).into_response(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(json!({"error": "service unavailable"})),
+            )
+                .into_response()
+        }
     };
-    let agent_id = body.get("agent_id").and_then(Value::as_str).unwrap_or("").to_string();
-    let message  = body.get("message").and_then(Value::as_str).unwrap_or("").to_string();
+    let agent_id = body
+        .get("agent_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let message = body
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     if agent_id.is_empty() || message.is_empty() {
-        return (StatusCode::BAD_REQUEST,
-            axum::Json(json!({"error": "agent_id and message required"}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({"error": "agent_id and message required"})),
+        )
+            .into_response();
     }
 
     // Persist the user message immediately so it survives even if chat_send
@@ -308,30 +419,43 @@ async fn api_chat(Json(body): Json<Value>) -> impl IntoResponse {
     let _ = crate::chat_history::append(&agent_id, "user", &message);
 
     let agent_id_for_task = agent_id.clone();
-    let message_for_task  = message.clone();
-    let reply = tokio::task::spawn_blocking(move || {
-        svc.chat_send(&agent_id_for_task, &message_for_task)
-    }).await;
+    let message_for_task = message.clone();
+    let reply =
+        tokio::task::spawn_blocking(move || svc.chat_send(&agent_id_for_task, &message_for_task))
+            .await;
     match reply {
         Ok(r) => {
             let _ = crate::chat_history::append(&agent_id, "agent", &r);
             axum::Json(json!({ "reply": r })).into_response()
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR,
-            axum::Json(json!({"error": format!("chat task: {e}")}))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({"error": format!("chat task: {e}")})),
+        )
+            .into_response(),
     }
 }
 
 /// GET /api/chat/{agent_id} → array of {role, text, created_at} oldest first.
 async fn api_chat_history(Path(agent_id): Path<String>) -> impl IntoResponse {
     match crate::chat_history::history(&agent_id, 200) {
-        Ok(msgs) => axum::Json(msgs.into_iter().map(|m| json!({
-            "role":       m.role,
-            "text":       m.text,
-            "created_at": m.created_at,
-        })).collect::<Vec<_>>()).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR,
-            axum::Json(json!({"error": e}))).into_response(),
+        Ok(msgs) => axum::Json(
+            msgs.into_iter()
+                .map(|m| {
+                    json!({
+                        "role":       m.role,
+                        "text":       m.text,
+                        "created_at": m.created_at,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )
+        .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({"error": e})),
+        )
+            .into_response(),
     }
 }
 
@@ -339,15 +463,29 @@ async fn api_chat_history(Path(agent_id): Path<String>) -> impl IntoResponse {
 async fn api_persona_set_name(Json(body): Json<Value>) -> impl IntoResponse {
     let svc = match app_service() {
         Some(s) => s,
-        None => return (StatusCode::SERVICE_UNAVAILABLE,
-            axum::Json(json!({"error":"service unavailable"}))).into_response(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(json!({"error":"service unavailable"})),
+            )
+                .into_response()
+        }
     };
-    let name = body.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+    let name = body
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     if name.is_empty() {
-        return (StatusCode::BAD_REQUEST,
-            axum::Json(json!({"error":"name required"}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({"error":"name required"})),
+        )
+            .into_response();
     }
-    tokio::task::spawn_blocking(move || svc.set_persona_name(&name)).await.ok();
+    tokio::task::spawn_blocking(move || svc.set_persona_name(&name))
+        .await
+        .ok();
     axum::Json(json!({"ok": true})).into_response()
 }
 
@@ -358,11 +496,17 @@ async fn api_agent_get(Path(id): Path<String>) -> impl IntoResponse {
         None => return (StatusCode::SERVICE_UNAVAILABLE, "service unavailable").into_response(),
     };
     let id_owned = id.clone();
-    let detail = tokio::task::spawn_blocking(move || svc.agent_detail(&id_owned)).await.ok().flatten();
+    let detail = tokio::task::spawn_blocking(move || svc.agent_detail(&id_owned))
+        .await
+        .ok()
+        .flatten();
     match detail {
         Some(d) => axum::Json(d).into_response(),
-        None    => (StatusCode::NOT_FOUND,
-            axum::Json(json!({"error": format!("agent {id} not found")}))).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            axum::Json(json!({"error": format!("agent {id} not found")})),
+        )
+            .into_response(),
     }
 }
 
@@ -375,56 +519,90 @@ async fn api_agent_get(Path(id): Path<String>) -> impl IntoResponse {
 async fn api_agent_action(Path(id): Path<String>, Json(body): Json<Value>) -> impl IntoResponse {
     let svc = match app_service() {
         Some(s) => s,
-        None => return (StatusCode::SERVICE_UNAVAILABLE,
-            axum::Json(json!({"error":"service unavailable"}))).into_response(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(json!({"error":"service unavailable"})),
+            )
+                .into_response()
+        }
     };
-    let action = body.get("action").and_then(Value::as_str).unwrap_or("").to_string();
+    let action = body
+        .get("action")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     let id_owned = id.clone();
     let body_owned = body.clone();
 
     let res: Result<(), String> = tokio::task::spawn_blocking(move || -> Result<(), String> {
         match action.as_str() {
             "toggle" => {
-                let enabled = body_owned.get("enabled").and_then(Value::as_bool)
+                let enabled = body_owned
+                    .get("enabled")
+                    .and_then(Value::as_bool)
                     .ok_or("enabled required")?;
                 svc.toggle_agent(&id_owned, enabled);
                 Ok(())
             }
             "behavior" => {
-                let enabled    = body_owned.get("enabled").and_then(Value::as_bool).unwrap_or(true);
-                let min_delay  = body_owned.get("min_delay").and_then(Value::as_u64).unwrap_or(3);
-                let max_delay  = body_owned.get("max_delay").and_then(Value::as_u64).unwrap_or(15);
-                let max_hour   = body_owned.get("max_hour").and_then(Value::as_u64).unwrap_or(30) as u32;
-                let max_day    = body_owned.get("max_day").and_then(Value::as_u64).unwrap_or(200) as u32;
+                let enabled = body_owned
+                    .get("enabled")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
+                let min_delay = body_owned
+                    .get("min_delay")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(3);
+                let max_delay = body_owned
+                    .get("max_delay")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(15);
+                let max_hour = body_owned
+                    .get("max_hour")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(30) as u32;
+                let max_day = body_owned
+                    .get("max_day")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(200) as u32;
                 svc.set_behavior(&id_owned, enabled, min_delay, max_delay, max_hour, max_day);
                 Ok(())
             }
             "objective_add" => {
-                let text = body_owned.get("text").and_then(Value::as_str)
-                    .ok_or("text required")?.to_string();
+                let text = body_owned
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .ok_or("text required")?
+                    .to_string();
                 svc.add_objective(&id_owned, &text);
                 Ok(())
             }
             "objective_remove" => {
-                let index = body_owned.get("index").and_then(Value::as_u64)
+                let index = body_owned
+                    .get("index")
+                    .and_then(Value::as_u64)
                     .ok_or("index required")? as usize;
                 svc.remove_objective(&id_owned, index);
                 Ok(())
             }
             "set_remote_ai" => {
-                let allowed = body_owned.get("allowed").and_then(Value::as_bool)
+                let allowed = body_owned
+                    .get("allowed")
+                    .and_then(Value::as_bool)
                     .ok_or("allowed required")?;
                 svc.set_remote_ai(&id_owned, allowed);
                 Ok(())
             }
             other => Err(format!("unknown action '{other}'")),
         }
-    }).await.unwrap_or_else(|e| Err(format!("task: {e}")));
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("task: {e}")));
 
     match res {
-        Ok(())  => axum::Json(json!({"ok": true})).into_response(),
-        Err(e)  => (StatusCode::BAD_REQUEST,
-            axum::Json(json!({"error": e}))).into_response(),
+        Ok(()) => axum::Json(json!({"ok": true})).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, axum::Json(json!({"error": e}))).into_response(),
     }
 }
 
@@ -435,7 +613,8 @@ async fn api_pending_list(Path(agent_id): Path<String>) -> impl IntoResponse {
         None => return (StatusCode::SERVICE_UNAVAILABLE, "service unavailable").into_response(),
     };
     let pending = tokio::task::spawn_blocking(move || svc.load_pending(&agent_id))
-        .await.unwrap_or_default();
+        .await
+        .unwrap_or_default();
     axum::Json(pending).into_response()
 }
 
@@ -446,33 +625,56 @@ async fn api_pending_action(
 ) -> impl IntoResponse {
     let svc = match app_service() {
         Some(s) => s,
-        None => return (StatusCode::SERVICE_UNAVAILABLE,
-            axum::Json(json!({"error":"service unavailable"}))).into_response(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(json!({"error":"service unavailable"})),
+            )
+                .into_response()
+        }
     };
-    let reply_id = body.get("reply_id").and_then(Value::as_str).unwrap_or("").to_string();
-    let action   = body.get("action").and_then(Value::as_str).unwrap_or("").to_string();
-    let text     = body.get("text").and_then(Value::as_str).map(String::from);
+    let reply_id = body
+        .get("reply_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let action = body
+        .get("action")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let text = body.get("text").and_then(Value::as_str).map(String::from);
     if reply_id.is_empty() || action.is_empty() {
-        return (StatusCode::BAD_REQUEST,
-            axum::Json(json!({"error":"reply_id and action required"}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({"error":"reply_id and action required"})),
+        )
+            .into_response();
     }
     let res: Result<(), String> = tokio::task::spawn_blocking(move || -> Result<(), String> {
         match action.as_str() {
-            "approve" => { svc.approve_reply(&agent_id, &reply_id); Ok(()) }
-            "reject"  => { svc.reject_reply(&agent_id, &reply_id);  Ok(()) }
-            "edit"    => {
+            "approve" => {
+                svc.approve_reply(&agent_id, &reply_id);
+                Ok(())
+            }
+            "reject" => {
+                svc.reject_reply(&agent_id, &reply_id);
+                Ok(())
+            }
+            "edit" => {
                 let t = text.ok_or("text required for edit")?;
                 svc.edit_draft(&agent_id, &reply_id, &t);
                 Ok(())
             }
             other => Err(format!("unknown action '{other}'")),
         }
-    }).await.unwrap_or_else(|e| Err(format!("task: {e}")));
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("task: {e}")));
 
     match res {
-        Ok(())  => axum::Json(json!({"ok": true})).into_response(),
-        Err(e)  => (StatusCode::BAD_REQUEST,
-            axum::Json(json!({"error": e}))).into_response(),
+        Ok(()) => axum::Json(json!({"ok": true})).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, axum::Json(json!({"error": e}))).into_response(),
     }
 }
 
@@ -485,36 +687,50 @@ async fn api_pending_action(
 async fn api_health() -> impl IntoResponse {
     let svc = match app_service() {
         Some(s) => s,
-        None => return (StatusCode::SERVICE_UNAVAILABLE,
-            axum::Json(json!({"error":"service unavailable"}))).into_response(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(json!({"error":"service unavailable"})),
+            )
+                .into_response()
+        }
     };
     let res = tokio::task::spawn_blocking(move || -> Value {
         let issues_raw = svc.config_check();
-        let ok_count = issues_raw.iter()
+        let ok_count = issues_raw
+            .iter()
             .filter(|i| matches!(i.severity, crate::ui_service::ConfigSeverity::Ok))
             .count();
-        let issues: Vec<Value> = issues_raw.into_iter()
+        let issues: Vec<Value> = issues_raw
+            .into_iter()
             .filter(|i| !matches!(i.severity, crate::ui_service::ConfigSeverity::Ok))
-            .map(|i| json!({
-                "severity":   match i.severity {
-                    crate::ui_service::ConfigSeverity::Error   => "error",
-                    crate::ui_service::ConfigSeverity::Warning => "warning",
-                    crate::ui_service::ConfigSeverity::Info    => "info",
-                    crate::ui_service::ConfigSeverity::Ok      => "ok",
-                },
-                "category":   i.category,
-                "message":    i.message,
-                "suggestion": i.suggestion,
-            })).collect();
+            .map(|i| {
+                json!({
+                    "severity":   match i.severity {
+                        crate::ui_service::ConfigSeverity::Error   => "error",
+                        crate::ui_service::ConfigSeverity::Warning => "warning",
+                        crate::ui_service::ConfigSeverity::Info    => "info",
+                        crate::ui_service::ConfigSeverity::Ok      => "ok",
+                    },
+                    "category":   i.category,
+                    "message":    i.message,
+                    "suggestion": i.suggestion,
+                })
+            })
+            .collect();
         json!({
             "config_issues":   issues,
             "config_ok_count": ok_count,
         })
-    }).await;
+    })
+    .await;
     match res {
-        Ok(v)  => axum::Json(v).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR,
-            axum::Json(json!({"error": format!("health task: {e}")}))).into_response(),
+        Ok(v) => axum::Json(v).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({"error": format!("health task: {e}")})),
+        )
+            .into_response(),
     }
 }
 
@@ -522,23 +738,59 @@ async fn api_health() -> impl IntoResponse {
 async fn api_logs() -> impl IntoResponse {
     let svc = match app_service() {
         Some(s) => s,
-        None => return (StatusCode::SERVICE_UNAVAILABLE,
-            axum::Json(json!({"error":"service unavailable"}))).into_response(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(json!({"error":"service unavailable"})),
+            )
+                .into_response()
+        }
     };
     let res = tokio::task::spawn_blocking(move || -> Vec<Value> {
-        svc.log_recent(50).into_iter().map(|l| {
-            let level = match l.level {
-                crate::ui_service::LogLevel::Error    => "error",
-                crate::ui_service::LogLevel::Warn     => "warn",
-                _                                     => "info",
-            };
-            json!({ "level": level, "text": l.text, "ts": "" })
-        }).collect()
-    }).await;
+        svc.log_recent(50)
+            .into_iter()
+            .map(|l| {
+                let level = match l.level {
+                    crate::ui_service::LogLevel::Error => "error",
+                    crate::ui_service::LogLevel::Warn => "warn",
+                    _ => "info",
+                };
+                json!({ "level": level, "text": l.text, "ts": "" })
+            })
+            .collect()
+    })
+    .await;
     match res {
-        Ok(v)  => axum::Json(v).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR,
-            axum::Json(json!({"error": format!("logs task: {e}")}))).into_response(),
+        Ok(v) => axum::Json(v).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({"error": format!("logs task: {e}")})),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /api/ai-monitor — read-only, on-demand Windows route + local AI work
+/// telemetry. The collector owns a 15-second cache and is never included in
+/// the 2-second global snapshot/WebSocket path.
+async fn api_ai_monitor() -> impl IntoResponse {
+    let svc = match app_service() {
+        Some(s) => s,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(json!({"error":"service unavailable"})),
+            )
+                .into_response()
+        }
+    };
+    match tokio::task::spawn_blocking(move || svc.ai_monitor_snapshot()).await {
+        Ok(snapshot) => axum::Json(snapshot).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({"error": format!("AI monitor task: {e}")})),
+        )
+            .into_response(),
     }
 }
 
@@ -546,8 +798,13 @@ async fn api_logs() -> impl IntoResponse {
 async fn api_team_dashboard() -> impl IntoResponse {
     let svc = match app_service() {
         Some(s) => s,
-        None => return (StatusCode::SERVICE_UNAVAILABLE,
-            axum::Json(json!({"error":"service unavailable"}))).into_response(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(json!({"error":"service unavailable"})),
+            )
+                .into_response()
+        }
     };
     let res = tokio::task::spawn_blocking(move || -> Value {
         let dash = svc.team_dashboard();
@@ -571,11 +828,15 @@ async fn api_team_dashboard() -> impl IntoResponse {
                 "cache_hit_pct":  usage.cache_hit_pct,
             },
         })
-    }).await;
+    })
+    .await;
     match res {
-        Ok(v)  => axum::Json(v).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR,
-            axum::Json(json!({"error": format!("team task: {e}")}))).into_response(),
+        Ok(v) => axum::Json(v).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({"error": format!("team task: {e}")})),
+        )
+            .into_response(),
     }
 }
 
@@ -605,7 +866,9 @@ async fn handle_ws(mut socket: WebSocket) {
     tick.tick().await;
 
     // Initial push.
-    if !push_snapshot(&mut socket).await { return; }
+    if !push_snapshot(&mut socket).await {
+        return;
+    }
 
     loop {
         tokio::select! {
@@ -628,11 +891,11 @@ async fn handle_ws(mut socket: WebSocket) {
 async fn push_snapshot(socket: &mut WebSocket) -> bool {
     let svc = match app_service() {
         Some(s) => s,
-        None    => return true, // service not yet registered — keep waiting
+        None => return true, // service not yet registered — keep waiting
     };
     let snap = tokio::task::spawn_blocking(move || build_snapshot(&svc)).await;
     let body = match snap {
-        Ok(v)  => v.to_string(),
+        Ok(v) => v.to_string(),
         Err(_) => return true, // task join error — skip this tick
     };
     socket.send(Message::Text(body.into())).await.is_ok()
@@ -644,7 +907,9 @@ async fn push_snapshot(socket: &mut WebSocket) -> bool {
 async fn api_browser_screenshot() -> impl IntoResponse {
     let svc = match app_service() {
         Some(s) => s,
-        None => return (StatusCode::SERVICE_UNAVAILABLE, "AppService not registered").into_response(),
+        None => {
+            return (StatusCode::SERVICE_UNAVAILABLE, "AppService not registered").into_response()
+        }
     };
     let png = tokio::task::spawn_blocking(move || svc.browser_screenshot()).await;
     match png {
@@ -654,9 +919,14 @@ async fn api_browser_screenshot() -> impl IntoResponse {
                 (header::CACHE_CONTROL, "no-cache, max-age=0"),
             ],
             bytes,
-        ).into_response(),
-        Ok(None)  => (StatusCode::SERVICE_UNAVAILABLE, "browser not open").into_response(),
-        Err(e)    => (StatusCode::INTERNAL_SERVER_ERROR, format!("screenshot task: {e}")).into_response(),
+        )
+            .into_response(),
+        Ok(None) => (StatusCode::SERVICE_UNAVAILABLE, "browser not open").into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("screenshot task: {e}"),
+        )
+            .into_response(),
     }
 }
 
@@ -666,85 +936,87 @@ async fn api_browser_screenshot() -> impl IntoResponse {
 async fn api_snapshot() -> impl IntoResponse {
     let svc = match app_service() {
         Some(s) => s,
-        None => return axum::Json(json!({
-            "error": "AppService not registered (sirin still booting?)"
-        })).into_response(),
+        None => {
+            return axum::Json(json!({
+                "error": "AppService not registered (sirin still booting?)"
+            }))
+            .into_response()
+        }
     };
 
     // Run inside spawn_blocking — most AppService methods do synchronous
     // SQLite reads + parser work; we don't want to block the async runtime.
     let snap = tokio::task::spawn_blocking(move || build_snapshot(&svc)).await;
     match snap {
-        Ok(v)  => axum::Json(v).into_response(),
+        Ok(v) => axum::Json(v).into_response(),
         Err(e) => axum::Json(json!({
             "error": format!("snapshot task failed: {e}")
-        })).into_response(),
-    }
-}
-
-/// Local-only Windows network + AI work snapshot. The synchronous collectors
-/// run off the async runtime; missing evidence is returned in-band as JSON.
-async fn api_ai_monitor() -> impl IntoResponse {
-    let svc = match app_service() {
-        Some(s) => s,
-        None => return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            axum::Json(json!({"error": "AppService not registered (sirin still booting?)"})),
-        ).into_response(),
-    };
-
-    match tokio::task::spawn_blocking(move || svc.ai_monitor_snapshot()).await {
-        Ok(snapshot) => axum::Json(snapshot).into_response(),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            axum::Json(json!({"error": format!("AI monitor task failed: {error}")})),
-        ).into_response(),
+        }))
+        .into_response(),
     }
 }
 
 fn build_snapshot(svc: &Arc<dyn AppService>) -> Value {
     let s = svc.system_status();
 
-    let agents: Vec<Value> = svc.list_agents().into_iter().map(|a| json!({
-        "id":          a.id,
-        "name":        a.name,
-        "platform":    a.platform,
-        "live_status": a.live_status,
-        "enabled":     a.enabled,
-    })).collect();
+    let agents: Vec<Value> = svc
+        .list_agents()
+        .into_iter()
+        .map(|a| {
+            json!({
+                "id":          a.id,
+                "name":        a.name,
+                "platform":    a.platform,
+                "live_status": a.live_status,
+                "enabled":     a.enabled,
+            })
+        })
+        .collect();
 
     let mut pending = serde_json::Map::new();
     for a in svc.list_agents() {
         pending.insert(a.id.clone(), json!(svc.pending_count(&a.id)));
     }
 
-    let active_runs: Vec<Value> = svc.active_test_runs().into_iter().map(|r| json!({
-        "test_id":   r.test_id,
-        "status":    r.status,
-        "step":      r.step,
-        "analysis":  r.analysis,
-        "started_at": r.started_at,
-        // #279 click-to-expand: run_id needed by frontend to fetch
-        // get_test_result / live_trace via /mcp.
-        "run_id":    r.run_id,
-        "is_replay": r.is_replay,
-        // #279 tier 1 — Phase A/B live telemetry surfaced inline so the
-        // dashboard's active-runs card can render subphase / idle / ETA
-        // without a follow-up MCP fetch.  All None for queued rows.
-        "idle_secs":               r.idle_secs,
-        "last_action_age_ms":      r.last_action_age_ms,
-        "current_subphase":        r.current_subphase,
-        "subphase_age_ms":         r.subphase_age_ms,
-        "recent_steps_count":      r.recent_steps_count,
-        "replay_mode":             r.replay_mode,
-        "estimated_remaining_secs": r.estimated_remaining_secs,
-    })).collect();
+    let active_runs: Vec<Value> = svc
+        .active_test_runs()
+        .into_iter()
+        .map(|r| {
+            json!({
+                "test_id":   r.test_id,
+                "status":    r.status,
+                "step":      r.step,
+                "analysis":  r.analysis,
+                "started_at": r.started_at,
+                // #279 click-to-expand: run_id needed by frontend to fetch
+                // get_test_result / live_trace via /mcp.
+                "run_id":    r.run_id,
+                "is_replay": r.is_replay,
+                // #279 tier 1 — Phase A/B live telemetry surfaced inline so the
+                // dashboard's active-runs card can render subphase / idle / ETA
+                // without a follow-up MCP fetch.  All None for queued rows.
+                "idle_secs":               r.idle_secs,
+                "last_action_age_ms":      r.last_action_age_ms,
+                "current_subphase":        r.current_subphase,
+                "subphase_age_ms":         r.subphase_age_ms,
+                "recent_steps_count":      r.recent_steps_count,
+                "replay_mode":             r.replay_mode,
+                "estimated_remaining_secs": r.estimated_remaining_secs,
+            })
+        })
+        .collect();
 
     let mut recent_runs: Vec<Value> = Vec::new();
     for r in svc.recent_test_runs(8) {
-        let perf_hint = r.run_id.as_deref()
+        let perf_hint = r
+            .run_id
+            .as_deref()
             .and_then(classify_perf_hint)
-            .and_then(|v| v.get("hint").and_then(|h| h.as_str()).map(|s| s.to_string()));
+            .and_then(|v| {
+                v.get("hint")
+                    .and_then(|h| h.as_str())
+                    .map(|s| s.to_string())
+            });
         recent_runs.push(json!({
             "test_id":     r.test_id,
             "status":      r.status,
@@ -768,37 +1040,47 @@ fn build_snapshot(svc: &Arc<dyn AppService>) -> Value {
         }));
     }
 
-    let last_verdict = svc.recent_test_runs(1).into_iter().next().map(|r| json!({
-        "test_id":   r.test_id,
-        "status":    r.status,
-    }));
+    let last_verdict = svc.recent_test_runs(1).into_iter().next().map(|r| {
+        json!({
+            "test_id":   r.test_id,
+            "status":    r.status,
+        })
+    });
 
-    let coverage = svc.test_coverage_data().ok().map(|c| json!({
-        "product":        c.product,
-        "version":        c.version,
-        "total_features": c.total_features,
-        "total_covered":  c.total_covered,
-        "scripted":       c.scripted,
-        "discovered":     c.discovered,
-        "discovery_status": match c.discovery_status {
-            crate::ui_service::DiscoveryStatus::NotRun     => "NotRun",
-            crate::ui_service::DiscoveryStatus::Crawling { .. } => "Crawling",
-            crate::ui_service::DiscoveryStatus::Done { .. }     => "Done",
-        },
-        "groups":         c.groups.into_iter().map(|g| json!({
-            "id":       g.id,
-            "name":     g.name,
-            "role":     g.role,
-            "covered":  g.covered,
-            "total":    g.total,
-            "features": g.features.into_iter().map(|f| json!({
-                "id":       f.id,
-                "name":     f.name,
-                "status":   f.status,
-                "test_ids": f.test_ids,
+    let coverage = svc.test_coverage_data().ok().map(|c| {
+        json!({
+            "product":        c.product,
+            "version":        c.version,
+            "total_features": c.total_features,
+            "total_covered":  c.total_covered,
+            "total_confirmed": c.total_confirmed,
+            "total_partial":  c.total_partial,
+            "total_missing":  c.total_missing,
+            "scripted":       c.scripted,
+            "discovered":     c.discovered,
+            "discovery_status": match c.discovery_status {
+                crate::ui_service::DiscoveryStatus::NotRun     => "NotRun",
+                crate::ui_service::DiscoveryStatus::Crawling { .. } => "Crawling",
+                crate::ui_service::DiscoveryStatus::Done { .. }     => "Done",
+            },
+            "groups":         c.groups.into_iter().map(|g| json!({
+                "id":       g.id,
+                "name":     g.name,
+                "role":     g.role,
+                "covered":  g.covered,
+                "confirmed": g.confirmed,
+                "partial":  g.partial,
+                "missing":  g.missing,
+                "total":    g.total,
+                "features": g.features.into_iter().map(|f| json!({
+                    "id":       f.id,
+                    "name":     f.name,
+                    "status":   f.status,
+                    "test_ids": f.test_ids,
+                })).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
-        })).collect::<Vec<_>>(),
-    }));
+        })
+    });
 
     // #266: replay-success-rate KPI for Dashboard + per-test status for Coverage.
     // Window=14d so the metric splits into "last 7d" + "prior 7d" for drift.
@@ -807,18 +1089,31 @@ fn build_snapshot(svc: &Arc<dyn AppService>) -> Value {
         "window_days":              replay_health.window_days,
         "total_runs":               replay_health.total_runs,
         "passed_via_replay":        replay_health.passed_via_replay,
+        "passed_via_fixture_only":   replay_health.passed_via_fixture_only,
+        "passed_deterministic":      replay_health.passed_deterministic,
         "passed_via_llm":           replay_health.passed_via_llm,
         "failed":                   replay_health.failed,
         "success_rate_replay":      replay_health.success_rate_replay,
+        "success_rate_deterministic": replay_health.success_rate_deterministic,
         "previous_success_rate_replay": replay_health.previous_success_rate_replay,
+        "previous_success_rate_deterministic": replay_health.previous_success_rate_deterministic,
         "drift":                    replay_health.drift,
+        "deterministic_drift":      replay_health.deterministic_drift,
+        "latest_run_at":            replay_health.latest_run_at,
+        "has_recent_data":          replay_health.has_recent_data,
     });
-    let test_replay_statuses: Vec<Value> = svc.test_replay_statuses().into_iter().map(|t| json!({
-        "test_id":     t.test_id,
-        "status":      t.status,
-        "has_script":  t.has_script,
-        "recent_modes": t.recent_modes,
-    })).collect();
+    let test_replay_statuses: Vec<Value> = svc
+        .test_replay_statuses()
+        .into_iter()
+        .map(|t| {
+            json!({
+                "test_id":     t.test_id,
+                "status":      t.status,
+                "has_script":  t.has_script,
+                "recent_modes": t.recent_modes,
+            })
+        })
+        .collect();
 
     // #279 tier 1 — surface queue + browser-ownership state at top level
     // so the dashboard can show queue depth, drain ETA, and which active
@@ -922,23 +1217,33 @@ fn cors_layer() -> CorsLayer {
 
 // ── Handler ───────────────────────────────────────────────────────────────────
 
-async fn mcp_handler(
-    headers: HeaderMap,
-    Json(req): Json<Value>,
-) -> impl IntoResponse {
-    let id     = req.get("id").cloned().unwrap_or(json!(null));
+async fn mcp_handler(headers: HeaderMap, Json(req): Json<Value>) -> impl IntoResponse {
+    let is_notification = req.get("id").is_none();
+    let id = req.get("id").cloned().unwrap_or(json!(null));
     let method = req["method"].as_str().unwrap_or("").to_string();
     let params = req.get("params").cloned().unwrap_or(json!({}));
     // Transport-level client identity — stable across tools/call requests for
     // the same HTTP client (same User-Agent).  Feeds resolve_client_id so
     // audit logs and authz decisions use the right identity instead of a
     // last-writer-wins global.
-    let user_agent = headers.get("user-agent")
+    let user_agent = headers
+        .get("user-agent")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("unknown")
         .to_string();
 
     let result = dispatch(&method, params, &user_agent).await;
+
+    // JSON-RPC notifications never receive a JSON-RPC response.  Streamable
+    // HTTP clients (including Codex) treat any response body here as a new
+    // server message and fail deserializing the synthetic `id: null` reply.
+    // Acknowledge delivery at the HTTP layer only.
+    if is_notification {
+        if let Err(message) = result {
+            tracing::warn!(method, error = %message, "MCP notification dispatch failed");
+        }
+        return StatusCode::ACCEPTED.into_response();
+    }
 
     let body = match result {
         Ok(v) => json!({
@@ -953,7 +1258,7 @@ async fn mcp_handler(
         }),
     };
 
-    axum::Json(body)
+    axum::Json(body).into_response()
 }
 
 // ── Dispatcher ────────────────────────────────────────────────────────────────
@@ -961,7 +1266,7 @@ async fn mcp_handler(
 async fn dispatch(method: &str, params: Value, user_agent: &str) -> Result<Value, String> {
     match method {
         "initialize" => handle_initialize(params, user_agent),
-        "tools/list" => handle_tools_list(),
+        "tools/list" => handle_tools_list_request(params),
         "tools/call" => handle_tools_call(params, user_agent).await,
         // Notifications (no response required, but we must not error)
         "notifications/initialized" => Ok(json!({})),
@@ -973,8 +1278,10 @@ async fn dispatch(method: &str, params: Value, user_agent: &str) -> Result<Value
 
 fn handle_initialize(params: Value, user_agent: &str) -> Result<Value, String> {
     // Parse clientInfo → "name@version", fallback "unknown@unknown"
-    let name    = params["clientInfo"]["name"].as_str().unwrap_or("unknown");
-    let version = params["clientInfo"]["version"].as_str().unwrap_or("unknown");
+    let name = params["clientInfo"]["name"].as_str().unwrap_or("unknown");
+    let version = params["clientInfo"]["version"]
+        .as_str()
+        .unwrap_or("unknown");
     let client_id = format!("{name}@{version}");
     // Remember this nice id for the duration of the client's session (keyed
     // by User-Agent, so concurrent clients with different UAs don't collide).
@@ -991,11 +1298,216 @@ fn handle_initialize(params: Value, user_agent: &str) -> Result<Value, String> {
         "serverInfo": {
             "name":    "sirin",
             "version": env!("CARGO_PKG_VERSION"),
-        }
+        },
+        "instructions": "Sirin is the only public control plane for browser and physical-device testing. For one fixed-route iPhone acceptance, prefer ios_acceptance_run: it activates the passive link on demand, keeps the evidence tiers separate, and releases its lease. Use ios_device_status for diagnosis and manual multi-action flows; status alone does not start WDA. Reuse run_id/action_id on ambiguous retries. The only no-lease phone action is ios_recover_home after explicit user approval, and it is restricted to a fixed SpringBoard recovery while WDA is confirmed down or wedged. Never enter passcodes, Apple credentials, trust approvals, Telegram credentials, create orders, pay, jailbreak, expose device ports to the LAN, change firewall settings, or call signing tools through MCP. Human and security blockers must be returned as NEEDS_HUMAN_*, SECURITY_BLOCK_*, or MISSING_PROOF."
     }))
 }
 
 // ── tools/list ────────────────────────────────────────────────────────────────
+
+const MCP_TOOL_PROFILE_ENV: &str = "SIRIN_MCP_TOOL_PROFILE";
+const MCP_TOOL_PROFILES: &str = "full, core, testing, ios, ops";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum McpToolProfile {
+    Full,
+    Core,
+    Testing,
+    Ios,
+    Ops,
+}
+
+impl McpToolProfile {
+    fn parse(raw: &str) -> Result<Self, String> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "full" => Ok(Self::Full),
+            "core" => Ok(Self::Core),
+            "testing" => Ok(Self::Testing),
+            "ios" => Ok(Self::Ios),
+            "ops" => Ok(Self::Ops),
+            other => Err(format!(
+                "invalid MCP tool profile '{other}'; expected one of: {MCP_TOOL_PROFILES}"
+            )),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::Core => "core",
+            Self::Testing => "testing",
+            Self::Ios => "ios",
+            Self::Ops => "ops",
+        }
+    }
+}
+
+fn resolve_mcp_tool_profile(
+    params: &Value,
+    env_profile: Option<&str>,
+) -> Result<McpToolProfile, String> {
+    if let Some(value) = params.get("profile") {
+        if value.is_null() {
+            // Treat an explicit JSON null the same as an omitted optional field.
+        } else if let Some(raw) = value.as_str() {
+            return McpToolProfile::parse(raw);
+        } else {
+            return Err(format!(
+                "tools/list profile must be a string; expected one of: {MCP_TOOL_PROFILES}"
+            ));
+        }
+    }
+
+    match env_profile.map(str::trim).filter(|raw| !raw.is_empty()) {
+        Some(raw) => McpToolProfile::parse(raw),
+        None => Ok(McpToolProfile::Full),
+    }
+}
+
+fn is_profile_common_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "help" | "diagnose" | "config_diagnostics" | "sirin_preflight" | "tail_app_log"
+    )
+}
+
+fn is_core_tool(name: &str) -> bool {
+    is_profile_common_tool(name)
+        || matches!(
+            name,
+            "browser_status"
+                | "browser_exec"
+                | "page_state"
+                | "list_tests"
+                | "run_test_async"
+                | "run_test_batch"
+                | "get_test_result"
+                | "get_screenshot"
+                | "get_full_observation"
+                | "get_run_trace"
+                | "list_recent_runs"
+                | "queue_status"
+                | "live_trace"
+                | "kill_run"
+                | "script_health"
+                | "test_summary"
+                | "test_analytics"
+                | "test_coverage"
+                | "kb_search"
+                | "kb_get"
+                | "kb_stats"
+                | "kb_write"
+                | "skill_list"
+                | "memory_search"
+                | "create_handoff"
+                | "get_latest_handoff"
+        )
+}
+
+fn is_testing_tool(name: &str) -> bool {
+    is_core_tool(name)
+        || name.starts_with("run_test_")
+        || name.starts_with("run_adhoc_")
+        || name.starts_with("run_regression_")
+        || name.starts_with("test_")
+        || name.starts_with("browser_")
+        || name.starts_with("discovery_")
+        || name.starts_with("benchmark_test_")
+        || name.starts_with("shadow_")
+        || name.starts_with("replay_")
+        || matches!(
+            name,
+            "discover_app"
+                | "lint_test"
+                | "scaffold_test"
+                | "list_saved_scripts"
+                | "delete_saved_script"
+                | "list_flaky_tests"
+                | "list_fixes"
+                | "persist_adhoc_run"
+                | "compare_with_replay"
+                | "explain_failure"
+        )
+}
+
+fn is_ios_tool(name: &str) -> bool {
+    is_profile_common_tool(name)
+        || name.starts_with("ios_")
+        || name.starts_with("device_")
+        || matches!(name, "browser_status" | "get_screenshot" | "live_trace")
+}
+
+fn is_ops_tool(name: &str) -> bool {
+    is_profile_common_tool(name)
+        || name.starts_with("ai_monitor_")
+        || name.starts_with("codex_supervisor_")
+        || name.starts_with("ops_")
+        || name.starts_with("a2a_")
+        || name.starts_with("research_sentinel_")
+        || name.starts_with("handoff_")
+        || name.starts_with("kb_")
+        || name.starts_with("agora_")
+        || name.starts_with("agoramarket_")
+        || name.starts_with("audit_")
+        || matches!(
+            name,
+            "create_handoff"
+                | "get_latest_handoff"
+                | "list_handoff_history"
+                | "generate_daily_brief"
+                | "list_tasks"
+                | "mark_task_done"
+                | "link_task"
+                | "queue_status"
+                | "memory_search"
+        )
+}
+
+fn tool_visible_in_profile(name: &str, profile: McpToolProfile) -> bool {
+    match profile {
+        McpToolProfile::Full => true,
+        McpToolProfile::Core => is_core_tool(name),
+        McpToolProfile::Testing => is_testing_tool(name),
+        McpToolProfile::Ios => is_ios_tool(name),
+        McpToolProfile::Ops => is_ops_tool(name),
+    }
+}
+
+fn handle_tools_list_request(params: Value) -> Result<Value, String> {
+    let env_profile = std::env::var(MCP_TOOL_PROFILE_ENV).ok();
+    handle_tools_list_request_with_env(params, env_profile.as_deref())
+}
+
+fn handle_tools_list_request_with_env(
+    params: Value,
+    env_profile: Option<&str>,
+) -> Result<Value, String> {
+    let profile = resolve_mcp_tool_profile(&params, env_profile)?;
+    let mut response = handle_tools_list()?;
+
+    // Preserve the historical full response byte-shape when no profile is
+    // selected. Profile metadata is added only to the optional compact mode.
+    if profile == McpToolProfile::Full {
+        return Ok(response);
+    }
+
+    let full_tool_count = response["tools"].as_array().map(Vec::len).unwrap_or(0);
+    if let Some(tools) = response["tools"].as_array_mut() {
+        tools.retain(|tool| {
+            tool["name"]
+                .as_str()
+                .is_some_and(|name| tool_visible_in_profile(name, profile))
+        });
+    }
+    let tool_count = response["tools"].as_array().map(Vec::len).unwrap_or(0);
+    response["_meta"] = json!({
+        "sirin/toolProfile": profile.as_str(),
+        "sirin/toolCount": tool_count,
+        "sirin/fullToolCount": full_tool_count,
+        "sirin/discoveryOnly": true,
+    });
+    Ok(response)
+}
 
 fn handle_tools_list() -> Result<Value, String> {
     let mut response = handle_tools_list_legacy()?;
@@ -1051,7 +1563,7 @@ fn handle_tools_list_legacy() -> Result<Value, String> {
             // #257 — config_diagnostics / diagnose moved to mcp_registry::seed_default
             {
                 "name": "browser_exec",
-                "description": "即席執行瀏覽器動作，不走完整 test goal。適合 debug / 探索 / 單步操作。\n\n基本導航：goto, screenshot, screenshot_analyze, click, click_point, type, read, eval, wait, exists, attr, scroll, key, console, network, url, title, close, set_viewport\n\nAX tree（literal text，精確比對）：enable_a11y, ax_tree, ax_find（支援 scroll / scroll_max / name_regex / not_name_matches / limit）, ax_value, ax_click, ax_focus, ax_type, ax_type_verified\n\nAX snapshots：ax_snapshot, ax_diff, wait_for_ax_change\n\nCondition waits（取代 sleep）：wait_for_url, wait_for_ax_ready, wait_for_network_idle\n\nAssertions：assert_ax_contains, assert_url_matches\n\nMulti-session（跨角色 E2E）：list_sessions, close_session；所有動作可加 session_id 參數切換 tab\n\nTest isolation / popup：clear_state, wait_new_tab, wait_request\n\nFlutter CanvasKit（Shadow DOM，用於 WebGL canvas 應用）：先呼叫 enable_a11y 觸發 flt-semantics-host，再用以下動作 — shadow_dump（列出所有元素）, shadow_find（找元素，params: role/name_regex）, shadow_click（JS PointerEvent 點擊，比 click 可靠）, shadow_type（focus+InsertText，非 Flutter 用）, shadow_type_flutter（shadow_click+flutter_type 合一）, flutter_type（逐字 keydown，ASCII only，不支援中文）, flutter_enter（對 flt-text-editing 發 Enter，用於送出訊息/表單）",
+                "description": "即席執行瀏覽器動作，不走完整 test goal。適合 debug / 探索 / 單步操作。\n\n基本導航：goto, screenshot, screenshot_analyze, click, click_point, type, read, eval, wait, exists, attr, scroll, key, console, network, url, title, close, set_viewport\n\nAX tree（literal text，精確比對）：enable_a11y, ax_tree, ax_find（支援 scroll / scroll_max / scroll_step / flutter / name_regex / not_name_matches / limit）, ax_value, ax_click, ax_focus, ax_type, ax_type_verified\n\nAX snapshots：ax_snapshot, ax_diff, wait_for_ax_change\n\nCondition waits（取代 sleep）：wait_for_url, wait_for_ax_ready, wait_for_network_idle\n\nAssertions：assert_ax_contains, assert_url_matches\n\nMulti-session（跨角色 E2E）：list_sessions, close_session；所有動作可加 session_id 參數切換 tab\n\nTest isolation / popup：clear_state, wait_new_tab, wait_request\n\nFlutter CanvasKit（Shadow DOM，用於 WebGL canvas 應用）：先呼叫 enable_a11y 觸發 flt-semantics-host，再用以下動作 — shadow_dump（列出所有元素）, shadow_find（找元素，params: role/name_regex）, shadow_click（JS PointerEvent 點擊，比 click 可靠）, shadow_type（focus+InsertText，非 Flutter 用）, shadow_type_flutter（shadow_click+flutter_type 合一）, flutter_type（逐字 keydown，ASCII only，不支援中文）, flutter_enter（對 flt-text-editing 發 Enter，用於送出訊息/表單）；Flutter ListView 內找 AX 節點時用 ax_find scroll=true flutter=true",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -1073,8 +1585,10 @@ fn handle_tools_list_legacy() -> Result<Value, String> {
                         "name_regex":         { "type": "string", "description": "ax_find: Rust regex 對 name 全文比對（比 name 子字串更精確）" },
                         "not_name_matches":   { "type": "array", "items": { "type": "string" }, "description": "ax_find: 排除 name 包含任一字串的節點" },
                         "limit":              { "type": "number", "description": "ax_find: >1 時返回 nodes 陣列（多節點），=1 時返回單節點（預設 1）" },
-                        "scroll":             { "type": "boolean", "description": "ax_find: true 時自動往下捲動直到找到元素（Flutter ListView / 分頁）" },
-                        "scroll_max":         { "type": "number", "description": "ax_find scroll 最多捲幾次（預設 10，每次 400px）" },
+                        "scroll":             { "type": "boolean", "description": "ax_find: true 時自動往下捲動直到找到元素" },
+                        "scroll_max":         { "type": "number", "description": "ax_find scroll 最多捲幾次（預設 10）" },
+                        "scroll_step":        { "type": "number", "description": "ax_find scroll 每次捲動 px（預設 400）" },
+                        "flutter":            { "type": "boolean", "description": "ax_find scroll / scroll action 使用 Flutter touch/wheel scroll，而不是 window.scrollBy" },
                         "include_ignored":    { "type": "boolean", "description": "ax_tree 是否包含 ignored / generic 節點 (預設 false)" },
                         "id":                 { "type": "string", "description": "ax_snapshot: 自訂快照 ID（省略則自動生成）" },
                         "before_id":          { "type": "string", "description": "ax_diff: 前一個快照 ID" },
@@ -1104,7 +1618,7 @@ fn handle_tools_list_legacy() -> Result<Value, String> {
 // ── tools/call ────────────────────────────────────────────────────────────────
 
 async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, String> {
-    let name      = params["name"].as_str().ok_or("Missing 'name'")?;
+    let name = params["name"].as_str().ok_or("Missing 'name'")?;
     let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
     // Issue #257 Option B — registry path FIRST. Migrated tools are
@@ -1133,7 +1647,11 @@ async fn handle_tools_call(params: Value, user_agent: &str) -> Result<Value, Str
         //         legacy-path holdout (see CLAUDE.md — needs user_agent
         //         for authz, not worth widening the registry signature
         //         to accommodate one tool).
-        "browser_exec"         => return call_browser_exec(arguments, user_agent).await.map(wrap_json),
+        "browser_exec" => {
+            return call_browser_exec(arguments, user_agent)
+                .await
+                .map(wrap_json)
+        }
         _ => return Err(format!("Unknown tool: {name}")),
     }
 }
@@ -1149,6 +1667,13 @@ fn wrap_json(payload: Value) -> Value {
 }
 
 // ── Tool implementations ──────────────────────────────────────────────────────
+
+/// Manual-only 5 MB download throughput measurement for the AI Work Monitor.
+/// No snapshot, timer, or background worker calls this function.
+pub(crate) async fn call_ai_monitor_speed_test(_args: Value) -> Result<Value, String> {
+    let result = crate::ai_monitor::manual_speed_test().await?;
+    serde_json::to_value(result).map_err(|e| format!("serialize speed test result: {e}"))
+}
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) async fn call_memory_search(args: Value) -> Result<String, String> {
@@ -1186,10 +1711,12 @@ pub(crate) fn call_teams_pending() -> String {
 
     pending
         .iter()
-        .map(|r| format!(
-            "ID: {}\n來自: {}\n原訊息: {}\n草稿: {}\n建立時間: {}",
-            r.id, r.peer_name, r.original_message, r.draft_reply, r.created_at
-        ))
+        .map(|r| {
+            format!(
+                "ID: {}\n來自: {}\n原訊息: {}\n草稿: {}\n建立時間: {}",
+                r.id, r.peer_name, r.original_message, r.draft_reply, r.created_at
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n---\n")
 }
@@ -1197,17 +1724,14 @@ pub(crate) fn call_teams_pending() -> String {
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_teams_approve(args: Value) -> Result<String, String> {
     let id = args["id"].as_str().ok_or("Missing id")?;
-    crate::pending_reply::update_status(
-        "teams", id,
-        crate::pending_reply::PendingStatus::Approved,
-    );
+    crate::pending_reply::update_status("teams", id, crate::pending_reply::PendingStatus::Approved);
     Ok(format!("草稿 {id} 已核准，等待送出。"))
 }
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_trigger_research(args: Value) -> Result<String, String> {
     let topic = args["topic"].as_str().ok_or("Missing topic")?.to_string();
-    let url   = args["url"].as_str().map(|s| s.to_string());
+    let url = args["url"].as_str().map(|s| s.to_string());
 
     crate::events::publish(crate::events::AgentEvent::ResearchRequested {
         topic: topic.clone(),
@@ -1220,39 +1744,89 @@ pub(crate) fn call_trigger_research(args: Value) -> Result<String, String> {
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_list_tests(args: Value) -> Result<Value, String> {
-    let tag_filter = args.get("tag").and_then(Value::as_str);
+    let suite = args
+        .get("suite")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
+    let include_tags = args
+        .get("tag")
+        .and_then(Value::as_str)
+        .map(|tag| vec![tag.to_owned()])
+        .or_else(|| string_vec_arg(&args, "tags"))
+        .or_else(|| string_vec_arg(&args, "include_tags"))
+        .or_else(|| string_vec_arg(&args, "includeTags"));
+    let exclude_tags =
+        string_vec_arg(&args, "exclude_tags").or_else(|| string_vec_arg(&args, "excludeTags"));
     let tests = crate::test_runner::list_tests();
-    let items: Vec<Value> = tests.iter()
-        .filter(|t| match tag_filter {
-            Some(tag) => t.tags.iter().any(|x| x == tag),
-            None => true,
+    let items: Vec<Value> = tests
+        .iter()
+        .filter(|t| {
+            let suite_ok = suite
+                .as_ref()
+                .map(|suite| {
+                    matches!(suite.as_str(), "all" | "*") || t.tags.iter().any(|tag| tag == suite)
+                })
+                .unwrap_or(true);
+            let include_ok = include_tags
+                .as_ref()
+                .map(|tags| {
+                    tags.iter()
+                        .any(|tag| t.tags.iter().any(|t_tag| t_tag == tag))
+                })
+                .unwrap_or(true);
+            let exclude_ok = exclude_tags
+                .as_ref()
+                .map(|tags| {
+                    !tags
+                        .iter()
+                        .any(|tag| t.tags.iter().any(|t_tag| t_tag == tag))
+                })
+                .unwrap_or(true);
+            suite_ok && include_ok && exclude_ok
         })
-        .map(|t| json!({
-            "id":   t.id,
-            "name": t.name,
-            "url":  t.url,
-            "goal": t.goal,
-            "tags": t.tags,
-            "max_iterations": t.max_iterations,
-            "timeout_secs": t.timeout_secs,
-            // Surface docs_refs so callers see required reading before running.
-            "docs_refs": t.docs_refs,
-        }))
+        .map(|t| {
+            json!({
+                "id":   t.id,
+                "name": t.name,
+                "url":  t.url,
+                "goal": t.goal,
+                "tags": t.tags,
+                "max_iterations": t.max_iterations,
+                "timeout_secs": t.timeout_secs,
+                // Surface docs_refs so callers see required reading before running.
+                "docs_refs": t.docs_refs,
+            })
+        })
         .collect();
-    Ok(json!({ "count": items.len(), "tests": items }))
+    Ok(json!({
+        "count": items.len(),
+        "suite": suite,
+        "include_tags": include_tags,
+        "exclude_tags": exclude_tags,
+        "tests": items,
+    }))
 }
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_run_test_async(args: Value) -> Result<Value, String> {
-    let test_id = args["test_id"].as_str().ok_or("Missing test_id")?.to_string();
-    let auto_fix = args.get("auto_fix").and_then(Value::as_bool).unwrap_or(false);
+    let test_id = args["test_id"]
+        .as_str()
+        .ok_or("Missing test_id")?
+        .to_string();
+    let auto_fix = args
+        .get("auto_fix")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
 
     // Issue #269 — optional per-test LLM override. Parsed from the `llm_override`
     // arg as `{provider, model, base_url?, api_key?}`. Bad provider name returns
     // an error here (before spawn) so the caller learns immediately.
     let llm_override: Option<crate::llm::LlmOverride> = match args.get("llm_override") {
-        Some(v) if !v.is_null() => Some(serde_json::from_value(v.clone())
-            .map_err(|e| format!("invalid llm_override: {e}"))?),
+        Some(v) if !v.is_null() => Some(
+            serde_json::from_value(v.clone()).map_err(|e| format!("invalid llm_override: {e}"))?,
+        ),
         _ => None,
     };
 
@@ -1264,7 +1838,9 @@ pub(crate) fn call_run_test_async(args: Value) -> Result<Value, String> {
         .unwrap_or_default();
 
     let run_id = crate::test_runner::spawn_run_async_with_override(
-        test_id.clone(), auto_fix, llm_override.clone()
+        test_id.clone(),
+        auto_fix,
+        llm_override.clone(),
     )?;
 
     let mut resp = json!({
@@ -1294,16 +1870,21 @@ pub(crate) fn call_run_test_async(args: Value) -> Result<Value, String> {
     Ok(resp)
 }
 
-/// Spawn N tests in parallel, each on its own dedicated chrome tab.
+/// Spawn N tests and return run ids immediately.
 ///
-/// `max_concurrency` clamped to [1, 8].  CDP isn't designed for hundreds
-/// of simultaneous tabs — 8 is conservative; if you need a wider sweep,
-/// shard externally and call this multiple times.
+/// Execution is serialized by `test_runner::TEST_RUN_LOCK` because Sirin owns a
+/// process-wide Chrome singleton.  `max_concurrency` is accepted for backwards
+/// compatibility but clamped to 1.
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_run_test_batch(args: Value) -> Result<Value, String> {
-    let test_ids: Vec<String> = args.get("test_ids")
+    let test_ids: Vec<String> = args
+        .get("test_ids")
         .and_then(Value::as_array)
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .ok_or("Missing test_ids (array of strings)")?;
     if test_ids.is_empty() {
         return Err("test_ids is empty".into());
@@ -1339,7 +1920,9 @@ pub(crate) fn call_run_test_batch(args: Value) -> Result<Value, String> {
         .filter(|&r| r > 0.0)
         .unwrap_or(8.0);
 
-    let provider = std::env::var("LLM_PROVIDER").unwrap_or_default().to_lowercase();
+    let provider = std::env::var("LLM_PROVIDER")
+        .unwrap_or_default()
+        .to_lowercase();
     let is_gemini = provider.contains("gemini");
     let is_local_lm = provider.contains("lmstudio") || provider.contains("ollama");
 
@@ -1351,7 +1934,11 @@ pub(crate) fn call_run_test_batch(args: Value) -> Result<Value, String> {
             tracing::info!(
                 "[batch] scheduling {} ({})",
                 tid,
-                if needs_llm { "llm-fallback expected, throttled" } else { "replay-only" }
+                if needs_llm {
+                    "llm-fallback expected, throttled"
+                } else {
+                    "replay-only"
+                }
             );
             needs_llm
         })
@@ -1384,34 +1971,21 @@ pub(crate) fn call_run_test_batch(args: Value) -> Result<Value, String> {
 
     // Batch-wide safe concurrency: if any needs_llm tests, throttle to llm_safe;
     // otherwise (pure replay batch) allow hardware cap.
-    let safe_concurrency = if needs_llm_count > 0 {
-        llm_safe
-    } else {
-        8
-    };
+    let safe_concurrency = if needs_llm_count > 0 { llm_safe } else { 8 };
 
-    let raw_cap = args.get("max_concurrency")
+    let raw_cap = args
+        .get("max_concurrency")
         .and_then(Value::as_u64)
-        .unwrap_or(safe_concurrency as u64) as usize;
+        .unwrap_or(1) as usize;
 
     let mut warn: Option<String> = None;
-    let cap = if raw_cap > safe_concurrency && needs_llm_count > 0 {
-        let provider_note = if is_gemini {
-            format!("GEMINI_RPM={rpm:.0}")
-        } else if is_local_lm {
-            "local LLM serialises decode".to_string()
-        } else {
-            "non-Gemini cloud".to_string()
-        };
+    let cap = if raw_cap > 1 {
         warn = Some(format!(
-            "max_concurrency={raw_cap} exceeds LLM-safe limit={safe_concurrency} \
-             ({needs_llm_count}/{} tests classified as llm-fallback expected; {provider_note}). \
-             Clamping to {safe_concurrency} to prevent 429/timeout cascade.",
-            test_ids.len()
+            "max_concurrency={raw_cap} requested, but Sirin serializes batch tests with TEST_RUN_LOCK because Chrome is process-wide. Clamping to 1."
         ));
-        safe_concurrency
+        1
     } else {
-        raw_cap.clamp(1, 8)
+        1
     };
 
     tracing::info!(
@@ -1421,13 +1995,17 @@ pub(crate) fn call_run_test_batch(args: Value) -> Result<Value, String> {
 
     let run_ids = crate::test_runner::spawn_batch_run(test_ids.clone(), cap)?;
     // Pair each input test with its assigned run_id for client clarity.
-    let pairs: Vec<Value> = test_ids.iter().zip(run_ids.iter())
+    let pairs: Vec<Value> = test_ids
+        .iter()
+        .zip(run_ids.iter())
         .map(|(tid, rid)| json!({ "test_id": tid, "run_id": rid }))
         .collect();
     let mut resp = json!({
         "count": pairs.len(),
         "max_concurrency": cap,
-        "safe_concurrency": safe_concurrency,
+        "safe_concurrency": 1,
+        "llm_safe_concurrency": safe_concurrency,
+        "effective_concurrency": cap,
         "rpm_limit": rpm,
         "runs": pairs,
         "status": "queued",
@@ -1441,27 +2019,37 @@ pub(crate) fn call_run_test_batch(args: Value) -> Result<Value, String> {
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_run_test_pipeline(args: Value) -> Result<Value, String> {
-    let stage_ids: Vec<String> = args.get("stage_ids")
+    let stage_ids: Vec<String> = args
+        .get("stage_ids")
         .and_then(Value::as_array)
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .ok_or("Missing stage_ids (array of strings)")?;
     if stage_ids.is_empty() {
         return Err("stage_ids is empty".into());
     }
-    let stop_on_failure = args.get("stop_on_failure")
+    let stop_on_failure = args
+        .get("stop_on_failure")
         .and_then(Value::as_bool)
         .unwrap_or(false);
 
     let (pipeline_id, run_ids) =
         crate::test_runner::spawn_pipeline_run(stage_ids.clone(), stop_on_failure)?;
 
-    let stages: Vec<Value> = stage_ids.iter().zip(run_ids.iter())
+    let stages: Vec<Value> = stage_ids
+        .iter()
+        .zip(run_ids.iter())
         .enumerate()
-        .map(|(i, (tid, rid))| json!({
-            "stage": i + 1,
-            "test_id": tid,
-            "run_id": rid,
-        }))
+        .map(|(i, (tid, rid))| {
+            json!({
+                "stage": i + 1,
+                "test_id": tid,
+                "run_id": rid,
+            })
+        })
         .collect();
 
     Ok(json!({
@@ -1478,7 +2066,11 @@ pub(crate) fn call_run_test_pipeline(args: Value) -> Result<Value, String> {
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_get_test_result(args: Value) -> Result<Value, String> {
     let run_id = args["run_id"].as_str().ok_or("Missing run_id")?;
-    let last_n = args.get("last_n").and_then(Value::as_u64).unwrap_or(10).clamp(1, 50) as usize;
+    let last_n = args
+        .get("last_n")
+        .and_then(Value::as_u64)
+        .unwrap_or(10)
+        .clamp(1, 50) as usize;
     let mut result = match crate::test_runner::runs::get(run_id) {
         Some(state) => {
             // In-memory hit: build envelope + attach recent_steps from RunState
@@ -1512,15 +2104,27 @@ pub(crate) fn call_get_test_result(args: Value) -> Result<Value, String> {
         // requiring callers to parse the raw JSON themselves.
         let (errors, warnings) = parse_console_counts(log_json);
         if let Some(obj) = result.as_object_mut() {
-            obj.insert("console_log".into(), serde_json::Value::String(log_json.clone()));
-            obj.insert("console_errors".into(), serde_json::Value::Number(errors.into()));
-            obj.insert("console_warnings".into(), serde_json::Value::Number(warnings.into()));
+            obj.insert(
+                "console_log".into(),
+                serde_json::Value::String(log_json.clone()),
+            );
+            obj.insert(
+                "console_errors".into(),
+                serde_json::Value::Number(errors.into()),
+            );
+            obj.insert(
+                "console_warnings".into(),
+                serde_json::Value::Number(warnings.into()),
+            );
         }
     } else {
         if let Some(obj) = result.as_object_mut() {
             obj.insert("console_log".into(), serde_json::Value::Null);
             obj.insert("console_errors".into(), serde_json::Value::Number(0.into()));
-            obj.insert("console_warnings".into(), serde_json::Value::Number(0.into()));
+            obj.insert(
+                "console_warnings".into(),
+                serde_json::Value::Number(0.into()),
+            );
         }
     }
 
@@ -1603,38 +2207,59 @@ fn build_envelope_from_sqlite(run_id: &str, last_n: usize) -> Option<Value> {
     use rusqlite::params;
     let conn_mutex = crate::test_runner::store::__shared_db();
     let conn = conn_mutex.lock().unwrap_or_else(|e| e.into_inner());
-    let row = conn.query_row(
-        "SELECT test_id, started_at, status, duration_ms, COALESCE(iterations,0), \
+    let row = conn
+        .query_row(
+            "SELECT test_id, started_at, status, duration_ms, COALESCE(iterations,0), \
          ai_analysis, failure_category, history_json, COALESCE(is_replay,0), \
          COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), \
-         COALESCE(cached_tokens, 0), COALESCE(cost_micro_usd, 0), llm_model \
+         COALESCE(cached_tokens, 0), COALESCE(cost_micro_usd, 0), llm_model, \
+         goal_json \
          FROM test_runs WHERE run_id = ?1 ORDER BY id DESC LIMIT 1",
-        params![run_id],
-        |r| Ok((
-            r.get::<_, String>(0)?,           // test_id
-            r.get::<_, String>(1)?,           // started_at
-            r.get::<_, String>(2)?,           // status
-            r.get::<_, Option<i64>>(3)?,      // duration_ms
-            r.get::<_, i64>(4)?,              // iterations
-            r.get::<_, Option<String>>(5)?,   // ai_analysis
-            r.get::<_, Option<String>>(6)?,   // failure_category
-            r.get::<_, Option<String>>(7)?,   // history_json
-            r.get::<_, i64>(8)? != 0,         // is_replay
-            r.get::<_, i64>(9).unwrap_or(0).max(0) as u32,   // prompt_tokens
-            r.get::<_, i64>(10).unwrap_or(0).max(0) as u32,  // completion_tokens
-            r.get::<_, i64>(11).unwrap_or(0).max(0) as u32,  // cached_tokens
-            r.get::<_, i64>(12).unwrap_or(0),                // cost_micro_usd
-            r.get::<_, Option<String>>(13).unwrap_or(None),  // llm_model
-        )),
-    ).ok()?;
-    let (test_id, started_at, status, duration_ms, iterations, analysis,
-         failure_category, history_json, is_replay, prompt_tokens, completion_tokens,
-         cached_tokens, cost_micro_usd, llm_model) = row;
+            params![run_id],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,                         // test_id
+                    r.get::<_, String>(1)?,                         // started_at
+                    r.get::<_, String>(2)?,                         // status
+                    r.get::<_, Option<i64>>(3)?,                    // duration_ms
+                    r.get::<_, i64>(4)?,                            // iterations
+                    r.get::<_, Option<String>>(5)?,                 // ai_analysis
+                    r.get::<_, Option<String>>(6)?,                 // failure_category
+                    r.get::<_, Option<String>>(7)?,                 // history_json
+                    r.get::<_, i64>(8)? != 0,                       // is_replay
+                    r.get::<_, i64>(9).unwrap_or(0).max(0) as u32,  // prompt_tokens
+                    r.get::<_, i64>(10).unwrap_or(0).max(0) as u32, // completion_tokens
+                    r.get::<_, i64>(11).unwrap_or(0).max(0) as u32, // cached_tokens
+                    r.get::<_, i64>(12).unwrap_or(0),               // cost_micro_usd
+                    r.get::<_, Option<String>>(13).unwrap_or(None), // llm_model
+                    r.get::<_, Option<String>>(14).unwrap_or(None), // goal_json
+                ))
+            },
+        )
+        .ok()?;
+    let (
+        test_id,
+        started_at,
+        status,
+        duration_ms,
+        iterations,
+        analysis,
+        failure_category,
+        history_json,
+        is_replay,
+        prompt_tokens,
+        completion_tokens,
+        cached_tokens,
+        cost_micro_usd,
+        llm_model,
+        goal_json,
+    ) = row;
 
     // Parse history_json → Vec<TestStep>.  Older rows may have a malformed
     // or missing blob; in that case just return an empty steps array — the
     // dashboard will show analysis/error without per-step detail.
-    let steps: Vec<crate::test_runner::executor::TestStep> = history_json.as_deref()
+    let steps: Vec<crate::test_runner::executor::TestStep> = history_json
+        .as_deref()
         .and_then(|h| serde_json::from_str::<Vec<crate::test_runner::executor::TestStep>>(h).ok())
         .unwrap_or_default();
     let llm_prompt_bytes_sum: u64 = steps.iter().filter_map(|s| s.llm_prompt_bytes).sum();
@@ -1648,8 +2273,9 @@ fn build_envelope_from_sqlite(run_id: &str, last_n: usize) -> Option<Value> {
     // failure_category, else empty.  Mirrors what the in-memory path
     // exposes via TestResult.error_message.
     let error_text: Option<String> = match (failure_category.as_deref(), analysis.as_deref()) {
-        (Some(cat), _) if !cat.is_empty() && status != "passed"
-            => Some(format!("[{cat}] {}", analysis.as_deref().unwrap_or(""))),
+        (Some(cat), _) if !cat.is_empty() && status != "passed" => {
+            Some(format!("[{cat}] {}", analysis.as_deref().unwrap_or("")))
+        }
         _ => analysis.clone(),
     };
 
@@ -1662,7 +2288,7 @@ fn build_envelope_from_sqlite(run_id: &str, last_n: usize) -> Option<Value> {
         "last_action_age_ms":  0,
         "current_subphase":    Value::Null,
         "subphase_age_ms":     0,
-        "replay_mode":         if is_replay { "script" } else { "llm" },
+        "replay_mode":         test_result_replay_mode(is_replay, goal_json.as_deref(), analysis.as_deref()),
         "recent_steps_count":  total_steps,
         "recent_steps":        serialised,
         "llm_steps":           llm_steps,
@@ -1686,6 +2312,26 @@ fn build_envelope_from_sqlite(run_id: &str, last_n: usize) -> Option<Value> {
     }))
 }
 
+fn test_result_replay_mode(
+    is_replay: bool,
+    goal_json: Option<&str>,
+    analysis: Option<&str>,
+) -> &'static str {
+    if is_replay {
+        "script"
+    } else if goal_json
+        .map(|goal| goal.contains("\"fixture_only\":true"))
+        .unwrap_or(false)
+        || analysis
+            .map(|text| text.starts_with("fixture_only passed:"))
+            .unwrap_or(false)
+    {
+        "fixture_only"
+    } else {
+        "llm"
+    }
+}
+
 /// Portable home directory — USERPROFILE on Windows, HOME on Unix.
 fn home_dir() -> Option<std::path::PathBuf> {
     std::env::var("USERPROFILE")
@@ -1694,24 +2340,20 @@ fn home_dir() -> Option<std::path::PathBuf> {
         .map(std::path::PathBuf::from)
 }
 
-/// Manual-only 5 MB download throughput measurement for the AI Work Monitor.
-pub(crate) async fn call_ai_monitor_speed_test(_args: Value) -> Result<Value, String> {
-    let result = crate::ai_monitor::manual_speed_test().await?;
-    serde_json::to_value(result).map_err(|error| error.to_string())
-}
-
 /// Parse a console_log JSON string (array of {level, text}) and return
 /// (error_count, warning_count).  Gracefully returns (0, 0) on any parse error.
 fn parse_console_counts(log_json: &str) -> (u32, u32) {
     let Ok(arr) = serde_json::from_str::<serde_json::Value>(log_json) else {
         return (0, 0);
     };
-    let Some(msgs) = arr.as_array() else { return (0, 0) };
+    let Some(msgs) = arr.as_array() else {
+        return (0, 0);
+    };
     let mut errors = 0u32;
     let mut warnings = 0u32;
     for msg in msgs {
         match msg.get("level").and_then(|l| l.as_str()) {
-            Some("error")   => errors   += 1,
+            Some("error") => errors += 1,
             Some("warning") => warnings += 1,
             _ => {}
         }
@@ -1760,20 +2402,33 @@ pub(crate) fn call_get_screenshot(args: Value) -> Result<Value, String> {
 pub(crate) fn call_run_adhoc_test(args: Value) -> Result<Value, String> {
     let url = args["url"].as_str().ok_or("Missing url")?.to_string();
     let goal = args["goal"].as_str().ok_or("Missing goal")?.to_string();
-    let criteria: Vec<String> = args.get("success_criteria")
+    let criteria: Vec<String> = args
+        .get("success_criteria")
         .and_then(Value::as_array)
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     let locale = args.get("locale").and_then(Value::as_str).map(String::from);
-    let max_iter = args.get("max_iterations").and_then(Value::as_u64).map(|n| n as u32);
+    let max_iter = args
+        .get("max_iterations")
+        .and_then(Value::as_u64)
+        .map(|n| n as u32);
     let timeout = args.get("timeout_secs").and_then(Value::as_u64);
     let headless = args.get("browser_headless").and_then(Value::as_bool);
-    let llm_backend = args.get("llm_backend").and_then(Value::as_str).map(String::from);
-    let fixture: Option<crate::test_runner::parser::Fixture> = args.get("fixture")
+    let llm_backend = args
+        .get("llm_backend")
+        .and_then(Value::as_str)
+        .map(String::from);
+    let fixture: Option<crate::test_runner::parser::Fixture> = args
+        .get("fixture")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
 
     // Issue #81: optional per-run URL blocklist.
-    let blocked_url_patterns: Option<Vec<String>> = args.get("blocked_url_patterns")
+    let blocked_url_patterns: Option<Vec<String>> = args
+        .get("blocked_url_patterns")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
     let run_id = crate::test_runner::spawn_adhoc_run(crate::test_runner::AdhocRunRequest {
         url: url.clone(),
@@ -1801,15 +2456,26 @@ pub(crate) fn call_run_adhoc_test(args: Value) -> Result<Value, String> {
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_persist_adhoc_run(args: Value) -> Result<Value, String> {
     let run_id = args["run_id"].as_str().ok_or("Missing run_id")?.to_string();
-    let test_id = args["test_id"].as_str().ok_or("Missing test_id")?.to_string();
+    let test_id = args["test_id"]
+        .as_str()
+        .ok_or("Missing test_id")?
+        .to_string();
     let name = args.get("name").and_then(Value::as_str).map(String::from);
-    let tags: Option<Vec<String>> = args.get("tags")
-        .and_then(Value::as_array)
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect());
+    let tags: Option<Vec<String>> = args.get("tags").and_then(Value::as_array).map(|arr| {
+        arr.iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect()
+    });
     // Default both flags to the SAFE option — refuse silent overwrites; bump
     // iterations so regression has slack vs. the (often tightly-fit) ad-hoc run.
-    let bump_iterations = args.get("bump_iterations").and_then(Value::as_bool).unwrap_or(true);
-    let overwrite = args.get("overwrite").and_then(Value::as_bool).unwrap_or(false);
+    let bump_iterations = args
+        .get("bump_iterations")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let overwrite = args
+        .get("overwrite")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
 
     let result = crate::test_runner::persist_adhoc_run(crate::test_runner::PersistAdhocParams {
         run_id,
@@ -1824,35 +2490,42 @@ pub(crate) fn call_persist_adhoc_run(args: Value) -> Result<Value, String> {
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_list_recent_runs(args: Value) -> Result<Value, String> {
-    let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(20).min(100) as usize;
+    let limit = args
+        .get("limit")
+        .and_then(Value::as_u64)
+        .unwrap_or(20)
+        .min(100) as usize;
     let test_id = args.get("test_id").and_then(Value::as_str);
 
     let runs = match test_id {
         Some(tid) => crate::test_runner::store::recent_runs(tid, limit),
-        None      => crate::test_runner::store::recent_runs_all(limit),
+        None => crate::test_runner::store::recent_runs_all(limit),
     };
-    let items: Vec<Value> = runs.into_iter().map(|r| {
-        let mut obj = json!({
-            "id":               r.id,
-            "test_id":          r.test_id,
-            "started_at":       r.started_at,
-            "duration_ms":      r.duration_ms,
-            "status":           r.status,
-            "failure_category": r.failure_category,
-            "ai_analysis":      r.ai_analysis,
-            "screenshot_path":  r.screenshot_path,
-            "console_errors":   r.console_errors,
-            "console_warnings": r.console_warnings,
-        });
-        // Surface a quick ⚠️ flag for tests with console errors so callers
-        // don't need to parse counts themselves.
-        if r.console_errors > 0 {
-            obj["console_flag"] = serde_json::Value::String("error".into());
-        } else if r.console_warnings > 0 {
-            obj["console_flag"] = serde_json::Value::String("warning".into());
-        }
-        obj
-    }).collect();
+    let items: Vec<Value> = runs
+        .into_iter()
+        .map(|r| {
+            let mut obj = json!({
+                "id":               r.id,
+                "test_id":          r.test_id,
+                "started_at":       r.started_at,
+                "duration_ms":      r.duration_ms,
+                "status":           r.status,
+                "failure_category": r.failure_category,
+                "ai_analysis":      r.ai_analysis,
+                "screenshot_path":  r.screenshot_path,
+                "console_errors":   r.console_errors,
+                "console_warnings": r.console_warnings,
+            });
+            // Surface a quick ⚠️ flag for tests with console errors so callers
+            // don't need to parse counts themselves.
+            if r.console_errors > 0 {
+                obj["console_flag"] = serde_json::Value::String("error".into());
+            } else if r.console_warnings > 0 {
+                obj["console_flag"] = serde_json::Value::String("warning".into());
+            }
+            obj
+        })
+        .collect();
     Ok(json!({ "count": items.len(), "runs": items }))
 }
 
@@ -1861,14 +2534,56 @@ pub(crate) fn call_list_recent_runs(args: Value) -> Result<Value, String> {
 /// flags tests with errors so callers see a clean pass/fail + console report.
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_test_summary(args: Value) -> Result<Value, String> {
-    let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(31).min(100) as usize;
+    let limit = args
+        .get("limit")
+        .and_then(Value::as_u64)
+        .unwrap_or(31)
+        .min(100) as usize;
+    let suite = args
+        .get("suite")
+        .and_then(Value::as_str)
+        .unwrap_or("active-smoke")
+        .trim()
+        .to_owned();
+    let include_tags = args
+        .get("tag")
+        .and_then(Value::as_str)
+        .map(|tag| vec![tag.to_owned()])
+        .or_else(|| string_vec_arg(&args, "tags"))
+        .or_else(|| string_vec_arg(&args, "include_tags"))
+        .or_else(|| string_vec_arg(&args, "includeTags"));
+    let exclude_tags =
+        string_vec_arg(&args, "exclude_tags").or_else(|| string_vec_arg(&args, "excludeTags"));
+    let test_tags: std::collections::HashMap<String, Vec<String>> =
+        crate::test_runner::list_tests()
+            .into_iter()
+            .filter(|t| {
+                let suite_ok = suite.is_empty()
+                    || matches!(suite.as_str(), "all" | "*")
+                    || t.tags.iter().any(|tag| tag == &suite);
+                let include_ok = include_tags
+                    .as_ref()
+                    .map(|tags| {
+                        tags.iter()
+                            .any(|tag| t.tags.iter().any(|t_tag| t_tag == tag))
+                    })
+                    .unwrap_or(true);
+                let exclude_ok = exclude_tags
+                    .as_ref()
+                    .map(|tags| {
+                        !tags
+                            .iter()
+                            .any(|tag| t.tags.iter().any(|t_tag| t_tag == tag))
+                    })
+                    .unwrap_or(true);
+                suite_ok && include_ok && exclude_ok
+            })
+            .map(|t| (t.id, t.tags))
+            .collect();
 
-    // Default: runs from the last hour.
+    // Default: runs from the last 24 hours.
     let since_str = args.get("since").and_then(Value::as_str);
-    let cutoff = since_str.map(String::from).unwrap_or_else(|| {
-        let t = chrono::Local::now() - chrono::Duration::hours(1);
-        t.format("%H:%M").to_string()
-    });
+    let cutoff = test_summary_cutoff(since_str)?;
 
     let all_runs = crate::test_runner::store::recent_runs_all(limit * 4);
 
@@ -1876,50 +2591,67 @@ pub(crate) fn call_test_summary(args: Value) -> Result<Value, String> {
     let mut seen: std::collections::HashMap<String, crate::test_runner::store::RunRecord> =
         std::collections::HashMap::new();
     for r in all_runs {
-        if r.started_at.len() >= 16 && &r.started_at[11..16] >= cutoff.as_str() {
+        if !test_tags.contains_key(&r.test_id) {
+            continue;
+        }
+        let started_at = chrono::DateTime::parse_from_rfc3339(&r.started_at)
+            .map(|dt| dt.with_timezone(&chrono::Local))
+            .ok();
+        if started_at.map(|dt| dt >= cutoff).unwrap_or(false) {
             seen.entry(r.test_id.clone()).or_insert(r);
         }
     }
 
-    let mut results: Vec<Value> = seen.values().map(|r| {
-        let flag = if r.console_errors > 0 { "error" }
-                   else if r.console_warnings > 0 { "warning" }
-                   else { "ok" };
-        json!({
-            "test_id":          r.test_id,
-            "status":           r.status,
-            "duration_ms":      r.duration_ms,
-            "console_errors":   r.console_errors,
-            "console_warnings": r.console_warnings,
-            "flag":             flag,
+    let mut results: Vec<Value> = seen
+        .values()
+        .map(|r| {
+            let flag = test_summary_flag(&r.status, r.console_errors, r.console_warnings);
+            let tags = test_tags.get(&r.test_id).cloned().unwrap_or_default();
+            json!({
+                "test_id":          r.test_id,
+                "status":           r.status,
+                "duration_ms":      r.duration_ms,
+                "console_errors":   r.console_errors,
+                "console_warnings": r.console_warnings,
+                "tags":             tags,
+                "flag":             flag,
+            })
         })
-    }).collect();
+        .collect();
     results.sort_by(|a, b| {
         // Sort: failures first, then console-error, then by test_id
         let a_bad = a["status"].as_str().map(|s| s != "passed").unwrap_or(false) as u8;
         let b_bad = b["status"].as_str().map(|s| s != "passed").unwrap_or(false) as u8;
-        b_bad.cmp(&a_bad)
-            .then(b["console_errors"].as_u64().cmp(&a["console_errors"].as_u64()))
+        b_bad
+            .cmp(&a_bad)
+            .then(
+                b["console_errors"]
+                    .as_u64()
+                    .cmp(&a["console_errors"].as_u64()),
+            )
             .then(a["test_id"].as_str().cmp(&b["test_id"].as_str()))
     });
 
     let total = results.len();
     let passed = results.iter().filter(|r| r["status"] == "passed").count();
     let failed = total - passed;
-    let console_errors_total: u64 = results.iter()
-        .filter_map(|r| r["console_errors"].as_u64()).sum();
-    let console_warnings_total: u64 = results.iter()
-        .filter_map(|r| r["console_warnings"].as_u64()).sum();
+    let console_errors_total: u64 = results
+        .iter()
+        .filter_map(|r| r["console_errors"].as_u64())
+        .sum();
+    let console_warnings_total: u64 = results
+        .iter()
+        .filter_map(|r| r["console_warnings"].as_u64())
+        .sum();
 
-    let recommendation = if failed > 0 {
-        format!("{} tests failed — check 'flag' and 'status' fields", failed)
-    } else if console_errors_total > 0 {
-        format!("All passed but {} console errors detected — review with get_test_result", console_errors_total)
-    } else {
-        format!("All {} tests passed with clean console ✓", total)
-    };
+    let (status, recommendation) = test_summary_outcome(total, failed, console_errors_total);
 
     Ok(json!({
+        "suite":                  suite,
+        "include_tags":           include_tags,
+        "exclude_tags":           exclude_tags,
+        "status":                 status,
+        "has_data":               total > 0,
         "total":                  total,
         "passed":                 passed,
         "failed":                 failed,
@@ -1930,11 +2662,79 @@ pub(crate) fn call_test_summary(args: Value) -> Result<Value, String> {
     }))
 }
 
+fn test_summary_outcome(
+    total: usize,
+    failed: usize,
+    console_errors_total: u64,
+) -> (&'static str, String) {
+    if total == 0 {
+        (
+            "no_data",
+            "No test results found for the selected filters and time window — run the selected suite before evaluating health".to_string(),
+        )
+    } else if failed > 0 {
+        (
+            "failed",
+            format!("{} tests failed — check 'flag' and 'status' fields", failed),
+        )
+    } else if console_errors_total > 0 {
+        (
+            "attention_needed",
+            format!(
+                "All passed but {} console errors detected — review with get_test_result",
+                console_errors_total
+            ),
+        )
+    } else {
+        (
+            "passed",
+            format!("All {} tests passed with clean console ✓", total),
+        )
+    }
+}
+
+fn test_summary_cutoff(since: Option<&str>) -> Result<chrono::DateTime<chrono::Local>, String> {
+    use chrono::TimeZone;
+
+    let Some(raw) = since.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(chrono::Local::now() - chrono::Duration::hours(24));
+    };
+
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(raw) {
+        return Ok(dt.with_timezone(&chrono::Local));
+    }
+
+    let time = chrono::NaiveTime::parse_from_str(raw, "%H:%M")
+        .map_err(|_| format!("invalid since '{raw}', expected RFC3339 or HH:MM"))?;
+    let today = chrono::Local::now().date_naive();
+    let naive = today.and_time(time);
+    chrono::Local
+        .from_local_datetime(&naive)
+        .single()
+        .ok_or_else(|| format!("invalid local since time '{raw}'"))
+}
+
+fn test_summary_flag(status: &str, console_errors: u32, console_warnings: u32) -> &'static str {
+    if status != "passed" || console_errors > 0 {
+        "error"
+    } else if console_warnings > 0 {
+        "warning"
+    } else {
+        "ok"
+    }
+}
+
 /// test_coverage — read agora_market.yaml feature map and compute coverage statistics.
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_test_coverage(args: Value) -> Result<Value, String> {
-    let group_filter = args.get("group_id").and_then(Value::as_str).map(String::from);
-    let missing_only = args.get("show_missing_only").and_then(Value::as_bool).unwrap_or(false);
+    let group_filter = args
+        .get("group_id")
+        .and_then(Value::as_str)
+        .map(String::from);
+    let missing_only = args
+        .get("show_missing_only")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
 
     // Load feature map config.
     let map_path = crate::platform::config_path("coverage/agora_market.yaml");
@@ -1946,30 +2746,48 @@ pub(crate) fn call_test_coverage(args: Value) -> Result<Value, String> {
     // Build a lookup: test_id → { has_script, pass_rate, last_status }
     let all_tests = crate::test_runner::list_tests();
     let all_scripts = crate::test_runner::store::all_test_stats();
-    let all_saved: std::collections::HashMap<String, bool> = all_tests.iter()
-        .map(|t| (t.id.clone(), crate::test_runner::store::script_info(&t.id).is_some()))
+    let all_saved: std::collections::HashMap<String, bool> = all_tests
+        .iter()
+        .map(|t| {
+            (
+                t.id.clone(),
+                crate::test_runner::store::script_info(&t.id).is_some(),
+            )
+        })
         .collect();
-    let stats_map: std::collections::HashMap<&str, _> = all_scripts.iter()
+    let stats_map: std::collections::HashMap<&str, _> = all_scripts
+        .iter()
         .map(|s| (s.test_id.as_str(), s))
         .collect();
 
-    let groups_raw = map["feature_groups"].as_array()
+    let groups_raw = map["feature_groups"]
+        .as_array()
         .ok_or("feature_groups missing or not array")?;
 
     let mut total_features = 0usize;
     let mut total_covered = 0usize;
+    let mut total_confirmed = 0usize;
+    let mut total_partial = 0usize;
     let mut all_gaps: Vec<Value> = Vec::new();
     let mut group_results: Vec<Value> = Vec::new();
 
     for g in groups_raw {
         let gid = g["id"].as_str().unwrap_or("?");
         if let Some(ref f) = group_filter {
-            if gid != f { continue; }
+            if gid != f {
+                continue;
+            }
         }
         let gname = g["name"].as_str().unwrap_or(gid);
 
-        let features_raw = g["features"].as_array().map(|a| a.as_slice()).unwrap_or(&[]);
+        let features_raw = g["features"]
+            .as_array()
+            .map(|a| a.as_slice())
+            .unwrap_or(&[]);
         let mut covered_count = 0usize;
+        let mut confirmed_count = 0usize;
+        let mut partial_count = 0usize;
+        let mut missing_count = 0usize;
         let mut feature_results: Vec<Value> = Vec::new();
 
         for feat in features_raw {
@@ -1978,30 +2796,49 @@ pub(crate) fn call_test_coverage(args: Value) -> Result<Value, String> {
             let status = feat["status"].as_str().unwrap_or("missing");
 
             // Resolve which tests cover this feature.
-            let test_ids: Vec<&str> = feat["test_ids"].as_array()
+            let test_ids: Vec<&str> = feat["test_ids"]
+                .as_array()
                 .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
                 .unwrap_or_default();
 
-            let covering_tests: Vec<Value> = test_ids.iter().map(|tid| {
-                let has_script = all_saved.get(*tid).copied().unwrap_or(false);
-                let stat = stats_map.get(tid);
-                let pass_rate = stat.map(|s| s.pass_rate_7d).unwrap_or(0.0);
-                let last_status = stat.and_then(|_| {
-                    crate::test_runner::store::recent_runs(tid, 1).into_iter().next()
-                        .map(|r| r.status)
-                }).unwrap_or_else(|| "never_run".into());
-                json!({
-                    "test_id":      tid,
-                    "has_script":   has_script,
-                    "pass_rate_7d": pass_rate,
-                    "last_status":  last_status,
+            let covering_tests: Vec<Value> = test_ids
+                .iter()
+                .map(|tid| {
+                    let has_script = all_saved.get(*tid).copied().unwrap_or(false);
+                    let stat = stats_map.get(tid);
+                    let pass_rate = stat.map(|s| s.pass_rate_7d).unwrap_or(0.0);
+                    let last_status = stat
+                        .and_then(|_| {
+                            crate::test_runner::store::recent_runs(tid, 1)
+                                .into_iter()
+                                .next()
+                                .map(|r| r.status)
+                        })
+                        .unwrap_or_else(|| "never_run".into());
+                    json!({
+                        "test_id":      tid,
+                        "has_script":   has_script,
+                        "pass_rate_7d": pass_rate,
+                        "last_status":  last_status,
+                    })
                 })
-            }).collect();
+                .collect();
 
             let is_covered = status != "missing" && !test_ids.is_empty();
-            if is_covered { covered_count += 1; }
+            if is_covered {
+                covered_count += 1;
+                match status {
+                    "confirmed" => confirmed_count += 1,
+                    "partial" => partial_count += 1,
+                    _ => {}
+                }
+            } else {
+                missing_count += 1;
+            }
 
-            if missing_only && status != "missing" { continue; }
+            if missing_only && status != "missing" {
+                continue;
+            }
 
             feature_results.push(json!({
                 "id":       fid,
@@ -2022,29 +2859,42 @@ pub(crate) fn call_test_coverage(args: Value) -> Result<Value, String> {
         }
 
         let feat_total = features_raw.len();
-        let pct = if feat_total > 0 { (covered_count * 100 / feat_total) as u32 } else { 0 };
+        let pct = if feat_total > 0 {
+            (covered_count * 100 / feat_total) as u32
+        } else {
+            0
+        };
         total_features += feat_total;
         total_covered += covered_count;
+        total_confirmed += confirmed_count;
+        total_partial += partial_count;
 
         group_results.push(json!({
-            "id":       gid,
-            "name":     gname,
-            "role":     g["role"],
-            "covered":  covered_count,
-            "total":    feat_total,
-            "pct":      pct,
-            "features": feature_results,
+            "id":            gid,
+            "name":          gname,
+            "role":          g["role"],
+            "covered":       covered_count,
+            "confirmed":     confirmed_count,
+            "partial":       partial_count,
+            "missing":       missing_count,
+            "total":         feat_total,
+            "pct":           pct,
+            "confirmed_pct": if feat_total > 0 { (confirmed_count * 100 / feat_total) as u32 } else { 0 },
+            "features":      feature_results,
         }));
     }
 
     let overall_pct = if total_features > 0 {
         (total_covered * 100 / total_features) as u32
-    } else { 0 };
+    } else {
+        0
+    };
 
     // Script summary across all regression tests.
     let total_tests = all_tests.len();
     let tests_with_script = all_saved.values().filter(|&&v| v).count();
-    let tests_llm_only = all_tests.iter()
+    let tests_llm_only = all_tests
+        .iter()
         .filter(|t| !all_saved.get(&t.id).copied().unwrap_or(false))
         .map(|t| t.id.as_str())
         .filter(|id| id.starts_with("agora_"))
@@ -2054,9 +2904,13 @@ pub(crate) fn call_test_coverage(args: Value) -> Result<Value, String> {
         "product":    map["product"],
         "version":    map["version"],
         "overall": {
-            "covered":  total_covered,
-            "total":    total_features,
-            "pct":      overall_pct,
+            "covered":       total_covered,
+            "confirmed":     total_confirmed,
+            "partial":       total_partial,
+            "missing":       total_features.saturating_sub(total_covered),
+            "total":         total_features,
+            "pct":           overall_pct,
+            "confirmed_pct": if total_features > 0 { (total_confirmed * 100 / total_features) as u32 } else { 0 },
         },
         "script_status": {
             "total_tests":        total_tests,
@@ -2071,31 +2925,38 @@ pub(crate) fn call_test_coverage(args: Value) -> Result<Value, String> {
 /// #247 — discover_app: kick off discovery crawler in a background thread.
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_discover_app(args: Value) -> Result<Value, String> {
-    let seed_url = args.get("seed_url").and_then(Value::as_str)
-        .ok_or("seed_url required")?.to_string();
-    let max_depth = args.get("max_depth").and_then(Value::as_u64)
-        .map(|n| n as u32).unwrap_or(1);
+    let seed_url = args
+        .get("seed_url")
+        .and_then(Value::as_str)
+        .ok_or("seed_url required")?
+        .to_string();
+    let max_depth = args
+        .get("max_depth")
+        .and_then(Value::as_u64)
+        .map(|n| n as u32)
+        .unwrap_or(1);
 
-    let run_id = format!(
-        "disc_{}",
-        chrono::Utc::now().format("%Y%m%d_%H%M%S")
-    );
+    let run_id = format!("disc_{}", chrono::Utc::now().format("%Y%m%d_%H%M%S"));
     crate::test_runner::discovery::begin_run(&run_id, &seed_url, max_depth)?;
 
     let run_id_owned = run_id.clone();
-    let seed_owned   = seed_url.clone();
+    let seed_owned = seed_url.clone();
     std::thread::spawn(move || {
-        match crate::test_runner::discovery::crawl_app(
-            &seed_owned, max_depth, &run_id_owned,
-        ) {
+        match crate::test_runner::discovery::crawl_app(&seed_owned, max_depth, &run_id_owned) {
             Ok(count) => {
                 let _ = crate::test_runner::discovery::finish_run(
-                    &run_id_owned, "done", Some(count), None,
+                    &run_id_owned,
+                    "done",
+                    Some(count),
+                    None,
                 );
             }
             Err(e) => {
                 let _ = crate::test_runner::discovery::finish_run(
-                    &run_id_owned, "failed", Some(0), Some(&e),
+                    &run_id_owned,
+                    "failed",
+                    Some(0),
+                    Some(&e),
                 );
             }
         }
@@ -2113,7 +2974,7 @@ pub(crate) fn call_discover_app(args: Value) -> Result<Value, String> {
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_discovery_status() -> Result<Value, String> {
     let latest = crate::test_runner::discovery::latest_run()?;
-    let total  = crate::test_runner::discovery::feature_count().unwrap_or(0);
+    let total = crate::test_runner::discovery::feature_count().unwrap_or(0);
     match latest {
         None => Ok(json!({
             "status":            "not_run",
@@ -2173,16 +3034,21 @@ pub(crate) fn call_discovery_features(args: Value) -> Result<Value, String> {
 pub(crate) fn call_scaffold_test(args: Value) -> Result<Value, String> {
     use crate::test_runner::scaffold::{scaffold_yaml, TestRole};
 
-    let role_str = args.get("role").and_then(Value::as_str)
+    let role_str = args
+        .get("role")
+        .and_then(Value::as_str)
         .ok_or("missing required `role` (buyer / seller / delivery / admin)")?;
-    let role = TestRole::from_str(role_str)
-        .ok_or_else(|| format!(
-            "invalid role `{role_str}` — expected buyer / seller / delivery / admin"
-        ))?;
-    let test_id = args.get("id").and_then(Value::as_str)
+    let role = TestRole::from_str(role_str).ok_or_else(|| {
+        format!("invalid role `{role_str}` — expected buyer / seller / delivery / admin")
+    })?;
+    let test_id = args
+        .get("id")
+        .and_then(Value::as_str)
         .ok_or("missing required `id` (test_id, same as YAML file basename)")?;
     if test_id.is_empty() || test_id.contains('/') || test_id.contains('\\') {
-        return Err(format!("invalid test_id `{test_id}` — must be a plain identifier"));
+        return Err(format!(
+            "invalid test_id `{test_id}` — must be a plain identifier"
+        ));
     }
     let name = args.get("name").and_then(Value::as_str);
 
@@ -2192,7 +3058,7 @@ pub(crate) fn call_scaffold_test(args: Value) -> Result<Value, String> {
     let suggested_path = crate::platform::config_path(
         std::path::Path::new("tests")
             .join("agora_regression")
-            .join(format!("{test_id}.yaml"))
+            .join(format!("{test_id}.yaml")),
     );
 
     Ok(json!({
@@ -2213,20 +3079,27 @@ pub(crate) fn call_scaffold_test(args: Value) -> Result<Value, String> {
 /// Returns issues as structured JSON; empty array = clean.
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_lint_test(args: Value) -> Result<Value, String> {
-    let test_id = args.get("test_id").and_then(Value::as_str)
+    let test_id = args
+        .get("test_id")
+        .and_then(Value::as_str)
         .ok_or("missing required `test_id`")?;
     let goal = crate::test_runner::parser::find(test_id)
         .ok_or_else(|| format!("test `{test_id}` not found in config/tests/"))?;
     let issues = crate::test_runner::lint::lint(&goal);
-    let issues_json: Vec<Value> = issues.iter().map(|i| json!({
-        "rule":     i.rule,
-        "severity": match i.severity {
-            crate::test_runner::lint::Severity::Warn  => "warn",
-            crate::test_runner::lint::Severity::Error => "error",
-        },
-        "step":     i.step,
-        "message":  i.message,
-    })).collect();
+    let issues_json: Vec<Value> = issues
+        .iter()
+        .map(|i| {
+            json!({
+                "rule":     i.rule,
+                "severity": match i.severity {
+                    crate::test_runner::lint::Severity::Warn  => "warn",
+                    crate::test_runner::lint::Severity::Error => "error",
+                },
+                "step":     i.step,
+                "message":  i.message,
+            })
+        })
+        .collect();
     Ok(json!({
         "test_id":     test_id,
         "clean":       issues.is_empty(),
@@ -2237,7 +3110,10 @@ pub(crate) fn call_lint_test(args: Value) -> Result<Value, String> {
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_list_flaky_tests(args: Value) -> Result<Value, String> {
-    let threshold = args.get("threshold").and_then(Value::as_f64).unwrap_or(0.70);
+    let threshold = args
+        .get("threshold")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.70);
     let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize;
 
     let all_stats = crate::test_runner::store::all_test_stats();
@@ -2256,8 +3132,12 @@ pub(crate) fn call_list_flaky_tests(args: Value) -> Result<Value, String> {
         .take(limit)
         .collect();
     // Worst first
-    flaky.sort_by(|a, b| a["pass_rate_7d"].as_f64().partial_cmp(&b["pass_rate_7d"].as_f64())
-        .unwrap_or(std::cmp::Ordering::Equal));
+    flaky.sort_by(|a, b| {
+        a["pass_rate_7d"]
+            .as_f64()
+            .partial_cmp(&b["pass_rate_7d"].as_f64())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     Ok(json!({
         "count":     flaky.len(),
@@ -2276,35 +3156,50 @@ pub(crate) async fn call_explain_failure(args: Value) -> Result<Value, String> {
     // Try in-memory state first, fall back to SQLite (handles pruned runs).
     let mem_state = crate::test_runner::runs::get(run_id);
 
-    let (status, ai_analysis, error_msg, history_summary, console_log) = if let Some(ref s) = mem_state {
-        let json = crate::test_runner::runs::to_json(s);
-        let status = json["status"].as_str().unwrap_or("unknown").to_string();
-        let details = &json["details"];
-        let ai = details["analysis"].as_str().map(String::from);
-        let err = details["error"].as_str().map(String::from);
-        let hist = match &s.phase {
-            crate::test_runner::runs::RunPhase::Complete(r) => {
-                r.history.iter().rev().take(5).rev().enumerate()
-                    .map(|(i, step)| format!("  {}: {} → {}", i+1,
-                        &step.action.to_string()[..step.action.to_string().len().min(60)],
-                        &step.observation[..step.observation.len().min(120)]))
-                    .collect::<Vec<_>>().join("\n")
+    let (status, ai_analysis, error_msg, history_summary, console_log) =
+        if let Some(ref s) = mem_state {
+            let json = crate::test_runner::runs::to_json(s);
+            let status = json["status"].as_str().unwrap_or("unknown").to_string();
+            let details = &json["details"];
+            let ai = details["analysis"].as_str().map(String::from);
+            let err = details["error"].as_str().map(String::from);
+            let hist = match &s.phase {
+                crate::test_runner::runs::RunPhase::Complete(r) => r
+                    .history
+                    .iter()
+                    .rev()
+                    .take(5)
+                    .rev()
+                    .enumerate()
+                    .map(|(i, step)| {
+                        format!(
+                            "  {}: {} → {}",
+                            i + 1,
+                            &step.action.to_string()[..step.action.to_string().len().min(60)],
+                            &step.observation[..step.observation.len().min(120)]
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                _ => String::new(),
+            };
+            let console = crate::test_runner::store::get_console_log(run_id);
+            (status, ai, err, hist, console)
+        } else {
+            // In-memory pruned — pull from SQLite.
+            match crate::test_runner::store::find_full_context_by_run_id(run_id) {
+                Some((status, cat, ai, steps, console)) => {
+                    let hist: String = steps.unwrap_or_default();
+                    let err: Option<String> = cat.map(|c| format!("failure_category: {c}"));
+                    (status, ai, err, hist, console)
+                }
+                None => {
+                    return Err(format!(
+                        "run_id '{run_id}' not found (not in memory or SQLite)"
+                    ))
+                }
             }
-            _ => String::new(),
         };
-        let console = crate::test_runner::store::get_console_log(run_id);
-        (status, ai, err, hist, console)
-    } else {
-        // In-memory pruned — pull from SQLite.
-        match crate::test_runner::store::find_full_context_by_run_id(run_id) {
-            Some((status, cat, ai, steps, console)) => {
-                let hist: String = steps.unwrap_or_default();
-                let err: Option<String> = cat.map(|c| format!("failure_category: {c}"));
-                (status, ai, err, hist, console)
-            }
-            None => return Err(format!("run_id '{run_id}' not found (not in memory or SQLite)")),
-        }
-    };
 
     if status == "passed" {
         return Ok(json!({
@@ -2315,17 +3210,29 @@ pub(crate) async fn call_explain_failure(args: Value) -> Result<Value, String> {
     }
 
     // Parse console errors.
-    let console_section: String = console_log.as_deref().map(|log| {
-        let msgs: Vec<String> = serde_json::from_str::<Value>(log).ok()
-            .and_then(|v| v.as_array().cloned()).unwrap_or_default()
-            .into_iter()
-            .filter(|m| m.get("level").and_then(|l| l.as_str()) == Some("error"))
-            .take(5)
-            .filter_map(|m| m["text"].as_str().map(|t| format!("  [error] {}", &t[..t.len().min(200)])))
-            .collect();
-        if msgs.is_empty() { String::new() }
-        else { format!("\nBrowser Console Errors:\n{}", msgs.join("\n")) }
-    }).unwrap_or_default();
+    let console_section: String = console_log
+        .as_deref()
+        .map(|log| {
+            let msgs: Vec<String> = serde_json::from_str::<Value>(log)
+                .ok()
+                .and_then(|v| v.as_array().cloned())
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|m| m.get("level").and_then(|l| l.as_str()) == Some("error"))
+                .take(5)
+                .filter_map(|m| {
+                    m["text"]
+                        .as_str()
+                        .map(|t| format!("  [error] {}", &t[..t.len().min(200)]))
+                })
+                .collect();
+            if msgs.is_empty() {
+                String::new()
+            } else {
+                format!("\nBrowser Console Errors:\n{}", msgs.join("\n"))
+            }
+        })
+        .unwrap_or_default();
 
     // Build the prompt for LLM explanation.
     let prompt = format!(
@@ -2346,12 +3253,18 @@ pub(crate) async fn call_explain_failure(args: Value) -> Result<Value, String> {
     );
 
     // Use the main LLM (fallback to simple summary if unavailable).
-    let ctx = crate::adk::context::AgentContext::new("explain_failure",
-        crate::adk::tool::ToolRegistry::new());
-    let explanation = match crate::llm::call_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), prompt).await {
-        Ok(s) => s.trim().to_string(),
-        Err(e) => format!("LLM unavailable: {e}. Raw info: status={status}, error={:?}", error_msg),
-    };
+    let ctx = crate::adk::context::AgentContext::new(
+        "explain_failure",
+        crate::adk::tool::ToolRegistry::new(),
+    );
+    let explanation =
+        match crate::llm::call_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), prompt).await {
+            Ok(s) => s.trim().to_string(),
+            Err(e) => format!(
+                "LLM unavailable: {e}. Raw info: status={status}, error={:?}",
+                error_msg
+            ),
+        };
 
     Ok(json!({
         "run_id":           run_id,
@@ -2365,54 +3278,241 @@ pub(crate) async fn call_explain_failure(args: Value) -> Result<Value, String> {
 /// #266 — script_health: project-wide replay metrics + per-test classification.
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_script_health(args: Value) -> Result<Value, String> {
-    let window_days = args.get("window_days")
+    let window_days = args
+        .get("window_days")
         .and_then(Value::as_u64)
         .map(|v| v as u32)
         .unwrap_or(14);
-
-    let aggregate = crate::test_runner::store::replay_health(window_days);
+    let suite = args
+        .get("suite")
+        .and_then(Value::as_str)
+        .unwrap_or("active-smoke")
+        .trim()
+        .to_owned();
+    let include_tags = string_vec_arg(&args, "tags")
+        .or_else(|| string_vec_arg(&args, "include_tags"))
+        .or_else(|| string_vec_arg(&args, "includeTags"));
+    let exclude_tags =
+        string_vec_arg(&args, "exclude_tags").or_else(|| string_vec_arg(&args, "excludeTags"));
 
     // Per-test breakdown — same shape the UI uses, exposed via MCP for cron /
     // CI consumers that want to flag specific stale tests.
-    let per_test: Vec<Value> = crate::test_runner::list_tests()
+    let tests: Vec<_> = crate::test_runner::list_tests()
+        .into_iter()
+        .filter(|t| {
+            let suite_ok = suite.is_empty()
+                || matches!(suite.as_str(), "all" | "*")
+                || t.tags.iter().any(|tag| tag == &suite);
+            let include_ok = include_tags
+                .as_ref()
+                .map(|tags| {
+                    tags.iter()
+                        .any(|tag| t.tags.iter().any(|t_tag| t_tag == tag))
+                })
+                .unwrap_or(true);
+            let exclude_ok = exclude_tags
+                .as_ref()
+                .map(|tags| {
+                    !tags
+                        .iter()
+                        .any(|tag| t.tags.iter().any(|t_tag| t_tag == tag))
+                })
+                .unwrap_or(true);
+            suite_ok && include_ok && exclude_ok
+        })
+        .collect();
+
+    let test_ids: Vec<String> = tests.iter().map(|test| test.id.clone()).collect();
+    let aggregate = serde_json::to_value(crate::test_runner::store::replay_health_for_tests(
+        window_days,
+        &test_ids,
+    ))
+    .map_err(|e| format!("serialize script health: {e}"))?;
+
+    let per_test: Vec<Value> = tests
         .into_iter()
         .map(|t| {
             let status = crate::test_runner::store::test_replay_status(&t.id);
             let recent = crate::test_runner::store::recent_replay_modes(&t.id, 3);
             let has_script = crate::test_runner::store::script_info(&t.id).is_some();
             let status_str = match status {
-                crate::test_runner::store::ReplayStatus::Healthy        => "healthy",
-                crate::test_runner::store::ReplayStatus::StaleFallback  => "stale_fallback",
-                crate::test_runner::store::ReplayStatus::LlmOnly        => "llm_only",
-                crate::test_runner::store::ReplayStatus::Untested       => "untested",
+                crate::test_runner::store::ReplayStatus::FixtureOnly => "fixture_only",
+                crate::test_runner::store::ReplayStatus::Healthy => "healthy",
+                crate::test_runner::store::ReplayStatus::StaleFallback => "stale_fallback",
+                crate::test_runner::store::ReplayStatus::LlmOnly => "llm_only",
+                crate::test_runner::store::ReplayStatus::Untested => "untested",
             };
             json!({
                 "test_id":     t.id,
                 "status":      status_str,
                 "has_script":  has_script,
                 "recent_modes": recent,
+                "tags":        t.tags,
             })
         })
         .collect();
 
     Ok(json!({
+        "suite": suite,
+        "selected_test_count": test_ids.len(),
         "aggregate": aggregate,
         "per_test":  per_test,
         "drift_warning_threshold": -0.10,
     }))
 }
 
+fn string_vec_arg(args: &Value, key: &str) -> Option<Vec<String>> {
+    args.get(key)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .filter(|items| !items.is_empty())
+}
+
+// Registry compatibility: read-only active-smoke health snapshot.
+pub(crate) fn call_agora_health_check(args: Value) -> Result<Value, String> {
+    let force_rerun = args
+        .get("force_rerun")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let rerun_if_stale = args
+        .get("rerun_if_stale")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    let mut passed_latest = 0usize;
+    let mut failed_latest = 0usize;
+    let mut no_data = 0usize;
+    let tests: Vec<Value> = crate::test_runner::list_tests()
+        .into_iter()
+        .filter(|t| t.tags.iter().any(|tag| tag == "active-smoke"))
+        .map(|t| {
+            let latest = crate::test_runner::store::recent_runs(&t.id, 1)
+                .into_iter()
+                .next();
+            match latest.as_ref().map(|r| r.status.as_str()) {
+                Some("passed") => passed_latest += 1,
+                Some(_) => failed_latest += 1,
+                None => no_data += 1,
+            }
+            json!({
+                "test_id": t.id,
+                "latest_status": latest.as_ref().map(|r| r.status.as_str()).unwrap_or("no_data"),
+                "latest_run_id": latest.as_ref().and_then(|r| r.run_id.as_deref()),
+                "started_at": latest.as_ref().map(|r| r.started_at.as_str()),
+            })
+        })
+        .collect();
+
+    Ok(json!({
+        "boundary": "Read-only active-smoke health snapshot; no test run was queued.",
+        "queued": false,
+        "rerun_requested": force_rerun || rerun_if_stale,
+        "rerun_note": "Use run_test_batch/run_test_async explicitly for execution.",
+        "active_smoke_count": tests.len(),
+        "passed_latest": passed_latest,
+        "failed_latest": failed_latest,
+        "no_data": no_data,
+        "tests": tests,
+        "script_health": call_script_health(json!({"window_days": 7}))?,
+    }))
+}
+
+// Registry compatibility: summarize latest non-passing active-smoke evidence.
+pub(crate) fn call_agora_health_triage(args: Value) -> Result<Value, String> {
+    let include_passed = args
+        .get("include_passed")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    let mut selected: Vec<crate::test_runner::store::RunRecord> = Vec::new();
+
+    if let Some(run_ids) = args.get("run_ids").and_then(Value::as_array) {
+        let wanted: std::collections::HashSet<&str> =
+            run_ids.iter().filter_map(Value::as_str).collect();
+        selected.extend(
+            crate::test_runner::store::recent_runs_all(200)
+                .into_iter()
+                .filter(|r| r.run_id.as_deref().is_some_and(|id| wanted.contains(id))),
+        );
+    }
+
+    if let Some(test_ids) = args.get("test_ids").and_then(Value::as_array) {
+        for test_id in test_ids.iter().filter_map(Value::as_str) {
+            if let Some(row) = crate::test_runner::store::recent_runs(test_id, 1)
+                .into_iter()
+                .next()
+            {
+                selected.push(row);
+            }
+        }
+    }
+
+    if selected.is_empty() {
+        let active_smoke: std::collections::HashSet<String> = crate::test_runner::list_tests()
+            .into_iter()
+            .filter(|t| t.tags.iter().any(|tag| tag == "active-smoke"))
+            .map(|t| t.id)
+            .collect();
+        selected.extend(
+            crate::test_runner::store::recent_runs_all(100)
+                .into_iter()
+                .filter(|r| active_smoke.contains(&r.test_id))
+                .filter(|r| include_passed || r.status != "passed"),
+        );
+    }
+
+    let runs: Vec<Value> = selected
+        .into_iter()
+        .map(|r| {
+            json!({
+                "test_id": r.test_id,
+                "run_id": r.run_id,
+                "status": r.status,
+                "started_at": r.started_at,
+                "failure_category": r.failure_category,
+                "console_errors": r.console_errors,
+                "console_warnings": r.console_warnings,
+                "analysis": r.ai_analysis,
+                "recommended_action": "Inspect get_test_result/get_run_trace before filing a product issue.",
+                "safe_to_escalate_to_codex": false,
+            })
+        })
+        .collect();
+
+    Ok(json!({
+        "boundary": "Read-only triage summary; no ChatGPT/Codex/GitHub/AgoraMarketAPI call was made.",
+        "count": runs.len(),
+        "runs": runs,
+    }))
+}
+
 /// #230 — replayLastFailure: step-by-step inspection of the last failed run.
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_replay_last_failure(args: Value) -> Result<Value, String> {
-    let test_id  = args["test_id"].as_str().ok_or("Missing test_id")?;
+    let test_id = args["test_id"].as_str().ok_or("Missing test_id")?;
     let break_at = args.get("break_at").and_then(Value::as_u64).unwrap_or(0) as usize;
 
     let row = crate::test_runner::store::last_failed_run(test_id)
         .ok_or_else(|| format!("No failed run found for test_id={test_id}"))?;
 
-    let (run_id, started_at, duration_ms, failure_category, ai_analysis,
-         iterations, history_json, console_log) = row;
+    let (
+        run_id,
+        started_at,
+        duration_ms,
+        failure_category,
+        ai_analysis,
+        iterations,
+        history_json,
+        console_log,
+    ) = row;
 
     // Parse steps from history_json.
     let steps_raw: Vec<Value> = history_json
@@ -2427,10 +3527,22 @@ pub(crate) fn call_replay_last_failure(args: Value) -> Result<Value, String> {
         .enumerate()
         .take(if break_at == 0 { usize::MAX } else { break_at })
         .map(|(i, s)| {
-            let action  = s.get("action").and_then(Value::as_str).unwrap_or("?").to_string();
-            let args_v  = s.get("args").cloned().unwrap_or(Value::Null);
-            let result  = s.get("result").and_then(Value::as_str).unwrap_or("").to_string();
-            let obs     = s.get("observation").and_then(Value::as_str).unwrap_or("").to_string();
+            let action = s
+                .get("action")
+                .and_then(Value::as_str)
+                .unwrap_or("?")
+                .to_string();
+            let args_v = s.get("args").cloned().unwrap_or(Value::Null);
+            let result = s
+                .get("result")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let obs = s
+                .get("observation")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
             json!({
                 "step":        i + 1,
                 "action":      action,
@@ -2441,7 +3553,11 @@ pub(crate) fn call_replay_last_failure(args: Value) -> Result<Value, String> {
         })
         .collect();
 
-    let console_errors = console_log.as_deref().map(parse_console_counts).map(|(e,_)| e).unwrap_or(0);
+    let console_errors = console_log
+        .as_deref()
+        .map(parse_console_counts)
+        .map(|(e, _)| e)
+        .unwrap_or(0);
 
     Ok(json!({
         "test_id":          test_id,
@@ -2462,17 +3578,15 @@ pub(crate) fn call_replay_last_failure(args: Value) -> Result<Value, String> {
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_shadow_dump_diff(args: Value) -> Result<Value, String> {
     let test_id = args["test_id"].as_str().ok_or("Missing test_id")?;
-    let step_a  = args["step_a"].as_u64().ok_or("Missing step_a")? as usize;
-    let step_b  = args["step_b"].as_u64().ok_or("Missing step_b")? as usize;
+    let step_a = args["step_a"].as_u64().ok_or("Missing step_a")? as usize;
+    let step_b = args["step_b"].as_u64().ok_or("Missing step_b")? as usize;
     let run_id_override = args.get("run_id").and_then(Value::as_str);
 
     // Get history_json from the specified run or latest failed run.
     let history_json: Option<String> = if let Some(rid) = run_id_override {
-        crate::test_runner::store::find_history_by_run_id(rid)
-            .and_then(|(_, _, _, hj)| hj)
+        crate::test_runner::store::find_history_by_run_id(rid).and_then(|(_, _, _, hj)| hj)
     } else {
-        crate::test_runner::store::last_failed_run(test_id)
-            .and_then(|(_, _, _, _, _, _, hj, _)| hj)
+        crate::test_runner::store::last_failed_run(test_id).and_then(|(_, _, _, _, _, _, hj, _)| hj)
     };
 
     let steps_raw: Vec<Value> = history_json
@@ -2504,11 +3618,13 @@ pub(crate) fn call_shadow_dump_diff(args: Value) -> Result<Value, String> {
     let lines_a: Vec<&str> = obs_a.lines().collect();
     let lines_b: Vec<&str> = obs_b.lines().collect();
 
-    let removed: Vec<String> = lines_a.iter()
+    let removed: Vec<String> = lines_a
+        .iter()
         .filter(|l| !lines_b.contains(l))
         .map(|l| format!("- {l}"))
         .collect();
-    let added: Vec<String> = lines_b.iter()
+    let added: Vec<String> = lines_b
+        .iter()
         .filter(|l| !lines_a.contains(l))
         .map(|l| format!("+ {l}"))
         .collect();
@@ -2520,8 +3636,14 @@ pub(crate) fn call_shadow_dump_diff(args: Value) -> Result<Value, String> {
         format!("{}\n{}", removed.join("\n"), added.join("\n"))
     };
 
-    let action_a = steps_raw[step_a - 1].get("action").and_then(Value::as_str).unwrap_or("?");
-    let action_b = steps_raw[step_b - 1].get("action").and_then(Value::as_str).unwrap_or("?");
+    let action_a = steps_raw[step_a - 1]
+        .get("action")
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+    let action_b = steps_raw[step_b - 1]
+        .get("action")
+        .and_then(Value::as_str)
+        .unwrap_or("?");
 
     Ok(json!({
         "test_id":         test_id,
@@ -2550,26 +3672,28 @@ pub(crate) fn call_compare_with_replay(args: Value) -> Result<Value, String> {
 
     // Split into replay (is_replay=true) and LLM (is_replay=false) runs.
     let latest_replay = runs.iter().find(|r| r.is_replay);
-    let latest_llm    = runs.iter().find(|r| !r.is_replay);
+    let latest_llm = runs.iter().find(|r| !r.is_replay);
 
-    let to_summary = |r: &crate::test_runner::store::RunRecord| json!({
-        "mode":             if r.is_replay { "script" } else { "llm" },
-        "status":          r.status,
-        "started_at":      r.started_at,
-        "duration_ms":     r.duration_ms,
-        "failure_category": r.failure_category,
-        "console_errors":  r.console_errors,
-        "console_warnings": r.console_warnings,
-    });
+    let to_summary = |r: &crate::test_runner::store::RunRecord| {
+        json!({
+            "mode":             if r.is_replay { "script" } else { "llm" },
+            "status":          r.status,
+            "started_at":      r.started_at,
+            "duration_ms":     r.duration_ms,
+            "failure_category": r.failure_category,
+            "console_errors":  r.console_errors,
+            "console_warnings": r.console_warnings,
+        })
+    };
 
     let replay_summary = latest_replay.map(to_summary);
-    let llm_summary    = latest_llm.map(to_summary);
+    let llm_summary = latest_llm.map(to_summary);
 
     // Compute comparison if both exist.
     let comparison: Option<Value> = match (latest_replay, latest_llm) {
         (Some(r), Some(l)) => {
-            let both_passed  = r.status == "passed" && l.status == "passed";
-            let both_failed  = r.status != "passed" && l.status != "passed";
+            let both_passed = r.status == "passed" && l.status == "passed";
+            let both_failed = r.status != "passed" && l.status != "passed";
             let same_outcome = r.status == l.status;
             let duration_delta_ms: i64 = match (r.duration_ms, l.duration_ms) {
                 (Some(rd), Some(ld)) => rd - ld,
@@ -2614,32 +3738,66 @@ pub(crate) fn call_compare_with_replay(args: Value) -> Result<Value, String> {
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_test_analytics(args: Value) -> Result<Value, String> {
     let test_id = args.get("test_id").and_then(Value::as_str);
+    let include_historical = args
+        .get("include_historical")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let window_days = args
+        .get("window_days")
+        .and_then(Value::as_u64)
+        .unwrap_or(30)
+        .min(3650) as u32;
+    let active_ids: Vec<String> = if test_id.is_none() && !include_historical {
+        crate::test_runner::list_tests()
+            .into_iter()
+            .map(|test| test.id)
+            .collect()
+    } else {
+        Vec::new()
+    };
     let stats = match test_id {
         Some(tid) => vec![crate::test_runner::store::test_stats(tid)],
-        None      => crate::test_runner::store::all_test_stats(),
+        None => crate::test_runner::store::analytics_stats(
+            (!include_historical).then_some(active_ids.as_slice()),
+            (window_days > 0).then_some(window_days),
+        ),
     };
     // Named regression tests only (adhoc_* excluded, min 3 runs enforced in store).
     let total_tests = stats.len();
     let flaky_count = stats.iter().filter(|s| s.is_flaky).count();
-    let avg_pass_rate = if total_tests == 0 { 0.0 } else {
+    let avg_pass_rate = if total_tests == 0 {
+        0.0
+    } else {
         stats.iter().map(|s| s.pass_rate_7d).sum::<f64>() / total_tests as f64
     };
-    let items: Vec<Value> = stats.iter().map(|s| json!({
-        "test_id":              s.test_id,
-        "total_runs":           s.total_runs,
-        "pass_rate_7d":         s.pass_rate_7d,
-        "pass_rate_30d":        s.pass_rate_30d,
-        "is_flaky":             s.is_flaky,
-        "avg_iterations":       s.avg_iterations,
-        "avg_duration_ms":      s.avg_duration_ms,
-        "top_failure_category": s.top_failure_category,
-        // Script replay info (#136)
-        "has_script":           crate::test_runner::store::script_info(&s.test_id).is_some(),
-    })).collect();
+    let scripted_ids = crate::test_runner::store::saved_script_test_ids();
+    let items: Vec<Value> = stats
+        .iter()
+        .map(|s| {
+            json!({
+                "test_id":              s.test_id,
+                "total_runs":           s.total_runs,
+                "pass_rate_7d":         s.pass_rate_7d,
+                "pass_rate_30d":        s.pass_rate_30d,
+                "is_flaky":             s.is_flaky,
+                "avg_iterations":       s.avg_iterations,
+                "avg_duration_ms":      s.avg_duration_ms,
+                "top_failure_category": s.top_failure_category,
+                // Script replay info (#136)
+                "has_script":           scripted_ids.contains(&s.test_id),
+            })
+        })
+        .collect();
     Ok(json!({
         "tests":   items,
+        "scope": {
+            "mode": if test_id.is_some() { "explicit_test" } else if include_historical { "historical_ids" } else { "current_manifest" },
+            "window_days": if test_id.is_some() || window_days == 0 { Value::Null } else { json!(window_days) },
+            "candidate_tests": if test_id.is_some() { json!(1) } else if include_historical { Value::Null } else { json!(active_ids.len()) },
+            "include_historical": include_historical,
+        },
         "summary": {
-            "total_tests":   total_tests,   // named regression only (adhoc_* excluded, ≥3 runs)
+            "total_tests":   total_tests,
             "flaky_count":   flaky_count,
             "avg_pass_rate": avg_pass_rate,
         }
@@ -2653,9 +3811,12 @@ pub(crate) fn call_test_analytics(args: Value) -> Result<Value, String> {
 pub(crate) fn call_suggest_allowlist(args: Value) -> Result<Value, String> {
     use std::collections::HashMap;
 
-    let threshold   = args.get("threshold").and_then(Value::as_u64).unwrap_or(2) as usize;
-    let sessions    = args.get("sessions").and_then(Value::as_u64).unwrap_or(10) as usize;
-    let proj_filter = args.get("project_key").and_then(Value::as_str).map(String::from);
+    let threshold = args.get("threshold").and_then(Value::as_u64).unwrap_or(2) as usize;
+    let sessions = args.get("sessions").and_then(Value::as_u64).unwrap_or(10) as usize;
+    let proj_filter = args
+        .get("project_key")
+        .and_then(Value::as_str)
+        .map(String::from);
 
     // Locate ~/.claude/projects
     let home = home_dir().ok_or("Cannot determine home directory")?;
@@ -2669,10 +3830,14 @@ pub(crate) fn call_suggest_allowlist(args: Value) -> Result<Value, String> {
     if let Ok(entries) = std::fs::read_dir(&projects_dir) {
         for entry in entries.flatten() {
             let dir = entry.path();
-            if !dir.is_dir() { continue; }
+            if !dir.is_dir() {
+                continue;
+            }
             if let Some(ref key) = proj_filter {
                 let dir_name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if !dir_name.contains(key.as_str()) { continue; }
+                if !dir_name.contains(key.as_str()) {
+                    continue;
+                }
             }
             // Flat JSONL files directly inside each project dir.
             if let Ok(files) = std::fs::read_dir(&dir) {
@@ -2716,16 +3881,23 @@ pub(crate) fn call_suggest_allowlist(args: Value) -> Result<Value, String> {
         };
         files_scanned += 1;
         for line in content.lines() {
-            let Ok(obj) = serde_json::from_str::<Value>(line) else { continue };
+            let Ok(obj) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
             let msg = obj.get("message").unwrap_or(&obj);
             let content_arr = msg.get("content").and_then(Value::as_array);
             let Some(arr) = content_arr else { continue };
             for item in arr {
-                let Some(typ) = item.get("type").and_then(Value::as_str) else { continue };
-                if typ != "tool_use" { continue; }
+                let Some(typ) = item.get("type").and_then(Value::as_str) else {
+                    continue;
+                };
+                if typ != "tool_use" {
+                    continue;
+                }
                 let name = item.get("name").and_then(Value::as_str).unwrap_or("?");
                 let pattern = if name == "Bash" {
-                    let cmd = item.get("input")
+                    let cmd = item
+                        .get("input")
                         .and_then(|i| i.get("command"))
                         .and_then(Value::as_str)
                         .unwrap_or("");
@@ -2733,11 +3905,15 @@ pub(crate) fn call_suggest_allowlist(args: Value) -> Result<Value, String> {
                     // Strip path prefixes, keep executable name only.
                     let exe = first.rsplit(&['/', '\\']).next().unwrap_or(first);
                     // Remove characters that aren't alphanumeric, underscore, dot, or dash.
-                    let exe: String = exe.chars()
+                    let exe: String = exe
+                        .chars()
                         .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '.' || *c == '-')
                         .collect();
-                    if exe.is_empty() { "Bash(?:*)".to_string() }
-                    else { format!("Bash({exe}:*)") }
+                    if exe.is_empty() {
+                        "Bash(?:*)".to_string()
+                    } else {
+                        format!("Bash({exe}:*)")
+                    }
                 } else {
                     name.to_string()
                 };
@@ -2747,13 +3923,12 @@ pub(crate) fn call_suggest_allowlist(args: Value) -> Result<Value, String> {
     }
 
     // Build suggestions: high-frequency AND not already in allowlist.
-    let mut suggestions: Vec<Value> = counter.iter()
+    let mut suggestions: Vec<Value> = counter
+        .iter()
         .filter(|(pat, &cnt)| cnt >= threshold && !existing_allow.contains(*pat))
         .map(|(pat, &cnt)| json!({ "pattern": pat, "frequency": cnt }))
         .collect();
-    suggestions.sort_by(|a, b| {
-        b["frequency"].as_u64().cmp(&a["frequency"].as_u64())
-    });
+    suggestions.sort_by(|a, b| b["frequency"].as_u64().cmp(&a["frequency"].as_u64()));
 
     Ok(json!({
         "files_scanned":  files_scanned,
@@ -2772,8 +3947,7 @@ pub(crate) fn call_list_redundant_allow() -> Result<Value, String> {
     let settings_path = home.join(".claude").join("settings.json");
     let src = std::fs::read_to_string(&settings_path)
         .map_err(|e| format!("Cannot read settings.json: {e}"))?;
-    let parsed: Value = serde_json::from_str(&src)
-        .map_err(|e| format!("Parse error: {e}"))?;
+    let parsed: Value = serde_json::from_str(&src).map_err(|e| format!("Parse error: {e}"))?;
     let allow: Vec<String> = parsed["permissions"]["allow"]
         .as_array()
         .unwrap_or(&vec![])
@@ -2782,7 +3956,8 @@ pub(crate) fn call_list_redundant_allow() -> Result<Value, String> {
         .collect();
 
     // Wildcards: patterns that end with :*)
-    let wildcards: Vec<&str> = allow.iter()
+    let wildcards: Vec<&str> = allow
+        .iter()
         .filter(|p| p.ends_with(":*)"))
         .map(String::as_str)
         .collect();
@@ -2809,9 +3984,11 @@ pub(crate) fn call_list_redundant_allow() -> Result<Value, String> {
         }
         // Wildcard pattern — check if another wildcard is a strict prefix.
         for other_wc in &wildcards {
-            if *other_wc == pat.as_str() { continue; }
+            if *other_wc == pat.as_str() {
+                continue;
+            }
             let other_prefix = &other_wc[..other_wc.len() - 3];
-            let self_prefix  = &pat[..pat.len() - 3];
+            let self_prefix = &pat[..pat.len() - 3];
             if self_prefix.starts_with(other_prefix) && self_prefix != other_prefix {
                 redundant.push(json!({
                     "pattern":    pat,
@@ -2839,13 +4016,11 @@ where
 {
     let home = home_dir().ok_or("Cannot determine home directory")?;
     let path = home.join(".claude").join("settings.json");
-    let src  = std::fs::read_to_string(&path)
-        .map_err(|e| format!("Cannot read settings.json: {e}"))?;
-    let mut parsed: Value = serde_json::from_str(&src)
-        .map_err(|e| format!("Parse error: {e}"))?;
+    let src =
+        std::fs::read_to_string(&path).map_err(|e| format!("Cannot read settings.json: {e}"))?;
+    let mut parsed: Value = serde_json::from_str(&src).map_err(|e| format!("Parse error: {e}"))?;
     f(&mut parsed)?;
-    let out = serde_json::to_string_pretty(&parsed)
-        .map_err(|e| format!("Serialize error: {e}"))?;
+    let out = serde_json::to_string_pretty(&parsed).map_err(|e| format!("Serialize error: {e}"))?;
     std::fs::write(&path, out).map_err(|e| format!("Write error: {e}"))?;
     Ok(())
 }
@@ -2853,16 +4028,18 @@ where
 pub(crate) fn call_list_allowlist() -> Result<Value, String> {
     let home = home_dir().ok_or("Cannot determine home directory")?;
     let path = home.join(".claude").join("settings.json");
-    let src  = std::fs::read_to_string(&path)
-        .map_err(|e| format!("Cannot read settings.json: {e}"))?;
-    let parsed: Value = serde_json::from_str(&src)
-        .map_err(|e| format!("Parse error: {e}"))?;
+    let src =
+        std::fs::read_to_string(&path).map_err(|e| format!("Cannot read settings.json: {e}"))?;
+    let parsed: Value = serde_json::from_str(&src).map_err(|e| format!("Parse error: {e}"))?;
     let allow: Vec<String> = parsed["permissions"]["allow"]
-        .as_array().unwrap_or(&vec![])
-        .iter().filter_map(|v| v.as_str().map(String::from)).collect();
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .filter_map(|v| v.as_str().map(String::from))
+        .collect();
 
     let wildcard_count = allow.iter().filter(|p| p.ends_with(":*)")).count();
-    let exact_count    = allow.len() - wildcard_count;
+    let exact_count = allow.len() - wildcard_count;
 
     Ok(json!({
         "total":    allow.len(),
@@ -2874,7 +4051,10 @@ pub(crate) fn call_list_allowlist() -> Result<Value, String> {
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_add_allow(args: Value) -> Result<Value, String> {
-    let pattern = args["pattern"].as_str().ok_or("Missing pattern")?.to_string();
+    let pattern = args["pattern"]
+        .as_str()
+        .ok_or("Missing pattern")?
+        .to_string();
     let mut already_existed = false;
     mutate_settings(|v| {
         let arr = v["permissions"]["allow"]
@@ -2897,7 +4077,10 @@ pub(crate) fn call_add_allow(args: Value) -> Result<Value, String> {
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_remove_allow(args: Value) -> Result<Value, String> {
-    let pattern = args["pattern"].as_str().ok_or("Missing pattern")?.to_string();
+    let pattern = args["pattern"]
+        .as_str()
+        .ok_or("Missing pattern")?
+        .to_string();
     let mut removed = false;
     mutate_settings(|v| {
         let arr = v["permissions"]["allow"]
@@ -2921,12 +4104,18 @@ pub(crate) fn call_list_slash_commands() -> Result<Value, String> {
     if let Ok(entries) = std::fs::read_dir(&cmd_dir) {
         for e in entries.flatten() {
             let p = e.path();
-            if p.extension().and_then(|x| x.to_str()) != Some("md") { continue; }
-            let name = p.file_stem().and_then(|s| s.to_str())
-                .unwrap_or("?").to_string();
+            if p.extension().and_then(|x| x.to_str()) != Some("md") {
+                continue;
+            }
+            let name = p
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("?")
+                .to_string();
             let body = std::fs::read_to_string(&p).unwrap_or_default();
             // Extract first non-empty line as description.
-            let desc = body.lines()
+            let desc = body
+                .lines()
                 .find(|l| !l.trim().is_empty())
                 .unwrap_or("")
                 .trim_start_matches('#')
@@ -2942,11 +4131,13 @@ pub(crate) fn call_list_slash_commands() -> Result<Value, String> {
 pub(crate) fn call_list_hooks() -> Result<Value, String> {
     let home = home_dir().ok_or("Cannot determine home directory")?;
     let path = home.join(".claude").join("settings.json");
-    let src  = std::fs::read_to_string(&path)
-        .map_err(|e| format!("Cannot read settings.json: {e}"))?;
-    let parsed: Value = serde_json::from_str(&src)
-        .map_err(|e| format!("Parse error: {e}"))?;
-    let hooks = parsed.get("hooks").cloned().unwrap_or(Value::Object(Default::default()));
+    let src =
+        std::fs::read_to_string(&path).map_err(|e| format!("Cannot read settings.json: {e}"))?;
+    let parsed: Value = serde_json::from_str(&src).map_err(|e| format!("Parse error: {e}"))?;
+    let hooks = parsed
+        .get("hooks")
+        .cloned()
+        .unwrap_or(Value::Object(Default::default()));
     Ok(json!({ "hooks": hooks }))
 }
 
@@ -2966,24 +4157,30 @@ fn load_points() -> Vec<Value> {
 
 fn save_points(points: &[Value]) -> Result<(), String> {
     let path = session_points_path().ok_or("Cannot determine home directory")?;
-    let out = serde_json::to_string_pretty(&Value::Array(points.to_vec()))
-        .map_err(|e| e.to_string())?;
+    let out =
+        serde_json::to_string_pretty(&Value::Array(points.to_vec())).map_err(|e| e.to_string())?;
     std::fs::write(&path, out).map_err(|e| e.to_string())
 }
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_save_point(args: Value) -> Result<Value, String> {
-    let label    = args["label"].as_str().ok_or("Missing label")?.to_string();
-    let summary  = args.get("summary").and_then(Value::as_str).unwrap_or("").to_string();
+    let label = args["label"].as_str().ok_or("Missing label")?.to_string();
+    let summary = args
+        .get("summary")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     let ttl_days = args.get("ttl_days").and_then(Value::as_f64).unwrap_or(7.0) as u64;
 
     let now = chrono::Local::now();
-    let saved_at  = now.to_rfc3339();
+    let saved_at = now.to_rfc3339();
     let expire_at = (now + chrono::Duration::days(ttl_days as i64)).to_rfc3339();
 
     let mut points = load_points();
     // Upsert by label.
-    let existing_idx = points.iter().position(|p| p["label"].as_str() == Some(&label));
+    let existing_idx = points
+        .iter()
+        .position(|p| p["label"].as_str() == Some(&label));
     let entry = json!({
         "label":     label,
         "summary":   summary,
@@ -3002,15 +4199,27 @@ pub(crate) fn call_save_point(args: Value) -> Result<Value, String> {
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_list_points(args: Value) -> Result<Value, String> {
-    let filter = args.get("label_contains").and_then(Value::as_str).map(String::from);
+    let filter = args
+        .get("label_contains")
+        .and_then(Value::as_str)
+        .map(String::from);
     let now = chrono::Local::now().to_rfc3339();
 
     let points = load_points();
-    let active: Vec<&Value> = points.iter()
-        .filter(|p| p["expire_at"].as_str().map(|e| e > now.as_str()).unwrap_or(true))
+    let active: Vec<&Value> = points
+        .iter()
+        .filter(|p| {
+            p["expire_at"]
+                .as_str()
+                .map(|e| e > now.as_str())
+                .unwrap_or(true)
+        })
         .filter(|p| {
             if let Some(ref f) = filter {
-                p["label"].as_str().map(|l| l.contains(f.as_str())).unwrap_or(false)
+                p["label"]
+                    .as_str()
+                    .map(|l| l.contains(f.as_str()))
+                    .unwrap_or(false)
             } else {
                 true
             }
@@ -3027,7 +4236,8 @@ pub(crate) fn call_list_points(args: Value) -> Result<Value, String> {
 pub(crate) fn call_restore_point(args: Value) -> Result<Value, String> {
     let label = args["label"].as_str().ok_or("Missing label")?;
     let points = load_points();
-    let point = points.iter()
+    let point = points
+        .iter()
         .find(|p| p["label"].as_str() == Some(label))
         .ok_or_else(|| format!("Save point '{label}' not found"))?;
     Ok(point.clone())
@@ -3038,8 +4248,14 @@ pub(crate) fn call_expire_points() -> Result<Value, String> {
     let now = chrono::Local::now().to_rfc3339();
     let all = load_points();
     let before = all.len();
-    let active: Vec<Value> = all.into_iter()
-        .filter(|p| p["expire_at"].as_str().map(|e| e > now.as_str()).unwrap_or(true))
+    let active: Vec<Value> = all
+        .into_iter()
+        .filter(|p| {
+            p["expire_at"]
+                .as_str()
+                .map(|e| e > now.as_str())
+                .unwrap_or(true)
+        })
         .collect();
     let removed = before - active.len();
     save_points(&active)?;
@@ -3052,10 +4268,10 @@ pub(crate) fn call_expire_points() -> Result<Value, String> {
 /// Format: (input_mtok, output_mtok, cache_write_mtok, cache_read_mtok)
 fn model_pricing(model: &str) -> (f64, f64, f64, f64) {
     match model {
-        m if m.contains("opus")   => (15.0, 75.0, 18.75, 1.50),
-        m if m.contains("sonnet") => (3.0,  15.0,  3.75,  0.30),
-        m if m.contains("haiku")  => (0.25,  1.25,  0.30,  0.03),
-        _                         => (3.0,  15.0,  3.75,  0.30), // default sonnet
+        m if m.contains("opus") => (15.0, 75.0, 18.75, 1.50),
+        m if m.contains("sonnet") => (3.0, 15.0, 3.75, 0.30),
+        m if m.contains("haiku") => (0.25, 1.25, 0.30, 0.03),
+        _ => (3.0, 15.0, 3.75, 0.30), // default sonnet
     }
 }
 
@@ -3080,41 +4296,77 @@ fn parse_session(path: &std::path::Path) -> Option<SessionTokens> {
     let mut cost_usd = 0.0f64;
 
     for line in content.lines() {
-        let Ok(obj) = serde_json::from_str::<Value>(line) else { continue };
+        let Ok(obj) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
         let msg = obj.get("message").unwrap_or(&obj);
-        let Some(usage) = msg.get("usage") else { continue };
+        let Some(usage) = msg.get("usage") else {
+            continue;
+        };
         let model = msg.get("model").and_then(Value::as_str).unwrap_or("sonnet");
         let (pi, po, pw, pr) = model_pricing(model);
 
-        let inp  = usage.get("input_tokens").and_then(Value::as_u64).unwrap_or(0);
-        let out  = usage.get("output_tokens").and_then(Value::as_u64).unwrap_or(0);
-        let cr   = usage.get("cache_read_input_tokens").and_then(Value::as_u64).unwrap_or(0);
-        let cw   = usage.get("cache_creation_input_tokens").and_then(Value::as_u64).unwrap_or(0);
+        let inp = usage
+            .get("input_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let out = usage
+            .get("output_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let cr = usage
+            .get("cache_read_input_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let cw = usage
+            .get("cache_creation_input_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
 
-        input += inp; output += out; cache_read += cr; cache_write += cw;
+        input += inp;
+        output += out;
+        cache_read += cr;
+        cache_write += cw;
         total_messages += 1;
 
         cost_usd += (inp as f64 / 1_000_000.0) * pi
             + (out as f64 / 1_000_000.0) * po
-            + (cr  as f64 / 1_000_000.0) * pr
-            + (cw  as f64 / 1_000_000.0) * pw;
+            + (cr as f64 / 1_000_000.0) * pr
+            + (cw as f64 / 1_000_000.0) * pw;
     }
 
-    if total_messages == 0 { return None; }
-    Some(SessionTokens { session_id, input, output, cache_read, cache_write, total_messages, cost_usd })
+    if total_messages == 0 {
+        return None;
+    }
+    Some(SessionTokens {
+        session_id,
+        input,
+        output,
+        cache_read,
+        cache_write,
+        total_messages,
+        cost_usd,
+    })
 }
 
 fn collect_jsonl_files(project_key: Option<&str>) -> Vec<std::path::PathBuf> {
-    let home = match home_dir() { Some(h) => h, None => return Vec::new() };
+    let home = match home_dir() {
+        Some(h) => h,
+        None => return Vec::new(),
+    };
     let projects_dir = home.join(".claude").join("projects");
     let mut files = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&projects_dir) {
         for e in entries.flatten() {
             let dir = e.path();
-            if !dir.is_dir() { continue; }
+            if !dir.is_dir() {
+                continue;
+            }
             if let Some(key) = project_key {
                 let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if !name.contains(key) { continue; }
+                if !name.contains(key) {
+                    continue;
+                }
             }
             if let Ok(fents) = std::fs::read_dir(&dir) {
                 for f in fents.flatten() {
@@ -3131,8 +4383,14 @@ fn collect_jsonl_files(project_key: Option<&str>) -> Vec<std::path::PathBuf> {
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_session_cost(args: Value) -> Result<Value, String> {
-    let session_id = args.get("session_id").and_then(Value::as_str).map(String::from);
-    let proj_key   = args.get("project_key").and_then(Value::as_str).map(String::from);
+    let session_id = args
+        .get("session_id")
+        .and_then(Value::as_str)
+        .map(String::from);
+    let proj_key = args
+        .get("project_key")
+        .and_then(Value::as_str)
+        .map(String::from);
 
     let files = collect_jsonl_files(proj_key.as_deref());
     if files.is_empty() {
@@ -3140,22 +4398,29 @@ pub(crate) fn call_session_cost(args: Value) -> Result<Value, String> {
     }
 
     let target_file: Option<std::path::PathBuf> = if let Some(ref sid) = session_id {
-        files.into_iter().find(|p| {
-            p.file_stem().and_then(|s| s.to_str()) == Some(sid.as_str())
-        })
+        files
+            .into_iter()
+            .find(|p| p.file_stem().and_then(|s| s.to_str()) == Some(sid.as_str()))
     } else {
         // Latest file by modification time.
-        files.into_iter().max_by_key(|p| {
-            p.metadata().and_then(|m| m.modified()).ok()
-        })
+        files
+            .into_iter()
+            .max_by_key(|p| p.metadata().and_then(|m| m.modified()).ok())
     };
 
-    let path = target_file.ok_or_else(|| format!("Session '{}' not found", session_id.as_deref().unwrap_or("latest")))?;
+    let path = target_file.ok_or_else(|| {
+        format!(
+            "Session '{}' not found",
+            session_id.as_deref().unwrap_or("latest")
+        )
+    })?;
     let t = parse_session(&path).ok_or("No usage data found in session")?;
 
     let cache_hit_pct = if t.cache_read + t.cache_write > 0 {
         (t.cache_read as f64 / (t.cache_read + t.cache_write) as f64) * 100.0
-    } else { 0.0 };
+    } else {
+        0.0
+    };
 
     Ok(json!({
         "session_id":     t.session_id,
@@ -3175,32 +4440,38 @@ pub(crate) fn call_session_cost(args: Value) -> Result<Value, String> {
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_list_expensive_sessions(args: Value) -> Result<Value, String> {
-    let top      = args.get("top").and_then(Value::as_u64).unwrap_or(10) as usize;
-    let proj_key = args.get("project_key").and_then(Value::as_str).map(String::from);
+    let top = args.get("top").and_then(Value::as_u64).unwrap_or(10) as usize;
+    let proj_key = args
+        .get("project_key")
+        .and_then(Value::as_str)
+        .map(String::from);
 
     let files = collect_jsonl_files(proj_key.as_deref());
-    let mut sessions: Vec<Value> = files.iter()
+    let mut sessions: Vec<Value> = files
+        .iter()
         .filter_map(|p| parse_session(p))
-        .map(|t| json!({
-            "session_id":  t.session_id,
-            "cost_usd":    t.cost_usd,
-            "cost_usd_fmt": format!("{:.4}", t.cost_usd),
-            "input":       t.input,
-            "output":      t.output,
-            "cache_read":  t.cache_read,
-            "messages":    t.total_messages,
-        }))
+        .map(|t| {
+            json!({
+                "session_id":  t.session_id,
+                "cost_usd":    t.cost_usd,
+                "cost_usd_fmt": format!("{:.4}", t.cost_usd),
+                "input":       t.input,
+                "output":      t.output,
+                "cache_read":  t.cache_read,
+                "messages":    t.total_messages,
+            })
+        })
         .collect();
 
     sessions.sort_by(|a, b| {
-        b["cost_usd"].as_f64().partial_cmp(&a["cost_usd"].as_f64())
+        b["cost_usd"]
+            .as_f64()
+            .partial_cmp(&a["cost_usd"].as_f64())
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     sessions.truncate(top);
 
-    let total_usd: f64 = sessions.iter()
-        .filter_map(|s| s["cost_usd"].as_f64())
-        .sum();
+    let total_usd: f64 = sessions.iter().filter_map(|s| s["cost_usd"].as_f64()).sum();
 
     Ok(json!({
         "top":         top,
@@ -3226,24 +4497,45 @@ fn load_tasks() -> Vec<Value> {
 
 fn persist_tasks(tasks: &[Value]) -> Result<(), String> {
     let path = tasks_path().ok_or("Cannot determine home directory")?;
-    let out = serde_json::to_string_pretty(&Value::Array(tasks.to_vec()))
-        .map_err(|e| e.to_string())?;
+    let out =
+        serde_json::to_string_pretty(&Value::Array(tasks.to_vec())).map_err(|e| e.to_string())?;
     std::fs::write(&path, out).map_err(|e| e.to_string())
 }
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_create_task(args: Value) -> Result<Value, String> {
-    let project  = args["project"].as_str().ok_or("Missing project")?.to_string();
-    let desc     = args["description"].as_str().ok_or("Missing description")?.to_string();
-    let priority = args.get("priority").and_then(Value::as_str).unwrap_or("P1").to_string();
-    let kb_refs  = args.get("kb_refs").and_then(Value::as_str).unwrap_or("").to_string();
+    let project = args["project"]
+        .as_str()
+        .ok_or("Missing project")?
+        .to_string();
+    let desc = args["description"]
+        .as_str()
+        .ok_or("Missing description")?
+        .to_string();
+    let priority = args
+        .get("priority")
+        .and_then(Value::as_str)
+        .unwrap_or("P1")
+        .to_string();
+    let kb_refs = args
+        .get("kb_refs")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
 
     let now = chrono::Local::now();
     let date_str = now.format("%Y%m%d").to_string();
     let mut tasks = load_tasks();
-    let seq = tasks.iter()
-        .filter(|t| t["id"].as_str().map(|s| s.starts_with(&format!("T-{date_str}"))).unwrap_or(false))
-        .count() + 1;
+    let seq = tasks
+        .iter()
+        .filter(|t| {
+            t["id"]
+                .as_str()
+                .map(|s| s.starts_with(&format!("T-{date_str}")))
+                .unwrap_or(false)
+        })
+        .count()
+        + 1;
     let id = format!("T-{date_str}-{seq:04}");
 
     let task = json!({
@@ -3265,30 +4557,41 @@ pub(crate) fn call_create_task(args: Value) -> Result<Value, String> {
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_list_tasks(args: Value) -> Result<Value, String> {
-    let project_filter  = args.get("project").and_then(Value::as_str).map(String::from);
-    let status_filter   = args.get("status").and_then(Value::as_str).unwrap_or("open");
-    let priority_filter = args.get("priority").and_then(Value::as_str).map(String::from);
+    let project_filter = args
+        .get("project")
+        .and_then(Value::as_str)
+        .map(String::from);
+    let status_filter = args.get("status").and_then(Value::as_str).unwrap_or("open");
+    let priority_filter = args
+        .get("priority")
+        .and_then(Value::as_str)
+        .map(String::from);
 
     let tasks = load_tasks();
-    let filtered: Vec<&Value> = tasks.iter()
+    let filtered: Vec<&Value> = tasks
+        .iter()
         .filter(|t| {
             let status = t["status"].as_str().unwrap_or("open");
             match status_filter {
-                "all"  => true,
+                "all" => true,
                 "open" => status == "open",
                 "done" => status == "done",
-                other  => status == other,
+                other => status == other,
             }
         })
         .filter(|t| {
             if let Some(ref proj) = project_filter {
                 t["project"].as_str() == Some(proj.as_str())
-            } else { true }
+            } else {
+                true
+            }
         })
         .filter(|t| {
             if let Some(ref pri) = priority_filter {
                 t["priority"].as_str() == Some(pri.as_str())
-            } else { true }
+            } else {
+                true
+            }
         })
         .collect();
 
@@ -3301,12 +4604,17 @@ pub(crate) fn call_list_tasks(args: Value) -> Result<Value, String> {
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_mark_task_done(args: Value) -> Result<Value, String> {
-    let task_id    = args["task_id"].as_str().ok_or("Missing task_id")?;
-    let resolution = args["resolution"].as_str().ok_or("Missing resolution")?.to_string();
+    let task_id = args["task_id"].as_str().ok_or("Missing task_id")?;
+    let resolution = args["resolution"]
+        .as_str()
+        .ok_or("Missing resolution")?
+        .to_string();
     let now = chrono::Local::now().to_rfc3339();
 
     let mut tasks = load_tasks();
-    let idx = tasks.iter().position(|t| t["id"].as_str() == Some(task_id))
+    let idx = tasks
+        .iter()
+        .position(|t| t["id"].as_str() == Some(task_id))
         .ok_or_else(|| format!("Task '{task_id}' not found"))?;
     if let Some(obj) = tasks[idx].as_object_mut() {
         obj.insert("status".to_string(), Value::String("done".to_string()));
@@ -3320,12 +4628,20 @@ pub(crate) fn call_mark_task_done(args: Value) -> Result<Value, String> {
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_link_task(args: Value) -> Result<Value, String> {
-    let task_id     = args["task_id"].as_str().ok_or("Missing task_id")?;
-    let github_url  = args.get("github_url").and_then(Value::as_str).map(String::from);
-    let kb_topickey = args.get("kb_topickey").and_then(Value::as_str).map(String::from);
+    let task_id = args["task_id"].as_str().ok_or("Missing task_id")?;
+    let github_url = args
+        .get("github_url")
+        .and_then(Value::as_str)
+        .map(String::from);
+    let kb_topickey = args
+        .get("kb_topickey")
+        .and_then(Value::as_str)
+        .map(String::from);
 
     let mut tasks = load_tasks();
-    let idx = tasks.iter().position(|t| t["id"].as_str() == Some(task_id))
+    let idx = tasks
+        .iter()
+        .position(|t| t["id"].as_str() == Some(task_id))
         .ok_or_else(|| format!("Task '{task_id}' not found"))?;
     if let Some(obj) = tasks[idx].as_object_mut() {
         if let Some(ref url) = github_url {
@@ -3356,17 +4672,28 @@ fn load_handoffs() -> Vec<Value> {
 
 fn save_handoffs(entries: &[Value]) -> Result<(), String> {
     let path = handoff_history_path().ok_or("Cannot determine home directory")?;
-    let out = serde_json::to_string_pretty(&Value::Array(entries.to_vec()))
-        .map_err(|e| e.to_string())?;
+    let out =
+        serde_json::to_string_pretty(&Value::Array(entries.to_vec())).map_err(|e| e.to_string())?;
     std::fs::write(&path, out).map_err(|e| e.to_string())
 }
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
-pub(crate) fn call_create_handoff(args: Value) -> Result<Value, String> {
-    let reason    = args["reason"].as_str().ok_or("Missing reason")?.to_string();
-    let content   = args["content"].as_str().ok_or("Missing content")?.to_string();
-    let project   = args.get("project").and_then(Value::as_str).unwrap_or("sirin").to_string();
-    let file_refs = args.get("file_refs").and_then(Value::as_str).unwrap_or("").to_string();
+pub(crate) async fn call_create_handoff(args: Value) -> Result<Value, String> {
+    let reason = args["reason"].as_str().ok_or("Missing reason")?.to_string();
+    let content = args["content"]
+        .as_str()
+        .ok_or("Missing content")?
+        .to_string();
+    let project = args
+        .get("project")
+        .and_then(Value::as_str)
+        .unwrap_or("sirin")
+        .to_string();
+    let file_refs = args
+        .get("file_refs")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
 
     let now = chrono::Local::now();
     let saved_at = now.to_rfc3339();
@@ -3389,7 +4716,19 @@ pub(crate) fn call_create_handoff(args: Value) -> Result<Value, String> {
 
     // Best-effort write to KB (agora-trading) for SessionStart hook compatibility.
     // Errors here are non-fatal — local file is the primary store.
-    let kb_status = try_kb_write_handoff(&content, &reason, &project, &file_refs);
+    let kb_status = try_kb_write_entry(
+        &format!("{project}-handoff-latest"),
+        &format!("Mid-session Handoff — {reason}"),
+        &content,
+        "ops",
+        "raw",
+        "confirmed",
+        0.95,
+        "handoff,session-bridge",
+        &project,
+        &file_refs,
+    )
+    .await;
 
     Ok(json!({
         "id":         id,
@@ -3401,82 +4740,49 @@ pub(crate) fn call_create_handoff(args: Value) -> Result<Value, String> {
     }))
 }
 
-/// Non-blocking best-effort call to agora-trading kbWrite for cross-session
-/// compatibility with the existing fetch-handoff.sh mechanism.
-fn try_kb_write_handoff(content: &str, reason: &str, project: &str, file_refs: &str) -> String {
-    // Read tokens from ~/.claude.json
-    let read_token = |server: &str| -> Option<String> {
-        let path = home_dir()?.join(".claude.json");
-        let src = std::fs::read_to_string(&path).ok()?;
-        let v: Value = serde_json::from_str(&src).ok()?;
-        v["mcpServers"][server]["headers"]["Authorization"]
-            .as_str()
-            .map(String::from)
+/// Best-effort fixed kbWrite call through Sirin's server-local service path.
+/// The caller chooses the entry shape, but the transport remains limited to
+/// the single upstream tool and never uses an external-AI bearer.
+async fn try_kb_write_entry(
+    topic_key: &str,
+    title: &str,
+    content: &str,
+    domain: &str,
+    layer: &str,
+    status: &str,
+    confidence: f64,
+    tags: &str,
+    project: &str,
+    file_refs: &str,
+) -> String {
+    let entry = crate::kb_client::KbEntry {
+        topic_key: topic_key.to_string(),
+        title: title.to_string(),
+        content: content.to_string(),
+        domain: domain.to_string(),
+        layer: layer.to_string(),
+        tags: tags.to_string(),
+        confidence,
+        file_refs: file_refs.to_string(),
+        status: status.to_string(),
+        project: project.to_string(),
     };
-
-    let trading_tok = match read_token("agora-trading") {
-        Some(t) => t,
-        None => return "skipped (no agora-trading token)".to_string(),
-    };
-    let ops_tok = match read_token("agora-ops") {
-        Some(t) => t,
-        None => return "skipped (no agora-ops token)".to_string(),
-    };
-
-    // 2026-05-05 — project-specific topicKey to avoid cross-project collision.
-    // See KB `sirin-process-mcp-handoff-workflow` v3 for the full rationale:
-    // before this, every project (sirin / agora-backend / flutter) wrote to
-    // the single `sirin-handoff-latest` key and clobbered each other.  Now
-    // each project gets its own `<project>-handoff-latest`.
-    let topic_key = format!("{project}-handoff-latest");
-
-    let payload = json!({
-        "jsonrpc": "2.0",
-        "method": "tools/call",
-        "params": {
-            "name": "kbWrite",
-            "arguments": {
-                "topicKey":   topic_key,
-                "title":      format!("Mid-session Handoff — {reason}"),
-                "content":    content,
-                "domain":     "ops",
-                "layer":      "raw",
-                "tags":       "handoff,session-bridge",
-                "status":     "confirmed",
-                "confidence": 0.95,
-                "fileRefs":   file_refs,
-                "source":     "claude-session",
-                "project":    project,
-            }
-        },
-        "id": 1
-    });
-
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(8))
-        .build()
-        .unwrap_or_default();
-
-    match client.post("https://agoramarketapi.purrtechllc.com/api/mcp")
-        .header("Authorization", &trading_tok)
-        .header("X-OPS-Authorization", &ops_tok)
-        .header("Content-Type", "application/json")
-        .header("Accept", "application/json, text/event-stream")
-        .json(&payload)
-        .send()
-    {
-        Ok(resp) if resp.status().is_success() => "ok".to_string(),
-        Ok(resp) => format!("http {}", resp.status()),
-        Err(e)   => format!("err: {e}"),
+    match crate::kb_client::write_entry(&entry).await {
+        Ok(_) => "ok (server-local; no Telegram approval)".to_string(),
+        Err(e) => format!("err: {e}"),
     }
 }
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_get_latest_handoff(args: Value) -> Result<Value, String> {
-    let project = args.get("project").and_then(Value::as_str).unwrap_or("sirin");
+    let project = args
+        .get("project")
+        .and_then(Value::as_str)
+        .unwrap_or("sirin");
 
     let history = load_handoffs();
-    let latest = history.iter()
+    let latest = history
+        .iter()
         .find(|e| e["project"].as_str().unwrap_or("sirin") == project)
         .ok_or_else(|| format!("No handoff found for project={project}"))?;
 
@@ -3491,18 +4797,28 @@ pub(crate) fn call_get_latest_handoff(args: Value) -> Result<Value, String> {
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_list_handoff_history(args: Value) -> Result<Value, String> {
-    let project = args.get("project").and_then(Value::as_str).unwrap_or("sirin");
-    let limit   = args.get("limit").and_then(Value::as_u64).unwrap_or(10) as usize;
+    let project = args
+        .get("project")
+        .and_then(Value::as_str)
+        .unwrap_or("sirin");
+    let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(10) as usize;
 
     let history = load_handoffs();
-    let entries: Vec<Value> = history.iter()
+    let entries: Vec<Value> = history
+        .iter()
         .filter(|e| e["project"].as_str().unwrap_or("sirin") == project)
         .take(limit)
         .map(|e| {
             // Return summary (first 120 chars of content) instead of full content.
-            let preview: String = e["content"].as_str().unwrap_or("")
-                .lines().next().unwrap_or("")
-                .chars().take(120).collect();
+            let preview: String = e["content"]
+                .as_str()
+                .unwrap_or("")
+                .lines()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(120)
+                .collect();
             json!({
                 "id":       e["id"],
                 "reason":   e["reason"],
@@ -3527,18 +4843,27 @@ fn jaccard_similarity(a: &str, b: &str) -> f64 {
     let words_a: HashSet<&str> = a.split_whitespace().collect();
     let words_b: HashSet<&str> = b.split_whitespace().collect();
     let intersection = words_a.intersection(&words_b).count();
-    let union        = words_a.union(&words_b).count();
-    if union == 0 { return 0.0; }
+    let union = words_a.union(&words_b).count();
+    if union == 0 {
+        return 0.0;
+    }
     intersection as f64 / union as f64
 }
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) async fn call_kb_duplicate_check(args: Value) -> Result<Value, String> {
-    let keys_str  = args["topic_keys"].as_str().ok_or("Missing topic_keys")?;
-    let project   = args.get("project").and_then(Value::as_str).unwrap_or("sirin");
+    let keys_str = args["topic_keys"].as_str().ok_or("Missing topic_keys")?;
+    let project = args
+        .get("project")
+        .and_then(Value::as_str)
+        .unwrap_or("sirin");
     let threshold = args.get("threshold").and_then(Value::as_f64).unwrap_or(0.7);
 
-    let keys: Vec<&str> = keys_str.split(',').map(str::trim).filter(|k| !k.is_empty()).collect();
+    let keys: Vec<&str> = keys_str
+        .split(',')
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+        .collect();
     if keys.len() < 2 {
         return Err("Need at least 2 topic_keys to compare".to_string());
     }
@@ -3554,12 +4879,12 @@ pub(crate) async fn call_kb_duplicate_check(args: Value) -> Result<Value, String
     }
 
     let mut entries: Vec<(String, String)> = Vec::new();
-    let mut errors:  Vec<String>            = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
     for h in fetch_handles {
         match h.await {
             Ok(Ok((k, c))) => entries.push((k, c)),
-            Ok(Err(e))     => errors.push(e),
-            Err(e)         => errors.push(e.to_string()),
+            Ok(Err(e)) => errors.push(e),
+            Err(e) => errors.push(e.to_string()),
         }
     }
 
@@ -3587,7 +4912,9 @@ pub(crate) async fn call_kb_duplicate_check(args: Value) -> Result<Value, String
 
     // Sort most-similar first.
     duplicates.sort_by(|a, b| {
-        b["jaccard"].as_f64().partial_cmp(&a["jaccard"].as_f64())
+        b["jaccard"]
+            .as_f64()
+            .partial_cmp(&a["jaccard"].as_f64())
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
@@ -3601,112 +4928,26 @@ pub(crate) async fn call_kb_duplicate_check(args: Value) -> Result<Value, String
     }))
 }
 
-/// Call agora-trading kbGet via HTTP and return the content string.
+/// Shared KB read path used by legacy aggregate tools. Authorization, cache,
+/// stale fallback, and negative-result classification all live in kb_client.
 async fn kb_get_via_http(topic_key: &str, project: &str) -> Result<String, String> {
-    let (trading_tok, ops_tok) = {
-        let read_tok = |server: &str| -> Option<String> {
-            let path = home_dir()?.join(".claude.json");
-            let src = std::fs::read_to_string(path).ok()?;
-            let v: Value = serde_json::from_str(&src).ok()?;
-            v["mcpServers"][server]["headers"]["Authorization"]
-                .as_str().map(String::from)
-        };
-        (
-            read_tok("agora-trading").ok_or("Missing agora-trading token")?,
-            read_tok("agora-ops").ok_or("Missing agora-ops token")?,
-        )
-    };
-
-    let payload = json!({
-        "jsonrpc": "2.0",
-        "method": "tools/call",
-        "params": {
-            "name": "kbGet",
-            "arguments": { "topicKey": topic_key, "project": project }
-        },
-        "id": 1
-    });
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let resp = client
-        .post("https://agoramarketapi.purrtechllc.com/api/mcp")
-        .header("Authorization", &trading_tok)
-        .header("X-OPS-Authorization", &ops_tok)
-        .header("Content-Type", "application/json")
-        .header("Accept", "application/json, text/event-stream")
-        .json(&payload)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?
-        .text()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    // Parse SSE / JSON response, extract text content.
-    for line in resp.lines() {
-        let line = line.trim().trim_start_matches("data: ");
-        if !line.starts_with('{') { continue; }
-        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
-        if v["result"]["isError"].as_bool() == Some(true) {
-            return Err(format!("kbGet error: {}", v["result"]["content"][0]["text"]));
-        }
-        if let Some(text) = v["result"]["content"][0]["text"].as_str() {
-            return Ok(text.to_string());
-        }
-    }
-    Err(format!("kbGet: no content returned for {topic_key}@{project}"))
+    crate::kb_client::get(project, topic_key)
+        .await?
+        .ok_or_else(|| format!("kbGet: topic not found: {topic_key}@{project}"))
 }
 
-/// Same pattern but for kbHealth.
+/// KB health follows the same shared read-only authorization path.
 async fn kb_health_via_http(project: &str) -> Result<String, String> {
-    let read_tok = |server: &str| -> Option<String> {
-        let path = home_dir()?.join(".claude.json");
-        let src = std::fs::read_to_string(path).ok()?;
-        let v: Value = serde_json::from_str(&src).ok()?;
-        v["mcpServers"][server]["headers"]["Authorization"]
-            .as_str().map(String::from)
-    };
-    let trading_tok = read_tok("agora-trading").ok_or("Missing agora-trading token")?;
-    let ops_tok     = read_tok("agora-ops").ok_or("Missing agora-ops token")?;
-
-    let payload = json!({
-        "jsonrpc": "2.0",
-        "method": "tools/call",
-        "params": { "name": "kbHealth", "arguments": { "project": project } },
-        "id": 1
-    });
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| e.to_string())?;
-    let resp = client
-        .post("https://agoramarketapi.purrtechllc.com/api/mcp")
-        .header("Authorization", &trading_tok)
-        .header("X-OPS-Authorization", &ops_tok)
-        .header("Content-Type", "application/json")
-        .header("Accept", "application/json, text/event-stream")
-        .json(&payload)
-        .send().await.map_err(|e| e.to_string())?
-        .text().await.map_err(|e| e.to_string())?;
-
-    for line in resp.lines() {
-        let line = line.trim().trim_start_matches("data: ");
-        if !line.starts_with('{') { continue; }
-        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
-        if let Some(text) = v["result"]["content"][0]["text"].as_str() {
-            return Ok(text.to_string());
-        }
-    }
-    Err("kbHealth: no content returned".to_string())
+    crate::kb_client::health(project).await
 }
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) async fn call_kb_stats(args: Value) -> Result<Value, String> {
-    let project = args.get("project").and_then(Value::as_str).unwrap_or("sirin").to_string();
+    let project = args
+        .get("project")
+        .and_then(Value::as_str)
+        .unwrap_or("sirin")
+        .to_string();
     let brief_limit = args
         .get("brief_limit")
         .and_then(Value::as_u64)
@@ -3733,50 +4974,69 @@ pub(crate) async fn call_kb_stats(args: Value) -> Result<Value, String> {
         });
 
     // Get health text and parse the structured sections.
-    let health_raw = kb_health_via_http(&project).await
-        .unwrap_or_else(|e| format!("kbHealth error: {e}"));
+    let (health_raw, health_error) = match kb_health_via_http(&project).await {
+        Ok(raw) => (raw, None),
+        Err(error) => (String::new(), Some(error)),
+    };
 
     // Parse counts from the health text (format: "  key   N").
     let mut by_status: std::collections::HashMap<String, u64> = Default::default();
-    let mut by_layer:  std::collections::HashMap<String, u64> = Default::default();
+    let mut by_layer: std::collections::HashMap<String, u64> = Default::default();
     let mut by_domain: std::collections::HashMap<String, u64> = Default::default();
-    let mut by_tag:    std::collections::HashMap<String, u64> = Default::default();
+    let mut by_tag: std::collections::HashMap<String, u64> = Default::default();
     let mut total = 0u64;
     let mut section = "";
     for line in health_raw.lines() {
         let t = line.trim();
         if t.starts_with("total:") {
-            total = t.split_whitespace().last().and_then(|s| s.parse().ok()).unwrap_or(0);
-        } else if t == "by status:" { section = "status"; }
-        else if t == "by layer:"  { section = "layer"; }
-        else if t == "by domain:" { section = "domain"; }
-        else if t == "by tag:"    { section = "tag"; }
-        else if !t.is_empty() && !section.is_empty() {
+            total = t
+                .split_whitespace()
+                .last()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+        } else if t == "by status:" {
+            section = "status";
+        } else if t == "by layer:" {
+            section = "layer";
+        } else if t == "by domain:" {
+            section = "domain";
+        } else if t == "by tag:" {
+            section = "tag";
+        } else if !t.is_empty() && !section.is_empty() {
             let parts: Vec<&str> = t.split_whitespace().collect();
             if parts.len() >= 2 {
                 let key = parts[0].to_string();
                 let val: u64 = parts[1].parse().unwrap_or(0);
                 match section {
-                    "status" => { by_status.insert(key, val); }
-                    "layer"  => { by_layer.insert(key, val); }
-                    "domain" => { by_domain.insert(key, val); }
-                    "tag"    => { by_tag.insert(key, val); }
+                    "status" => {
+                        by_status.insert(key, val);
+                    }
+                    "layer" => {
+                        by_layer.insert(key, val);
+                    }
+                    "domain" => {
+                        by_domain.insert(key, val);
+                    }
+                    "tag" => {
+                        by_tag.insert(key, val);
+                    }
                     _ => {}
                 }
             }
         }
     }
 
-    let confirmed  = *by_status.get("confirmed").unwrap_or(&0);
-    let stale      = *by_status.get("stale").unwrap_or(&0);
-    let draft      = *by_status.get("draft").unwrap_or(&0);
-    let stale_pct  = if total > 0 { stale * 100 / total } else { 0 };
-    let draft_pct  = if total > 0 { draft * 100 / total } else { 0 };
+    let confirmed = *by_status.get("confirmed").unwrap_or(&0);
+    let stale = *by_status.get("stale").unwrap_or(&0);
+    let draft = *by_status.get("draft").unwrap_or(&0);
+    let stale_pct = if total > 0 { stale * 100 / total } else { 0 };
+    let draft_pct = if total > 0 { draft * 100 / total } else { 0 };
 
     // #219 backlog item 8 — brief-layer length governance.
     // Probe known topicKeys and surface over-limit items as a structured breakdown.
     let mut brief_entries: Vec<Value> = Vec::new();
     let mut brief_violation_count = 0usize;
+    let mut brief_fetch_error_count = 0usize;
     for topic in &brief_topics {
         match kb_get_via_http(topic, &project).await {
             Ok(content) => {
@@ -3794,6 +5054,7 @@ pub(crate) async fn call_kb_stats(args: Value) -> Result<Value, String> {
                 }));
             }
             Err(e) => {
+                brief_fetch_error_count += 1;
                 brief_entries.push(json!({
                     "topic_key": topic,
                     "error": e,
@@ -3805,6 +5066,11 @@ pub(crate) async fn call_kb_stats(args: Value) -> Result<Value, String> {
     }
 
     let mut health_flags: Vec<String> = Vec::new();
+    if health_error.is_some() {
+        health_flags.push("health_unavailable".to_string());
+    } else if total == 0 {
+        health_flags.push("health_empty_or_unparseable".to_string());
+    }
     if stale_pct > 10 {
         health_flags.push("stale_over_10pct".to_string());
     }
@@ -3814,7 +5080,14 @@ pub(crate) async fn call_kb_stats(args: Value) -> Result<Value, String> {
     if brief_violation_count > 0 {
         health_flags.push("brief_length_violations".to_string());
     }
-    let health_flag = if health_flags.is_empty() {
+    if brief_fetch_error_count > 0 {
+        health_flags.push("brief_fetch_errors".to_string());
+    }
+    let health_flag = if health_error.is_some() {
+        "❌ unavailable"
+    } else if total == 0 {
+        "⚠️ unknown"
+    } else if health_flags.is_empty() {
         "✅ healthy"
     } else {
         "⚠️ attention_needed"
@@ -3837,11 +5110,13 @@ pub(crate) async fn call_kb_stats(args: Value) -> Result<Value, String> {
                 "limit": brief_limit,
                 "topics_checked": brief_topics.len(),
                 "violations": brief_violation_count,
+                "fetch_errors": brief_fetch_error_count,
                 "entries": brief_entries
             }
         },
         "health_flag": health_flag,
         "health_flags": health_flags,
+        "health_error": health_error,
         "raw_health":  health_raw,
     }))
 }
@@ -3873,7 +5148,8 @@ fn fetch_run_usage_snapshot(run_id: &str) -> Option<RunUsageSnapshot> {
                 llm_model: row.get::<_, Option<String>>(4).unwrap_or(None),
             })
         },
-    ).ok()
+    )
+    .ok()
 }
 
 fn classify_perf_hint(run_id: &str) -> Option<Value> {
@@ -3893,8 +5169,16 @@ fn classify_perf_hint(run_id: &str) -> Option<Value> {
     };
     let mut repeated_action_pairs = 0u64;
     for w in steps.windows(2) {
-        let a0 = w[0].action.get("action").and_then(|v| v.as_str()).unwrap_or("");
-        let a1 = w[1].action.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        let a0 = w[0]
+            .action
+            .get("action")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let a1 = w[1]
+            .action
+            .get("action")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if !a0.is_empty() && a0 == a1 {
             repeated_action_pairs += 1;
         }
@@ -3929,10 +5213,16 @@ fn classify_perf_hint(run_id: &str) -> Option<Value> {
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) async fn call_kb_diff(args: Value) -> Result<Value, String> {
-    let topic_a   = args["topic_a"].as_str().ok_or("Missing topic_a")?;
-    let topic_b   = args["topic_b"].as_str().ok_or("Missing topic_b")?;
-    let project_a = args.get("project_a").and_then(Value::as_str).unwrap_or("sirin");
-    let project_b = args.get("project_b").and_then(Value::as_str).unwrap_or(project_a);
+    let topic_a = args["topic_a"].as_str().ok_or("Missing topic_a")?;
+    let topic_b = args["topic_b"].as_str().ok_or("Missing topic_b")?;
+    let project_a = args
+        .get("project_a")
+        .and_then(Value::as_str)
+        .unwrap_or("sirin");
+    let project_b = args
+        .get("project_b")
+        .and_then(Value::as_str)
+        .unwrap_or(project_a);
 
     // Fetch both entries concurrently.
     let (res_a, res_b) = tokio::join!(
@@ -3945,11 +5235,13 @@ pub(crate) async fn call_kb_diff(args: Value) -> Result<Value, String> {
     let lines_a: Vec<&str> = content_a.lines().collect();
     let lines_b: Vec<&str> = content_b.lines().collect();
 
-    let removed: Vec<String> = lines_a.iter()
+    let removed: Vec<String> = lines_a
+        .iter()
         .filter(|l| !lines_b.contains(l))
         .map(|l| format!("- {l}"))
         .collect();
-    let added: Vec<String> = lines_b.iter()
+    let added: Vec<String> = lines_b
+        .iter()
         .filter(|l| !lines_a.contains(l))
         .map(|l| format!("+ {l}"))
         .collect();
@@ -3964,7 +5256,9 @@ pub(crate) async fn call_kb_diff(args: Value) -> Result<Value, String> {
     // Rough overlap ratio.
     let overlap_pct = if lines_a.len() + lines_b.len() > 0 {
         unchanged * 200 / (lines_a.len() + lines_b.len())
-    } else { 0 };
+    } else {
+        0
+    };
 
     Ok(json!({
         "topic_a":      topic_a,
@@ -3998,14 +5292,23 @@ fn load_intents() -> std::collections::HashMap<String, Value> {
 
 fn save_intents(intents: &std::collections::HashMap<String, Value>) -> Result<(), String> {
     let path = intents_path().ok_or("Cannot determine home directory")?;
-    let obj  = serde_json::Value::Object(intents.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
-    let out  = serde_json::to_string_pretty(&obj).map_err(|e| e.to_string())?;
+    let obj = serde_json::Value::Object(
+        intents
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
+    );
+    let out = serde_json::to_string_pretty(&obj).map_err(|e| e.to_string())?;
     std::fs::write(&path, out).map_err(|e| e.to_string())
 }
 
 /// Build an LlmConfig for the given backend name.
 /// For "deepseek" reads LLM_FALLBACK_* env vars; others use defaults.
-fn llm_config_for_backend(backend: &str, model_override: Option<&str>, key_override: Option<&str>) -> crate::llm::LlmConfig {
+fn llm_config_for_backend(
+    backend: &str,
+    model_override: Option<&str>,
+    key_override: Option<&str>,
+) -> crate::llm::LlmConfig {
     let lower = backend.to_lowercase();
     let backend_norm = match lower.as_str() {
         "deepseek" => "lmstudio", // OpenAI-compat
@@ -4015,19 +5318,30 @@ fn llm_config_for_backend(backend: &str, model_override: Option<&str>, key_overr
     let (model, api_key, base_url_override) = if lower == "deepseek" {
         let m = model_override
             .map(String::from)
-            .or_else(|| std::env::var("LLM_FALLBACK_MODEL").ok().filter(|v| !v.is_empty()))
+            .or_else(|| {
+                std::env::var("LLM_FALLBACK_MODEL")
+                    .ok()
+                    .filter(|v| !v.is_empty())
+            })
             .unwrap_or_else(|| "deepseek-chat".to_string());
-        let k = key_override
-            .map(String::from)
-            .or_else(|| std::env::var("LLM_FALLBACK_API_KEY").ok().filter(|v| !v.is_empty()));
-        let url = std::env::var("LLM_FALLBACK_BASE_URL").ok()
+        let k = key_override.map(String::from).or_else(|| {
+            std::env::var("LLM_FALLBACK_API_KEY")
+                .ok()
+                .filter(|v| !v.is_empty())
+        });
+        let url = std::env::var("LLM_FALLBACK_BASE_URL")
+            .ok()
             .filter(|v| !v.is_empty());
         (m, k, url)
     } else {
-        let m = model_override.map(String::from)
+        let m = model_override
+            .map(String::from)
             .unwrap_or_else(|| "gemini-2.0-flash".to_string());
-        let k = key_override.map(String::from)
-            .or_else(|| std::env::var("GEMINI_API_KEY").ok().filter(|v| !v.is_empty()));
+        let k = key_override.map(String::from).or_else(|| {
+            std::env::var("GEMINI_API_KEY")
+                .ok()
+                .filter(|v| !v.is_empty())
+        });
         (m, k, None)
     };
 
@@ -4041,7 +5355,7 @@ fn llm_config_for_backend(backend: &str, model_override: Option<&str>, key_overr
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) async fn call_route_query(args: Value) -> Result<Value, String> {
     let intent = args["intent"].as_str().ok_or("Missing intent")?;
-    let prompt  = args["prompt"].as_str().ok_or("Missing prompt")?.to_string();
+    let prompt = args["prompt"].as_str().ok_or("Missing prompt")?.to_string();
 
     let intents = load_intents();
     let (backend, model) = if let Some(entry) = intents.get(intent) {
@@ -4053,7 +5367,10 @@ pub(crate) async fn call_route_query(args: Value) -> Result<Value, String> {
     };
 
     let cfg = llm_config_for_backend(&backend, model.as_deref(), None);
-    let ctx = crate::adk::context::AgentContext::new("route_query", crate::adk::tool::ToolRegistry::new());
+    let ctx = crate::adk::context::AgentContext::new(
+        "route_query",
+        crate::adk::tool::ToolRegistry::new(),
+    );
     let start = std::time::Instant::now();
     let result = crate::llm::call_prompt(ctx.http.as_ref(), &cfg, prompt.clone())
         .await
@@ -4070,13 +5387,14 @@ pub(crate) async fn call_route_query(args: Value) -> Result<Value, String> {
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) async fn call_query_llm(args: Value) -> Result<Value, String> {
-    let backend    = args["backend"].as_str().ok_or("Missing backend")?;
-    let prompt     = args["prompt"].as_str().ok_or("Missing prompt")?.to_string();
-    let model_ov   = args.get("model").and_then(Value::as_str);
-    let key_ov     = args.get("api_key").and_then(Value::as_str);
+    let backend = args["backend"].as_str().ok_or("Missing backend")?;
+    let prompt = args["prompt"].as_str().ok_or("Missing prompt")?.to_string();
+    let model_ov = args.get("model").and_then(Value::as_str);
+    let key_ov = args.get("api_key").and_then(Value::as_str);
 
     let cfg = llm_config_for_backend(backend, model_ov, key_ov);
-    let ctx = crate::adk::context::AgentContext::new("query_llm", crate::adk::tool::ToolRegistry::new());
+    let ctx =
+        crate::adk::context::AgentContext::new("query_llm", crate::adk::tool::ToolRegistry::new());
     let start = std::time::Instant::now();
     let result = crate::llm::call_prompt(ctx.http.as_ref(), &cfg, prompt)
         .await
@@ -4092,11 +5410,14 @@ pub(crate) async fn call_query_llm(args: Value) -> Result<Value, String> {
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) async fn call_fallback_chain(args: Value) -> Result<Value, String> {
-    let prompt   = args["prompt"].as_str().ok_or("Missing prompt")?.to_string();
+    let prompt = args["prompt"].as_str().ok_or("Missing prompt")?.to_string();
     let backends_str = args["backends"].as_str().ok_or("Missing backends")?;
     let backends: Vec<&str> = backends_str.split(',').map(str::trim).collect();
 
-    let ctx = crate::adk::context::AgentContext::new("fallback_chain", crate::adk::tool::ToolRegistry::new());
+    let ctx = crate::adk::context::AgentContext::new(
+        "fallback_chain",
+        crate::adk::tool::ToolRegistry::new(),
+    );
     let start = std::time::Instant::now();
 
     for backend in &backends {
@@ -4121,23 +5442,33 @@ pub(crate) async fn call_fallback_chain(args: Value) -> Result<Value, String> {
 
 pub(crate) fn call_list_intents() -> Result<Value, String> {
     let intents = load_intents();
-    let list: Vec<Value> = intents.iter()
-        .map(|(name, entry)| json!({
-            "intent":  name,
-            "backend": entry["backend"],
-            "model":   entry.get("model"),
-            "reason":  entry.get("reason"),
-        }))
+    let list: Vec<Value> = intents
+        .iter()
+        .map(|(name, entry)| {
+            json!({
+                "intent":  name,
+                "backend": entry["backend"],
+                "model":   entry.get("model"),
+                "reason":  entry.get("reason"),
+            })
+        })
         .collect();
     Ok(json!({ "count": list.len(), "intents": list }))
 }
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_register_intent(args: Value) -> Result<Value, String> {
-    let name    = args["name"].as_str().ok_or("Missing name")?.to_string();
-    let backend = args["backend"].as_str().ok_or("Missing backend")?.to_string();
-    let model   = args.get("model").and_then(Value::as_str).map(String::from);
-    let reason  = args.get("reason").and_then(Value::as_str).unwrap_or("").to_string();
+    let name = args["name"].as_str().ok_or("Missing name")?.to_string();
+    let backend = args["backend"]
+        .as_str()
+        .ok_or("Missing backend")?
+        .to_string();
+    let model = args.get("model").and_then(Value::as_str).map(String::from);
+    let reason = args
+        .get("reason")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
 
     let mut intents = load_intents();
     let entry = json!({
@@ -4152,23 +5483,30 @@ pub(crate) fn call_register_intent(args: Value) -> Result<Value, String> {
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) async fn call_benchmark_llms(args: Value) -> Result<Value, String> {
-    let prompt   = args["prompt"].as_str().ok_or("Missing prompt")?.to_string();
-    let backends_str = args.get("backends").and_then(Value::as_str).unwrap_or("gemini,deepseek");
-    let backends: Vec<String> = backends_str.split(',').map(|s| s.trim().to_string()).collect();
+    let prompt = args["prompt"].as_str().ok_or("Missing prompt")?.to_string();
+    let backends_str = args
+        .get("backends")
+        .and_then(Value::as_str)
+        .unwrap_or("gemini,deepseek");
+    let backends: Vec<String> = backends_str
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .collect();
 
-    let ctx = std::sync::Arc::new(
-        crate::adk::context::AgentContext::new("benchmark_llms", crate::adk::tool::ToolRegistry::new())
-    );
+    let ctx = std::sync::Arc::new(crate::adk::context::AgentContext::new(
+        "benchmark_llms",
+        crate::adk::tool::ToolRegistry::new(),
+    ));
 
     let mut handles = Vec::new();
     for backend in &backends {
-        let b    = backend.clone();
-        let p    = prompt.clone();
+        let b = backend.clone();
+        let p = prompt.clone();
         let ctx2 = ctx.clone();
         handles.push(tokio::spawn(async move {
-            let cfg   = llm_config_for_backend(&b, None, None);
+            let cfg = llm_config_for_backend(&b, None, None);
             let start = std::time::Instant::now();
-            let res   = crate::llm::call_prompt(ctx2.http.as_ref(), &cfg, p).await;
+            let res = crate::llm::call_prompt(ctx2.http.as_ref(), &cfg, p).await;
             let elapsed = start.elapsed().as_millis();
             (b, cfg.model, elapsed, res)
         }));
@@ -4211,20 +5549,38 @@ pub(crate) async fn call_benchmark_llms(args: Value) -> Result<Value, String> {
 /// - `api_key`: optional override key
 /// - `runs_per_test`: optional integer (default 3, clamp 1..5)
 pub(crate) async fn call_benchmark_test_override(args: Value) -> Result<Value, String> {
-    let test_ids: Vec<String> = args.get("test_ids")
+    let test_ids: Vec<String> = args
+        .get("test_ids")
         .and_then(Value::as_array)
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .ok_or("Missing test_ids (array of strings)")?;
     if test_ids.is_empty() {
         return Err("test_ids is empty".into());
     }
-    let provider = args.get("provider").and_then(Value::as_str)
+    let provider = args
+        .get("provider")
+        .and_then(Value::as_str)
         .ok_or("Missing provider")?;
-    let model = args.get("model").and_then(Value::as_str)
+    let model = args
+        .get("model")
+        .and_then(Value::as_str)
         .ok_or("Missing model")?;
-    let base_url = args.get("base_url").and_then(Value::as_str).map(String::from);
-    let api_key = args.get("api_key").and_then(Value::as_str).map(String::from);
-    let runs_per_test = args.get("runs_per_test").and_then(Value::as_u64).unwrap_or(3)
+    let base_url = args
+        .get("base_url")
+        .and_then(Value::as_str)
+        .map(String::from);
+    let api_key = args
+        .get("api_key")
+        .and_then(Value::as_str)
+        .map(String::from);
+    let runs_per_test = args
+        .get("runs_per_test")
+        .and_then(Value::as_u64)
+        .unwrap_or(3)
         .clamp(1, 5) as usize;
 
     let override_cfg = crate::llm::LlmOverride {
@@ -4268,7 +5624,9 @@ pub(crate) async fn call_benchmark_test_override(args: Value) -> Result<Value, S
         };
         elapsed_ms.sort_unstable();
         let p95_ms = if ok > 0 {
-            let idx = ((ok as f64 * 0.95).ceil() as usize).saturating_sub(1).min(ok - 1);
+            let idx = ((ok as f64 * 0.95).ceil() as usize)
+                .saturating_sub(1)
+                .min(ok - 1);
             elapsed_ms[idx] as u64
         } else {
             0
@@ -4330,7 +5688,9 @@ async fn benchmark_override_for_tests(
         };
         elapsed_ms.sort_unstable();
         let p95_ms = if ok > 0 {
-            let idx = ((ok as f64 * 0.95).ceil() as usize).saturating_sub(1).min(ok - 1);
+            let idx = ((ok as f64 * 0.95).ceil() as usize)
+                .saturating_sub(1)
+                .min(ok - 1);
             elapsed_ms[idx] as u64
         } else {
             0
@@ -4353,29 +5713,49 @@ async fn benchmark_override_for_tests(
 ///
 /// Returns side-by-side metrics + computed speedup and a simple recommendation.
 pub(crate) async fn call_benchmark_test_override_matrix(args: Value) -> Result<Value, String> {
-    let test_ids: Vec<String> = args.get("test_ids")
+    let test_ids: Vec<String> = args
+        .get("test_ids")
         .and_then(Value::as_array)
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .ok_or("Missing test_ids (array of strings)")?;
     if test_ids.is_empty() {
         return Err("test_ids is empty".into());
     }
-    let runs_per_test = args.get("runs_per_test").and_then(Value::as_u64).unwrap_or(3)
+    let runs_per_test = args
+        .get("runs_per_test")
+        .and_then(Value::as_u64)
+        .unwrap_or(3)
         .clamp(1, 5) as usize;
-    let min_speedup_pct = args.get("min_speedup_pct").and_then(Value::as_u64).unwrap_or(30) as u64;
+    let min_speedup_pct = args
+        .get("min_speedup_pct")
+        .and_then(Value::as_u64)
+        .unwrap_or(30) as u64;
     let max_pass_rate_drop_pct = args
         .get("max_pass_rate_drop_pct")
         .and_then(Value::as_u64)
         .unwrap_or(10) as u64;
 
     let parse_override = |root: &Value, key: &str| -> Result<crate::llm::LlmOverride, String> {
-        let obj = root.get(key).and_then(Value::as_object)
+        let obj = root
+            .get(key)
+            .and_then(Value::as_object)
             .ok_or_else(|| format!("Missing {key} object"))?;
-        let provider = obj.get("provider").and_then(Value::as_str)
+        let provider = obj
+            .get("provider")
+            .and_then(Value::as_str)
             .ok_or_else(|| format!("Missing {key}.provider"))?;
-        let model = obj.get("model").and_then(Value::as_str)
+        let model = obj
+            .get("model")
+            .and_then(Value::as_str)
             .ok_or_else(|| format!("Missing {key}.model"))?;
-        let base_url = obj.get("base_url").and_then(Value::as_str).map(String::from);
+        let base_url = obj
+            .get("base_url")
+            .and_then(Value::as_str)
+            .map(String::from);
         let api_key = obj.get("api_key").and_then(Value::as_str).map(String::from);
         Ok(crate::llm::LlmOverride {
             provider: provider.to_string(),
@@ -4400,8 +5780,12 @@ pub(crate) async fn call_benchmark_test_override_matrix(args: Value) -> Result<V
     let mut speedup_count = 0usize;
     let mut pass_drop_worst_pct = 0u64;
     for tid in &test_ids {
-        let b = base.iter().find(|v| v["test_id"].as_str() == Some(tid.as_str()));
-        let c = cand.iter().find(|v| v["test_id"].as_str() == Some(tid.as_str()));
+        let b = base
+            .iter()
+            .find(|v| v["test_id"].as_str() == Some(tid.as_str()));
+        let c = cand
+            .iter()
+            .find(|v| v["test_id"].as_str() == Some(tid.as_str()));
         let (Some(b), Some(c)) = (b, c) else { continue };
         let b_avg = b["avg_ms"].as_u64().unwrap_or(0);
         let c_avg = c["avg_ms"].as_u64().unwrap_or(0);
@@ -4440,13 +5824,14 @@ pub(crate) async fn call_benchmark_test_override_matrix(args: Value) -> Result<V
     } else {
         0
     };
-    let recommendation = if avg_speedup_pct >= min_speedup_pct && pass_drop_worst_pct <= max_pass_rate_drop_pct {
-        "adopt_candidate_for_routine_tests"
-    } else if pass_drop_worst_pct > max_pass_rate_drop_pct {
-        "keep_baseline_candidate_hurts_pass_rate"
-    } else {
-        "mixed_result_try_per_test_override"
-    };
+    let recommendation =
+        if avg_speedup_pct >= min_speedup_pct && pass_drop_worst_pct <= max_pass_rate_drop_pct {
+            "adopt_candidate_for_routine_tests"
+        } else if pass_drop_worst_pct > max_pass_rate_drop_pct {
+            "keep_baseline_candidate_hurts_pass_rate"
+        } else {
+            "mixed_result_try_per_test_override"
+        };
 
     Ok(json!({
         "runs_per_test": runs_per_test,
@@ -4473,10 +5858,12 @@ async fn call_agora_tool(name: &str, arguments: Value) -> Result<String, String>
         let path = home_dir()?.join(".claude.json");
         let src = std::fs::read_to_string(path).ok()?;
         let v: Value = serde_json::from_str(&src).ok()?;
-        v["mcpServers"][server]["headers"]["Authorization"].as_str().map(String::from)
+        v["mcpServers"][server]["headers"]["Authorization"]
+            .as_str()
+            .map(String::from)
     };
     let trading_tok = read_tok("agora-trading").ok_or("Missing agora-trading token")?;
-    let ops_tok     = read_tok("agora-ops").ok_or("Missing agora-ops token")?;
+    let ops_tok = read_tok("agora-ops").ok_or("Missing agora-ops token")?;
 
     let payload = json!({
         "jsonrpc": "2.0",
@@ -4486,20 +5873,30 @@ async fn call_agora_tool(name: &str, arguments: Value) -> Result<String, String>
     });
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
-        .build().map_err(|e| e.to_string())?;
-    let resp = client.post("https://agoramarketapi.purrtechllc.com/api/mcp")
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client
+        .post("https://agoramarketapi.purrtechllc.com/api/mcp")
         .header("Authorization", &trading_tok)
         .header("X-OPS-Authorization", &ops_tok)
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
         .json(&payload)
-        .send().await.map_err(|e| e.to_string())?
-        .text().await.map_err(|e| e.to_string())?;
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .text()
+        .await
+        .map_err(|e| e.to_string())?;
 
     for line in resp.lines() {
         let line = line.trim().trim_start_matches("data: ");
-        if !line.starts_with('{') { continue; }
-        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        if !line.starts_with('{') {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
         if let Some(text) = v["result"]["content"][0]["text"].as_str() {
             return Ok(text.to_string());
         }
@@ -4509,10 +5906,14 @@ async fn call_agora_tool(name: &str, arguments: Value) -> Result<String, String>
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) async fn call_generate_daily_brief(args: Value) -> Result<Value, String> {
-    let sections_str = args.get("sections").and_then(Value::as_str)
+    let sections_str = args
+        .get("sections")
+        .and_then(Value::as_str)
         .unwrap_or("market,portfolio,ml,ops");
     let sections: Vec<&str> = sections_str.split(',').map(str::trim).collect();
-    let date = args.get("date").and_then(Value::as_str)
+    let date = args
+        .get("date")
+        .and_then(Value::as_str)
         .map(String::from)
         .unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%d").to_string());
 
@@ -4524,25 +5925,31 @@ pub(crate) async fn call_generate_daily_brief(args: Value) -> Result<Value, Stri
     let mut tasks: Vec<(&str, tokio::task::JoinHandle<Result<String, String>>)> = Vec::new();
 
     if sections.contains(&"market") {
-        tasks.push(("market", tokio::spawn(async {
-            call_agora_tool("getMarketSnapshot", json!({})).await
-        })));
+        tasks.push((
+            "market",
+            tokio::spawn(async { call_agora_tool("getMarketSnapshot", json!({})).await }),
+        ));
     }
     if sections.contains(&"portfolio") {
-        tasks.push(("portfolio", tokio::spawn(async {
-            let pos = call_agora_tool("getOpenPositions", json!({})).await?;
-            Ok(pos)
-        })));
+        tasks.push((
+            "portfolio",
+            tokio::spawn(async {
+                let pos = call_agora_tool("getOpenPositions", json!({})).await?;
+                Ok(pos)
+            }),
+        ));
     }
     if sections.contains(&"ml") {
-        tasks.push(("ml", tokio::spawn(async {
-            call_agora_tool("getMlShadowStats", json!({})).await
-        })));
+        tasks.push((
+            "ml",
+            tokio::spawn(async { call_agora_tool("getMlShadowStats", json!({})).await }),
+        ));
     }
     if sections.contains(&"ops") {
-        tasks.push(("ops", tokio::spawn(async {
-            call_agora_tool("getSystemHealth", json!({})).await
-        })));
+        tasks.push((
+            "ops",
+            tokio::spawn(async { call_agora_tool("getSystemHealth", json!({})).await }),
+        ));
     }
 
     for (section, handle) in tasks {
@@ -4551,7 +5958,7 @@ pub(crate) async fn call_generate_daily_brief(args: Value) -> Result<Value, Stri
                 brief_parts.push(format!("## {}\n\n{}\n", section_title(section), text));
             }
             Ok(Err(e)) => errors.push(format!("{section}: {e}")),
-            Err(e)     => errors.push(format!("{section}: join error: {e}")),
+            Err(e) => errors.push(format!("{section}: join error: {e}")),
         }
     }
 
@@ -4563,7 +5970,19 @@ pub(crate) async fn call_generate_daily_brief(args: Value) -> Result<Value, Stri
 
     // Write to KB.
     let topic_key = format!("agora-daily-brief-{date}");
-    let kb_status = try_kb_write_handoff(&content, &format!("daily-brief-{date}"), "sirin", "");
+    let kb_status = try_kb_write_entry(
+        &topic_key,
+        &format!("Daily Ops Brief — {date}"),
+        &content,
+        "ops",
+        "raw",
+        "confirmed",
+        0.9,
+        "sirin,kb",
+        "sirin",
+        "",
+    )
+    .await;
 
     Ok(json!({
         "date":       date,
@@ -4577,11 +5996,11 @@ pub(crate) async fn call_generate_daily_brief(args: Value) -> Result<Value, Stri
 
 fn section_title(section: &str) -> &str {
     match section {
-        "market"    => "Market Snapshot",
+        "market" => "Market Snapshot",
         "portfolio" => "Open Positions",
-        "ml"        => "ML Shadow Stats",
-        "ops"       => "System Health",
-        other       => other,
+        "ml" => "ML Shadow Stats",
+        "ops" => "System Health",
+        other => other,
     }
 }
 
@@ -4590,10 +6009,19 @@ fn section_title(section: &str) -> &str {
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) async fn call_kb_merge(args: Value) -> Result<Value, String> {
     let src_keys_str = args["src_keys"].as_str().ok_or("Missing src_keys")?;
-    let dst_key      = args["dst_key"].as_str().ok_or("Missing dst_key")?;
-    let project      = args.get("project").and_then(Value::as_str).unwrap_or("sirin");
-    let strategy     = args.get("strategy").and_then(Value::as_str).unwrap_or("concat");
-    let dry_run      = args.get("dry_run").and_then(Value::as_bool).unwrap_or(false);
+    let dst_key = args["dst_key"].as_str().ok_or("Missing dst_key")?;
+    let project = args
+        .get("project")
+        .and_then(Value::as_str)
+        .unwrap_or("sirin");
+    let strategy = args
+        .get("strategy")
+        .and_then(Value::as_str)
+        .unwrap_or("concat");
+    let dry_run = args
+        .get("dry_run")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
 
     let src_keys: Vec<&str> = src_keys_str.split(',').map(str::trim).collect();
 
@@ -4611,37 +6039,47 @@ pub(crate) async fn call_kb_merge(args: Value) -> Result<Value, String> {
     let mut fetch_errors: Vec<String> = Vec::new();
     for handle in fetch_handles {
         match handle.await {
-            Ok(Ok((k, c)))  => src_contents.push((k, c)),
-            Ok(Err(e))      => fetch_errors.push(e),
-            Err(e)          => fetch_errors.push(e.to_string()),
+            Ok(Ok((k, c))) => src_contents.push((k, c)),
+            Ok(Err(e)) => fetch_errors.push(e),
+            Err(e) => fetch_errors.push(e.to_string()),
         }
     }
 
     if src_contents.is_empty() {
-        return Err(format!("No source entries fetched. Errors: {}", fetch_errors.join("; ")));
+        return Err(format!(
+            "No source entries fetched. Errors: {}",
+            fetch_errors.join("; ")
+        ));
     }
 
     // Merge content.
     let merged_content = match strategy {
         "llm" => {
             // Ask LLM to intelligently merge.
-            let combined: String = src_contents.iter()
+            let combined: String = src_contents
+                .iter()
                 .map(|(k, c)| format!("### [{k}]\n{c}"))
-                .collect::<Vec<_>>().join("\n\n---\n\n");
+                .collect::<Vec<_>>()
+                .join("\n\n---\n\n");
             let merge_prompt = format!(
                 "Merge these KB entries into one coherent, deduplicated entry. \
                  Preserve all unique information. Use markdown. Be concise (< 2000 chars):\n\n{combined}"
             );
-            let ctx = crate::adk::context::AgentContext::new("kb_merge", crate::adk::tool::ToolRegistry::new());
+            let ctx = crate::adk::context::AgentContext::new(
+                "kb_merge",
+                crate::adk::tool::ToolRegistry::new(),
+            );
             crate::llm::call_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), merge_prompt)
                 .await
                 .map_err(|e| e.to_string())?
         }
         _ => {
             // concat: join with separators.
-            src_contents.iter()
+            src_contents
+                .iter()
                 .map(|(k, c)| format!("<!-- merged from {k} -->\n{c}"))
-                .collect::<Vec<_>>().join("\n\n---\n\n")
+                .collect::<Vec<_>>()
+                .join("\n\n---\n\n")
         }
     };
 
@@ -4666,7 +6104,19 @@ pub(crate) async fn call_kb_merge(args: Value) -> Result<Value, String> {
     };
 
     // Write merged content to dst.
-    let write_status = try_kb_write_handoff(&final_content, &format!("merge:{}", src_keys_str), project, "");
+    let write_status = try_kb_write_entry(
+        dst_key,
+        &format!("Merged KB entry — {}", src_keys_str),
+        &final_content,
+        "tooling",
+        "topic",
+        "confirmed",
+        0.9,
+        "sirin,kb",
+        project,
+        "",
+    )
+    .await;
 
     // Mark sources as stale via best-effort HTTP calls.
     let mut stale_results: Vec<String> = Vec::new();
@@ -4674,7 +6124,10 @@ pub(crate) async fn call_kb_merge(args: Value) -> Result<Value, String> {
         let k = key.clone();
         let p = project.to_string();
         let r = call_agora_tool("kbMarkStale", json!({ "topicKey": k, "project": p })).await;
-        stale_results.push(format!("{k}: {}", if r.is_ok() { "stale" } else { "stale-failed" }));
+        stale_results.push(format!(
+            "{k}: {}",
+            if r.is_ok() { "stale" } else { "stale-failed" }
+        ));
     }
 
     Ok(json!({
@@ -4702,12 +6155,21 @@ pub(crate) fn call_list_saved_scripts() -> Result<Value, String> {
                 .map(|a| a.len())
                 .unwrap_or(0);
             // Viewport info (#135, #138)
-            let recorded_vp = store::script_viewport(&t.test_id)
-                .unwrap_or_else(|| "unknown".to_string());
+            let recorded_vp =
+                store::script_viewport(&t.test_id).unwrap_or_else(|| "unknown".to_string());
             // Compare with YAML's current viewport
             let yaml_vp = crate::test_runner::parser::find(&t.test_id)
-                .and_then(|tg| tg.viewport.map(|v| format!("{}x{}:{:.1}:{}", v.width, v.height, v.scale,
-                    if v.mobile { "mobile" } else { "desktop" })))
+                .and_then(|tg| {
+                    tg.viewport.map(|v| {
+                        format!(
+                            "{}x{}:{:.1}:{}",
+                            v.width,
+                            v.height,
+                            v.scale,
+                            if v.mobile { "mobile" } else { "desktop" }
+                        )
+                    })
+                })
                 .unwrap_or_else(|| "default".to_string());
             let vp_match = recorded_vp == yaml_vp || recorded_vp == "unknown";
             let mut entry = json!({
@@ -4732,7 +6194,9 @@ pub(crate) fn call_list_saved_scripts() -> Result<Value, String> {
         }
     }
     scripts.sort_by(|a, b| {
-        b.get("success_count").and_then(Value::as_u64).unwrap_or(0)
+        b.get("success_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
             .cmp(&a.get("success_count").and_then(Value::as_u64).unwrap_or(0))
     });
     Ok(json!({
@@ -4744,7 +6208,9 @@ pub(crate) fn call_list_saved_scripts() -> Result<Value, String> {
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_delete_saved_script(args: Value) -> Result<Value, String> {
-    let test_id = args.get("test_id").and_then(Value::as_str)
+    let test_id = args
+        .get("test_id")
+        .and_then(Value::as_str)
         .ok_or("'delete_saved_script' requires 'test_id'")?;
     crate::test_runner::store::delete_script(test_id);
     Ok(json!({
@@ -4756,43 +6222,57 @@ pub(crate) fn call_delete_saved_script(args: Value) -> Result<Value, String> {
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_list_fixes(args: Value) -> Result<Value, String> {
-    let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(20).min(100) as usize;
+    let limit = args
+        .get("limit")
+        .and_then(Value::as_u64)
+        .unwrap_or(20)
+        .min(100) as usize;
     let test_id = args.get("test_id").and_then(Value::as_str);
 
     let fixes = match test_id {
         Some(tid) => crate::test_runner::store::recent_fixes(tid, limit),
-        None      => crate::test_runner::store::recent_fixes_all(limit),
+        None => crate::test_runner::store::recent_fixes_all(limit),
     };
-    let items: Vec<Value> = fixes.into_iter().map(|f| json!({
-        "id":                  f.id,
-        "test_id":             f.test_id,
-        "run_id":              f.run_id,
-        "category":            f.category,
-        "triggered_at":        f.triggered_at,
-        "completed_at":        f.completed_at,
-        "outcome":             f.outcome,
-        "claude_exit_code":    f.claude_exit_code,
-        "claude_output":       f.claude_output,
-        "verification_run_id": f.verification_run_id,
-        "verified_at":         f.verified_at,
-    })).collect();
+    let items: Vec<Value> = fixes
+        .into_iter()
+        .map(|f| {
+            json!({
+                "id":                  f.id,
+                "test_id":             f.test_id,
+                "run_id":              f.run_id,
+                "category":            f.category,
+                "triggered_at":        f.triggered_at,
+                "completed_at":        f.completed_at,
+                "outcome":             f.outcome,
+                "claude_exit_code":    f.claude_exit_code,
+                "claude_output":       f.claude_output,
+                "verification_run_id": f.verification_run_id,
+                "verified_at":         f.verified_at,
+            })
+        })
+        .collect();
     Ok(json!({ "count": items.len(), "fixes": items }))
 }
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_config_diagnostics() -> Result<Value, String> {
     let issues = crate::config_check::run_diagnostics();
-    let items: Vec<Value> = issues.iter().map(|i| json!({
-        "severity":   match i.severity {
-            crate::config_check::Severity::Ok      => "ok",
-            crate::config_check::Severity::Info    => "info",
-            crate::config_check::Severity::Warning => "warning",
-            crate::config_check::Severity::Error   => "error",
-        },
-        "category":   i.category,
-        "message":    i.message,
-        "suggestion": i.suggestion,
-    })).collect();
+    let items: Vec<Value> = issues
+        .iter()
+        .map(|i| {
+            json!({
+                "severity":   match i.severity {
+                    crate::config_check::Severity::Ok      => "ok",
+                    crate::config_check::Severity::Info    => "info",
+                    crate::config_check::Severity::Warning => "warning",
+                    crate::config_check::Severity::Error   => "error",
+                },
+                "category":   i.category,
+                "message":    i.message,
+                "suggestion": i.suggestion,
+            })
+        })
+        .collect();
     let summary = crate::config_check::format_report(&issues);
     Ok(json!({
         "count": items.len(),
@@ -4807,7 +6287,8 @@ pub(crate) fn call_config_diagnostics() -> Result<Value, String> {
 // ── multi_agent MCP handlers ──────────────────────────────────────────────────
 
 fn resolve_cwd(args: &Value) -> String {
-    args["cwd"].as_str()
+    args["cwd"]
+        .as_str()
         .map(|s| s.to_string())
         .or_else(|| crate::claude_session::repo_path("sirin"))
         .unwrap_or_else(|| ".".to_string())
@@ -4817,14 +6298,14 @@ fn resolve_cwd(args: &Value) -> String {
 pub(crate) fn call_agent_team_status(args: Value) -> Result<Value, String> {
     let cwd = resolve_cwd(&args);
     let guard = crate::multi_agent::get_or_init(&cwd);
-    let team  = guard.as_ref().ok_or("team not initialized")?;
+    let team = guard.as_ref().ok_or("team not initialized")?;
     Ok(serde_json::to_value(team.status()).unwrap_or(serde_json::json!({})))
 }
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_agent_team_task(args: Value) -> Result<Value, String> {
     let task = args["task"].as_str().ok_or("Missing 'task'")?;
-    let cwd  = resolve_cwd(&args);
+    let cwd = resolve_cwd(&args);
 
     if !crate::claude_session::cli_available() {
         return Err("Claude CLI not available".into());
@@ -4862,9 +6343,9 @@ pub(crate) fn call_agent_team_test(args: Value) -> Result<Value, String> {
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_agent_send(args: Value) -> Result<Value, String> {
-    let role    = args["role"].as_str().ok_or("Missing 'role'")?;
+    let role = args["role"].as_str().ok_or("Missing 'role'")?;
     let message = args["message"].as_str().ok_or("Missing 'message'")?;
-    let cwd     = resolve_cwd(&args);
+    let cwd = resolve_cwd(&args);
 
     if !crate::claude_session::cli_available() {
         return Err("Claude CLI not available".into());
@@ -4874,17 +6355,17 @@ pub(crate) fn call_agent_send(args: Value) -> Result<Value, String> {
     let team = guard.as_mut().ok_or("team not initialized")?;
 
     let reply = match role {
-        "pm"       => team.pm.send(message)?,
+        "pm" => team.pm.send(message)?,
         "engineer" => team.engineer.send(message)?,
-        "tester"   => team.tester.send(message)?,
-        other      => return Err(format!("Unknown role: {other}")),
+        "tester" => team.tester.send(message)?,
+        other => return Err(format!("Unknown role: {other}")),
     };
 
     let sid = match role {
-        "pm"       => team.pm.session_id().map(|s| s.to_string()),
+        "pm" => team.pm.session_id().map(|s| s.to_string()),
         "engineer" => team.engineer.session_id().map(|s| s.to_string()),
-        "tester"   => team.tester.session_id().map(|s| s.to_string()),
-        _          => None,
+        "tester" => team.tester.session_id().map(|s| s.to_string()),
+        _ => None,
     };
 
     Ok(serde_json::json!({
@@ -4899,7 +6380,7 @@ pub(crate) fn call_agent_send(args: Value) -> Result<Value, String> {
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_agent_reset(args: Value) -> Result<Value, String> {
     let role = args["role"].as_str().ok_or("Missing 'role'")?;
-    let cwd  = resolve_cwd(&args);
+    let cwd = resolve_cwd(&args);
 
     let mut guard = crate::multi_agent::get_or_init(&cwd);
     let team = guard.as_mut().ok_or("team not initialized")?;
@@ -4920,13 +6401,15 @@ pub(crate) fn call_agent_reset(args: Value) -> Result<Value, String> {
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_agent_enqueue(args: Value) -> Result<Value, String> {
     let task = args["task"].as_str().ok_or("Missing 'task'")?;
-    let priority = args.get("priority")
+    let priority = args
+        .get("priority")
         .and_then(|v| v.as_u64())
         .map(|n| n.min(255) as u8)
         .unwrap_or(50);
 
     // T2-2: optional yaml_test_id triggers YAML verification after Engineer completes.
-    let yaml_test_id: Option<String> = args.get("yaml_test_id")
+    let yaml_test_id: Option<String> = args
+        .get("yaml_test_id")
         .and_then(|v| v.as_str())
         .filter(|s| !s.trim().is_empty())
         .map(String::from);
@@ -4946,12 +6429,15 @@ pub(crate) fn call_agent_enqueue(args: Value) -> Result<Value, String> {
         yaml_test_id, task);
 
     let msg = if yaml_test_id.is_some() {
-        format!("任務已加入佇列（T2-2：完成後自動驗證 YAML test '{}'）。\
+        format!(
+            "任務已加入佇列（T2-2：完成後自動驗證 YAML test '{}'）。\
                  用 agent_start_worker 確保 Worker 正在執行，用 agent_queue_status 查詢進度。",
-            yaml_test_id.as_deref().unwrap_or(""))
+            yaml_test_id.as_deref().unwrap_or("")
+        )
     } else {
         "任務已加入佇列。用 agent_start_worker 確保 Worker 正在執行，\
-         用 agent_queue_status 查詢進度。".to_string()
+         用 agent_queue_status 查詢進度。"
+            .to_string()
     };
 
     Ok(serde_json::json!({
@@ -4969,19 +6455,27 @@ pub(crate) fn call_agent_queue_status() -> Result<Value, String> {
     // 安全截斷輔助：找 max_bytes 內最後一個 char boundary
     fn safe_truncate(s: &str, max_bytes: usize) -> &str {
         let end = s.len().min(max_bytes);
-        let boundary = (0..=end).rev().find(|&i| s.is_char_boundary(i)).unwrap_or(0);
+        let boundary = (0..=end)
+            .rev()
+            .find(|&i| s.is_char_boundary(i))
+            .unwrap_or(0);
         &s[..boundary]
     }
 
-    let summary: Vec<_> = tasks.iter().map(|t| serde_json::json!({
-        "id":          t.id,
-        "status":      t.status.to_string(),
-        "description": safe_truncate(&t.description, 80),
-        "created_at":  t.created_at,
-        "finished_at": t.finished_at,
-        "result_preview": t.result.as_deref()
-            .map(|r| safe_truncate(r, 120).to_string()),
-    })).collect();
+    let summary: Vec<_> = tasks
+        .iter()
+        .map(|t| {
+            serde_json::json!({
+                "id":          t.id,
+                "status":      t.status.to_string(),
+                "description": safe_truncate(&t.description, 80),
+                "created_at":  t.created_at,
+                "finished_at": t.finished_at,
+                "result_preview": t.result.as_deref()
+                    .map(|r| safe_truncate(r, 120).to_string()),
+            })
+        })
+        .collect();
     Ok(serde_json::json!({
         "total":   tasks.len(),
         "queued":  tasks.iter().filter(|t| t.status == crate::multi_agent::TaskStatus::Queued).count(),
@@ -4997,11 +6491,15 @@ pub(crate) fn call_agent_start_worker(args: Value) -> Result<Value, String> {
     use std::sync::atomic::{AtomicBool, Ordering};
     static STARTED: AtomicBool = AtomicBool::new(false);
 
-    if STARTED.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+    if STARTED
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+    {
         let cwd = resolve_cwd(&args);
         // T1-1: optional `n` for parallel workers (default 1, capped at 8 to
         // protect Anthropic API rate limit).
-        let n = args.get("n")
+        let n = args
+            .get("n")
             .and_then(|v| v.as_u64())
             .map(|v| v as usize)
             .unwrap_or(1)
@@ -5031,13 +6529,19 @@ pub(crate) fn call_agent_clear_completed() -> Result<Value, String> {
 /// categories, and one curl-shaped quickstart.  Anything more detailed
 /// lives in `/help` (HTML).
 ///
-/// Pure data — no I/O, no caching needed.  Safe for cron / discovery
-/// crawlers to call repeatedly.
+/// Derived from the in-process registry/literal tool list; no network I/O.
+/// Safe for cron / discovery crawlers to call repeatedly.
 pub(crate) fn call_help(_args: Value) -> Result<Value, String> {
+    let full_tool_count = handle_tools_list()?["tools"]
+        .as_array()
+        .map(Vec::len)
+        .unwrap_or(0);
     Ok(json!({
         "name":    "Sirin",
         "version": env!("CARGO_PKG_VERSION"),
-        "summary": "AI-driven browser test daemon. Exposes 65+ MCP tools (browser automation, E2E test runner, KB search, multi-agent squad). Local-only by default (127.0.0.1).",
+        "tool_count": full_tool_count,
+        "full_tool_count": full_tool_count,
+        "summary": format!("AI-driven browser test daemon. Exposes {full_tool_count} MCP tools (browser automation, E2E test runner, KB search, multi-agent squad). Local-only by default (127.0.0.1)."),
         "urls": {
             "help_html":   "http://127.0.0.1:7700/help",
             "dashboard":   "http://127.0.0.1:7700/ui/",
@@ -5069,6 +6573,13 @@ pub(crate) fn call_help(_args: Value) -> Result<Value, String> {
             },
             "curl": "curl -X POST http://127.0.0.1:7700/mcp -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"method\":\"tools/list\",\"id\":1}'"
         },
+        "tool_discovery_profiles": {
+            "default": "full",
+            "available": ["full", "core", "testing", "ios", "ops"],
+            "request_override": {"method": "tools/list", "params": {"profile": "testing"}},
+            "environment_default": MCP_TOOL_PROFILE_ENV,
+            "boundary": "Profiles reduce tools/list context only; tools/call behavior and authorization are unchanged."
+        },
         "tool_categories": [
             { "category": "browser_automation",
               "primary": ["browser_exec"],
@@ -5080,7 +6591,7 @@ pub(crate) fn call_help(_args: Value) -> Result<Value, String> {
               "primary": ["test_coverage", "script_health"],
               "what":    "Per-feature coverage map + replay-vs-LLM health drift alerts" },
             { "category": "knowledge_base",
-              "primary": ["kb_search", "kbWrite", "kb_stats"],
+              "primary": ["kb_search", "kb_write", "kb_stats"],
               "what":    "Cross-project confirmed-trap / pass-pattern store (agora-trading KB backend)" },
             { "category": "multi_agent_squad",
               "primary": ["agent_assign_task", "agent_queue_status", "cleanup_stale_worktrees"],
@@ -5132,10 +6643,11 @@ pub(crate) fn call_help(_args: Value) -> Result<Value, String> {
 /// registry entry for the full doc; this function clamps inputs and
 /// hands off to [`crate::multi_agent::worktree::cleanup_stale_worktrees`].
 pub(crate) fn call_cleanup_stale_worktrees(args: Value) -> Result<Value, String> {
-    let older_than_hours = args.get("older_than_hours")
+    let older_than_hours = args
+        .get("older_than_hours")
         .and_then(Value::as_u64)
         .unwrap_or(24)
-        .clamp(1, 720);  // 1h … 30d
+        .clamp(1, 720); // 1h … 30d
     let dry_run = args.get("dry_run").and_then(Value::as_bool).unwrap_or(true);
 
     // Repo cwd: prefer the running process's working dir, which the worker
@@ -5164,7 +6676,7 @@ pub(crate) fn call_cleanup_stale_worktrees(args: Value) -> Result<Value, String>
 pub(crate) fn call_squad_knowledge(arguments: Value) -> Result<Value, String> {
     let limit = arguments["limit"].as_u64().unwrap_or(20).min(100) as usize;
     let lessons = crate::multi_agent::knowledge::all_lessons(limit);
-    let total   = crate::multi_agent::knowledge::lesson_count();
+    let total = crate::multi_agent::knowledge::lesson_count();
     Ok(serde_json::json!({
         "total": total,
         "showing": lessons.len(),
@@ -5185,25 +6697,39 @@ pub(crate) fn call_squad_knowledge(arguments: Value) -> Result<Value, String> {
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_dev_team_enqueue_issue(args: Value) -> Result<Value, String> {
-    let project_key  = args["project_key"].as_str()
+    let project_key = args["project_key"]
+        .as_str()
         .ok_or("Missing 'project_key' (e.g. 'agora_market', 'sirin')")?;
-    let gh_repo      = args["gh_repo"].as_str()
+    let gh_repo = args["gh_repo"]
+        .as_str()
         .ok_or("Missing 'gh_repo' (e.g. 'Redandan/AgoraMarket')")?;
-    let issue_number = args["issue_number"].as_u64()
+    let issue_number = args["issue_number"]
+        .as_u64()
         .ok_or("Missing 'issue_number' (positive integer)")? as u32;
     // Default dry_run=true — safer for external callers; they must explicitly
     // opt in to live mode.
-    let dry_run  = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(true);
-    let priority = args.get("priority").and_then(|v| v.as_u64())
-        .map(|n| n.min(255) as u8).unwrap_or(50);
+    let dry_run = args
+        .get("dry_run")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let priority = args
+        .get("priority")
+        .and_then(|v| v.as_u64())
+        .map(|n| n.min(255) as u8)
+        .unwrap_or(50);
 
     let task_id = if dry_run {
         crate::multi_agent::github_adapter::enqueue_from_issue_dry_run(
-            project_key, gh_repo, issue_number,
+            project_key,
+            gh_repo,
+            issue_number,
         )?
     } else {
         crate::multi_agent::github_adapter::enqueue_from_issue_with_priority(
-            project_key, gh_repo, issue_number, priority,
+            project_key,
+            gh_repo,
+            issue_number,
+            priority,
         )?
     };
 
@@ -5229,14 +6755,25 @@ pub(crate) fn call_dev_team_enqueue_issue(args: Value) -> Result<Value, String> 
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_dev_team_list_previews(args: Value) -> Result<Value, String> {
-    let limit = args.get("limit").and_then(|v| v.as_u64())
-        .map(|n| n.min(200) as usize).unwrap_or(20);
-    let issue_url_filter = args.get("issue_url").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .map(|n| n.min(200) as usize)
+        .unwrap_or(20);
+    let issue_url_filter = args
+        .get("issue_url")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
 
     // Helper: char-boundary-safe truncation
     fn safe_truncate(s: &str, max_bytes: usize) -> String {
-        if s.len() <= max_bytes { return s.to_string(); }
-        let end = (0..=max_bytes).rev().find(|&i| s.is_char_boundary(i)).unwrap_or(0);
+        if s.len() <= max_bytes {
+            return s.to_string();
+        }
+        let end = (0..=max_bytes)
+            .rev()
+            .find(|&i| s.is_char_boundary(i))
+            .unwrap_or(0);
         format!("{}…", &s[..end])
     }
 
@@ -5248,14 +6785,19 @@ pub(crate) fn call_dev_team_list_previews(args: Value) -> Result<Value, String> 
     }
     previews.truncate(limit);
 
-    let summary: Vec<_> = previews.iter().map(|p| serde_json::json!({
-        "task_id":      p.task_id,
-        "issue_url":    p.issue_url,
-        "success":      p.success,
-        "saved_at":     p.saved_at,
-        "body_preview": safe_truncate(&p.body, 200),
-        "body_chars":   p.body.len(),
-    })).collect();
+    let summary: Vec<_> = previews
+        .iter()
+        .map(|p| {
+            serde_json::json!({
+                "task_id":      p.task_id,
+                "issue_url":    p.issue_url,
+                "success":      p.success,
+                "saved_at":     p.saved_at,
+                "body_preview": safe_truncate(&p.body, 200),
+                "body_chars":   p.body.len(),
+            })
+        })
+        .collect();
 
     Ok(serde_json::json!({
         "total":    summary.len(),
@@ -5266,13 +6808,17 @@ pub(crate) fn call_dev_team_list_previews(args: Value) -> Result<Value, String> 
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_dev_team_replay_preview(args: Value) -> Result<Value, String> {
-    let task_id = args["task_id"].as_str()
+    let task_id = args["task_id"]
+        .as_str()
         .ok_or("Missing 'task_id' (from dev_team_list_previews)")?;
 
-    let preview = crate::multi_agent::github_adapter::latest_preview_for(task_id)
-        .ok_or_else(|| format!(
-            "No preview found for task_id '{task_id}'. \
-             Use dev_team_list_previews to see available task_ids."))?;
+    let preview =
+        crate::multi_agent::github_adapter::latest_preview_for(task_id).ok_or_else(|| {
+            format!(
+                "No preview found for task_id '{task_id}'. \
+             Use dev_team_list_previews to see available task_ids."
+            )
+        })?;
 
     crate::multi_agent::github_adapter::replay_preview(&preview)?;
 
@@ -5289,9 +6835,11 @@ pub(crate) fn call_dev_team_replay_preview(args: Value) -> Result<Value, String>
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_dev_team_read_issue(args: Value) -> Result<Value, String> {
-    let gh_repo      = args["gh_repo"].as_str()
+    let gh_repo = args["gh_repo"]
+        .as_str()
         .ok_or("Missing 'gh_repo' (e.g. 'Redandan/AgoraMarket')")?;
-    let issue_number = args["issue_number"].as_u64()
+    let issue_number = args["issue_number"]
+        .as_u64()
         .ok_or("Missing 'issue_number'")? as u32;
 
     let issue = crate::multi_agent::github_adapter::read_issue(gh_repo, issue_number)?;
@@ -5311,14 +6859,18 @@ pub(crate) fn call_consult(args: Value) -> Result<Value, String> {
     use crate::claude_session;
 
     let question = args["question"].as_str().ok_or("Missing 'question'")?;
-    let context  = args["context"].as_str().unwrap_or("");
-    let cwd = args["cwd"].as_str()
+    let context = args["context"].as_str().unwrap_or("");
+    let cwd = args["cwd"]
+        .as_str()
         .map(|s| s.to_string())
         .or_else(|| claude_session::repo_path("sirin"))
         .ok_or("Missing 'cwd' and sirin repo path not found")?;
 
     if !claude_session::cli_available() {
-        return Err("Claude CLI not available — install with: npm install -g @anthropic-ai/claude-code".into());
+        return Err(
+            "Claude CLI not available — install with: npm install -g @anthropic-ai/claude-code"
+                .into(),
+        );
     }
 
     let advice = claude_session::consult(question, context, &cwd)?;
@@ -5332,12 +6884,17 @@ pub(crate) fn call_consult(args: Value) -> Result<Value, String> {
 /// 用 get_test_result 輪詢狀態，完成後 analysis 欄位包含結果。
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) async fn call_assistant_task(args: Value) -> Result<Value, String> {
-    let request = args.get("request").and_then(Value::as_str)
+    let request = args
+        .get("request")
+        .and_then(Value::as_str)
         .ok_or("'assistant_task' requires 'request'")?
         .to_string();
     let url = args.get("url").and_then(Value::as_str).map(String::from);
 
-    tracing::info!("[assistant] queuing task: {}", &request[..request.len().min(80)]);
+    tracing::info!(
+        "[assistant] queuing task: {}",
+        &request[..request.len().min(80)]
+    );
 
     // Use the test runner's run registry for polling compatibility.
     let run_id = crate::test_runner::runs::new_run("assistant");
@@ -5350,7 +6907,7 @@ pub(crate) async fn call_assistant_task(args: Value) -> Result<Value, String> {
             Err(e) => {
                 crate::test_runner::runs::set_phase(
                     &run_id_clone,
-                    crate::test_runner::runs::RunPhase::Error(format!("runtime: {e}"))
+                    crate::test_runner::runs::RunPhase::Error(format!("runtime: {e}")),
                 );
                 return;
             }
@@ -5371,7 +6928,9 @@ pub(crate) async fn call_assistant_task(args: Value) -> Result<Value, String> {
                 },
                 iterations: result.steps,
                 duration_ms: 0,
-                error_message: if result.success { None } else {
+                error_message: if result.success {
+                    None
+                } else {
                     Some(result.summary.clone())
                 },
                 // Issue #144: save final screenshot so get_test_result can surface it.
@@ -5391,7 +6950,9 @@ pub(crate) async fn call_assistant_task(args: Value) -> Result<Value, String> {
                 final_analysis: Some(format!(
                     "{}\n\ndata: {}",
                     result.summary,
-                    result.data.as_ref()
+                    result
+                        .data
+                        .as_ref()
                         .map(|d| d.to_string())
                         .unwrap_or_default()
                 )),
@@ -5399,7 +6960,7 @@ pub(crate) async fn call_assistant_task(args: Value) -> Result<Value, String> {
             };
             crate::test_runner::runs::set_phase(
                 &run_id_clone,
-                crate::test_runner::runs::RunPhase::Complete(tr)
+                crate::test_runner::runs::RunPhase::Complete(tr),
             );
         });
     });
@@ -5416,13 +6977,16 @@ pub(crate) async fn call_assistant_task(args: Value) -> Result<Value, String> {
 /// 遇到停頓時根據 policy 自動回應（auto=yes；consult=問另一個 session）。
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_supervised_run(args: Value) -> Result<Value, String> {
-    use crate::claude_session::{self, SupervisionPolicy, SupervisionEvent};
+    use crate::claude_session::{self, SupervisionEvent, SupervisionPolicy};
 
-    let cwd    = args["cwd"].as_str().ok_or("Missing 'cwd'")?;
+    let cwd = args["cwd"].as_str().ok_or("Missing 'cwd'")?;
     let prompt = args["prompt"].as_str().ok_or("Missing 'prompt'")?;
 
     if !claude_session::cli_available() {
-        return Err("Claude CLI not available — install with: npm install -g @anthropic-ai/claude-code".into());
+        return Err(
+            "Claude CLI not available — install with: npm install -g @anthropic-ai/claude-code"
+                .into(),
+        );
     }
 
     let policy = match args["policy"].as_str().unwrap_or("auto") {
@@ -5437,21 +7001,27 @@ pub(crate) fn call_supervised_run(args: Value) -> Result<Value, String> {
 
     let result = claude_session::run_supervised(cwd, prompt, &policy, &|event| {
         let line = match &event {
-            SupervisionEvent::Working    { text }   => {
+            SupervisionEvent::Working { text } => {
                 let e = text.len().min(120);
-                let e = (0..=e).rev().find(|&i| text.is_char_boundary(i)).unwrap_or(0);
+                let e = (0..=e)
+                    .rev()
+                    .find(|&i| text.is_char_boundary(i))
+                    .unwrap_or(0);
                 format!("working: {}", &text[..e])
-            },
-            SupervisionEvent::UsingTool  { name }     => format!("tool: {name}"),
-            SupervisionEvent::Paused     { question } => format!("paused: {question}"),
+            }
+            SupervisionEvent::UsingTool { name } => format!("tool: {name}"),
+            SupervisionEvent::Paused { question } => format!("paused: {question}"),
             SupervisionEvent::Consulting { question } => format!("consulting: {question}"),
-            SupervisionEvent::GotAdvice  { advice }   => {
+            SupervisionEvent::GotAdvice { advice } => {
                 let e = advice.len().min(200);
-                let e = (0..=e).rev().find(|&i| advice.is_char_boundary(i)).unwrap_or(0);
+                let e = (0..=e)
+                    .rev()
+                    .find(|&i| advice.is_char_boundary(i))
+                    .unwrap_or(0);
                 format!("advice: {}", &advice[..e])
-            },
-            SupervisionEvent::Continuing { round }    => format!("continuing round {round}"),
-            SupervisionEvent::Done       { .. }       => "done".into(),
+            }
+            SupervisionEvent::Continuing { round } => format!("continuing round {round}"),
+            SupervisionEvent::Done { .. } => "done".into(),
         };
         events.lock().unwrap_or_else(|e| e.into_inner()).push(line);
     });
@@ -5474,38 +7044,57 @@ pub(crate) fn call_supervised_run(args: Value) -> Result<Value, String> {
     }
 }
 
-async fn call_browser_exec(args: Value, user_agent: &str) -> Result<Value, String> {
+pub(crate) async fn call_browser_exec(args: Value, user_agent: &str) -> Result<Value, String> {
     // ── AuthZ gate ────────────────────────────────────────────────────────────
     let action_name = args["action"].as_str().unwrap_or("").to_string();
     // Resolve per-request — never read a global.  Concurrent clients each
     // carry their own UA, so the session lookup is race-free.
-    let client_id   = resolve_client_id(user_agent);
+    let client_id = resolve_client_id(user_agent);
     let current_url = crate::browser::current_url().ok();
-    let cfg         = crate::authz::global_config();
-    let decision    = crate::authz::decide(&client_id, &action_name, &args, &current_url, &cfg);
+    let cfg = crate::authz::global_config();
+    let decision = crate::authz::decide(&client_id, &action_name, &args, &current_url, &cfg);
     match &decision {
         crate::authz::Decision::Allow(reason) => {
             crate::authz::audit::log_allow(
-                &cfg.audit.log_path, &client_id, &action_name, &args, &current_url, reason,
+                &cfg.audit.log_path,
+                &client_id,
+                &action_name,
+                &args,
+                &current_url,
+                reason,
             );
         }
         crate::authz::Decision::Deny(reason) => {
             crate::authz::audit::log_deny(
-                &cfg.audit.log_path, &client_id, &action_name, &args, &current_url, reason,
+                &cfg.audit.log_path,
+                &client_id,
+                &action_name,
+                &args,
+                &current_url,
+                reason,
             );
             return Err(format!("authz denied: {reason}"));
         }
         crate::authz::Decision::Ask(reason) => {
             crate::authz::audit::log_ask(
-                &cfg.audit.log_path, &client_id, &action_name, &args, &current_url, reason,
+                &cfg.audit.log_path,
+                &client_id,
+                &action_name,
+                &args,
+                &current_url,
+                reason,
             );
             let req_id = format!("ask-{}-{}", &action_name, uuid_v4_short());
             crate::monitor::emit_authz_ask(
-                &req_id, &client_id, &action_name, args.clone(),
+                &req_id,
+                &client_id,
+                &action_name,
+                args.clone(),
                 current_url.as_deref().unwrap_or(""),
                 30_000, // timeout_ms
                 false,  // learn: false
-            ).await;
+            )
+            .await;
             // Wait for human decision (30s timeout → deny)
             if let Some(ms) = crate::monitor::state() {
                 let rx = ms.register_authz_ask(&req_id);
@@ -5514,7 +7103,9 @@ async fn call_browser_exec(args: Value, user_agent: &str) -> Result<Value, Strin
                         // User clicked Allow — continue execution
                     }
                     Ok(Ok(crate::monitor::AuthzDecisionResult::Deny)) | Ok(Err(_)) | Err(_) => {
-                        return Err(format!("authz ask denied by operator (or timed out): {reason}"));
+                        return Err(format!(
+                            "authz ask denied by operator (or timed out): {reason}"
+                        ));
                     }
                 }
             } else {
@@ -5523,15 +7114,24 @@ async fn call_browser_exec(args: Value, user_agent: &str) -> Result<Value, Strin
         }
         crate::authz::Decision::AskWithLearn => {
             crate::authz::audit::log_ask(
-                &cfg.audit.log_path, &client_id, &action_name, &args, &current_url, "ask+learn",
+                &cfg.audit.log_path,
+                &client_id,
+                &action_name,
+                &args,
+                &current_url,
+                "ask+learn",
             );
             let req_id = format!("ask-{}-{}", &action_name, uuid_v4_short());
             crate::monitor::emit_authz_ask(
-                &req_id, &client_id, &action_name, args.clone(),
+                &req_id,
+                &client_id,
+                &action_name,
+                args.clone(),
                 current_url.as_deref().unwrap_or(""),
                 30_000, // timeout_ms
                 true,   // learn: true
-            ).await;
+            )
+            .await;
             // Wait for human decision (30s timeout → deny)
             if let Some(ms) = crate::monitor::state() {
                 let rx = ms.register_authz_ask(&req_id);
@@ -5540,7 +7140,9 @@ async fn call_browser_exec(args: Value, user_agent: &str) -> Result<Value, Strin
                         // User clicked Allow — continue execution
                     }
                     Ok(Ok(crate::monitor::AuthzDecisionResult::Deny)) | Ok(Err(_)) | Err(_) => {
-                        return Err("authz ask denied by operator (or timed out): ask+learn".to_string());
+                        return Err(
+                            "authz ask denied by operator (or timed out): ask+learn".to_string()
+                        );
                     }
                 }
             } else {
@@ -5550,7 +7152,9 @@ async fn call_browser_exec(args: Value, user_agent: &str) -> Result<Value, Strin
     }
 
     // ── Control gate (Pause / Step / Abort) ──────────────────────────────────
-    crate::monitor::control().gate().await
+    crate::monitor::control()
+        .gate()
+        .await
         .map_err(|e| format!("control: {e}"))?;
 
     // ── Monitor emit ──────────────────────────────────────────────────────────
@@ -5562,11 +7166,18 @@ async fn call_browser_exec(args: Value, user_agent: &str) -> Result<Value, Strin
     // target / text / timeout are kept for the screenshot_analyze / ocr_find_text
     // async-only handlers below; all other parameter parsing is done inside
     // browser_exec::dispatch() which reads them from the raw `args` Value.
-    let target  = args.get("target").and_then(Value::as_str).unwrap_or("").to_string();
+    let target = args
+        .get("target")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     let timeout = args.get("timeout").and_then(Value::as_u64);
     let headless_override = args.get("browser_headless").and_then(Value::as_bool);
     // session_id pre-processing happens inside the blocking closure below.
-    let session_id_arg = args.get("session_id").and_then(Value::as_str).map(String::from);
+    let session_id_arg = args
+        .get("session_id")
+        .and_then(Value::as_str)
+        .map(String::from);
 
     // ── Async-only actions (need LLM call, can't go in spawn_blocking) ────
     if action == "screenshot_analyze" {
@@ -5578,14 +7189,17 @@ async fn call_browser_exec(args: Value, user_agent: &str) -> Result<Value, Strin
         // Ensure browser open in correct mode first (might trigger vision-needing
         // re-launch for Flutter/WebGL).
         let want_headless = headless_override.unwrap_or_else(crate::browser::default_headless);
-        blocking("ensure_open", move || crate::browser::ensure_open(want_headless))
-            .await?;
+        blocking("ensure_open", move || {
+            crate::browser::ensure_open(want_headless)
+        })
+        .await?;
         let llm = crate::llm::shared_llm();
         let client = crate::llm::shared_http();
         match crate::llm::analyze_screenshot(&client, &llm, &target).await {
             Ok(analysis) => {
                 let dur = t0.elapsed().as_millis() as u64;
-                crate::monitor::emit_action_done(&action_id, json!({"analysis": &analysis}), dur).await;
+                crate::monitor::emit_action_done(&action_id, json!({"analysis": &analysis}), dur)
+                    .await;
                 return Ok(json!({ "analysis": analysis, "prompt": target }));
             }
             Err(e) => {
@@ -5605,7 +7219,8 @@ async fn call_browser_exec(args: Value, user_agent: &str) -> Result<Value, Strin
         let max_results = timeout.unwrap_or(5) as usize;
         let result = blocking("ocr_find_text", move || {
             crate::perception::ocr::find_text_on_current_page(&target, max_results)
-        }).await;
+        })
+        .await;
         match result {
             Ok(val) => {
                 let dur = t0.elapsed().as_millis() as u64;
@@ -5646,7 +7261,7 @@ async fn call_browser_exec(args: Value, user_agent: &str) -> Result<Value, Strin
                 let tab_id = args.get("tab_id").and_then(Value::as_i64);
                 return match crate::ext_server::authoritative_url(tab_id) {
                     Some(u) => Ok(json!({ "url": u, "source": "extension" })),
-                    None    => Ok(json!({
+                    None => Ok(json!({
                         "url":    browser::current_url().unwrap_or_default(),
                         "source": "cdp_cache_fallback",
                     })),
@@ -5665,7 +7280,7 @@ async fn call_browser_exec(args: Value, user_agent: &str) -> Result<Value, Strin
 
     let dur = t0.elapsed().as_millis() as u64;
     match &result {
-        Ok(v)  => crate::monitor::emit_action_done(&action_id, v.clone(), dur).await,
+        Ok(v) => crate::monitor::emit_action_done(&action_id, v.clone(), dur).await,
         Err(e) => crate::monitor::emit_action_error(&action_id, e).await,
     }
     result
@@ -5695,19 +7310,28 @@ async fn call_browser_exec(args: Value, user_agent: &str) -> Result<Value, Strin
 /// Returned shape:
 ///   { lines: [...], count: N, total_buffered: M, version: V, filter: {...} }
 pub(crate) fn call_tail_app_log(args: Value) -> Result<Value, String> {
-    let lines_req = args.get("lines")
+    let lines_req = args
+        .get("lines")
         .and_then(Value::as_u64)
         .unwrap_or(100)
         .clamp(1, 300) as usize;
     let grep = args.get("grep").and_then(Value::as_str).map(str::to_string);
-    let level = args.get("level").and_then(Value::as_str).map(str::to_uppercase);
+    let level = args
+        .get("level")
+        .and_then(Value::as_str)
+        .map(str::to_uppercase);
 
     // Pull more than asked when filtering, so the post-filter slice still
     // approximates `lines_req` lines.  Capped at MAX_LINES (300) anyway.
-    let pull = if grep.is_some() || level.is_some() { 300 } else { lines_req };
+    let pull = if grep.is_some() || level.is_some() {
+        300
+    } else {
+        lines_req
+    };
     let raw = crate::log_buffer::recent(pull);
 
-    let filtered: Vec<String> = raw.into_iter()
+    let filtered: Vec<String> = raw
+        .into_iter()
         .filter(|line| {
             let level_ok = match level.as_deref() {
                 None => true,
@@ -5778,11 +7402,14 @@ pub(crate) fn build_queue_summary() -> Value {
     let active = crate::test_runner::runs::snapshot_active();
 
     let mut running_entries: Vec<Value> = Vec::new();
-    let mut queued_entries:  Vec<(String, String, i64)> = Vec::new();
+    let mut queued_entries: Vec<(String, String, i64)> = Vec::new();
 
     for state in &active {
         match &state.phase {
-            crate::test_runner::runs::RunPhase::Running { step, current_action } => {
+            crate::test_runner::runs::RunPhase::Running {
+                step,
+                current_action,
+            } => {
                 let elapsed = state.last_phase_updated_at.elapsed();
                 running_entries.push(json!({
                     "test_id":            state.test_id,
@@ -5797,7 +7424,9 @@ pub(crate) fn build_queue_summary() -> Value {
             }
             crate::test_runner::runs::RunPhase::Queued => {
                 let waited = chrono::DateTime::parse_from_rfc3339(&state.started_at)
-                    .map(|dt| (now.signed_duration_since(dt.with_timezone(&chrono::Local))).num_seconds())
+                    .map(|dt| {
+                        (now.signed_duration_since(dt.with_timezone(&chrono::Local))).num_seconds()
+                    })
                     .unwrap_or(0);
                 queued_entries.push((state.test_id.clone(), state.run_id.clone(), waited));
             }
@@ -5810,23 +7439,36 @@ pub(crate) fn build_queue_summary() -> Value {
     let queued_count = queued_entries.len();
 
     let recent = crate::test_runner::store::recent_runs_all(50);
-    let mut durations: Vec<u64> = recent.iter()
+    let mut durations: Vec<u64> = recent
+        .iter()
         .filter_map(|r| r.duration_ms)
         .filter(|d| *d > 0)
         .map(|d| ((d / 1000) as u64).max(1))
         .collect();
     durations.sort_unstable();
-    let median = if durations.is_empty() { 0 } else { durations[durations.len() / 2] };
-    let p95 = if durations.is_empty() { 0 } else { durations[(durations.len() * 95 / 100).min(durations.len() - 1)] };
+    let median = if durations.is_empty() {
+        0
+    } else {
+        durations[durations.len() / 2]
+    };
+    let p95 = if durations.is_empty() {
+        0
+    } else {
+        durations[(durations.len() * 95 / 100).min(durations.len() - 1)]
+    };
     let estimated_drain = (queued_count as u64) * median;
 
-    let queued_sample: Vec<Value> = queued_entries.iter().take(20).map(|(test_id, run_id, w)| {
-        json!({
-            "test_id":         test_id,
-            "run_id":          run_id,
-            "queued_for_secs": w,
+    let queued_sample: Vec<Value> = queued_entries
+        .iter()
+        .take(20)
+        .map(|(test_id, run_id, w)| {
+            json!({
+                "test_id":         test_id,
+                "run_id":          run_id,
+                "queued_for_secs": w,
+            })
         })
-    }).collect();
+        .collect();
 
     json!({
         "concurrency":              1,
@@ -5876,7 +7518,8 @@ pub(crate) fn build_queue_summary() -> Value {
 ///   }
 pub(crate) fn call_live_trace(args: Value) -> Result<Value, String> {
     let run_id = args["run_id"].as_str().ok_or("Missing run_id")?;
-    let last_n = args.get("last_n")
+    let last_n = args
+        .get("last_n")
         .and_then(Value::as_u64)
         .unwrap_or(5)
         .clamp(1, 30) as usize;
@@ -5905,25 +7548,34 @@ pub(crate) fn call_browser_status() -> Result<Value, String> {
     let active_idx = status.active_tab_index;
 
     // Build tabs array
-    let tabs: Vec<Value> = status.tabs.into_iter().enumerate().map(|(i, url)| {
-        let session = status.named_sessions.iter()
-            .find(|(_, idx, _)| *idx == i)
-            .map(|(sid, _, _)| sid.clone());
-        let is_active = i == active_idx;
-        let mut obj = json!({
-            "index": i,
-            "url": url,
-            "active": is_active
-        });
-        if let Some(sid) = session {
-            obj["session_id"] = json!(sid);
-        }
-        obj
-    }).collect();
+    let tabs: Vec<Value> = status
+        .tabs
+        .into_iter()
+        .enumerate()
+        .map(|(i, url)| {
+            let session = status
+                .named_sessions
+                .iter()
+                .find(|(_, idx, _)| *idx == i)
+                .map(|(sid, _, _)| sid.clone());
+            let is_active = i == active_idx;
+            let mut obj = json!({
+                "index": i,
+                "url": url,
+                "active": is_active
+            });
+            if let Some(sid) = session {
+                obj["session_id"] = json!(sid);
+            }
+            obj
+        })
+        .collect();
 
-    let named: Vec<Value> = status.named_sessions.iter().map(|(sid, idx, url)| {
-        json!({ "session_id": sid, "tab_index": idx, "url": url })
-    }).collect();
+    let named: Vec<Value> = status
+        .named_sessions
+        .iter()
+        .map(|(sid, idx, url)| json!({ "session_id": sid, "tab_index": idx, "url": url }))
+        .collect();
 
     Ok(json!({
         "is_open": is_open,
@@ -5942,7 +7594,11 @@ pub(crate) fn call_browser_status() -> Result<Value, String> {
 // ── #187 sync_config ─────────────────────────────────────────────────────────
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
-pub(crate) fn call_sync_config() -> Result<Value, String> {
+pub(crate) fn call_sync_config(args: Value) -> Result<Value, String> {
+    let _prune_stale_tests = args
+        .get("prune_stale_tests")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let repo_config = std::env::current_dir()
         .map_err(|e| format!("cwd: {e}"))?
         .join("config");
@@ -5951,8 +7607,12 @@ pub(crate) fn call_sync_config() -> Result<Value, String> {
     let count = copy_dir_recursive(&repo_config, &local_config)
         .map_err(|e| format!("sync_config failed: {e}"))?;
 
-    tracing::info!("[sync_config] synced {} files: {} → {}", count,
-        repo_config.display(), local_config.display());
+    tracing::info!(
+        "[sync_config] synced {} files: {} → {}",
+        count,
+        repo_config.display(),
+        local_config.display()
+    );
 
     Ok(json!({
         "synced": true,
@@ -5987,20 +7647,31 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) async fn call_run_regression_suite(args: Value) -> Result<Value, String> {
-    let tag_filter = args.get("tag").and_then(Value::as_str).unwrap_or("").to_string();
-    let suite_timeout = args.get("timeout_secs").and_then(Value::as_u64).unwrap_or(3600);
+    let tag_filter = args
+        .get("tag")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let suite_timeout = args
+        .get("timeout_secs")
+        .and_then(Value::as_u64)
+        .unwrap_or(3600);
 
     // Discover all regression tests (same logic as list_tests but filtered to agora_regression/)
     let all_tests = crate::test_runner::list_tests();
-    let suite: Vec<_> = all_tests.into_iter().filter(|t| {
-        // Only regression tests
-        let is_regression = t.id.starts_with("agora_") &&
-            crate::platform::config_path("tests/agora_regression")
-                .join(format!("{}.yaml", t.id)).exists();
-        // Tag filter
-        let tag_ok = tag_filter.is_empty() || t.tags.iter().any(|tg| tg == &tag_filter);
-        is_regression && tag_ok
-    }).collect();
+    let suite: Vec<_> = all_tests
+        .into_iter()
+        .filter(|t| {
+            // Only regression tests
+            let is_regression = t.id.starts_with("agora_")
+                && crate::platform::config_path("tests/agora_regression")
+                    .join(format!("{}.yaml", t.id))
+                    .exists();
+            // Tag filter
+            let tag_ok = tag_filter.is_empty() || t.tags.iter().any(|tg| tg == &tag_filter);
+            is_regression && tag_ok
+        })
+        .collect();
 
     let total = suite.len();
     if total == 0 {
@@ -6029,16 +7700,20 @@ pub(crate) async fn call_run_regression_suite(args: Value) -> Result<Value, Stri
         let mut newly_done = Vec::new();
         for run_id in &pending {
             if let Some(state) = crate::test_runner::runs::get(run_id) {
-                let is_terminal = matches!(state.phase,
-                    crate::test_runner::runs::RunPhase::Complete(_) |
-                    crate::test_runner::runs::RunPhase::Error(_));
+                let is_terminal = matches!(
+                    state.phase,
+                    crate::test_runner::runs::RunPhase::Complete(_)
+                        | crate::test_runner::runs::RunPhase::Error(_)
+                );
                 if is_terminal {
                     newly_done.push(run_id.clone());
                     done_map.insert(run_id.clone(), crate::test_runner::runs::to_json(&state));
                 }
             }
         }
-        for rid in newly_done { pending.remove(&rid); }
+        for rid in newly_done {
+            pending.remove(&rid);
+        }
     }
 
     // Timed-out runs
@@ -6056,7 +7731,10 @@ pub(crate) async fn call_run_regression_suite(args: Value) -> Result<Value, Stri
     let mut console_errors_total = 0u64;
     let mut console_warnings_total = 0u64;
     for (test_id, run_id) in &run_ids {
-        let result = done_map.get(run_id).cloned().unwrap_or(json!({ "status": "unknown" }));
+        let result = done_map
+            .get(run_id)
+            .cloned()
+            .unwrap_or(json!({ "status": "unknown" }));
         let status = result["status"].as_str().unwrap_or("unknown");
         match status {
             "passed" => passed += 1,
@@ -6068,9 +7746,15 @@ pub(crate) async fn call_run_regression_suite(args: Value) -> Result<Value, Stri
             .as_deref()
             .map(parse_console_counts)
             .unwrap_or((0, 0));
-        console_errors_total  += ce as u64;
+        console_errors_total += ce as u64;
         console_warnings_total += cw as u64;
-        let flag = if ce > 0 { "error" } else if cw > 0 { "warning" } else { "ok" };
+        let flag = if ce > 0 {
+            "error"
+        } else if cw > 0 {
+            "warning"
+        } else {
+            "ok"
+        };
         results.push(json!({
             "test_id":          test_id,
             "run_id":           run_id,
@@ -6088,15 +7772,24 @@ pub(crate) async fn call_run_regression_suite(args: Value) -> Result<Value, Stri
     results.sort_by(|a, b| {
         let a_bad = (a["status"] != "passed") as u8;
         let b_bad = (b["status"] != "passed") as u8;
-        b_bad.cmp(&a_bad)
-            .then(b["console_errors"].as_u64().cmp(&a["console_errors"].as_u64()))
+        b_bad.cmp(&a_bad).then(
+            b["console_errors"]
+                .as_u64()
+                .cmp(&a["console_errors"].as_u64()),
+        )
     });
 
     let summary = format!("{passed}/{total} PASS — failed: {failed}, timeout: {timed_out}");
     let recommendation = if failed > 0 || timed_out > 0 {
-        format!("{} tests failed/timed out — check 'status' and 'error' fields", failed + timed_out)
+        format!(
+            "{} tests failed/timed out — check 'status' and 'error' fields",
+            failed + timed_out
+        )
     } else if console_errors_total > 0 {
-        format!("All passed but {} console errors detected — review with get_test_result", console_errors_total)
+        format!(
+            "All passed but {} console errors detected — review with get_test_result",
+            console_errors_total
+        )
     } else {
         format!("All {total} tests passed with clean console ✓")
     };
@@ -6149,8 +7842,11 @@ pub(crate) async fn call_sirin_preflight() -> Result<Value, String> {
     // 3. redandan.github.io version check
     let pages_version = tokio::time::timeout(
         std::time::Duration::from_secs(8),
-        fetch_github_pages_version()
-    ).await.ok().flatten();
+        fetch_github_pages_version(),
+    )
+    .await
+    .ok()
+    .flatten();
 
     // 4. API health (quick check via agora-ops orient if available, skip if not)
     // We just report what we know from orient tool — skip heavy network calls here
@@ -6173,13 +7869,18 @@ pub(crate) async fn call_sirin_preflight() -> Result<Value, String> {
 }
 
 fn count_yaml_files(dir: &std::path::Path) -> usize {
-    if !dir.exists() { return 0; }
+    if !dir.exists() {
+        return 0;
+    }
     let mut count = 0;
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let p = entry.path();
-            if p.is_dir() { count += count_yaml_files(&p); }
-            else if p.extension().map(|e| e == "yaml").unwrap_or(false) { count += 1; }
+            if p.is_dir() {
+                count += count_yaml_files(&p);
+            } else if p.extension().map(|e| e == "yaml").unwrap_or(false) {
+                count += 1;
+            }
         }
     }
     count
@@ -6188,13 +7889,20 @@ fn count_yaml_files(dir: &std::path::Path) -> usize {
 async fn fetch_github_pages_version() -> Option<String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(6))
-        .build().ok()?;
-    let html = client.get("https://redandan.github.io/")
+        .build()
+        .ok()?;
+    let html = client
+        .get("https://redandan.github.io/")
         .header("User-Agent", "Sirin-preflight/1.0")
-        .send().await.ok()?
-        .text().await.ok()?;
+        .send()
+        .await
+        .ok()?
+        .text()
+        .await
+        .ok()?;
     // Extract <meta name="version" content="X.Y.Z">
-    html.split("name=\"version\"").nth(1)
+    html.split("name=\"version\"")
+        .nth(1)
         .and_then(|s| s.split("content=\"").nth(1))
         .and_then(|s| s.split('"').next())
         .map(|s| s.to_string())
@@ -6202,15 +7910,24 @@ async fn fetch_github_pages_version() -> Option<String> {
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) async fn call_page_state(args: Value) -> Result<Value, String> {
-    let include_screenshot = args.get("include_screenshot").and_then(Value::as_bool).unwrap_or(true);
-    let include_ax         = args.get("include_ax").and_then(Value::as_bool).unwrap_or(true);
-    let max_ax_nodes       = args.get("max_ax_nodes").and_then(Value::as_u64).unwrap_or(50) as usize;
+    let include_screenshot = args
+        .get("include_screenshot")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let include_ax = args
+        .get("include_ax")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let max_ax_nodes = args
+        .get("max_ax_nodes")
+        .and_then(Value::as_u64)
+        .unwrap_or(50) as usize;
 
     blocking("page_state", move || -> Result<Value, String> {
         use crate::browser;
 
         // Basic state — always collected.
-        let url   = browser::current_url().unwrap_or_default();
+        let url = browser::current_url().unwrap_or_default();
         let title = browser::page_title().unwrap_or_default();
 
         // Console messages (last 20 entries).
@@ -6233,19 +7950,26 @@ pub(crate) async fn call_page_state(args: Value) -> Result<Value, String> {
             match crate::browser_ax::get_full_tree(false) {
                 Ok(nodes) => {
                     let limited: Vec<_> = nodes.into_iter().take(max_ax_nodes).collect();
-                    let text = limited.iter()
-                        .map(|n| format!(
-                            "[{}] {} \"{}\"",
-                            n.role.as_deref().unwrap_or("?"),
-                            n.backend_id.map(|id| id.to_string()).unwrap_or_else(|| "-".into()),
-                            n.name.as_deref().unwrap_or(""),
-                        ))
+                    let text = limited
+                        .iter()
+                        .map(|n| {
+                            format!(
+                                "[{}] {} \"{}\"",
+                                n.role.as_deref().unwrap_or("?"),
+                                n.backend_id
+                                    .map(|id| id.to_string())
+                                    .unwrap_or_else(|| "-".into()),
+                                n.name.as_deref().unwrap_or(""),
+                            )
+                        })
                         .collect::<Vec<_>>()
                         .join("\n");
-                    result["ax_tree_text"]  = json!(text);
+                    result["ax_tree_text"] = json!(text);
                     result["ax_node_count"] = json!(limited.len());
                 }
-                Err(e) => { result["ax_error"] = json!(e); }
+                Err(e) => {
+                    result["ax_error"] = json!(e);
+                }
             }
         }
 
@@ -6253,10 +7977,12 @@ pub(crate) async fn call_page_state(args: Value) -> Result<Value, String> {
         if include_screenshot {
             match browser::screenshot_jpeg(80) {
                 Ok(jpeg) => {
-                    result["screenshot_jpeg_b64"]   = json!(base64_encode(&jpeg));
+                    result["screenshot_jpeg_b64"] = json!(base64_encode(&jpeg));
                     result["screenshot_size_bytes"] = json!(jpeg.len());
                 }
-                Err(e) => { result["screenshot_error"] = json!(e); }
+                Err(e) => {
+                    result["screenshot_error"] = json!(e);
+                }
             }
         }
 
@@ -6268,7 +7994,9 @@ pub(crate) async fn call_page_state(args: Value) -> Result<Value, String> {
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) fn call_get_full_observation(args: Value) -> Result<Value, String> {
     let run_id = args["run_id"].as_str().ok_or("Missing run_id")?;
-    let step   = args["step"].as_u64().ok_or("Missing step (non-negative integer)")? as usize;
+    let step = args["step"]
+        .as_u64()
+        .ok_or("Missing step (non-negative integer)")? as usize;
     match crate::test_runner::runs::get_full_observation(run_id, step) {
         Some(content) => Ok(json!({
             "run_id": run_id,
@@ -6276,7 +8004,9 @@ pub(crate) fn call_get_full_observation(args: Value) -> Result<Value, String> {
             "content": content,
             "char_count": content.chars().count(),
         })),
-        None => Err(format!("observation for run_id '{run_id}' step {step} not found")),
+        None => Err(format!(
+            "observation for run_id '{run_id}' step {step} not found"
+        )),
     }
 }
 
@@ -6299,28 +8029,50 @@ pub(crate) fn call_get_run_trace(args: Value) -> Result<Value, String> {
     let mut llm_response_bytes_sum: u64 = 0;
     let mut llm_steps: u64 = 0;
     let mut all_kb_hits: std::collections::BTreeSet<String> = Default::default();
-    let steps: Vec<Value> = history.iter().enumerate().map(|(i, s)| {
-        if let Some(ms) = s.llm_latency_ms { total_latency += ms; latency_samples += 1; }
-        if let Some(b) = s.llm_prompt_bytes { llm_prompt_bytes_sum += b; }
-        if let Some(b) = s.llm_response_bytes { llm_response_bytes_sum += b; }
-        if s.llm_latency_ms.is_some() { llm_steps += 1; }
-        for k in &s.kb_hits { all_kb_hits.insert(k.clone()); }
-        let action_short = s.action.get("action").cloned()
-            .unwrap_or_else(|| s.action.clone());
-        json!({
-            "step": i,
-            "ts": s.ts,
-            "llm_model": s.llm_model,
-            "llm_latency_ms": s.llm_latency_ms,
-            "llm_tokens": s.llm_tokens,
-            "kb_hits": s.kb_hits,
-            "parse_errors": s.parse_errors,
-            "action": action_short,
-            "obs_chars": s.observation.chars().count(),
+    let steps: Vec<Value> = history
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            if let Some(ms) = s.llm_latency_ms {
+                total_latency += ms;
+                latency_samples += 1;
+            }
+            if let Some(b) = s.llm_prompt_bytes {
+                llm_prompt_bytes_sum += b;
+            }
+            if let Some(b) = s.llm_response_bytes {
+                llm_response_bytes_sum += b;
+            }
+            if s.llm_latency_ms.is_some() {
+                llm_steps += 1;
+            }
+            for k in &s.kb_hits {
+                all_kb_hits.insert(k.clone());
+            }
+            let action_short = s
+                .action
+                .get("action")
+                .cloned()
+                .unwrap_or_else(|| s.action.clone());
+            json!({
+                "step": i,
+                "ts": s.ts,
+                "llm_model": s.llm_model,
+                "llm_latency_ms": s.llm_latency_ms,
+                "llm_tokens": s.llm_tokens,
+                "kb_hits": s.kb_hits,
+                "parse_errors": s.parse_errors,
+                "action": action_short,
+                "obs_chars": s.observation.chars().count(),
+            })
         })
-    }).collect();
+        .collect();
 
-    let avg = if latency_samples > 0 { total_latency / latency_samples } else { 0 };
+    let avg = if latency_samples > 0 {
+        total_latency / latency_samples
+    } else {
+        0
+    };
     let usage = fetch_run_usage_snapshot(run_id);
     Ok(json!({
         "run_id": run_id,
@@ -6353,18 +8105,15 @@ pub(crate) fn call_get_run_trace(args: Value) -> Result<Value, String> {
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) async fn call_kb_search(args: Value) -> Result<Value, String> {
-    if !crate::kb_client::enabled() {
-        return Ok(json!({ "error": "KB 未啟用，請設定 KB_ENABLED=1" }));
-    }
-    let query = args["query"]
-        .as_str()
-        .ok_or("Missing 'query'")?
-        .to_string();
+    let query = args["query"].as_str().ok_or("Missing 'query'")?.to_string();
     let project = args["project"]
         .as_str()
         .map(String::from)
         .unwrap_or_else(crate::kb_client::default_project);
     let limit = args["limit"].as_u64().unwrap_or(5).min(20) as usize;
+    if !crate::kb_client::enabled() {
+        return Ok(json!({ "error": "KB 未啟用，請設定 KB_ENABLED=1" }));
+    }
 
     match crate::kb_client::search(&project, &query, limit).await {
         Ok(Some(text)) => Ok(json!({
@@ -6384,9 +8133,6 @@ pub(crate) async fn call_kb_search(args: Value) -> Result<Value, String> {
 
 // Migrated to mcp_registry — visibility raised so the registry can invoke it.
 pub(crate) async fn call_kb_get(args: Value) -> Result<Value, String> {
-    if !crate::kb_client::enabled() {
-        return Ok(json!({ "error": "KB 未啟用，請設定 KB_ENABLED=1" }));
-    }
     let topic = args["topic_key"]
         .as_str()
         .ok_or("Missing 'topic_key'")?
@@ -6395,6 +8141,9 @@ pub(crate) async fn call_kb_get(args: Value) -> Result<Value, String> {
         .as_str()
         .map(String::from)
         .unwrap_or_else(crate::kb_client::default_project);
+    if !crate::kb_client::enabled() {
+        return Ok(json!({ "error": "KB 未啟用，請設定 KB_ENABLED=1" }));
+    }
 
     match crate::kb_client::get(&project, &topic).await {
         Ok(Some(text)) => Ok(json!({
@@ -6412,34 +8161,64 @@ pub(crate) async fn call_kb_get(args: Value) -> Result<Value, String> {
     }
 }
 
-// Migrated to mcp_registry — visibility raised so the registry can invoke it.
-pub(crate) async fn call_kb_write(args: Value) -> Result<Value, String> {
-    if !crate::kb_client::enabled() {
-        return Ok(json!({ "error": "KB 未啟用，請設定 KB_ENABLED=1" }));
-    }
-    let topic_key = args["topic_key"].as_str().ok_or("Missing 'topic_key'")?.to_string();
-    let title     = args["title"].as_str().ok_or("Missing 'title'")?.to_string();
-    let content   = args["content"].as_str().ok_or("Missing 'content'")?.to_string();
-    let domain    = args["domain"].as_str().ok_or("Missing 'domain'")?.to_string();
-    if topic_key.is_empty() || title.is_empty() || content.is_empty() || domain.is_empty() {
-        return Err("topic_key, title, content, domain must all be non-empty".to_string());
-    }
-    let tags      = args["tags"].as_str().unwrap_or("").to_string();
-    let file_refs = args["file_refs"].as_str().unwrap_or("").to_string();
-    let project   = args["project"].as_str().map(String::from)
-        .unwrap_or_else(crate::kb_client::default_project);
+fn kb_entry_from_args(args: &Value) -> Result<crate::kb_client::KbEntry, String> {
+    let required = |name: &str| {
+        args[name]
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| format!("Missing or empty '{name}'"))
+    };
+    Ok(crate::kb_client::KbEntry {
+        topic_key: required("topic_key")?,
+        title: required("title")?,
+        content: required("content")?,
+        domain: required("domain")?,
+        layer: args["layer"].as_str().unwrap_or("topic").to_string(),
+        tags: args["tags"].as_str().unwrap_or("").to_string(),
+        confidence: args["confidence"].as_f64().unwrap_or(0.9),
+        file_refs: args["file_refs"].as_str().unwrap_or("").to_string(),
+        status: args["status"].as_str().unwrap_or("confirmed").to_string(),
+        project: args["project"]
+            .as_str()
+            .map(String::from)
+            .unwrap_or_else(crate::kb_client::default_project),
+    })
+}
 
-    match crate::kb_client::write_raw_to_project(
-        &project, &topic_key, &title, &content, &domain, &tags, &file_refs,
-    ).await {
-        Ok(()) => Ok(json!({
-            "project":    project,
-            "topic_key":  topic_key,
+// Local AI sessions call this Sirin-owned tool instead of the external-AI
+// AgoraMarket connector. The remote service credential stays on the server;
+// no per-call Telegram approval is involved.
+pub(crate) async fn call_kb_write(args: Value) -> Result<Value, String> {
+    let entry = kb_entry_from_args(&args)?;
+    if !crate::kb_client::enabled() {
+        return Ok(json!({
+            "error": "KB 未啟用，請設定 KB_ENABLED=1",
+            "status": "disabled",
+            "write_performed": false,
+        }));
+    }
+    match crate::kb_client::write_entry(&entry).await {
+        Ok(_upstream) => Ok(json!({
+            "project":    entry.project,
+            "topic_key":  entry.topic_key,
             "status":     "accepted",
-            "layer":      "raw",
-            "confidence": 0.6,
+            "write_performed": true,
+            "layer":      entry.layer,
+            "entry_status": entry.status,
+            "confidence": entry.confidence,
+            "source":     "sirin",
+            "transport":  "server_local_ssh",
+            "human_approval_required": false,
+            "telegram_approval_required": false,
+            "verify_with": "kb_get",
         })),
-        Err(e) => Ok(json!({ "error": e })),
+        Err(e) => Ok(json!({
+            "error": e,
+            "status": "failed",
+            "write_performed": false,
+        })),
     }
 }
 
@@ -6447,22 +8226,267 @@ pub(crate) async fn call_kb_write(args: Value) -> Result<Value, String> {
 mod test_runner_mcp_tests {
     use super::*;
 
+    // KB tests mutate process-wide environment variables. Serialize them so
+    // a read-disabled test cannot race a write-enabled test.
+    static KB_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     #[test]
     fn list_tests_returns_config_tests() {
         let result = call_list_tests(json!({})).unwrap();
         assert!(result["count"].is_u64());
         // config/tests/wiki_smoke.yaml should be visible
         let tests = result["tests"].as_array().unwrap();
-        assert!(tests.iter().any(|t| t["id"] == "wiki_smoke"),
-            "wiki_smoke test should be listed: {result:?}");
+        assert!(
+            tests.iter().any(|t| t["id"] == "wiki_smoke"),
+            "wiki_smoke test should be listed: {result:?}"
+        );
     }
 
     #[test]
     fn list_tests_with_tag_filter() {
         let result = call_list_tests(json!({"tag": "smoke"})).unwrap();
         let tests = result["tests"].as_array().unwrap();
-        assert!(tests.iter().all(|t| t["tags"].as_array().unwrap()
-            .iter().any(|tg| tg == "smoke")));
+        assert!(tests
+            .iter()
+            .all(|t| t["tags"].as_array().unwrap().iter().any(|tg| tg == "smoke")));
+    }
+
+    #[test]
+    fn list_tests_honors_suite_and_exclude_tags() {
+        let result = call_list_tests(json!({
+            "suite": "active-smoke",
+            "exclude_tags": ["mutating", "requires-operator-approval"]
+        }))
+        .unwrap();
+        let tests = result["tests"].as_array().unwrap();
+        assert!(!tests.is_empty(), "active-smoke tests should be listed");
+        for test in tests {
+            let tags = test["tags"].as_array().unwrap();
+            assert!(
+                tags.iter().any(|tag| tag == "active-smoke"),
+                "non-active-smoke leaked into list_tests result: {test:?}"
+            );
+            assert!(
+                !tags
+                    .iter()
+                    .any(|tag| tag == "mutating" || tag == "requires-operator-approval"),
+                "excluded tag leaked into list_tests result: {test:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn script_health_honors_exclude_tags_and_returns_tags() {
+        let result = call_script_health(json!({
+            "suite": "all",
+            "exclude_tags": ["mutating", "requires-operator-approval", "selector-risk"]
+        }))
+        .unwrap();
+        let tests = result["per_test"].as_array().unwrap();
+        assert!(
+            !tests.is_empty(),
+            "script_health should return filtered tests"
+        );
+        for test in tests {
+            let tags = test["tags"].as_array().expect("per_test must include tags");
+            assert!(
+                !tags.iter().any(|tag| tag == "mutating"
+                    || tag == "requires-operator-approval"
+                    || tag == "selector-risk"),
+                "excluded tag leaked into script_health result: {test:?}"
+            );
+        }
+        assert_eq!(
+            result["selected_test_count"].as_u64().unwrap() as usize,
+            tests.len()
+        );
+        assert!(result["aggregate"]["has_recent_data"].is_boolean());
+        assert!(
+            result["aggregate"]["latest_run_at"].is_string()
+                || result["aggregate"]["latest_run_at"].is_null()
+        );
+    }
+
+    #[test]
+    fn test_analytics_defaults_to_current_manifest_and_recent_window() {
+        let result = call_test_analytics(json!({})).unwrap();
+        assert_eq!(result["scope"]["mode"], "current_manifest");
+        assert_eq!(result["scope"]["window_days"], 30);
+        assert_eq!(
+            result["scope"]["candidate_tests"].as_u64().unwrap() as usize,
+            crate::test_runner::list_tests().len()
+        );
+    }
+
+    #[test]
+    fn help_reports_the_actual_discoverable_tool_count() {
+        let help = call_help(json!({})).unwrap();
+        let listed = handle_tools_list().unwrap();
+        assert_eq!(
+            help["tool_count"].as_u64().unwrap() as usize,
+            listed["tools"].as_array().unwrap().len()
+        );
+        assert!(help["tool_categories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|category| category["primary"].as_array().into_iter().flatten())
+            .any(|tool| tool == "kb_write"));
+    }
+
+    fn listed_tool_names(response: &Value) -> std::collections::BTreeSet<&str> {
+        response["tools"]
+            .as_array()
+            .expect("tools array")
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect()
+    }
+
+    #[test]
+    fn tools_list_default_profile_preserves_the_full_response() {
+        let historical = handle_tools_list().unwrap();
+        let defaulted = handle_tools_list_request_with_env(json!({}), None).unwrap();
+        assert_eq!(defaulted, historical);
+        assert!(defaulted.get("_meta").is_none());
+    }
+
+    #[test]
+    fn tools_list_compact_profiles_reduce_context_and_keep_domain_entrypoints() {
+        let full = handle_tools_list().unwrap();
+        let full_count = full["tools"].as_array().unwrap().len();
+
+        let cases = [
+            ("core", "run_test_async", "ios_device_status"),
+            ("testing", "run_regression_suite", "ios_device_status"),
+            ("ios", "ios_device_status", "ops_schedule_digest"),
+            ("ops", "ops_schedule_digest", "ios_device_status"),
+        ];
+        for (profile, expected, excluded) in cases {
+            let response =
+                handle_tools_list_request_with_env(json!({"profile": profile}), None).unwrap();
+            let names = listed_tool_names(&response);
+            assert!(names.contains("help"), "{profile} must expose help");
+            assert!(names.contains("diagnose"), "{profile} must expose diagnose");
+            assert!(
+                names.contains(expected),
+                "{profile} must expose {expected}: {names:?}"
+            );
+            assert!(
+                !names.contains(excluded),
+                "{profile} unexpectedly exposed {excluded}"
+            );
+            assert!(
+                names.len() < full_count,
+                "{profile} must be smaller than the full catalog"
+            );
+            assert_eq!(response["_meta"]["sirin/toolProfile"], profile);
+            assert_eq!(
+                response["_meta"]["sirin/toolCount"].as_u64().unwrap() as usize,
+                names.len()
+            );
+            assert_eq!(
+                response["_meta"]["sirin/fullToolCount"].as_u64().unwrap() as usize,
+                full_count
+            );
+            assert_eq!(response["_meta"]["sirin/discoveryOnly"], true);
+        }
+    }
+
+    #[test]
+    fn tools_list_request_profile_overrides_environment_default() {
+        assert_eq!(
+            resolve_mcp_tool_profile(&json!({"profile": "ios"}), Some("ops")).unwrap(),
+            McpToolProfile::Ios
+        );
+        assert_eq!(
+            resolve_mcp_tool_profile(&json!({}), Some(" testing ")).unwrap(),
+            McpToolProfile::Testing
+        );
+        assert_eq!(
+            resolve_mcp_tool_profile(&json!({"profile": null}), Some("core")).unwrap(),
+            McpToolProfile::Core
+        );
+    }
+
+    #[test]
+    fn tools_list_rejects_invalid_profile_values() {
+        let invalid_name =
+            handle_tools_list_request_with_env(json!({"profile": "secret"}), None).unwrap_err();
+        assert!(invalid_name.contains(MCP_TOOL_PROFILES));
+
+        let invalid_type =
+            handle_tools_list_request_with_env(json!({"profile": 1}), None).unwrap_err();
+        assert!(invalid_type.contains("must be a string"));
+    }
+
+    #[test]
+    fn test_summary_honors_suite_filter() {
+        let result = call_test_summary(json!({
+            "suite": "active-smoke",
+            "limit": 100,
+        }))
+        .unwrap();
+        let results = result["results"].as_array().unwrap();
+        for item in results {
+            let tags = item["tags"]
+                .as_array()
+                .expect("summary result must include tags");
+            assert!(
+                tags.iter().any(|tag| tag == "active-smoke"),
+                "non-active-smoke test leaked into active-smoke summary: {item:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_summary_cutoff_accepts_rfc3339_and_rejects_invalid() {
+        let cutoff = test_summary_cutoff(Some("2026-06-14T14:00:00+08:00")).unwrap();
+        assert_eq!(cutoff.to_rfc3339(), "2026-06-14T14:00:00+08:00");
+
+        let err = test_summary_cutoff(Some("not-a-time")).unwrap_err();
+        assert!(
+            err.contains("expected RFC3339 or HH:MM"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_summary_outcome_never_reports_an_empty_window_as_passed() {
+        let (status, recommendation) = test_summary_outcome(0, 0, 0);
+        assert_eq!(status, "no_data");
+        assert!(!recommendation.to_ascii_lowercase().contains("passed"));
+
+        assert_eq!(test_summary_outcome(3, 1, 0).0, "failed");
+        assert_eq!(test_summary_outcome(3, 0, 2).0, "attention_needed");
+        assert_eq!(test_summary_outcome(3, 0, 0).0, "passed");
+    }
+
+    #[test]
+    fn test_summary_flag_marks_failed_runs_as_error() {
+        assert_eq!(test_summary_flag("error", 0, 0), "error");
+        assert_eq!(test_summary_flag("failed", 0, 0), "error");
+        assert_eq!(test_summary_flag("timeout", 0, 0), "error");
+        assert_eq!(test_summary_flag("passed", 1, 0), "error");
+        assert_eq!(test_summary_flag("passed", 0, 1), "warning");
+        assert_eq!(test_summary_flag("passed", 0, 0), "ok");
+    }
+
+    #[test]
+    fn test_result_replay_mode_distinguishes_fixture_only() {
+        assert_eq!(test_result_replay_mode(true, None, None), "script");
+        assert_eq!(
+            test_result_replay_mode(false, Some(r#"{"fixture_only":true}"#), None),
+            "fixture_only"
+        );
+        assert_eq!(
+            test_result_replay_mode(false, None, Some("fixture_only passed: deterministic")),
+            "fixture_only"
+        );
+        assert_eq!(
+            test_result_replay_mode(false, None, Some("regular llm run")),
+            "llm"
+        );
     }
 
     #[test]
@@ -6553,8 +8577,12 @@ mod test_runner_mcp_tests {
         let total = r["errors"].as_u64().unwrap()
             + r["warnings"].as_u64().unwrap()
             + r["ok"].as_u64().unwrap()
-            + r["issues"].as_array().unwrap().iter()
-                .filter(|i| i["severity"] == "info").count() as u64;
+            + r["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|i| i["severity"] == "info")
+                .count() as u64;
         assert_eq!(total, r["count"].as_u64().unwrap());
     }
 
@@ -6579,31 +8607,83 @@ mod test_runner_mcp_tests {
         assert_eq!(resolve_client_id("test-ua-xyz"), "my-client@9.9.9");
     }
 
+    #[tokio::test]
+    async fn initialized_notification_returns_empty_accepted_response() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral MCP test listener");
+        let addr = listener.local_addr().expect("read MCP test address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, mcp_router())
+                .await
+                .expect("serve MCP test router");
+        });
+
+        let response = reqwest::Client::new()
+            .post(format!("http://{addr}/mcp"))
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized"
+            }))
+            .send()
+            .await
+            .expect("send initialized notification");
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert!(
+            response
+                .text()
+                .await
+                .expect("read notification body")
+                .is_empty(),
+            "JSON-RPC notifications must not return a response body"
+        );
+        server.abort();
+    }
+
     #[test]
     fn sessions_isolate_clients_by_user_agent() {
         // Race regression guard: two UAs must map to independent client_ids,
         // no matter the order of writes.
         remember_client_id("ua-a", "alice@1.0");
         remember_client_id("ua-b", "bob@2.0");
-        remember_client_id("ua-a", "alice@1.0");  // idempotent re-register
+        remember_client_id("ua-a", "alice@1.0"); // idempotent re-register
         assert_eq!(resolve_client_id("ua-a"), "alice@1.0");
         assert_eq!(resolve_client_id("ua-b"), "bob@2.0");
     }
 
     #[test]
     fn authz_permissive_config_allows_known_actions() {
-        use crate::authz::{AuthzConfig, config::Mode, decide, Decision};
+        use crate::authz::{config::Mode, decide, AuthzConfig, Decision};
         let cfg = AuthzConfig {
             mode: Mode::Permissive,
             ..AuthzConfig::default()
         };
         // screenshot is in readonly_allow in defaults but here we use a
         // custom permissive config — permissive mode allows everything
-        let d = decide("test@1.0", "goto", &json!({"target": "https://example.com/"}), &None, &cfg);
-        assert!(matches!(d, Decision::Allow(_)), "permissive should allow goto: {d:?}");
+        let d = decide(
+            "test@1.0",
+            "goto",
+            &json!({"target": "https://example.com/"}),
+            &None,
+            &cfg,
+        );
+        assert!(
+            matches!(d, Decision::Allow(_)),
+            "permissive should allow goto: {d:?}"
+        );
 
-        let d2 = decide("test@1.0", "ax_click", &json!({"backend_id": 1}), &None, &cfg);
-        assert!(matches!(d2, Decision::Allow(_)), "permissive should allow ax_click: {d2:?}");
+        let d2 = decide(
+            "test@1.0",
+            "ax_click",
+            &json!({"backend_id": 1}),
+            &None,
+            &cfg,
+        );
+        assert!(
+            matches!(d2, Decision::Allow(_)),
+            "permissive should allow ax_click: {d2:?}"
+        );
     }
 
     #[test]
@@ -6620,20 +8700,21 @@ mod test_runner_mcp_tests {
         // operator who clicks "Allow" after 25 s still sees the action
         // complete.  Must be short enough to prevent CLOSE_WAIT buildup
         // when a handler stalls on a dead Chrome transport.
-        assert!(MCP_REQUEST_TIMEOUT >= Duration::from_secs(60),
-            "timeout must outlive authz ask window (30s) + slowest handler");
-        assert!(MCP_REQUEST_TIMEOUT <= Duration::from_secs(600),
-            "timeout must not exceed 10min (defeats purpose of layer)");
+        assert!(
+            MCP_REQUEST_TIMEOUT >= Duration::from_secs(60),
+            "timeout must outlive authz ask window (30s) + slowest handler"
+        );
+        assert!(
+            MCP_REQUEST_TIMEOUT <= Duration::from_secs(600),
+            "timeout must not exceed 10min (defeats purpose of layer)"
+        );
     }
 
     /// CorsLayer must be constructible whether or not CLAUDE_CHROME_EXT_ID is
     /// set — both branches of `cors_layer()` need to compile and not panic.
     #[test]
     fn cors_layer_strict_mode_constructs() {
-        std::env::set_var(
-            "CLAUDE_CHROME_EXT_ID",
-            "bfnaelmomeimhlpmgjnjophhpkkoljpa",
-        );
+        std::env::set_var("CLAUDE_CHROME_EXT_ID", "bfnaelmomeimhlpmgjnjophhpkkoljpa");
         let _ = cors_layer();
         std::env::remove_var("CLAUDE_CHROME_EXT_ID");
     }
@@ -6649,13 +8730,17 @@ mod test_runner_mcp_tests {
     /// instead of a hang).
     #[tokio::test]
     async fn kb_search_returns_error_when_disabled() {
+        let _guard = KB_ENV_LOCK.lock().await;
         std::env::remove_var("KB_ENABLED");
-        let r = call_kb_search(json!({ "query": "anything" })).await.unwrap();
+        let r = call_kb_search(json!({ "query": "anything" }))
+            .await
+            .unwrap();
         assert!(r.get("error").is_some(), "expected error payload, got {r}");
     }
 
     #[tokio::test]
     async fn kb_search_rejects_missing_query() {
+        let _guard = KB_ENV_LOCK.lock().await;
         std::env::set_var("KB_ENABLED", "1");
         let r = call_kb_search(json!({})).await;
         assert!(r.is_err(), "must reject missing query: {r:?}");
@@ -6664,6 +8749,7 @@ mod test_runner_mcp_tests {
 
     #[tokio::test]
     async fn kb_get_rejects_missing_topic_key() {
+        let _guard = KB_ENV_LOCK.lock().await;
         std::env::set_var("KB_ENABLED", "1");
         let r = call_kb_get(json!({})).await;
         assert!(r.is_err(), "must reject missing topic_key: {r:?}");
@@ -6672,11 +8758,31 @@ mod test_runner_mcp_tests {
 
     #[tokio::test]
     async fn kb_get_returns_error_when_disabled() {
+        let _guard = KB_ENV_LOCK.lock().await;
         std::env::remove_var("KB_ENABLED");
         let r = call_kb_get(json!({ "topic_key": "any-topic" }))
             .await
             .unwrap();
         assert!(r.get("error").is_some(), "expected error payload, got {r}");
+    }
+
+    #[tokio::test]
+    async fn kb_stats_never_reports_healthy_when_health_is_unavailable() {
+        let _guard = KB_ENV_LOCK.lock().await;
+        std::env::remove_var("KB_ENABLED");
+        let result = call_kb_stats(json!({
+            "project": "sirin",
+            "brief_topics": []
+        }))
+        .await
+        .unwrap();
+        assert_eq!(result["health_flag"], "❌ unavailable");
+        assert!(result["health_error"].as_str().is_some());
+        assert!(result["health_flags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|flag| flag == "health_unavailable"));
     }
 
     /// kb_write must appear in tools/list with required schema fields so CiC
@@ -6689,7 +8795,10 @@ mod test_runner_mcp_tests {
             .iter()
             .find(|t| t["name"].as_str() == Some("kb_write"))
             .expect("kb_write entry must be present");
-        assert!(entry["description"].as_str().unwrap_or("").contains("Knowledge Base"));
+        assert!(entry["description"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Knowledge Base"));
         let required = entry["inputSchema"]["required"]
             .as_array()
             .expect("required array");
@@ -6700,28 +8809,60 @@ mod test_runner_mcp_tests {
         let props = entry["inputSchema"]["properties"]
             .as_object()
             .expect("properties object");
-        for k in ["topic_key", "title", "content", "domain", "tags", "file_refs", "project"] {
+        for k in [
+            "topic_key",
+            "title",
+            "content",
+            "domain",
+            "tags",
+            "file_refs",
+            "project",
+            "layer",
+            "status",
+            "confidence",
+        ] {
             assert!(props.contains_key(k), "properties must include {k}");
         }
     }
 
     #[tokio::test]
     async fn kb_write_returns_error_when_disabled() {
+        let _guard = KB_ENV_LOCK.lock().await;
         std::env::remove_var("KB_ENABLED");
+        std::env::remove_var("KB_WRITE_TELEMETRY");
         let r = call_kb_write(json!({
             "topic_key": "k", "title": "t", "content": "c", "domain": "d"
-        })).await.unwrap();
+        }))
+        .await
+        .unwrap();
         assert!(r.get("error").is_some(), "expected error payload, got {r}");
+        assert_eq!(r["write_performed"], false);
+    }
+
+    #[test]
+    fn manual_kb_write_defaults_do_not_depend_on_telemetry() {
+        let entry = kb_entry_from_args(&json!({
+            "topic_key": "sirin-kb-local-write",
+            "title": "Sirin KB local write",
+            "content": "Manual local AI KB updates use the Sirin service path.",
+            "domain": "tooling"
+        }))
+        .expect("valid manual KB entry");
+        assert_eq!(entry.layer, "topic");
+        assert_eq!(entry.status, "confirmed");
+        assert_eq!(entry.confidence, 0.9);
     }
 
     #[tokio::test]
     async fn kb_write_rejects_missing_required_fields() {
+        let _guard = KB_ENV_LOCK.lock().await;
         std::env::set_var("KB_ENABLED", "1");
         let r = call_kb_write(json!({ "title": "t", "content": "c", "domain": "d" })).await;
         assert!(r.is_err(), "must reject missing topic_key: {r:?}");
         let r = call_kb_write(json!({
             "topic_key": "", "title": "t", "content": "c", "domain": "d"
-        })).await;
+        }))
+        .await;
         assert!(r.is_err(), "must reject empty topic_key: {r:?}");
         std::env::remove_var("KB_ENABLED");
     }
@@ -6755,7 +8896,10 @@ mod test_runner_mcp_tests {
     fn base64_decode_rejects_invalid_char() {
         // '@' is not a valid base64 character
         let result = base64_decode("SGVsbG8@");
-        assert!(result.is_none(), "should return None for invalid base64 chars");
+        assert!(
+            result.is_none(),
+            "should return None for invalid base64 chars"
+        );
     }
 
     // ── #257 Option B end-to-end tests ──────────────────────────────────────
@@ -6770,24 +8914,60 @@ mod test_runner_mcp_tests {
     fn tools_list_includes_registry_tools() {
         let response = handle_tools_list().expect("handle_tools_list must succeed");
         let tools = response["tools"].as_array().expect("tools array");
-        let names: Vec<&str> = tools.iter()
-            .filter_map(|t| t["name"].as_str())
-            .collect();
+        let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
 
         // Registry tools must be present (3 currently migrated).
-        assert!(names.contains(&"skill_list"),       "skill_list missing: {names:?}");
-        assert!(names.contains(&"teams_pending"),    "teams_pending missing: {names:?}");
-        assert!(names.contains(&"discovery_status"), "discovery_status missing: {names:?}");
-        assert!(names.contains(&"research_sentinel_goal_create"), "research sentinel goal tool missing");
-        assert!(names.contains(&"research_sentinel_run_once"), "research sentinel run tool missing");
-        assert!(names.contains(&"research_sentinel_inbox"), "research sentinel inbox tool missing");
-        assert!(names.contains(&"research_sentinel_ack"), "research sentinel ack tool missing");
-        assert!(names.contains(&"research_sentinel_review"), "research sentinel review tool missing");
+        assert!(
+            names.contains(&"skill_list"),
+            "skill_list missing: {names:?}"
+        );
+        assert!(
+            names.contains(&"teams_pending"),
+            "teams_pending missing: {names:?}"
+        );
+        assert!(
+            names.contains(&"discovery_status"),
+            "discovery_status missing: {names:?}"
+        );
+        assert!(
+            names.contains(&"research_sentinel_goal_create"),
+            "research sentinel goal tool missing"
+        );
+        assert!(
+            names.contains(&"research_sentinel_run_once"),
+            "research sentinel run tool missing"
+        );
+        assert!(
+            names.contains(&"research_sentinel_inbox"),
+            "research sentinel inbox tool missing"
+        );
+        assert!(
+            names.contains(&"research_sentinel_monitor_status"),
+            "research sentinel monitor status tool missing"
+        );
+        assert!(
+            names.contains(&"a2a_worker_status"),
+            "a2a worker status tool missing"
+        );
+        assert!(
+            names.contains(&"research_sentinel_ack"),
+            "research sentinel ack tool missing"
+        );
+        assert!(
+            names.contains(&"research_sentinel_review"),
+            "research sentinel review tool missing"
+        );
 
         // Some legacy tools must also still be present (we didn't accidentally
         // delete the literal block).
-        assert!(names.contains(&"memory_search"),    "legacy memory_search missing");
-        assert!(names.contains(&"run_test_async"),   "legacy run_test_async missing");
+        assert!(
+            names.contains(&"memory_search"),
+            "legacy memory_search missing"
+        );
+        assert!(
+            names.contains(&"run_test_async"),
+            "legacy run_test_async missing"
+        );
 
         // No tool name is duplicated (registry tools must not also live in
         // the literal block).
@@ -6802,12 +8982,16 @@ mod test_runner_mcp_tests {
         let envelope = handle_tools_call(
             json!({ "name": "skill_list", "arguments": {} }),
             "test-user-agent",
-        ).await.expect("skill_list dispatch must succeed");
+        )
+        .await
+        .expect("skill_list dispatch must succeed");
 
         // skill_list is a SyncText handler — envelope shape:
         //   {"content":[{"type":"text","text":"..."}]}
-        assert_eq!(envelope["content"][0]["type"], "text",
-            "skill_list envelope: {envelope:?}");
+        assert_eq!(
+            envelope["content"][0]["type"], "text",
+            "skill_list envelope: {envelope:?}"
+        );
         assert!(envelope["content"][0]["text"].is_string());
     }
 
@@ -6816,17 +9000,21 @@ mod test_runner_mcp_tests {
         let envelope = handle_tools_call(
             json!({ "name": "discovery_status", "arguments": {} }),
             "test-user-agent",
-        ).await.expect("discovery_status dispatch must succeed");
+        )
+        .await
+        .expect("discovery_status dispatch must succeed");
 
         // discovery_status is a SyncJson handler — wrap_json renders the
         // structured payload as pretty-printed JSON inside the text field.
-        let text = envelope["content"][0]["text"].as_str()
+        let text = envelope["content"][0]["text"]
+            .as_str()
             .expect("envelope text");
-        let inner: Value = serde_json::from_str(text)
-            .expect("inner payload must be valid JSON");
+        let inner: Value = serde_json::from_str(text).expect("inner payload must be valid JSON");
         // discovery_status returns at minimum a "status" field.
-        assert!(inner.get("status").is_some(),
-            "discovery_status payload missing status: {inner}");
+        assert!(
+            inner.get("status").is_some(),
+            "discovery_status payload missing status: {inner}"
+        );
     }
 
     #[tokio::test]
@@ -6838,19 +9026,24 @@ mod test_runner_mcp_tests {
         let result = handle_tools_call(
             json!({ "name": "run_test_async", "arguments": {} }),
             "test-user-agent",
-        ).await;
+        )
+        .await;
         // Either Ok(envelope-with-error-content) or Err — both prove the
         // dispatch path reached the handler.  The key signal we want to
         // rule out is "Unknown tool: run_test_async".
         match result {
             Ok(env) => {
                 let text = env["content"][0]["text"].as_str().unwrap_or("");
-                assert!(!text.contains("Unknown tool"),
-                    "legacy dispatch path broken for run_test_async: {env}");
+                assert!(
+                    !text.contains("Unknown tool"),
+                    "legacy dispatch path broken for run_test_async: {env}"
+                );
             }
             Err(e) => {
-                assert!(!e.contains("Unknown tool"),
-                    "legacy dispatch path broken for run_test_async: {e}");
+                assert!(
+                    !e.contains("Unknown tool"),
+                    "legacy dispatch path broken for run_test_async: {e}"
+                );
             }
         }
     }
@@ -6862,9 +9055,13 @@ mod test_runner_mcp_tests {
         let result = handle_tools_call(
             json!({ "name": "this_tool_definitely_does_not_exist_xyz", "arguments": {} }),
             "test-user-agent",
-        ).await;
+        )
+        .await;
         match result {
-            Err(e)  => assert!(e.contains("Unknown tool"), "want Unknown tool error, got: {e}"),
+            Err(e) => assert!(
+                e.contains("Unknown tool"),
+                "want Unknown tool error, got: {e}"
+            ),
             Ok(env) => panic!("expected error for bogus tool, got envelope: {env}"),
         }
     }
@@ -6881,12 +9078,18 @@ mod test_runner_mcp_tests {
         assert!(r["lines"].is_array());
         assert!(r["count"].as_u64().unwrap() >= 1);
         assert!(r["total_buffered"].as_u64().unwrap() >= 1);
-        assert!(r["version"].as_u64().unwrap() >= 1, "version counter must bump on push");
+        assert!(
+            r["version"].as_u64().unwrap() >= 1,
+            "version counter must bump on push"
+        );
         assert_eq!(r["filter"]["lines_requested"], 50);
         // Marker visible somewhere in the returned slice.
         let lines = r["lines"].as_array().unwrap();
         assert!(
-            lines.iter().any(|l| l.as_str().unwrap_or("").contains("tail_app_log_test_marker_alpha")),
+            lines.iter().any(|l| l
+                .as_str()
+                .unwrap_or("")
+                .contains("tail_app_log_test_marker_alpha")),
             "marker line must appear in tail output"
         );
     }
@@ -6899,7 +9102,10 @@ mod test_runner_mcp_tests {
         let r = call_tail_app_log(json!({"grep": "grep_target_unique_xyz123"})).unwrap();
         let lines = r["lines"].as_array().unwrap();
         assert!(
-            lines.iter().all(|l| l.as_str().unwrap_or("").contains("grep_target_unique_xyz123")),
+            lines.iter().all(|l| l
+                .as_str()
+                .unwrap_or("")
+                .contains("grep_target_unique_xyz123")),
             "all returned lines must match grep filter"
         );
         assert_eq!(r["filter"]["grep"], "grep_target_unique_xyz123");
@@ -6925,7 +9131,10 @@ mod test_runner_mcp_tests {
         // Every returned line must contain the ERROR token AND the grep substring.
         for l in lines {
             let s = l.as_str().unwrap_or("");
-            assert!(s.contains("ERROR"), "level filter let through non-ERROR: {s}");
+            assert!(
+                s.contains("ERROR"),
+                "level filter let through non-ERROR: {s}"
+            );
             assert!(s.contains("level_filter"));
         }
         assert_eq!(r["filter"]["level"], "ERROR");
@@ -6955,7 +9164,11 @@ mod test_runner_mcp_tests {
         let count = r["queued_count"].as_u64().unwrap();
         let median = r["median_test_secs_last_50"].as_u64().unwrap();
         let drain = r["estimated_drain_secs"].as_u64().unwrap();
-        assert_eq!(drain, count * median, "drain estimate must be queued × median");
+        assert_eq!(
+            drain,
+            count * median,
+            "drain estimate must be queued × median"
+        );
     }
 
     // ── Phase B: live_trace + subphase + recent_steps ─────────────────────────
@@ -6981,21 +9194,24 @@ mod test_runner_mcp_tests {
         use crate::test_runner::runs::{self, RunPhase};
 
         let run_id = runs::new_run("test_live_trace_envelope");
-        runs::set_phase(&run_id, RunPhase::Running {
-            step: 7,
-            current_action: "shadow_click".to_string(),
-        });
+        runs::set_phase(
+            &run_id,
+            RunPhase::Running {
+                step: 7,
+                current_action: "shadow_click".to_string(),
+            },
+        );
         runs::set_subphase(&run_id, "llm_call");
 
         let step = TestStep {
-            thought:            "let me click that button".to_string(),
-            action:             json!({"action": "shadow_click", "target": "btn"}),
-            observation:        "ok".to_string(),
-            llm_model:          Some("gemma-4-e4b-it".to_string()),
-            llm_latency_ms:     Some(1234),
-            llm_prompt_bytes:   Some(8200),
+            thought: "let me click that button".to_string(),
+            action: json!({"action": "shadow_click", "target": "btn"}),
+            observation: "ok".to_string(),
+            llm_model: Some("gemma-4-e4b-it".to_string()),
+            llm_latency_ms: Some(1234),
+            llm_prompt_bytes: Some(8200),
             llm_response_bytes: Some(420),
-            ts:                 Some("2026-05-05T12:00:00+08:00".to_string()),
+            ts: Some("2026-05-05T12:00:00+08:00".to_string()),
             ..Default::default()
         };
         runs::push_step_summary(&run_id, step);
@@ -7006,8 +9222,10 @@ mod test_runner_mcp_tests {
         assert_eq!(r["test_id"], "test_live_trace_envelope");
         assert_eq!(r["status"], "running");
         assert_eq!(r["current_subphase"], "llm_call");
-        assert!(r["subphase_age_ms"].as_u64().unwrap() < 5000,
-            "subphase just set, age must be small");
+        assert!(
+            r["subphase_age_ms"].as_u64().unwrap() < 5000,
+            "subphase just set, age must be small"
+        );
         assert_eq!(r["recent_steps_count"], 1);
         assert_eq!(r["returned_steps_count"], 1);
         assert_eq!(r["requested_last_n"], 5);
@@ -7032,23 +9250,38 @@ mod test_runner_mcp_tests {
         use crate::test_runner::runs::{self, RunPhase};
 
         let run_id = runs::new_run("test_live_trace_clamp");
-        runs::set_phase(&run_id, RunPhase::Running { step: 1, current_action: "x".into() });
+        runs::set_phase(
+            &run_id,
+            RunPhase::Running {
+                step: 1,
+                current_action: "x".into(),
+            },
+        );
 
         let huge = "A".repeat(500);
-        runs::push_step_summary(&run_id, TestStep {
-            thought: "t".into(),
-            action: json!({"action": "screenshot", "data": huge}),
-            observation: "ok".into(),
-            ..Default::default()
-        });
+        runs::push_step_summary(
+            &run_id,
+            TestStep {
+                thought: "t".into(),
+                action: json!({"action": "screenshot", "data": huge}),
+                observation: "ok".into(),
+                ..Default::default()
+            },
+        );
 
         let r = call_live_trace(json!({"run_id": run_id, "last_n": 999})).unwrap();
         assert_eq!(r["requested_last_n"], 30, "last_n must clamp to 30");
 
         let s0 = &r["recent_steps"].as_array().unwrap()[0];
         let data = s0["action"]["data"].as_str().unwrap();
-        assert!(data.len() < 500, "long action-input string must be truncated");
-        assert!(data.contains("truncated"), "preview marker must be present: {data}");
+        assert!(
+            data.len() < 500,
+            "long action-input string must be truncated"
+        );
+        assert!(
+            data.contains("truncated"),
+            "preview marker must be present: {data}"
+        );
     }
 
     #[test]
@@ -7059,16 +9292,22 @@ mod test_runner_mcp_tests {
 
         let run_id = runs::new_run("test_live_trace_cap");
         for i in 0..35 {
-            runs::push_step_summary(&run_id, TestStep {
-                thought: format!("step-{i}"),
-                action: json!({"action": "wait"}),
-                observation: "ok".into(),
-                ..Default::default()
-            });
+            runs::push_step_summary(
+                &run_id,
+                TestStep {
+                    thought: format!("step-{i}"),
+                    action: json!({"action": "wait"}),
+                    observation: "ok".into(),
+                    ..Default::default()
+                },
+            );
         }
 
         let r = call_live_trace(json!({"run_id": run_id, "last_n": 30})).unwrap();
-        assert_eq!(r["recent_steps_count"], 30, "buffer caps at 30 (oldest dropped)");
+        assert_eq!(
+            r["recent_steps_count"], 30,
+            "buffer caps at 30 (oldest dropped)"
+        );
         let steps = r["recent_steps"].as_array().unwrap();
         // Oldest kept should be step-5 (35 - 30 = step-5 onward).
         assert_eq!(steps[0]["thought"], "step-5");
@@ -7082,7 +9321,13 @@ mod test_runner_mcp_tests {
         use crate::test_runner::runs::{self, RunPhase};
 
         let run_id = runs::new_run("test_subphase_clear");
-        runs::set_phase(&run_id, RunPhase::Running { step: 1, current_action: "x".into() });
+        runs::set_phase(
+            &run_id,
+            RunPhase::Running {
+                step: 1,
+                current_action: "x".into(),
+            },
+        );
         runs::set_subphase(&run_id, "browser_action");
 
         let r = call_get_test_result(json!({"run_id": &run_id})).unwrap();
@@ -7090,8 +9335,14 @@ mod test_runner_mcp_tests {
 
         runs::clear_subphase(&run_id);
         let r = call_get_test_result(json!({"run_id": &run_id})).unwrap();
-        assert!(r["current_subphase"].is_null(), "current_subphase must clear to null");
-        assert_eq!(r["status"], "running", "parent phase unaffected by subphase clear");
+        assert!(
+            r["current_subphase"].is_null(),
+            "current_subphase must clear to null"
+        );
+        assert_eq!(
+            r["status"], "running",
+            "parent phase unaffected by subphase clear"
+        );
     }
 }
 
@@ -7101,7 +9352,10 @@ fn base64_decode(input: &str) -> Option<Vec<u8>> {
         let mut t = [-1i8; 256];
         let enc = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         let mut i = 0usize;
-        while i < enc.len() { t[enc[i] as usize] = i as i8; i += 1; }
+        while i < enc.len() {
+            t[enc[i] as usize] = i as i8;
+            i += 1;
+        }
         t
     };
     let clean: Vec<u8> = input.bytes().filter(|&b| b != b'=').collect();
@@ -7110,10 +9364,15 @@ fn base64_decode(input: &str) -> Option<Vec<u8>> {
     let mut bits = 0u32;
     for &c in &clean {
         let v = TABLE[c as usize];
-        if v < 0 { return None; }
+        if v < 0 {
+            return None;
+        }
         buf = (buf << 6) | v as u32;
         bits += 6;
-        if bits >= 8 { bits -= 8; out.push((buf >> bits) as u8); }
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8);
+        }
     }
     Some(out)
 }
@@ -7129,10 +9388,16 @@ fn base64_encode(input: &[u8]) -> String {
         let triple = (b0 << 16) | (b1 << 8) | b2;
         out.push(CHARS[((triple >> 18) & 0x3F) as usize] as char);
         out.push(CHARS[((triple >> 12) & 0x3F) as usize] as char);
-        if chunk.len() > 1 { out.push(CHARS[((triple >> 6) & 0x3F) as usize] as char); }
-        else { out.push('='); }
-        if chunk.len() > 2 { out.push(CHARS[(triple & 0x3F) as usize] as char); }
-        else { out.push('='); }
+        if chunk.len() > 1 {
+            out.push(CHARS[((triple >> 6) & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(CHARS[(triple & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
     }
     out
 }

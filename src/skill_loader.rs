@@ -70,7 +70,10 @@ fn scan_skills_dir() -> Vec<SkillDefinition> {
                 skills.push(skill);
             }
             Ok(_) => {}
-            Err(e) => eprintln!("[skill_loader] Skipping {:?}: {e}", path.file_name().unwrap_or_default()),
+            Err(e) => eprintln!(
+                "[skill_loader] Skipping {:?}: {e}",
+                path.file_name().unwrap_or_default()
+            ),
         }
     }
     skills

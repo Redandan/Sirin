@@ -5,6 +5,7 @@ url: "https://redandan.github.io/?__test_role=buyer"
 max_iterations: 18
 timeout_secs: 220
 max_retries: 1  # H5 Flutter 偶發 Chrome 初始化延遲，自動重試一次
+fixture_only: true
 
 # H5 mobile viewport — AgoraMarket 會員端是手機版 App，必須用手機 viewport 測試
 viewport:
@@ -24,14 +25,27 @@ locale: zh-TW
 fixture:
   setup:
     - {action: "wait", target: "3000"}      # 等買家頁面完整載入
-    - {action: "enable_a11y"}               # 初始化 Flutter semantics
+    - {action: "dismiss_passkey_prompt"}    # AgoraMarket may show Passkey onboarding before tabs
     - {action: "wait", target: "1000"}
+    - {action: "enable_a11y"}               # 初始化 Flutter semantics
+    - {action: "wait_for_ax_ready", min_nodes: 10, timeout_ms: 10000}
+    - {action: "agora_nav_click", target: "錢包"}
+    - {action: "wait", target: "2500"}
+    - {action: "enable_a11y"}
+    - {action: "wait_for_ax_ready", min_nodes: 10, timeout_ms: 10000}
+    - {action: "assert_ax_contains", target: "錢包"}
+    - {action: "assert_ax_contains", target: "USDT"}
+    - {action: "assert_ax_contains", target: "儲值"}
+    - {action: "assert_ax_contains", target: "提款"}
+    - {action: "assert_ax_contains", target: "質押"}
 
 goal: |
   目標：確認買家錢包頁面能正常顯示餘額、幣種選擇、操作按鈕與交易記錄。
 
+  ⚠️ fixture_only=true；fixture.setup 全部成功即通過，不進 LLM ReAct loop。
+
   起始狀態：以買家身份登入（?__test_role=buyer auto-login），fixture.setup 已完成
-  3s 等待 + enable_a11y + 1s 等待。買家頁面底部有 4 個 tab：商品、訂單、錢包、我的。
+  Passkey prompt dismiss、enable_a11y、底部「錢包」tab 切換與 AX assertions。
 
   ⚠️ 必須點底部「錢包」tab，不是上方導航。
   ⚠️ Flutter app：所有 UI 判斷用 screenshot_analyze。
@@ -52,5 +66,4 @@ success_criteria:
   - "看到交易記錄列表"
 
 tags: [regression, wallet, buyer, agora]
-
 

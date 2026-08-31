@@ -41,5 +41,4 @@ success_criteria:
   - "shadow_dump 成功執行並記錄訂單列表"
   - "記錄退款入口是否存在（找到或找不到均合格）"
 
-tags: [c2c, buyer, refund, cancel, regression, issue-185]
-
+tags: [c2c, buyer, refund, cancel, regression, issue-185, mutating, requires-operator-approval]

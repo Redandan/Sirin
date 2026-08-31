@@ -1,11 +1,13 @@
+# yaml-language-server: $schema=../../test-schema.json
 id: agora_search_keyword
 name: "商品關鍵字搜尋測試"
 url: "https://redandan.github.io/?__test_role=buyer"
 locale: zh-TW
 
-max_iterations: 25
-timeout_secs: 360
+max_iterations: 8
+timeout_secs: 150
 max_retries: 1  # H5 Flutter 偶發 Chrome 初始化延遲，自動重試一次
+fixture_only: true
 
 # H5 mobile viewport — AgoraMarket 會員端是手機版 App，必須用手機 viewport 測試
 viewport:
@@ -14,41 +16,44 @@ viewport:
   scale: 2.0
   mobile: true
 
+fixture:
+  setup:
+    - {action: "clear_state"}
+    - {action: "goto", target: "https://redandan.github.io/?__test_role=buyer"}
+    - {action: "wait", target: "5000"}
+    - {action: "dismiss_passkey_prompt"}
+    - {action: "wait", target: "1000"}
+    - {action: "enable_a11y"}
+    - {action: "wait_for_ax_ready", min_nodes: 10, timeout_ms: 10000}
+    - {action: "shadow_find", role: "button", name_regex: "輸入商品ID搜尋"}
+    - {action: "shadow_click", role: "button", name_regex: "輸入商品ID搜尋"}
+    - {action: "wait", target: "1500"}
+    - {action: "enable_a11y"}
+    - {action: "wait_for_ax_ready", min_nodes: 10, timeout_ms: 10000}
+    - {action: "assert_url_matches", target: "#/search"}
+    - {action: "assert_ax_contains", target: "搜尋商品"}
+    - {action: "shadow_find", role: "button", name_regex: "熱門搜尋關鍵字 iPhone 15"}
+    - {action: "shadow_click", role: "button", name_regex: "熱門搜尋關鍵字 iPhone 15"}
+    - {action: "wait", target: "1500"}
+    - {action: "enable_a11y"}
+    - {action: "wait_for_ax_ready", min_nodes: 10, timeout_ms: 10000}
+    - {action: "assert_ax_contains", target: "iPhone"}
+    - {action: "shadow_find", role: "button", name_regex: "USDT"}
 
 goal: |
-  目標：確認買家可搜尋商品並看到結果。
+  目標：fixture-only 驗證買家可進入搜尋頁，點選熱門關鍵字並看到商品結果。
 
-  起始狀態：以買家身份登入，已在首頁（URL auto-login via __test_role=buyer）。
+  ⚠️ fixture_only=true；fixture.setup 全部成功即通過，不進 LLM ReAct loop。
+  ⚠️ 不使用 click_point；搜尋入口與結果皆用 Flutter AX/shadow semantics 驗證。
 
-  ⚠️ Flutter CanvasKit app：所有 UI 判斷用 screenshot_analyze。
-  ⚠️ 搜尋詞用 "iPhone"（ASCII，flutter_type 完整支援）。
-  ⚠️ 嚴禁 click_point — 只用 shadow_click 和 eval。
-
-  搜尋入口 fallback（依序嘗試）：
-  A. shadow_click role=textfield name_regex="搜尋|Search|搜索|Keyword|關鍵字"
-  B. shadow_click role=button name_regex="搜尋|Search|搜索|magnifying|放大鏡|🔍"
-  C. eval target='window.location.hash="#/search"'（hash route 直連搜尋頁）
-
-  步驟（線性，步驟 13 無條件 done=true）：
-  1. goto target="https://redandan.github.io/?__test_role=buyer"（防 session 污染）
-  2. wait 4000（等 auto-login + Flutter 首頁載入）
-  3. enable_a11y
-  4. wait 1500
-  5. screenshot_analyze "確認在首頁。頂部有搜尋圖示嗎？有搜尋欄嗎？"
-  6. shadow_dump（列出所有 role=button 和 role=textfield）
-  7. 依 A→B→C 順序嘗試搜尋入口（前面成功就繼續）
-  8. wait 1500
-  9. flutter_type text="iPhone"
-  10. wait 500
-  11. flutter_enter（送出搜尋；若失敗則 shadow_click role=button name_regex="搜尋|Search|🔍" 再試）
-  12. wait 2500
-  13. screenshot_analyze "搜尋後頁面是什麼狀態？有商品列表嗎？"
-  14. done=true
+  已知穩定路徑：
+  - 首頁搜尋入口 AX name 是「輸入商品ID搜尋...」
+  - 搜尋頁有「搜尋商品」textbox 與熱門搜尋關鍵字
+  - 點「熱門搜尋關鍵字 iPhone 15」後，結果頁會顯示 iPhone 商品卡與 USDT 價格
 
 success_criteria:
   - "成功找到搜尋入口（搜尋欄、搜尋圖示、或任何搜尋相關 UI）"
-  - "嘗試輸入 ASCII 關鍵字後頁面正常（無崩潰）"
+  - "成功進入 #/search"
+  - "點熱門搜尋 iPhone 15 後看到 iPhone 商品結果"
 
-tags: [agora, regression, search]
-
-
+tags: [agora, regression, search, fixture, non-mutating]

@@ -15,8 +15,8 @@ use crate::telegram::llm::generate_ai_reply;
 
 use super::context::{load_local_file_reports, resolve_memory_context, resolve_search_context};
 use super::format::{
-    code_fence_language, extract_excerpt_block, format_local_file_reply, format_skill_catalog_reply,
-    summarize_file_report_line,
+    code_fence_language, extract_excerpt_block, format_local_file_reply,
+    format_skill_catalog_reply, summarize_file_report_line,
 };
 use super::intent::{
     extract_file_reference, infer_focus_paths_from_query, is_file_view_request,
@@ -37,9 +37,9 @@ const REACT_MAX_TURNS: usize = 3;
 // drift fails CI.
 
 pub(super) struct ChatReactPromptArgs<'a> {
-    pub(super) persona_name:     &'a str,
-    pub(super) user_text:        &'a str,
-    pub(super) initial_context:  Option<&'a str>,
+    pub(super) persona_name: &'a str,
+    pub(super) user_text: &'a str,
+    pub(super) initial_context: Option<&'a str>,
     pub(super) has_meeting_auth: bool,
 }
 
@@ -63,7 +63,8 @@ impl<'a> ChatReactPromptArgs<'a> {
             These bracket tags are internal only; never mention them in the final user-facing reply.",
             handoff_line = handoff_line,
         );
-        let context_block = self.initial_context
+        let context_block = self
+            .initial_context
             .map(|c| format!("\nContext:\n{c}\n"))
             .unwrap_or_default();
         format!(
@@ -101,7 +102,8 @@ pub async fn react_loop(
         user_text,
         initial_context,
         has_meeting_auth,
-    }.render();
+    }
+    .render();
 
     for _turn in 0..REACT_MAX_TURNS {
         // #263 Phase 2 — go through ctx.llm_caller for testability.
@@ -174,13 +176,17 @@ pub async fn react_loop(
                 .split_once("::")
                 .map(|(a, b)| (a.trim().to_string(), b.trim().to_string()))
                 .unwrap_or_else(|| (String::new(), tool_query.clone()));
-            ctx.call_tool("confidential_handoff", serde_json::json!({ "to_agent": to, "payload": payload }))
-                .await
+            ctx.call_tool(
+                "confidential_handoff",
+                serde_json::json!({ "to_agent": to, "payload": payload }),
+            )
+            .await
         } else {
             ctx.call_tool(tool, serde_json::json!({ "query": tool_query, "limit": 3 }))
                 .await
         };
-        let tool_result = call_result.unwrap_or_else(|_| serde_json::Value::String("(no results)".into()));
+        let tool_result =
+            call_result.unwrap_or_else(|_| serde_json::Value::String("(no results)".into()));
 
         let result_text = match &tool_result {
             serde_json::Value::Array(arr) => arr
@@ -211,7 +217,11 @@ pub async fn react_loop(
          Provide a final [ANSWER] now based on what you know.\n"
     );
     // #263 Phase 2 — go through ctx.llm_caller for testability.
-    let final_raw = ctx.llm_caller.call_plain(final_prompt).await.unwrap_or_default();
+    let final_raw = ctx
+        .llm_caller
+        .call_plain(final_prompt)
+        .await
+        .unwrap_or_default();
     final_raw
         .lines()
         .find(|l| l.trim().starts_with("[ANSWER]"))
@@ -241,11 +251,15 @@ pub(super) async fn dispatch_by_understanding(
     let persona_name = persona.map(|p| p.name()).unwrap_or("Sirin");
     let direct_answer = is_direct_answer_request(&request.user_text);
     // Check if this agent has meeting-room handoff auth (for [HANDOFF] bracket tag).
-    let has_mtg_auth = ctx.metadata.get("caller_agent_id")
-        .map(|id| crate::meeting::with_session(|s| {
-            s.map(|sess| sess.auths.iter().any(|a| &a.from_agent == id))
-             .unwrap_or(false)
-        }))
+    let has_mtg_auth = ctx
+        .metadata
+        .get("caller_agent_id")
+        .map(|id| {
+            crate::meeting::with_session(|s| {
+                s.map(|sess| sess.auths.iter().any(|a| &a.from_agent == id))
+                    .unwrap_or(false)
+            })
+        })
         .unwrap_or(false);
     let skill_ctx = crate::skills::build_skill_context(&request.planner_skills);
 
@@ -557,7 +571,14 @@ pub(super) async fn dispatch_by_understanding(
                     url: None,
                 });
             }
-            let reply = react_loop(ctx, &request.user_text, persona_name, context_block, has_mtg_auth).await;
+            let reply = react_loop(
+                ctx,
+                &request.user_text,
+                persona_name,
+                context_block,
+                has_mtg_auth,
+            )
+            .await;
             if reply.trim().is_empty() {
                 None
             } else {
@@ -580,8 +601,19 @@ pub(super) async fn dispatch_by_understanding(
                     Some("RUNNING"),
                     None,
                 );
-                let reply = react_loop(ctx, &request.user_text, persona_name, context_block, has_mtg_auth).await;
-                return if reply.trim().is_empty() { None } else { Some(reply) };
+                let reply = react_loop(
+                    ctx,
+                    &request.user_text,
+                    persona_name,
+                    context_block,
+                    has_mtg_auth,
+                )
+                .await;
+                return if reply.trim().is_empty() {
+                    None
+                } else {
+                    Some(reply)
+                };
             }
 
             let memory_ctx = resolve_memory_context(&request.user_text, ctx).await;
@@ -622,11 +654,12 @@ mod prompt_tests {
     #[test]
     fn chat_react_prompt_includes_all_fields() {
         let rendered = ChatReactPromptArgs {
-            persona_name:     "Sirin",
-            user_text:        "你好",
-            initial_context:  Some("earlier session note"),
+            persona_name: "Sirin",
+            user_text: "你好",
+            initial_context: Some("earlier session note"),
             has_meeting_auth: false,
-        }.render();
+        }
+        .render();
         assert!(rendered.contains("System: You are Sirin"));
         assert!(rendered.contains("User: 你好"));
         assert!(rendered.contains("[SEARCH]"));
@@ -643,10 +676,11 @@ mod prompt_tests {
     fn chat_react_prompt_handoff_only_with_meeting_auth() {
         let with_auth = ChatReactPromptArgs {
             persona_name: "Sirin",
-            user_text:    "hi",
+            user_text: "hi",
             initial_context: None,
             has_meeting_auth: true,
-        }.render();
+        }
+        .render();
         assert!(with_auth.contains("[HANDOFF]"));
     }
 
@@ -654,10 +688,11 @@ mod prompt_tests {
     fn chat_react_prompt_omits_context_section_when_none() {
         let rendered = ChatReactPromptArgs {
             persona_name: "Sirin",
-            user_text:    "hi",
+            user_text: "hi",
             initial_context: None,
             has_meeting_auth: false,
-        }.render();
+        }
+        .render();
         assert!(!rendered.contains("Context:"));
     }
 }
@@ -750,16 +785,29 @@ mod react_loop_tests {
     #[tokio::test]
     async fn react_loop_first_call_carries_persona_and_user_text() {
         let mock = Arc::new(MockLlmCaller::with_responses(vec![Ok(
-            "[ANSWER] ok".to_string(),
+            "[ANSWER] ok".to_string()
         )]));
         let ctx = ctx_with_mock(Arc::clone(&mock));
 
-        react_loop(&ctx, "我想要查記憶", "Sirin", Some("note: prior chat about KB"), false).await;
+        react_loop(
+            &ctx,
+            "我想要查記憶",
+            "Sirin",
+            Some("note: prior chat about KB"),
+            false,
+        )
+        .await;
 
         let captured = mock.captured.lock().unwrap();
         let prompt = &captured[0].1;
         assert!(prompt.contains("Sirin"), "prompt must include persona");
-        assert!(prompt.contains("我想要查記憶"), "prompt must include user text");
-        assert!(prompt.contains("prior chat about KB"), "prompt must include initial context");
+        assert!(
+            prompt.contains("我想要查記憶"),
+            "prompt must include user text"
+        );
+        assert!(
+            prompt.contains("prior chat about KB"),
+            "prompt must include initial context"
+        );
     }
 }

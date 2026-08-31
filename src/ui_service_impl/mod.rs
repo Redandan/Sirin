@@ -44,7 +44,10 @@ impl RealService {
 
     pub(super) fn push_toast(&self, level: ToastLevel, text: impl Into<String>) {
         if let Ok(mut t) = self.toasts.lock() {
-            t.push(ToastEvent { level, text: text.into() });
+            t.push(ToastEvent {
+                level,
+                text: text.into(),
+            });
         }
     }
 
@@ -67,132 +70,325 @@ impl RealService {
     }
 
     pub(super) fn toast_history_snapshot(&self) -> Vec<ToastEvent> {
-        self.toast_history.lock().ok().map(|h| h.clone()).unwrap_or_default()
+        self.toast_history
+            .lock()
+            .ok()
+            .map(|h| h.clone())
+            .unwrap_or_default()
     }
 }
 
 impl AgentService for RealService {
-    fn list_agents(&self) -> Vec<AgentSummary> { agents::list_agents(self) }
-    fn agent_detail(&self, id: &str) -> Option<AgentDetailView> { agents::agent_detail(self, id) }
-    fn create_agent(&self, id: &str, name: &str) { agents::create_agent(self, id, name) }
-    fn rename_agent(&self, id: &str, name: &str) { agents::rename_agent(self, id, name) }
-    fn toggle_agent(&self, id: &str, enabled: bool) { agents::toggle_agent(self, id, enabled) }
-    fn delete_agent(&self, id: &str) { agents::delete_agent(self, id) }
-    fn add_objective(&self, id: &str, text: &str) { agents::add_objective(self, id, text) }
-    fn remove_objective(&self, id: &str, index: usize) { agents::remove_objective(self, id, index) }
-    fn set_remote_ai(&self, id: &str, allowed: bool) { agents::set_remote_ai(self, id, allowed) }
-    fn set_behavior(&self, id: &str, enabled: bool, min_delay: u64, max_delay: u64, max_hour: u32, max_day: u32) {
+    fn list_agents(&self) -> Vec<AgentSummary> {
+        agents::list_agents(self)
+    }
+    fn agent_detail(&self, id: &str) -> Option<AgentDetailView> {
+        agents::agent_detail(self, id)
+    }
+    fn create_agent(&self, id: &str, name: &str) {
+        agents::create_agent(self, id, name)
+    }
+    fn rename_agent(&self, id: &str, name: &str) {
+        agents::rename_agent(self, id, name)
+    }
+    fn toggle_agent(&self, id: &str, enabled: bool) {
+        agents::toggle_agent(self, id, enabled)
+    }
+    fn delete_agent(&self, id: &str) {
+        agents::delete_agent(self, id)
+    }
+    fn add_objective(&self, id: &str, text: &str) {
+        agents::add_objective(self, id, text)
+    }
+    fn remove_objective(&self, id: &str, index: usize) {
+        agents::remove_objective(self, id, index)
+    }
+    fn set_remote_ai(&self, id: &str, allowed: bool) {
+        agents::set_remote_ai(self, id, allowed)
+    }
+    fn set_behavior(
+        &self,
+        id: &str,
+        enabled: bool,
+        min_delay: u64,
+        max_delay: u64,
+        max_hour: u32,
+        max_day: u32,
+    ) {
         agents::set_behavior(self, id, enabled, min_delay, max_delay, max_hour, max_day)
     }
-    fn toggle_skill(&self, id: &str, skill_id: &str, enabled: bool) { agents::toggle_skill(self, id, skill_id, enabled) }
-    fn disabled_skills(&self, id: &str) -> Vec<String> { agents::disabled_skills(self, id) }
+    fn toggle_skill(&self, id: &str, skill_id: &str, enabled: bool) {
+        agents::toggle_skill(self, id, skill_id, enabled)
+    }
+    fn disabled_skills(&self, id: &str) -> Vec<String> {
+        agents::disabled_skills(self, id)
+    }
 }
 
 impl PendingReplyService for RealService {
-    fn pending_count(&self, id: &str) -> usize { pending::pending_count(self, id) }
-    fn load_pending(&self, id: &str) -> Vec<PendingReplyView> { pending::load_pending(self, id) }
-    fn approve_reply(&self, id: &str, reply_id: &str) { pending::approve_reply(self, id, reply_id) }
-    fn reject_reply(&self, id: &str, reply_id: &str) { pending::reject_reply(self, id, reply_id) }
-    fn edit_draft(&self, id: &str, reply_id: &str, new_text: &str) { pending::edit_draft(self, id, reply_id, new_text) }
+    fn pending_count(&self, id: &str) -> usize {
+        pending::pending_count(self, id)
+    }
+    fn load_pending(&self, id: &str) -> Vec<PendingReplyView> {
+        pending::load_pending(self, id)
+    }
+    fn approve_reply(&self, id: &str, reply_id: &str) {
+        pending::approve_reply(self, id, reply_id)
+    }
+    fn reject_reply(&self, id: &str, reply_id: &str) {
+        pending::reject_reply(self, id, reply_id)
+    }
+    fn edit_draft(&self, id: &str, reply_id: &str, new_text: &str) {
+        pending::edit_draft(self, id, reply_id, new_text)
+    }
 }
 
 impl WorkflowService for RealService {
-    fn workflow_state(&self) -> Option<WorkflowView> { workflow::workflow_state(self) }
-    fn workflow_create(&self, feature: &str, description: &str) { workflow::workflow_create(self, feature, description) }
-    fn workflow_advance(&self) -> bool { workflow::workflow_advance(self) }
-    fn workflow_stage_prompt(&self) -> Option<String> { workflow::workflow_stage_prompt(self) }
-    fn workflow_reset(&self) { workflow::workflow_reset(self) }
-    fn workflow_generate(&self) -> Option<String> { workflow::workflow_generate(self) }
-    fn workflow_save_output(&self, stage_id: &str, output: &str) { workflow::workflow_save_output(self, stage_id, output) }
+    fn workflow_state(&self) -> Option<WorkflowView> {
+        workflow::workflow_state(self)
+    }
+    fn workflow_create(&self, feature: &str, description: &str) {
+        workflow::workflow_create(self, feature, description)
+    }
+    fn workflow_advance(&self) -> bool {
+        workflow::workflow_advance(self)
+    }
+    fn workflow_stage_prompt(&self) -> Option<String> {
+        workflow::workflow_stage_prompt(self)
+    }
+    fn workflow_reset(&self) {
+        workflow::workflow_reset(self)
+    }
+    fn workflow_generate(&self) -> Option<String> {
+        workflow::workflow_generate(self)
+    }
+    fn workflow_save_output(&self, stage_id: &str, output: &str) {
+        workflow::workflow_save_output(self, stage_id, output)
+    }
 }
 
 impl IntegrationService for RealService {
-    fn tg_submit_code(&self, code: &str) -> bool { integrations::tg_submit_code(self, code) }
-    fn tg_submit_password(&self, pwd: &str) -> bool { integrations::tg_submit_password(self, pwd) }
-    fn tg_reconnect(&self) { integrations::tg_reconnect(self) }
-    fn start_teams(&self) { integrations::start_teams(self) }
-    fn teams_running(&self) -> bool { integrations::teams_running(self) }
-    fn mcp_tools(&self) -> Vec<McpToolDetail> { integrations::mcp_tools(self) }
-    fn mcp_call(&self, tool: &str, args: &str) -> Result<String, String> { integrations::mcp_call(self, tool, args) }
-    fn sirin_mcp_call(&self, tool: &str, args: &str) -> Result<String, String> { integrations::sirin_mcp_call(self, tool, args) }
-    fn meeting_active(&self) -> bool { integrations::meeting_active(self) }
-    fn meeting_start(&self, participants: Vec<String>) -> String { integrations::meeting_start(self, participants) }
-    fn meeting_end(&self) { integrations::meeting_end(self) }
-    fn meeting_send(&self, speaker: &str, text: &str) { integrations::meeting_send(self, speaker, text) }
-    fn meeting_history(&self) -> Vec<(String, String)> { integrations::meeting_history(self) }
-    fn chat_send(&self, id: &str, message: &str) -> String { integrations::chat_send(self, id, message) }
-    fn trigger_research(&self, topic: &str, url: Option<&str>) { integrations::trigger_research(self, topic, url) }
-    fn execute_skill(&self, skill_id: &str, input: &str) -> String { integrations::execute_skill(self, skill_id, input) }
+    fn tg_submit_code(&self, code: &str) -> bool {
+        integrations::tg_submit_code(self, code)
+    }
+    fn tg_submit_password(&self, pwd: &str) -> bool {
+        integrations::tg_submit_password(self, pwd)
+    }
+    fn tg_reconnect(&self) {
+        integrations::tg_reconnect(self)
+    }
+    fn start_teams(&self) {
+        integrations::start_teams(self)
+    }
+    fn teams_running(&self) -> bool {
+        integrations::teams_running(self)
+    }
+    fn mcp_tools(&self) -> Vec<McpToolDetail> {
+        integrations::mcp_tools(self)
+    }
+    fn mcp_call(&self, tool: &str, args: &str) -> Result<String, String> {
+        integrations::mcp_call(self, tool, args)
+    }
+    fn sirin_mcp_call(&self, tool: &str, args: &str) -> Result<String, String> {
+        integrations::sirin_mcp_call(self, tool, args)
+    }
+    fn meeting_active(&self) -> bool {
+        integrations::meeting_active(self)
+    }
+    fn meeting_start(&self, participants: Vec<String>) -> String {
+        integrations::meeting_start(self, participants)
+    }
+    fn meeting_end(&self) {
+        integrations::meeting_end(self)
+    }
+    fn meeting_send(&self, speaker: &str, text: &str) {
+        integrations::meeting_send(self, speaker, text)
+    }
+    fn meeting_history(&self) -> Vec<(String, String)> {
+        integrations::meeting_history(self)
+    }
+    fn chat_send(&self, id: &str, message: &str) -> String {
+        integrations::chat_send(self, id, message)
+    }
+    fn trigger_research(&self, topic: &str, url: Option<&str>) {
+        integrations::trigger_research(self, topic, url)
+    }
+    fn execute_skill(&self, skill_id: &str, input: &str) -> String {
+        integrations::execute_skill(self, skill_id, input)
+    }
 }
 
 impl SystemService for RealService {
-    fn recent_tasks(&self, limit: usize) -> Vec<TaskView> { system::recent_tasks(self, limit) }
-    fn log_version(&self) -> usize { system::log_version(self) }
-    fn log_recent(&self, limit: usize) -> Vec<LogLine> { system::log_recent(self, limit) }
-    fn log_len(&self) -> usize { system::log_len(self) }
-    fn log_clear(&self) { system::log_clear(self) }
-    fn system_status(&self) -> SystemStatus { system::system_status(self) }
-    fn search_memory(&self, query: &str, limit: usize) -> Vec<String> { system::search_memory(self, query, limit) }
-    fn persona_name(&self) -> String { system::persona_name(self) }
-    fn set_persona_name(&self, name: &str) { system::set_persona_name(self, name) }
-    fn persona_objectives(&self) -> Vec<String> { system::persona_objectives(self) }
-    fn set_persona_objectives(&self, objectives: Vec<String>) { system::set_persona_objectives(self, objectives) }
-    fn persona_voice(&self) -> String { system::persona_voice(self) }
-    fn set_persona_voice(&self, voice: &str) { system::set_persona_voice(self, voice) }
-    fn available_models(&self) -> Vec<String> { system::available_models(self) }
-    fn set_main_model(&self, model: &str) { system::set_main_model(self, model) }
-    fn export_config(&self) -> String { system::export_config(self) }
-    fn import_config(&self, yaml: &str) -> Result<(), String> { system::import_config(self, yaml) }
-    fn poll_toasts(&self) -> Vec<ToastEvent> { system::poll_toasts(self) }
-    fn toast_history(&self) -> Vec<ToastEvent> { system::toast_history(self) }
-    fn config_check(&self) -> Vec<ConfigIssueView> { system::config_check(self) }
-    fn config_ai_analyze(&self) -> Result<AiAdviceView, String> { system::config_ai_analyze(self) }
-    fn config_apply_fixes(&self, fixes: Vec<ConfigFixView>) -> Result<Vec<String>, String> {
-        system::config_apply_fixes(self, fixes)
+    fn recent_tasks(&self, limit: usize) -> Vec<TaskView> {
+        system::recent_tasks(self, limit)
+    }
+    fn log_version(&self) -> usize {
+        system::log_version(self)
+    }
+    fn log_recent(&self, limit: usize) -> Vec<LogLine> {
+        system::log_recent(self, limit)
+    }
+    fn log_len(&self) -> usize {
+        system::log_len(self)
+    }
+    fn log_clear(&self) {
+        system::log_clear(self)
+    }
+    fn system_status(&self) -> SystemStatus {
+        system::system_status(self)
     }
     fn ai_monitor_snapshot(&self) -> crate::ai_monitor::AiMonitorSnapshot {
         crate::ai_monitor::snapshot()
     }
+    fn search_memory(&self, query: &str, limit: usize) -> Vec<String> {
+        system::search_memory(self, query, limit)
+    }
+    fn persona_name(&self) -> String {
+        system::persona_name(self)
+    }
+    fn set_persona_name(&self, name: &str) {
+        system::set_persona_name(self, name)
+    }
+    fn persona_objectives(&self) -> Vec<String> {
+        system::persona_objectives(self)
+    }
+    fn set_persona_objectives(&self, objectives: Vec<String>) {
+        system::set_persona_objectives(self, objectives)
+    }
+    fn persona_voice(&self) -> String {
+        system::persona_voice(self)
+    }
+    fn set_persona_voice(&self, voice: &str) {
+        system::set_persona_voice(self, voice)
+    }
+    fn available_models(&self) -> Vec<String> {
+        system::available_models(self)
+    }
+    fn set_main_model(&self, model: &str) {
+        system::set_main_model(self, model)
+    }
+    fn export_config(&self) -> String {
+        system::export_config(self)
+    }
+    fn import_config(&self, yaml: &str) -> Result<(), String> {
+        system::import_config(self, yaml)
+    }
+    fn poll_toasts(&self) -> Vec<ToastEvent> {
+        system::poll_toasts(self)
+    }
+    fn toast_history(&self) -> Vec<ToastEvent> {
+        system::toast_history(self)
+    }
+    fn config_check(&self) -> Vec<ConfigIssueView> {
+        system::config_check(self)
+    }
+    fn config_ai_analyze(&self) -> Result<AiAdviceView, String> {
+        system::config_ai_analyze(self)
+    }
+    fn config_apply_fixes(&self, fixes: Vec<ConfigFixView>) -> Result<Vec<String>, String> {
+        system::config_apply_fixes(self, fixes)
+    }
 }
 
 impl BrowserService for RealService {
-    fn browser_is_open(&self) -> bool { browser::browser_is_open(self) }
-    fn browser_open(&self, url: &str, headless: bool) { browser::browser_open(self, url, headless) }
-    fn browser_navigate(&self, url: &str) -> Result<(), String> { browser::browser_navigate(self, url) }
-    fn browser_click(&self, selector: &str) -> Result<(), String> { browser::browser_click(self, selector) }
-    fn browser_type(&self, selector: &str, text: &str) -> Result<(), String> { browser::browser_type(self, selector, text) }
-    fn browser_screenshot(&self) -> Option<Vec<u8>> { browser::browser_screenshot(self) }
-    fn browser_eval(&self, js: &str) -> Result<String, String> { browser::browser_eval(self, js) }
-    fn browser_read(&self, selector: &str) -> Result<String, String> { browser::browser_read(self, selector) }
-    fn browser_close(&self) { browser::browser_close(self) }
-    fn browser_url(&self) -> Option<String> { browser::browser_url(self) }
-    fn browser_title(&self) -> Option<String> { browser::browser_title(self) }
-    fn browser_click_point(&self, x: f64, y: f64) -> Result<(), String> { browser::browser_click_point(self, x, y) }
-    fn browser_hover(&self, selector: &str) -> Result<(), String> { browser::browser_hover(self, selector) }
-    fn browser_press_key(&self, key: &str) -> Result<(), String> { browser::browser_press_key(self, key) }
-    fn browser_wait(&self, selector: &str, timeout_ms: u64) -> Result<(), String> { browser::browser_wait(self, selector, timeout_ms) }
-    fn browser_exists(&self, selector: &str) -> bool { browser::browser_exists(self, selector) }
-    fn browser_select(&self, selector: &str, value: &str) -> Result<(), String> { browser::browser_select(self, selector, value) }
-    fn browser_scroll(&self, x: f64, y: f64) -> Result<(), String> { browser::browser_scroll(self, x, y) }
-    fn browser_set_viewport(&self, width: u32, height: u32, mobile: bool) -> Result<(), String> { browser::browser_set_viewport(self, width, height, mobile) }
-    fn browser_console(&self, limit: usize) -> String { browser::browser_console(self, limit) }
-    fn browser_tab_count(&self) -> usize { browser::browser_tab_count(self) }
+    fn browser_is_open(&self) -> bool {
+        browser::browser_is_open(self)
+    }
+    fn browser_open(&self, url: &str, headless: bool) {
+        browser::browser_open(self, url, headless)
+    }
+    fn browser_navigate(&self, url: &str) -> Result<(), String> {
+        browser::browser_navigate(self, url)
+    }
+    fn browser_click(&self, selector: &str) -> Result<(), String> {
+        browser::browser_click(self, selector)
+    }
+    fn browser_type(&self, selector: &str, text: &str) -> Result<(), String> {
+        browser::browser_type(self, selector, text)
+    }
+    fn browser_screenshot(&self) -> Option<Vec<u8>> {
+        browser::browser_screenshot(self)
+    }
+    fn browser_eval(&self, js: &str) -> Result<String, String> {
+        browser::browser_eval(self, js)
+    }
+    fn browser_read(&self, selector: &str) -> Result<String, String> {
+        browser::browser_read(self, selector)
+    }
+    fn browser_close(&self) {
+        browser::browser_close(self)
+    }
+    fn browser_url(&self) -> Option<String> {
+        browser::browser_url(self)
+    }
+    fn browser_title(&self) -> Option<String> {
+        browser::browser_title(self)
+    }
+    fn browser_click_point(&self, x: f64, y: f64) -> Result<(), String> {
+        browser::browser_click_point(self, x, y)
+    }
+    fn browser_hover(&self, selector: &str) -> Result<(), String> {
+        browser::browser_hover(self, selector)
+    }
+    fn browser_press_key(&self, key: &str) -> Result<(), String> {
+        browser::browser_press_key(self, key)
+    }
+    fn browser_wait(&self, selector: &str, timeout_ms: u64) -> Result<(), String> {
+        browser::browser_wait(self, selector, timeout_ms)
+    }
+    fn browser_exists(&self, selector: &str) -> bool {
+        browser::browser_exists(self, selector)
+    }
+    fn browser_select(&self, selector: &str, value: &str) -> Result<(), String> {
+        browser::browser_select(self, selector, value)
+    }
+    fn browser_scroll(&self, x: f64, y: f64) -> Result<(), String> {
+        browser::browser_scroll(self, x, y)
+    }
+    fn browser_set_viewport(&self, width: u32, height: u32, mobile: bool) -> Result<(), String> {
+        browser::browser_set_viewport(self, width, height, mobile)
+    }
+    fn browser_console(&self, limit: usize) -> String {
+        browser::browser_console(self, limit)
+    }
+    fn browser_tab_count(&self) -> usize {
+        browser::browser_tab_count(self)
+    }
 }
 
 impl MultiAgentService for RealService {
-    fn team_dashboard(&self)                          -> TeamDashView      { team::team_dashboard(self) }
-    fn team_queue(&self)                              -> Vec<TeamTaskView> { team::team_queue(self) }
-    fn team_enqueue(&self, desc: &str)                -> String            { team::team_enqueue(self, desc) }
-    fn team_start_worker(&self)                       { team::team_start_worker(self) }
-    fn team_clear_completed(&self)                    { team::team_clear_completed(self) }
-    fn team_reset_member(&self, role: &str)           { team::team_reset_member(self, role) }
-    fn team_token_usage(&self, window_secs: u64)      -> TokenUsageView    { team::team_token_usage(self, window_secs) }
+    fn team_dashboard(&self) -> TeamDashView {
+        team::team_dashboard(self)
+    }
+    fn team_queue(&self) -> Vec<TeamTaskView> {
+        team::team_queue(self)
+    }
+    fn team_enqueue(&self, desc: &str) -> String {
+        team::team_enqueue(self, desc)
+    }
+    fn team_start_worker(&self) {
+        team::team_start_worker(self)
+    }
+    fn team_clear_completed(&self) {
+        team::team_clear_completed(self)
+    }
+    fn team_reset_member(&self, role: &str) {
+        team::team_reset_member(self, role)
+    }
+    fn team_token_usage(&self, window_secs: u64) -> TokenUsageView {
+        team::team_token_usage(self, window_secs)
+    }
 
     fn dev_team_read_issue(&self, gh_repo: &str, n: u32) -> Result<GhIssueView, String> {
         team::dev_team_read_issue(self, gh_repo, n)
     }
     fn dev_team_enqueue_issue(
-        &self, project_key: &str, gh_repo: &str, n: u32, dry_run: bool, priority: u8,
+        &self,
+        project_key: &str,
+        gh_repo: &str,
+        n: u32,
+        dry_run: bool,
+        priority: u8,
     ) -> Result<String, String> {
         team::dev_team_enqueue_issue(self, project_key, gh_repo, n, dry_run, priority)
     }
@@ -217,7 +413,8 @@ impl TestRunnerService for RealService {
             match r.status.as_str() {
                 "passed" => {
                     let e = totals.entry(r.test_id.clone()).or_insert((0, 0));
-                    e.0 += 1; e.1 += 1;
+                    e.0 += 1;
+                    e.1 += 1;
                 }
                 "failed" | "error" | "timeout" => {
                     let e = totals.entry(r.test_id.clone()).or_insert((0, 0));
@@ -229,7 +426,9 @@ impl TestRunnerService for RealService {
         // Need at least 2 terminal runs to call something flaky vs. a one-off.
         let pass_rate_for = |id: &str| -> Option<f32> {
             let (p, t) = totals.get(id).copied()?;
-            if t < 2 { return None; }
+            if t < 2 {
+                return None;
+            }
             Some(p as f32 / t as f32)
         };
 
@@ -239,22 +438,36 @@ impl TestRunnerService for RealService {
                 // for dashboard display; raw integer is preserved in SQLite).
                 let cost_usd = if r.cost_micro_usd > 0 {
                     Some(r.cost_micro_usd as f32 / 1_000_000.0)
-                } else { None };
-                let prompt_tokens     = if r.prompt_tokens > 0 { Some(r.prompt_tokens) } else { None };
-                let completion_tokens = if r.completion_tokens > 0 { Some(r.completion_tokens) } else { None };
-                let cached_tokens     = if r.cached_tokens > 0 { Some(r.cached_tokens) } else { None };
+                } else {
+                    None
+                };
+                let prompt_tokens = if r.prompt_tokens > 0 {
+                    Some(r.prompt_tokens)
+                } else {
+                    None
+                };
+                let completion_tokens = if r.completion_tokens > 0 {
+                    Some(r.completion_tokens)
+                } else {
+                    None
+                };
+                let cached_tokens = if r.cached_tokens > 0 {
+                    Some(r.cached_tokens)
+                } else {
+                    None
+                };
 
                 TestRunView {
-                    pass_rate:        pass_rate_for(&r.test_id),
-                    test_id:          r.test_id,
-                    status:           r.status,
-                    started_at:       r.started_at,
-                    duration_ms:      r.duration_ms.map(|d| d as u64),
-                    analysis:         r.ai_analysis,
-                    step:             None,
+                    pass_rate: pass_rate_for(&r.test_id),
+                    test_id: r.test_id,
+                    status: r.status,
+                    started_at: r.started_at,
+                    duration_ms: r.duration_ms.map(|d| d as u64),
+                    analysis: r.ai_analysis,
+                    step: None,
                     failure_category: r.failure_category,
                     // Issue #222: populate console stats from RunRecord (#220 field)
-                    console_errors:   Some(r.console_errors),
+                    console_errors: Some(r.console_errors),
                     console_warnings: Some(r.console_warnings),
                     // Issue #240: token + cost telemetry
                     prompt_tokens,
@@ -264,17 +477,17 @@ impl TestRunnerService for RealService {
                     // #279 click-to-expand: surface iteration count + replay
                     // mode + run_id so the dashboard row click can fetch the
                     // full step history via get_test_result MCP.
-                    iterations:       r.iterations,
-                    is_replay:        r.is_replay,
-                    run_id:           r.run_id,
+                    iterations: r.iterations,
+                    is_replay: r.is_replay,
+                    run_id: r.run_id,
                     // Phase A/B telemetry — only meaningful for active rows;
                     // historical recent_runs entries always None.
-                    idle_secs:               None,
-                    last_action_age_ms:      None,
-                    current_subphase:        None,
-                    subphase_age_ms:         None,
-                    recent_steps_count:      None,
-                    replay_mode:             None,
+                    idle_secs: None,
+                    last_action_age_ms: None,
+                    current_subphase: None,
+                    subphase_age_ms: None,
+                    recent_steps_count: None,
+                    replay_mode: None,
                     estimated_remaining_secs: None,
                 }
             })
@@ -282,14 +495,15 @@ impl TestRunnerService for RealService {
     }
 
     fn active_test_runs(&self) -> Vec<TestRunView> {
-        use crate::test_runner::runs::{list_active, get, RunPhase};
+        use crate::test_runner::runs::{get, list_active, RunPhase};
         // Pre-compute median completed-run duration so each active row can
         // surface a best-effort ETA.  One SQLite hit per snapshot tick is
         // cheap (<1 ms typical) and shared across rows.  Same window as
         // call_queue_status so users see consistent numbers.
         let median_total_secs: Option<u64> = {
             let recent = crate::test_runner::store::recent_runs_all(50);
-            let mut durations: Vec<u64> = recent.iter()
+            let mut durations: Vec<u64> = recent
+                .iter()
                 .filter_map(|r| r.duration_ms)
                 .filter(|d| *d > 0)
                 .map(|d| ((d / 1000) as u64).max(1))
@@ -307,8 +521,15 @@ impl TestRunnerService for RealService {
             .map(|s| {
                 let (status, analysis, step, is_running) = match &s.phase {
                     RunPhase::Queued => ("queued".to_string(), None, None, false),
-                    RunPhase::Running { current_action, step } =>
-                        ("running".to_string(), Some(current_action.clone()), Some(*step), true),
+                    RunPhase::Running {
+                        current_action,
+                        step,
+                    } => (
+                        "running".to_string(),
+                        Some(current_action.clone()),
+                        Some(*step),
+                        true,
+                    ),
                     _ => ("unknown".to_string(), None, None, false),
                 };
                 // Phase A — idle since last set_phase; only meaningful while
@@ -343,9 +564,11 @@ impl TestRunnerService for RealService {
                             // Treat the test's own median (across all runs of any
                             // test_id) as the budget; if we're past it, ETA = 0.
                             let elapsed_secs = chrono::DateTime::parse_from_rfc3339(&s.started_at)
-                                .map(|dt| (chrono::Local::now()
-                                    - dt.with_timezone(&chrono::Local))
-                                    .num_seconds().max(0) as u64)
+                                .map(|dt| {
+                                    (chrono::Local::now() - dt.with_timezone(&chrono::Local))
+                                        .num_seconds()
+                                        .max(0) as u64
+                                })
                                 .unwrap_or(0);
                             // Avoid divide-by-zero / runaway extrapolation: clamp
                             // step assumption to at least 4 (rough mid-test).
@@ -360,35 +583,35 @@ impl TestRunnerService for RealService {
                     None
                 };
                 TestRunView {
-                    test_id:          s.test_id.clone(),
+                    test_id: s.test_id.clone(),
                     status,
-                    started_at:       s.started_at.clone(),
-                    duration_ms:      None,
+                    started_at: s.started_at.clone(),
+                    duration_ms: None,
                     analysis,
                     step,
                     failure_category: None,
-                    pass_rate:        None,
-                    console_errors:   None,  // not available for active runs
+                    pass_rate: None,
+                    console_errors: None, // not available for active runs
                     console_warnings: None,
                     // Token telemetry only flushed on completion (Issue #240).
-                    prompt_tokens:     None,
+                    prompt_tokens: None,
                     completion_tokens: None,
-                    cached_tokens:     None,
-                    cost_usd:          None,
+                    cached_tokens: None,
+                    cost_usd: None,
                     // #279 — iterations only meaningful after run completes;
                     // is_replay derived from registry's replay_mode field
                     // (set by executor's replay-vs-llm decision); run_id is
                     // available because we just looked it up.
-                    iterations:       None,
-                    is_replay:        s.replay_mode.as_deref() == Some("script"),
-                    run_id:           Some(s.run_id.clone()),
+                    iterations: None,
+                    is_replay: s.replay_mode.as_deref() == Some("script"),
+                    run_id: Some(s.run_id.clone()),
                     // Phase A/B telemetry pulled fresh from registry.
                     idle_secs,
                     last_action_age_ms,
                     current_subphase,
                     subphase_age_ms,
                     recent_steps_count,
-                    replay_mode:             s.replay_mode.clone(),
+                    replay_mode: s.replay_mode.clone(),
                     estimated_remaining_secs,
                 }
             })
@@ -423,39 +646,54 @@ impl TestRunnerService for RealService {
         let map: Value = serde_yaml::from_str(&src)
             .map_err(|e| format!("Parse error in agora_market.yaml: {e}"))?;
 
-        let product = map["product"].as_str().unwrap_or("agora_market").to_string();
+        let product = map["product"]
+            .as_str()
+            .unwrap_or("agora_market")
+            .to_string();
         let version = map["version"].as_str().unwrap_or("?").to_string();
 
-        let groups_raw = map["feature_groups"].as_array()
+        let groups_raw = map["feature_groups"]
+            .as_array()
             .ok_or_else(|| "feature_groups missing or not array".to_string())?;
 
-        let mut total_covered  = 0usize;
+        let mut total_covered = 0usize;
+        let mut total_confirmed = 0usize;
+        let mut total_partial = 0usize;
         let mut total_features = 0usize;
         let mut total_scripted = 0usize;
         let mut groups = Vec::new();
 
         for g in groups_raw {
-            let gid   = g["id"].as_str().unwrap_or("?").to_string();
+            let gid = g["id"].as_str().unwrap_or("?").to_string();
             let gname = g["name"].as_str().unwrap_or(&gid).to_string();
-            let role  = match &g["role"] {
-                Value::String(s)  => s.clone(),
-                Value::Array(arr) => arr.iter()
+            let role = match &g["role"] {
+                Value::String(s) => s.clone(),
+                Value::Array(arr) => arr
+                    .iter()
                     .filter_map(Value::as_str)
                     .collect::<Vec<_>>()
                     .join("+"),
-                _                 => String::new(),
+                _ => String::new(),
             };
 
             let features_raw = g["features"].as_array().map(Vec::as_slice).unwrap_or(&[]);
             let mut covered_count = 0usize;
+            let mut confirmed_count = 0usize;
+            let mut partial_count = 0usize;
+            let mut missing_count = 0usize;
             let mut features = Vec::new();
 
             for feat in features_raw {
-                let fid    = feat["id"].as_str().unwrap_or("?").to_string();
-                let fname  = feat["name"].as_str().unwrap_or(&fid).to_string();
+                let fid = feat["id"].as_str().unwrap_or("?").to_string();
+                let fname = feat["name"].as_str().unwrap_or(&fid).to_string();
                 let status = feat["status"].as_str().unwrap_or("missing").to_string();
-                let test_ids: Vec<String> = feat["test_ids"].as_array()
-                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                let test_ids: Vec<String> = feat["test_ids"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
                     .unwrap_or_default();
 
                 if status != "missing" && !test_ids.is_empty() {
@@ -465,18 +703,35 @@ impl TestRunnerService for RealService {
                     // Real implementation will check per-test replay_mode in
                     // the run history (see plan §Coverage 3-Tier Model).
                     if status == "confirmed" {
+                        confirmed_count += 1;
                         total_scripted += 1;
+                    } else if status == "partial" {
+                        partial_count += 1;
                     }
+                } else {
+                    missing_count += 1;
                 }
-                features.push(CoverageFeatureView { id: fid, name: fname, status, test_ids });
+                features.push(CoverageFeatureView {
+                    id: fid,
+                    name: fname,
+                    status,
+                    test_ids,
+                });
             }
 
             total_features += features.len();
-            total_covered  += covered_count;
+            total_covered += covered_count;
+            total_confirmed += confirmed_count;
+            total_partial += partial_count;
 
             groups.push(CoverageGroupView {
-                id: gid, name: gname, role,
+                id: gid,
+                name: gname,
+                role,
                 covered: covered_count,
+                confirmed: confirmed_count,
+                partial: partial_count,
+                missing: missing_count,
                 total: features.len(),
                 features,
             });
@@ -484,29 +739,34 @@ impl TestRunnerService for RealService {
 
         // Discovery layer (Issue #247) — read from SQLite when the crawler
         // has run; fall back to total_features (mock) until then.
-        let (discovered, discovery_status) =
-            match crate::test_runner::discovery::latest_run() {
-                Ok(Some(run)) => {
-                    let count = crate::test_runner::discovery::feature_count()
-                        .unwrap_or(total_features as u32);
-                    let status = match run.status.as_str() {
-                        "running" => crate::ui_service::DiscoveryStatus::Crawling {
-                            started_at: run.started_at,
-                        },
-                        "done" => crate::ui_service::DiscoveryStatus::Done {
-                            at: run.finished_at.unwrap_or(run.started_at),
-                            total_widgets: run.total_widgets.unwrap_or(0),
-                        },
-                        _ => crate::ui_service::DiscoveryStatus::NotRun,
-                    };
-                    (count as usize, status)
-                }
-                _ => (total_features, crate::ui_service::DiscoveryStatus::NotRun),
-            };
+        let (discovered, discovery_status) = match crate::test_runner::discovery::latest_run() {
+            Ok(Some(run)) => {
+                let count =
+                    crate::test_runner::discovery::feature_count().unwrap_or(total_features as u32);
+                let status = match run.status.as_str() {
+                    "running" => crate::ui_service::DiscoveryStatus::Crawling {
+                        started_at: run.started_at,
+                    },
+                    "done" => crate::ui_service::DiscoveryStatus::Done {
+                        at: run.finished_at.unwrap_or(run.started_at),
+                        total_widgets: run.total_widgets.unwrap_or(0),
+                    },
+                    _ => crate::ui_service::DiscoveryStatus::NotRun,
+                };
+                (count as usize, status)
+            }
+            _ => (total_features, crate::ui_service::DiscoveryStatus::NotRun),
+        };
 
         Ok(CoverageData {
-            product, version,
-            total_covered, total_features, groups,
+            product,
+            version,
+            total_covered,
+            total_confirmed,
+            total_partial,
+            total_missing: total_features.saturating_sub(total_covered),
+            total_features,
+            groups,
             discovered,
             scripted: total_scripted,
             discovery_status,
@@ -514,27 +774,30 @@ impl TestRunnerService for RealService {
     }
 
     fn discovery_data(&self) -> Result<DiscoveryDataView, String> {
-        use crate::ui_service::{DiscoveryStatus, DiscoveredFeatureView};
+        use crate::ui_service::{DiscoveredFeatureView, DiscoveryStatus};
 
         let latest = crate::test_runner::discovery::latest_run()?;
         let features_raw = crate::test_runner::discovery::list_features()?;
-        let features: Vec<DiscoveredFeatureView> = features_raw.into_iter().map(|f| {
-            DiscoveredFeatureView {
+        let features: Vec<DiscoveredFeatureView> = features_raw
+            .into_iter()
+            .map(|f| DiscoveredFeatureView {
                 route: f.route,
                 label: f.label,
                 kind: f.kind,
                 selector: f.selector,
                 last_seen: f.last_seen,
-            }
-        }).collect();
+            })
+            .collect();
         let total = features.len() as u32;
 
         let (status, last_run_at) = match latest {
             None => (DiscoveryStatus::NotRun, None),
             Some(r) => {
                 let st = match r.status.as_str() {
-                    "running" => DiscoveryStatus::Crawling { started_at: r.started_at.clone() },
-                    "done"    => DiscoveryStatus::Done {
+                    "running" => DiscoveryStatus::Crawling {
+                        started_at: r.started_at.clone(),
+                    },
+                    "done" => DiscoveryStatus::Done {
                         at: r.finished_at.clone().unwrap_or(r.started_at.clone()),
                         total_widgets: r.total_widgets.unwrap_or(0),
                     },
@@ -544,32 +807,38 @@ impl TestRunnerService for RealService {
             }
         };
 
-        Ok(DiscoveryDataView { status, total, features, last_run_at })
+        Ok(DiscoveryDataView {
+            status,
+            total,
+            features,
+            last_run_at,
+        })
     }
 
     fn launch_discovery(&self, seed_url: &str, max_depth: u32) -> Result<String, String> {
-        let run_id = format!(
-            "disc_{}",
-            chrono::Utc::now().format("%Y%m%d_%H%M%S")
-        );
+        let run_id = format!("disc_{}", chrono::Utc::now().format("%Y%m%d_%H%M%S"));
         crate::test_runner::discovery::begin_run(&run_id, seed_url, max_depth)?;
 
         // Detached thread — UI polls latest_run() to track progress.  Errors
         // get persisted as run.status = "failed" + error message.
         let run_id_owned = run_id.clone();
-        let seed_owned   = seed_url.to_string();
+        let seed_owned = seed_url.to_string();
         std::thread::spawn(move || {
-            match crate::test_runner::discovery::crawl_app(
-                &seed_owned, max_depth, &run_id_owned,
-            ) {
+            match crate::test_runner::discovery::crawl_app(&seed_owned, max_depth, &run_id_owned) {
                 Ok(count) => {
                     let _ = crate::test_runner::discovery::finish_run(
-                        &run_id_owned, "done", Some(count), None,
+                        &run_id_owned,
+                        "done",
+                        Some(count),
+                        None,
                     );
                 }
                 Err(e) => {
                     let _ = crate::test_runner::discovery::finish_run(
-                        &run_id_owned, "failed", Some(0), Some(&e),
+                        &run_id_owned,
+                        "failed",
+                        Some(0),
+                        Some(&e),
                     );
                 }
             }
@@ -584,11 +853,18 @@ impl TestRunnerService for RealService {
             window_days: h.window_days,
             total_runs: h.total_runs,
             passed_via_replay: h.passed_via_replay,
+            passed_via_fixture_only: h.passed_via_fixture_only,
+            passed_deterministic: h.passed_deterministic,
             passed_via_llm: h.passed_via_llm,
             failed: h.failed,
             success_rate_replay: h.success_rate_replay,
+            success_rate_deterministic: h.success_rate_deterministic,
             previous_success_rate_replay: h.previous_success_rate_replay,
+            previous_success_rate_deterministic: h.previous_success_rate_deterministic,
             drift: h.drift,
+            deterministic_drift: h.deterministic_drift,
+            latest_run_at: h.latest_run_at,
+            has_recent_data: h.has_recent_data,
         }
     }
 
@@ -597,14 +873,15 @@ impl TestRunnerService for RealService {
         crate::test_runner::list_tests()
             .into_iter()
             .map(|t| {
-                let has_script  = crate::test_runner::store::script_info(&t.id).is_some();
+                let has_script = crate::test_runner::store::script_info(&t.id).is_some();
                 let recent_modes = crate::test_runner::store::recent_replay_modes(&t.id, 3);
-                let status      = crate::test_runner::store::test_replay_status(&t.id);
-                let status_str  = match status {
-                    ReplayStatus::Healthy        => "healthy",
-                    ReplayStatus::StaleFallback  => "stale_fallback",
-                    ReplayStatus::LlmOnly        => "llm_only",
-                    ReplayStatus::Untested       => "untested",
+                let status = crate::test_runner::store::test_replay_status(&t.id);
+                let status_str = match status {
+                    ReplayStatus::FixtureOnly => "fixture_only",
+                    ReplayStatus::Healthy => "healthy",
+                    ReplayStatus::StaleFallback => "stale_fallback",
+                    ReplayStatus::LlmOnly => "llm_only",
+                    ReplayStatus::Untested => "untested",
                 };
                 crate::ui_service::TestReplayStatusView {
                     test_id: t.id,

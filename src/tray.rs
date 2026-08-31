@@ -57,7 +57,9 @@ pub fn spawn_tray() -> bool {
             true
         }
         Err(e) => {
-            tracing::warn!("[tray] failed to spawn tray thread: {e} — daemon continues without tray");
+            tracing::warn!(
+                "[tray] failed to spawn tray thread: {e} — daemon continues without tray"
+            );
             false
         }
     }
@@ -68,7 +70,7 @@ fn tray_thread_main() {
     let tray_menu = Menu::new();
     let open_dashboard = MenuItem::new("Open Dashboard", true, None);
     let open_ai_monitor = MenuItem::new("Open AI Work Monitor", true, None);
-    let quit_item      = MenuItem::new("Quit Sirin", true, None);
+    let quit_item = MenuItem::new("Quit Sirin", true, None);
 
     if tray_menu.append(&open_dashboard).is_err()
         || tray_menu.append(&open_ai_monitor).is_err()
@@ -89,7 +91,10 @@ fn tray_thread_main() {
 
     let tray = match TrayIconBuilder::new()
         .with_menu(Box::new(tray_menu))
-        .with_tooltip(format!("Sirin v{} — initializing", env!("CARGO_PKG_VERSION")))
+        .with_tooltip(format!(
+            "Sirin v{} — initializing",
+            env!("CARGO_PKG_VERSION")
+        ))
         .with_icon(icon)
         .build()
     {
@@ -105,7 +110,7 @@ fn tray_thread_main() {
     // Cache the menu IDs so the event-receive branch doesn't allocate.
     let id_dashboard = open_dashboard.id().clone();
     let id_ai_monitor = open_ai_monitor.id().clone();
-    let id_quit      = quit_item.id().clone();
+    let id_quit = quit_item.id().clone();
 
     let mut last_status_update = Instant::now() - STATUS_REFRESH;
     let menu_events = MenuEvent::receiver();
@@ -170,8 +175,12 @@ fn load_icon() -> Option<tray_icon::Icon> {
 /// (Sirin not yet listening, transient network) leave the previous
 /// tooltip in place — no log spam.
 fn update_tooltip(tray: &TrayIcon) {
-    let text = fetch_status_text()
-        .unwrap_or_else(|| format!("Sirin v{} — snapshot unreachable", env!("CARGO_PKG_VERSION")));
+    let text = fetch_status_text().unwrap_or_else(|| {
+        format!(
+            "Sirin v{} — snapshot unreachable",
+            env!("CARGO_PKG_VERSION")
+        )
+    });
     let _ = tray.set_tooltip(Some(&text));
 }
 
@@ -194,8 +203,12 @@ fn fetch_status_text() -> Option<String> {
     let json: serde_json::Value = resp.json().ok()?;
 
     let runs = json.get("active_runs")?.as_array()?;
-    let queued = runs.iter().filter(|r| r.get("status").and_then(|s| s.as_str()) == Some("queued")).count();
-    let running_runs: Vec<&serde_json::Value> = runs.iter()
+    let queued = runs
+        .iter()
+        .filter(|r| r.get("status").and_then(|s| s.as_str()) == Some("queued"))
+        .count();
+    let running_runs: Vec<&serde_json::Value> = runs
+        .iter()
         .filter(|r| r.get("status").and_then(|s| s.as_str()) == Some("running"))
         .collect();
     let running = running_runs.len();
@@ -209,19 +222,24 @@ fn fetch_status_text() -> Option<String> {
 
     // Per-run sub-phase line — most informative when 1 test is in flight.
     if let Some(r) = running_runs.first() {
-        let test_id  = r.get("test_id").and_then(|v| v.as_str()).unwrap_or("?");
+        let test_id = r.get("test_id").and_then(|v| v.as_str()).unwrap_or("?");
         let subphase = r.get("current_subphase").and_then(|v| v.as_str());
         let idle_secs = r.get("idle_secs").and_then(|v| v.as_u64()).unwrap_or(0);
-        let stuck = if idle_secs >= 60 { format!(" [stuck {idle_secs}s]") } else { String::new() };
+        let stuck = if idle_secs >= 60 {
+            format!(" [stuck {idle_secs}s]")
+        } else {
+            String::new()
+        };
         match subphase {
             Some(sp) => lines.push(format!("→ {test_id}  ({sp}{stuck})")),
-            None     => lines.push(format!("→ {test_id}{stuck}")),
+            None => lines.push(format!("→ {test_id}{stuck}")),
         }
     }
 
     // Queue drain ETA when we have backlog.
     if queued > 0 {
-        if let Some(drain) = json.get("queue")
+        if let Some(drain) = json
+            .get("queue")
             .and_then(|q| q.get("estimated_drain_secs"))
             .and_then(|d| d.as_u64())
         {
@@ -231,10 +249,16 @@ fn fetch_status_text() -> Option<String> {
     }
 
     // Browser idle countdown when Chrome is up but no test claims it.
-    let browser_open  = json.get("browser_open").and_then(|v| v.as_bool()).unwrap_or(false);
+    let browser_open = json
+        .get("browser_open")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let browser_owner = json.get("browser_owner").and_then(|v| v.as_object());
     if browser_open && browser_owner.is_none() {
-        if let Some(secs) = json.get("browser_idle_close_in_secs").and_then(|v| v.as_u64()) {
+        if let Some(secs) = json
+            .get("browser_idle_close_in_secs")
+            .and_then(|v| v.as_u64())
+        {
             lines.push(format!("Browser idle — auto-close in {secs}s"));
         }
     }
@@ -247,21 +271,29 @@ fn fetch_status_text() -> Option<String> {
 fn open_url(url: &str) -> std::io::Result<()> {
     #[cfg(windows)]
     {
+        use crate::platform::NoWindow;
         // `cmd /C start "" <url>` — the empty `""` arg is the window title
         // that `start` requires before its real argument when the URL
-        // contains spaces.  CREATE_NO_WINDOW would suppress the cmd flash,
-        // but Windows hides cmd /C windows immediately anyway.
+        // contains spaces.  Keep the shell hidden; only the browser should
+        // appear.
         std::process::Command::new("cmd")
+            .no_window()
             .args(["/C", "start", "", url])
             .spawn()
             .map(|_| ())
     }
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("open").arg(url).spawn().map(|_| ())
+        std::process::Command::new("open")
+            .arg(url)
+            .spawn()
+            .map(|_| ())
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        std::process::Command::new("xdg-open").arg(url).spawn().map(|_| ())
+        std::process::Command::new("xdg-open")
+            .arg(url)
+            .spawn()
+            .map(|_| ())
     }
 }

@@ -106,19 +106,25 @@ src/updater.rs               Auto-update via GitHub Releases (self_update crate)
                              — GitHub asset: sirin-windows-x86_64.zip / sirin.exe
                              — Tag format: v0.2.0 triggers release CI
 src/claude_session.rs        Spawn `claude` CLI for cross-repo bug fixing
+src/codex_supervisor.rs      Codex desktop task supervision — structured
+                             evidence classifier, task contract/coverage
+                             matrix, local dedupe ledger, one-shot claims;
+                             never stores conversation bodies or grants approval
 src/config_check.rs          Diagnostics + AI fix proposal (dual-stage confirm)
 src/mcp_client.rs            External MCP server proxy
-src/mcp_server.rs            MCP HTTP server (:7700/mcp) — 65+ tools exposed
+src/mcp_server.rs            MCP HTTP server (:7700/mcp) — registry-derived tools;
+                             `help.tool_count` reports the live count dynamically
                              (run_test_batch added v0.4.0; v0.4.6 added 22 new
                              tools: coverage, replay_last_failure, shadow_dump_diff,
                              suggest_allowlist, list/add/remove_allow, save_point,
                              create/list/mark_done task, session_cost,
                              create_handoff, get_latest_handoff, kb_stats, kb_diff…)
-src/ai_monitor.rs            Local AI activity, resource, power, recovery, and
-                             acceptance snapshot exposed through `/api/snapshot`.
-src/codex_supervisor.rs      Codex desktop task supervision — structured
-                             evidence classification, task contract, coverage
-                             matrix, local dedupe ledger, and claim protocol.
+config/mcp_tool_baseline.json Canonical sorted MCP inventory. The parity test
+                             compares the directly constructed registry plus
+                             legacy-listed tools against this file, preventing
+                             a clean checkout from silently losing a domain.
+docs/MCP_TOOL_PROVENANCE.md   Recovery evidence, exclusions, and the clean-build
+                             contract for the accepted 190-tool baseline.
 src/multi_agent/             PM/Engineer/Tester squad — persistent sessions via
                              `claude --continue`; SQLite task queue (JSONL);
                              multi-worker pool (spawn_n); GitHub issue loop-closure;

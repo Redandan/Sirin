@@ -252,7 +252,11 @@ async fn discover_tools(
 ///
 /// This is invoked by the ToolRegistry handler when an agent uses an
 /// `mcp_{server}_{tool}` tool.
-pub async fn call_tool(server_url: &str, tool_name: &str, arguments: Value) -> Result<Value, String> {
+pub async fn call_tool(
+    server_url: &str,
+    tool_name: &str,
+    arguments: Value,
+) -> Result<Value, String> {
     call_tool_with_bearer(server_url, tool_name, arguments, None).await
 }
 
@@ -266,6 +270,18 @@ pub async fn call_tool_with_bearer(
     tool_name: &str,
     arguments: Value,
     bearer: Option<&str>,
+) -> Result<Value, String> {
+    call_tool_with_auth_headers(server_url, tool_name, arguments, bearer, None).await
+}
+
+/// Like [`call_tool_with_bearer`] but also supports the Agora OPS header used
+/// by read-only operations MCP tools.
+pub async fn call_tool_with_auth_headers(
+    server_url: &str,
+    tool_name: &str,
+    arguments: Value,
+    bearer: Option<&str>,
+    ops_authorization: Option<&str>,
 ) -> Result<Value, String> {
     let st = state();
     let guard = st.read().await;
@@ -286,6 +302,9 @@ pub async fn call_tool_with_bearer(
     if let Some(token) = bearer {
         req = req.bearer_auth(token);
     }
+    if let Some(token) = ops_authorization {
+        req = req.header("X-OPS-Authorization", token);
+    }
     let resp = req
         .json(&body)
         .timeout(std::time::Duration::from_secs(120))
@@ -293,7 +312,10 @@ pub async fn call_tool_with_bearer(
         .await
         .map_err(|e| format!("MCP call failed ({server_url}): {e}"))?;
 
-    let json: Value = resp.json().await.map_err(|e| format!("MCP response parse error: {e}"))?;
+    let json: Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("MCP response parse error: {e}"))?;
 
     // Check for JSON-RPC error.
     if let Some(err) = json.get("error") {
@@ -301,7 +323,19 @@ pub async fn call_tool_with_bearer(
             .get("message")
             .and_then(Value::as_str)
             .unwrap_or("unknown error");
-        return Err(format!("MCP tool error: {msg}"));
+        let code = err.get("code").and_then(Value::as_i64);
+        let data = err.get("data").filter(|value| !value.is_null());
+        let mut detail = format!("MCP tool error: {msg}");
+        if let Some(code) = code {
+            detail.push_str(&format!("; code={code}"));
+        }
+        if let Some(data) = data {
+            let data_text = serde_json::to_string(data)
+                .unwrap_or_else(|_| "<unserializable error data>".to_string());
+            detail.push_str("; data=");
+            detail.push_str(&data_text);
+        }
+        return Err(detail);
     }
 
     // Extract the result.  MCP tool results come as `{ content: [{ type: "text", text: "..." }] }`.

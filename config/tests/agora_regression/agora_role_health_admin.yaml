@@ -1,0 +1,42 @@
+id: agora_role_health_admin
+name: "AgoraMarket 角色健康檢查 — admin"
+url: "https://redandan.github.io/?__test_role=admin"
+
+max_iterations: 4
+timeout_secs: 120
+fixture_only: true
+
+viewport:
+  width: 1280
+  height: 900
+  scale: 1.0
+  mobile: false
+
+locale: zh-TW
+
+fixture:
+  setup:
+    - {action: "clear_state"}
+    - {action: "goto", target: "https://redandan.github.io/?__test_role=admin"}
+    - {action: "wait_for_flutter_semantics", timeout: 15000, min_roles: 2}
+    - {action: "dismiss_passkey_prompt"}
+    - {action: "goto", target: "https://redandan.github.io/?__test_role=admin"}
+    - {action: "wait_for_flutter_semantics", timeout: 25000, min_roles: 2}
+    - {action: "assert_url_matches", target: "#/admin"}
+    - {action: "shadow_find", name_regex: "儀表板|統計|數據總覽"}
+    - {action: "shadow_find", name_regex: "用戶|用戶與互動"}
+
+goal: |
+  目標：確認 admin 測試角色會落在管理後台，而不是 seller surface。
+
+  步驟：
+  1. url
+  2. shadow_dump
+  3. done=true
+
+success_criteria:
+  - "URL 不應落在 #/seller"
+  - "看到管理後台內容，例如統計、商品與電商、管理選單、或 admin dashboard"
+  - "不應顯示賣家首頁營運任務或 seller 底部分頁作為主要 surface"
+
+tags: [regression, smoke, active-smoke, role-health, admin, agora]

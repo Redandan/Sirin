@@ -44,10 +44,7 @@ pub fn load_trace(path: &Path) -> Vec<ServerEvent> {
 /// Short display name for a trace file path.
 /// `.sirin/trace-2026-04-17T10:30:00.ndjson` → `"2026-04-17 10:30:00"`
 pub fn display_name(path: &Path) -> String {
-    let stem = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("trace");
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("trace");
     stem.trim_start_matches("trace-")
         .replace('T', " ")
         .trim_end_matches(".000Z")

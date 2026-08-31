@@ -1,5 +1,5 @@
 //! Accessibility tree auto-diffing for Sirin test runs.
-//! 
+//!
 //! When a test calls `ax_snapshot()` followed by DOM interactions and `ax_tree()`,
 //! we automatically detect the first retrieval and return a differential format
 //! instead of the full tree, saving 40-50% of tree-related tokens.
@@ -134,7 +134,10 @@ fn diff_trees(baseline: &Value, current: &Value) -> Value {
 
         // Check for removed nodes
         for id in baseline_map.keys() {
-            if !current_nodes.iter().any(|n| n.get("backend_id").and_then(|v| v.as_u64()) == Some(*id)) {
+            if !current_nodes
+                .iter()
+                .any(|n| n.get("backend_id").and_then(|v| v.as_u64()) == Some(*id))
+            {
                 changed_nodes.push(json!({
                     "backend_id": id,
                     "status": "removed",

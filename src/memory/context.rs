@@ -24,7 +24,9 @@ fn context_log_path(peer_id: Option<i64>, agent_id: Option<&str>) -> PathBuf {
         (None, Some(pid)) => format!("sirin_context_{pid}.jsonl"),
         (None, None) => "sirin_context.jsonl".to_string(),
     };
-    crate::platform::app_data_dir().join("tracking").join(&filename)
+    crate::platform::app_data_dir()
+        .join("tracking")
+        .join(&filename)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,7 +75,9 @@ pub fn collect_reply_samples(agent_id: &str, limit: usize) -> Vec<String> {
     let prefix = format!("sirin_context_{agent_id}");
     let mut samples: Vec<(String, String)> = Vec::new(); // (timestamp, reply)
 
-    let Ok(entries) = fs::read_dir(&dir) else { return Vec::new() };
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return Vec::new();
+    };
     for entry in entries.filter_map(|e| e.ok()) {
         let name = entry.file_name();
         let name = name.to_string_lossy();

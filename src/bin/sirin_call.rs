@@ -153,8 +153,11 @@ fn main() {
                     if let Some(text) = item["text"].as_str() {
                         // Try to pretty-print if it's valid JSON
                         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(text) {
-                            println!("{}", serde_json::to_string_pretty(&parsed)
-                                .unwrap_or_else(|_| text.to_string()));
+                            println!(
+                                "{}",
+                                serde_json::to_string_pretty(&parsed)
+                                    .unwrap_or_else(|_| text.to_string())
+                            );
                         } else {
                             println!("{text}");
                         }
@@ -163,8 +166,10 @@ fn main() {
                 }
             }
             // Fallback: print full response
-            println!("{}", serde_json::to_string_pretty(&response)
-                .unwrap_or_else(|_| response.to_string()));
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&response).unwrap_or_else(|_| response.to_string())
+            );
         }
         Err(e) => {
             eprintln!("Error: {e}");

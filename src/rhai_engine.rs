@@ -115,11 +115,16 @@ mod tests {
                 b.push_str(s);
                 b.push('\n');
             });
-            engine.run_with_scope(&mut rhai::Scope::new(), r###"
+            engine
+                .run_with_scope(
+                    &mut rhai::Scope::new(),
+                    r###"
                 print("BTC 當前價格");
                 print("| USD | $95,000 |");
                 log("test log");
-            "###).unwrap();
+            "###,
+                )
+                .unwrap();
             let s = output.lock().unwrap().trim().to_string();
             s
         };
@@ -164,6 +169,10 @@ pub fn run_rhai_script(
         .run_with_scope(&mut scope, &code)
         .map_err(|e| format!("Script error: {e}"))?;
 
-    let result = output.lock().unwrap_or_else(|e| e.into_inner()).trim().to_string();
+    let result = output
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .trim()
+        .to_string();
     Ok(result)
 }

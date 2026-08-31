@@ -5,10 +5,12 @@
 //! Refreshes on demand via [`refresh_codebase_index`], or via
 //! [`ensure_codebase_index`] if the file is stale (> 10 min old).
 
-use std::collections::HashMap;
-use std::fs::{self, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
 
@@ -79,7 +81,24 @@ fn score_entry(text: &str, query_terms: &[String]) -> f64 {
 // ── Index file layout ─────────────────────────────────────────────────────────
 
 fn codebase_index_path() -> PathBuf {
-    crate::platform::app_data_dir().join("memory").join("codebase_index.jsonl")
+    crate::platform::app_data_dir()
+        .join("memory")
+        .join("codebase_index.jsonl")
+}
+
+fn codebase_index_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn codebase_index_is_stale(path: &Path) -> bool {
+    match fs::metadata(path).and_then(|metadata| metadata.modified()) {
+        Ok(modified) => modified
+            .elapsed()
+            .map(|age| age > std::time::Duration::from_secs(600))
+            .unwrap_or(true),
+        Err(_) => true,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,6 +108,33 @@ struct CodebaseEntry {
     summary: String,
     symbols: Vec<String>,
     text: String,
+    #[serde(default)]
+    size_bytes: u64,
+    #[serde(default)]
+    modified_unix_nanos: u64,
+}
+
+fn read_codebase_entries(
+    path: &Path,
+) -> Result<Vec<CodebaseEntry>, Box<dyn std::error::Error + Send + Sync>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let file = fs::File::open(path)?;
+    Ok(BufReader::new(file)
+        .lines()
+        .map_while(Result::ok)
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str::<CodebaseEntry>(&line).ok())
+        .collect())
+}
+
+fn persist_codebase_entries(
+    path: &Path,
+    entries: &[CodebaseEntry],
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    crate::jsonl_log::atomic_write_jsonl(path, entries)?;
+    Ok(())
 }
 
 // ── Project traversal ─────────────────────────────────────────────────────────
@@ -309,7 +355,21 @@ fn summarize_file_role(_path: &Path, rel: &str, text: &str) -> String {
         .unwrap_or_else(|| first_meaningful_line(text))
 }
 
-fn build_codebase_entry(root: &Path, path: &Path, text: &str) -> CodebaseEntry {
+fn metadata_modified_unix_nanos(metadata: &fs::Metadata) -> u64 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .and_then(|duration| u64::try_from(duration.as_nanos()).ok())
+        .unwrap_or(0)
+}
+
+fn build_codebase_entry(
+    root: &Path,
+    path: &Path,
+    text: &str,
+    metadata: &fs::Metadata,
+) -> CodebaseEntry {
     let rel = relative_display(path, root);
     let symbols = extract_symbols(path, text);
     let summary = summarize_file_role(path, &rel, text);
@@ -329,32 +389,85 @@ fn build_codebase_entry(root: &Path, path: &Path, text: &str) -> CodebaseEntry {
             "File: {rel}\nKind: {}\nRole: {summary}\nSymbols: {symbol_block}\n\nExcerpt:\n{excerpt}",
             code_file_kind(path)
         ),
+        size_bytes: metadata.len(),
+        modified_unix_nanos: metadata_modified_unix_nanos(metadata),
     }
+}
+
+fn update_codebase_entries_for_file(
+    root: &Path,
+    path: &Path,
+    entries: &mut Vec<CodebaseEntry>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let rel = relative_display(path, root);
+    entries.retain(|entry| entry.path != rel);
+
+    let metadata = fs::metadata(path)?;
+    if is_codebase_candidate(path, &metadata) {
+        let text = fs::read_to_string(path)?;
+        if !text.trim().is_empty() {
+            entries.push(build_codebase_entry(root, path, &text, &metadata));
+        }
+    }
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(())
+}
+
+#[derive(Debug, Default)]
+struct CodebaseDelta {
+    changed_paths: Vec<PathBuf>,
+    removed_paths: Vec<String>,
+}
+
+fn detect_codebase_delta(
+    root: &Path,
+    files: &[PathBuf],
+    entries: &[CodebaseEntry],
+) -> Result<CodebaseDelta, Box<dyn std::error::Error + Send + Sync>> {
+    let indexed: HashMap<&str, (u64, u64)> = entries
+        .iter()
+        .map(|entry| {
+            (
+                entry.path.as_str(),
+                (entry.size_bytes, entry.modified_unix_nanos),
+            )
+        })
+        .collect();
+    let mut current_paths = HashSet::new();
+    let mut changed_paths = Vec::new();
+
+    for path in files {
+        let metadata = fs::metadata(path)?;
+        let rel = relative_display(path, root);
+        current_paths.insert(rel.clone());
+        let fingerprint = (metadata.len(), metadata_modified_unix_nanos(&metadata));
+        if indexed.get(rel.as_str()).copied() != Some(fingerprint) {
+            changed_paths.push(path.clone());
+        }
+    }
+
+    let removed_paths = entries
+        .iter()
+        .filter(|entry| !current_paths.contains(&entry.path))
+        .map(|entry| entry.path.clone())
+        .collect();
+
+    Ok(CodebaseDelta {
+        changed_paths,
+        removed_paths,
+    })
 }
 
 // ── Public API: refresh / ensure / list / inspect / search ────────────────────
 
-fn refresh_codebase_index_inner() -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
-    let Some(root) = find_project_root() else {
-        return Ok(0);
-    };
-
+fn build_codebase_entries(
+    root: &Path,
+) -> Result<Vec<CodebaseEntry>, Box<dyn std::error::Error + Send + Sync>> {
     let mut files = Vec::new();
-    collect_codebase_files(&root, &mut files)?;
+    collect_codebase_files(root, &mut files)?;
     files.sort();
 
-    let path = codebase_index_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    let mut output = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(&path)?;
-
-    let mut indexed = 0usize;
+    let mut entries = Vec::new();
     for file in files {
         let Ok(text) = fs::read_to_string(&file) else {
             continue;
@@ -362,16 +475,78 @@ fn refresh_codebase_index_inner() -> Result<usize, Box<dyn std::error::Error + S
         if text.trim().is_empty() {
             continue;
         }
-        let entry = build_codebase_entry(&root, &file, &text);
-        writeln!(output, "{}", serde_json::to_string(&entry)?)?;
-        indexed += 1;
+        let Ok(metadata) = fs::metadata(&file) else {
+            continue;
+        };
+        entries.push(build_codebase_entry(root, &file, &text, &metadata));
     }
 
-    Ok(indexed)
+    Ok(entries)
 }
 
-/// Rebuild the codebase index *and* the call graph in one pass so they stay
-/// in sync.  Called after every `file_write` and `file_patch`.
+fn refresh_codebase_index_inner_at(
+    root: &Path,
+    index_path: &Path,
+) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+    let entries = build_codebase_entries(root)?;
+
+    let _guard = codebase_index_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    persist_codebase_entries(index_path, &entries)?;
+    Ok(entries.len())
+}
+
+fn refresh_codebase_index_inner() -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+    let Some(root) = find_project_root() else {
+        return Ok(0);
+    };
+    refresh_codebase_index_inner_at(&root, &codebase_index_path())
+}
+
+fn refresh_stale_codebase_index() -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+    let root = find_project_root().ok_or("Cannot determine project root")?;
+    let canonical_root = fs::canonicalize(&root)?;
+    let mut files = Vec::new();
+    collect_codebase_files(&canonical_root, &mut files)?;
+    files.sort();
+
+    let (entry_count, delta) = {
+        let _guard = codebase_index_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let index_path = codebase_index_path();
+        let mut entries = read_codebase_entries(&index_path)?;
+        let delta = detect_codebase_delta(&canonical_root, &files, &entries)?;
+        let removed: HashSet<&str> = delta.removed_paths.iter().map(String::as_str).collect();
+        entries.retain(|entry| !removed.contains(entry.path.as_str()));
+        for path in &delta.changed_paths {
+            update_codebase_entries_for_file(&canonical_root, path, &mut entries)?;
+        }
+        persist_codebase_entries(&index_path, &entries)?;
+        (entries.len(), delta)
+    };
+
+    let changed_rust: Vec<PathBuf> = delta
+        .changed_paths
+        .into_iter()
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("rs"))
+        .collect();
+    let removed_rust: Vec<String> = delta
+        .removed_paths
+        .into_iter()
+        .filter(|path| Path::new(path).extension().and_then(|ext| ext.to_str()) == Some("rs"))
+        .collect();
+    if let Err(error) = crate::code_graph::refresh_call_graph_files(&changed_rust, &removed_rust) {
+        eprintln!("[memory] external-change call graph refresh failed: {error}");
+    }
+
+    Ok(entry_count)
+}
+
+/// Rebuild the complete codebase index and call graph so they stay in sync.
+/// Normal coding-tool writes use [`refresh_codebase_file`]; this full path is
+/// reserved for initial creation and explicit rebuilds.
 pub fn refresh_codebase_index() -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
     let result = refresh_codebase_index_inner();
     // Invalidate and rebuild the call graph; failures are non-fatal.
@@ -380,18 +555,56 @@ pub fn refresh_codebase_index() -> Result<usize, Box<dyn std::error::Error + Sen
     result
 }
 
-pub fn ensure_codebase_index() -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
-    let path = codebase_index_path();
-    let should_refresh = match fs::metadata(&path).and_then(|m| m.modified()) {
-        Ok(modified) => modified
-            .elapsed()
-            .map(|age| age > std::time::Duration::from_secs(600))
-            .unwrap_or(true),
-        Err(_) => true,
+/// Incrementally refresh the codebase and call-graph entries for one file.
+///
+/// A missing index still triggers one full build. Once the index exists,
+/// coding-agent writes update only the touched file so a small patch does not
+/// synchronously rescan the entire repository.
+pub fn refresh_codebase_file(
+    path: &Path,
+) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+    let root = find_project_root().ok_or("Cannot determine project root")?;
+    let canonical_root = fs::canonicalize(&root)?;
+    let canonical_path = fs::canonicalize(path)?;
+    if !canonical_path.starts_with(&canonical_root) {
+        return Err(format!(
+            "codebase refresh path '{}' is outside project root '{}'",
+            canonical_path.display(),
+            canonical_root.display()
+        )
+        .into());
+    }
+
+    let index_path = codebase_index_path();
+    if !index_path.exists() {
+        return refresh_codebase_index();
+    }
+    if codebase_index_is_stale(&index_path) {
+        return refresh_stale_codebase_index();
+    }
+
+    let entry_count = {
+        let _guard = codebase_index_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut entries = read_codebase_entries(&index_path)?;
+        update_codebase_entries_for_file(&canonical_root, &canonical_path, &mut entries)?;
+        persist_codebase_entries(&index_path, &entries)?;
+        entries.len()
     };
 
-    if should_refresh {
+    if let Err(error) = crate::code_graph::refresh_call_graph_file(&canonical_path) {
+        eprintln!("[memory] incremental call graph refresh failed: {error}");
+    }
+    Ok(entry_count)
+}
+
+pub fn ensure_codebase_index() -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+    let path = codebase_index_path();
+    if !path.exists() {
         refresh_codebase_index()
+    } else if codebase_index_is_stale(&path) {
+        refresh_stale_codebase_index()
     } else {
         Ok(0)
     }
@@ -640,6 +853,14 @@ pub fn search_codebase(
     let _ = ensure_codebase_index();
 
     let path = codebase_index_path();
+    search_codebase_index(&path, query, limit)
+}
+
+fn search_codebase_index(
+    path: &Path,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
@@ -649,6 +870,9 @@ pub fn search_codebase(
         return Ok(Vec::new());
     }
 
+    let _guard = codebase_index_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let file = fs::File::open(&path)?;
     let reader = BufReader::new(file);
     let mut scored: Vec<(f64, String, Vec<String>)> = Vec::new();
@@ -758,6 +982,34 @@ pub fn looks_like_code_query(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn fixture_codebase_project(label: &str) -> (PathBuf, PathBuf) {
+        static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
+        let sequence = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "sirin_codebase_{label}_{}_{}",
+            std::process::id(),
+            sequence
+        ));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(root.join("src")).expect("create fixture src");
+        std::fs::create_dir_all(root.join("docs")).expect("create fixture docs");
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("write fixture manifest");
+        std::fs::write(root.join("src/main.rs"), "pub fn bootstrap_runtime() {}\n")
+            .expect("write fixture source");
+        std::fs::write(
+            root.join("docs/planner.md"),
+            "# Planner agent intent routing\nPlanner agent classifies intent before routing.\n",
+        )
+        .expect("write fixture documentation");
+        let index_path = root.join("data/codebase_index.jsonl");
+        (root, index_path)
+    }
 
     #[test]
     fn tokenize_ascii() {
@@ -1023,16 +1275,115 @@ mod tests {
     }
 
     #[test]
-    fn refresh_returns_nonzero_for_real_project() {
-        let count = refresh_codebase_index();
-        assert!(count.is_ok(), "refresh should succeed: {:?}", count.err());
-        assert!(count.unwrap() > 0, "should have indexed at least one file");
+    fn incremental_refresh_updates_one_entry_without_dropping_others() {
+        let root =
+            std::env::temp_dir().join(format!("sirin_codebase_incremental_{}", std::process::id()));
+        let src_dir = root.join("src");
+        let changed = src_dir.join("changed.rs");
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(&src_dir).expect("create temp source tree");
+        std::fs::write(&changed, "pub fn old_symbol() {}\n").expect("write source");
+
+        let mut entries = vec![CodebaseEntry {
+            path: "docs/untouched.md".to_string(),
+            kind: "documentation".to_string(),
+            summary: "untouched".to_string(),
+            symbols: Vec::new(),
+            text: "untouched".to_string(),
+            size_bytes: 0,
+            modified_unix_nanos: 0,
+        }];
+        update_codebase_entries_for_file(&root, &changed, &mut entries)
+            .expect("initial incremental refresh");
+        assert_eq!(entries.len(), 2);
+        assert!(entries
+            .iter()
+            .any(|entry| entry.symbols.iter().any(|symbol| symbol == "old_symbol")));
+
+        std::fs::write(&changed, "pub fn new_symbol() {}\n").expect("rewrite source");
+        update_codebase_entries_for_file(&root, &changed, &mut entries)
+            .expect("replacement incremental refresh");
+        assert_eq!(entries.len(), 2, "changed file entry must be replaced");
+        assert!(entries
+            .iter()
+            .any(|entry| entry.path == "docs/untouched.md"));
+        assert!(entries
+            .iter()
+            .any(|entry| entry.symbols.iter().any(|symbol| symbol == "new_symbol")));
+        assert!(!entries
+            .iter()
+            .any(|entry| entry.symbols.iter().any(|symbol| symbol == "old_symbol")));
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
-    fn search_codebase_finds_relevant_results() {
-        let _ = refresh_codebase_index();
-        let results = search_codebase("planner agent intent", 5);
+    fn stale_scan_detects_changed_new_and_removed_files() {
+        let root =
+            std::env::temp_dir().join(format!("sirin_codebase_delta_{}", std::process::id()));
+        let src_dir = root.join("src");
+        let changed = src_dir.join("changed.rs");
+        let removed = src_dir.join("removed.rs");
+        let added = src_dir.join("added.rs");
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(&src_dir).expect("create temp source tree");
+        std::fs::write(&changed, "fn old() {}\n").expect("write changed source");
+        std::fs::write(&removed, "fn removed() {}\n").expect("write removed source");
+
+        let mut entries = Vec::new();
+        update_codebase_entries_for_file(&root, &changed, &mut entries).unwrap();
+        update_codebase_entries_for_file(&root, &removed, &mut entries).unwrap();
+
+        let unchanged_files = vec![changed.clone(), removed.clone()];
+        let unchanged = detect_codebase_delta(&root, &unchanged_files, &entries)
+            .expect("detect unchanged baseline");
+        assert!(unchanged.changed_paths.is_empty());
+        assert!(unchanged.removed_paths.is_empty());
+
+        std::fs::write(&changed, "fn changed_with_different_size() {}\n")
+            .expect("rewrite changed source");
+        std::fs::remove_file(&removed).expect("remove indexed source");
+        std::fs::write(&added, "fn added() {}\n").expect("write added source");
+        let files = vec![added.clone(), changed.clone()];
+
+        let delta = detect_codebase_delta(&root, &files, &entries).expect("detect delta");
+        assert_eq!(delta.changed_paths.len(), 2);
+        assert!(delta.changed_paths.contains(&changed));
+        assert!(delta.changed_paths.contains(&added));
+        assert_eq!(delta.removed_paths, vec!["src/removed.rs".to_string()]);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn legacy_index_entries_default_file_fingerprint() {
+        let legacy = r#"{
+            "path":"src/legacy.rs",
+            "kind":"rust-source",
+            "summary":"legacy",
+            "symbols":[],
+            "text":"legacy"
+        }"#;
+        let entry: CodebaseEntry = serde_json::from_str(legacy).expect("read legacy entry");
+        assert_eq!(entry.size_bytes, 0);
+        assert_eq!(entry.modified_unix_nanos, 0);
+    }
+
+    #[test]
+    fn refresh_returns_nonzero_for_fixture_project() {
+        let (root, index_path) = fixture_codebase_project("refresh");
+        let count = refresh_codebase_index_inner_at(&root, &index_path)
+            .expect("refresh fixture should succeed");
+        assert!(count > 0, "should have indexed at least one file");
+        let entries = read_codebase_entries(&index_path).expect("read fixture index");
+        assert!(entries.iter().any(|entry| entry.path == "src/main.rs"));
+        assert!(entries.iter().any(|entry| entry.path == "docs/planner.md"));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn search_codebase_finds_relevant_fixture_results() {
+        let (root, index_path) = fixture_codebase_project("search");
+        refresh_codebase_index_inner_at(&root, &index_path).expect("refresh fixture index");
+        let results = search_codebase_index(&index_path, "planner agent intent", 5);
         assert!(results.is_ok(), "search should succeed");
         let results = results.unwrap();
         assert!(
@@ -1040,5 +1391,6 @@ mod tests {
             "planner should appear in results: {:?}",
             results
         );
+        std::fs::remove_dir_all(&root).ok();
     }
 }

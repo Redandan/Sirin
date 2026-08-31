@@ -181,7 +181,7 @@ if [ -f "src/mcp_server.rs" ] && [ -f "src/adk/tool/builtins.rs" ]; then
   # Since Issue #115 the shared dispatch lives in src/browser_exec.rs; actions
   # defined there count as "registered in builtins" because builtins delegates
   # to browser_exec::dispatch().  We search both files.
-  BROWSER_ACTIONS="goto screenshot screenshot_analyze click click_point type read eval wait exists attr scroll key console network url title close set_viewport enable_a11y ax_tree ax_find ax_value ax_click ax_focus ax_type ax_type_verified ax_snapshot ax_diff wait_for_ax_change wait_for_url wait_for_ax_ready wait_for_network_idle assert_ax_contains assert_url_matches shadow_find shadow_click shadow_dump flutter_type flutter_enter shadow_type_flutter go_back clear_state wait_new_tab wait_request list_sessions close_session dom_snapshot"
+  BROWSER_ACTIONS="goto screenshot screenshot_analyze click click_point type read eval wait exists attr scroll key console network url title close set_viewport enable_a11y wait_for_flutter_semantics ax_tree ax_find ax_value ax_click ax_focus ax_type ax_type_verified ax_snapshot ax_diff wait_for_ax_change wait_for_url wait_for_ax_ready wait_for_network_idle assert_ax_contains assert_url_matches shadow_find shadow_click dismiss_passkey_prompt agora_nav_click shadow_dump flutter_type flutter_enter shadow_type_flutter go_back clear_state wait_new_tab wait_request list_sessions close_session dom_snapshot"
   MISSING_COUNT=0
   for action in $BROWSER_ACTIONS; do
     if ! grep -q "\"$action\"" src/adk/tool/builtins.rs src/browser_exec.rs 2>/dev/null; then

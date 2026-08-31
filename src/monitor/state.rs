@@ -103,11 +103,18 @@ impl MonitorState {
     }
 
     pub fn paused_stream(&self) -> bool {
-        self.0.read().unwrap_or_else(|e| e.into_inner()).paused_stream
+        self.0
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .paused_stream
     }
 
     pub fn clients_snapshot(&self) -> HashSet<String> {
-        self.0.read().unwrap_or_else(|e| e.into_inner()).clients.clone()
+        self.0
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clients
+            .clone()
     }
 
     // ── Write access ─────────────────────────────────────────────────────────
@@ -132,12 +139,18 @@ impl MonitorState {
 
     /// Record whether the Monitor view is currently open.
     pub fn set_view_active(&self, active: bool) {
-        self.0.write().unwrap_or_else(|e| e.into_inner()).view_active = active;
+        self.0
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .view_active = active;
     }
 
     /// Pause or resume the screenshot stream (does not affect action gating).
     pub fn set_paused_stream(&self, paused: bool) {
-        self.0.write().unwrap_or_else(|e| e.into_inner()).paused_stream = paused;
+        self.0
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .paused_stream = paused;
     }
 
     /// Register or unregister a client ID.
@@ -200,12 +213,20 @@ impl MonitorState {
 
     /// Number of events currently held.
     pub fn event_count(&self) -> usize {
-        self.0.read().unwrap_or_else(|e| e.into_inner()).events.len()
+        self.0
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .events
+            .len()
     }
 
     /// Number of screenshots currently held.
     pub fn screenshot_count(&self) -> usize {
-        self.0.read().unwrap_or_else(|e| e.into_inner()).screenshots.len()
+        self.0
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .screenshots
+            .len()
     }
 }
 
@@ -243,7 +264,11 @@ mod tests {
 
         // Push one more — should drop URL /0, keep /1 … /1000
         state.push_event(make_event(MAX_EVENTS as u32));
-        assert_eq!(state.event_count(), MAX_EVENTS, "queue must stay at capacity");
+        assert_eq!(
+            state.event_count(),
+            MAX_EVENTS,
+            "queue must stay at capacity"
+        );
 
         let events = state.events_snapshot();
         let first_url = match &events[0] {
@@ -296,7 +321,11 @@ mod tests {
 
         // The latest frame should be our 0xFF sentinel
         let (_, latest) = state.latest_screenshot().unwrap();
-        assert_eq!(latest, vec![0xFF], "latest screenshot is wrong after eviction");
+        assert_eq!(
+            latest,
+            vec![0xFF],
+            "latest screenshot is wrong after eviction"
+        );
     }
 
     #[test]

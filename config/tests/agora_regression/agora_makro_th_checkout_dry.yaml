@@ -1,0 +1,62 @@
+# yaml-language-server: $schema=../test-schema.json
+id: agora_makro_th_checkout_dry
+name: "Makro Thailand 購物車店家結帳 dry-run"
+url: "https://redandan.github.io/?__test_role=buyer#/cart"
+
+max_iterations: 12
+timeout_secs: 360
+max_retries: 1
+retry_on_parse_error: 5
+fail_on_console_errors: true
+preserve_origin_state: true
+
+blocked_url_patterns:
+  - "*/payment/confirm*"
+  - "*/payment/success*"
+  - "*/orders/create*"
+
+# H5 mobile viewport
+viewport:
+  width: 390
+  height: 844
+  scale: 2.0
+  mobile: true
+
+locale: zh-TW
+perception: vision
+
+fixture:
+  setup:
+    - {action: "goto", target: "https://redandan.github.io/?__test_role=buyer#/cart"}
+    - {action: "wait", target: "5000"}
+    - {action: "dismiss_passkey_prompt"}
+    - {action: "wait", target: "1000"}
+    - {action: "enable_a11y"}
+    - {action: "wait_for_ax_ready", min_nodes: 10, timeout_ms: 15000}
+    - {action: "assert_ax_contains", target: "小菠萝泰国跑腿"}
+    - {action: "assert_ax_contains", target: "ARO Japanese Rice For Sushi 5 kg"}
+
+goal: |
+  目標：驗證 Makro Thailand 購物車店家可以進入結帳頁，但不要付款。
+
+  嚴格線性步驟：
+  1. 畫面已在買家購物車。先用 screenshot_analyze 確認可見「小菠萝泰国跑腿」區塊。
+  2. 如果該區塊沒有完整出現在畫面中，向下捲動直到看到「小菠萝泰国跑腿」和它右下角的「結帳」按鈕。
+  3. 只點「小菠萝泰国跑腿」區塊內的「結帳」按鈕。不要點上方「小蜜蜂跑腿」的結帳。
+  4. 等待 URL 進入 #/checkout。
+  5. 重新 enable_a11y，確認頁面顯示「確認付款」，且可見 Makro / ARO / THB / 小菠萝泰国跑腿 其中任兩項。
+  6. done=true。絕對不要點「確認付款」。
+
+  安全邊界：
+  - 這是 dry-run，只能停在付款前。
+  - 看到「確認付款」就成功，不能繼續點擊。
+  - 不建立真實訂單，不付款。
+
+success_criteria:
+  - "購物車可見小菠萝泰国跑腿 Makro Thailand 區塊"
+  - "只觸發小菠萝泰国跑腿店家的結帳，不觸發小蜜蜂跑腿"
+  - "URL 到達 #/checkout"
+  - "結帳頁顯示確認付款"
+  - "流程未點擊確認付款，未進入付款完成或訂單建立頁"
+
+tags: [agora, regression, buyer, checkout, makro-th, first-order, dry-run, ops, external-issue, issue-257]

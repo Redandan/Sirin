@@ -41,14 +41,14 @@ use serde_json::{json, Value};
 /// One tool's definition: name + schema + dispatch handler.  Inserted
 /// into the global registry once at startup.
 pub struct ToolDef {
-    pub name:         &'static str,
+    pub name: &'static str,
     pub description: &'static str,
     /// JSON Schema for the tool's `arguments` payload.  Lives as a
     /// `Value` (not a struct) so we don't have to standardise the
     /// schema shape across all 92 tools — each registration can pass
     /// whatever shape the existing literal had.
     pub input_schema: Value,
-    pub handler:      ToolHandler,
+    pub handler: ToolHandler,
 }
 
 impl ToolDef {
@@ -61,6 +61,10 @@ impl ToolDef {
             "inputSchema": self.input_schema,
         });
 
+        // Keep safety declarations explicit and narrow. Observation-only
+        // tools are safe for approval=never clients. KB writes are mutations,
+        // but topicKey upsert is idempotent and the Sirin implementation is
+        // restricted to a fixed server-local kbWrite path.
         match self.name {
             "codex_supervisor_snapshot" => {
                 definition["annotations"] = json!({
@@ -70,7 +74,7 @@ impl ToolDef {
                     "openWorldHint": false
                 });
             }
-            "codex_supervisor_report" => {
+            "codex_supervisor_report" | "codex_supervisor_complete_action" => {
                 definition["annotations"] = json!({
                     "readOnlyHint": false,
                     "destructiveHint": false,
@@ -78,12 +82,44 @@ impl ToolDef {
                     "openWorldHint": false
                 });
             }
-            "codex_supervisor_claim" | "codex_supervisor_complete_action" => {
+            "codex_supervisor_claim" => {
                 definition["annotations"] = json!({
                     "readOnlyHint": false,
                     "destructiveHint": false,
                     "idempotentHint": false,
                     "openWorldHint": false
+                });
+            }
+            "ai_monitor_speed_test" => {
+                definition["annotations"] = json!({
+                    "readOnlyHint": true,
+                    "destructiveHint": false,
+                    "idempotentHint": false,
+                    "openWorldHint": true
+                });
+            }
+            "ios_device_status" | "ios_control_session_status" => {
+                definition["annotations"] = json!({
+                    "readOnlyHint": true,
+                    "destructiveHint": false,
+                    "idempotentHint": true,
+                    "openWorldHint": false
+                });
+            }
+            "kb_get" | "kb_search" | "kb_stats" => {
+                definition["annotations"] = json!({
+                    "readOnlyHint": true,
+                    "destructiveHint": false,
+                    "idempotentHint": true,
+                    "openWorldHint": true
+                });
+            }
+            "kb_write" => {
+                definition["annotations"] = json!({
+                    "readOnlyHint": false,
+                    "destructiveHint": false,
+                    "idempotentHint": true,
+                    "openWorldHint": true
                 });
             }
             _ => {}
@@ -126,9 +162,9 @@ impl ToolHandler {
     /// need to know which variant ran.
     pub async fn invoke(&self, args: Value) -> Result<Value, String> {
         match self {
-            Self::SyncJson(f)  => f(args).map(wrap_json),
+            Self::SyncJson(f) => f(args).map(wrap_json),
             Self::AsyncJson(f) => f(args).await.map(wrap_json),
-            Self::SyncText(f)  => f(args).map(wrap_text),
+            Self::SyncText(f) => f(args).map(wrap_text),
             Self::AsyncText(f) => f(args).await.map(wrap_text),
         }
     }
@@ -295,49 +331,58 @@ fn seed_default(m: &mut RegistryMap) {
         handler: ToolHandler::SyncJson(crate::codex_supervisor::call_complete_action),
     });
 
+    m.insert("ai_monitor_speed_test", ToolDef {
+        name: "ai_monitor_speed_test",
+        description: "AI Work Monitor 手動下載測速。只有明確呼叫時才從 Cloudflare speed endpoint 下載 5 MB；不會背景執行、不改路由、不讀憑證。",
+        input_schema: json!({"type": "object", "properties": {}}),
+        handler: ToolHandler::AsyncJson(|args| Box::pin(crate::mcp_server::call_ai_monitor_speed_test(args))),
+    });
+
     // Domain: AI-facing discovery — first thing other AIs see when they
     // call `tools/list`, so the description spells out what Sirin is + the
     // help URL.  Returning the URL inline lets curl-only callers skip the
     // browser entirely.
     m.insert("help", ToolDef {
         name:         "help",
-        description: "📖 What is Sirin? — AI-driven browser test daemon. Returns connection methods + tool categories + the help URL (http://127.0.0.1:7700/help) for full HTML docs. Other AIs (Claude / Cline / Cursor / curl) should call this FIRST to learn what 65+ tools are available and how to use them. No args required.",
+        description: "📖 What is Sirin? — AI-driven browser test daemon. Returns the full tools/list count, optional discovery profiles, connection methods, tool categories, and the help URL (http://127.0.0.1:7700/help). Other AIs (Claude / Cline / Cursor / curl) should call this FIRST. No args required.",
         input_schema: json!({"type": "object", "properties": {}}),
         handler:      ToolHandler::SyncJson(crate::mcp_server::call_help),
     });
 
-    m.insert("ai_monitor_speed_test", ToolDef {
-        name:         "ai_monitor_speed_test",
-        description: "AI Work Monitor manual download test. Downloads 5 MB only after an explicit call; it does not run in the background, change routes, or access credentials.",
-        input_schema: json!({"type": "object", "properties": {}}),
-        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::mcp_server::call_ai_monitor_speed_test(args))),
-    });
-
     // Domain: skills + teams (text-mode handlers).
-    m.insert("skill_list", ToolDef {
-        name:         "skill_list",
-        description: "列出 Sirin 所有可用技能（含 YAML 動態技能）。",
-        input_schema: json!({"type": "object", "properties": {}}),
-        // Wrap the zero-arg handler into a `fn(Value) -> Result<String, String>`
-        // shape via a non-capturing closure.  Closures without captures coerce
-        // to fn pointers, which is what the enum variant requires.
-        handler:      ToolHandler::SyncText(|_args| Ok(crate::mcp_server::call_skill_list())),
-    });
+    m.insert(
+        "skill_list",
+        ToolDef {
+            name: "skill_list",
+            description: "列出 Sirin 所有可用技能（含 YAML 動態技能）。",
+            input_schema: json!({"type": "object", "properties": {}}),
+            // Wrap the zero-arg handler into a `fn(Value) -> Result<String, String>`
+            // shape via a non-capturing closure.  Closures without captures coerce
+            // to fn pointers, which is what the enum variant requires.
+            handler: ToolHandler::SyncText(|_args| Ok(crate::mcp_server::call_skill_list())),
+        },
+    );
 
-    m.insert("teams_pending", ToolDef {
-        name:         "teams_pending",
-        description: "取得 Teams 待確認回覆草稿列表。",
-        input_schema: json!({"type": "object", "properties": {}}),
-        handler:      ToolHandler::SyncText(|_args| Ok(crate::mcp_server::call_teams_pending())),
-    });
+    m.insert(
+        "teams_pending",
+        ToolDef {
+            name: "teams_pending",
+            description: "取得 Teams 待確認回覆草稿列表。",
+            input_schema: json!({"type": "object", "properties": {}}),
+            handler: ToolHandler::SyncText(|_args| Ok(crate::mcp_server::call_teams_pending())),
+        },
+    );
 
     // Domain: discovery (structured-JSON handler with no args).
-    m.insert("discovery_status", ToolDef {
-        name:         "discovery_status",
-        description: "查詢 discovery crawler 的目前狀態（NotRun / Crawling / Done + 元數據）。",
-        input_schema: json!({"type": "object", "properties": {}}),
-        handler:      ToolHandler::SyncJson(|_args| crate::mcp_server::call_discovery_status()),
-    });
+    m.insert(
+        "discovery_status",
+        ToolDef {
+            name: "discovery_status",
+            description: "查詢 discovery crawler 的目前狀態（NotRun / Crawling / Done + 元數據）。",
+            input_schema: json!({"type": "object", "properties": {}}),
+            handler: ToolHandler::SyncJson(|_args| crate::mcp_server::call_discovery_status()),
+        },
+    );
 
     // Domain: settings/allowlist + KB + replay scripts (zero-arg SyncJson handlers).
     // 6-tool batch migrated 2026-05-04 — see #257 follow-up commits.
@@ -363,19 +408,25 @@ fn seed_default(m: &mut RegistryMap) {
         handler:      ToolHandler::SyncJson(|_args| crate::mcp_server::call_list_slash_commands()),
     });
 
-    m.insert("list_hooks", ToolDef {
-        name:         "list_hooks",
-        description: "#225 — 列出 ~/.claude/settings.json hooks 設定（event → command 清單）。",
-        input_schema: json!({"type": "object", "properties": {}}),
-        handler:      ToolHandler::SyncJson(|_args| crate::mcp_server::call_list_hooks()),
-    });
+    m.insert(
+        "list_hooks",
+        ToolDef {
+            name: "list_hooks",
+            description: "#225 — 列出 ~/.claude/settings.json hooks 設定（event → command 清單）。",
+            input_schema: json!({"type": "object", "properties": {}}),
+            handler: ToolHandler::SyncJson(|_args| crate::mcp_server::call_list_hooks()),
+        },
+    );
 
-    m.insert("list_intents", ToolDef {
-        name:         "list_intents",
-        description: "#233 — 列出 ~/.claude/llm_intents.json 中的所有 intent → LLM 路由規則。",
-        input_schema: json!({"type": "object", "properties": {}}),
-        handler:      ToolHandler::SyncJson(|_args| crate::mcp_server::call_list_intents()),
-    });
+    m.insert(
+        "list_intents",
+        ToolDef {
+            name: "list_intents",
+            description: "#233 — 列出 ~/.claude/llm_intents.json 中的所有 intent → LLM 路由規則。",
+            input_schema: json!({"type": "object", "properties": {}}),
+            handler: ToolHandler::SyncJson(|_args| crate::mcp_server::call_list_intents()),
+        },
+    );
 
     m.insert("list_saved_scripts", ToolDef {
         name:         "list_saved_scripts",
@@ -455,24 +506,38 @@ fn seed_default(m: &mut RegistryMap) {
 
     m.insert("sync_config", ToolDef {
         name:         "sync_config",
-        description: "將 repo 的 config/tests/ 同步到 %LOCALAPPDATA%\\Sirin\\config\\tests/（Sirin 執行時讀取的位置）。\n\n每次修改 YAML 測試檔後必須呼叫，否則 Sirin 跑的是舊版 YAML。\n\n返回：synced=true, files_copied=N。\n\n關閉 #187。",
-        input_schema: json!({"type": "object", "properties": {}}),
-        handler:      ToolHandler::SyncJson(|_args| crate::mcp_server::call_sync_config()),
+        description: "將 repo 的 config/tests/ 同步到 %LOCALAPPDATA%\\Sirin\\config\\tests/（Sirin 執行時讀取的位置）。\n\n每次修改 YAML 測試檔後必須呼叫，否則 Sirin 跑的是舊版 YAML。若傳 prune_stale_tests=true，會刪除 LOCALAPPDATA 裡 repo 已不存在的 config/tests/**/*.yaml，避免舊測試污染 list_tests/test_summary。\n\n返回：synced=true, files_copied=N, stale_tests_removed=[...]。\n\n關閉 #187。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "prune_stale_tests": {
+                    "type": "boolean",
+                    "description": "預設 false；true 時刪除本機 config/tests 內 repo 已不存在的 YAML"
+                }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_sync_config),
     });
 
-    m.insert("agent_queue_status", ToolDef {
-        name:         "agent_queue_status",
-        description: "查看 AI 小隊任務佇列現況（所有任務的 id / status / 結果摘要）。",
-        input_schema: json!({"type": "object", "properties": {}}),
-        handler:      ToolHandler::SyncJson(|_args| crate::mcp_server::call_agent_queue_status()),
-    });
+    m.insert(
+        "agent_queue_status",
+        ToolDef {
+            name: "agent_queue_status",
+            description: "查看 AI 小隊任務佇列現況（所有任務的 id / status / 結果摘要）。",
+            input_schema: json!({"type": "object", "properties": {}}),
+            handler: ToolHandler::SyncJson(|_args| crate::mcp_server::call_agent_queue_status()),
+        },
+    );
 
-    m.insert("agent_clear_completed", ToolDef {
-        name:         "agent_clear_completed",
-        description: "清除任務佇列中所有已完成（done / failed）的任務，保留 queued / running。",
-        input_schema: json!({"type": "object", "properties": {}}),
-        handler:      ToolHandler::SyncJson(|_args| crate::mcp_server::call_agent_clear_completed()),
-    });
+    m.insert(
+        "agent_clear_completed",
+        ToolDef {
+            name: "agent_clear_completed",
+            description: "清除任務佇列中所有已完成（done / failed）的任務，保留 queued / running。",
+            input_schema: json!({"type": "object", "properties": {}}),
+            handler: ToolHandler::SyncJson(|_args| crate::mcp_server::call_agent_clear_completed()),
+        },
+    );
 
     m.insert("cleanup_stale_worktrees", ToolDef {
         name:         "cleanup_stale_worktrees",
@@ -531,18 +596,21 @@ fn seed_default(m: &mut RegistryMap) {
         handler:      ToolHandler::SyncJson(crate::mcp_server::call_list_points),
     });
 
-    m.insert("restore_point", ToolDef {
-        name:         "restore_point",
-        description: "#227 — 讀取指定 save point 的 summary，用於恢復上下文。",
-        input_schema: json!({
-            "type": "object",
-            "required": ["label"],
-            "properties": {
-                "label": { "type": "string", "description": "要恢復的 save point label" }
-            }
-        }),
-        handler:      ToolHandler::SyncJson(crate::mcp_server::call_restore_point),
-    });
+    m.insert(
+        "restore_point",
+        ToolDef {
+            name: "restore_point",
+            description: "#227 — 讀取指定 save point 的 summary，用於恢復上下文。",
+            input_schema: json!({
+                "type": "object",
+                "required": ["label"],
+                "properties": {
+                    "label": { "type": "string", "description": "要恢復的 save point label" }
+                }
+            }),
+            handler: ToolHandler::SyncJson(crate::mcp_server::call_restore_point),
+        },
+    );
 
     // ── #228 task-tracker (4 tools, full domain) ──
 
@@ -590,20 +658,23 @@ fn seed_default(m: &mut RegistryMap) {
         handler:      ToolHandler::SyncJson(crate::mcp_server::call_mark_task_done),
     });
 
-    m.insert("link_task", ToolDef {
-        name:         "link_task",
-        description: "#228 — 把 task 和 GitHub issue URL 或 KB topicKey 連結。",
-        input_schema: json!({
-            "type": "object",
-            "required": ["task_id"],
-            "properties": {
-                "task_id":     { "type": "string", "description": "T-YYYYMMDD-NNNN" },
-                "github_url":  { "type": "string", "description": "GitHub issue URL（選填）" },
-                "kb_topickey": { "type": "string", "description": "KB topicKey（選填）" }
-            }
-        }),
-        handler:      ToolHandler::SyncJson(crate::mcp_server::call_link_task),
-    });
+    m.insert(
+        "link_task",
+        ToolDef {
+            name: "link_task",
+            description: "#228 — 把 task 和 GitHub issue URL 或 KB topicKey 連結。",
+            input_schema: json!({
+                "type": "object",
+                "required": ["task_id"],
+                "properties": {
+                    "task_id":     { "type": "string", "description": "T-YYYYMMDD-NNNN" },
+                    "github_url":  { "type": "string", "description": "GitHub issue URL（選填）" },
+                    "kb_topickey": { "type": "string", "description": "KB topicKey（選填）" }
+                }
+            }),
+            handler: ToolHandler::SyncJson(crate::mcp_server::call_link_task),
+        },
+    );
 
     // ── #224 handoff (3 tools, full domain) ──
 
@@ -620,7 +691,7 @@ fn seed_default(m: &mut RegistryMap) {
                 "file_refs": { "type": "string", "description": "動到的檔案（逗號分隔，選填）" }
             }
         }),
-        handler:      ToolHandler::SyncJson(crate::mcp_server::call_create_handoff),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::mcp_server::call_create_handoff(args))),
     });
 
     m.insert("get_latest_handoff", ToolDef {
@@ -635,18 +706,21 @@ fn seed_default(m: &mut RegistryMap) {
         handler:      ToolHandler::SyncJson(crate::mcp_server::call_get_latest_handoff),
     });
 
-    m.insert("list_handoff_history", ToolDef {
-        name:         "list_handoff_history",
-        description: "#224 — 列出最近 N 筆 handoff 記錄（最新在前）。",
-        input_schema: json!({
-            "type": "object",
-            "properties": {
-                "project": { "type": "string", "description": "project slug，預設 sirin" },
-                "limit":   { "type": "number",  "description": "筆數上限，預設 10" }
-            }
-        }),
-        handler:      ToolHandler::SyncJson(crate::mcp_server::call_list_handoff_history),
-    });
+    m.insert(
+        "list_handoff_history",
+        ToolDef {
+            name: "list_handoff_history",
+            description: "#224 — 列出最近 N 筆 handoff 記錄（最新在前）。",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "project": { "type": "string", "description": "project slug，預設 sirin" },
+                    "limit":   { "type": "number",  "description": "筆數上限，預設 10" }
+                }
+            }),
+            handler: ToolHandler::SyncJson(crate::mcp_server::call_list_handoff_history),
+        },
+    );
 
     // Domain: replay scripts + auto-fix history + #225 claude-config + #232
     // session-cost + #233 register_intent (sync arg-taking handlers).
@@ -777,17 +851,24 @@ fn seed_default(m: &mut RegistryMap) {
     // lint_test / persist_adhoc_run / discover_app / discovery_features)
     // stay on the legacy path — same shape but riskier to batch in one go.
 
-    m.insert("list_tests", ToolDef {
-        name:         "list_tests",
-        description: "列出 config/tests/ 目錄下所有 YAML 測試 goal。",
-        input_schema: json!({
-            "type": "object",
-            "properties": {
-                "tag": { "type": "string", "description": "選填：tag filter" }
-            }
-        }),
-        handler:      ToolHandler::SyncJson(crate::mcp_server::call_list_tests),
-    });
+    m.insert(
+        "list_tests",
+        ToolDef {
+            name: "list_tests",
+            description: "列出 config/tests/ 目錄下 YAML 測試 goal。預設列全部；可用 suite=active-smoke / deep-regression / obsolete / all，或 tags/include_tags/exclude_tags 篩選，讓外部 AI 排程前避開 mutating / requires-operator-approval 測試。",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "suite": { "type": "string", "description": "選填：active-smoke | deep-regression | obsolete | all；不傳則列全部" },
+                    "tag": { "type": "string", "description": "選填：單一 tag filter" },
+                    "tags": { "type": "array", "items": { "type": "string" }, "description": "選填：任一 tag 命中即納入" },
+                    "include_tags": { "type": "array", "items": { "type": "string" }, "description": "選填：任一 tag 命中即納入" },
+                    "exclude_tags": { "type": "array", "items": { "type": "string" }, "description": "選填：排除任一 tag 命中的測試" }
+                }
+            }),
+            handler: ToolHandler::SyncJson(crate::mcp_server::call_list_tests),
+        },
+    );
 
     m.insert("get_test_result", ToolDef {
         name:         "get_test_result",
@@ -857,24 +938,295 @@ fn seed_default(m: &mut RegistryMap) {
 
     m.insert("test_summary", ToolDef {
         name:         "test_summary",
-        description: "一次呼叫取得最近一批測試的完整摘要：pass/fail counts + console_errors 統計 + 建議動作。適合每次 regression suite 跑完後立刻查看結果。\n\n回傳: { passed, failed, console_errors_total, console_warnings_total, results: [{test_id, status, console_errors, console_warnings, flag}] }",
+        description: "一次呼叫取得最近一批測試的完整摘要：pass/fail counts + console_errors 統計 + 建議動作。預設 suite=active-smoke，只看已驗證、可快速判斷目前 AgoraMarket 健康狀態的 deterministic smoke；可改 suite=deep-regression / obsolete / all，或用 tags/exclude_tags 自訂篩選。零筆符合資料時 status=no_data、has_data=false，不會誤報為 passed。\n\n回傳: { suite, include_tags, status, has_data, passed, failed, console_errors_total, console_warnings_total, results: [{test_id, status, run_mode, fixture_only, tags, console_errors, console_warnings, flag}] }",
         input_schema: json!({
             "type": "object",
             "properties": {
-                "since":  { "type": "string", "description": "只看此時間（HH:MM）之後的 runs，預設最近 1 小時" },
-                "limit":  { "type": "number", "description": "最多看幾個不重複的 test，預設 31" }
+                "since":  { "type": "string", "description": "只看此時間（RFC3339 或 HH:MM）之後的 runs，預設最近 24 小時" },
+                "limit":  { "type": "number", "description": "最多看幾個不重複的 test，預設 31" },
+                "suite":  { "type": "string", "description": "active-smoke（預設）| deep-regression | obsolete | all" },
+                "tag":    { "type": "string", "description": "選填：只看單一 tag，會覆蓋 suite 的預設 tag" },
+                "tags":   { "type": "array", "items": { "type": "string" }, "description": "選填：任一 tag 命中即納入，會覆蓋 suite 的預設 tag" },
+                "exclude_tags": { "type": "array", "items": { "type": "string" }, "description": "選填：排除任一 tag 命中的測試" }
             }
         }),
         handler:      ToolHandler::SyncJson(crate::mcp_server::call_test_summary),
     });
 
-    m.insert("test_analytics", ToolDef {
-        name:         "test_analytics",
-        description: "聚合測試健康指標：pass rate (近 10 / 30 runs)、flaky 標記、avg iterations、avg duration、最常見 failure_category。不指定 test_id 時返回全部測試（依 pass_rate_7d 升序，最差優先）+ summary 區塊。",
+    m.insert("agora_health_check", ToolDef {
+        name:         "agora_health_check",
+        description: "外部 AI 的 AgoraMarket 單一健康檢查入口。整合 active-smoke 的 test_summary + script_health + 最新 run freshness，回傳 status/confidence/healthy/evidence/next_action。預設只讀不跑測試；傳 rerun_if_stale=true 會在資料過期或缺失時排 active-smoke，force_rerun=true 則直接重跑。",
         input_schema: json!({
             "type": "object",
             "properties": {
-                "test_id": { "type": "string", "description": "選填：只看特定測試" }
+                "stale_after_hours": {
+                    "type": "number",
+                    "description": "active-smoke 最新證據超過幾小時視為 stale，預設 6"
+                },
+                "rerun_if_stale": {
+                    "type": "boolean",
+                    "description": "預設 false；true 時資料 stale/no_data 會自動 queue active-smoke"
+                },
+                "force_rerun": {
+                    "type": "boolean",
+                    "description": "預設 false；true 時不管新鮮度都 queue active-smoke"
+                },
+                "max_concurrency": {
+                    "type": "number",
+                    "description": "保留相容；agora_health_check 目前固定 serial concurrency=1，以避免 Flutter semantics/profile 互相干擾"
+                }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_agora_health_check),
+    });
+
+    m.insert("agora_health_triage", ToolDef {
+        name:         "agora_health_triage",
+        description: "AgoraMarket active-smoke 失敗後的一鍵診斷入口。預設讀最新 active-smoke 非 passed run；也可傳 run_ids 或 test_ids 指定診斷。彙整 get_test_result / trace / console / screenshot 線索，輸出 failure_type、root_cause_hint、recommended_action、safe_to_escalate_to_codex。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "run_ids": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "選填：指定要診斷的 run_id 清單"
+                },
+                "test_ids": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "選填：指定 test_id，會診斷各 test 最新 run"
+                },
+                "include_passed": {
+                    "type": "boolean",
+                    "description": "預設 false；true 時也把 passed run 納入輸出，方便驗證分類"
+                }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::mcp_server::call_agora_health_triage),
+    });
+
+    m.insert("agora_explore_audit", ToolDef {
+        name:         "agora_explore_audit",
+        description: "AgoraMarket 自動探索稽核入口。Sirin 會依 config/audits/agoramarket.yaml 序列巡檢 buyer/seller/admin 主要頁與 seller 商品/訂單/錢包 surface，收集 final_url/title/Flutter semantics/shadow DOM/console 線索，偵測白屏、卡 login、role 錯誤、console error、核心文案缺失等明顯問題，輸出 issue_candidates 交給 Codex 驗收。每次 run 會回傳 run_id/evidence_path，並把 JSON evidence 持久化到 app data tracking/audits。這是 deterministic audit，不會修改 AgoraMarket。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "surfaces": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": ["buyer_home", "seller_home", "admin_home", "seller_products", "seller_orders", "seller_wallet"]
+                    },
+                    "description": "選填：只稽核指定 surface；預設全部"
+                },
+                "include_screenshots": {
+                    "type": "boolean",
+                    "description": "預設 false；true 時每個 surface 會附 screenshot base64，payload 較大"
+                },
+                "stop_on_first_critical": {
+                    "type": "boolean",
+                    "description": "預設 false；true 時遇到 high severity issue 立即停止"
+                },
+                "timeout_ms": {
+                    "type": "number",
+                    "description": "等待 Flutter semantics 的 timeout，預設 15000"
+                }
+            }
+        }),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::audit_engine::call_agora_explore_audit(args))),
+    });
+
+    m.insert("audit_history", ToolDef {
+        name:         "audit_history",
+        description: "列出最近 persisted audit runs。預設 profile_id=agoramarket，讀取 app data tracking/audits/<profile_id>/*/result.json，只做 read-only history 查詢，不啟動瀏覽器。回傳 run_id/status/issue_count/critical_count/evidence_path/issue_summary。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "profile_id": {
+                    "type": "string",
+                    "description": "audit profile id，預設 agoramarket"
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "最多回傳幾筆，預設 10，範圍 1-100"
+                },
+                "include_issues": {
+                    "type": "boolean",
+                    "description": "預設 true；false 時省略 issue_summary，適合只看 run list"
+                }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::audit_engine::call_audit_history),
+    });
+
+    m.insert("audit_get_result", ToolDef {
+        name:         "audit_get_result",
+        description: "依 run_id 讀取 persisted audit evidence 完整 JSON。預設 profile_id=agoramarket，只讀 app data tracking/audits/<profile_id>/<run_id>/result.json，不啟動瀏覽器。",
+        input_schema: json!({
+            "type": "object",
+            "required": ["run_id"],
+            "properties": {
+                "profile_id": {
+                    "type": "string",
+                    "description": "audit profile id，預設 agoramarket"
+                },
+                "run_id": {
+                    "type": "string",
+                    "description": "agora_explore_audit 回傳的 run_id"
+                }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::audit_engine::call_audit_get_result),
+    });
+
+    m.insert("agoramarket_audit_latest", ToolDef {
+        name:         "agoramarket_audit_latest",
+        description: "快速取得最新 AgoraMarket audit summary。讀取 persisted evidence，不啟動瀏覽器。預設只回 summary；include_full=true 時附完整 result JSON。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "include_full": {
+                    "type": "boolean",
+                    "description": "預設 false；true 時附完整 persisted result JSON"
+                }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::audit_engine::call_agoramarket_audit_latest),
+    });
+
+    m.insert("handoff_list", ToolDef {
+        name:         "handoff_list",
+        description: "列出 Sirin audit 產生的 Codex handoff inbox。預設 profile_id=agoramarket、status=active，只讀 app data tracking/handoffs，不啟動瀏覽器。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "profile_id": {
+                    "type": "string",
+                    "description": "handoff profile id，預設 agoramarket"
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["active", "open", "acknowledged", "resolved", "reopened", "all"],
+                    "description": "預設 active；active 會列出所有非 resolved handoff"
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "最多回傳幾筆，預設 20，範圍 1-100"
+                }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::audit_engine::call_handoff_list),
+    });
+
+    m.insert("handoff_get", ToolDef {
+        name:         "handoff_get",
+        description: "讀取單一 Codex handoff record 完整內容。預設 profile_id=agoramarket，只讀 app data tracking/handoffs。",
+        input_schema: json!({
+            "type": "object",
+            "required": ["handoff_id"],
+            "properties": {
+                "profile_id": {
+                    "type": "string",
+                    "description": "handoff profile id，預設 agoramarket"
+                },
+                "handoff_id": {
+                    "type": "string",
+                    "description": "handoff_list 或 agora_explore_audit.handoff_inbox 回傳的 handoff_id"
+                }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::audit_engine::call_handoff_get),
+    });
+
+    m.insert("handoff_ack", ToolDef {
+        name:         "handoff_ack",
+        description: "把 Codex handoff 標記為 acknowledged，代表 Codex 已接手。只更新 Sirin handoff inbox 狀態，不啟動瀏覽器。",
+        input_schema: json!({
+            "type": "object",
+            "required": ["handoff_id"],
+            "properties": {
+                "profile_id": {
+                    "type": "string",
+                    "description": "handoff profile id，預設 agoramarket"
+                },
+                "handoff_id": {
+                    "type": "string",
+                    "description": "要接手的 handoff_id"
+                },
+                "actor": {
+                    "type": "string",
+                    "description": "操作者，預設 codex"
+                }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::audit_engine::call_handoff_ack),
+    });
+
+    m.insert("handoff_resolve", ToolDef {
+        name:         "handoff_resolve",
+        description: "把 Codex handoff 標記為 resolved，代表 Codex 已處理完成。record 內保留 recheck_hint 供後續 Sirin 重驗。",
+        input_schema: json!({
+            "type": "object",
+            "required": ["handoff_id"],
+            "properties": {
+                "profile_id": {
+                    "type": "string",
+                    "description": "handoff profile id，預設 agoramarket"
+                },
+                "handoff_id": {
+                    "type": "string",
+                    "description": "要完成的 handoff_id"
+                },
+                "actor": {
+                    "type": "string",
+                    "description": "操作者，預設 codex"
+                },
+                "note": {
+                    "type": "string",
+                    "description": "選填 resolve note，例如修復 PR 或驗收備註"
+                }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::audit_engine::call_handoff_resolve),
+    });
+
+    m.insert("handoff_recheck", ToolDef {
+        name:         "handoff_recheck",
+        description: "依 handoff_id 讀取 recheck_hint，只重跑該 handoff 對應 AgoraMarket surface。若原 fingerprint 消失則標記 verified_resolved；若仍出現則標記 reopened/open，並回傳 recheck run/evidence。",
+        input_schema: json!({
+            "type": "object",
+            "required": ["handoff_id"],
+            "properties": {
+                "profile_id": {
+                    "type": "string",
+                    "description": "handoff profile id，預設 agoramarket"
+                },
+                "handoff_id": {
+                    "type": "string",
+                    "description": "要重驗的 handoff_id"
+                },
+                "timeout_ms": {
+                    "type": "number",
+                    "description": "等待 Flutter semantics 的 timeout，預設 12000"
+                },
+                "include_screenshots": {
+                    "type": "boolean",
+                    "description": "預設 false；true 時 recheck audit 附 screenshot base64，payload 較大"
+                }
+            }
+        }),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::audit_engine::call_handoff_recheck(args))),
+    });
+
+    m.insert("test_analytics", ToolDef {
+        name:         "test_analytics",
+        description: "聚合測試健康指標：pass rate (近 10 / 30 runs)、flaky 標記、avg iterations、avg duration、最常見 failure_category。預設只看目前 config/tests 清單且限近 30 天，使用單次批次查詢；可明確要求歷史 test id 或完整時間範圍。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "test_id": { "type": "string", "description": "選填：只看特定測試；明確指定時保留該測試最近 30 runs 的歷史行為" },
+                "window_days": { "type": "integer", "minimum": 0, "maximum": 3650, "default": 30, "description": "批次統計時間範圍；0=不限時間" },
+                "include_historical": { "type": "boolean", "default": false, "description": "true 時納入已不在目前 config/tests 的歷史 test id" }
             }
         }),
         handler:      ToolHandler::SyncJson(crate::mcp_server::call_test_analytics),
@@ -908,14 +1260,18 @@ fn seed_default(m: &mut RegistryMap) {
 
     m.insert("script_health", ToolDef {
         name:         "script_health",
-        description: "#266 — 回傳 saved_scripts 健康度指標，用於 Dashboard KPI / Coverage column / cron 偵測 stale-script drift。\n\n回傳兩部份：\n- `aggregate`: window 內 total_runs / passed_via_replay / passed_via_llm / failed / success_rate_replay + 上一週期比較 + drift\n- `per_test`: 每個 test 的 status (healthy|stale_fallback|llm_only|untested) + 最近 3 次 is_replay 歷史\n\n預設 window=14 天（前 7 天 vs 後 7 天比較）。若 drift < -0.10（10 個百分點），代表 replay 成功率明顯下滑，建議 audit。",
+        description: "#266 — 回傳 saved_scripts / fixture_only deterministic 健康度指標，用於 Dashboard KPI / Coverage column / cron 偵測 stale-script drift。預設 suite=active-smoke，只看可快速判斷目前 AgoraMarket 健康狀態的 deterministic smoke；可改 suite=deep-regression / obsolete / all，或用 tags/exclude_tags 自訂篩選。\n\n回傳兩部份：\n- `aggregate`: 篩選後 tests 在時間窗內的實際 runs：total_runs / passed_via_replay / passed_via_fixture_only / passed_deterministic / passed_via_llm / failed / success_rate_replay / success_rate_deterministic + 上一週期比較、drift、latest_run_at、has_recent_data\n- `per_test`: 每個 test 的 status (healthy|fixture_only|stale_fallback|llm_only|untested) + tags + 最近 3 次 is_replay 歷史\n\n預設 window=14 天（前 7 天 vs 後 7 天比較）。若 drift < -0.10（10 個百分點），代表 replay 成功率明顯下滑，建議 audit。",
         input_schema: json!({
             "type": "object",
             "properties": {
                 "window_days": {
                     "type": "number",
                     "description": "比較窗（會被切兩半做 week-over-week drift），預設 14"
-                }
+                },
+                "suite":  { "type": "string", "description": "active-smoke（預設）| deep-regression | obsolete | all" },
+                "tag":    { "type": "string", "description": "選填：只看單一 tag，會覆蓋 suite 的預設 tag" },
+                "tags":   { "type": "array", "items": { "type": "string" }, "description": "選填：任一 tag 命中即納入，會覆蓋 suite 的預設 tag" },
+                "exclude_tags": { "type": "array", "items": { "type": "string" }, "description": "選填：排除任一 tag 命中的測試" }
             }
         }),
         handler:      ToolHandler::SyncJson(crate::mcp_server::call_script_health),
@@ -995,7 +1351,7 @@ fn seed_default(m: &mut RegistryMap) {
 
     m.insert("run_test_batch", ToolDef {
         name:         "run_test_batch",
-        description: "並行啟動多個 YAML test，每個跑在獨立 chrome tab（session_id 自動分配）。立即返回 N 個 run_id。\n\n適用場景：smoke suite / nightly regression / 一次跑完多個 tag。\n\n限制：max_concurrency 最大 8（避免 CDP 連線過載）；不會自動 triage 或 auto_fix（失敗請用個別 run_test_async 重跑）；任一 test_id 找不到就整批拒絕。",
+        description: "批次啟動多個 YAML test，立即返回 N 個 run_id；實際執行會經 TEST_RUN_LOCK 序列化，避免多個 Flutter/Chrome 測試同時撞 Sirin 的 process-wide Chrome singleton。\n\n適用場景：smoke suite / nightly regression / 一次排完多個 tag。\n\n限制：effective_concurrency 固定 1；不會自動 triage 或 auto_fix（失敗請用個別 run_test_async 重跑）；任一 test_id 找不到就整批拒絕。",
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -1006,7 +1362,7 @@ fn seed_default(m: &mut RegistryMap) {
                 },
                 "max_concurrency": {
                     "type": "number",
-                    "description": "最大同時執行數量；預設 3，最大 8"
+                    "description": "相容舊客戶端；目前會被 clamped to 1，因 Sirin Chrome singleton 必須序列執行"
                 }
             },
             "required": ["test_ids"]
@@ -1371,7 +1727,7 @@ fn seed_default(m: &mut RegistryMap) {
 
     m.insert("kb_stats", ToolDef {
         name:         "kb_stats",
-        description: "#226 — KB 深度統計（補強 kbHealth）。透過 agora-trading MCP 取得指定 project 的條目分布：by domain / by status / by layer / by tag（若上游提供）/ draft ratio / stale ratio。\n\n另外包含 #219 的 brief 長度治理 breakdown：可檢查指定 topicKey 的字數是否超過上限（預設 3000）。\n\n需要 agora-trading + agora-ops token 在 ~/.claude.json 中設定。",
+        description: "#226 — KB 深度統計（補強 kbHealth）。透過 Sirin 共用 KB client 與 Agora OPS read authorization 取得指定 project 的條目分布：by domain / by status / by layer / by tag（若上游提供）/ draft ratio / stale ratio。\n\n另外包含 #219 的 brief 長度治理 breakdown：可檢查指定 topicKey 的字數是否超過上限（預設 3000）。上游健康檢查不可用、空白或無法解析時會回報 unavailable/unknown，不會顯示 healthy。",
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -1687,7 +2043,7 @@ fn seed_default(m: &mut RegistryMap) {
     // KB direct access (Sirin's own search/get/write to the AgoraMarket KB)
     m.insert("kb_search", ToolDef {
         name:         "kb_search",
-        description: "語意搜尋 AgoraMarket Knowledge Base，返回最相關的條目內容。KB 必須啟用（KB_ENABLED=1）。Bearer token 留在 Sirin 端，瀏覽器永遠看不到。",
+        description: "語意搜尋 AgoraMarket Knowledge Base，返回最相關的條目內容。KB 必須啟用（KB_ENABLED=1）。Sirin 優先使用既有 Agora OPS read authorization；憑證不會進入瀏覽器。無結果會回傳 found=false，不會把提示文字當內容。",
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -1702,7 +2058,7 @@ fn seed_default(m: &mut RegistryMap) {
 
     m.insert("kb_get", ToolDef {
         name:         "kb_get",
-        description: "依 topicKey 取得 Knowledge Base 單一條目。KB 必須啟用（KB_ENABLED=1）。Bearer token 留在 Sirin 端。",
+        description: "依 topicKey 取得 Knowledge Base 單一條目。KB 必須啟用（KB_ENABLED=1）。Sirin 優先使用既有 Agora OPS read authorization；not-found 文字不會被當成內容或寫入快取。",
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -1716,17 +2072,20 @@ fn seed_default(m: &mut RegistryMap) {
 
     m.insert("kb_write", ToolDef {
         name:         "kb_write",
-        description: "Write a note to AgoraMarket Knowledge Base. Stored as layer=raw, status=draft, source=sirin. KB must be enabled (KB_ENABLED=1).",
+        description: "Upsert an explicitly requested Knowledge Base entry through Sirin's fixed server-local kbWrite service path. No external-AI bearer or per-call Telegram approval is used. The remote credential never leaves the AgoraMarketAPI host. Projects, topic keys, sizes, layer, and status are allowlisted; source is always sirin. KB_ENABLED=1 plus AGORA_SSH_HOST/AGORA_SSH_KEY (or SIRIN_KB_SSH_HOST/SIRIN_KB_SSH_KEY) are required. This manual tool is independent of KB_WRITE_TELEMETRY.",
         input_schema: json!({
             "type": "object",
             "properties": {
-                "topic_key": { "type": "string", "description": "unique kebab-case key, e.g. 'cic-result-demo-001'" },
+                "topic_key": { "type": "string", "description": "recognized domain-prefixed lowercase kebab-case key, e.g. 'sirin-kb-local-write'" },
                 "title":     { "type": "string", "description": "human-readable title" },
-                "content":   { "type": "string", "description": "note body (Markdown OK)" },
+                "content":   { "type": "string", "description": "entry body, Markdown allowed, maximum 3500 characters" },
                 "domain":    { "type": "string", "description": "e.g. 'tooling', 'cic', 'session-task'" },
                 "tags":      { "type": "string", "description": "comma-separated, e.g. 'cic-task,result'" },
                 "file_refs": { "type": "string", "description": "optional comma-separated file refs" },
-                "project":   { "type": "string", "description": "KB project slug (default reads KB_PROJECT env)" }
+                "project":   { "type": "string", "enum": ["sirin", "agora-backend", "flutter"], "description": "KB project slug (default reads KB_PROJECT env)" },
+                "layer":     { "type": "string", "enum": ["raw", "topic", "brief"], "default": "topic" },
+                "status":    { "type": "string", "enum": ["draft", "confirmed"], "default": "confirmed" },
+                "confidence": { "type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.9 }
             },
             "required": ["topic_key", "title", "content", "domain"]
         }),
@@ -1745,52 +2104,63 @@ fn seed_default(m: &mut RegistryMap) {
     //    handler that needs `user_agent` for authz, and the ToolHandler
     //    enum doesn't carry that channel.
 
-    m.insert("memory_search", ToolDef {
-        name:         "memory_search",
-        description: "搜尋 Sirin 的記憶庫與對話歷史。",
-        input_schema: json!({
-            "type": "object",
-            "properties": {
-                "query": { "type": "string", "description": "搜尋關鍵字" },
-                "limit": { "type": "number", "description": "最多返回幾筆（預設 5）" }
-            },
-            "required": ["query"]
-        }),
-        // First AsyncText migration — same Box::pin pattern as AsyncJson, just
-        // wraps a `Result<String, String>` future instead of `Result<Value, ..>`.
-        handler:      ToolHandler::AsyncText(|args| Box::pin(crate::mcp_server::call_memory_search(args))),
-    });
+    m.insert(
+        "memory_search",
+        ToolDef {
+            name: "memory_search",
+            description: "搜尋 Sirin 的記憶庫與對話歷史。",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "搜尋關鍵字" },
+                    "limit": { "type": "number", "description": "最多返回幾筆（預設 5）" }
+                },
+                "required": ["query"]
+            }),
+            // First AsyncText migration — same Box::pin pattern as AsyncJson, just
+            // wraps a `Result<String, String>` future instead of `Result<Value, ..>`.
+            handler: ToolHandler::AsyncText(|args| {
+                Box::pin(crate::mcp_server::call_memory_search(args))
+            }),
+        },
+    );
 
-    m.insert("teams_approve", ToolDef {
-        name:         "teams_approve",
-        description: "核准指定的 Teams 草稿，觸發送出。",
-        input_schema: json!({
-            "type": "object",
-            "properties": {
-                "id": { "type": "string", "description": "PendingReply ID" }
-            },
-            "required": ["id"]
-        }),
-        handler:      ToolHandler::SyncText(crate::mcp_server::call_teams_approve),
-    });
+    m.insert(
+        "teams_approve",
+        ToolDef {
+            name: "teams_approve",
+            description: "核准指定的 Teams 草稿，觸發送出。",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "PendingReply ID" }
+                },
+                "required": ["id"]
+            }),
+            handler: ToolHandler::SyncText(crate::mcp_server::call_teams_approve),
+        },
+    );
 
-    m.insert("trigger_research", ToolDef {
-        name:         "trigger_research",
-        description: "觸發 Sirin 對指定主題進行調研。",
-        input_schema: json!({
-            "type": "object",
-            "properties": {
-                "topic": { "type": "string", "description": "調研主題" },
-                "url":   { "type": "string", "description": "參考 URL（選填）" }
-            },
-            "required": ["topic"]
-        }),
-        handler:      ToolHandler::SyncText(crate::mcp_server::call_trigger_research),
-    });
+    m.insert(
+        "trigger_research",
+        ToolDef {
+            name: "trigger_research",
+            description: "觸發 Sirin 對指定主題進行調研。",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "topic": { "type": "string", "description": "調研主題" },
+                    "url":   { "type": "string", "description": "參考 URL（選填）" }
+                },
+                "required": ["topic"]
+            }),
+            handler: ToolHandler::SyncText(crate::mcp_server::call_trigger_research),
+        },
+    );
 
     m.insert("research_sentinel_goal_create", ToolDef {
         name:         "research_sentinel_goal_create",
-        description: "建立 Codex 定義的新聞/事件研究目標。Sirin 只做外部研究與本地 inbox 保存；不讀 AgoraMarketAPI 交易狀態、不下單、不改 OCO。",
+        description: "建立 Codex 定義的官方/投資資料研究目標。Sirin 只讀配置來源與本地 inbox；不讀 AgoraMarketAPI 交易狀態、不下單、不改 OCO。",
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -1805,7 +2175,7 @@ fn seed_default(m: &mut RegistryMap) {
 
     m.insert("research_sentinel_run_once", ToolDef {
         name:         "research_sentinel_run_once",
-        description: "依 Codex 定義的 goal 或 inline topic 執行一次新聞/事件研究，整理來源 URL、事件類型、資產、relevance、confidence，並保存到 Codex 可讀 inbox。研究結果不是買賣建議。",
+        description: "依 Codex 定義的 goal 或 inline topic 執行一次 Official + Investment Intelligence 研究。只讀 configured official/investment_data RSS 來源，整理 event score、Codex recommendation、來源 URL 與風險關聯；不使用一般新聞/搜尋 fallback，不輸出買賣建議。",
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -1814,44 +2184,1094 @@ fn seed_default(m: &mut RegistryMap) {
                 "focus": { "type": "string", "description": "inline 研究焦點" },
                 "keywords": { "type": "array", "items": { "type": "string" }, "description": "inline 搜尋關鍵字" },
                 "lookback_hours": { "type": "integer", "description": "回看小時，預設 goal 值或 24，範圍 1..168" },
-                "rss_feeds": { "type": "array", "items": { "type": "string" }, "description": "RSS fallback feeds；預設 CoinDesk + Cointelegraph" },
-                "max_queries": { "type": "integer", "description": "最多搜尋 query 數，預設 4，範圍 1..8" },
+                "rss_feeds": { "type": "array", "items": { "type": "string" }, "description": "臨時 RSS 來源；未提供時使用 config/research_sentinel.yaml 的 official/investment_data sources" },
                 "max_results": { "type": "integer", "description": "最多保留結果，預設 12，範圍 1..30" },
-                "create_inbox": { "type": "boolean", "description": "是否寫入 inbox，預設 true" }
+                "create_inbox": { "type": "boolean", "description": "是否寫入 inbox，預設 true" },
+                "create_report": { "description": "HTML 報告產生策略：true/always 強制產生；false/never 不產生；auto 只在 new convert_to_issue、escalated、source_errors 時產生。未提供時手動 run 預設產生。" },
+                "publish_to_kb": { "type": "boolean", "description": "是否對符合條件的新事件/升級事件嘗試寫入 KB；仍受 KB_ENABLED/KB_WRITE_TELEMETRY 保護，預設 false" },
+                "deep_research": { "type": "boolean", "description": "是否啟用可選 LLM deep research 層；LLM 不可用時會保留 deterministic 結果並標記 unavailable，預設 false" },
+                "deep_research_mode": { "type": "string", "enum": ["off", "auto", "required"], "description": "deep research 模式；auto 允許安全降級，required 會把 LLM 失敗標成 failed" },
+                "max_deep_events": { "type": "integer", "description": "最多交給 deep research 分析的 Codex-review events，預設 4，範圍 1..8" }
             }
         }),
         handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::research_sentinel::call_research_sentinel_run_once(args))),
     });
 
-    m.insert("research_sentinel_inbox", ToolDef {
-        name:         "research_sentinel_inbox",
-        description: "列出 Sirin 本地 News Research Sentinel inbox，供 Codex 驗收研究結果。",
+    m.insert(
+        "research_sentinel_inbox",
+        ToolDef {
+            name: "research_sentinel_inbox",
+            description: "列出 Sirin 本地 News Research Sentinel inbox，供 Codex 驗收研究結果。",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "unread_only": { "type": "boolean", "description": "只列 unread，預設 true" },
+                    "limit": { "type": "integer", "description": "最多筆數，預設 20，範圍 1..100" }
+                }
+            }),
+            handler: ToolHandler::SyncJson(crate::research_sentinel::call_research_sentinel_inbox),
+        },
+    );
+
+    m.insert("research_sentinel_monitor_status", ToolDef {
+        name:         "research_sentinel_monitor_status",
+        description: "查看 Research Sentinel 背景 monitor loop 狀態：enabled、interval、last_run、next_run、new/escalated counts、HTML report path、KB publish count。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {}
+        }),
+        handler:      ToolHandler::SyncJson(crate::research_sentinel::call_research_sentinel_monitor_status),
+    });
+
+    m.insert("a2a_worker_status", ToolDef {
+        name:         "a2a_worker_status",
+        description: "查看 Sirin server-side A2A worker 狀態。此 worker 只負責從外部任務服務 claim Sirin 可執行的工作、執行本地 research sentinel / AgoraMarket issue scout / first-order activation / Sirin test-health scout，再回報 artifacts；任務管理與驗收仍在服務端/Codex。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {}
+        }),
+        handler:      ToolHandler::SyncJson(crate::a2a_worker::call_a2a_worker_status),
+    });
+
+    m.insert("a2a_issue_candidates", ToolDef {
+        name:         "a2a_issue_candidates",
+        description: "列出 Sirin 本地保存的 ops scout 候選問題 inbox。候選由 Sirin worker 從 read-only evidence 產生並存於本機 app data，包括 AGORA_MARKET_ISSUE_SCOUT 與 SIRIN_AGORA_TEST_HEALTH_SCOUT；不依賴 AgoraMarketAPI 新增 review API。可用 task_id/status/severity/limit 篩選。",
         input_schema: json!({
             "type": "object",
             "properties": {
-                "unread_only": { "type": "boolean", "description": "只列 unread，預設 true" },
+                "task_id": { "type": "string", "description": "可選：只列指定 A2A task id" },
+                "status": { "type": "string", "description": "可選：CANDIDATE/CONVERT_TO_ISSUE/NEEDS_MORE_EVIDENCE/REJECTED/ACCEPTED" },
+                "severity": { "type": "string", "description": "可選：HIGH/MEDIUM/LOW" },
                 "limit": { "type": "integer", "description": "最多筆數，預設 20，範圍 1..100" }
             }
         }),
-        handler:      ToolHandler::SyncJson(crate::research_sentinel::call_research_sentinel_inbox),
+        handler:      ToolHandler::SyncJson(crate::a2a_worker::call_a2a_issue_candidates),
     });
 
-    m.insert("research_sentinel_ack", ToolDef {
-        name:         "research_sentinel_ack",
-        description: "將指定 News Research Sentinel inbox item 標記為 read。",
+    m.insert("ops_event_inbox", ToolDef {
+        name:         "ops_event_inbox",
+        description: "列出 Sirin 本地 AgoraMarket 商城運營事件 inbox。這是 a2a_issue_candidates 的運營事件視角，可用 eventType/evidenceLevel/allowedAction/targetProject/status/severity/limit 篩選；只讀 Sirin 本機 app data，不建立 issue、不改 AgoraMarket/API。",
         input_schema: json!({
             "type": "object",
             "properties": {
-                "id": { "type": "string", "description": "inbox item id" }
-            },
-            "required": ["id"]
+                "task_id": { "type": "string", "description": "可選：只列指定 A2A task id" },
+                "status": { "type": "string", "description": "可選：CANDIDATE/CONVERT_TO_ISSUE/NEEDS_MORE_EVIDENCE/REJECTED/ACCEPTED" },
+                "severity": { "type": "string", "description": "可選：HIGH/MEDIUM/LOW" },
+                "eventType": { "type": "string", "description": "可選：service_health/order_risk/growth_signal/test_coverage_gap 等 opsEvent.eventType" },
+                "evidenceLevel": { "type": "string", "description": "可選：suspected/observed/needs_verification/hypothesis/confirmed" },
+                "allowedAction": { "type": "string", "description": "可選：SIRIN_BACKLOG_ONLY/CODEX_VERIFY_INTEGRATION/HANDOFF_REVIEW_ONLY/OPERATOR_REVIEW/OPEN_PRODUCT_ISSUE_AFTER_REVIEW" },
+                "targetProject": { "type": "string", "description": "可選：Sirin/AgoraMarket/AgoraMarketAPI" },
+                "limit": { "type": "integer", "description": "最多筆數，預設 20，範圍 1..100" }
+            }
         }),
-        handler:      ToolHandler::SyncJson(crate::research_sentinel::call_research_sentinel_ack),
+        handler:      ToolHandler::SyncJson(crate::a2a_worker::call_ops_event_inbox),
     });
+
+    m.insert("a2a_review_issue_candidate", ToolDef {
+        name:         "a2a_review_issue_candidate",
+        description: "在 Sirin 本地 review 一筆 ops event/候選問題，寫入 review_status/review_note/reviewed_by 並回傳 handoff。reviewStatus=CONVERT_TO_ISSUE 只有 allowedAction=OPEN_PRODUCT_ISSUE_AFTER_REVIEW 時允許；其他事件只能 ACCEPTED/NEEDS_MORE_EVIDENCE/REJECTED。這只更新 Sirin 本機 review inbox；不建立 GitHub issue、不修改 AgoraMarketAPI、不改訂單/資金/交易狀態。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "dedupeKey": { "type": "string", "description": "候選問題 dedupeKey" },
+                "id": { "type": "string", "description": "可選 alias：候選 record_id 或 dedupeKey" },
+                "recordId": { "type": "string", "description": "可選 alias：候選 record_id" },
+                "task_id": { "type": "string", "description": "可選：同一 dedupeKey 多 task 時指定 task id" },
+                "reviewStatus": {
+                    "type": "string",
+                    "enum": ["ACCEPTED", "REJECTED", "NEEDS_MORE_EVIDENCE", "NEEDS_MORE_SOURCES", "CONVERT_TO_ISSUE"],
+                    "description": "候選審核狀態"
+                },
+                "reviewNote": { "type": "string", "description": "可選：審核備註" },
+                "reviewedBy": { "type": "string", "description": "可選：審核者，預設 codex" },
+                "externalIssueUrl": { "type": "string", "description": "可選：已開外部 issue URL，例如 AgoraMarketAPI GitHub issue" },
+                "externalIssueProject": { "type": "string", "description": "可選：外部 issue 所屬專案，例如 AgoraMarketAPI" },
+                "externalIssueNumber": { "type": "integer", "description": "可選：外部 issue 編號" }
+            },
+            "required": ["reviewStatus"]
+        }),
+        handler:      ToolHandler::SyncJson(crate::a2a_worker::call_a2a_review_issue_candidate),
+    });
+
+    m.insert("a2a_handoff_queue", ToolDef {
+        name:         "a2a_handoff_queue",
+        description: "列出 Sirin 本地 approved handoff queue。當 issue candidate 被審核為 CONVERT_TO_ISSUE 或 ACCEPTED 時會入隊，供 operator 交給 ChatGPT/Codex；工具本身不呼叫外部 AI、不建立 GitHub issue、不改 AgoraMarketAPI。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "status": { "type": "string", "description": "READY/ACKED/DONE/CANCELLED/ALL，預設 READY" },
+                "limit": { "type": "integer", "description": "最多筆數，預設 50，範圍 1..200" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::a2a_worker::call_a2a_handoff_queue),
+    });
+
+    m.insert("a2a_handoff_approval_packets", ToolDef {
+        name:         "a2a_handoff_approval_packets",
+        description: "只讀產生 READY handoff 的 operator approval packets，包含可複製的 a2a_update_handoff ACK template。用於把 Sirin 發現的運營問題安全交給 ChatGPT/Codex 複查；不 ACK、不呼叫外部 AI、不改 GitHub/AgoraMarket/AgoraMarketAPI。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "handoffId": { "type": "string", "description": "可選：只產生指定 handoff 的 approval packet" },
+                "limit": { "type": "integer", "description": "最多筆數，預設 20，範圍 1..100" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::a2a_worker::call_a2a_handoff_approval_packets),
+    });
+
+    m.insert("a2a_request_handoff_approval", ToolDef {
+        name:         "a2a_request_handoff_approval",
+        description: "為 READY handoff 建立或更新 Sirin 本地 operator approval request。這代表 Sirin 正式提請審批，但不 ACK handoff、不呼叫 ChatGPT/Codex、不改 GitHub/AgoraMarket/AgoraMarketAPI。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "handoffId": { "type": "string", "description": "READY handoff queue item id" },
+                "requestedBy": { "type": "string", "description": "可選：提出申請者，預設 sirin" },
+                "note": { "type": "string", "description": "可選：審批申請備註" }
+            },
+            "required": ["handoffId"]
+        }),
+        handler:      ToolHandler::SyncJson(crate::a2a_worker::call_a2a_request_handoff_approval),
+    });
+
+    m.insert("a2a_handoff_approval_requests", ToolDef {
+        name:         "a2a_handoff_approval_requests",
+        description: "列出 Sirin 本地 handoff approval request queue。預設只看 PENDING_OPERATOR_APPROVAL；只讀，不 ACK handoff、不呼叫 ChatGPT/Codex、不改外部專案。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "handoffId": { "type": "string", "description": "可選：只列指定 handoff 的 approval request" },
+                "status": { "type": "string", "description": "PENDING_OPERATOR_APPROVAL/ALL，預設 PENDING_OPERATOR_APPROVAL" },
+                "limit": { "type": "integer", "description": "最多筆數，預設 50，範圍 1..200" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::a2a_worker::call_a2a_handoff_approval_requests),
+    });
+
+    m.insert("a2a_update_handoff_approval_request", ToolDef {
+        name:         "a2a_update_handoff_approval_request",
+        description: "更新 Sirin 本地 handoff approval request 狀態，例如 APPROVED/REJECTED/CANCELLED。只記錄 operator 對申請的決定；不 ACK handoff、不呼叫 ChatGPT/Codex、不改 GitHub/AgoraMarket/AgoraMarketAPI。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "requestId": { "type": "string", "description": "approval request id；可用 handoffId 代替" },
+                "handoffId": { "type": "string", "description": "approval request 對應 handoff id；可用 requestId 代替" },
+                "status": {
+                    "type": "string",
+                    "enum": ["PENDING_OPERATOR_APPROVAL", "APPROVED", "REJECTED", "CANCELLED"],
+                    "description": "新的 approval request 狀態"
+                },
+                "reviewer": { "type": "string", "description": "可選：operator/reviewer id；預設 operator" },
+                "reviewedBy": { "type": "string", "description": "可選：reviewer alias" },
+                "decision": { "type": "string", "description": "可選：operator decision；預設等於 status" },
+                "note": { "type": "string", "description": "可選：review note" },
+                "approvedBoundary": { "type": "string", "description": "可選：批准邊界；預設只允許 Sirin-local metadata update" }
+            },
+            "required": ["status"]
+        }),
+        handler:      ToolHandler::SyncJson(crate::a2a_worker::call_a2a_update_handoff_approval_request),
+    });
+
+    m.insert("a2a_handoff_review_inbox", ToolDef {
+        name:         "a2a_handoff_review_inbox",
+        description: "只讀列出 handoff 下游 review inbox：已 ACK 且有 executionPackage 的項目可交 ChatGPT/Codex 複查，READY handoff 會以 approval_required 顯示並附 approval packet；不 ACK、不呼叫外部 AI、不改 GitHub/AgoraMarket/AgoraMarketAPI。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "actor": { "type": "string", "description": "可選：CHATGPT/CODEX" },
+                "status": { "type": "string", "description": "可選：READY_FOR_REVIEW/APPROVAL_REQUIRED/LEGACY_ACK_MISSING_EXECUTION_PACKAGE" },
+                "limit": { "type": "integer", "description": "最多筆數，預設 50，範圍 1..200" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::a2a_worker::call_a2a_handoff_review_inbox),
+    });
+
+    m.insert("a2a_update_handoff", ToolDef {
+        name:         "a2a_update_handoff",
+        description: "更新 Sirin 本地 approved handoff 狀態，例如 ACKED/DONE/CANCELLED，並可記錄 operator review decision/boundary。ACKED 會產生本地 executionPackage 供 ChatGPT/Codex 複查，但只更新本地 handoff queue metadata，不呼叫 ChatGPT/Codex/GitHub/AgoraMarketAPI。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "handoffId": { "type": "string", "description": "handoff queue item id" },
+                "status": {
+                    "type": "string",
+                    "enum": ["READY", "ACKED", "DONE", "CANCELLED"],
+                    "description": "新的 handoff 狀態"
+                },
+                "note": { "type": "string", "description": "可選：狀態更新備註" },
+                "reviewer": { "type": "string", "description": "可選：reviewer/operator id；預設 operator" },
+                "reviewedBy": { "type": "string", "description": "可選：reviewer/operator id alias" },
+                "decision": { "type": "string", "description": "可選：operator/Codex review decision；預設等於 status" },
+                "approvedBoundary": {
+                    "type": "string",
+                    "description": "可選：明確批准邊界；預設只允許 Sirin-local metadata update"
+                },
+                "approvedActions": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "可選：本次 review 批准的 Sirin-local actions"
+                },
+                "blockedMutations": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "可選：本次 review 仍禁止的 external/production mutations"
+                }
+            },
+            "required": ["handoffId", "status"]
+        }),
+        handler:      ToolHandler::SyncJson(crate::a2a_worker::call_a2a_update_handoff),
+    });
+
+    m.insert("a2a_prepare_handoff_execution_packages", ToolDef {
+        name:         "a2a_prepare_handoff_execution_packages",
+        description: "為舊版 ACKED handoff 補齊 Sirin 本地 executionPackage，讓已審核 handoff 可被 ChatGPT/Codex 複查。預設 dryRun=true；dryRun=false 只寫 Sirin 本地 handoff queue，不呼叫 ChatGPT/Codex/GitHub/AgoraMarketAPI。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "dryRun": {
+                    "type": "boolean",
+                    "description": "預設 true；false 才會寫入 Sirin 本地 handoff queue"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "最多準備幾筆 ACKED handoff，預設 50，範圍 1..200"
+                }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::a2a_worker::call_a2a_prepare_handoff_execution_packages),
+    });
+
+    m.insert("ops_schedule_create", ToolDef {
+        name:         "ops_schedule_create",
+        description: "建立 Sirin 本地運營 AI 排期任務。任務資料存於 Sirin app data tracking/ops_schedule.jsonl，可排 SIRIN_AGORA_TEST_HEALTH_SCOUT、AGORA_MARKET_ISSUE_SCOUT、AGORA_MARKET_FIRST_ORDER_ACTIVATION 等 Sirin 可執行檢查；不寫 AgoraMarketAPI、不建立遠端任務。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "title": { "type": "string", "description": "排期任務標題" },
+                "description": { "type": "string", "description": "可選：任務說明" },
+                "taskType": { "type": "string", "description": "預設 SIRIN_AGORA_TEST_HEALTH_SCOUT；外部 read-only ops MCP 巡檢可用 AGORA_MARKET_ISSUE_SCOUT；第一單成交 playbook 可用 AGORA_MARKET_FIRST_ORDER_ACTIVATION" },
+                "params": { "type": "object", "description": "傳給 Sirin 檢查任務的本地參數" },
+                "cadence": { "type": "string", "description": "manual/daily/weekly/once，第一版只保存排期語義" },
+                "priority": { "type": "string", "description": "P0/P1/P2，預設 P1" },
+                "scheduledFor": { "type": "string", "description": "可選：RFC3339 或人類可讀時間字串" }
+            },
+            "required": ["title"]
+        }),
+        handler:      ToolHandler::SyncJson(crate::ops_schedule::call_ops_schedule_create),
+    });
+
+    m.insert("ops_review_queue_list", ToolDef {
+        name:         "ops_review_queue_list",
+        description: "列出 Sirin 本地 ops_action_ledger 的 Codex 複查任務。這是 Sirin 發起、Codex 複查的入口；只讀本地 tracking/ops_action_ledger.jsonl，不呼叫 Codex/GitHub/AgoraMarketAPI。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "status": { "type": "string", "description": "PENDING_CODEX_REVIEW/CLAIMED/IN_PROGRESS/NEEDS_MORE_EVIDENCE/BLOCKED/VERIFIED/DONE/REJECTED/ALL，預設 PENDING_CODEX_REVIEW" },
+                "actor": { "type": "string", "description": "可選：通常是 CODEX" },
+                "targetProject": { "type": "string", "description": "可選：例如 Sirin/AgoraMarket/AgoraMarketAPI" },
+                "limit": { "type": "integer", "description": "最多筆數，預設 50，範圍 1..200" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::ops_action_ledger::call_ops_review_queue_list),
+    });
+
+    m.insert("ops_review_claim", ToolDef {
+        name:         "ops_review_claim",
+        description: "讓 Codex claim 一筆 Sirin 本地 CODEX_REVIEW 任務。只更新 Sirin 本地 ledger 狀態，不修改外部專案。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "actionId": { "type": "string", "description": "OPS-ACTION-YYYYMMDD-NNNN" },
+                "id": { "type": "string", "description": "actionId alias" },
+                "claimedBy": { "type": "string", "description": "預設 codex" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::ops_action_ledger::call_ops_review_claim),
+    });
+
+    m.insert("ops_review_update", ToolDef {
+        name:         "ops_review_update",
+        description: "更新 Sirin 本地 CODEX_REVIEW 任務進度，例如 IN_PROGRESS、NEEDS_MORE_EVIDENCE、BLOCKED。只寫本地 ledger。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "actionId": { "type": "string", "description": "OPS-ACTION-YYYYMMDD-NNNN" },
+                "id": { "type": "string", "description": "actionId alias" },
+                "status": { "type": "string", "enum": ["PENDING_CODEX_REVIEW", "CLAIMED", "IN_PROGRESS", "NEEDS_MORE_EVIDENCE", "BLOCKED"] },
+                "note": { "type": "string", "description": "可選：進度備註" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::ops_action_ledger::call_ops_review_update),
+    });
+
+    m.insert("ops_review_complete", ToolDef {
+        name:         "ops_review_complete",
+        description: "Codex 完成複查後把結論回寫 Sirin 本地 action ledger。可帶 result 物件或 finding/evidence/recommendedNextAction/issueToOpenOrUpdate 欄位；不建立 issue、不改 AgoraMarket/API。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "actionId": { "type": "string", "description": "OPS-ACTION-YYYYMMDD-NNNN" },
+                "id": { "type": "string", "description": "actionId alias" },
+                "status": { "type": "string", "enum": ["VERIFIED", "DONE", "REJECTED", "NEEDS_MORE_EVIDENCE"], "description": "完成狀態，預設 VERIFIED" },
+                "result": { "type": "object", "description": "Codex 複查結論，例如 is_real_issue/evidence/recommended_next_action/issue_to_open_or_update" },
+                "finding": { "type": "string", "description": "未提供 result 時的簡短結論" },
+                "evidence": { "type": "string", "description": "未提供 result 時的證據摘要" },
+                "recommendedNextAction": { "type": "string", "description": "未提供 result 時的下一步" },
+                "issueToOpenOrUpdate": { "type": "string", "description": "未提供 result 時的 issue URL 或建議" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::ops_action_ledger::call_ops_review_complete),
+    });
+
+    m.insert("ops_schedule_list", ToolDef {
+        name:         "ops_schedule_list",
+        description: "列出 Sirin 本地運營 AI 排期任務。可依 status/taskType/priority 篩選；資料只來自本機 tracking/ops_schedule.jsonl。成功執行後可看 last_result_status 判斷報告是 READY_FOR_REVIEW 或 BLOCKED_INTEGRATION。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "status": { "type": "string", "description": "SCHEDULED/RUNNING/PAUSED/DONE/CANCELLED/FAILED" },
+                "taskType": { "type": "string", "description": "可選：任務類型" },
+                "priority": { "type": "string", "description": "可選：P0/P1/P2" },
+                "limit": { "type": "integer", "description": "最多筆數，預設 50，範圍 1..200" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::ops_schedule::call_ops_schedule_list),
+    });
+
+    m.insert("ops_schedule_digest", ToolDef {
+        name:         "ops_schedule_digest",
+        description: "彙總最近 Sirin 本地運營 AI 排期結果，輸出跨輪 actionSummary、已追蹤 issue/handoff、剩餘待處理項與下一個建議排程；只讀本地 tracking/ops_schedule.jsonl，不執行任務也不修改外部系統。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "taskType": { "type": "string", "description": "可選：只彙總指定任務類型，例如 AGORA_MARKET_ISSUE_SCOUT" },
+                "limit": { "type": "integer", "description": "最近幾筆 schedule，預設 10，範圍 1..50" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::ops_schedule::call_ops_schedule_digest),
+    });
+
+    m.insert("ops_external_issue_sync", ToolDef {
+        name:         "ops_external_issue_sync",
+        description: "只讀同步 Sirin 本地運營排期中追蹤的 GitHub issue 狀態，將 open/closed 寫回本機 tracking/ops_schedule.jsonl，供 externalIssueStateSync 決定是否可重跑 checkout dry-run；不修改 GitHub、AgoraMarket 或 AgoraMarketAPI。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "taskType": { "type": "string", "description": "可選：只同步指定任務類型，預設 AGORA_MARKET_FIRST_ORDER_ACTIVATION" },
+                "limit": { "type": "integer", "description": "最多掃描幾筆 schedule，預設 50，範圍 1..200" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::ops_schedule::call_ops_external_issue_sync),
+    });
+
+    m.insert("ops_schedule_update", ToolDef {
+        name:         "ops_schedule_update",
+        description: "更新 Sirin 本地運營 AI 排期狀態，例如 PAUSED/DONE/CANCELLED。只更新 Sirin 本地 metadata，不觸發 AgoraMarketAPI side effect。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "scheduleId": { "type": "string", "description": "OPS-YYYYMMDD-NNNN" },
+                "status": {
+                    "type": "string",
+                    "enum": ["SCHEDULED", "RUNNING", "PAUSED", "DONE", "CANCELLED", "FAILED"],
+                    "description": "新的排期狀態"
+                },
+                "note": { "type": "string", "description": "可選：狀態更新備註" }
+            },
+            "required": ["scheduleId", "status"]
+        }),
+        handler:      ToolHandler::SyncJson(crate::ops_schedule::call_ops_schedule_update),
+    });
+
+    m.insert("ops_schedule_run_due", ToolDef {
+        name:         "ops_schedule_run_due",
+        description: "執行 Sirin 本地 due 的運營 AI 排期任務。會把 SCHEDULED 且到期的任務標記 RUNNING，呼叫 Sirin 既有 inspection 能力，成功後將 issue scout candidates 寫回 Sirin 本地 inbox，並在本輪結束後只讀同步 tracked GitHub issue state 到本地 snapshot；不修改 GitHub、AgoraMarket 或 AgoraMarketAPI。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "scheduleId": { "type": "string", "description": "可選：只執行指定 OPS schedule" },
+                "limit": { "type": "integer", "description": "最多執行幾筆 due schedule，預設 1，範圍 1..10" }
+            }
+        }),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::ops_schedule::call_ops_schedule_run_due(args))),
+    });
+
+    m.insert("device_list", ToolDef {
+        name:         "device_list",
+        description: "列出本機 Android SDK、ADB devices 與 Android Emulator AVD。只讀本機狀態；用於確認 Sirin 是否能控制 emulator。",
+        input_schema: json!({"type": "object", "properties": {}}),
+        handler:      ToolHandler::SyncJson(crate::device_geo::call_device_list),
+    });
+
+    m.insert("device_emulator_start", ToolDef {
+        name:         "device_emulator_start",
+        description: "啟動 Android Emulator AVD 並等待 adb boot_completed。預設 AVD=Sirin_Pixel_7_API_35，使用 D:\\Android\\Sdk / D:\\Android\\Avd；若 emulator 已在跑則直接回傳 already_running。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "avd": { "type": "string", "description": "AVD 名稱，預設 Sirin_Pixel_7_API_35" },
+                "timeoutSeconds": { "type": "integer", "description": "等待 boot completed 秒數，預設 180" },
+                "noWindow": { "type": "boolean", "description": "是否無視窗啟動，預設 true" },
+                "gpu": { "type": "string", "description": "emulator -gpu 參數，預設 swiftshader_indirect" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::device_geo::call_device_emulator_start),
+    });
+
+    m.insert("device_emulator_status", ToolDef {
+        name:         "device_emulator_status",
+        description: "查詢 Android Emulator/ADB 狀態，包含 SDK/AVD 路徑、AVD 清單、device、bootCompleted、foregroundPackage。",
+        input_schema: json!({"type": "object", "properties": {}}),
+        handler:      ToolHandler::SyncJson(crate::device_geo::call_device_emulator_status),
+    });
+
+    m.insert("device_screenshot", ToolDef {
+        name:         "device_screenshot",
+        description: "擷取 Android Emulator 目前畫面 PNG，寫入 Sirin app data/device_screenshots，回傳 path、size、sha256。用於 GPS 路線後的 App 畫面證據閉環；預設只允許 emulator-*。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "device": { "type": "string", "description": "ADB serial，例如 emulator-5554；省略時自動選第一台 emulator" },
+                "label": { "type": "string", "description": "可選：檔名標籤，會自動清理不安全字元" },
+                "allowPhysicalDevice": { "type": "boolean", "description": "預設 false；true 才允許非 emulator device" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::device_geo::call_device_screenshot),
+    });
+
+    m.insert("device_app_launch", ToolDef {
+        name:         "device_app_launch",
+        description: "在 Android Emulator 啟動 App。可用 package 走 monkey launcher，或 package+activity 走 am start。預設只允許 emulator-*。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "device": { "type": "string", "description": "ADB serial，例如 emulator-5554；省略時自動選第一台 emulator" },
+                "package": { "type": "string", "description": "Android package name" },
+                "activity": { "type": "string", "description": "可選：Activity class/path；提供時使用 am start -n package/activity" },
+                "allowPhysicalDevice": { "type": "boolean", "description": "預設 false；true 才允許非 emulator device" }
+            },
+            "required": ["package"]
+        }),
+        handler:      ToolHandler::SyncJson(crate::device_geo::call_device_app_launch),
+    });
+
+    m.insert("device_operator_login_start", ToolDef {
+        name:         "device_operator_login_start",
+        description: "建立本地等待用戶手動登入的狀態。Sirin 不輸入帳密；用戶在 emulator 內登入後呼叫 device_operator_login_confirm。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "device": { "type": "string", "description": "ADB serial，例如 emulator-5554；省略時自動選第一台 emulator" },
+                "loginId": { "type": "string", "description": "可選：自訂 login wait id" },
+                "package": { "type": "string", "description": "可選：正在等待登入的 App package" },
+                "timeoutSeconds": { "type": "integer", "description": "登入等待語義秒數，預設 300" },
+                "note": { "type": "string", "description": "可選：操作提示" },
+                "allowPhysicalDevice": { "type": "boolean", "description": "預設 false；true 才允許非 emulator device" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::device_geo::call_device_operator_login_start),
+    });
+
+    m.insert("device_operator_login_status", ToolDef {
+        name:         "device_operator_login_status",
+        description: "查詢 Sirin 本地用戶手動登入等待狀態。可指定 loginId；省略則列出所有本程序內登入等待。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "loginId": { "type": "string", "description": "可選：login wait id" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::device_geo::call_device_operator_login_status),
+    });
+
+    m.insert("device_operator_login_confirm", ToolDef {
+        name:         "device_operator_login_confirm",
+        description: "由用戶或操作員確認 emulator 內帳號已登入完成。只更新 Sirin 本地狀態，不讀取或保存帳密。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "loginId": { "type": "string", "description": "login wait id" },
+                "note": { "type": "string", "description": "可選：確認備註" }
+            },
+            "required": ["loginId"]
+        }),
+        handler:      ToolHandler::SyncJson(crate::device_geo::call_device_operator_login_confirm),
+    });
+
+    m.insert("device_geo_fix", ToolDef {
+        name:         "device_geo_fix",
+        description: "對 Android Emulator 注入單次 GPS 定位，底層使用 adb -s <device> emu geo fix <lng> <lat>。預設只允許 emulator-*，真機必須顯式 allowPhysicalDevice=true。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "device": { "type": "string", "description": "ADB serial，例如 emulator-5554；省略時自動選第一台 emulator" },
+                "lat": { "type": "number", "description": "緯度" },
+                "lng": { "type": "number", "description": "經度" },
+                "point": { "type": "object", "description": "可選：{lat,lng}" },
+                "allowPhysicalDevice": { "type": "boolean", "description": "預設 false；true 才允許非 emulator device" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::device_geo::call_device_geo_fix),
+    });
+
+    m.insert("device_geo_route_plan", ToolDef {
+        name:         "device_geo_route_plan",
+        description: "規劃 Android Emulator GPS 路線點。輸入起終點/多點、speedKmh、durationSeconds、tickSeconds，回傳每個 tick 的 lat/lng；不執行 ADB。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "route": { "type": "object", "description": "{start:{lat,lng}, end:{lat,lng}} 或 {points:[{lat,lng},...]}" },
+                "start": { "type": "object", "description": "可選：起點 {lat,lng}" },
+                "end": { "type": "object", "description": "可選：終點 {lat,lng}" },
+                "points": { "type": "array", "items": { "type": "object" }, "description": "可選：多點路線" },
+                "speedKmh": { "type": "number", "description": "預設 20.0" },
+                "durationSeconds": { "type": "integer", "description": "預設 600" },
+                "tickSeconds": { "type": "integer", "description": "預設 1" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::device_geo::call_device_geo_route_plan),
+    });
+
+    m.insert("device_geo_route_start", ToolDef {
+        name:         "device_geo_route_start",
+        description: "啟動 Android Emulator GPS 路線注入背景任務。典型用法：speedKmh=20、durationSeconds=600、tickSeconds=1，Sirin 每秒注入一次定位。預設只允許 emulator-*。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "routeId": { "type": "string", "description": "可選：自訂 route id" },
+                "device": { "type": "string", "description": "ADB serial，例如 emulator-5554；省略時自動選第一台 emulator" },
+                "route": { "type": "object", "description": "{start:{lat,lng}, end:{lat,lng}} 或 {points:[{lat,lng},...]}" },
+                "start": { "type": "object", "description": "可選：起點 {lat,lng}" },
+                "end": { "type": "object", "description": "可選：終點 {lat,lng}" },
+                "points": { "type": "array", "items": { "type": "object" }, "description": "可選：多點路線" },
+                "speedKmh": { "type": "number", "description": "預設 20.0" },
+                "durationSeconds": { "type": "integer", "description": "預設 600" },
+                "tickSeconds": { "type": "integer", "description": "預設 1" },
+                "screenMonitor": { "type": "boolean", "description": "預設 false；true 時路線執行中定期擷取 emulator 畫面，狀態回傳 screenshot path/hash/evidence" },
+                "screenSampleEveryTicks": { "type": "integer", "description": "screenMonitor=true 時每 N 個 tick 擷取一次，預設 5" },
+                "screenRequireChange": { "type": "boolean", "description": "預設 false；true 時連續截圖 hash 不變達 maxStaleScreenTicks 會判定 FAILED" },
+                "maxStaleScreenTicks": { "type": "integer", "description": "screenRequireChange=true 時允許連續不變樣本數，預設 3" },
+                "allowPhysicalDevice": { "type": "boolean", "description": "預設 false；true 才允許非 emulator device" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::device_geo::call_device_geo_route_start),
+    });
+
+    m.insert("device_geo_roam_plan", ToolDef {
+        name:         "device_geo_roam_plan",
+        description: "自動產生道路型城市漫遊路線。預設台北中心、半徑 1500m、20km/h、10 分鐘、每秒 tick；先產生 non-repeating seed waypoints，再用 OSRM-compatible road router 取得道路 geometry；只規劃不執行 ADB。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "city": { "type": "string", "description": "可選：taipei/new_taipei/taichung/kaohsiung；省略預設 taipei" },
+                "center": { "type": "object", "description": "可選：覆蓋城市中心 {lat,lng}" },
+                "radiusMeters": { "type": "number", "description": "漫遊半徑，預設 1500，範圍 100..10000" },
+                "waypoints": { "type": "integer", "description": "路線 waypoint 數，預設 8，範圍 4..32" },
+                "roadProvider": { "type": "string", "description": "預設 osrm；offline/unit test 可用 synthetic" },
+                "roadRouterUrl": { "type": "string", "description": "OSRM-compatible base URL，預設 https://router.project-osrm.org" },
+                "roadProfile": { "type": "string", "description": "OSRM profile，預設 driving" },
+                "roadTimeoutSeconds": { "type": "integer", "description": "road router timeout，預設 15" },
+                "allowSyntheticFallback": { "type": "boolean", "description": "預設 false；road routing 失敗時是否允許退回非道路 synthetic route" },
+                "speedKmh": { "type": "number", "description": "預設 20.0" },
+                "durationSeconds": { "type": "integer", "description": "預設 600" },
+                "tickSeconds": { "type": "integer", "description": "預設 1" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::device_geo::call_device_geo_roam_plan),
+    });
+
+    m.insert("device_geo_roam_start", ToolDef {
+        name:         "device_geo_roam_start",
+        description: "自動產生道路型城市漫遊路線並啟動 Android Emulator GPS 注入。典型流程：device_emulator_start → device_app_launch → device_operator_login_start/confirm → device_geo_roam_start。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "device": { "type": "string", "description": "ADB serial，例如 emulator-5554；省略時自動選第一台 emulator" },
+                "city": { "type": "string", "description": "可選：taipei/new_taipei/taichung/kaohsiung；省略預設 taipei" },
+                "center": { "type": "object", "description": "可選：覆蓋城市中心 {lat,lng}" },
+                "radiusMeters": { "type": "number", "description": "漫遊半徑，預設 1500，範圍 100..10000" },
+                "waypoints": { "type": "integer", "description": "路線 waypoint 數，預設 8，範圍 4..32" },
+                "roadProvider": { "type": "string", "description": "預設 osrm；offline/unit test 可用 synthetic" },
+                "roadRouterUrl": { "type": "string", "description": "OSRM-compatible base URL，預設 https://router.project-osrm.org" },
+                "roadProfile": { "type": "string", "description": "OSRM profile，預設 driving" },
+                "roadTimeoutSeconds": { "type": "integer", "description": "road router timeout，預設 15" },
+                "allowSyntheticFallback": { "type": "boolean", "description": "預設 false；road routing 失敗時是否允許退回非道路 synthetic route" },
+                "speedKmh": { "type": "number", "description": "預設 20.0" },
+                "durationSeconds": { "type": "integer", "description": "預設 600" },
+                "tickSeconds": { "type": "integer", "description": "預設 1" },
+                "screenMonitor": { "type": "boolean", "description": "預設 false；true 時路線執行中定期擷取 emulator 畫面，狀態回傳 screenshot path/hash/evidence" },
+                "screenSampleEveryTicks": { "type": "integer", "description": "screenMonitor=true 時每 N 個 tick 擷取一次，預設 5" },
+                "screenRequireChange": { "type": "boolean", "description": "預設 false；true 時連續截圖 hash 不變達 maxStaleScreenTicks 會判定 FAILED" },
+                "maxStaleScreenTicks": { "type": "integer", "description": "screenRequireChange=true 時允許連續不變樣本數，預設 3" },
+                "allowPhysicalDevice": { "type": "boolean", "description": "預設 false；true 才允許非 emulator device" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::device_geo::call_device_geo_roam_start),
+    });
+
+    m.insert("device_geo_route_status", ToolDef {
+        name:         "device_geo_route_status",
+        description: "查詢 Sirin 目前 Android Emulator GPS 路線注入任務狀態。可指定 routeId；省略則列出所有本程序內任務。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "routeId": { "type": "string", "description": "可選：route id" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::device_geo::call_device_geo_route_status),
+    });
+
+    m.insert(
+        "device_geo_route_stop",
+        ToolDef {
+            name: "device_geo_route_stop",
+            description: "停止 Sirin Android Emulator GPS 路線注入背景任務。",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "routeId": { "type": "string", "description": "route id" }
+                },
+                "required": ["routeId"]
+            }),
+            handler: ToolHandler::SyncJson(crate::device_geo::call_device_geo_route_stop),
+        },
+    );
+
+    m.insert("ios_3utools_status", ToolDef {
+        name:         "ios_3utools_status",
+        description: "Deprecated：舊 3uTools GUI PoC 狀態工具。新 iOS 定位方案請使用 ios_dev_location_status；此工具只保留相容，不作為主路線。",
+        input_schema: json!({"type": "object", "properties": {}}),
+        handler:      ToolHandler::SyncJson(crate::ios_location::call_ios_3utools_status),
+    });
+
+    m.insert("ios_3utools_start", ToolDef {
+        name:         "ios_3utools_start",
+        description: "Deprecated：舊 3uTools GUI PoC 啟動工具。新 iOS 定位方案不使用 3uTools，請使用 ios_dev_location_*。",
+        input_schema: json!({"type": "object", "properties": {}}),
+        handler:      ToolHandler::SyncJson(crate::ios_location::call_ios_3utools_start),
+    });
+
+    m.insert("ios_dev_location_status", ToolDef {
+        name:         "ios_dev_location_status",
+        description: "檢查不依賴 3uTools 的 iOS Developer Location Driver：偵測 pymobiledevice3 / libimobiledevice(idevicesetlocation)、Apple Mobile Device Service、連線裝置摘要與安全邊界。只讀且會遮罩裝置識別碼。",
+        input_schema: json!({"type": "object", "properties": {}}),
+        handler:      ToolHandler::SyncJson(crate::ios_location::call_ios_dev_location_status),
+    });
+
+    m.insert("ios_dev_location_current", ToolDef {
+        name:         "ios_dev_location_current",
+        description: "嘗試讀取 iOS 真機當前 GPS 位置。若 pymobiledevice3/lockdown/developer services 不提供當前位置，回 UNAVAILABLE_REQUIRES_APP_REPORT 並寫 evidence，要求由受信任 App/Web 回報座標。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "requestId": { "type": "string", "description": "可選：自訂 current-location probe id" },
+                "note": { "type": "string", "description": "可選：operator 備註" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::ios_location::call_ios_dev_location_current),
+    });
+
+    m.insert("ios_location_report_latest", ToolDef {
+        name:         "ios_location_report_latest",
+        description: "讀取 iPhone Safari/受信任瀏覽器透過 /ios-location-report 回報給 Sirin 的最新 GPS 座標；用於 iOS 不允許直接讀取目前位置時，作為當前城市漫遊起點。",
+        input_schema: json!({"type": "object", "properties": {}}),
+        handler:      ToolHandler::SyncJson(crate::ios_location::call_ios_location_report_latest),
+    });
+
+    m.insert("ios_dev_location_set", ToolDef {
+        name:         "ios_dev_location_set",
+        description: "透過 iOS developer location simulation CLI backend 設定單點定位。不使用 3uTools；backend=auto 時優先 pymobiledevice3，否則 idevicesetlocation。會寫 Sirin 本地 evidence。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "sessionId": { "type": "string", "description": "可選：自訂 iOS developer location session id" },
+                "backend": { "type": "string", "description": "auto/pymobiledevice3/libimobiledevice，預設 auto" },
+                "lat": { "type": "number", "description": "緯度" },
+                "lng": { "type": "number", "description": "經度" },
+                "point": { "type": "object", "description": "可選：{lat,lng}" },
+                "targetApp": { "type": "string", "description": "可選：正在測試的 app 名稱/package/bundle id" },
+                "note": { "type": "string", "description": "可選：operator 備註" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::ios_location::call_ios_dev_location_set),
+    });
+
+    m.insert("ios_dev_location_reset", ToolDef {
+        name:         "ios_dev_location_reset",
+        description: "透過 iOS developer location simulation CLI backend 重置/清除模擬定位。不使用 3uTools；會寫 Sirin 本地 evidence。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "sessionId": { "type": "string", "description": "可選：自訂 reset session id" },
+                "backend": { "type": "string", "description": "auto/pymobiledevice3/libimobiledevice，預設 auto" },
+                "note": { "type": "string", "description": "可選：operator 備註" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::ios_location::call_ios_dev_location_reset),
+    });
+
+    m.insert("ios_dev_location_session_status", ToolDef {
+        name:         "ios_dev_location_session_status",
+        description: "查詢 Sirin 本程序內 iOS developer location session。可指定 sessionId；省略列全部。只讀。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "sessionId": { "type": "string", "description": "可選：iOS developer location session id" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::ios_location::call_ios_dev_location_session_status),
+    });
+
+    m.insert("ios_dev_location_route_plan", ToolDef {
+        name:         "ios_dev_location_route_plan",
+        description: "建立不依賴 3uTools 的 iOS developer-location 道路路線計畫。可提供道路 polyline points；若省略 points，會依 center/currentLocation/city 自動產生當前城市道路漫遊。預設 20km/h、10 分鐘、1 秒 tick。只規劃與寫 evidence，不需要真機。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "routeId": { "type": "string", "description": "可選：自訂 route id" },
+                "points": { "type": "array", "description": "道路 polyline 點陣列，至少兩點；每點 {lat,lng}" },
+                "roadPolyline": { "type": "array", "description": "同 points，語意上表示已由道路/地圖來源產生" },
+                "route": { "type": "object", "description": "可選：{points:[{lat,lng},...]}" },
+                "center": { "type": "object", "description": "省略 points 時使用的漫遊中心點 {lat,lng}" },
+                "currentLocation": { "type": "object", "description": "省略 points 時使用的目前位置 {lat,lng}" },
+                "city": { "type": "string", "description": "內建城市 fallback：taipei/new_taipei/taichung/kaohsiung；預設 taipei" },
+                "radiusMeters": { "type": "number", "description": "城市漫遊半徑，預設 1500" },
+                "waypoints": { "type": "integer", "description": "城市漫遊 seed waypoint 數，預設 8" },
+                "roadProvider": { "type": "string", "description": "osrm/synthetic/none，預設 osrm" },
+                "roadRouterUrl": { "type": "string", "description": "OSRM-compatible router base URL，可用 SIRIN_OSRM_BASE_URL 覆蓋" },
+                "roadProfile": { "type": "string", "description": "OSRM profile，預設 driving" },
+                "allowSyntheticFallback": { "type": "boolean", "description": "road router 失敗時是否允許退回非道路 synthetic；預設 false" },
+                "routeSource": { "type": "string", "description": "可選：道路來源，例如 app_screen_road_trace/osrm/manual_road_polyline" },
+                "movementProfile": { "type": "string", "description": "移動模型：roam（預設）或 bicycle。bicycle 會加入起步、巡航波動、轉彎減速與短停，且單段速度不超過 20.5km/h" },
+                "speedKmh": { "type": "number", "description": "預設 20，範圍 1-130" },
+                "durationSeconds": { "type": "integer", "description": "預設 600" },
+                "tickSeconds": { "type": "integer", "description": "預設 1，範圍 1-60" },
+                "includeSchedule": { "type": "boolean", "description": "是否回傳完整 tick 點；預設 false，只回 preview" },
+                "note": { "type": "string", "description": "可選：operator 備註" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::ios_location::call_ios_dev_location_route_plan),
+    });
+
+    m.insert("ios_dev_location_roam_plan", ToolDef {
+        name:         "ios_dev_location_roam_plan",
+        description: "依目前位置或城市中心自動產生 iOS developer-location 當前城市道路漫遊路線。預設 OSRM 道路路由、20km/h、10 分鐘、1 秒 tick；只規劃不寫入真機。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "routeId": { "type": "string", "description": "可選：自訂 route id" },
+                "center": { "type": "object", "description": "漫遊中心點 {lat,lng}；優先使用" },
+                "currentLocation": { "type": "object", "description": "目前位置 {lat,lng}" },
+                "city": { "type": "string", "description": "內建城市 fallback：taipei/new_taipei/taichung/kaohsiung；預設 taipei" },
+                "radiusMeters": { "type": "number", "description": "城市漫遊半徑，預設 1500" },
+                "waypoints": { "type": "integer", "description": "seed waypoint 數，預設 8" },
+                "roadProvider": { "type": "string", "description": "osrm/synthetic/none，預設 osrm" },
+                "roadRouterUrl": { "type": "string", "description": "OSRM-compatible router base URL，可用 SIRIN_OSRM_BASE_URL 覆蓋" },
+                "roadProfile": { "type": "string", "description": "OSRM profile，預設 driving" },
+                "allowSyntheticFallback": { "type": "boolean", "description": "road router 失敗時是否允許退回非道路 synthetic；預設 false" },
+                "movementProfile": { "type": "string", "description": "移動模型：roam（預設）或 bicycle。bicycle 會加入起步、巡航波動、轉彎減速與短停，且單段速度不超過 20.5km/h" },
+                "speedKmh": { "type": "number", "description": "預設 20，範圍 1-130" },
+                "durationSeconds": { "type": "integer", "description": "預設 600" },
+                "tickSeconds": { "type": "integer", "description": "預設 1，範圍 1-60" },
+                "includeSchedule": { "type": "boolean", "description": "是否回傳完整 tick 點；預設 false，只回 preview" },
+                "note": { "type": "string", "description": "可選：operator 備註" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::ios_location::call_ios_dev_location_roam_plan),
+    });
+
+    m.insert("ios_dev_location_route_status", ToolDef {
+        name:         "ios_dev_location_route_status",
+        description: "查詢 Sirin 本程序內 iOS developer-location road route plan。可指定 routeId；省略列全部。只讀。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "routeId": { "type": "string", "description": "可選：iOS developer location route id" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::ios_location::call_ios_dev_location_route_status),
+    });
+
+    m.insert("ios_dev_location_route_start", ToolDef {
+        name:         "ios_dev_location_route_start",
+        description: "啟動已規劃的 iOS developer-location GPX 路線播放。使用 pymobiledevice3 simulate-location play，不依賴 3uTools；會產生 GPX、stdout/stderr log 與 evidence，立即回傳 pid。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "routeId": { "type": "string", "description": "必填：由 ios_dev_location_route_plan / roam_plan 回傳的 routeId" },
+                "backend": { "type": "string", "description": "目前僅支援 pymobiledevice3，預設 pymobiledevice3" },
+                "userspace": { "type": "boolean", "description": "是否加 --userspace，預設 true" }
+            },
+            "required": ["routeId"]
+        }),
+        handler:      ToolHandler::SyncJson(crate::ios_location::call_ios_dev_location_route_start),
+    });
+
+    m.insert("ios_dev_location_route_run_status", ToolDef {
+        name:         "ios_dev_location_route_run_status",
+        description: "讀取 iOS developer-location route_start 本地 run log，回傳 set-location 次數、第一/最後座標、累計移動距離、stdout/stderr 與 evidence 路徑。省略 routeRunId 時讀最新 run。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "routeRunId": { "type": "string", "description": "可選：route_start 回傳的 routeRunId；省略讀最新 route run" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::ios_location::call_ios_dev_location_route_run_status),
+    });
+
+    m.insert("ios_dev_location_route_stop", ToolDef {
+        name:         "ios_dev_location_route_stop",
+        description: "停止 iOS developer-location route_start 啟動的 GPX 播放程序。可指定 routeRunId 或 pid；省略 routeRunId 時嘗試使用最新 route run evidence。停止後仍建議呼叫 ios_dev_location_reset 清除 developer simulated location。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "routeRunId": { "type": "string", "description": "可選：route_start 回傳的 routeRunId；省略時讀最新 route run" },
+                "pid": { "type": "integer", "description": "可選：route_start 回傳的播放程序 pid；優先於 routeRunId evidence" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::ios_location::call_ios_dev_location_route_stop),
+    });
+
+    m.insert("ios_location_set_prepare", ToolDef {
+        name:         "ios_location_set_prepare",
+        description: "建立 iOS/3uTools 單點虛擬定位操作包。Sirin 產生 lat/lng、manual steps 與 evidence JSON；operator 在 3uTools Virtual Location 點 Modify virtual location 後再 confirm。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "sessionId": { "type": "string", "description": "可選：自訂 iOS location session id" },
+                "lat": { "type": "number", "description": "緯度" },
+                "lng": { "type": "number", "description": "經度" },
+                "point": { "type": "object", "description": "可選：{lat,lng}" },
+                "targetApp": { "type": "string", "description": "可選：正在測試的 app 名稱/package/bundle id" },
+                "note": { "type": "string", "description": "可選：operator 備註" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::ios_location::call_ios_location_set_prepare),
+    });
+
+    m.insert("ios_location_restore_prepare", ToolDef {
+        name:         "ios_location_restore_prepare",
+        description: "建立 iOS/3uTools 恢復真實定位操作包。operator 在 3uTools Virtual Location 點 Restore true location；必要時重啟 iPhone。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "sessionId": { "type": "string", "description": "可選：自訂 restore session id" },
+                "note": { "type": "string", "description": "可選：operator 備註" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::ios_location::call_ios_location_restore_prepare),
+    });
+
+    m.insert("ios_location_confirm", ToolDef {
+        name:         "ios_location_confirm",
+        description: "由 operator 回填 iOS/3uTools 定位操作結果。status 可用 APPLIED/RESTORED/FAILED/CANCELLED；只更新 Sirin 本地 session/evidence。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "sessionId": { "type": "string", "description": "iOS location session id" },
+                "status": { "type": "string", "description": "APPLIED/RESTORED/FAILED/CANCELLED" },
+                "note": { "type": "string", "description": "可選：驗證/錯誤備註" }
+            },
+            "required": ["sessionId"]
+        }),
+        handler:      ToolHandler::SyncJson(crate::ios_location::call_ios_location_confirm),
+    });
+
+    m.insert("ios_location_session_status", ToolDef {
+        name:         "ios_location_session_status",
+        description: "查詢 Sirin 本程序內 iOS/3uTools 定位 session。可指定 sessionId；省略列全部。只讀。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "sessionId": { "type": "string", "description": "可選：iOS location session id" }
+            }
+        }),
+        handler:      ToolHandler::SyncJson(crate::ios_location::call_ios_location_session_status),
+    });
+
+    // ── Physical iPhone control — Sirin-owned facade over the internal iOS
+    // Driver.  These tools intentionally keep credentials, unlock, signing,
+    // arbitrary URLs, messaging, orders, and payments outside the MCP surface.
+
+    m.insert("ios_device_status", ToolDef {
+        name:         "ios_device_status",
+        description: "唯讀檢查 Sirin 的實體 iPhone provider，分開回報 DEVICE_DETECTED、INFO_READABLE、SCREEN_CAPTURE、SCREEN_CONTROL；不把連線或截圖誤當成控制證據。",
+        input_schema: json!({"type": "object", "properties": {}}),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::ios_device::call_ios_device_status(args))),
+    });
+
+    m.insert("ios_screen_capture", ToolDef {
+        name:         "ios_screen_capture",
+        description: "透過 Sirin 擷取一張新鮮的實體 iPhone 畫面並存入 Sirin evidence。只證明 SCREEN_CAPTURE，不證明 SCREEN_CONTROL。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "label": { "type": "string", "description": "證據檔名標籤；選填" }
+            }
+        }),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::ios_device::call_ios_screen_capture(args))),
+    });
+
+    m.insert("ios_agoramarket_webview_evidence", ToolDef {
+        name:         "ios_agoramarket_webview_evidence",
+        description: "唯讀擷取目前前景 Telegram Mini App 中 AgoraMarket 正式站的實機 WebView 證據：綁定新鮮截圖、固定正式網域、版本 meta、啟動版本閘與已載入 Flutter runtime。不得傳入任意 JavaScript，不讀憑證，不改頁面；缺少已知舊快取前提時不宣稱快取更新 PASS。",
+        input_schema: json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {}
+        }),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::ios_device::call_ios_agoramarket_webview_evidence(args))),
+    });
+
+    m.insert("ios_control_session_start", ToolDef {
+        name:         "ios_control_session_start",
+        description: "取得 Sirin 管理的單一 iPhone 控制租約。預設 acceptance_browse_only；不授權密碼、信任、簽章、訊息、訂單或付款。",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "owner": { "type": "string", "description": "工作階段標籤，例如 codex-agoramarket" },
+                "policy": { "type": "string", "enum": ["acceptance_browse_only", "supervised_control"], "description": "預設 acceptance_browse_only" },
+                "ttl_secs": { "type": "integer", "minimum": 30, "maximum": 900, "description": "租約秒數，預設 300" }
+            }
+        }),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::ios_device::call_ios_control_session_start(args))),
+    });
+
+    m.insert(
+        "ios_control_session_status",
+        ToolDef {
+            name: "ios_control_session_status",
+            description: "唯讀查詢目前 iPhone 控制租約與最近一次 SCREEN_CONTROL 證據。",
+            input_schema: json!({"type": "object", "properties": {}}),
+            handler: ToolHandler::SyncJson(crate::ios_device::call_ios_control_session_status),
+        },
+    );
+
+    m.insert(
+        "ios_control_session_stop",
+        ToolDef {
+            name: "ios_control_session_stop",
+            description:
+                "釋放由 session_id 持有的 iPhone 控制租約，並強制停止及驗證 Sirin 自己建立的暫時 tunnel/WDA/forward 程序。Driver 服務本身保持被動常駐。",
+            input_schema: json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["session_id"],
+                "properties": {
+                    "session_id": { "type": "string" }
+                }
+            }),
+            handler: ToolHandler::AsyncJson(|args| {
+                Box::pin(crate::ios_device::call_ios_control_session_stop(args))
+            }),
+        },
+    );
+
+    m.insert("ios_swipe", ToolDef {
+        name:         "ios_swipe",
+        description: "由 Sirin 操作實體 iPhone 滑動。acceptance_browse_only 只允許垂直捲動；動作前後各擷取新鮮畫面，排除狀態列與瀏覽器工具列後，只有內容區出現實質垂直位移才回報 SCREEN_CONTROL=PASS。",
+        input_schema: json!({
+            "type": "object",
+            "required": ["session_id", "action_id", "x1", "y1", "x2", "y2"],
+            "properties": {
+                "session_id": { "type": "string" },
+                "action_id": { "type": "string", "description": "重試時必須沿用同一 id，避免重複手勢" },
+                "x1": { "type": "number" }, "y1": { "type": "number" },
+                "x2": { "type": "number" }, "y2": { "type": "number" },
+                "seconds": { "type": "number", "minimum": 0.05, "maximum": 3.0 },
+                "settle_ms": { "type": "integer", "minimum": 200, "maximum": 10000 }
+            }
+        }),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::ios_device::call_ios_swipe(args))),
+    });
+
+    m.insert("ios_home", ToolDef {
+        name:         "ios_home",
+        description: "由 Sirin 執行實體 iPhone Home 動作並以前後新鮮畫面驗證控制；需要有效租約與 action_id。",
+        input_schema: action_schema(json!({}), &[]),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::ios_device::call_ios_home(args))),
+    });
+
+    m.insert("ios_recover_home", ToolDef {
+        name:         "ios_recover_home",
+        description: "受限的 iPhone WDA 恢復：只在使用者明確核准、無有效租約、WDA 已 down/wedged 且 Sirin Driver 為 loopback acceptance-only 時，透過 USB 回到 SpringBoard 並請求重啟 WDA。不能點擊、輸入、開 App 或網址。",
+        input_schema: json!({
+            "type": "object",
+            "required": ["action_id"],
+            "properties": {
+                "action_id": { "type": "string", "description": "冪等鍵；回覆不明時必須沿用同一值" },
+                "settle_ms": { "type": "integer", "minimum": 200, "maximum": 10000 }
+            }
+        }),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::ios_device::call_ios_recover_home(args))),
+    });
+
+    m.insert("ios_open_app", ToolDef {
+        name:         "ios_open_app",
+        description: "由 Sirin 在實體 iPhone 開啟 Safari 或 Telegram；P0 不允許其他 App。需要有效租約與 action_id。",
+        input_schema: action_schema(json!({
+            "app": { "type": "string", "enum": ["safari", "telegram", "com.apple.mobilesafari", "ph.telegra.telegraph"] }
+        }), &["app"]),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::ios_device::call_ios_open_app(args))),
+    });
+
+    m.insert("ios_open_route", ToolDef {
+        name:         "ios_open_route",
+        description: "由 Sirin 開啟固定驗收入口：AgoraMarket Safari、Telegram @agora_login_bot 或 Codex iPhone Remote PWA；不接受任意 URL，不送出 Telegram 訊息。",
+        input_schema: action_schema(json!({
+            "route": { "type": "string", "enum": ["safari_store", "telegram_bot", "codex_remote"] }
+        }), &["route"]),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::ios_device::call_ios_open_route(args))),
+    });
+
+    m.insert("ios_acceptance_run", ToolDef {
+        name:         "ios_acceptance_run",
+        description: "以一次 Sirin 呼叫完成固定 iPhone 驗收入口：按需啟動被動鏈路、取得 acceptance_browse_only 租約、保存動作前後證據，最後驗證租約與 Sirin 暫時鏈路程序已釋放。只接受固定 route；run_id 是目前 Sirin process 內、綁定同一 route 的重試冪等鍵。",
+        input_schema: json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["run_id", "route"],
+            "properties": {
+                "run_id": { "type": "string", "description": "1-120 字元冪等鍵；回覆不明時必須沿用" },
+                "route": { "type": "string", "enum": ["safari_store", "telegram_bot", "codex_remote"] },
+                "owner": { "type": "string", "description": "選填工作標籤" },
+                "ttl_secs": { "type": "integer", "minimum": 30, "maximum": 900 },
+                "settle_ms": { "type": "integer", "minimum": 200, "maximum": 10000 }
+            }
+        }),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::ios_device::call_ios_acceptance_run(args))),
+    });
+
+    m.insert("ios_tap", ToolDef {
+        name:         "ios_tap",
+        description: "由 Sirin 點擊實體 iPhone。只在 supervised_control 明確啟用且 provider 非 acceptance-only 時可用；必須提供最新 expected_frame_sha256，避免點擊舊畫面。",
+        input_schema: action_schema(json!({
+            "x": { "type": "number" },
+            "y": { "type": "number" },
+            "expected_frame_sha256": { "type": "string", "description": "最近 ios_screen_capture 的 sha256" }
+        }), &["x", "y", "expected_frame_sha256"]),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::ios_device::call_ios_tap(args))),
+    });
+
+    m.insert(
+        "research_sentinel_ack",
+        ToolDef {
+            name: "research_sentinel_ack",
+            description: "將指定 News Research Sentinel inbox item 標記為 read。",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "inbox item id" }
+                },
+                "required": ["id"]
+            }),
+            handler: ToolHandler::SyncJson(crate::research_sentinel::call_research_sentinel_ack),
+        },
+    );
 
     m.insert("research_sentinel_review", ToolDef {
         name:         "research_sentinel_review",
-        description: "回寫 Codex 對 News Research Sentinel inbox item 的驗收結果，形成研究閉環。狀態可為 accepted、ignored、needs_more_sources、convert_to_issue。",
+        description: "回寫 Codex 對 News Research Sentinel inbox item 的驗收結果，形成研究閉環。accepted/convert_to_issue 會對符合條件事件嘗試寫入 KB；狀態可為 accepted、ignored、needs_more_sources、convert_to_issue。",
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -1865,8 +3285,34 @@ fn seed_default(m: &mut RegistryMap) {
             },
             "required": ["id", "review_status"]
         }),
-        handler:      ToolHandler::SyncJson(crate::research_sentinel::call_research_sentinel_review),
+        handler:      ToolHandler::AsyncJson(|args| Box::pin(crate::research_sentinel::call_research_sentinel_review(args))),
     });
+}
+
+fn action_schema(extra_properties: Value, extra_required: &[&str]) -> Value {
+    let mut properties = serde_json::Map::new();
+    properties.insert("session_id".into(), json!({"type": "string"}));
+    properties.insert(
+        "action_id".into(),
+        json!({
+            "type": "string",
+            "description": "idempotency key; retries must reuse the same value"
+        }),
+    );
+    properties.insert(
+        "settle_ms".into(),
+        json!({"type": "integer", "minimum": 200, "maximum": 10000}),
+    );
+    if let Some(extra) = extra_properties.as_object() {
+        properties.extend(extra.clone());
+    }
+    let mut required = vec!["session_id", "action_id"];
+    required.extend_from_slice(extra_required);
+    json!({
+        "type": "object",
+        "required": required,
+        "properties": properties,
+    })
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -1886,12 +3332,80 @@ mod tests {
         assert!(get("research_sentinel_goal_create").is_some());
         assert!(get("research_sentinel_run_once").is_some());
         assert!(get("research_sentinel_inbox").is_some());
-        assert!(get("research_sentinel_ack").is_some());
-        assert!(get("research_sentinel_review").is_some());
+        assert!(get("research_sentinel_monitor_status").is_some());
+        assert!(get("a2a_worker_status").is_some());
+        assert!(get("a2a_issue_candidates").is_some());
+        assert!(get("ops_event_inbox").is_some());
+        assert!(get("a2a_review_issue_candidate").is_some());
+        assert!(get("a2a_handoff_queue").is_some());
+        assert!(get("a2a_handoff_approval_packets").is_some());
+        assert!(get("a2a_request_handoff_approval").is_some());
+        assert!(get("a2a_handoff_approval_requests").is_some());
+        assert!(get("a2a_update_handoff_approval_request").is_some());
+        assert!(get("a2a_handoff_review_inbox").is_some());
+        assert!(get("a2a_update_handoff").is_some());
+        assert!(get("a2a_prepare_handoff_execution_packages").is_some());
         assert!(get("codex_supervisor_snapshot").is_some());
         assert!(get("codex_supervisor_report").is_some());
         assert!(get("codex_supervisor_claim").is_some());
         assert!(get("codex_supervisor_complete_action").is_some());
+        assert!(get("ops_schedule_create").is_some());
+        assert!(get("ops_review_queue_list").is_some());
+        assert!(get("ops_review_claim").is_some());
+        assert!(get("ops_review_update").is_some());
+        assert!(get("ops_review_complete").is_some());
+        assert!(get("ops_schedule_list").is_some());
+        assert!(get("ops_schedule_digest").is_some());
+        assert!(get("ops_schedule_update").is_some());
+        assert!(get("ops_schedule_run_due").is_some());
+        assert!(get("device_list").is_some());
+        assert!(get("device_emulator_start").is_some());
+        assert!(get("device_emulator_status").is_some());
+        assert!(get("device_screenshot").is_some());
+        assert!(get("device_app_launch").is_some());
+        assert!(get("device_operator_login_start").is_some());
+        assert!(get("device_operator_login_status").is_some());
+        assert!(get("device_operator_login_confirm").is_some());
+        assert!(get("device_geo_fix").is_some());
+        assert!(get("device_geo_route_plan").is_some());
+        assert!(get("device_geo_route_start").is_some());
+        assert!(get("device_geo_roam_plan").is_some());
+        assert!(get("device_geo_roam_start").is_some());
+        assert!(get("device_geo_route_status").is_some());
+        assert!(get("device_geo_route_stop").is_some());
+        assert!(get("ios_3utools_status").is_some());
+        assert!(get("ios_3utools_start").is_some());
+        assert!(get("ios_dev_location_status").is_some());
+        assert!(get("ios_dev_location_current").is_some());
+        assert!(get("ios_location_report_latest").is_some());
+        assert!(get("ios_dev_location_set").is_some());
+        assert!(get("ios_dev_location_reset").is_some());
+        assert!(get("ios_dev_location_session_status").is_some());
+        assert!(get("ios_dev_location_route_plan").is_some());
+        assert!(get("ios_dev_location_roam_plan").is_some());
+        assert!(get("ios_dev_location_route_status").is_some());
+        assert!(get("ios_dev_location_route_start").is_some());
+        assert!(get("ios_dev_location_route_run_status").is_some());
+        assert!(get("ios_device_status").is_some());
+        assert!(get("ios_screen_capture").is_some());
+        assert!(get("ios_agoramarket_webview_evidence").is_some());
+        assert!(get("ios_control_session_start").is_some());
+        assert!(get("ios_control_session_status").is_some());
+        assert!(get("ios_control_session_stop").is_some());
+        assert!(get("ios_swipe").is_some());
+        assert!(get("ios_home").is_some());
+        assert!(get("ios_recover_home").is_some());
+        assert!(get("ios_open_app").is_some());
+        assert!(get("ios_open_route").is_some());
+        assert!(get("ios_acceptance_run").is_some());
+        assert!(get("ios_tap").is_some());
+        assert!(get("ios_dev_location_route_stop").is_some());
+        assert!(get("ios_location_set_prepare").is_some());
+        assert!(get("ios_location_restore_prepare").is_some());
+        assert!(get("ios_location_confirm").is_some());
+        assert!(get("ios_location_session_status").is_some());
+        assert!(get("research_sentinel_ack").is_some());
+        assert!(get("research_sentinel_review").is_some());
 
         // Un-migrated tools must NOT be in the registry yet.  Only one tool
         // is permanently un-migrated: `browser_exec`.  It's the sole authz
@@ -1913,16 +3427,16 @@ mod tests {
         assert_eq!(snapshot["annotations"]["readOnlyHint"], true);
         assert_eq!(snapshot["annotations"]["openWorldHint"], false);
 
-        let report = get("codex_supervisor_report")
-            .expect("seeded supervisor report")
-            .to_json();
-        assert_eq!(report["annotations"]["idempotentHint"], true);
-
-        for name in ["codex_supervisor_claim", "codex_supervisor_complete_action"] {
-            let tool = get(name).expect("seeded supervisor mutation tool").to_json();
+        for name in [
+            "codex_supervisor_report",
+            "codex_supervisor_claim",
+            "codex_supervisor_complete_action",
+        ] {
+            let tool = get(name)
+                .expect("seeded supervisor mutation tool")
+                .to_json();
             assert_eq!(tool["annotations"]["readOnlyHint"], false);
             assert_eq!(tool["annotations"]["destructiveHint"], false);
-            assert_eq!(tool["annotations"]["idempotentHint"], false);
             assert_eq!(tool["annotations"]["openWorldHint"], false);
         }
     }
@@ -1931,9 +3445,105 @@ mod tests {
     fn tool_def_renders_to_expected_json_shape() {
         let def = get("skill_list").expect("seeded");
         let json = def.to_json();
-        assert_eq!(json["name"],        "skill_list");
-        assert_eq!(json["description"], "列出 Sirin 所有可用技能（含 YAML 動態技能）。");
+        assert_eq!(json["name"], "skill_list");
+        assert_eq!(
+            json["description"],
+            "列出 Sirin 所有可用技能（含 YAML 動態技能）。"
+        );
         assert!(json["inputSchema"].is_object());
+    }
+
+    #[test]
+    fn iphone_observation_tools_are_explicitly_read_only() {
+        for name in ["ios_device_status", "ios_control_session_status"] {
+            let json = get(name).expect("seeded iPhone observation tool").to_json();
+            assert_eq!(json["annotations"]["readOnlyHint"], true);
+            assert_eq!(json["annotations"]["destructiveHint"], false);
+            assert_eq!(json["annotations"]["idempotentHint"], true);
+            assert_eq!(json["annotations"]["openWorldHint"], false);
+        }
+
+        assert!(
+            get("ios_screen_capture")
+                .expect("seeded iPhone capture tool")
+                .to_json()["annotations"]
+                .is_null(),
+            "capture must retain the client's normal approval gate"
+        );
+        assert!(
+            get("ios_swipe")
+                .expect("seeded iPhone control tool")
+                .to_json()["annotations"]
+                .is_null(),
+            "control must retain the client's normal approval gate"
+        );
+        assert!(
+            get("ios_recover_home")
+                .expect("seeded iPhone recovery tool")
+                .to_json()["annotations"]
+                .is_null(),
+            "recovery must retain the client's normal approval gate"
+        );
+    }
+
+    #[test]
+    fn codex_remote_is_a_discoverable_fixed_iphone_route() {
+        let json = get("ios_open_route")
+            .expect("seeded iPhone fixed-route tool")
+            .to_json();
+        let routes = json["inputSchema"]["properties"]["route"]["enum"]
+            .as_array()
+            .expect("fixed route enum");
+        assert!(routes.iter().any(|route| route == "codex_remote"));
+        assert!(!routes
+            .iter()
+            .any(|route| route == "https://remote.purrtechllc.com/"));
+    }
+
+    #[test]
+    fn iphone_acceptance_run_is_fixed_route_and_not_read_only() {
+        let json = get("ios_acceptance_run")
+            .expect("seeded iPhone composite acceptance tool")
+            .to_json();
+        assert_eq!(json["inputSchema"]["additionalProperties"], false);
+        assert!(json["inputSchema"]["required"]
+            .as_array()
+            .expect("required fields")
+            .iter()
+            .any(|field| field == "run_id"));
+        assert!(json["annotations"].is_null());
+    }
+
+    #[test]
+    fn iphone_session_stop_cannot_retain_a_warm_link() {
+        let json = get("ios_control_session_stop")
+            .expect("seeded iPhone stop tool")
+            .to_json();
+        assert_eq!(json["inputSchema"]["additionalProperties"], false);
+        assert!(json["inputSchema"]["properties"]["release_link"].is_null());
+    }
+
+    #[test]
+    fn kb_tools_declare_read_and_idempotent_write_semantics() {
+        for name in ["kb_get", "kb_search", "kb_stats"] {
+            let json = get(name).expect("seeded KB read tool").to_json();
+            assert_eq!(json["annotations"]["readOnlyHint"], true);
+            assert_eq!(json["annotations"]["destructiveHint"], false);
+            assert_eq!(json["annotations"]["idempotentHint"], true);
+        }
+
+        let write = get("kb_write").expect("seeded KB write tool").to_json();
+        assert_eq!(write["annotations"]["readOnlyHint"], false);
+        assert_eq!(write["annotations"]["destructiveHint"], false);
+        assert_eq!(write["annotations"]["idempotentHint"], true);
+        assert_eq!(
+            write["inputSchema"]["properties"]["layer"]["default"],
+            "topic"
+        );
+        assert_eq!(
+            write["inputSchema"]["properties"]["status"]["default"],
+            "confirmed"
+        );
     }
 
     #[test]

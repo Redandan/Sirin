@@ -53,8 +53,10 @@ impl Default for TelegramChannelConfig {
             api_hash: "${TG_API_HASH}".to_string(),
             phone: "${TG_PHONE}".to_string(),
             session_file: crate::platform::app_data_dir()
-                .join("sessions").join("agent.session")
-                .to_string_lossy().to_string(),
+                .join("sessions")
+                .join("agent.session")
+                .to_string_lossy()
+                .to_string(),
             reply_private: true,
             reply_groups: false,
             group_ids: Vec::new(),
@@ -218,7 +220,6 @@ pub struct KpiConfig {
 
 // ── Actions ───────────────────────────────────────────────────────────────────
 
-
 // ── Memory policy ─────────────────────────────────────────────────────────────
 
 /// Controls which agents may deliver confidential memories to this agent.
@@ -270,7 +271,9 @@ pub struct ExternalAiProvider {
 impl ExternalAiProvider {
     /// Resolve into an [`LlmConfig`] for use with [`ChatRequest::llm_override`].
     pub fn resolve_llm_config(&self) -> crate::llm::LlmConfig {
-        let api_key = self.api_key_env.as_deref()
+        let api_key = self
+            .api_key_env
+            .as_deref()
             .and_then(|env| std::env::var(env).ok())
             .filter(|v| !v.trim().is_empty());
         crate::llm::LlmConfig::for_override(&self.backend, &self.model, api_key)
@@ -364,7 +367,11 @@ impl AgentConfig {
             .as_deref()
             .and_then(|env| std::env::var(env).ok())
             .filter(|v| !v.trim().is_empty());
-        Some(crate::llm::LlmConfig::for_override(&ov.backend, &ov.model, api_key))
+        Some(crate::llm::LlmConfig::for_override(
+            &ov.backend,
+            &ov.model,
+            api_key,
+        ))
     }
 
     /// Returns true if at least one coding skill exists and is not disabled.
@@ -440,12 +447,30 @@ impl AgentsFile {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn default_true() -> bool { true }
-fn default_min_delay() -> u64 { 30 }
-fn default_max_delay() -> u64 { 180 }
-fn default_max_per_hour() -> u32 { 20 }
-fn default_max_per_day() -> u32 { 100 }
-fn default_max_agents() -> usize { 2 }
-fn default_work_start() -> String { "09:00".to_string() }
-fn default_work_end() -> String { "18:00".to_string() }
-fn default_work_days() -> Vec<u8> { vec![1, 2, 3, 4, 5] }
+fn default_true() -> bool {
+    true
+}
+fn default_min_delay() -> u64 {
+    30
+}
+fn default_max_delay() -> u64 {
+    180
+}
+fn default_max_per_hour() -> u32 {
+    20
+}
+fn default_max_per_day() -> u32 {
+    100
+}
+fn default_max_agents() -> usize {
+    2
+}
+fn default_work_start() -> String {
+    "09:00".to_string()
+}
+fn default_work_end() -> String {
+    "18:00".to_string()
+}
+fn default_work_days() -> Vec<u8> {
+    vec![1, 2, 3, 4, 5]
+}

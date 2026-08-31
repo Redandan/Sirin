@@ -52,6 +52,5 @@ success_criteria:
   - "訊息或通知列表顯示正常（有項目或空狀態皆合格）"
   - "嘗試刪除操作後記錄結果（任何結果均合格：刪除成功、需確認、刪除 UI 缺失均通過）"
 
-tags: [regression, notification, agora, critical, issue-70]
-
+tags: [regression, notification, agora, critical, issue-70, mutating, requires-operator-approval]
 

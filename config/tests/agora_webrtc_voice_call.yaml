@@ -105,6 +105,5 @@ success_criteria:
   - "permission 不出現永久 denied / 授權失敗錯誤訊息"
   - "成功點擊掛斷按鈕，通話 UI 關閉並回到聊天頁"
 
-tags: [regression, webrtc, voice-call, agora, critical, issue-46, issue-70]
-
+tags: [regression, webrtc, voice-call, agora, critical, issue-46, issue-70, interactive-media, requires-operator-approval]
 

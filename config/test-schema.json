@@ -51,6 +51,11 @@
         }
       ]
     },
+    "fixture_only": {
+      "description": "When true, fixture.setup is the whole test: if every fixture step succeeds, the run passes without entering the LLM ReAct loop.\n\nUse this for deterministic smoke/canary tests where fixture steps include explicit assertions such as `assert_url_matches` or `shadow_find`.  This keeps frequently scheduled checks fast and avoids spending a local/remote LLM call just to say `done=true`.",
+      "default": false,
+      "type": "boolean"
+    },
     "goal": {
       "type": "string"
     },
@@ -122,6 +127,11 @@
           "$ref": "#/definitions/PerceptionMode"
         }
       ]
+    },
+    "preserve_origin_state": {
+      "description": "Preserve browser origin storage before the first navigation.\n\nDefault false keeps regression tests isolated. Set true only for operations dry-runs that intentionally validate existing live user state, such as a pre-seeded first-order cart.",
+      "default": false,
+      "type": "boolean"
     },
     "record_timeline_gif": {
       "description": "Capture an action-annotated GIF timeline of the run (Issue #78). When `true`, every ReAct iteration captures a frame and on failure the frames are encoded into `test_failures/<run_id>/timeline.gif` (the single failure-screenshot path stays for back-compat). Default `false` to avoid extra screenshot overhead in normal runs. Set to `true` when debugging flaky failures and you need frame-by-frame playback.",

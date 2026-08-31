@@ -26,7 +26,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 
-use headless_chrome::protocol::cdp::{Accessibility, DOM, Input};
+use headless_chrome::protocol::cdp::{Accessibility, Input, DOM};
 use serde::{Deserialize, Serialize};
 
 use crate::browser::with_tab;
@@ -83,22 +83,34 @@ impl AxNode {
         not_name_matches: &[String],
     ) -> bool {
         if let Some(r) = role {
-            if self.role.as_deref().unwrap_or("") != r { return false; }
+            if self.role.as_deref().unwrap_or("") != r {
+                return false;
+            }
         }
         if let Some(needle) = name_substring {
             let hay = self.name.as_deref().unwrap_or("").to_lowercase();
-            if !hay.contains(&needle.to_lowercase()) { return false; }
+            if !hay.contains(&needle.to_lowercase()) {
+                return false;
+            }
         }
         if let Some(pattern) = name_regex {
             let hay = self.name.as_deref().unwrap_or("");
             match regex::Regex::new(pattern) {
-                Ok(re) => { if !re.is_match(hay) { return false; } }
-                Err(_) => { return false; } // invalid regex → no match
+                Ok(re) => {
+                    if !re.is_match(hay) {
+                        return false;
+                    }
+                }
+                Err(_) => {
+                    return false;
+                } // invalid regex → no match
             }
         }
         for excl in not_name_matches {
             let hay = self.name.as_deref().unwrap_or("").to_lowercase();
-            if hay.contains(&excl.to_lowercase()) { return false; }
+            if hay.contains(&excl.to_lowercase()) {
+                return false;
+            }
         }
         true
     }
@@ -119,7 +131,10 @@ fn a11y_tabs() -> &'static Mutex<HashSet<usize>> {
 /// Clear all per-tab a11y tracking.  Call when Chrome is re-launched so new
 /// tabs start clean and `Accessibility.Enable` fires once on first use.
 pub fn reset_a11y_enabled() {
-    a11y_tabs().lock().unwrap_or_else(|e| e.into_inner()).clear();
+    a11y_tabs()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
 }
 
 /// Remove a specific tab from a11y tracking.  Call when a named session/tab
@@ -130,7 +145,10 @@ pub fn remove_a11y_tab(index: usize) {
     set.remove(&index);
     // Mirror the tab-Vec reindex that close_session() does: all slots above
     // the removed index shift down by one.
-    let shifted: HashSet<usize> = set.iter().map(|&i| if i > index { i - 1 } else { i }).collect();
+    let shifted: HashSet<usize> = set
+        .iter()
+        .map(|&i| if i > index { i - 1 } else { i })
+        .collect();
     *set = shifted;
 }
 
@@ -153,12 +171,15 @@ pub fn enable() -> Result<(), String> {
             return Ok(()); // already enabled — skip re-send (Issue #21)
         }
     }
-    with_tab(|tab| {
+    with_tab(move |tab| {
         tab.call_method(Accessibility::Enable(None))
             .map_err(|e| format!("Accessibility.enable: {e}"))?;
         Ok(())
     })?;
-    a11y_tabs().lock().unwrap_or_else(|e| e.into_inner()).insert(active);
+    a11y_tabs()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(active);
     Ok(())
 }
 
@@ -199,7 +220,9 @@ pub fn get_full_tree(include_ignored: bool) -> Result<Vec<AxNode>, String> {
 
     let raw = tree;
 
-    let nodes = raw.get("nodes").and_then(|v| v.as_array())
+    let nodes = raw
+        .get("nodes")
+        .and_then(|v| v.as_array())
         .ok_or_else(|| format!("getFullAXTree: missing nodes array; got {raw}"))?;
 
     // HIDE_FOR_TOOL_USE (Issue #75): drop nodes whose DOM element bears
@@ -213,27 +236,42 @@ pub fn get_full_tree(include_ignored: bool) -> Result<Vec<AxNode>, String> {
         let role = json_ax_value(n, "role");
         let ignored = n.get("ignored").and_then(|v| v.as_bool()).unwrap_or(false);
         if !include_ignored {
-            if ignored { continue; }
+            if ignored {
+                continue;
+            }
             if matches!(role.as_deref(), Some("none") | Some("generic")) {
                 continue;
             }
         }
-        let backend_id = n.get("backendDOMNodeId").and_then(|v| v.as_u64()).map(|n| n as u32);
+        let backend_id = n
+            .get("backendDOMNodeId")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as u32);
         if let Some(bid) = backend_id {
             if hidden.contains(&bid) {
                 continue;
             }
         }
-        let child_ids = n.get("childIds").and_then(|v| v.as_array())
-            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        let child_ids = n
+            .get("childIds")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
-        let node_id = n.get("nodeId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let node_id = n
+            .get("nodeId")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         out.push(AxNode {
             node_id,
             backend_id,
             role,
-            name:        json_ax_value(n, "name"),
-            value:       json_ax_value(n, "value"),
+            name: json_ax_value(n, "name"),
+            value: json_ax_value(n, "value"),
             description: json_ax_value(n, "description"),
             child_ids,
         });
@@ -254,11 +292,14 @@ fn collect_hidden_backend_ids() -> Result<HashSet<u32>, String> {
     // selector — returns node IDs directly which we map to backend IDs via
     // `DOM.describeNode`.  All calls are best-effort; the caller handles
     // any propagated error by treating the hidden set as empty.
-    with_tab(|tab| -> Result<HashSet<u32>, String> {
+    with_tab(move |tab| -> Result<HashSet<u32>, String> {
         let mut out = HashSet::new();
         // Get the document root nodeId.
         let doc = tab
-            .call_method(DOM::GetDocument { depth: Some(0), pierce: Some(false) })
+            .call_method(DOM::GetDocument {
+                depth: Some(0),
+                pierce: Some(false),
+            })
             .map_err(|e| format!("DOM.getDocument: {e}"))?;
         let root_id = doc.root.node_id;
 
@@ -277,7 +318,7 @@ fn collect_hidden_backend_ids() -> Result<HashSet<u32>, String> {
             });
             let ids = match res {
                 Ok(r) => r.node_ids,
-                Err(_) => continue,  // selector miss (e.g. no element) — fine
+                Err(_) => continue, // selector miss (e.g. no element) — fine
             };
             for nid in ids {
                 if let Ok(desc) = tab.call_method(DOM::DescribeNode {
@@ -297,7 +338,7 @@ fn collect_hidden_backend_ids() -> Result<HashSet<u32>, String> {
 }
 
 fn fetch_tree_raw() -> Result<serde_json::Value, String> {
-    with_tab(|tab| {
+    with_tab(move |tab| {
         tab.call_method(RawGetFullAxTree {})
             .map_err(|e| format!("Accessibility.getFullAXTree: {e}"))
     })
@@ -305,7 +346,10 @@ fn fetch_tree_raw() -> Result<serde_json::Value, String> {
 
 /// Count nodes in a raw `getFullAXTree` response.
 fn raw_node_count(raw: &serde_json::Value) -> usize {
-    raw.get("nodes").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0)
+    raw.get("nodes")
+        .and_then(|v| v.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0)
 }
 
 /// Poll the raw AX tree up to `attempts` times, sleeping `interval_ms`
@@ -331,9 +375,9 @@ fn json_ax_value(node: &serde_json::Value, field: &str) -> Option<String> {
     match inner {
         serde_json::Value::String(s) => Some(s.clone()),
         serde_json::Value::Number(n) => Some(n.to_string()),
-        serde_json::Value::Bool(b)   => Some(b.to_string()),
-        serde_json::Value::Null      => None,
-        other                         => Some(other.to_string()),
+        serde_json::Value::Bool(b) => Some(b.to_string()),
+        serde_json::Value::Null => None,
+        other => Some(other.to_string()),
     }
 }
 
@@ -388,7 +432,9 @@ pub fn find_by_role_and_name(
     not_name_matches: &[String],
 ) -> Result<Option<AxNode>, String> {
     let tree = get_full_tree(false)?;
-    Ok(tree.into_iter().find(|n| n.matches(role, name_substring, name_regex, not_name_matches)))
+    Ok(tree
+        .into_iter()
+        .find(|n| n.matches(role, name_substring, name_regex, not_name_matches)))
 }
 
 /// Find all nodes matching the supplied filters, up to `limit`.
@@ -423,6 +469,7 @@ pub fn find_scrolling_by_role_and_name(
     not_name_matches: &[String],
     scroll_max: usize,
     scroll_step_px: f64,
+    flutter_scroll: bool,
 ) -> Result<(Option<AxNode>, usize), String> {
     for scroll_count in 0..=scroll_max {
         let tree = get_full_tree(false)?;
@@ -433,8 +480,12 @@ pub fn find_scrolling_by_role_and_name(
             return Ok((Some(node), scroll_count));
         }
         if scroll_count < scroll_max {
-            crate::browser::scroll_by(0.0, scroll_step_px)?;
-            // Wait for Flutter ListView to load newly-visible items into the tree
+            if flutter_scroll {
+                crate::browser::flutter_scroll(scroll_step_px)?;
+            } else {
+                crate::browser::scroll_by(0.0, scroll_step_px)?;
+            }
+            // Wait for the page to load newly-visible items into the tree.
             std::thread::sleep(std::time::Duration::from_millis(400));
         }
     }
@@ -474,17 +525,17 @@ pub fn ax_snapshot(id: Option<&str>) -> Result<String, String> {
 #[derive(Debug, Serialize)]
 pub struct AxNodeChange {
     pub node_id: String,
-    pub before_name:  Option<String>,
-    pub after_name:   Option<String>,
+    pub before_name: Option<String>,
+    pub after_name: Option<String>,
     pub before_value: Option<String>,
-    pub after_value:  Option<String>,
+    pub after_value: Option<String>,
 }
 
 /// Result of comparing two ax tree snapshots.
 #[derive(Debug, Serialize)]
 pub struct AxDiff {
     /// Nodes present in `after` but not in `before`.
-    pub added:   Vec<AxNode>,
+    pub added: Vec<AxNode>,
     /// Nodes present in `before` but not in `after`.
     pub removed: Vec<AxNode>,
     /// Nodes present in both whose name or value differs.
@@ -501,14 +552,9 @@ pub fn ax_diff(before_id: &str, after_id: &str) -> Result<AxDiff, String> {
         .get(after_id)
         .ok_or_else(|| format!("snapshot '{after_id}' not found"))?;
 
-    let before_map: HashMap<&str, &AxNode> = before
-        .iter()
-        .map(|n| (n.node_id.as_str(), n))
-        .collect();
-    let after_map: HashMap<&str, &AxNode> = after
-        .iter()
-        .map(|n| (n.node_id.as_str(), n))
-        .collect();
+    let before_map: HashMap<&str, &AxNode> =
+        before.iter().map(|n| (n.node_id.as_str(), n)).collect();
+    let after_map: HashMap<&str, &AxNode> = after.iter().map(|n| (n.node_id.as_str(), n)).collect();
 
     let added: Vec<AxNode> = after
         .iter()
@@ -526,11 +572,11 @@ pub fn ax_diff(before_id: &str, after_id: &str) -> Result<AxDiff, String> {
             let n_before = before_map.get(n_after.node_id.as_str())?;
             if n_before.name != n_after.name || n_before.value != n_after.value {
                 Some(AxNodeChange {
-                    node_id:      n_after.node_id.clone(),
-                    before_name:  n_before.name.clone(),
-                    after_name:   n_after.name.clone(),
+                    node_id: n_after.node_id.clone(),
+                    before_name: n_before.name.clone(),
+                    after_name: n_after.name.clone(),
                     before_value: n_before.value.clone(),
-                    after_value:  n_after.value.clone(),
+                    after_value: n_after.value.clone(),
                 })
             } else {
                 None
@@ -538,7 +584,11 @@ pub fn ax_diff(before_id: &str, after_id: &str) -> Result<AxDiff, String> {
         })
         .collect();
 
-    Ok(AxDiff { added, removed, changed })
+    Ok(AxDiff {
+        added,
+        removed,
+        changed,
+    })
 }
 
 /// Poll until the ax tree differs from the stored baseline, or timeout.
@@ -586,8 +636,9 @@ pub fn wait_for_ax_change(baseline_id: &str, timeout_ms: u64) -> Result<(String,
 /// Read the literal `name` or `value` text of a node (used for assertions).
 /// Returns `value` if present, else `name`.  Empty string if neither.
 pub fn read_node_text(backend_id: u32) -> Result<String, String> {
-    let tree = get_full_tree(true)?;  // include ignored — text nodes sometimes are
-    let node = tree.into_iter()
+    let tree = get_full_tree(true)?; // include ignored — text nodes sometimes are
+    let node = tree
+        .into_iter()
         .find(|n| n.backend_id == Some(backend_id))
         .ok_or_else(|| format!("ax node with backend_id={backend_id} not found"))?;
     Ok(node.value.or(node.name).unwrap_or_default())
@@ -636,9 +687,11 @@ pub fn click_backend(backend_id: u32) -> Result<(), String> {
     let (cx, cy) = center_of_backend(backend_id)?;
 
     // ── Strategy 1: CDP Input.DispatchMouseEvent (Flutter-compatible) ──────
-    let cdp_ok = with_tab(|tab| {
+    let cdp_ok = with_tab(move |tab| {
         let point = headless_chrome::browser::tab::point::Point { x: cx, y: cy };
-        tab.click_point(point).map(|_| ()).map_err(|e| format!("cdp_click: {e}"))
+        tab.click_point(point)
+            .map(|_| ())
+            .map_err(|e| format!("cdp_click: {e}"))
     });
 
     if let Err(ref e) = cdp_ok {
@@ -684,12 +737,13 @@ pub fn click_backend(backend_id: u32) -> Result<(), String> {
 
 /// Focus an element by backend id.
 pub fn focus_backend(backend_id: u32) -> Result<(), String> {
-    with_tab(|tab| {
+    with_tab(move |tab| {
         tab.call_method(DOM::Focus {
             node_id: None,
             backend_node_id: Some(backend_id),
             object_id: None,
-        }).map_err(|e| format!("DOM.focus({backend_id}): {e}"))?;
+        })
+        .map_err(|e| format!("DOM.focus({backend_id}): {e}"))?;
         Ok(())
     })
 }
@@ -712,8 +766,9 @@ pub fn type_into_backend(backend_id: u32, text: &str) -> Result<(), String> {
     // can detect.
     let _ = click_backend(backend_id);
     std::thread::sleep(std::time::Duration::from_millis(300));
-    with_tab(|tab| {
-        tab.call_method(Input::InsertText { text: text.to_string() })
+    let text = text.to_string();
+    with_tab(move |tab| {
+        tab.call_method(Input::InsertText { text })
             .map_err(|e| format!("Input.insertText: {e}"))?;
         Ok(())
     })
@@ -786,7 +841,8 @@ pub fn enable_flutter_semantics() -> Result<(), String> {
     if let Ok(raw) = fetch_tree_raw() {
         if let Some(nodes) = raw.get("nodes").and_then(|v| v.as_array()) {
             for node in nodes {
-                let name = node.get("name")
+                let name = node
+                    .get("name")
                     .and_then(|n| n.get("value"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
@@ -826,7 +882,7 @@ pub fn enable_flutter_semantics() -> Result<(), String> {
                                 );
                                 if focus_backend(bid as u32).is_ok() {
                                     let _ = crate::browser::evaluate_js(
-                                        "document.activeElement && document.activeElement.click()"
+                                        "document.activeElement && document.activeElement.click()",
                                     );
                                     std::thread::sleep(std::time::Duration::from_millis(800));
                                     return Ok(());
@@ -855,8 +911,9 @@ pub fn enable_flutter_semantics() -> Result<(), String> {
             }
             ph.click();
             return "true";
-        })()"#
-    ).unwrap_or_default();
+        })()"#,
+    )
+    .unwrap_or_default();
 
     if clicked == "true" {
         std::thread::sleep(std::time::Duration::from_millis(800));
@@ -900,7 +957,7 @@ fn ax_value_to_string(v: &Option<Accessibility::AXValue>) -> Option<String> {
 
 /// Compute the centre point of an element's content box via CDP.
 fn center_of_backend(backend_id: u32) -> Result<(f64, f64), String> {
-    let model = with_tab(|tab| {
+    let model = with_tab(move |tab| {
         tab.call_method(DOM::GetBoxModel {
             node_id: None,
             backend_node_id: Some(backend_id),
@@ -930,7 +987,9 @@ mod tests {
             backend_id: Some(42),
             role: Some("button".into()),
             name: Some("Submit".into()),
-            value: None, description: None, child_ids: vec![],
+            value: None,
+            description: None,
+            child_ids: vec![],
         };
         assert!(n.matches(Some("button"), None, None, &[]));
         assert!(!n.matches(Some("textbox"), None, None, &[]));
@@ -943,7 +1002,9 @@ mod tests {
             backend_id: None,
             role: Some("text".into()),
             name: Some("Wallet Balance: $7376.80".into()),
-            value: None, description: None, child_ids: vec![],
+            value: None,
+            description: None,
+            child_ids: vec![],
         };
         assert!(n.matches(None, Some("balance"), None, &[]));
         assert!(n.matches(None, Some("$7376.80"), None, &[]));
@@ -956,8 +1017,11 @@ mod tests {
         let n = AxNode {
             node_id: "1".into(),
             backend_id: None,
-            role: None, name: None,
-            value: None, description: None, child_ids: vec![],
+            role: None,
+            name: None,
+            value: None,
+            description: None,
+            child_ids: vec![],
         };
         assert!(n.matches(None, None, None, &[]));
     }
@@ -971,7 +1035,9 @@ mod tests {
             backend_id: None,
             role: Some("textbox".into()),
             name: Some("Enter password".into()),
-            value: None, description: None, child_ids: vec![],
+            value: None,
+            description: None,
+            child_ids: vec![],
         };
         // Should be excluded when "password" is in the not_name_matches list.
         let excl = vec!["password".to_string()];
@@ -988,7 +1054,9 @@ mod tests {
             backend_id: None,
             role: Some("button".into()),
             name: Some("Confirm Order #1234".into()),
-            value: None, description: None, child_ids: vec![],
+            value: None,
+            description: None,
+            child_ids: vec![],
         };
         // Regex that matches the full name.
         assert!(n.matches(None, None, Some(r"Confirm.*"), &[]));
@@ -1003,31 +1071,53 @@ mod tests {
     #[test]
     fn ax_diff_detects_added_removed() {
         let node_a = AxNode {
-            node_id: "a".into(), backend_id: None,
-            role: Some("button".into()), name: Some("A".into()),
-            value: None, description: None, child_ids: vec![],
+            node_id: "a".into(),
+            backend_id: None,
+            role: Some("button".into()),
+            name: Some("A".into()),
+            value: None,
+            description: None,
+            child_ids: vec![],
         };
         let node_b = AxNode {
-            node_id: "b".into(), backend_id: None,
-            role: Some("button".into()), name: Some("B".into()),
-            value: None, description: None, child_ids: vec![],
+            node_id: "b".into(),
+            backend_id: None,
+            role: Some("button".into()),
+            name: Some("B".into()),
+            value: None,
+            description: None,
+            child_ids: vec![],
         };
         let node_b_changed = AxNode {
-            node_id: "b".into(), backend_id: None,
-            role: Some("button".into()), name: Some("B-updated".into()),
-            value: None, description: None, child_ids: vec![],
+            node_id: "b".into(),
+            backend_id: None,
+            role: Some("button".into()),
+            name: Some("B-updated".into()),
+            value: None,
+            description: None,
+            child_ids: vec![],
         };
         let node_c = AxNode {
-            node_id: "c".into(), backend_id: None,
-            role: Some("text".into()), name: Some("C".into()),
-            value: None, description: None, child_ids: vec![],
+            node_id: "c".into(),
+            backend_id: None,
+            role: Some("text".into()),
+            name: Some("C".into()),
+            value: None,
+            description: None,
+            child_ids: vec![],
         };
 
         // Manually insert snapshots into the store.
         {
             let mut store = snapshots().lock().unwrap_or_else(|e| e.into_inner());
-            store.insert("test_before".to_string(), vec![node_a.clone(), node_b.clone()]);
-            store.insert("test_after".to_string(),  vec![node_b_changed.clone(), node_c.clone()]);
+            store.insert(
+                "test_before".to_string(),
+                vec![node_a.clone(), node_b.clone()],
+            );
+            store.insert(
+                "test_after".to_string(),
+                vec![node_b_changed.clone(), node_c.clone()],
+            );
         }
 
         let diff = ax_diff("test_before", "test_after").unwrap();
@@ -1081,10 +1171,17 @@ mod tests {
     fn wait_for_ax_ready_errors_if_a11y_not_enabled() {
         // Ensure tab 0 is NOT in the enabled set for this test.
         // (Other tests in the suite do not touch a11y_tabs, but reset defensively.)
-        a11y_tabs().lock().unwrap_or_else(|e| e.into_inner()).remove(&0);
+        a11y_tabs()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&0);
 
         let result = wait_for_ax_ready(10, 5000);
-        assert!(result.is_err(), "expected Err when a11y not enabled, got {:?}", result);
+        assert!(
+            result.is_err(),
+            "expected Err when a11y not enabled, got {:?}",
+            result
+        );
         let msg = result.unwrap_err();
         assert!(
             msg.contains("enable_a11y"),

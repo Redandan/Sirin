@@ -1,0 +1,124 @@
+"""Ports, paths, and .env loading for phone-harness."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _runtime_root() -> Path:
+    configured = os.environ.get("SIRIN_IOS_DRIVER_RUNTIME_ROOT", "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    local = os.environ.get("LOCALAPPDATA", "").strip()
+    if local:
+        return (Path(local) / "Sirin" / "ios-driver").resolve()
+    return (REPO_ROOT / ".runtime").resolve()
+
+
+RUNTIME_ROOT = _runtime_root()
+STATE_DIR = RUNTIME_ROOT / "state"
+ENV_FILE = Path(
+    os.environ.get("SIRIN_ENV_FILE", "")
+    or (Path(os.environ.get("LOCALAPPDATA", str(REPO_ROOT))) / "Sirin" / ".env")
+).resolve()
+
+WDA_PORT = 8100
+MJPEG_PORT = 9100  # noqa: vulture
+
+WDA_URL = f"http://127.0.0.1:{WDA_PORT}"
+
+
+def _load_env(path: Path = ENV_FILE) -> dict[str, str]:
+    """Parse a KEY=VALUE .env file. Missing file is fine."""
+    values: dict[str, str] = {}
+    if not path.exists():
+        return values
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+_env = _load_env()
+
+
+def get(key: str, default: str | None = None) -> str | None:
+    """Read a setting: process env wins, then .env file, then default."""
+    return os.environ.get(key) or _env.get(key) or default
+
+
+# Optional overrides
+# Read by device.detect_wda_bundle; else auto-detected from installed apps.
+WDA_BUNDLE_ID = get("WDA_BUNDLE_ID")  # noqa: vulture
+# The Sirin-owned driver never accepts, stores, or types a phone passcode.
+PHONE_PASSCODE = None  # noqa: vulture
+
+# Fail-closed control surface for unattended storefront acceptance.  It is set
+# by scripts/unattended_host.py before this module is imported; ordinary,
+# supervised SideTap sessions keep the full human viewer.
+ACCEPTANCE_ONLY = (get("SIRIN_IOS_DRIVER_ACCEPTANCE_ONLY", "1") or "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
+# Prompt-injection gate: always | flagged | off. The default for this machine;
+# the viewer's toggle writes .state/send_approval, which wins at send time.
+# Anything unrecognized falls back to "always" (approval.mode fails safe).
+SEND_APPROVAL = get("SEND_APPROVAL", "always")  # noqa: vulture
+
+# How long a gated send waits for the human to click Approve in the viewer.
+# Running out is a denial, never a send: the safe direction is not sending.
+SEND_APPROVAL_TIMEOUT = float(get("SEND_APPROVAL_TIMEOUT", "120") or "120")  # noqa: vulture
+
+# Default moved off 8765: Practical Systems' pipeline API owns that port on
+# this workstation, and both stacks must run at the same time.
+VIEWER_PORT = int(get("SIRIN_IOS_DRIVER_PORT", "8770") or "8770")  # noqa: vulture
+
+# Post-gesture waits, applied by whichever client creates the shared session.
+# Measured on device: WDA's default animationCoolOffTimeout=2 made every swipe
+# cost 2-5s under scroll momentum; at 0, idle waits of 0/1/2s all measure
+# ~0.7s per swipe. idle=2 keeps settle protection on genuinely busy screens.
+WDA_IDLE_WAIT = float(get("WDA_IDLE_WAIT", "2") or "2")
+WDA_ANIM_COOLOFF = float(get("WDA_ANIM_COOLOFF", "0") or "0")
+
+# Scripted finger contact for a tap, in ms. 80 is the shipped value and stays
+# the default: the hold is pure wait (~20% of a bare tap budget), but a contact
+# that is too brief can be DROPPED by iOS and a missed tap is worse than a slow
+# one. Tune on device — 20 taps at 80 and 20 at 40 on a dense screen (keyboard
+# keys, small Settings rows), counting misses. Never on the passcode pad: a
+# wrong or dropped tap there burns an iOS lockout attempt, which is why
+# helpers._enter_passcode passes its own hold rather than riding this.
+WDA_TAP_HOLD_MS = int(get("WDA_TAP_HOLD_MS", "80") or "80")
+
+# Keystrokes per second WDA synthesises for POST /wda/keys. The Python side is
+# ONE request either way; the phone spends len(text)/rate seconds, so this is
+# the whole cost of a long paste. 60 is WDA's own default, so shipping it
+# changes nothing until it is measured. Raising it fails QUIETLY: iOS drops
+# synthesised keystrokes above some device-specific rate, and set_field_text's
+# read-back then makes send_message refuse a message that typed wrong.
+WDA_TYPING_FREQ = int(get("WDA_TYPING_FREQ", "60") or "60")
+
+# Live-view stream tuning (measured on device: WDA captures ~34fps max; 50%
+# scale halves frame weight with no fps cost, and the viewer shows ~1100px max).
+MJPEG_FPS = int(get("MJPEG_FPS", "60") or "60")
+MJPEG_QUALITY = int(get("MJPEG_QUALITY", "70") or "70")
+MJPEG_SCALE = int(get("MJPEG_SCALE", "50") or "50")
+
+# Viewer poll for /api/phone: seconds between polls. 0 disables the periodic
+# poll (viewer will still call loadPhone() on load). Default 0 avoids the
+# viewer accidentally triggering a WDA wedge; operators can enable it in
+# .env with VIEWER_PHONE_POLL_SECONDS=10 for a 10s poll.
+VIEWER_PHONE_POLL_SECONDS = float(get("VIEWER_PHONE_POLL_SECONDS", "0") or "0")  # noqa: vulture
+
+# Accessibility snapshot timeout (seconds). Added upstream in WDA #1214
+# (appium/WebDriverAgent#1214) to avoid indefinite hangs on apps with busy main
+# event loops (e.g. TikTok video feeds). 0 disables the bound; default is 2.0s.
+WDA_ACCESSIBILITY_DEADLINE = float(get("WDA_ACCESSIBILITY_DEADLINE", "2.0") or "2.0")

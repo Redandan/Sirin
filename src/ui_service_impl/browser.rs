@@ -82,7 +82,12 @@ pub fn browser_scroll(_svc: &RealService, x: f64, y: f64) -> Result<(), String> 
     crate::browser::scroll_by(x, y)
 }
 
-pub fn browser_set_viewport(_svc: &RealService, width: u32, height: u32, mobile: bool) -> Result<(), String> {
+pub fn browser_set_viewport(
+    _svc: &RealService,
+    width: u32,
+    height: u32,
+    mobile: bool,
+) -> Result<(), String> {
     crate::browser::set_viewport(width, height, 1.0, mobile)
 }
 

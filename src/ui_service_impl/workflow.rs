@@ -5,18 +5,28 @@ use crate::ui_service::*;
 
 pub(super) fn workflow_state(_svc: &RealService) -> Option<WorkflowView> {
     let state = crate::workflow::WorkflowState::load()?;
-    let stages = crate::workflow::STAGES.iter().map(|s| StageView {
-        id: s.id.to_string(), label: s.label.to_string(), desc: s.desc.to_string(),
-        status: match state.stage_status(s.id) {
-            crate::workflow::StageStatus::Done => StageStatusView::Done,
-            crate::workflow::StageStatus::Current => StageStatusView::Current,
-            crate::workflow::StageStatus::Pending => StageStatusView::Pending,
-        },
-    }).collect();
+    let stages = crate::workflow::STAGES
+        .iter()
+        .map(|s| StageView {
+            id: s.id.to_string(),
+            label: s.label.to_string(),
+            desc: s.desc.to_string(),
+            status: match state.stage_status(s.id) {
+                crate::workflow::StageStatus::Done => StageStatusView::Done,
+                crate::workflow::StageStatus::Current => StageStatusView::Current,
+                crate::workflow::StageStatus::Pending => StageStatusView::Pending,
+            },
+        })
+        .collect();
     let all_done = state.all_done();
     Some(WorkflowView {
-        feature: state.feature, description: state.description, skill_id: state.skill_id,
-        current_stage: state.current_stage, started_at: state.started_at, stages, all_done,
+        feature: state.feature,
+        description: state.description,
+        skill_id: state.skill_id,
+        current_stage: state.current_stage,
+        started_at: state.started_at,
+        stages,
+        all_done,
     })
 }
 
@@ -62,15 +72,22 @@ pub(super) fn workflow_generate(svc: &RealService) -> Option<String> {
     let handle = tokio::runtime::Handle::try_current().ok()?;
     let result = std::thread::spawn(move || {
         handle.block_on(crate::llm::call_prompt(
-            &crate::llm::shared_http(), &crate::llm::shared_llm(), &prompt,
+            &crate::llm::shared_http(),
+            &crate::llm::shared_llm(),
+            &prompt,
         ))
-    }).join().ok()?.ok()?;
+    })
+    .join()
+    .ok()?
+    .ok()?;
     Some(result)
 }
 
 pub(super) fn workflow_save_output(_svc: &RealService, stage_id: &str, output: &str) {
     if let Some(mut state) = crate::workflow::WorkflowState::load() {
-        state.stage_outputs.insert(stage_id.to_string(), output.to_string());
+        state
+            .stage_outputs
+            .insert(stage_id.to_string(), output.to_string());
         state.save();
     }
 }

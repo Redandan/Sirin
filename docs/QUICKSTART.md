@@ -51,6 +51,33 @@ cargo build --release
 .\target\release\sirin.exe
 ```
 
+### Windows 常駐運營模式
+
+如果要讓 Sirin 登入 Windows 後自動保持運行：
+
+```powershell
+cargo build --release
+.\scripts\install-sirin-daemon-task.ps1 -Action Install -RunNow
+```
+
+這個模式預設直接啟動 `target\release\sirin.exe --headless`，常態下只有一個
+`sirin.exe` 程序。Windows Task Scheduler 只負責登入時啟動；如果 Sirin
+被關掉或崩掉，就保持停止。
+
+狀態檢查：
+
+```powershell
+.\scripts\install-sirin-daemon-task.ps1 -Action Status
+```
+
+UI 仍然從瀏覽器打開：
+
+```text
+http://127.0.0.1:7700/ui/
+```
+
+詳細操作見 `docs/WINDOWS_DAEMON.md`。
+
 ## 4. 首次 Telegram 登入
 
 1. 啟動後切換到 **Telegram** tab

@@ -1,0 +1,40 @@
+id: test-health-repair
+name: "Replay 健康修復"
+description: "盤點 saved-script replay 漂移，針對明確授權的 test_id 以 LLM fallback 重錄，再用連續三次 replay 證明已恢復健康。"
+category: testing
+enabled: true
+requires_approval: true
+backed_by_tools:
+  - script_health
+  - test_analytics
+  - list_tests
+  - run_test
+trigger_keywords:
+  - replay
+  - stale_fallback
+  - saved script
+  - 腳本健康
+  - 測試健康
+  - 修復測試
+  - flaky
+example_prompts:
+  - "檢查 replay 健康"
+  - "哪些 saved scripts 已經過時"
+  - "修復 stale_fallback 測試"
+  - "讓這個測試重新走 deterministic replay"
+prompt_template: |
+  先執行唯讀盤點，不要直接跑測試：
+  1. 用 script_health（suite=all, window_days=14）找出 status=stale_fallback 的 test_id；用 test_analytics 確認最近失敗模式。
+  2. 用 list_tests 讀取候選測試的 docs_refs、fixture、viewport、tags 與流程風險。
+  3. 回報候選 test_id、目前證據、預計執行次數與可能改變的外部狀態，等待使用者對具體 test_id 明確授權。
+
+  得到明確授權後，一次只處理一個 test_id：
+  1. 呼叫 run_test（test_id=<已授權 id>, auto_fix=false）；若舊 replay 失敗，既有 runner 會 fallback 到 LLM，成功時自動覆寫 saved script。
+  2. 首次 run 必須 PASSED；若失敗，停止並回報，不要放寬 success criteria，不要刪除 saved script。
+  3. 再依序跑三次，同一時間只允許一個 run；三次都必須 PASSED 且走 replay。
+  4. 重查 script_health；只有 status=healthy 且 recent_modes 最近三筆皆為 replay 才能宣告修復完成。
+
+  安全邊界：
+  - 不呼叫 delete_saved_script，也不修改 YAML、fixture 或 success criteria。
+  - 涉及登入、訂單、付款、提款、退款、爭議、手機控制或其他外部寫入時，原有授權不可推定；缺少對該動作的明確授權就停止並回報 MISSING_PROOF。
+  - 分開回報本機設定、實際 run 證據、推論與 MISSING_PROOF。

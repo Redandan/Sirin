@@ -21,10 +21,10 @@
 //! - 每個任務在獨立 git worktree 執行（T2-4），避免多 worker 互踩 working tree。
 //! - 失敗任務保留 worktree 供人工排查；成功任務會 merge + cleanup。
 
+use super::{queue, queue::TaskStatus, AgentTeam};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use super::{AgentTeam, queue, queue::TaskStatus};
 
 static STARTED: AtomicBool = AtomicBool::new(false);
 
@@ -49,7 +49,7 @@ pub fn spawn_n(cwd: &str, n: usize) {
     // 把上次未完成的 Running 任務重設為 Queued
     reset_stale_running();
 
-    let n = n.max(1);  // safety: 至少 1 個 worker
+    let n = n.max(1); // safety: 至少 1 個 worker
     for w in 0..n {
         let cwd = cwd.to_string();
         std::thread::Builder::new()
@@ -82,13 +82,15 @@ fn run_loop(default_cwd: String, worker_id: usize) {
                 // 安全截斷：找 80 bytes 內最後的 char boundary
                 let preview_end = {
                     let max = task.description.len().min(80);
-                    (0..=max).rev().find(|&i| task.description.is_char_boundary(i)).unwrap_or(0)
+                    (0..=max)
+                        .rev()
+                        .find(|&i| task.description.is_char_boundary(i))
+                        .unwrap_or(0)
                 };
 
                 // Resolve which (project_key, cwd, extra_tools) this task targets.
                 // No `project` field on legacy tasks → empty key + default Sirin cwd.
-                let (project_key, project_cwd, extra_tools) =
-                    resolve_project(&task, &default_cwd);
+                let (project_key, project_cwd, extra_tools) = resolve_project(&task, &default_cwd);
 
                 tracing::info!(target: "sirin",
                     "[team-worker:w{worker_id}] Starting task {} [{}] — {}",
@@ -101,8 +103,7 @@ fn run_loop(default_cwd: String, worker_id: usize) {
                     AgentTeam::load_for_worker_project(&project_cwd, worker_id, &project_key)
                 });
                 team.set_extra_tools(&extra_tools);
-                let dry_run = task.project.as_ref()
-                    .map(|p| p.dry_run).unwrap_or(false);
+                let dry_run = task.project.as_ref().map(|p| p.dry_run).unwrap_or(false);
                 team.set_dry_run(dry_run);
 
                 // T2-4: Create isolated git worktree for this task.
@@ -116,7 +117,7 @@ fn run_loop(default_cwd: String, worker_id: usize) {
                         project_cwd.clone()
                     });
                 team.engineer.cwd = worktree_path.clone();
-                team.tester.cwd   = worktree_path.clone();
+                team.tester.cwd = worktree_path.clone();
                 if worktree_path != project_cwd {
                     let target_dir = std::path::PathBuf::from(&worktree_path)
                         .join(format!("target-task-{}", task.id))
@@ -128,12 +129,11 @@ fn run_loop(default_cwd: String, worker_id: usize) {
                 }
 
                 // Capture issue_url before assign_task — task may be moved/cloned.
-                let issue_url = task.project.as_ref()
-                    .and_then(|p| p.issue_url.clone());
+                let issue_url = task.project.as_ref().and_then(|p| p.issue_url.clone());
 
                 // T2-2: capture yaml_test_id before assign_task consumes task borrow.
-                let yaml_test_id: Option<String> = task.project.as_ref()
-                    .and_then(|p| p.yaml_test_id.clone());
+                let yaml_test_id: Option<String> =
+                    task.project.as_ref().and_then(|p| p.yaml_test_id.clone());
 
                 match team.assign_task(&task.description) {
                     Ok(review) => {
@@ -181,12 +181,16 @@ fn run_loop(default_cwd: String, worker_id: usize) {
 
                         // T2-4: merge task branch back to the project branch on success.
                         if worktree_path != project_cwd {
-                            if let Err(e) = super::worktree::merge_task_branch(&project_cwd, &task.id) {
+                            if let Err(e) =
+                                super::worktree::merge_task_branch(&project_cwd, &task.id)
+                            {
                                 tracing::warn!(target: "sirin",
                                     "[team-worker:w{worker_id}] T2-4 merge failed for task {}: {e}",
                                     task.id);
                             }
-                            if let Err(e) = super::worktree::cleanup_worktree(&project_cwd, &task.id) {
+                            if let Err(e) =
+                                super::worktree::cleanup_worktree(&project_cwd, &task.id)
+                            {
                                 tracing::warn!(target: "sirin",
                                     "[team-worker:w{worker_id}] T2-4 worktree cleanup failed \
                                      for task {}: {e}", task.id);
@@ -212,11 +216,15 @@ fn run_loop(default_cwd: String, worker_id: usize) {
                             // 安全截斷到 200 bytes 的 char boundary
                             let err_end = {
                                 let max = e.len().min(200);
-                                (0..=max).rev().find(|&i| e.is_char_boundary(i)).unwrap_or(0)
+                                (0..=max)
+                                    .rev()
+                                    .find(|&i| e.is_char_boundary(i))
+                                    .unwrap_or(0)
                             };
                             let retry_desc = format!(
                                 "[auto-retry] {}\n\nOriginal failure: {}",
-                                task.description, &e[..err_end]
+                                task.description,
+                                &e[..err_end]
                             );
                             queue::enqueue_with_retry(&retry_desc, 1);
                             tracing::info!(target: "sirin",
@@ -236,7 +244,7 @@ fn run_loop(default_cwd: String, worker_id: usize) {
 
                 // Restore team cwd to project_cwd so the next task gets a clean slate.
                 team.engineer.cwd = project_cwd.clone();
-                team.tester.cwd   = project_cwd.clone();
+                team.tester.cwd = project_cwd.clone();
 
                 // Always clear extra_tools / dry_run after the task — the next
                 // task may run on the same team but must not inherit per-task
@@ -322,12 +330,15 @@ fn post_issue_comment(task_id: &str, issue_url: &str, body: &str, success: bool)
     // Cap body — GitHub comments support 65k chars but readability dies past 4k.
     let body_capped = {
         let max = body.len().min(4_000);
-        let end = (0..=max).rev()
+        let end = (0..=max)
+            .rev()
             .find(|&i| body.is_char_boundary(i))
             .unwrap_or(0);
         if end < body.len() {
-            format!("{}\n\n_…(truncated, full review in Sirin queue: task `{task_id}`)_",
-                &body[..end])
+            format!(
+                "{}\n\n_…(truncated, full review in Sirin queue: task `{task_id}`)_",
+                &body[..end]
+            )
         } else {
             body.to_string()
         }
@@ -354,28 +365,28 @@ fn post_issue_comment(task_id: &str, issue_url: &str, body: &str, success: bool)
 ///   fall back to default_cwd but keep the project key for session isolation
 ///   (so tasks targeting an undefined repo still get their own session_id and
 ///   don't pollute Sirin's PM/Engineer/Tester history).
-fn resolve_project(
-    task: &queue::TeamTask,
-    default_cwd: &str,
-) -> (String, String, Vec<String>) {
+fn resolve_project(task: &queue::TeamTask, default_cwd: &str) -> (String, String, Vec<String>) {
     let Some(ctx) = task.project.as_ref() else {
         return (String::new(), default_cwd.to_string(), Vec::new());
     };
 
     let repo = ctx.repo.trim();
     if repo.is_empty() || repo.eq_ignore_ascii_case("sirin") {
-        return (String::new(), default_cwd.to_string(), ctx.extra_tools.clone());
+        return (
+            String::new(),
+            default_cwd.to_string(),
+            ctx.extra_tools.clone(),
+        );
     }
 
     // Normalize project key (lowercase, ascii) to match session file naming.
     let key = repo.to_ascii_lowercase();
-    let cwd = crate::claude_session::repo_path(repo)
-        .unwrap_or_else(|| {
-            tracing::warn!(target: "sirin",
+    let cwd = crate::claude_session::repo_path(repo).unwrap_or_else(|| {
+        tracing::warn!(target: "sirin",
                 "[team-worker] Unknown repo '{repo}' — falling back to default cwd, \
                  but keeping project session namespace");
-            default_cwd.to_string()
-        });
+        default_cwd.to_string()
+    });
     (key, cwd, ctx.extra_tools.clone())
 }
 

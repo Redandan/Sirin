@@ -34,7 +34,7 @@ fn maybe_rotate(path: &str) {
     // Shift backups: .4 → .5, .3 → .4, .2 → .3, .1 → .2
     for i in (1..5usize).rev() {
         let from = format!("{path}.{i}");
-        let to   = format!("{path}.{}", i + 1);
+        let to = format!("{path}.{}", i + 1);
         let _ = std::fs::rename(&from, &to);
     }
     // Current log → .1
@@ -129,12 +129,7 @@ pub fn log_ask(
 
 /// Log a `learn` event when a new rule is persisted.
 #[allow(dead_code)] // Reserved for ask_with_learn implementation
-pub fn log_learn(
-    log_path: &str,
-    client: &str,
-    new_rule: &JsonValue,
-    written_to: &str,
-) {
+pub fn log_learn(log_path: &str, client: &str, new_rule: &JsonValue, written_to: &str) {
     let ev = json!({
         "ts":         Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         "type":       "learn",
@@ -168,8 +163,12 @@ mod audit_test {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let dir = std::env::temp_dir()
-            .join(format!("authz_audit_{}_{}_{}", std::process::id(), nanos, n));
+        let dir = std::env::temp_dir().join(format!(
+            "authz_audit_{}_{}_{}",
+            std::process::id(),
+            nanos,
+            n
+        ));
         fs::create_dir_all(&dir).unwrap();
         dir.join("audit.ndjson").to_string_lossy().to_string()
     }
@@ -248,9 +247,30 @@ mod audit_test {
     #[test]
     fn write_multiple_events_all_parseable() {
         let path = tmp_log_path();
-        log_allow(&path, "a@1", "screenshot", &json!({}), &None, "readonly_allow");
-        log_deny(&path, "b@1", "eval", &json!({ "target": "document.cookie" }), &None, "js_contains=document.cookie");
-        log_ask(&path, "c@1", "goto", &json!({ "target": "https://google.com/" }), &None, "ask_rule");
+        log_allow(
+            &path,
+            "a@1",
+            "screenshot",
+            &json!({}),
+            &None,
+            "readonly_allow",
+        );
+        log_deny(
+            &path,
+            "b@1",
+            "eval",
+            &json!({ "target": "document.cookie" }),
+            &None,
+            "js_contains=document.cookie",
+        );
+        log_ask(
+            &path,
+            "c@1",
+            "goto",
+            &json!({ "target": "https://google.com/" }),
+            &None,
+            "ask_rule",
+        );
 
         let lines = parse_lines(&path);
         assert_eq!(lines.len(), 3);
@@ -283,14 +303,28 @@ mod audit_test {
         let path = dir.join("nested").join("deeply").join("audit.ndjson");
         let path_str = path.to_string_lossy().to_string();
 
-        log_allow(&path_str, "test@1", "screenshot", &json!({}), &None, "readonly_allow");
+        log_allow(
+            &path_str,
+            "test@1",
+            "screenshot",
+            &json!({}),
+            &None,
+            "readonly_allow",
+        );
         assert!(path.exists(), "file should be created in nested dirs");
     }
 
     #[test]
     fn url_none_writes_empty_string() {
         let path = tmp_log_path();
-        log_allow(&path, "test@1", "ax_tree", &json!({}), &None, "readonly_allow");
+        log_allow(
+            &path,
+            "test@1",
+            "ax_tree",
+            &json!({}),
+            &None,
+            "readonly_allow",
+        );
         let lines = parse_lines(&path);
         assert_eq!(lines[0]["url"], "");
     }

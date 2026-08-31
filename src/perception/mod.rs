@@ -24,8 +24,9 @@ pub mod ocr;
 use serde::{Deserialize, Serialize};
 
 /// How the executor should observe the page before each LLM turn.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default,
-         schemars::JsonSchema)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, schemars::JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum PerceptionMode {
     /// Legacy text-only observation.  No screenshot, no vision LLM call.
@@ -140,7 +141,10 @@ mod tests {
 
     #[test]
     fn mode_resolve_explicit_unchanged() {
-        assert_eq!(PerceptionMode::Vision.resolve(false), PerceptionMode::Vision);
+        assert_eq!(
+            PerceptionMode::Vision.resolve(false),
+            PerceptionMode::Vision
+        );
         assert_eq!(PerceptionMode::Text.resolve(true), PerceptionMode::Text);
     }
 

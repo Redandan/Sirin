@@ -110,6 +110,11 @@ src/
 │                           not depend on this.
 ├── assistant/              Assistant mode scaffold (empty stub) — populate
 │                           when adding Google Maps / FB farm style tasks
+├── research_sentinel.rs    Official/investment RSS research inbox for Codex
+│                           review.  Optional `deep_research` / `deep_research_mode`
+│                           adds an LLM analysis layer, but the deterministic
+│                           RSS/event result must still succeed when local LLM
+│                           is unavailable.
 ├── test_runner/            AI test runner (browser, not unit tests)
 │   ├── parser.rs           YAML TestGoal (locale, retry, url_query,
 │   │                       browser_headless, llm_backend, success_criteria,
@@ -140,7 +145,9 @@ src/
 │                           you MUST also add to this file's
 │                           web_navigate match arm OR register a new
 │                           top-level tool (e.g. expand_observation).
-├── mcp_server.rs           HTTP MCP server on :7700/mcp (18 tools).  When
+├── mcp_server.rs           HTTP MCP server on :7700/mcp. Tool count comes
+│                           from the registry and is reported dynamically by
+│                           `help.tool_count`. When
 │                           adding a browser action that should be externally
 │                           callable, ALSO add to this file's
 │                           call_browser_exec match arm AND the
@@ -152,6 +159,13 @@ src/
 │                             • `get_screenshot` — PNG base64 from last failure
 │                             • `get_full_observation` — combined snapshot
 │                             • `browser_exec` — fire any single browser action
+│                           The accepted tool-name contract lives in
+│                           `config/mcp_tool_baseline.json`. Any deliberate
+│                           add/rename/remove MUST update that file plus
+│                           `docs/MCP_API.md`; `mcp_parity_tests` compares the
+│                           directly constructed registry against the full
+│                           baseline so deleting both list and dispatch entries
+│                           cannot pass silently.
 ├── llm/                    Multi-backend LLM (Ollama/LMStudio/Gemini/
 │                           Codex) + vision multimodal
 ├── (no src/ui_egui anymore — UI moved to web/ in v0.5.0; see top-level
@@ -188,7 +202,7 @@ config/
 cargo check          # 0 errors required before commit
 # Tests — MUST use file-redirect form; pipe | tail kills cargo in background mode
 cargo test --bin sirin > /tmp/sirin_test.txt 2>&1 ; tail -8 /tmp/sirin_test.txt
-# (384 passed, 18 ignored as of v0.4.2)
+# Treat the command's current summary as the source of truth; don't hardcode counts.
 cargo build --release     # ~2-4 min incremental (see benchmarks below)
 ./target/release/sirin.exe                       # launch GUI on port 7700
 SIRIN_RPC_PORT=7701 ./target/release/sirin.exe   # alt port if 7700 stuck
@@ -379,6 +393,16 @@ Users running old versions will see the update banner on next launch.
 3. Implement the helper at module top (parallel to `execute_browser_test`)
 4. Unit tests in `mod tests`
 
+Approval boundary for every skill entry point:
+- `requires_approval: true` is metadata, not proof that a human approved an
+  exact action. Generic executors (`skill_execute` and UI local execution)
+  must call `skills::guard_generic_skill_execution` and fail closed.
+- Do not add an `approved: true` boolean to the generic tool schema; an agent
+  could manufacture it. Approval-gated execution needs a dedicated workflow
+  that binds the user's decision to the concrete action and scope.
+- Prompt-only skills may prepare a read-only plan. After explicit approval,
+  use a scope-specific tool or workflow; never bypass the generic guard.
+
 ## Code conventions (enforced by reviewer = future you)
 
 - **Mutex always**: `lock().unwrap_or_else(|e| e.into_inner())` —
@@ -443,15 +467,13 @@ browser_ax::wait_for_ax_ready(20, 5000)?;  // block ≤5s until ≥20 nodes
 ```
 or via MCP: `{"action":"wait_for_ax_ready","min_nodes":20,"timeout_ms":5000}`
 
-### flutter_type is ASCII-only — CJK silently fails
+### flutter_type supports ASCII and Unicode/CJK
 
-`flutter_type` calls `press_key()` per `char`, but `press_key` sends
-`Input.dispatchKeyEvent` which requires a standard keycode.  CJK chars
-like `你`, `好` have no keycode → the key event is dropped silently, the
-Flutter textbox stays empty.
-
-**Workaround**: use ASCII for test messages in YAML goals (e.g.
-`flutter_type text="hello"` instead of `flutter_type text="你好"`).
+`flutter_type` keeps the fast `press_key()` path for pure ASCII. When the input
+contains non-ASCII characters it automatically switches the whole string to
+the Unicode path: Flutter `ClipboardEvent('paste')`, then CDP
+`Input.InsertText` as fallback. Mixed strings such as `order 測試 123` are
+supported; keep the field focused before calling it.
 
 ### shadow_click uses JS PointerEvent, NOT CDP Input.dispatchMouseEvent
 
@@ -475,39 +497,13 @@ Registered in builtins.rs + mcp_server.rs + executor.rs prompt (d87c3c0).
 WebGL doesn't paint in Chrome headless mode.  Set `browser_headless:
 false` per-test, or `SIRIN_BROWSER_HEADLESS=false` env globally.
 
-### Flutter + SwiftShader: HTML renderer is correct, CanvasKit is not
+### Flutter + SwiftShader
 
-Chrome crashes 3×/test run on native GPU (Flutter CanvasKit + Windows GPU).
-Fixed by `--use-angle=swiftshader` in `browser.rs` `launch_with_mode()`.
-
-#### What SwiftShader actually does to Flutter
-
-| Flag combination | Flutter mode | Result |
-|---|---|---|
-| Native GPU (no flags) | CanvasKit | Works — but Chrome crashes 3×/run (GPU driver) |
-| `--use-angle=swiftshader` alone | HTML renderer | Chrome still crashes (~30s CDP timeout during Flutter JS init) |
-| `--use-angle=swiftshader` + `--ignore-gpu-blocklist` | CanvasKit attempted | ❌ All-black screen (CanvasKit fails on SwiftShader) |
-| `--disable-gpu` | HTML renderer | ✅ **Stable — current approach** |
-
-**Current approach: `--disable-gpu`** (commit `b2e6xxx`):
-- No GPU or WebGL at all → Flutter unconditionally uses HTML renderer
-- No SwiftShader WebGL processing → no 30-second CDP event silence → no timeouts
-- `--disable-gpu` is the standard Puppeteer/Playwright CI flag
-
-**`--use-angle=swiftshader`** was tried:
-- Even without `--ignore-gpu-blocklist`, Chrome timed out (~30s) during Flutter JS init
-- SwiftShader still processes WebGL calls, causing headless_chrome's event loop to time out
-- Removed
-
-#### What this means for tests
-
-With `--disable-gpu` (HTML renderer mode):
-- Flutter renders as real HTML DOM — CSS selectors, `click`, `type`, `find` all work
-- Semantics tree is NOT available — `ax_find`/`ax_click` will not work
-- Use `screenshot_analyze` for visual state, `click`/`type`/`find` for interaction
-- Keep `browser_headless: false` per-test (HTML renderer + visible window for CDP)
-- Add `url_query: {flutter-web-renderer: html}` to YAML as belt+suspenders
-- The executor waits 5 s after `goto` before first screenshot check (Flutter init time)
+Current Chrome launch uses `--use-angle=swiftshader`; it deliberately does
+**not** use `--disable-gpu` or `--ignore-gpu-blocklist`, because those variants
+either make Flutter startup extremely slow or can produce an all-black
+CanvasKit frame. Keep `browser_headless: false` for Flutter/WebGL acceptance,
+and use `perception: auto|vision` when the AX/DOM surface is insufficient.
 
 ### Chrome recovery re-launches in wrong headless mode
 `with_tab()` recovery used to call `ensure_open_reusing()` → `default_headless()`
@@ -619,7 +615,7 @@ Both `python` and `python3` resolve to the Microsoft Store stub
 ("No installed Python found").  Use `node`, `jq`, or shell tools
 instead — don't rely on Python for testing or scripting.
 
-### Browser singleton hangs forever when CDP disconnects mid-call
+### Browser singleton CDP hard deadline
 **Symptom (2026-04-20):** two parallel `run_test_async` runs against a
 Flutter SPA. Chrome crashed ~35s after launch (`TargetDestroyed` fired
 in CDP logs). Both runs got stuck at `step:0, current_action:"goto"`
@@ -629,16 +625,13 @@ on the Tokio task didn't fire because `executor.rs` `await`s a sync
 **Diagnosis:** `browser::with_tab` returns the cached `Tab` handle
 without health-checking the WebSocket. When the Chrome target dies, the
 next CDP method call blocks until OS-level TCP timeout (effectively never).
-**Workarounds:**
-- Don't fire concurrent `run_test_async` against the same singleton on
-  Flutter targets — serialize them, or use `run_test_batch` (uses
-  per-run `session_id` so each gets its own tab).
-- If a run is "queued" or "running, step 0" for >60s, kill Sirin +
-  Chrome and restart. The in-memory run will be lost; SQLite has nothing.
-**Fix needed:** wrap each CDP call in a tokio timeout; on timeout, mark
-the singleton dead so the next call relaunches Chrome instead of
-silently reusing the corpse. Tracked as task chip "Fix browser singleton
-hang on CDP disconnect".
+**Resolved in current source:** synchronous browser operations run behind a
+caller-side hard deadline (`SIRIN_BROWSER_OPERATION_TIMEOUT_SECS`, default
+120 seconds, clamped to 10–600). Timeout returns an explicit error, invalidates
+only the stale browser-session generation, and detaches cleanup so the caller
+does not block again in `Browser::drop`. The next operation may rebuild Chrome;
+the timed-out action is never retried automatically because it may have caused
+an external side effect.
 
 ### `claude_cli` LLM backend hangs on big ReAct prompts
 **Symptom (2026-04-20):** YAML `llm_backend: claude_cli` switches a test
@@ -871,7 +864,7 @@ cargo test --bin sirin browser_lifecycle -- --ignored --nocapture
 Before declaring "done" on any change:
 
 1. `cargo check` → 0 errors, 0 warnings
-2. `cargo test --bin sirin` → all pass (currently 468)
+2. `cargo test --bin sirin` → all pass; use the current command summary as truth
 3. Updated docs (`SKILL.md` + `MCP_API.md` if user-facing)
 4. Conventional commit message
 5. Push to `main` (no PR workflow currently)

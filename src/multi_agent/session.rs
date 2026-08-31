@@ -10,53 +10,53 @@
 //!
 //! session_id 存在 `data/multi_agent/<role>.json`，重啟 Sirin 後對話歷史仍可還原。
 
-use std::path::PathBuf;
-use serde::{Deserialize, Serialize};
-use crate::platform;
 use super::roles::DRY_RUN_ADDENDUM;
+use crate::platform;
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 // ── 持久化資料 ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct SessionFile {
     session_id: Option<String>,
-    role:       String,
+    role: String,
     started_at: String,
-    turns:      u32,
+    turns: u32,
     /// 完整對話歷史（持久化到磁碟）
     /// 格式：[(role, content), (role, content), ...]
     /// role: "system" | "user" | "assistant"
     #[serde(default)]
-    history:    Vec<(String, String)>,
+    history: Vec<(String, String)>,
 }
 
 // ── PersistentSession ─────────────────────────────────────────────────────────
 
 pub struct PersistentSession {
-    pub role:          String,
-    pub cwd:           String,
+    pub role: String,
+    pub cwd: String,
     /// Optional per-task Cargo target dir hint.
     /// Worker sets this when running inside an isolated worktree so
     /// concurrent cargo invocations avoid lock contention on a shared
     /// `target/` directory.
     pub cargo_target_dir: Option<String>,
     pub system_prompt: String,
-    pub worker_id:     usize,    // T1-1: per-worker session isolation
+    pub worker_id: usize, // T1-1: per-worker session isolation
     /// Project key — namespaces session files when running cross-repo tasks.
     /// Empty string OR "sirin" → legacy file naming (`{role}.json` / `w{N}_{role}.json`).
     /// Anything else → adds a `p{key}_` prefix so each project keeps its own
     /// session_id / turn-count / claude --continue history.
-    pub project_key:   String,
+    pub project_key: String,
     /// Per-task tool extensions appended to the role's static whitelist.
     /// Set/cleared by `AgentTeam::set_extra_tools()` for the duration of one
     /// task; not persisted (resets to empty on every reload).
-    pub extra_tools:   Vec<String>,
+    pub extra_tools: Vec<String>,
     /// Per-task dry-run flag — see `queue::ProjectContext::dry_run`.
     /// When `true`, `send()` prepends a do-not-mutate-external-state
     /// addendum to the message (the hard stop on auto-commenting lives in
     /// `worker.rs`). Not persisted; reset to `false` on every reload.
-    pub dry_run:       bool,
-    state:             SessionFile,
+    pub dry_run: bool,
+    state: SessionFile,
 }
 
 impl PersistentSession {
@@ -90,17 +90,18 @@ impl PersistentSession {
             .ok()
             .and_then(|s| serde_json::from_str::<SessionFile>(&s).ok())
             .unwrap_or_else(|| SessionFile {
-                role: role.to_string(), ..Default::default()
+                role: role.to_string(),
+                ..Default::default()
             });
         Self {
-            role:          role.to_string(),
-            cwd:           cwd.to_string(),
+            role: role.to_string(),
+            cwd: cwd.to_string(),
             cargo_target_dir: None,
             system_prompt: system_prompt.to_string(),
             worker_id,
-            project_key:   project_key.to_string(),
-            extra_tools:   Vec::new(),
-            dry_run:       false,
+            project_key: project_key.to_string(),
+            extra_tools: Vec::new(),
+            dry_run: false,
             state,
         }
     }
@@ -156,19 +157,21 @@ impl PersistentSession {
 
         // Context window 管理：超過 500K chars 時修剪歷史
         const MAX_HISTORY_CHARS: usize = 500_000; // Gemini 1M tokens ≈ 750K chars
-        let total_chars: usize = self.state.history.iter()
-            .map(|(_, c)| c.len())
-            .sum();
+        let total_chars: usize = self.state.history.iter().map(|(_, c)| c.len()).sum();
 
         if total_chars > MAX_HISTORY_CHARS {
             // 保留最近 50% 的對話
             let keep = self.state.history.len() / 2;
             if keep > 0 {
-                self.state.history = self.state.history
+                self.state.history = self
+                    .state
+                    .history
                     .split_off(self.state.history.len() - keep);
                 tracing::warn!(
                     "[multi_agent] {} context pruned: kept last {} turns ({} chars)",
-                    self.role, keep, total_chars
+                    self.role,
+                    keep,
+                    total_chars
                 );
             }
         }
@@ -178,14 +181,16 @@ impl PersistentSession {
         let llm = crate::llm::shared_llm();
 
         let output = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                crate::llm::call_prompt_messages(&http, &llm, &messages).await
-            })
-        }).map_err(|e| format!("{:?}", e))?;
+            tokio::runtime::Handle::current()
+                .block_on(async { crate::llm::call_prompt_messages(&http, &llm, &messages).await })
+        })
+        .map_err(|e| format!("{:?}", e))?;
 
         // 保存對話歷史
         self.state.history.push(("user".into(), body));
-        self.state.history.push(("assistant".into(), output.clone()));
+        self.state
+            .history
+            .push(("assistant".into(), output.clone()));
 
         // 生成 session_id（第一次）
         if is_new {
@@ -205,21 +210,28 @@ impl PersistentSession {
         self.state.session_id.as_deref()
     }
 
-    pub fn turns(&self) -> u32 { self.state.turns }
+    pub fn turns(&self) -> u32 {
+        self.state.turns
+    }
 
     /// 重置 session（開始全新對話）。
     pub fn reset(&mut self) {
         self.state = SessionFile {
-            role: self.role.clone(), ..Default::default()
+            role: self.role.clone(),
+            ..Default::default()
         };
         let _ = std::fs::remove_file(state_path_for_project(
-            &self.role, self.worker_id, &self.project_key,
+            &self.role,
+            self.worker_id,
+            &self.project_key,
         ));
     }
 
     fn save(&self) {
         let path = state_path_for_project(&self.role, self.worker_id, &self.project_key);
-        if let Some(parent) = path.parent() { let _ = std::fs::create_dir_all(parent); }
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         if let Ok(json) = serde_json::to_string_pretty(&self.state) {
             let _ = std::fs::write(&path, json);
         }
@@ -275,11 +287,15 @@ mod tests {
             "pm.json"
         );
         assert_eq!(
-            state_path_for_project("pm", 0, "sirin").file_name().unwrap(),
+            state_path_for_project("pm", 0, "sirin")
+                .file_name()
+                .unwrap(),
             "pm.json"
         );
         assert_eq!(
-            state_path_for_project("engineer", 1, "").file_name().unwrap(),
+            state_path_for_project("engineer", 1, "")
+                .file_name()
+                .unwrap(),
             "w1_engineer.json"
         );
     }
@@ -287,11 +303,15 @@ mod tests {
     #[test]
     fn project_paths_namespaced() {
         assert_eq!(
-            state_path_for_project("pm", 0, "agora_market").file_name().unwrap(),
+            state_path_for_project("pm", 0, "agora_market")
+                .file_name()
+                .unwrap(),
             "pagora_market_pm.json"
         );
         assert_eq!(
-            state_path_for_project("engineer", 2, "agora_market").file_name().unwrap(),
+            state_path_for_project("engineer", 2, "agora_market")
+                .file_name()
+                .unwrap(),
             "w2_pagora_market_engineer.json"
         );
     }
@@ -299,11 +319,15 @@ mod tests {
     #[test]
     fn project_key_case_insensitive_for_sirin() {
         assert_eq!(
-            state_path_for_project("pm", 0, "Sirin").file_name().unwrap(),
+            state_path_for_project("pm", 0, "Sirin")
+                .file_name()
+                .unwrap(),
             "pm.json"
         );
         assert_eq!(
-            state_path_for_project("pm", 0, "SIRIN").file_name().unwrap(),
+            state_path_for_project("pm", 0, "SIRIN")
+                .file_name()
+                .unwrap(),
             "pm.json"
         );
     }

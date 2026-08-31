@@ -7,9 +7,16 @@ goal: |
 
 max_iterations: 6
 timeout_secs: 60
+fixture_only: true
+
+fixture:
+  setup:
+    - {action: "wait", target: "2000"}
+    - {action: "assert_url_matches", target: "github.com/Redandan/Redandan.github.io/wiki"}
+    - {action: "assert_ax_contains", target: "Agora Market"}
 
 success_criteria:
-  - "頁面包含文字「Agora Market」"
-  - "URL 仍停留在 github.com/.../wiki 路徑"
+  - "成功看到文字「Agora Market」"
+  - "成功停留在 github.com/.../wiki 路徑"
 
 tags: [smoke, docs]

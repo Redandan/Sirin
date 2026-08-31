@@ -4,7 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Sirin</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <link rel="stylesheet" href="style.css">
+  <script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 </head>
 <body>
 
@@ -125,6 +127,25 @@
           <path d="M2 19h22"/>
         </svg>
         <span x-show="!sidebarCollapsed">AI 工作監控</span>
+      </button>
+      <button class="nav-row" :class="view === 'ops-scout' ? 'active' : ''"
+              @click="view = 'ops-scout'" :title="sidebarCollapsed ? '運營 Scout' : ''">
+        <svg class="nav-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+          <path d="M7.5 4.21 12 6.81l4.5-2.6"/>
+          <path d="M7.5 19.79V14.6L3 12"/>
+          <path d="M21 12l-4.5 2.6v5.19"/>
+          <path d="M12 22v-5"/>
+        </svg>
+        <span x-show="!sidebarCollapsed">運營 Scout</span>
+      </button>
+      <button class="nav-row" :class="view === 'ios-location' ? 'active' : ''"
+              @click="view = 'ios-location'" :title="sidebarCollapsed ? 'iOS 定位' : ''">
+        <svg class="nav-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M12 21s7-4.35 7-11a7 7 0 1 0-14 0c0 6.65 7 11 7 11z"/>
+          <circle cx="12" cy="10" r="2.5"/>
+        </svg>
+        <span x-show="!sidebarCollapsed">iOS 定位</span>
       </button>
 
       <div class="sidebar-section-label" x-show="!sidebarCollapsed">AGENT 列表</div>
@@ -293,8 +314,8 @@
                               class="dim mono small ml-md"
                               :title="'tokens: ' + (run.prompt_tokens || 0) + ' in / ' + (run.completion_tokens || 0) + ' out' + (run.cached_tokens > 0 ? ' (' + run.cached_tokens + ' cached)' : '')"
                               x-text="Number.isFinite(run.cost_usd) ? '$' + (run.cost_usd >= 0.01 ? run.cost_usd.toFixed(2) : run.cost_usd.toFixed(4)) : ''"></span>
-                        <span class="dim mono small" x-show="run.duration_ms"
-                              x-text="(run.duration_ms / 1000).toFixed(1) + 's'"></span>
+                        <span class="dim mono small" x-show="Number.isFinite(run.duration_ms) && run.duration_ms > 0"
+                              x-text="Number.isFinite(run.duration_ms) ? (run.duration_ms / 1000).toFixed(1) + 's' : ''"></span>
                         <span class="dim small ml-md" x-text="timeAgo(run.started_at)"></span>
                       </button>
                     </template>
@@ -496,18 +517,19 @@
                 </div>
               </template>
 
-              <!-- KPI: Replay rate (#266) — % of recent runs that passed via
-                   saved-script replay (no LLM cost).  Drops > 10pp week-over-week
+              <!-- KPI: zero-LLM pass rate (#266) — saved-script replay plus
+                   fixture-only deterministic runs. Drops > 10pp week-over-week
                    trigger a yellow warning border. -->
               <template x-if="wid === 'kpi_replay_rate'">
                 <div class="kpi-widget"
                      :class="kpi_replay_drift_warning ? 'kpi-warn' : ''">
                   <div class="kpi-num mono"
-                       x-text="(kpi_replay_rate * 100).toFixed(0) + '%'"></div>
-                  <div class="kpi-widget-label">重播率</div>
+                       x-text="kpi_replay_has_data ? (kpi_replay_rate * 100).toFixed(0) + '%' : '—'"></div>
+                  <div class="kpi-widget-label">零 LLM 通過率</div>
                   <div class="kpi-widget-sub dim small">
-                    <span x-show="kpi_replay_drift_pp == null">7d window</span>
-                    <span x-show="kpi_replay_drift_pp != null"
+                    <span x-show="!kpi_replay_has_data">近 7 天無執行</span>
+                    <span x-show="kpi_replay_has_data && kpi_replay_drift_pp == null">7d window</span>
+                    <span x-show="kpi_replay_has_data && kpi_replay_drift_pp != null"
                           x-text="(kpi_replay_drift_pp >= 0 ? '+' : '') + kpi_replay_drift_pp.toFixed(0) + 'pp vs prior 7d'"></span>
                   </div>
                 </div>
@@ -1140,8 +1162,8 @@
                       class="dim mono small ml-md"
                       :title="'tokens: ' + (run.prompt_tokens || 0) + ' in / ' + (run.completion_tokens || 0) + ' out' + (run.cached_tokens > 0 ? ' (' + run.cached_tokens + ' cached)' : '')"
                       x-text="Number.isFinite(run.cost_usd) ? '$' + (run.cost_usd >= 0.01 ? run.cost_usd.toFixed(2) : run.cost_usd.toFixed(4)) : ''"></span>
-                <span class="dim mono small" x-show="run.duration_ms"
-                      x-text="(run.duration_ms / 1000).toFixed(1) + 's'"></span>
+                <span class="dim mono small" x-show="Number.isFinite(run.duration_ms) && run.duration_ms > 0"
+                      x-text="Number.isFinite(run.duration_ms) ? (run.duration_ms / 1000).toFixed(1) + 's' : ''"></span>
                 <span class="dim small ml-md" x-text="timeAgo(run.started_at)"></span>
                 <span class="dim small ml-md">→</span>
               </button>
@@ -1452,6 +1474,682 @@
       </section>
 
       <!--
+        Ops Scout — Sirin-local ops event inbox for ops/test-health scouts.
+        Uses /mcp tools/call directly; no AgoraMarketAPI review API required.
+      -->
+      <section x-show="view === 'ops-scout'" class="view">
+        <div class="view-header">
+          <h1>運營 Scout</h1>
+          <div class="row gap-md">
+            <select class="select" x-model="scoutStatus" @change="loadScoutCandidates()">
+              <option value="all">全部狀態</option>
+              <option value="CANDIDATE">候選</option>
+              <option value="CONVERT_TO_ISSUE">可轉單</option>
+              <option value="NEEDS_MORE_EVIDENCE">需更多證據</option>
+              <option value="REJECTED">噪音</option>
+              <option value="ACCEPTED">已接受</option>
+            </select>
+            <select class="select" x-model="scoutSeverity" @change="loadScoutCandidates()">
+              <option value="all">全部嚴重度</option>
+              <option value="HIGH">HIGH</option>
+              <option value="MEDIUM">MEDIUM</option>
+              <option value="LOW">LOW</option>
+            </select>
+            <select class="select" x-model="scoutEventType" @change="loadScoutCandidates()">
+              <option value="all">全部事件</option>
+              <option value="service_health">service_health</option>
+              <option value="order_risk">order_risk</option>
+              <option value="trust_support">trust_support</option>
+              <option value="seller_fulfillment">seller_fulfillment</option>
+              <option value="growth_signal">growth_signal</option>
+              <option value="test_coverage_gap">test_coverage_gap</option>
+              <option value="service_health_validation">service_health_validation</option>
+            </select>
+            <select class="select" x-model="scoutAllowedAction" @change="loadScoutCandidates()">
+              <option value="all">全部動作</option>
+              <option value="OPEN_PRODUCT_ISSUE_AFTER_REVIEW">OPEN_PRODUCT_ISSUE_AFTER_REVIEW</option>
+              <option value="OPERATOR_REVIEW">OPERATOR_REVIEW</option>
+              <option value="HANDOFF_REVIEW_ONLY">HANDOFF_REVIEW_ONLY</option>
+              <option value="CODEX_VERIFY_INTEGRATION">CODEX_VERIFY_INTEGRATION</option>
+              <option value="SIRIN_BACKLOG_ONLY">SIRIN_BACKLOG_ONLY</option>
+            </select>
+            <select class="select" x-model="scoutEvidenceLevel" @change="loadScoutCandidates()">
+              <option value="all">全部證據</option>
+              <option value="observed">observed</option>
+              <option value="needs_verification">needs_verification</option>
+              <option value="hypothesis">hypothesis</option>
+              <option value="suspected">suspected</option>
+              <option value="confirmed">confirmed</option>
+            </select>
+            <button class="btn-secondary" @click="loadScoutCandidates()">⟳ 重新整理</button>
+            <span class="dim small" x-show="scoutLoading">loading…</span>
+            <span class="dim small" x-show="scoutToast" x-text="scoutToast"></span>
+          </div>
+        </div>
+        <hr class="thin-sep">
+
+        <div class="ops-schedule-panel">
+          <div class="section-label">
+            <span>本地任務排期</span>
+            <span class="dim small" x-show="opsScheduleLoading">loading…</span>
+            <span class="dim small" x-show="opsScheduleToast" x-text="opsScheduleToast"></span>
+          </div>
+          <div class="ops-schedule-grid">
+            <div class="card">
+              <div class="ops-form-grid">
+                <input class="input"
+                       x-model="newOpsTitle"
+                       placeholder="排期名稱">
+                <select class="select" x-model="newOpsTaskType">
+                  <option value="SIRIN_AGORA_TEST_HEALTH_SCOUT">SIRIN_AGORA_TEST_HEALTH_SCOUT</option>
+                  <option value="AGORA_MARKET_ISSUE_SCOUT">AGORA_MARKET_ISSUE_SCOUT</option>
+                  <option value="AGORA_MARKET_OPS_DAILY_BRIEF">AGORA_MARKET_OPS_DAILY_BRIEF</option>
+                </select>
+                <select class="select" x-model="newOpsCadence">
+                  <option value="manual">manual</option>
+                  <option value="daily">daily</option>
+                  <option value="weekly">weekly</option>
+                  <option value="once">once</option>
+                </select>
+                <select class="select" x-model="newOpsPriority">
+                  <option value="P0">P0</option>
+                  <option value="P1">P1</option>
+                  <option value="P2">P2</option>
+                </select>
+                <textarea class="ops-params"
+                          x-model="newOpsParams"
+                          placeholder='{"maxCandidates":12}'></textarea>
+                <button class="btn-primary" @click="createOpsSchedule()">新增排期</button>
+              </div>
+              <div class="card config-issue issue-error mt-md" x-show="opsScheduleError">
+                <div class="row">
+                  <span class="issue-icon issue-error">⊘</span>
+                  <span x-text="opsScheduleError"></span>
+                </div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="row gap-md mb-md">
+                <select class="select" x-model="opsScheduleStatus" @change="loadOpsSchedules()">
+                  <option value="all">全部排期</option>
+                  <option value="SCHEDULED">SCHEDULED</option>
+                  <option value="RUNNING">RUNNING</option>
+                  <option value="PAUSED">PAUSED</option>
+                  <option value="DONE">DONE</option>
+                  <option value="CANCELLED">CANCELLED</option>
+                  <option value="FAILED">FAILED</option>
+                </select>
+                <button class="btn-secondary" @click="loadOpsSchedules()">⟳</button>
+                <button class="btn-secondary"
+                        :disabled="opsScheduleRunBusy"
+                        @click="runOpsSchedule()"
+                        x-text="opsScheduleRunBusy ? '執行中…' : '執行 due'"></button>
+                <span class="row-spacer"></span>
+                <span class="dim mono small" x-text="opsSchedules.length + ' local'"></span>
+              </div>
+              <div class="card-empty" x-show="!opsScheduleLoading && opsSchedules.length === 0">
+                尚無本地運營排期
+              </div>
+              <template x-for="row in opsSchedules" :key="row.id">
+                <div class="ops-schedule-row">
+                  <div>
+                    <div class="row gap-sm">
+                      <span :class="'badge-soft ' + opsScheduleStatusClass(row.status)"
+                            x-text="row.status"></span>
+                      <span x-show="opsScheduleResultStatus(row)"
+                            :class="'badge-soft ' + opsScheduleResultStatusClass(opsScheduleResultStatus(row))"
+                            x-text="opsScheduleResultStatus(row)"></span>
+                      <span class="badge-soft badge-soft-info" x-text="row.priority || 'P1'"></span>
+                      <span class="dim mono small" x-text="row.cadence || 'manual'"></span>
+                    </div>
+                    <div class="ops-scout-title" x-text="row.title"></div>
+                    <div class="dim mono small" x-text="row.id + ' · ' + row.task_type"></div>
+                  </div>
+                  <div class="row gap-sm">
+                    <button class="btn-secondary"
+                            :disabled="opsScheduleRunBusy || row.status === 'RUNNING'"
+                            @click="runOpsSchedule(row)">立即執行</button>
+                    <button class="btn-secondary" x-show="row.status === 'PAUSED'"
+                            @click="updateOpsSchedule(row, 'SCHEDULED')">恢復</button>
+                    <button class="btn-secondary" x-show="row.status !== 'PAUSED'"
+                            @click="updateOpsSchedule(row, 'PAUSED')">暫停</button>
+                    <button class="btn-secondary" @click="updateOpsSchedule(row, 'DONE')">完成</button>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+        </div>
+
+        <hr class="thin-sep">
+
+        <div class="ops-handoff-panel">
+          <div class="section-label">
+            <span x-text="'Approved handoff queue  (' + handoffQueue.length + ')'"></span>
+            <span class="dim small" x-show="handoffLoading">loading…</span>
+          </div>
+          <div class="card">
+            <div class="row gap-md mb-md">
+              <select class="select" x-model="handoffStatus" @change="loadHandoffQueue()">
+                <option value="READY">READY</option>
+                <option value="ACKED">ACKED</option>
+                <option value="DONE">DONE</option>
+                <option value="CANCELLED">CANCELLED</option>
+                <option value="all">ALL</option>
+              </select>
+              <button class="btn-secondary" @click="loadHandoffQueue()">⟳</button>
+              <span class="dim small" x-show="handoffError" x-text="handoffError"></span>
+            </div>
+            <div class="card-empty" x-show="!handoffLoading && handoffQueue.length === 0">
+              尚無 approved handoff
+            </div>
+            <template x-for="row in handoffQueue" :key="row.handoff_id">
+              <div class="ops-handoff-row">
+                <div>
+                  <div class="row gap-sm">
+                    <span class="badge-soft badge-soft-info" x-text="row.status"></span>
+                    <span class="badge-soft" x-text="row.target_actor || 'CODEX'"></span>
+                    <span class="dim mono small" x-text="row.review_status"></span>
+                  </div>
+                  <div class="ops-scout-title" x-text="row.title"></div>
+                  <div class="dim mono small" x-text="row.handoff_id"></div>
+                </div>
+                <div class="row gap-sm">
+                  <button class="btn-secondary" @click="copyQueuedHandoff(row)">複製</button>
+                  <button class="btn-secondary" @click="updateHandoff(row, 'ACKED')">接手</button>
+                  <button class="btn-secondary" @click="updateHandoff(row, 'DONE')">完成</button>
+                  <button class="btn-secondary" @click="updateHandoff(row, 'CANCELLED')">取消</button>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <hr class="thin-sep">
+
+        <div class="ops-scout-grid">
+          <div class="ops-scout-list">
+            <div class="section-label">
+              <span x-text="'運營事件  (' + scoutCandidates.length + ')'"></span>
+            </div>
+            <div class="card card-empty" x-show="!scoutLoading && scoutCandidates.length === 0">
+              尚無 Sirin ops event
+            </div>
+            <div class="card config-issue issue-error" x-show="scoutError">
+              <div class="row">
+                <span class="issue-icon issue-error">⊘</span>
+                <span x-text="scoutError"></span>
+              </div>
+            </div>
+            <template x-for="row in scoutCandidates" :key="scoutCandidateKey(row)">
+              <button class="ops-scout-row"
+                      :class="scoutCandidateKey(row) === scoutCandidateKey(selectedScoutCandidate) ? 'active' : ''"
+                      @click="selectScoutCandidate(row)">
+                <div class="row">
+                  <span :class="'badge-soft ' + scoutSeverityClass(scoutCandidateSeverity(row))"
+                        x-text="scoutCandidateSeverity(row)"></span>
+                  <span :class="'badge-soft ' + scoutStatusClass(scoutCandidateStatus(row))"
+                        x-text="scoutCandidateStatus(row)"></span>
+                  <span :class="'badge-soft ' + scoutAllowedActionClass(scoutAllowedActionValue(row))"
+                        x-text="scoutAllowedActionValue(row)"></span>
+                </div>
+                <div class="ops-scout-title" x-text="scoutCandidateTitle(row)"></div>
+                <div class="dim mono small"
+                     x-text="scoutEventTypeValue(row) + ' · ' + scoutEvidenceLevelValue(row) + ' · ' + scoutTargetProjectValue(row)"></div>
+                <div class="dim mono small" x-text="scoutCandidateDedupe(row)"></div>
+              </button>
+            </template>
+          </div>
+
+          <div class="ops-scout-detail">
+            <template x-if="selectedScoutCandidate">
+              <div>
+                <div class="section-label">事件詳情</div>
+                <div class="card">
+                  <div class="row">
+                    <span :class="'badge-soft ' + scoutSeverityClass(scoutCandidateSeverity(selectedScoutCandidate))"
+                          x-text="scoutCandidateSeverity(selectedScoutCandidate)"></span>
+                    <span :class="'badge-soft ' + scoutStatusClass(scoutCandidateStatus(selectedScoutCandidate))"
+                          x-text="scoutCandidateStatus(selectedScoutCandidate)"></span>
+                    <span :class="'badge-soft ' + scoutAllowedActionClass(scoutAllowedActionValue(selectedScoutCandidate))"
+                          x-text="scoutAllowedActionValue(selectedScoutCandidate)"></span>
+                    <span class="row-spacer"></span>
+                    <button class="btn-secondary" @click="copyScoutHandoff()">複製 handoff</button>
+                  </div>
+                  <h2 class="modal-section-title mt-md" x-text="scoutCandidateTitle(selectedScoutCandidate)"></h2>
+                  <div class="kv-row">
+                    <span class="kv-label">event</span>
+                    <span class="mono" x-text="scoutEventTypeValue(selectedScoutCandidate)"></span>
+                  </div>
+                  <div class="kv-row">
+                    <span class="kv-label">evidence</span>
+                    <span class="mono" x-text="scoutEvidenceLevelValue(selectedScoutCandidate)"></span>
+                  </div>
+                  <div class="kv-row">
+                    <span class="kv-label">target</span>
+                    <span class="mono" x-text="scoutTargetProjectValue(selectedScoutCandidate)"></span>
+                  </div>
+                  <div class="kv-row">
+                    <span class="kv-label">task</span>
+                    <span class="mono" x-text="selectedScoutCandidate.task_id || '-'"></span>
+                  </div>
+                  <div class="kv-row">
+                    <span class="kv-label">dedupe</span>
+                    <span class="mono" x-text="scoutCandidateDedupe(selectedScoutCandidate)"></span>
+                  </div>
+                  <div class="kv-row">
+                    <span class="kv-label">surface</span>
+                    <span class="mono" x-text="selectedScoutCandidate.candidate?.affectedSurface || '-'"></span>
+                  </div>
+                  <div class="kv-row">
+                    <span class="kv-label">gate</span>
+                    <span class="mono" x-text="scoutOpsEvent(selectedScoutCandidate)?.productIssueGate?.reason || '-'"></span>
+                  </div>
+                </div>
+
+                <div class="section-label mt-lg">Evidence</div>
+                <div class="ops-evidence-list">
+                  <template x-for="ev in scoutEvidence(selectedScoutCandidate)" :key="ev.tool + ev.excerpt">
+                    <div class="card ops-evidence">
+                      <div class="row">
+                        <span class="badge-soft badge-soft-info" x-text="ev.tool || ev.type || 'evidence'"></span>
+                      </div>
+                      <pre x-text="ev.excerpt || ev.summary || JSON.stringify(ev, null, 2)"></pre>
+                    </div>
+                  </template>
+                </div>
+
+                <div class="section-label mt-lg">Review</div>
+                <div class="card">
+                  <div class="kv-row">
+                    <span class="kv-label">suggested</span>
+                    <span class="mono" x-text="scoutSuggestedReviewStatus(selectedScoutCandidate)"></span>
+                  </div>
+                  <div class="row gap-md">
+                    <select class="select" x-model="scoutReviewStatus">
+                      <option value="CONVERT_TO_ISSUE"
+                              :disabled="!scoutReviewStatusAllowed(selectedScoutCandidate, 'CONVERT_TO_ISSUE')">CONVERT_TO_ISSUE</option>
+                      <option value="NEEDS_MORE_EVIDENCE">NEEDS_MORE_EVIDENCE</option>
+                      <option value="REJECTED">REJECTED</option>
+                      <option value="ACCEPTED">ACCEPTED</option>
+                    </select>
+                    <button class="btn-primary"
+                            :disabled="scoutReviewBusy"
+                            @click="reviewSelectedScoutCandidate()"
+                            x-text="scoutReviewBusy ? '更新中…' : '更新審核'"></button>
+                  </div>
+                  <textarea class="ops-review-note"
+                            x-model="scoutReviewNote"
+                            placeholder="審核備註"></textarea>
+                </div>
+
+                <div class="section-label mt-lg">Handoff</div>
+                <pre class="ops-handoff" x-text="scoutHandoffText(selectedScoutCandidate)"></pre>
+              </div>
+            </template>
+          </div>
+        </div>
+      </section>
+
+      <!--
+        iOS Location — developer-location workbench for owned/test iPhones.
+        Uses Sirin-local MCP tools directly; no 3uTools dependency.
+      -->
+      <section x-show="view === 'ios-location'" class="view ios-roam-view">
+        <div class="view-header ios-roam-header">
+          <div>
+            <h1>iOS 當前城市漫遊</h1>
+            <div class="dim small">三步完成：設定起點、生成道路路線、播放到 iPhone。</div>
+          </div>
+          <div class="ios-command-strip">
+            <span :class="'ios-signal ' + iosStatusClass(iosStatus?.status)"
+                  x-text="iosStatus?.status || '未載入'"></span>
+            <span :class="'ios-signal ' + (iosDeviceConnected() ? 'badge-soft-ok' : '')"
+                  x-text="iosDeviceConnected() ? 'IPHONE READY' : 'IPHONE OFFLINE'"></span>
+            <span class="ios-signal badge-soft-info" x-text="iosBackendLabel()"></span>
+            <button class="btn-ghost compact"
+                    :disabled="iosStatusLoading"
+                    @click="loadIosStatus()"
+                    x-text="iosStatusLoading ? '刷新中' : '刷新'"></button>
+          </div>
+        </div>
+
+        <div class="ios-flow-rail">
+          <template x-for="step in iosFlowSteps().slice(0, 4)" :key="step.n">
+            <div :class="iosFlowStepClass(step)">
+              <span class="ios-flow-index mono" x-text="step.n"></span>
+              <div>
+                <strong x-text="step.title"></strong>
+                <span x-text="step.desc"></span>
+              </div>
+            </div>
+          </template>
+        </div>
+
+        <div class="ios-roam-layout" :class="iosPlaybackMonitorMode() ? 'ios-roam-monitoring' : ''">
+          <aside class="ios-control-panel">
+            <div class="ios-monitor-panel" x-show="iosPlaybackMonitorMode()">
+              <div class="ios-monitor-header">
+                <div>
+                  <div class="field-label">LIVE ROAM</div>
+                  <h2 x-text="iosPlaybackMonitorTitle()"></h2>
+                </div>
+                <span :class="'badge-soft ' + iosOperationSummaryClass()"
+                      x-text="iosOperationSummaryTitle()"></span>
+              </div>
+              <div class="ios-monitor-progress">
+                <strong class="mono" x-text="iosRouteProgressPercent() + '%'"></strong>
+                <span x-text="iosRouteRunElapsedText() + ' / ' + iosFormatDuration(iosRouteRunResult?.durationSeconds || iosDurationSeconds || 0)"></span>
+                <div class="ios-progress-track">
+                  <div class="ios-progress-fill" :style="'width: ' + iosRouteProgressPercent() + '%'"></div>
+                </div>
+              </div>
+              <div class="ios-monitor-grid">
+                <div>
+                  <span class="field-label">SPEED</span>
+                  <strong class="mono" x-text="iosRouteRunResult?.playbackAnalysis?.averageSpeedKmh != null ? iosRouteRunResult.playbackAnalysis.averageSpeedKmh + ' km/h' : '-'"></strong>
+                </div>
+                <div>
+                  <span class="field-label">REMAIN</span>
+                  <strong class="mono" x-text="iosRouteRunRemainingText()"></strong>
+                </div>
+                <div>
+                  <span class="field-label">DISTANCE</span>
+                  <strong class="mono" x-text="iosRouteDistanceProgressText()"></strong>
+                </div>
+                <div>
+                  <span class="field-label">POINT</span>
+                  <strong class="mono" x-text="iosPlaybackCoordinateCount() || '-'"></strong>
+                </div>
+              </div>
+              <div class="ios-monitor-actions">
+                <button class="btn-secondary"
+                        :disabled="iosRouteRunBusy || !iosRouteRunResult?.routeRunId"
+                        @click="iosRefreshRouteRunStatus()">刷新進度</button>
+                <button class="btn-secondary"
+                        :disabled="iosRouteRunBusy || !iosRouteRunResult?.pid || iosRouteRunResult?.stillRunning === false"
+                        @click="iosStopRoutePlayback()">停止</button>
+                <button class="btn-primary"
+                        :disabled="iosBusy"
+                        @click="iosResetLocation()">Reset</button>
+              </div>
+              <div class="ios-route-guidance" :class="iosRouteGuidanceClass()">
+                <strong x-text="iosRouteGuidanceTitle()"></strong>
+                <span x-text="iosRouteGuidanceText()"></span>
+              </div>
+            </div>
+
+            <div class="ios-setup-stack" x-show="!iosPlaybackMonitorMode()">
+            <div class="ios-control-section ios-step-current">
+              <div class="ios-control-heading">
+                <span class="ios-step-chip">1</span>
+                <span>起點</span>
+              </div>
+              <div class="ios-origin-card">
+                <div class="field-label">CURRENT ORIGIN</div>
+                <div class="ios-origin-point mono"
+                     x-text="iosLocationConfirmed ? iosPointText(iosCurrentCenterSafe()) : '尚未確認'"></div>
+                <div class="dim small" x-text="iosLocationConfirmed ? iosLocationSourceLabel() : '優先讀取手機；也可直接在地圖點選。'"></div>
+              </div>
+              <div class="ios-primary-actions compact">
+                <button class="btn-primary"
+                        :disabled="iosBusy"
+                        @click="iosReadCurrentLocation()"
+                        x-text="iosBusy ? '讀取中…' : '讀取手機位置'"></button>
+                <button class="btn-secondary"
+                        :disabled="iosBusy"
+                        @click="iosEnableOriginMapPick()">地圖選點</button>
+              </div>
+              <details class="ios-inline-advanced">
+                <summary>其他起點方式</summary>
+                <div class="ios-compact-grid mt-sm">
+                  <label>
+                    <span class="field-label">LAT</span>
+                    <input class="input mono" x-model="iosLat" @input="iosInvalidateLocation()">
+                  </label>
+                  <label>
+                    <span class="field-label">LNG</span>
+                    <input class="input mono" x-model="iosLng" @input="iosInvalidateLocation()">
+                  </label>
+                </div>
+                <div class="ios-preset-mini">
+                  <select class="input" x-model="iosSelectedPresetId">
+                    <template x-for="preset in iosOriginPresets" :key="preset.id">
+                      <option :value="preset.id" x-text="preset.label"></option>
+                    </template>
+                  </select>
+                  <button class="btn-secondary"
+                          :disabled="iosBusy"
+                          @click="iosUsePresetOrigin()">使用</button>
+                </div>
+                <button class="btn-secondary full mt-sm"
+                        :disabled="iosBusy"
+                        @click="iosLoadReportedLocation()">讀取手機回報</button>
+              </details>
+            </div>
+
+            <div class="ios-control-section">
+              <div class="ios-control-heading">
+                <span class="ios-step-chip">2</span>
+                <span>路線</span>
+              </div>
+              <label>
+                <span class="field-label">CITY</span>
+                <input class="input" x-model="iosCity">
+              </label>
+              <span class="field-label">DURATION</span>
+              <div class="segmented">
+                <button :class="iosDurationSeconds === 600 ? 'active' : ''"
+                        @click="iosSetDuration(600)">10 分</button>
+                <button :class="iosDurationSeconds === 900 ? 'active' : ''"
+                        @click="iosSetDuration(900)">15 分</button>
+                <button :class="iosDurationSeconds === 1800 ? 'active' : ''"
+                        @click="iosSetDuration(1800)">30 分</button>
+              </div>
+              <span class="field-label">MODE</span>
+              <div class="segmented segmented-two">
+                <button :class="iosMovementProfile === 'roam' ? 'active' : ''"
+                        @click="iosSetMovementProfile('roam')">步行</button>
+                <button :class="iosMovementProfile === 'bicycle' ? 'active' : ''"
+                        @click="iosSetMovementProfile('bicycle')">腳踏車</button>
+              </div>
+              <details class="ios-inline-advanced">
+                <summary>路線參數</summary>
+                <div class="ios-compact-grid mt-sm">
+                  <label>
+                    <span class="field-label">MAX KM/H</span>
+                    <input class="input mono" type="number" min="1" max="20.5" step="0.1" x-model.number="iosSpeedKmh">
+                  </label>
+                  <label>
+                    <span class="field-label">RADIUS M</span>
+                    <input class="input mono" type="number" min="100" max="10000" x-model.number="iosRoamRadiusMeters">
+                  </label>
+                </div>
+              </details>
+              <button class="btn-primary ios-wide-action"
+                      :disabled="iosBusy || !iosLocationConfirmed"
+                      :title="iosLocationConfirmed ? '分析街道並產生播放座標' : '請先確認起點'"
+                      @click="iosPlanRoute()"
+                      x-text="iosBusy ? '生成中…' : (iosRouteResult?.routeId ? '重新生成路線' : '生成路線')"></button>
+            </div>
+
+            <div class="ios-control-section">
+              <div class="ios-control-heading">
+                <span class="ios-step-chip">3</span>
+                <span>播放</span>
+              </div>
+              <div class="ios-compact-status">
+                <div>
+                  <span class="field-label">ROUTE</span>
+                  <strong class="mono" x-text="iosRouteResult?.routeQuality || '未生成'"></strong>
+                </div>
+                <div>
+                  <span class="field-label">POINTS</span>
+                  <strong class="mono" x-text="iosPlaybackCoordinateCount() || '-'"></strong>
+                </div>
+              </div>
+              <button class="btn-primary ios-play-button"
+                      :disabled="iosRouteRunBusy || !iosRouteReadyForPlayback()"
+                      :title="iosRoutePlaybackDisabledReason()"
+                      @click="iosStartRoutePlayback()"
+                      x-text="iosPrimaryPlaybackText()"></button>
+              <div class="ios-secondary-actions compact">
+                <button class="btn-secondary"
+                        :disabled="iosRouteRunBusy || !iosRouteRunResult?.routeRunId"
+                        @click="iosRefreshRouteRunStatus()">刷新</button>
+                <button class="btn-secondary"
+                        :disabled="iosRouteRunBusy || !iosRouteRunResult?.pid || iosRouteRunResult?.stillRunning === false"
+                        @click="iosStopRoutePlayback()">停止</button>
+                <button class="btn-secondary"
+                        :disabled="iosBusy"
+                        @click="iosResetLocation()">Reset</button>
+              </div>
+              <div class="ios-blocking-reason dim small"
+                   x-show="!iosRouteReadyForPlayback()"
+                   x-text="iosRoutePlaybackDisabledReason()"></div>
+            </div>
+            </div>
+          </aside>
+
+          <section class="ios-map-panel">
+            <div class="ios-map-shell ios-map-shell-large">
+              <div id="ios-leaflet-map"
+                   class="ios-leaflet-map ios-leaflet-map-large"
+                   role="img"
+                   aria-label="iOS 漫遊真實道路地圖"
+                   x-init="$nextTick(() => iosInitLeafletMap())"></div>
+              <div class="ios-map-status-panel">
+                <span class="mono">OSM</span>
+                <span x-text="iosLeafletReady ? '真實街道' : (iosLeafletError || '載入中')"></span>
+                <button class="btn-ghost compact"
+                        type="button"
+                        @click="iosUpdateLeafletMap({ fit: true })">置中</button>
+              </div>
+              <div class="ios-map-mode-panel" x-show="iosMapPickMode === 'origin'">
+                <span class="mono">選起點</span>
+                <span>點擊地圖設定漫遊起點</span>
+              </div>
+              <div :class="'ios-map-mode-badge ' + iosMapModeClass()">
+                <span class="mono" x-text="iosMapModeLabel()"></span>
+                <span x-text="iosRouteGuidanceTitle()"></span>
+              </div>
+              <div class="ios-map-progress-overlay">
+                <div class="row gap-md">
+                  <span :class="'badge-soft ' + iosOperationSummaryClass()"
+                        x-text="iosOperationSummaryTitle()"></span>
+                  <span class="row-spacer"></span>
+                  <span :class="'badge-soft ' + iosRoutePlayableClass()"
+                        x-text="iosRoutePlayableLabel()"></span>
+                </div>
+                <div class="ios-progress-track mt-sm">
+                  <div class="ios-progress-fill" :style="'width: ' + iosRouteProgressPercent() + '%'"></div>
+                </div>
+                <div class="ios-live-kpis">
+                  <div>
+                    <span class="field-label">PROGRESS</span>
+                    <strong class="mono" x-text="iosRouteProgressPercent() + '%'"></strong>
+                  </div>
+                  <div>
+                    <span class="field-label">TIME</span>
+                    <strong class="mono" x-text="iosRouteRunElapsedText() + ' / ' + iosFormatDuration(iosRouteRunResult?.durationSeconds || iosDurationSeconds || 0)"></strong>
+                  </div>
+                  <div>
+                    <span class="field-label">DISTANCE</span>
+                    <strong class="mono" x-text="iosRouteDistanceProgressText()"></strong>
+                  </div>
+                  <div>
+                    <span class="field-label">SPEED</span>
+                    <strong class="mono" x-text="iosRouteRunResult?.playbackAnalysis?.averageSpeedKmh != null ? iosRouteRunResult.playbackAnalysis.averageSpeedKmh + ' km/h' : '-'"></strong>
+                  </div>
+                </div>
+              </div>
+              <svg class="ios-route-map"
+                   x-show="iosLeafletError"
+                   viewBox="0 0 1000 520"
+                   role="img"
+                   aria-label="iOS 漫遊路線地圖"
+                   @click="iosMapClick($event)">
+                <rect class="ios-map-bg" x="0" y="0" width="1000" height="520"></rect>
+                <g class="ios-map-grid-lines">
+                  <path d="M40 120H960M40 220H960M40 320H960M40 420H960"></path>
+                  <path d="M180 40V480M340 40V480M500 40V480M660 40V480M820 40V480"></path>
+                </g>
+                <g class="ios-map-road-hints">
+                  <path d="M70 456C210 360 280 398 410 300S650 204 930 78"></path>
+                  <path d="M80 168C210 154 342 190 470 172S716 98 928 150"></path>
+                  <path d="M132 62C168 168 202 250 258 368S414 488 530 454S716 332 918 362"></path>
+                </g>
+                <polyline class="ios-map-route-shadow"
+                          x-show="iosRoutePointArray().length > 1"
+                          :points="iosMapPolyline()"></polyline>
+                <polyline class="ios-map-route-remaining"
+                          x-show="iosRoutePointArray().length > 1"
+                          :points="iosMapSegmentPolyline('remaining')"></polyline>
+                <polyline class="ios-map-route-played"
+                          x-show="iosRouteRunResult?.routeRunId && iosRoutePointArray().length > 1"
+                          :points="iosMapSegmentPolyline('played')"></polyline>
+                <g x-html="iosMapMarkersSvg()"></g>
+              </svg>
+            </div>
+
+            <div class="ios-route-summary-row ios-route-summary-compact">
+              <div class="ios-route-guidance" :class="iosRouteGuidanceClass()">
+                <span class="field-label">NEXT</span>
+                <strong x-text="iosRouteGuidanceTitle()"></strong>
+                <span x-text="iosRouteGuidanceText()"></span>
+              </div>
+              <div>
+                <span class="field-label">ROUTE</span>
+                <strong class="mono" x-text="iosRouteResult?.routeId || '尚未生成'"></strong>
+              </div>
+              <div>
+                <span class="field-label">QUALITY</span>
+                <strong class="mono" x-text="iosRouteResult?.routeQuality || '-'"></strong>
+              </div>
+              <div>
+                <span class="field-label">POINTS</span>
+                <strong class="mono" x-text="iosRouteResult?.scheduledPointCount || iosRoutePointArray().length || '-'"></strong>
+              </div>
+              <div>
+                <span class="field-label">ROAD</span>
+                <strong class="mono" x-text="iosRouteResult?.roadRouted ? 'OSRM' : '-'"></strong>
+              </div>
+            </div>
+
+            <details class="ios-advanced-details ios-dev-drawer">
+              <summary>開發 / 進階資料</summary>
+              <div class="ios-advanced-grid">
+                <div>
+                  <div class="field-label">手動路線點</div>
+                  <textarea class="ios-route-points mono"
+                            x-model="iosRoutePoints"
+                            spellcheck="false"></textarea>
+                  <div class="ios-secondary-actions mt-sm">
+                    <button class="btn-secondary" @click="iosLoadDemoRoute()">示範路線</button>
+                    <button class="btn-secondary" @click="iosUndoRoutePoint()">回退點</button>
+                    <button class="btn-secondary" @click="iosClearRoute()">清空</button>
+                    <button class="btn-secondary" :disabled="iosBusy" @click="iosPlanManualRoute()">手動路線</button>
+                  </div>
+                </div>
+                <div>
+                  <div class="field-label">結果摘要</div>
+                  <pre class="ios-result-pre"
+                       x-text="JSON.stringify({ route: iosRouteResult, run: iosRouteRunResult, set: iosResult, current: iosCurrentResult, report: iosLatestReportResult, error: iosError }, null, 2)"></pre>
+                </div>
+              </div>
+            </details>
+
+            <div class="ios-error-strip" x-show="iosError">
+              <span class="issue-icon issue-error">⊘</span>
+              <span x-text="iosError"></span>
+            </div>
+            <div class="ios-toast-strip" x-show="iosToast" x-text="iosToast"></div>
+          </section>
+        </div>
+      </section>
+
+      <!--
         Workspace — per-agent detail view (4 sub-tabs).
         References:
           對話   = Slack thread / Linear comment
@@ -1516,7 +2214,6 @@
               </div>
               <div class="chat-input-row">
                 <input type="text" class="chat-input" x-model="chat_input"
-                       @keydown.enter="sendChat()"
                        :disabled="chat_sending"
                        placeholder="輸入訊息給 Agent…">
                 <button class="btn-primary" @click="sendChat()"
@@ -1674,7 +2371,6 @@
                     </template>
                     <div class="row gap-md mt-md">
                       <input class="kv-input" type="text" x-model="new_obj_text"
-                             @keydown.enter="addObjective(currentAgent.id)"
                              placeholder="新增 objective…" style="flex:1">
                       <button class="btn-secondary"
                               @click="addObjective(currentAgent.id)">+ 新增</button>

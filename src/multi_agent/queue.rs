@@ -5,10 +5,10 @@
 //!
 //! 使用全局 Mutex 確保多執行緒安全。
 
+use crate::platform;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
-use crate::platform;
 
 // ── 資料結構 ──────────────────────────────────────────────────────────────────
 
@@ -24,15 +24,17 @@ pub enum TaskStatus {
 impl std::fmt::Display for TaskStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TaskStatus::Queued  => write!(f, "queued"),
+            TaskStatus::Queued => write!(f, "queued"),
             TaskStatus::Running => write!(f, "running"),
-            TaskStatus::Done    => write!(f, "done"),
-            TaskStatus::Failed  => write!(f, "failed"),
+            TaskStatus::Done => write!(f, "done"),
+            TaskStatus::Failed => write!(f, "failed"),
         }
     }
 }
 
-fn default_priority() -> u8 { 50 }
+fn default_priority() -> u8 {
+    50
+}
 
 /// Per-task project context — overrides the worker's default `cwd` and lets
 /// a task ask for extra tools beyond the role's default whitelist.
@@ -49,14 +51,14 @@ fn default_priority() -> u8 { 50 }
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct ProjectContext {
     #[serde(default)]
-    pub repo:        String,
+    pub repo: String,
     #[serde(default)]
     pub extra_tools: Vec<String>,
     /// Optional GitHub issue URL (e.g. `https://github.com/owner/repo/issues/42`).
     /// When present, the worker will auto-post the task's final review back as
     /// a comment on this issue — closing the loop for issue-driven Dev Team work.
     #[serde(default)]
-    pub issue_url:   Option<String>,
+    pub issue_url: Option<String>,
     /// Verification / preview mode.
     ///
     /// When `true`:
@@ -74,7 +76,7 @@ pub struct ProjectContext {
     /// new repos, anything where you want to inspect the team's plan before
     /// it touches the outside world.
     #[serde(default)]
-    pub dry_run:     bool,
+    pub dry_run: bool,
     /// T2-2: Optional YAML test id to auto-verify after Engineer completes the task.
     ///
     /// When set, the worker calls `AgentTeam::yaml_test_cycle(sirin_cwd, test_id)`
@@ -90,21 +92,21 @@ pub struct ProjectContext {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TeamTask {
-    pub id:          String,
+    pub id: String,
     pub description: String,
-    pub created_at:  String,
-    pub status:      TaskStatus,
-    pub result:      Option<String>,
+    pub created_at: String,
+    pub status: TaskStatus,
+    pub result: Option<String>,
     pub finished_at: Option<String>,
     #[serde(default)]
     pub retry_count: u8,
     #[serde(default = "default_priority")]
-    pub priority:    u8,
+    pub priority: u8,
     /// Optional project context. `None` (default) → run on Sirin repo with
     /// the role's standard tool whitelist (legacy behaviour, fully
     /// backward-compatible with pre-existing JSONL records).
     #[serde(default)]
-    pub project:     Option<ProjectContext>,
+    pub project: Option<ProjectContext>,
 }
 
 // ── 全局鎖 ────────────────────────────────────────────────────────────────────
@@ -143,11 +145,7 @@ pub fn enqueue_with_retry(description: &str, retry_count: u8) -> String {
 
 /// 加入帶有 `ProjectContext` 的任務 — 指定 repo 與 extra_tools，讓 worker
 /// 把 task 路由到對應 cwd 的 session pool（例如 AgoraMarket）。
-pub fn enqueue_with_project(
-    description: &str,
-    priority: u8,
-    project: ProjectContext,
-) -> String {
+pub fn enqueue_with_project(description: &str, priority: u8, project: ProjectContext) -> String {
     enqueue_full(description, priority, 0, Some(project))
 }
 
@@ -155,18 +153,18 @@ pub fn enqueue_with_project(
 /// 確保新增 TeamTask 欄位時只有一處需要改。
 fn enqueue_full(
     description: &str,
-    priority:    u8,
+    priority: u8,
     retry_count: u8,
-    project:     Option<ProjectContext>,
+    project: Option<ProjectContext>,
 ) -> String {
     let _g = lock().lock().unwrap_or_else(|e| e.into_inner());
     let id = chrono::Local::now().timestamp_millis().to_string();
     let task = TeamTask {
-        id:          id.clone(),
+        id: id.clone(),
         description: description.to_string(),
-        created_at:  chrono::Local::now().to_rfc3339(),
-        status:      TaskStatus::Queued,
-        result:      None,
+        created_at: chrono::Local::now().to_rfc3339(),
+        status: TaskStatus::Queued,
+        result: None,
         finished_at: None,
         retry_count,
         priority,
@@ -201,7 +199,9 @@ pub fn take_next_queued() -> Option<TeamTask> {
     let _g = lock().lock().unwrap_or_else(|e| e.into_inner());
     let mut tasks = read_all_unlocked();
     // 找 priority 最小（最緊急）、同 priority 則最早 created_at 的 Queued 任務
-    let found_idx = tasks.iter().enumerate()
+    let found_idx = tasks
+        .iter()
+        .enumerate()
         .filter(|(_, t)| t.status == TaskStatus::Queued)
         .min_by_key(|(_, t)| (t.priority, t.created_at.clone()))
         .map(|(i, _)| i);
@@ -221,8 +221,8 @@ pub fn update_status(id: &str, status: TaskStatus, result: Option<String>) {
     let mut tasks = read_all_unlocked();
     for t in &mut tasks {
         if t.id == id {
-            t.status      = status.clone();
-            t.result      = result.clone();
+            t.status = status.clone();
+            t.result = result.clone();
             if matches!(status, TaskStatus::Done | TaskStatus::Failed) {
                 t.finished_at = Some(chrono::Local::now().to_rfc3339());
             }
@@ -241,7 +241,10 @@ pub fn list_all() -> Vec<TeamTask> {
 
 /// 列出指定狀態的任務。
 pub fn list_by_status(status: &TaskStatus) -> Vec<TeamTask> {
-    list_all().into_iter().filter(|t| &t.status == status).collect()
+    list_all()
+        .into_iter()
+        .filter(|t| &t.status == status)
+        .collect()
 }
 
 /// 清除所有 Done / Failed 任務（保留 Queued / Running）。
@@ -268,7 +271,9 @@ fn read_all_unlocked() -> Vec<TeamTask> {
 
 fn append_unlocked(task: &TeamTask) {
     let path = queue_path();
-    if let Some(p) = path.parent() { let _ = std::fs::create_dir_all(p); }
+    if let Some(p) = path.parent() {
+        let _ = std::fs::create_dir_all(p);
+    }
     let line = serde_json::to_string(task).unwrap_or_default();
     let content = std::fs::read_to_string(&path).unwrap_or_default();
     let _ = std::fs::write(&path, format!("{content}{line}\n"));
@@ -276,7 +281,8 @@ fn append_unlocked(task: &TeamTask) {
 
 fn rewrite_unlocked(tasks: &[TeamTask]) {
     let path = queue_path();
-    let content = tasks.iter()
+    let content = tasks
+        .iter()
         .filter_map(|t| serde_json::to_string(t).ok())
         .collect::<Vec<_>>()
         .join("\n");
@@ -325,15 +331,25 @@ mod tests {
             let _g = lock().lock().unwrap_or_else(|e| e.into_inner());
             let t1 = TeamTask {
                 id: (base + CTR.fetch_add(1, Ordering::SeqCst)).to_string(),
-                description: "first".into(), created_at: "2026-01-01T00:00:01Z".into(),
-                status: TaskStatus::Queued, result: None, finished_at: None,
-                retry_count: 0, priority: 50, project: None,
+                description: "first".into(),
+                created_at: "2026-01-01T00:00:01Z".into(),
+                status: TaskStatus::Queued,
+                result: None,
+                finished_at: None,
+                retry_count: 0,
+                priority: 50,
+                project: None,
             };
             let t2 = TeamTask {
                 id: (base + CTR.fetch_add(1, Ordering::SeqCst)).to_string(),
-                description: "second".into(), created_at: "2026-01-01T00:00:02Z".into(),
-                status: TaskStatus::Queued, result: None, finished_at: None,
-                retry_count: 0, priority: 50, project: None,
+                description: "second".into(),
+                created_at: "2026-01-01T00:00:02Z".into(),
+                status: TaskStatus::Queued,
+                result: None,
+                finished_at: None,
+                retry_count: 0,
+                priority: 50,
+                project: None,
             };
             append_unlocked(&t1);
             append_unlocked(&t2);
@@ -366,15 +382,17 @@ mod tests {
     fn project_context_yaml_test_id_roundtrip() {
         // yaml_test_id=None → serializes without the field, deserializes back to None.
         let ctx_none = ProjectContext {
-            repo:         "sirin".into(),
-            extra_tools:  vec![],
-            issue_url:    None,
-            dry_run:      false,
+            repo: "sirin".into(),
+            extra_tools: vec![],
+            issue_url: None,
+            dry_run: false,
             yaml_test_id: None,
         };
         let json_none = serde_json::to_string(&ctx_none).unwrap();
-        assert!(!json_none.contains("yaml_test_id") || json_none.contains("null"),
-            "yaml_test_id=None should not appear or appear as null");
+        assert!(
+            !json_none.contains("yaml_test_id") || json_none.contains("null"),
+            "yaml_test_id=None should not appear or appear as null"
+        );
         let back: ProjectContext = serde_json::from_str(&json_none).unwrap();
         assert_eq!(back.yaml_test_id, None);
 
@@ -384,15 +402,20 @@ mod tests {
             ..ctx_none.clone()
         };
         let json_some = serde_json::to_string(&ctx_some).unwrap();
-        assert!(json_some.contains("agora_checkout_deep"),
-            "yaml_test_id value must appear in JSON");
+        assert!(
+            json_some.contains("agora_checkout_deep"),
+            "yaml_test_id value must appear in JSON"
+        );
         let back2: ProjectContext = serde_json::from_str(&json_some).unwrap();
         assert_eq!(back2.yaml_test_id.as_deref(), Some("agora_checkout_deep"));
 
         // Legacy JSON without yaml_test_id field → deserializes to None (backward compat).
         let legacy = r#"{"repo":"sirin","extra_tools":[],"issue_url":null,"dry_run":false}"#;
         let back3: ProjectContext = serde_json::from_str(legacy).unwrap();
-        assert_eq!(back3.yaml_test_id, None, "legacy JSON without field must default to None");
+        assert_eq!(
+            back3.yaml_test_id, None,
+            "legacy JSON without field must default to None"
+        );
     }
 
     // (Removed in v0.5.6: `enqueue_three_tasks` was an #[ignore] one-shot

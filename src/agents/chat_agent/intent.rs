@@ -469,7 +469,8 @@ pub(super) async fn understand_message(
     let prompt = IntentClassifierPromptArgs {
         user_text,
         context_block,
-    }.render();
+    }
+    .render();
 
     // Intent classification is a simple JSON categorisation task — use the
     // router (local) LLM to avoid burning remote API quota on every message.
@@ -638,13 +639,14 @@ pub(super) fn related_research_snippet(user_text: &str) -> Option<String> {
 // ── Typed prompt args (Issue #256) ──────────────────────────────────────────
 
 pub(super) struct IntentClassifierPromptArgs<'a> {
-    pub(super) user_text:     &'a str,
+    pub(super) user_text: &'a str,
     pub(super) context_block: Option<&'a str>,
 }
 
 impl<'a> IntentClassifierPromptArgs<'a> {
     pub(super) fn render(&self) -> String {
-        let context_section = self.context_block
+        let context_section = self
+            .context_block
             .map(|c| {
                 let preview: String = c.chars().take(600).collect();
                 format!("\nRecent conversation (for context only):\n{preview}\n")
@@ -771,7 +773,9 @@ mod tests {
     fn project_overview_query_accepts_zh_en_keywords() {
         assert!(looks_like_project_overview_query("這個專案怎麼運作"));
         assert!(looks_like_project_overview_query("解釋 codebase"));
-        assert!(looks_like_project_overview_query("show me the architecture"));
+        assert!(looks_like_project_overview_query(
+            "show me the architecture"
+        ));
         assert!(looks_like_project_overview_query("這是什麼"));
         // Negatives.
         assert!(!looks_like_project_overview_query("修這個 bug"));
@@ -847,9 +851,10 @@ mod tests {
     #[test]
     fn intent_classifier_prompt_includes_user_text_and_intent_list() {
         let p = super::IntentClassifierPromptArgs {
-            user_text:     "解釋 src/main.rs",
+            user_text: "解釋 src/main.rs",
             context_block: None,
-        }.render();
+        }
+        .render();
         assert!(p.contains("User message: 解釋 src/main.rs"));
         // The intent enum values are documented in quotes within the prompt.
         assert!(p.contains("- intent:"));
@@ -864,9 +869,10 @@ mod tests {
     #[test]
     fn intent_classifier_prompt_includes_context_when_provided() {
         let p = super::IntentClassifierPromptArgs {
-            user_text:     "繼續",
+            user_text: "繼續",
             context_block: Some("AI: previous response\nUser: ok"),
-        }.render();
+        }
+        .render();
         assert!(p.contains("Recent conversation"));
         assert!(p.contains("AI: previous response"));
     }
@@ -875,9 +881,10 @@ mod tests {
     fn intent_classifier_prompt_truncates_long_context() {
         let huge = "x".repeat(2000);
         let p = super::IntentClassifierPromptArgs {
-            user_text:     "?",
+            user_text: "?",
             context_block: Some(&huge),
-        }.render();
+        }
+        .render();
         // 600-char preview cap on context_block; allow up to ~50 extra
         // 'x' chars from the static prompt body ("explicitly", etc.).
         let x_count = p.matches('x').count();
@@ -902,10 +909,10 @@ mod tests {
     // The first two need 0 mock responses; the third path is the one
     // worth covering here.
 
-    use std::sync::Arc;
     use crate::adk::tool::ToolRegistry;
     use crate::adk::AgentContext;
     use crate::llm::{LlmKind, MockLlmCaller};
+    use std::sync::Arc;
 
     fn ctx_with_mock(mock: Arc<MockLlmCaller>) -> AgentContext {
         AgentContext::new("test-intent", ToolRegistry::new()).with_llm_caller(mock)
@@ -922,7 +929,11 @@ mod tests {
             understand_message(&ctx, "research async runtimes", None, Some("research")).await;
 
         assert_eq!(understanding.intent, Intent::WebSearch);
-        assert_eq!(mock.call_count(), 0, "no LLM call for planner-supplied intent");
+        assert_eq!(
+            mock.call_count(),
+            0,
+            "no LLM call for planner-supplied intent"
+        );
     }
 
     #[tokio::test]
@@ -935,8 +946,14 @@ mod tests {
             understand_message(&ctx, "show me src/main.rs please", None, None).await;
 
         assert_eq!(understanding.intent, Intent::LocalFile);
-        assert!(understanding.target_files.contains(&"src/main.rs".to_string()));
-        assert_eq!(mock.call_count(), 0, "no LLM call when keyword path matches");
+        assert!(understanding
+            .target_files
+            .contains(&"src/main.rs".to_string()));
+        assert_eq!(
+            mock.call_count(),
+            0,
+            "no LLM call when keyword path matches"
+        );
     }
 
     #[tokio::test]
@@ -947,8 +964,7 @@ mod tests {
         )]));
         let ctx = ctx_with_mock(Arc::clone(&mock));
 
-        let understanding =
-            understand_message(&ctx, "do the thing", None, None).await;
+        let understanding = understand_message(&ctx, "do the thing", None, None).await;
 
         assert_eq!(understanding.intent, Intent::LocalFile);
         assert_eq!(mock.call_count(), 1);
@@ -974,7 +990,7 @@ mod tests {
     #[tokio::test]
     async fn understand_message_falls_back_to_general_on_llm_error() {
         let mock = Arc::new(MockLlmCaller::with_responses(vec![Err(
-            "simulated 500".to_string(),
+            "simulated 500".to_string()
         )]));
         let ctx = ctx_with_mock(Arc::clone(&mock));
 
@@ -987,7 +1003,7 @@ mod tests {
     #[tokio::test]
     async fn understand_message_falls_back_to_general_on_unparseable_json() {
         let mock = Arc::new(MockLlmCaller::with_responses(vec![Ok(
-            "this is not JSON".to_string(),
+            "this is not JSON".to_string()
         )]));
         let ctx = ctx_with_mock(Arc::clone(&mock));
 

@@ -158,9 +158,8 @@ pub const ALLOWED_TOOLS_PM: &[&str] = &["Read", "Grep", "Glob"];
 pub const ALLOWED_TOOLS_TESTER: &[&str] = &["Read", "Grep", "Glob", "Bash"];
 
 /// Engineer has full read/write/exec access required to implement tasks.
-pub const ALLOWED_TOOLS_ENGINEER: &[&str] = &[
-    "Read", "Write", "Edit", "MultiEdit", "Grep", "Glob", "Bash",
-];
+pub const ALLOWED_TOOLS_ENGINEER: &[&str] =
+    &["Read", "Write", "Edit", "MultiEdit", "Grep", "Glob", "Bash"];
 
 /// Merge a role's static whitelist with `extra` tools requested by a task's
 /// `ProjectContext`. Returns owned `Vec<String>` so the caller can build a
@@ -173,10 +172,10 @@ pub const ALLOWED_TOOLS_ENGINEER: &[&str] = &[
 /// are silently ignored.
 pub fn merged_whitelist_for(role: &str, extra: &[String]) -> Vec<String> {
     let base: &[&str] = match role {
-        "pm"       => ALLOWED_TOOLS_PM,
-        "tester"   => ALLOWED_TOOLS_TESTER,
+        "pm" => ALLOWED_TOOLS_PM,
+        "tester" => ALLOWED_TOOLS_TESTER,
         "engineer" => ALLOWED_TOOLS_ENGINEER,
-        _          => return Vec::new(),
+        _ => return Vec::new(),
     };
     let mut v: Vec<String> = base.iter().map(|s| (*s).to_string()).collect();
     for t in extra {

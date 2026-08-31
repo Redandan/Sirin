@@ -1,50 +1,88 @@
 #requires -Version 5.1
 <#
-Sirin watchdog. Run once and leave it alive.
+Sirin watchdog for long-lived local daemon use.
 
 Behavior:
-  1. Sirin not running              → launch
-  2. Sirin running, binary newer    → kill + relaunch (cargo build picked up)
-  3. Sirin running, binary same     → nothing (poll every 5s)
+  1. Sirin not running           -> launch
+  2. Sirin running, binary newer -> kill + relaunch
+  3. Sirin running, binary same  -> keep it
 
-Usage (PowerShell):
+Examples:
   .\scripts\watch-sirin.ps1
+  .\scripts\watch-sirin.ps1 -Headless:$false
+  .\scripts\watch-sirin.ps1 -Once
 
-Or pin to Windows Task Scheduler "登入時觸發" with action:
-  Program:    powershell.exe
-  Arguments:  -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\Users\Redan\IdeaProjects\Sirin\scripts\watch-sirin.ps1"
-
-Stops only when you Ctrl+C or kill the powershell host process.
+For normal always-on ops, Task Scheduler should run sirin.exe directly. Use
+this script only for development watchdog mode:
+  .\scripts\install-sirin-daemon-task.ps1 -Action Install -RunNow -UseWatchdog
 #>
 
-$ErrorActionPreference = 'Stop'
-$repo    = "C:\Users\Redan\IdeaProjects\Sirin"
-$binary  = Join-Path $repo "target\release\sirin.exe"
-$logOut  = Join-Path $repo "sirin.log"
-$logErr  = Join-Path $repo "sirin.err.log"
-$pollSec = 5
+[CmdletBinding()]
+param(
+    [string]$Repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path,
+    [string]$Binary = '',
+    [string]$LogDir = '',
+    [int]$PollSeconds = 30,
+    [switch]$Once,
+    [switch]$Headless = $true,
+    [switch]$IosDriverAutostart
+)
 
-function Write-Tag([string]$msg) {
-    Write-Host "[watchdog $(Get-Date -Format HH:mm:ss)] $msg"
+$ErrorActionPreference = 'Stop'
+
+if ([string]::IsNullOrWhiteSpace($Binary)) {
+    $Binary = Join-Path $Repo 'target\release\sirin.exe'
+}
+if ([string]::IsNullOrWhiteSpace($LogDir)) {
+    $local = $env:LOCALAPPDATA
+    if ([string]::IsNullOrWhiteSpace($local)) {
+        $local = Join-Path $Repo '.sirin'
+    }
+    $LogDir = Join-Path $local 'Sirin\logs'
+}
+
+$LogOut = Join-Path $LogDir 'sirin-daemon.out.log'
+$LogErr = Join-Path $LogDir 'sirin-daemon.err.log'
+
+function Write-Tag([string]$Message) {
+    Write-Host "[sirin-watchdog $(Get-Date -Format HH:mm:ss)] $Message"
 }
 
 function Get-SirinProc {
     Get-Process sirin -ErrorAction SilentlyContinue |
-        Where-Object { $_.Path -eq $binary }
+        Where-Object {
+            try {
+                [string]::Equals($_.Path, $Binary, [System.StringComparison]::OrdinalIgnoreCase)
+            }
+            catch {
+                $false
+            }
+        }
 }
 
 function Start-Sirin {
-    if (-not (Test-Path $binary)) {
-        Write-Tag "binary missing: $binary — skip launch"
+    if (-not (Test-Path -LiteralPath $Binary)) {
+        Write-Tag "binary missing: $Binary"
         return $null
     }
-    Write-Tag "launching $binary"
-    $p = Start-Process -FilePath $binary `
-        -RedirectStandardOutput $logOut `
-        -RedirectStandardError  $logErr `
-        -WindowStyle Hidden -PassThru
+    New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+    $args = @()
+    if ($Headless) {
+        $args += '--headless'
+    }
+    if ($IosDriverAutostart) {
+        $args += '--ios-driver-autostart'
+    }
+    Write-Tag "launching $Binary $($args -join ' ')"
+    $proc = Start-Process -FilePath $Binary `
+        -ArgumentList $args `
+        -WorkingDirectory $Repo `
+        -RedirectStandardOutput $LogOut `
+        -RedirectStandardError  $LogErr `
+        -WindowStyle Hidden `
+        -PassThru
     Start-Sleep -Seconds 2
-    return $p
+    return $proc
 }
 
 function Stop-Sirin {
@@ -55,28 +93,41 @@ function Stop-Sirin {
     Start-Sleep -Seconds 1
 }
 
-Write-Tag "watching $binary"
+function Invoke-WatchdogTick {
+    $proc = Get-SirinProc
+
+    if (-not $proc) {
+        Write-Tag "not running"
+        Start-Sirin | Out-Null
+        return
+    }
+
+    if (Test-Path -LiteralPath $Binary) {
+        $binaryMtime = (Get-Item -LiteralPath $Binary).LastWriteTime
+        $newerThanAny = @($proc | Where-Object { $binaryMtime -gt $_.StartTime }).Count -gt 0
+        if ($newerThanAny) {
+            Write-Tag "binary newer than running process; relaunching"
+            Stop-Sirin
+            Start-Sirin | Out-Null
+            return
+        }
+    }
+
+    Write-Tag "running pid=$(@($proc).Id -join ',')"
+}
+
+Write-Tag "watching $Binary"
 
 while ($true) {
     try {
-        $proc = Get-SirinProc
-
-        if (-not $proc) {
-            Write-Tag "not running"
-            Start-Sirin | Out-Null
-        }
-        elseif (Test-Path $binary) {
-            $binaryMtime = (Get-Item $binary).LastWriteTime
-            if ($binaryMtime -gt $proc.StartTime) {
-                Write-Tag "binary newer ($binaryMtime > pid $($proc.Id) startup $($proc.StartTime)) — relaunching"
-                Stop-Sirin
-                Start-Sirin | Out-Null
-            }
-        }
+        Invoke-WatchdogTick
     }
     catch {
-        Write-Tag "loop err: $($_.Exception.Message)"
+        Write-Tag "loop error: $($_.Exception.Message)"
     }
 
-    Start-Sleep -Seconds $pollSec
+    if ($Once) {
+        break
+    }
+    Start-Sleep -Seconds ([Math]::Max(5, $PollSeconds))
 }

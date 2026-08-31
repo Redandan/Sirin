@@ -142,9 +142,7 @@ pub fn build_bug_prompt(
     network_log: Option<&str>,
     screenshot_path: Option<&str>,
 ) -> String {
-    let mut parts = vec![
-        format!("## Browser Test Failure\n\n{bug_description}"),
-    ];
+    let mut parts = vec![format!("## Browser Test Failure\n\n{bug_description}")];
     if let Some(u) = url {
         parts.push(format!("**URL:** {u}"));
     }
@@ -246,9 +244,9 @@ pub fn run_supervised(
         return Err(format!("cwd does not exist: {cwd}"));
     }
 
-    let mut prompt          = initial_prompt.to_string();
+    let mut prompt = initial_prompt.to_string();
     let mut is_continuation = false;
-    let mut context_so_far  = String::new();   // 累積，給顧問當背景
+    let mut context_so_far = String::new(); // 累積，給顧問當背景
     const MAX_ROUNDS: usize = 5;
 
     for round in 0..MAX_ROUNDS {
@@ -265,8 +263,14 @@ pub fn run_supervised(
 
         // ── 成功退出 → 完成 ───────────────────────────────────────────────
         if exit_code == 0 || subtype == "success" {
-            on_event(SupervisionEvent::Done { output: final_output.clone() });
-            return Ok(SessionResult { success: true, output: final_output, exit_code });
+            on_event(SupervisionEvent::Done {
+                output: final_output.clone(),
+            });
+            return Ok(SessionResult {
+                success: true,
+                output: final_output,
+                exit_code,
+            });
         }
 
         // ── 最後一輪 → 放棄 ───────────────────────────────────────────────
@@ -282,18 +286,22 @@ pub fn run_supervised(
             "Please continue with the next step.".to_string()
         };
 
-        on_event(SupervisionEvent::Paused { question: question.clone() });
+        on_event(SupervisionEvent::Paused {
+            question: question.clone(),
+        });
 
         // ── 根據 policy 決定怎麼回答 ──────────────────────────────────────
         prompt = match policy {
-            SupervisionPolicy::AutoApprove => {
-                "Yes, please continue.".to_string()
-            }
+            SupervisionPolicy::AutoApprove => "Yes, please continue.".to_string(),
             SupervisionPolicy::Consult { consultant_cwd } => {
                 let c_cwd = consultant_cwd.as_deref().unwrap_or(cwd);
-                on_event(SupervisionEvent::Consulting { question: question.clone() });
+                on_event(SupervisionEvent::Consulting {
+                    question: question.clone(),
+                });
                 let advice = consult(&question, &context_so_far, c_cwd)?;
-                on_event(SupervisionEvent::GotAdvice { advice: advice.clone() });
+                on_event(SupervisionEvent::GotAdvice {
+                    advice: advice.clone(),
+                });
                 advice
             }
         };
@@ -301,7 +309,9 @@ pub fn run_supervised(
         is_continuation = true;
     }
 
-    Err(format!("supervised: max rounds ({MAX_ROUNDS}) reached without success"))
+    Err(format!(
+        "supervised: max rounds ({MAX_ROUNDS}) reached without success"
+    ))
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -320,24 +330,34 @@ fn run_one_round(
     let mut cmd = build_claude_command();
 
     cmd.current_dir(cwd)
-        .args(["-p", prompt, "--output-format", "stream-json",
-               "--verbose", "--dangerously-skip-permissions"])
+        .args([
+            "-p",
+            prompt,
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--dangerously-skip-permissions",
+        ])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
 
-    if continuation { cmd.arg("--continue"); }
+    if continuation {
+        cmd.arg("--continue");
+    }
 
     let mut child = cmd.spawn().map_err(|e| format!("spawn claude: {e}"))?;
-    let stdout    = child.stdout.take().ok_or("no stdout")?;
+    let stdout = child.stdout.take().ok_or("no stdout")?;
 
-    let mut last_text    = String::new();
+    let mut last_text = String::new();
     let mut final_output = String::new();
-    let mut subtype      = String::new();
+    let mut subtype = String::new();
 
     for line in BufReader::new(stdout).lines() {
         let Ok(line) = line else { continue };
-        let Ok(val)  = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+        let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
 
         match val.get("type").and_then(|t| t.as_str()) {
             Some("assistant") => {
@@ -351,24 +371,28 @@ fn run_one_round(
                 on_event(SupervisionEvent::UsingTool { name });
             }
             Some("result") => {
-                subtype      = val["subtype"].as_str().unwrap_or("").to_string();
+                subtype = val["subtype"].as_str().unwrap_or("").to_string();
                 final_output = val["result"].as_str().unwrap_or("").to_string();
             }
             _ => {}
         }
     }
 
-    let exit_code = child.wait()
-        .map(|s| s.code().unwrap_or(-1))
-        .unwrap_or(-1);
+    let exit_code = child.wait().map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
 
-    let out = if final_output.is_empty() { last_text.clone() } else { final_output };
+    let out = if final_output.is_empty() {
+        last_text.clone()
+    } else {
+        final_output
+    };
     Ok((exit_code, last_text, out, subtype))
 }
 
 /// 判斷一段文字是否像個需要回答的問題。
 fn looks_like_question(text: &str) -> bool {
-    if text.is_empty() { return false; }
+    if text.is_empty() {
+        return false;
+    }
     text.ends_with('?')
         || text.to_lowercase().contains("should i")
         || text.to_lowercase().contains("do you want")
@@ -425,7 +449,9 @@ pub fn run_one_turn_scoped(
             args.push(&joined);
         }
     }
-    if continuation { args.push("--continue"); }
+    if continuation {
+        args.push("--continue");
+    }
 
     // Fix B: stream stdout line-by-line instead of buffering all 80-100 MB of
     // stream-json into a Vec<u8>.  Bypasses run_claude()'s read_to_end()
@@ -452,7 +478,7 @@ pub fn run_one_turn_scoped(
         .stderr(Stdio::null());
 
     let mut child = cmd.spawn().map_err(|e| format!("spawn claude: {e}"))?;
-    let stdout    = child.stdout.take().ok_or("no stdout")?;
+    let stdout = child.stdout.take().ok_or("no stdout")?;
 
     // Watchdog: kill the child after 600s if still running.
     let pid = child.id();
@@ -480,19 +506,27 @@ pub fn run_one_turn_scoped(
         }
     });
 
-    let mut output     = String::new();
+    let mut output = String::new();
     let mut session_id = String::new();
 
     for line in BufReader::new(stdout).lines() {
         let Ok(line) = line else { continue };
-        let Ok(val)  = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+        let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
         match val["type"].as_str() {
             Some("assistant") => {
-                if let Some(t) = extract_assistant_text(&val) { output = t; }
+                if let Some(t) = extract_assistant_text(&val) {
+                    output = t;
+                }
             }
             Some("result") => {
-                if let Some(r) = val["result"].as_str()     { output     = r.to_string(); }
-                if let Some(s) = val["session_id"].as_str() { session_id = s.to_string(); }
+                if let Some(r) = val["result"].as_str() {
+                    output = r.to_string();
+                }
+                if let Some(s) = val["session_id"].as_str() {
+                    session_id = s.to_string();
+                }
             }
             _ => {}
         }
@@ -509,10 +543,21 @@ pub fn run_one_turn_scoped(
 
 fn extract_assistant_text(val: &serde_json::Value) -> Option<String> {
     let blocks = val.get("message")?.get("content")?.as_array()?;
-    let texts: Vec<&str> = blocks.iter().filter_map(|b| {
-        if b.get("type")?.as_str()? == "text" { b["text"].as_str() } else { None }
-    }).collect();
-    if texts.is_empty() { None } else { Some(texts.join("")) }
+    let texts: Vec<&str> = blocks
+        .iter()
+        .filter_map(|b| {
+            if b.get("type")?.as_str()? == "text" {
+                b["text"].as_str()
+            } else {
+                None
+            }
+        })
+        .collect();
+    if texts.is_empty() {
+        None
+    } else {
+        Some(texts.join(""))
+    }
 }
 
 /// Well-known repo paths (configurable via env).
@@ -527,12 +572,14 @@ pub fn repo_path(name: &str) -> Option<String> {
         .or_else(|_| std::env::var("HOME"))
         .unwrap_or_default();
     match name.to_lowercase().as_str() {
-        "backend" | "api" | "agora_api" | "agoramarketapi"
-            => Some(format!("{home}/IdeaProjects/AgoraMarketAPI")),
+        "backend" | "api" | "agora_api" | "agoramarketapi" => {
+            Some(format!("{home}/IdeaProjects/AgoraMarketAPI"))
+        }
         // The Flutter app's repo was renamed: AgoraMarketFlutter → AgoraMarket.
         // Keep all known aliases so older callers / configs still resolve.
-        "frontend" | "flutter" | "pwa" | "agora_market" | "agora" | "agoramarket"
-            => Some(format!("{home}/IdeaProjects/AgoraMarket")),
+        "frontend" | "flutter" | "pwa" | "agora_market" | "agora" | "agoramarket" => {
+            Some(format!("{home}/IdeaProjects/AgoraMarket"))
+        }
         "sirin" => Some(format!("{home}/IdeaProjects/Sirin")),
         _ => None,
     }
@@ -545,19 +592,24 @@ fn claude_bin() -> PathBuf {
         return PathBuf::from(p);
     }
     // Try well-known locations (Windows npm global)
-    let candidates = [
-        "claude",
-        "claude.cmd",
-    ];
+    let candidates = ["claude", "claude.cmd"];
     for c in candidates {
-        if Command::new(c).no_window().arg("--version").output().map(|o| o.status.success()).unwrap_or(false) {
+        if Command::new(c)
+            .no_window()
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+        {
             return PathBuf::from(c);
         }
     }
     // npm global path on Windows
     if let Ok(home) = std::env::var("APPDATA") {
         let npm_bin = PathBuf::from(&home).join("npm").join("claude.cmd");
-        if npm_bin.exists() { return npm_bin; }
+        if npm_bin.exists() {
+            return npm_bin;
+        }
     }
     PathBuf::from("claude")
 }
@@ -625,12 +677,14 @@ fn run_claude_with_timeout(
 ) -> Result<std::process::Output, String> {
     let mut cmd = build_claude_command();
     cmd.args(args);
-    if let Some(dir) = cwd { cmd.current_dir(dir); }
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
     // Pipe stdout/stderr so we can drain them in background threads.
     // Explicitly null stdin: Claude CLI waits 3s for stdin if inherited.
     cmd.stdin(Stdio::null())
-       .stdout(Stdio::piped())
-       .stderr(Stdio::piped());
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
     let child = cmd.spawn().map_err(|e| format!("spawn claude: {e}"))?;
     wait_child_with_timeout(child, timeout)
@@ -666,7 +720,11 @@ fn wait_child_with_timeout(
             Some(status) => {
                 let stdout = stdout_handle.join().unwrap_or_default();
                 let stderr = stderr_handle.join().unwrap_or_default();
-                return Ok(std::process::Output { status, stdout, stderr });
+                return Ok(std::process::Output {
+                    status,
+                    stdout,
+                    stderr,
+                });
             }
             None => {
                 if Instant::now() >= deadline {
@@ -704,12 +762,18 @@ fn resolve_claude_node_script(claude_cmd: &Path) -> Option<PathBuf> {
         .join("@anthropic-ai")
         .join("claude-code")
         .join("cli.js");
-    if candidate.exists() { Some(candidate) } else { None }
+    if candidate.exists() {
+        Some(candidate)
+    } else {
+        None
+    }
 }
 
 /// Check if Claude CLI is available on the system.
 pub fn cli_available() -> bool {
-    run_claude(&["--version"], None).map(|o| o.status.success()).unwrap_or(false)
+    run_claude(&["--version"], None)
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 /// Get Claude CLI version string.
@@ -740,8 +804,8 @@ mod tests {
             c
         };
         cmd.stdin(Stdio::null())
-           .stdout(Stdio::piped())
-           .stderr(Stdio::piped());
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
 
         let child = cmd.spawn().expect("spawn long-running process");
         let result = wait_child_with_timeout(child, Duration::from_secs(2));
@@ -795,21 +859,25 @@ mod tests {
 
     #[test]
     fn project_from_cwd_recognises_agora_backend() {
-        assert_eq!(project_from_cwd("C:/Users/x/IdeaProjects/AgoraMarketAPI"),
-                   "agora-backend");
-        assert_eq!(project_from_cwd("/home/x/agoramarketapi"),
-                   "agora-backend");
+        assert_eq!(
+            project_from_cwd("C:/Users/x/IdeaProjects/AgoraMarketAPI"),
+            "agora-backend"
+        );
+        assert_eq!(project_from_cwd("/home/x/agoramarketapi"), "agora-backend");
         // Hyphenated form also matches
-        assert_eq!(project_from_cwd("/var/repos/agora-market-api"),
-                   "agora-backend");
+        assert_eq!(
+            project_from_cwd("/var/repos/agora-market-api"),
+            "agora-backend"
+        );
     }
 
     #[test]
     fn project_from_cwd_recognises_flutter() {
-        assert_eq!(project_from_cwd("C:/Users/x/IdeaProjects/AgoraMarketFlutter"),
-                   "flutter");
-        assert_eq!(project_from_cwd("/home/x/agoramarketflutter"),
-                   "flutter");
+        assert_eq!(
+            project_from_cwd("C:/Users/x/IdeaProjects/AgoraMarketFlutter"),
+            "flutter"
+        );
+        assert_eq!(project_from_cwd("/home/x/agoramarketflutter"), "flutter");
     }
 
     #[test]
@@ -872,7 +940,10 @@ mod tests {
         println!("Exit code: {}", result.exit_code);
         println!("Output: {}", &result.output[..result.output.len().min(500)]);
         assert!(result.success, "session should succeed");
-        assert!(result.output.contains("SIRIN_TEST_OK"), "output should contain marker");
+        assert!(
+            result.output.contains("SIRIN_TEST_OK"),
+            "output should contain marker"
+        );
     }
 
     /// Verify that `run_one_turn_scoped` selects the right permission flag.
@@ -884,30 +955,41 @@ mod tests {
     fn scoped_args_none_uses_skip_permissions() {
         // None → --dangerously-skip-permissions present, --allowedTools absent
         let args = build_scoped_args("hello", false, None);
-        assert!(args.contains(&"--dangerously-skip-permissions"),
-            "None should add --dangerously-skip-permissions");
-        assert!(!args.iter().any(|a| *a == "--allowedTools"),
-            "None must NOT add --allowedTools");
+        assert!(
+            args.contains(&"--dangerously-skip-permissions"),
+            "None should add --dangerously-skip-permissions"
+        );
+        assert!(
+            !args.iter().any(|a| *a == "--allowedTools"),
+            "None must NOT add --allowedTools"
+        );
     }
 
     #[test]
     fn scoped_args_some_uses_allowed_tools() {
         let tools = &["Read", "Grep", "Glob"];
         let args = build_scoped_args("hello", false, Some(tools));
-        assert!(!args.contains(&"--dangerously-skip-permissions"),
-            "Some(tools) must NOT add --dangerously-skip-permissions");
-        let idx = args.iter().position(|a| *a == "--allowedTools")
+        assert!(
+            !args.contains(&"--dangerously-skip-permissions"),
+            "Some(tools) must NOT add --dangerously-skip-permissions"
+        );
+        let idx = args
+            .iter()
+            .position(|a| *a == "--allowedTools")
             .expect("--allowedTools must be present");
-        assert_eq!(args[idx + 1], "Read,Grep,Glob",
-            "tools must be comma-joined");
+        assert_eq!(
+            args[idx + 1],
+            "Read,Grep,Glob",
+            "tools must be comma-joined"
+        );
     }
 
     #[test]
     fn scoped_args_continuation_appended() {
-        let args_no_cont  = build_scoped_args("p", false, None);
-        let args_cont     = build_scoped_args("p", true,  None);
+        let args_no_cont = build_scoped_args("p", false, None);
+        let args_cont = build_scoped_args("p", true, None);
         assert!(!args_no_cont.contains(&"--continue"));
-        assert!( args_cont.contains(&"--continue"));
+        assert!(args_cont.contains(&"--continue"));
     }
 
     /// Mirror of the arg-building logic in `run_one_turn_scoped`, without I/O.
@@ -921,14 +1003,18 @@ mod tests {
         // &str lives long enough for the test assertion.
         let mut args: Vec<&str> = vec!["-p", prompt, "--output-format", "stream-json", "--verbose"];
         match allowed_tools {
-            None => { args.push("--dangerously-skip-permissions"); }
+            None => {
+                args.push("--dangerously-skip-permissions");
+            }
             Some(tools) => {
                 let joined: &'static str = Box::leak(tools.join(",").into_boxed_str());
                 args.push("--allowedTools");
                 args.push(joined);
             }
         }
-        if continuation { args.push("--continue"); }
+        if continuation {
+            args.push("--continue");
+        }
         args
     }
 
@@ -968,7 +1054,8 @@ mod tests {
             "Should I use a HashMap or BTreeMap for storing agent IDs?",
             "Working on src/agents/mod.rs, adding an agent registry.",
             &cwd,
-        ).expect("consult");
+        )
+        .expect("consult");
         println!("Advice: {advice}");
         assert!(!advice.is_empty());
     }
@@ -982,8 +1069,11 @@ mod tests {
             &cwd,
             "Reply with exactly: SUPERVISED_OK",
             &SupervisionPolicy::AutoApprove,
-            &|e| { events.lock().unwrap().push(format!("{e:?}")); },
-        ).expect("supervised");
+            &|e| {
+                events.lock().unwrap().push(format!("{e:?}"));
+            },
+        )
+        .expect("supervised");
         println!("Output: {}", result.output);
         println!("Events: {:?}", events.lock().unwrap());
         assert!(result.output.contains("SUPERVISED_OK"));
@@ -997,9 +1087,12 @@ mod tests {
             &cwd,
             "Look at src/claude_session.rs, then ask me whether you should \
              add more tests. Wait for my answer before proceeding.",
-            &SupervisionPolicy::Consult { consultant_cwd: Some(cwd.clone()) },
+            &SupervisionPolicy::Consult {
+                consultant_cwd: Some(cwd.clone()),
+            },
             &|e| println!("[event] {e:?}"),
-        ).expect("supervised consult");
+        )
+        .expect("supervised consult");
         println!("Final: {}", result.output);
         assert!(result.success);
     }
@@ -1023,9 +1116,8 @@ mod tests {
         println!("[1] Page title: {title}");
 
         // Check for expected content
-        let has_agora = browser::evaluate_js(
-            "document.body.innerText.includes('Agora Market')"
-        ).unwrap_or_default();
+        let has_agora = browser::evaluate_js("document.body.innerText.includes('Agora Market')")
+            .unwrap_or_default();
         println!("[2] Contains 'Agora Market': {has_agora}");
 
         // Simulate finding a "bug" — check for a non-existent element
@@ -1064,7 +1156,10 @@ mod tests {
         let cwd = repo_path("sirin").expect("sirin path");
         let result = run_sync(&cwd, &bug_prompt).expect("claude session");
         println!("[7] Exit code: {}", result.exit_code);
-        println!("[8] Output:\n{}", &result.output[..result.output.len().min(500)]);
+        println!(
+            "[8] Output:\n{}",
+            &result.output[..result.output.len().min(500)]
+        );
 
         assert!(result.success, "Claude session should succeed");
         assert!(!result.output.is_empty(), "Claude should produce output");

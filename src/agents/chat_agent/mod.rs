@@ -72,10 +72,10 @@ pub struct ChatRequest {
 /// Serialisable LLM override forwarded from `AgentConfig::llm_override`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmOverride {
-    pub backend:  String,
+    pub backend: String,
     pub base_url: String,
-    pub model:    String,
-    pub api_key:  Option<String>,
+    pub model: String,
+    pub api_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -117,8 +117,8 @@ impl Agent for ChatAgent {
 
             // Respect the remote-AI kill-switch: per-request flag (from AgentConfig)
             // takes priority, then falls back to persona.yaml setting.
-            let remote_disabled = request.disable_remote_ai
-                || persona.as_ref().is_some_and(|p| p.disable_remote_ai);
+            let remote_disabled =
+                request.disable_remote_ai || persona.as_ref().is_some_and(|p| p.disable_remote_ai);
             let use_large = request.use_large_model && !remote_disabled;
 
             // Per-request LLM override (e.g. Anthropic Claude for meeting participants).
@@ -264,10 +264,7 @@ pub async fn run_chat_response_via_adk_with_tracker(
         .context("chat_request")
         .with_optional_tracker(tracker)
         .with_metadata("agent", "chat_agent")
-        .with_metadata(
-            "caller_agent_id",
-            request.agent_id.as_deref().unwrap_or(""),
-        )
+        .with_metadata("caller_agent_id", request.agent_id.as_deref().unwrap_or(""))
         .with_metadata(
             "peer_id",
             request

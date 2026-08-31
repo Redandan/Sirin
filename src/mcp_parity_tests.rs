@@ -1,6 +1,7 @@
 //! tools/list ↔ tools/call parity guard (Issue #257, Option A).
 //!
-//! Sirin exposes 90+ MCP tools.  Each tool is currently defined in three
+//! Sirin exposes a versioned MCP tool inventory.  Each tool is currently
+//! defined in three
 //! places in `src/mcp_server.rs`:
 //!
 //! 1. JSON literal in `handle_tools_list` (the `tools/list` response).
@@ -69,11 +70,7 @@ fn slice_between<'a>(src: &'a str, start_marker: &str, end_marker: &str) -> Opti
 /// `"name": { ... }` (input-schema fields whose property name happens
 /// to be "name" — see e.g. `persist_adhoc_run`).
 fn extract_listed_tool_names(src: &str) -> BTreeSet<String> {
-    let body = match slice_between(
-        src,
-        "fn handle_tools_list",
-        "// ── tools/call ",
-    ) {
+    let body = match slice_between(src, "fn handle_tools_list", "// ── tools/call ") {
         Some(b) => b,
         None => return BTreeSet::new(),
     };
@@ -104,7 +101,9 @@ fn extract_listed_tool_names(src: &str) -> BTreeSet<String> {
             let after_close = &after_quote[end + 1..];
             let next_non_ws = after_close.chars().find(|c| !c.is_whitespace());
             if next_non_ws == Some(',')
-                && raw.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+                && raw
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
                 && !raw.is_empty()
             {
                 out.insert(raw.to_string());
@@ -142,11 +141,15 @@ fn extract_dispatched_tool_names(src: &str) -> BTreeSet<String> {
         }
         // Pattern: `"X" =>` — extract X.
         let after_quote = &trimmed[1..];
-        let Some(end) = after_quote.find('"') else { continue; };
+        let Some(end) = after_quote.find('"') else {
+            continue;
+        };
         let name = &after_quote[..end];
         // Must be snake_case.
         if name.is_empty()
-            || !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
         {
             continue;
         }
@@ -176,7 +179,9 @@ fn extract_registry_tool_names(src: &str) -> BTreeSet<String> {
         if let Some(end) = after.find('"') {
             let name = &after[..end];
             if !name.is_empty()
-                && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
             {
                 out.insert(name.to_string());
             }
@@ -198,9 +203,9 @@ fn tools_list_and_dispatch_in_sync() {
     // set when not present.
     let registry_src = read_mcp_registry_source().unwrap_or_default();
 
-    let listed     = extract_listed_tool_names(&server_src);
+    let listed = extract_listed_tool_names(&server_src);
     let dispatched = extract_dispatched_tool_names(&server_src);
-    let registry   = extract_registry_tool_names(&registry_src);
+    let registry = extract_registry_tool_names(&registry_src);
 
     // Sanity: the extractors should find non-trivial counts.  If we hit 0
     // it means the landmark strings drifted and the test is silently
@@ -213,13 +218,19 @@ fn tools_list_and_dispatch_in_sync() {
     // registry count grows.  The combined floor below covers both:
     // even with everything migrated, registry alone keeps the union
     // well above the threshold.
-    let union_size: usize =
-        listed.union(&dispatched).chain(registry.iter()).collect::<BTreeSet<_>>().len();
+    let union_size: usize = listed
+        .union(&dispatched)
+        .chain(registry.iter())
+        .collect::<BTreeSet<_>>()
+        .len();
     assert!(
         union_size >= 50,
         "extractors collectively found only {} tool name(s) (listed={}, \
          dispatched={}, registry={}) — landmark strings may have drifted",
-        union_size, listed.len(), dispatched.len(), registry.len(),
+        union_size,
+        listed.len(),
+        dispatched.len(),
+        registry.len(),
     );
     // Per-extractor minimums: as long as the parser hasn't broken to 0,
     // any positive count is fine.  We only fail loud if BOTH literal sets
@@ -237,21 +248,34 @@ fn tools_list_and_dispatch_in_sync() {
     //      (a migrated tool must not also appear in the literal block).
     //   3. literal_dispatched ∩ registry == ∅
     //      (a migrated tool must not also have a legacy dispatch arm).
-    let union_listed:     BTreeSet<String> = listed.union(&registry).cloned().collect();
+    let union_listed: BTreeSet<String> = listed.union(&registry).cloned().collect();
     let union_dispatched: BTreeSet<String> = dispatched.union(&registry).cloned().collect();
 
-    let only_listed:     Vec<_> = union_listed.difference(&union_dispatched).cloned().collect();
-    let only_dispatched: Vec<_> = union_dispatched.difference(&union_listed).cloned().collect();
-    let double_listed:   Vec<_> = listed.intersection(&registry).cloned().collect();
-    let double_disp:     Vec<_> = dispatched.intersection(&registry).cloned().collect();
+    let only_listed: Vec<_> = union_listed
+        .difference(&union_dispatched)
+        .cloned()
+        .collect();
+    let only_dispatched: Vec<_> = union_dispatched
+        .difference(&union_listed)
+        .cloned()
+        .collect();
+    let double_listed: Vec<_> = listed.intersection(&registry).cloned().collect();
+    let double_disp: Vec<_> = dispatched.intersection(&registry).cloned().collect();
 
-    if !only_listed.is_empty() || !only_dispatched.is_empty()
-        || !double_listed.is_empty() || !double_disp.is_empty()
+    if !only_listed.is_empty()
+        || !only_dispatched.is_empty()
+        || !double_listed.is_empty()
+        || !double_disp.is_empty()
     {
-        let fmt = |v: &[String]| if v.is_empty() {
-            "(none)".to_string()
-        } else {
-            v.iter().map(|n| format!("  - {n}")).collect::<Vec<_>>().join("\n")
+        let fmt = |v: &[String]| {
+            if v.is_empty() {
+                "(none)".to_string()
+            } else {
+                v.iter()
+                    .map(|n| format!("  - {n}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
         };
         panic!(
             "tools/list ↔ tools/call out of sync (#257 silent-drop guard):\n\n\
@@ -266,6 +290,43 @@ fn tools_list_and_dispatch_in_sync() {
             fmt(&double_disp),
         );
     }
+}
+
+/// Prevent a clean checkout from silently dropping an entire domain while
+/// keeping list/call parity green.  The registry is safe to inspect without
+/// starting the daemon; the only legacy-listed tool is added from the source
+/// extractor so this assertion mirrors the real `tools/list` surface.
+#[test]
+fn deployed_tool_inventory_matches_baseline() {
+    let expected_names: Vec<String> =
+        serde_json::from_str(include_str!("../config/mcp_tool_baseline.json"))
+            .expect("config/mcp_tool_baseline.json must be valid JSON");
+    let expected: BTreeSet<String> = expected_names.iter().cloned().collect();
+    assert_eq!(
+        expected.len(),
+        expected_names.len(),
+        "MCP tool baseline contains duplicate names"
+    );
+
+    let mut actual: BTreeSet<String> = crate::mcp_registry::iter()
+        .map(|tool| tool.name.to_string())
+        .collect();
+    let server_src = read_mcp_server_source()
+        .expect("src/mcp_server.rs must be readable for the MCP inventory guard");
+    actual.extend(extract_listed_tool_names(&server_src));
+
+    let missing: Vec<_> = expected.difference(&actual).cloned().collect();
+    let unexpected: Vec<_> = actual.difference(&expected).cloned().collect();
+    assert!(
+        missing.is_empty() && unexpected.is_empty(),
+        "clean-checkout MCP inventory drifted (expected={}, actual={}):\n\
+         missing={missing:#?}\n\
+         unexpected={unexpected:#?}\n\
+         Deliberate tool changes must update config/mcp_tool_baseline.json in the same commit.",
+        expected.len(),
+        actual.len()
+    );
+    assert_eq!(actual.len(), 190, "accepted deployed MCP baseline changed");
 }
 
 #[cfg(test)]
@@ -320,7 +381,13 @@ fn handle_tools_list() -> Result<Value, String> {
 // ── tools/call ────────────────────────────────────────────────────────────────
 "#;
         let names = extract_listed_tool_names(src);
-        assert_eq!(names, ["persist_adhoc_run"].iter().map(|s| s.to_string()).collect());
+        assert_eq!(
+            names,
+            ["persist_adhoc_run"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
+        );
     }
 
     #[test]

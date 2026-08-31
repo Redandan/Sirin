@@ -45,7 +45,12 @@ struct IdleState {
 
 fn state() -> &'static Mutex<IdleState> {
     static S: OnceLock<Mutex<IdleState>> = OnceLock::new();
-    S.get_or_init(|| Mutex::new(IdleState { idle_since: None, threshold_secs: 0 }))
+    S.get_or_init(|| {
+        Mutex::new(IdleState {
+            idle_since: None,
+            threshold_secs: 0,
+        })
+    })
 }
 
 /// Snapshot helper — returns `Some(remaining_secs)` only when the watcher is

@@ -4,6 +4,7 @@ url: "https://redandan.github.io/?__test_role=admin"
 
 max_iterations: 18
 timeout_secs: 300
+fixture_only: true
 # Admin 後台是 PC 桌面版，使用標準桌面 viewport
 viewport:
   width: 1280
@@ -11,33 +12,49 @@ viewport:
   scale: 1.0
   mobile: false
 
-goal: |
-  驗證 admin 商品管理頁的分類篩選功能（Issue #70 Bug #4）。
+locale: zh-TW
 
-  ✅ 已確認 AX tree 資訊（請嚴格遵守）：
+fixture:
+  setup:
+    - {action: "clear_state"}
+    - {action: "goto", target: "https://redandan.github.io/?__test_role=admin"}
+    - {action: "wait", target: "3000"}
+    - {action: "wait_for_flutter_semantics", timeout: 15000, min_roles: 2}
+    - {action: "dismiss_passkey_prompt"}
+    - {action: "goto", target: "https://redandan.github.io/?__test_role=admin"}
+    - {action: "wait", target: "5000"}
+    - {action: "wait_for_flutter_semantics", timeout: 25000, min_roles: 8}
+    - {action: "shadow_click", role: "button", name_regex: "^商品與電商(\\n商品與電商)?$"}
+    - {action: "wait", target: "3000"}
+    - {action: "wait_for_flutter_semantics", timeout: 12000, min_roles: 20}
+    - {action: "shadow_find", name_regex: "總產品數|上架中"}
+    - {action: "shadow_find", role: "button", name_regex: "^請選擇產品分類$"}
+    - {action: "shadow_click", role: "button", name_regex: "^請選擇產品分類$"}
+    - {action: "wait", target: "1500"}
+    - {action: "wait_for_flutter_semantics", timeout: 12000, min_roles: 20}
+    - {action: "shadow_find", name_regex: "電子產品|手機|服飾|家居|食品|全部|產品分類"}
+
+goal: |
+  目標：fixture-only 驗證 admin「商品與電商」頁的分類篩選入口（Issue #70 Bug #4）。
+
+  ✅ 已確認 AX / shadow tree 資訊：
   - 導航按鈕名稱：「商品與電商」（不是「商品管理」，不是「商品」）
   - 分類篩選按鈕：role=button name="請選擇產品分類"（不是 combobox）
   - Flutter 頁面過渡需要 3 秒以上才完成
 
-  ⚠️ Flutter CanvasKit app：所有 UI 判斷用 screenshot_analyze。
-  ⚠️ 嚴禁提早終止：必須執行完步驟 10 才能 done=true。
+  fixture.setup 已完成：
+  - clear_state + admin URL 導航
+  - Passkey prompt dismiss
+  - 點擊「商品與電商」
+  - 確認商品列表與「請選擇產品分類」存在
+  - 點擊分類按鈕
+  - 確認 dropdown 或分類選項可見
 
-  步驟（按順序執行，不跳過）：
-  1. goto target="https://redandan.github.io/?__test_role=admin"（確保 admin 角色登入）
-  2. wait 5000（等 admin 後台完整載入）
-  3. screenshot_analyze "確認在 admin 後台，看到哪個頁面？"
-  4. shadow_click role=button name_regex="^商品與電商(\\n商品與電商)?$"
-  5. wait 3000（等待 Flutter 頁面過渡動畫完成）
-  6. screenshot_analyze "是否在商品管理頁？看到商品列表了嗎？"
-  7. shadow_click role=button name_regex="請選擇產品分類"（點擊分類篩選按鈕）
-  8. wait 1500
-  9. screenshot_analyze "分類篩選 dropdown 是否展開？顯示哪些分類選項？"
-  10. done=true
-
-  ⚠️ 必須完整執行步驟 1-10，嚴禁在步驟 6 前 done=true。
+  fixture_only=true；fixture.setup 全部成功即通過，不進 LLM ReAct loop。
 
 success_criteria:
   - "Admin 商品管理頁可開啟（看到商品列表）"
-  - "找到並點擊「請選擇產品分類」篩選按鈕（記錄 dropdown 展開或失敗）"
+  - "找到並點擊「請選擇產品分類」篩選按鈕"
+  - "分類 dropdown 展開或分類選項可見"
 
 tags: [regression, admin, category-filter, agora, critical, issue-70]

@@ -23,14 +23,14 @@
 //! 4. **Query** (`query_call_graph`) — given a symbol name and hop depth,
 //!    return its callers, callees, and definition location.
 
-use std::collections::HashMap;
-use std::fs::{self, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use std::sync::RwLock;
 use serde::{Deserialize, Serialize};
+use std::sync::RwLock;
 
 // ── Public types ───────────────────────────────────────────────────────────────
 
@@ -75,7 +75,9 @@ pub fn invalidate_cache() {
 // ── File-system paths ──────────────────────────────────────────────────────────
 
 fn graph_file_path() -> PathBuf {
-    crate::platform::app_data_dir().join("code_graph").join("graph.jsonl")
+    crate::platform::app_data_dir()
+        .join("code_graph")
+        .join("graph.jsonl")
 }
 
 fn relative_display(path: &Path, root: &Path) -> String {
@@ -270,11 +272,11 @@ fn collect_rs_files(root: &Path, out: &mut Vec<PathBuf>) {
 
 /// Parse all `.rs` files under the project root and return the combined list
 /// of `CallGraphEntry` records, ready to be persisted.
-pub fn build_call_graph() -> Result<Vec<CallGraphEntry>, Box<dyn std::error::Error + Send + Sync>> {
-    let root = find_project_root().ok_or("Cannot determine project root")?;
-
+fn build_call_graph_from_root(
+    root: &Path,
+) -> Result<Vec<CallGraphEntry>, Box<dyn std::error::Error + Send + Sync>> {
     let mut rs_files = Vec::new();
-    collect_rs_files(&root, &mut rs_files);
+    collect_rs_files(root, &mut rs_files);
     rs_files.sort();
 
     let mut entries: Vec<CallGraphEntry> = Vec::new();
@@ -282,7 +284,7 @@ pub fn build_call_graph() -> Result<Vec<CallGraphEntry>, Box<dyn std::error::Err
         let Ok(src) = fs::read_to_string(file) else {
             continue;
         };
-        let rel = relative_display(file, &root);
+        let rel = relative_display(file, root);
         let mut file_entries = parse_rust_file(&rel, &src);
         entries.append(&mut file_entries);
     }
@@ -290,27 +292,78 @@ pub fn build_call_graph() -> Result<Vec<CallGraphEntry>, Box<dyn std::error::Err
     Ok(entries)
 }
 
+pub fn build_call_graph() -> Result<Vec<CallGraphEntry>, Box<dyn std::error::Error + Send + Sync>> {
+    let root = find_project_root().ok_or("Cannot determine project root")?;
+    build_call_graph_from_root(&root)
+}
+
+fn update_entries_for_file(
+    root: &Path,
+    path: &Path,
+    entries: &mut Vec<CallGraphEntry>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let rel = relative_display(path, root);
+    entries.retain(|entry| entry.path != rel);
+
+    if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+        let src = fs::read_to_string(path)?;
+        entries.extend(parse_rust_file(&rel, &src));
+    }
+
+    entries.sort_by(|a, b| {
+        a.path
+            .cmp(&b.path)
+            .then_with(|| a.line.cmp(&b.line))
+            .then_with(|| a.symbol.cmp(&b.symbol))
+    });
+    Ok(())
+}
+
+fn update_entries_for_files(
+    root: &Path,
+    changed_paths: &[PathBuf],
+    removed_paths: &[String],
+    entries: &mut Vec<CallGraphEntry>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let removed: HashSet<&str> = removed_paths.iter().map(String::as_str).collect();
+    entries.retain(|entry| !removed.contains(entry.path.as_str()));
+    for path in changed_paths {
+        update_entries_for_file(root, path, entries)?;
+    }
+    Ok(())
+}
+
 // ── Persistence ────────────────────────────────────────────────────────────────
 
-/// Rebuild the call graph index and write it to disk.  Called automatically
-/// by `memory::refresh_codebase_index()` after each file write.
+fn persist_call_graph_to(
+    path: &Path,
+    entries: &[CallGraphEntry],
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    crate::jsonl_log::atomic_write_jsonl(path, entries)?;
+    Ok(())
+}
+
+fn persist_call_graph(
+    entries: &[CallGraphEntry],
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    persist_call_graph_to(&graph_file_path(), entries)
+}
+
+fn rebuild_call_graph_to(
+    root: &Path,
+    path: &Path,
+) -> Result<Vec<CallGraphEntry>, Box<dyn std::error::Error + Send + Sync>> {
+    let entries = build_call_graph_from_root(root)?;
+    persist_call_graph_to(path, &entries)?;
+    Ok(entries)
+}
+
+/// Rebuild the complete call graph index and write it to disk. Initial index
+/// creation and explicit rebuilds use this path; normal coding-tool writes use
+/// [`refresh_call_graph_file`], while stale codebase scans batch external deltas.
 pub fn refresh_call_graph() -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
-    let entries = build_call_graph()?;
-
-    let path = graph_file_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    let mut file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(&path)?;
-
-    for entry in &entries {
-        writeln!(file, "{}", serde_json::to_string(entry)?)?;
-    }
+    let root = find_project_root().ok_or("Cannot determine project root")?;
+    let entries = rebuild_call_graph_to(&root, &graph_file_path())?;
 
     // Refresh the in-process cache.
     *graph_cache().write().unwrap_or_else(|e| e.into_inner()) = Some(entries.clone());
@@ -318,11 +371,74 @@ pub fn refresh_call_graph() -> Result<usize, Box<dyn std::error::Error + Send + 
     Ok(entries.len())
 }
 
+/// Refresh only the call-graph entries owned by one changed source file.
+///
+/// The first call still builds the full graph when no persisted index exists.
+/// Subsequent coding-tool writes parse one Rust file and rewrite the compact
+/// JSONL index, avoiding a full project tree-sitter scan after every hunk.
+pub fn refresh_call_graph_file(
+    path: &Path,
+) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+    if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+        return Ok(0);
+    }
+
+    refresh_call_graph_files(&[path.to_path_buf()], &[])
+}
+
+/// Apply a batch of external Rust-file changes and deletions, then persist one
+/// graph snapshot. This is used by the periodic codebase delta scan so several
+/// externally-edited files do not each rewrite the full JSONL graph.
+pub(crate) fn refresh_call_graph_files(
+    changed_paths: &[PathBuf],
+    removed_paths: &[String],
+) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+    if changed_paths.is_empty() && removed_paths.is_empty() {
+        ensure_call_graph()?;
+        return Ok(graph_cache()
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(Vec::len)
+            .unwrap_or(0));
+    }
+
+    let root = find_project_root().ok_or("Cannot determine project root")?;
+    let canonical_root = fs::canonicalize(&root)?;
+    let mut canonical_paths = Vec::new();
+    for path in changed_paths {
+        if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+            continue;
+        }
+        let canonical_path = fs::canonicalize(path)?;
+        if !canonical_path.starts_with(&canonical_root) {
+            return Err(format!(
+                "call graph refresh path '{}' is outside project root '{}'",
+                canonical_path.display(),
+                canonical_root.display()
+            )
+            .into());
+        }
+        canonical_paths.push(canonical_path);
+    }
+
+    ensure_call_graph()?;
+    let mut guard = graph_cache().write().unwrap_or_else(|e| e.into_inner());
+    let entries = guard.get_or_insert_with(Vec::new);
+    update_entries_for_files(&canonical_root, &canonical_paths, removed_paths, entries)?;
+    persist_call_graph(entries)?;
+    Ok(entries.len())
+}
+
 /// Load call graph entries from disk into the in-process cache if not already
 /// loaded.
 pub fn ensure_call_graph() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Fast path: already loaded.
-    if graph_cache().read().unwrap_or_else(|e| e.into_inner()).is_some() {
+    if graph_cache()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_some()
+    {
         return Ok(());
     }
 
@@ -336,15 +452,10 @@ pub fn ensure_call_graph() -> Result<(), Box<dyn std::error::Error + Send + Sync
             .filter_map(|l| serde_json::from_str::<CallGraphEntry>(&l).ok())
             .collect()
     } else {
-        // No file on disk yet — build it now.
-        match build_call_graph() {
-            Ok(e) => {
-                // Best-effort persist; ignore errors.
-                let _ = refresh_call_graph();
-                e
-            }
-            Err(_) => Vec::new(),
-        }
+        // No file on disk yet — build once and persist that same snapshot.
+        let entries = build_call_graph()?;
+        persist_call_graph(&entries)?;
+        entries
     };
 
     *graph_cache().write().unwrap_or_else(|e| e.into_inner()) = Some(entries);
@@ -480,6 +591,7 @@ pub fn query_call_graph(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     const SIMPLE_SRC: &str = r#"
 pub fn greet(name: &str) -> String {
@@ -494,6 +606,29 @@ struct Greeter;
 
 enum Color { Red, Green, Blue }
 "#;
+
+    fn fixture_project(label: &str) -> PathBuf {
+        static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
+        let sequence = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "sirin_call_graph_{label}_{}_{}",
+            std::process::id(),
+            sequence
+        ));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(root.join("src")).expect("create fixture source tree");
+        std::fs::write(
+            root.join("src/planner_agent.rs"),
+            "pub fn run_react_loop() { memory_store(); }\n",
+        )
+        .expect("write planner fixture");
+        std::fs::write(
+            root.join("src/memory.rs"),
+            "pub fn memory_store() {}\npub struct MemoryIndex;\n",
+        )
+        .expect("write memory fixture");
+        root
+    }
 
     #[test]
     fn parse_extracts_functions() {
@@ -559,11 +694,12 @@ enum Color { Red, Green, Blue }
     // ── build_call_graph ──────────────────────────────────────────────────────
 
     #[test]
-    fn build_call_graph_returns_entries_for_real_project() {
-        let entries = build_call_graph().expect("build_call_graph should succeed");
+    fn build_call_graph_returns_entries_for_fixture_project() {
+        let root = fixture_project("build_entries");
+        let entries = build_call_graph_from_root(&root).expect("build_call_graph should succeed");
         assert!(
             !entries.is_empty(),
-            "should parse at least one symbol from the project"
+            "should parse at least one symbol from the fixture project"
         );
         // Every entry must have a non-empty symbol and path.
         assert!(
@@ -574,13 +710,14 @@ enum Color { Red, Green, Blue }
             entries.iter().all(|e| !e.path.is_empty()),
             "all paths should be non-empty"
         );
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
-    fn build_call_graph_finds_known_symbols() {
-        let entries = build_call_graph().expect("build should succeed");
+    fn build_call_graph_finds_known_fixture_symbols() {
+        let root = fixture_project("known_symbols");
+        let entries = build_call_graph_from_root(&root).expect("build should succeed");
         let symbols: Vec<&str> = entries.iter().map(|e| e.symbol.as_str()).collect();
-        // These functions exist in the project and must be detected.
         assert!(
             symbols.contains(&"run_react_loop"),
             "run_react_loop should be in call graph"
@@ -589,51 +726,93 @@ enum Color { Red, Green, Blue }
             symbols.contains(&"memory_store"),
             "memory_store should be in call graph"
         );
+        let run_loop = entries
+            .iter()
+            .find(|entry| entry.symbol == "run_react_loop")
+            .expect("run_react_loop entry");
+        assert!(run_loop.calls.contains(&"memory_store".to_string()));
+        std::fs::remove_dir_all(&root).ok();
     }
 
     // ── refresh_call_graph writes to disk ─────────────────────────────────────
-    //
-    // NOTE: Tests that mutate the global graph_cache() run here serially because
-    // `query_returns_callers_and_callees` also manipulates the cache.
-    // These tests therefore only verify file I/O, not cache state.
+    // Explicit fixture paths keep persistence tests isolated from the global
+    // cache and the user's app-data graph.
 
     #[test]
-    fn refresh_call_graph_writes_nonempty_file_to_disk() {
-        let count = refresh_call_graph().expect("refresh should succeed");
-        assert!(count > 0, "should have written at least one entry");
+    fn fixture_refresh_writes_nonempty_file_to_disk() {
+        let root = fixture_project("refresh");
+        let path = root.join("data/code_graph/graph.jsonl");
+        let entries = rebuild_call_graph_to(&root, &path).expect("refresh should succeed");
+        assert!(
+            !entries.is_empty(),
+            "should have written at least one entry"
+        );
 
-        // Verify the on-disk file exists and is not empty.
-        let path = graph_file_path();
         assert!(path.exists(), "graph file should be written to disk");
         let content = std::fs::read_to_string(&path).expect("should read graph file");
         assert!(!content.trim().is_empty(), "graph file should not be empty");
-
-        // Leave the cache in a known state.
-        invalidate_cache();
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
-    fn graph_file_contains_valid_jsonl_entries() {
-        // Build entries without touching the cache.
-        let entries = build_call_graph().expect("build ok");
-
-        // Write to a temp file and verify round-trip.
-        let tmp = std::env::temp_dir().join(format!("sirin_cg_test_{}.jsonl", std::process::id()));
-        {
-            use std::io::Write as IoWrite;
-            let mut f = std::fs::File::create(&tmp).expect("create tmp ok");
-            for e in &entries {
-                writeln!(f, "{}", serde_json::to_string(e).expect("serialize ok"))
-                    .expect("write ok");
-            }
-        }
-        let content = std::fs::read_to_string(&tmp).expect("read ok");
+    fn fixture_graph_file_contains_valid_jsonl_entries() {
+        let root = fixture_project("jsonl");
+        let path = root.join("graph.jsonl");
+        let entries = rebuild_call_graph_to(&root, &path).expect("build and persist ok");
+        let content = std::fs::read_to_string(&path).expect("read ok");
         let loaded: Vec<CallGraphEntry> = content
             .lines()
             .filter(|l| !l.trim().is_empty())
             .map(|l| serde_json::from_str(l).expect("deserialize ok"))
             .collect();
         assert_eq!(loaded.len(), entries.len(), "round-trip count should match");
-        std::fs::remove_file(&tmp).ok();
+        assert!(loaded.iter().any(|entry| entry.symbol == "run_react_loop"));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn incremental_refresh_replaces_only_the_changed_file() {
+        let root = std::env::temp_dir().join(format!(
+            "sirin_call_graph_incremental_{}",
+            std::process::id()
+        ));
+        let src_dir = root.join("src");
+        let changed = src_dir.join("changed.rs");
+        let untouched = src_dir.join("untouched.rs");
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(&src_dir).expect("create temp source tree");
+        std::fs::write(&changed, "fn old_symbol() { shared(); }\n").expect("write changed");
+        std::fs::write(&untouched, "fn untouched_symbol() {}\n").expect("write untouched");
+
+        let mut entries = parse_rust_file(
+            "src/changed.rs",
+            &std::fs::read_to_string(&changed).unwrap(),
+        );
+        entries.extend(parse_rust_file(
+            "src/untouched.rs",
+            &std::fs::read_to_string(&untouched).unwrap(),
+        ));
+
+        std::fs::write(&changed, "fn new_symbol() { shared(); }\n").expect("rewrite changed");
+        update_entries_for_file(&root, &changed, &mut entries).expect("incremental refresh");
+
+        assert!(entries.iter().any(|entry| entry.symbol == "new_symbol"));
+        assert!(!entries.iter().any(|entry| entry.symbol == "old_symbol"));
+        assert!(entries
+            .iter()
+            .any(|entry| entry.symbol == "untouched_symbol"));
+
+        update_entries_for_files(
+            &root,
+            &[changed],
+            &["src/untouched.rs".to_string()],
+            &mut entries,
+        )
+        .expect("batch delta should update and remove entries");
+        assert!(entries.iter().any(|entry| entry.symbol == "new_symbol"));
+        assert!(!entries
+            .iter()
+            .any(|entry| entry.symbol == "untouched_symbol"));
+        std::fs::remove_dir_all(&root).ok();
     }
 }

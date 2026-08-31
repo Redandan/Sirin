@@ -58,14 +58,14 @@ use super::executor::TestStatus;
 /// What the test runner should do after a failed attempt.
 #[derive(Debug, Clone)]
 pub struct RetryDecision {
-    pub should_retry:   bool,
-    pub sleep_ms:       u64,
+    pub should_retry: bool,
+    pub sleep_ms: u64,
     pub recover_browser: bool,
     /// Human-readable reason for the decision (logged + surfaced in UI).
-    pub reason:         String,
+    pub reason: String,
     /// `true` when the test is below the quarantine threshold and should
     /// be flagged in the dashboard (no retry, awaiting manual unblock).
-    pub quarantined:    bool,
+    pub quarantined: bool,
 }
 
 /// Compute the retry decision for a failed attempt.
@@ -78,12 +78,12 @@ pub struct RetryDecision {
 /// - `last_error_msg`    — `result.error_message`, used to detect deploy-race
 /// - `last_category`     — failure_category if already classified
 pub fn decide(
-    test_id:          &str,
-    attempt:          u32,
+    test_id: &str,
+    attempt: u32,
     yaml_max_retries: u32,
-    last_status:      TestStatus,
-    last_error_msg:   Option<&str>,
-    last_category:    Option<&str>,
+    last_status: TestStatus,
+    last_error_msg: Option<&str>,
+    last_category: Option<&str>,
 ) -> RetryDecision {
     let policy = global();
 
@@ -96,15 +96,15 @@ pub fn decide(
 
     // Need at least N runs to make a quarantine call; one-off bad luck
     // shouldn't quarantine a brand-new test.
-    let quarantined = total_runs >= policy.quarantine_min_runs
-        && pass_rate < policy.quarantine_threshold;
+    let quarantined =
+        total_runs >= policy.quarantine_min_runs && pass_rate < policy.quarantine_threshold;
 
     if quarantined {
         return RetryDecision {
-            should_retry:    false,
-            sleep_ms:        0,
+            should_retry: false,
+            sleep_ms: 0,
             recover_browser: false,
-            quarantined:     true,
+            quarantined: true,
             reason: format!(
                 "quarantined: pass_rate {:.0}% < {:.0}% over last {} runs",
                 pass_rate * 100.0,
@@ -122,9 +122,9 @@ pub fn decide(
         let should_retry = attempt < max_total;
         return RetryDecision {
             should_retry,
-            sleep_ms:        if should_retry { over.sleep_ms } else { 0 },
+            sleep_ms: if should_retry { over.sleep_ms } else { 0 },
             recover_browser: should_retry && over.recover_browser,
-            quarantined:     false,
+            quarantined: false,
             reason: format!(
                 "{}: attempt {}/{}, sleep {}ms",
                 over.label,
@@ -141,9 +141,9 @@ pub fn decide(
     let should_retry = attempt < max_total && is_transient(last_status, last_error_msg);
     RetryDecision {
         should_retry,
-        sleep_ms:        if should_retry { tier.sleep_ms } else { 0 },
+        sleep_ms: if should_retry { tier.sleep_ms } else { 0 },
         recover_browser: should_retry && tier.recover_browser,
-        quarantined:     false,
+        quarantined: false,
         reason: format!(
             "{}: pass_rate {:.0}% / {} runs, attempt {}/{}, sleep {}ms",
             tier.label,
@@ -174,7 +174,7 @@ pub struct RetryPolicy {
     /// Below this pass-rate (over `quarantine_min_runs` recent runs) the
     /// test is auto-quarantined and won't retry.
     pub quarantine_threshold: f64,
-    pub quarantine_min_runs:  usize,
+    pub quarantine_min_runs: usize,
 
     /// Pass-rate tiers, evaluated in declaration order.  The first tier
     /// whose `min_pass_rate` ≤ the test's pass-rate wins.  Make sure they
@@ -191,8 +191,8 @@ pub struct RetryPolicy {
 pub struct Tier {
     /// Minimum pass-rate (0.0–1.0) to qualify for this tier.
     pub min_pass_rate: f64,
-    pub max_retries:   u32,
-    pub sleep_ms:      u64,
+    pub max_retries: u32,
+    pub sleep_ms: u64,
     /// Call `browser::clear_browser_state()` before retrying?  Default
     /// false for the top tier (stable tests don't need recovery), true
     /// for moderate (browser state may be poisoned).
@@ -206,30 +206,30 @@ pub struct Classification {
     /// Optional list of TestStatus names ("timeout", "error", "failed").
     /// Empty = match any.
     #[serde(default)]
-    pub match_status:        Vec<String>,
+    pub match_status: Vec<String>,
     /// Optional list of failure_category strings ("env", "flaky", …).
     /// Empty = match any.
     #[serde(default)]
-    pub match_category:      Vec<String>,
+    pub match_category: Vec<String>,
     /// Optional list of substrings in result.error_message.  Empty = no
     /// substring constraint.
     #[serde(default)]
-    pub match_error_substr:  Vec<String>,
+    pub match_error_substr: Vec<String>,
 
-    pub max_retries:     u32,
-    pub sleep_ms:        u64,
+    pub max_retries: u32,
+    pub sleep_ms: u64,
     #[serde(default)]
     pub recover_browser: bool,
-    pub label:           String,
+    pub label: String,
 }
 
 /// Lowercase name matching `#[serde(rename_all = "lowercase")]` on TestStatus.
 fn status_str(status: TestStatus) -> &'static str {
     match status {
-        TestStatus::Passed   => "passed",
-        TestStatus::Failed   => "failed",
-        TestStatus::Timeout  => "timeout",
-        TestStatus::Error    => "error",
+        TestStatus::Passed => "passed",
+        TestStatus::Failed => "failed",
+        TestStatus::Timeout => "timeout",
+        TestStatus::Error => "error",
         TestStatus::Disputed => "disputed",
     }
 }
@@ -242,12 +242,16 @@ impl Classification {
             return false;
         }
         if !self.match_category.is_empty()
-            && !cat.map(|c| self.match_category.iter().any(|m| m == c)).unwrap_or(false)
+            && !cat
+                .map(|c| self.match_category.iter().any(|m| m == c))
+                .unwrap_or(false)
         {
             return false;
         }
         if !self.match_error_substr.is_empty() {
-            let Some(e) = err else { return false; };
+            let Some(e) = err else {
+                return false;
+            };
             if !self.match_error_substr.iter().any(|s| e.contains(s)) {
                 return false;
             }
@@ -264,14 +268,19 @@ impl RetryPolicy {
         // default — they get the top tier so a single bad run doesn't
         // immediately downgrade them.
         if total_runs < self.quarantine_min_runs {
-            return self.tiers.first().expect("policy must have at least one tier");
+            return self
+                .tiers
+                .first()
+                .expect("policy must have at least one tier");
         }
         for t in &self.tiers {
             if pass_rate >= t.min_pass_rate {
                 return t;
             }
         }
-        self.tiers.last().expect("policy must have at least one tier")
+        self.tiers
+            .last()
+            .expect("policy must have at least one tier")
     }
 
     pub fn classify_override(
@@ -280,39 +289,41 @@ impl RetryPolicy {
         err: Option<&str>,
         cat: Option<&str>,
     ) -> Option<&Classification> {
-        self.classifications.iter().find(|c| c.matches(status, err, cat))
+        self.classifications
+            .iter()
+            .find(|c| c.matches(status, err, cat))
     }
 
     /// Sane built-in defaults.  Used when the YAML is missing or malformed.
     pub fn default_policy() -> Self {
         Self {
             quarantine_threshold: 0.70,
-            quarantine_min_runs:  3,
+            quarantine_min_runs: 3,
 
             tiers: vec![
                 Tier {
-                    min_pass_rate:   0.95,
-                    max_retries:     1,
-                    sleep_ms:        3_000,
+                    min_pass_rate: 0.95,
+                    max_retries: 1,
+                    sleep_ms: 3_000,
                     recover_browser: false,
-                    label:           "stable".into(),
+                    label: "stable".into(),
                 },
                 Tier {
-                    min_pass_rate:   0.70,
-                    max_retries:     2,
-                    sleep_ms:        5_000,
+                    min_pass_rate: 0.70,
+                    max_retries: 2,
+                    sleep_ms: 5_000,
                     recover_browser: true,
-                    label:           "moderate".into(),
+                    label: "moderate".into(),
                 },
                 // Below 0.70 is technically caught by quarantine_threshold
                 // first; this tier is a safety net (e.g., when
                 // total_runs < quarantine_min_runs).
                 Tier {
-                    min_pass_rate:   0.0,
-                    max_retries:     0,
-                    sleep_ms:        0,
+                    min_pass_rate: 0.0,
+                    max_retries: 0,
+                    sleep_ms: 0,
                     recover_browser: false,
-                    label:           "flaky".into(),
+                    label: "flaky".into(),
                 },
             ],
 
@@ -321,45 +332,43 @@ impl RetryPolicy {
                 // typical of a partial deploy.  Wait long enough for the API
                 // to come back (KB: agora-trap-deploy-timing-race).
                 Classification {
-                    match_status:       vec!["failed".into(), "error".into()],
-                    match_category:     vec![],
+                    match_status: vec!["failed".into(), "error".into()],
+                    match_category: vec![],
                     match_error_substr: vec![
-                        "HTTP 500".into(), "HTTP 503".into(),
+                        "HTTP 500".into(),
+                        "HTTP 503".into(),
                         "JpaQueryTransformerSupport".into(),
                         "Internal Server Error".into(),
                     ],
-                    max_retries:     1,
-                    sleep_ms:        30_000,
+                    max_retries: 1,
+                    sleep_ms: 30_000,
                     recover_browser: true,
-                    label:           "backend_down".into(),
+                    label: "backend_down".into(),
                 },
                 // LlmEmpty — Gemini's silent 200 + empty content bug.
                 // Two quick retries usually catch a working response.
                 Classification {
-                    match_status:       vec!["error".into()],
-                    match_category:     vec![],
+                    match_status: vec!["error".into()],
+                    match_category: vec![],
                     match_error_substr: vec![
                         "empty content".into(),
                         "too many invalid LLM responses".into(),
                     ],
-                    max_retries:     2,
-                    sleep_ms:        500,
+                    max_retries: 2,
+                    sleep_ms: 500,
                     recover_browser: false,
-                    label:           "llm_empty".into(),
+                    label: "llm_empty".into(),
                 },
                 // ConvergenceGuard — same action / state for too many turns.
                 // Deterministic, no point retrying.
                 Classification {
-                    match_status:       vec!["failed".into(), "error".into()],
-                    match_category:     vec![],
-                    match_error_substr: vec![
-                        "convergence_guard".into(),
-                        "no progress".into(),
-                    ],
-                    max_retries:     0,
-                    sleep_ms:        0,
+                    match_status: vec!["failed".into(), "error".into()],
+                    match_category: vec![],
+                    match_error_substr: vec!["convergence_guard".into(), "no progress".into()],
+                    max_retries: 0,
+                    sleep_ms: 0,
                     recover_browser: false,
-                    label:           "convergence_guard".into(),
+                    label: "convergence_guard".into(),
                 },
             ],
         }
@@ -389,7 +398,8 @@ fn load() -> RetryPolicy {
             Err(e) => {
                 tracing::warn!(
                     "[retry_policy] {} parse error: {} — using defaults",
-                    path.display(), e
+                    path.display(),
+                    e
                 );
                 RetryPolicy::default_policy()
             }
@@ -411,7 +421,9 @@ fn policy_path() -> PathBuf {
 mod tests {
     use super::*;
 
-    fn p() -> RetryPolicy { RetryPolicy::default_policy() }
+    fn p() -> RetryPolicy {
+        RetryPolicy::default_policy()
+    }
 
     #[test]
     fn tier_for_stable_pass_rate() {
@@ -438,11 +450,13 @@ mod tests {
     #[test]
     fn classify_override_backend_down() {
         let pol = p();
-        let m = pol.classify_override(
-            TestStatus::Failed,
-            Some("Got HTTP 500 from /api/list"),
-            None,
-        ).expect("should match backend_down");
+        let m = pol
+            .classify_override(
+                TestStatus::Failed,
+                Some("Got HTTP 500 from /api/list"),
+                None,
+            )
+            .expect("should match backend_down");
         assert_eq!(m.label, "backend_down");
         assert_eq!(m.sleep_ms, 30_000);
         assert!(m.recover_browser);
@@ -451,11 +465,9 @@ mod tests {
     #[test]
     fn classify_override_llm_empty() {
         let pol = p();
-        let m = pol.classify_override(
-            TestStatus::Error,
-            Some("LLM returned empty content"),
-            None,
-        ).expect("should match llm_empty");
+        let m = pol
+            .classify_override(TestStatus::Error, Some("LLM returned empty content"), None)
+            .expect("should match llm_empty");
         assert_eq!(m.label, "llm_empty");
         assert_eq!(m.max_retries, 2);
     }
@@ -463,22 +475,20 @@ mod tests {
     #[test]
     fn classify_override_convergence_guard_no_retry() {
         let pol = p();
-        let m = pol.classify_override(
-            TestStatus::Failed,
-            Some("convergence_guard tripped after 3 same-action turns"),
-            None,
-        ).expect("should match convergence_guard");
+        let m = pol
+            .classify_override(
+                TestStatus::Failed,
+                Some("convergence_guard tripped after 3 same-action turns"),
+                None,
+            )
+            .expect("should match convergence_guard");
         assert_eq!(m.max_retries, 0);
     }
 
     #[test]
     fn classify_override_no_match_returns_none() {
         let pol = p();
-        let m = pol.classify_override(
-            TestStatus::Passed,
-            None,
-            None,
-        );
+        let m = pol.classify_override(TestStatus::Passed, None, None);
         // None of our overrides match status=passed
         assert!(m.is_none());
     }
@@ -490,7 +500,10 @@ mod tests {
         assert!(!is_transient(TestStatus::Passed, None));
         assert!(!is_transient(TestStatus::Failed, None));
         // Failed + all-black → still transient (Chrome rendering glitch)
-        assert!(is_transient(TestStatus::Failed, Some("screenshot all-black bytes=2048")));
+        assert!(is_transient(
+            TestStatus::Failed,
+            Some("screenshot all-black bytes=2048")
+        ));
     }
 
     #[test]
@@ -513,13 +526,15 @@ mod tests {
             // skip in sub-crate / partial-checkout builds
             return;
         }
-        let yaml = std::fs::read_to_string(&path)
-            .expect("read config/retry_policy.yaml");
-        let pol: RetryPolicy = serde_yaml::from_str(&yaml)
-            .expect("config/retry_policy.yaml must parse");
-        assert!(!pol.tiers.is_empty(),  "tiers must be non-empty");
+        let yaml = std::fs::read_to_string(&path).expect("read config/retry_policy.yaml");
+        let pol: RetryPolicy =
+            serde_yaml::from_str(&yaml).expect("config/retry_policy.yaml must parse");
+        assert!(!pol.tiers.is_empty(), "tiers must be non-empty");
         assert!(pol.tiers.iter().any(|t| t.label == "stable"));
-        assert!(pol.classifications.iter().any(|c| c.label == "backend_down"));
+        assert!(pol
+            .classifications
+            .iter()
+            .any(|c| c.label == "backend_down"));
     }
 
     /// Issue #241 acceptance: a test with a long fail history quarantines

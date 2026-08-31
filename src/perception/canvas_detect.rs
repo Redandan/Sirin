@@ -69,8 +69,16 @@ pub async fn probe_page(ctx: &crate::adk::context::AgentContext) -> PageProbe {
 
     match serde_json::from_str::<serde_json::Value>(&raw_str) {
         Ok(v) => PageProbe {
-            url: v.get("url").and_then(|s| s.as_str()).unwrap_or("").to_string(),
-            title: v.get("title").and_then(|s| s.as_str()).unwrap_or("").to_string(),
+            url: v
+                .get("url")
+                .and_then(|s| s.as_str())
+                .unwrap_or("")
+                .to_string(),
+            title: v
+                .get("title")
+                .and_then(|s| s.as_str())
+                .unwrap_or("")
+                .to_string(),
             canvas_detected: v.get("canvas").and_then(|b| b.as_bool()).unwrap_or(false),
         },
         Err(e) => {

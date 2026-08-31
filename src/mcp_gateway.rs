@@ -28,7 +28,7 @@ pub async fn gateway_handler() -> Html<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{response::IntoResponse, http::StatusCode};
+    use axum::{http::StatusCode, response::IntoResponse};
 
     #[tokio::test]
     async fn gateway_returns_html_with_marker_and_endpoint_meta() {
@@ -58,8 +58,7 @@ mod tests {
         // Future-proof discovery hint &mdash; CiC / scrapers can locate the
         // JSON-RPC endpoint without hard-coding `/mcp`.
         assert!(
-            body.contains(r#"name="sirin-mcp-endpoint""#)
-                && body.contains(r#"content="/mcp""#),
+            body.contains(r#"name="sirin-mcp-endpoint""#) && body.contains(r#"content="/mcp""#),
             "body missing sirin-mcp-endpoint meta tag"
         );
         // Tier-2 marker: the dynamic-tools script is wired up.

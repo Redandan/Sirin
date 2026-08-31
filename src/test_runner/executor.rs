@@ -100,7 +100,8 @@ pub(crate) async fn pre_resolve_docs_for(test: &TestGoal) {
                 Ok(Some(text)) => {
                     record_kb_hit(&test.id, entry);
                     sections.push(format!(
-                        "### KB:{project}/{entry}\n{}", truncate(&text, 2000)
+                        "### KB:{project}/{entry}\n{}",
+                        truncate(&text, 2000)
                     ));
                 }
                 Ok(None) => {
@@ -111,20 +112,14 @@ pub(crate) async fn pre_resolve_docs_for(test: &TestGoal) {
                         );
                     }
                 }
-                Err(e) => sections.push(format!(
-                    "### KB:{project}/{entry}\n[unavailable: {e}]"
-                )),
+                Err(e) => sections.push(format!("### KB:{project}/{entry}\n[unavailable: {e}]")),
             }
         } else {
             // Filesystem path — render unavailable inline so authors see typos.
             let path = std::path::Path::new(entry);
             match std::fs::read_to_string(path) {
-                Ok(text) => sections.push(format!(
-                    "### {entry}\n{}", truncate(&text, 2000)
-                )),
-                Err(e) => sections.push(format!(
-                    "### {entry}\n[unavailable: {e}]"
-                )),
+                Ok(text) => sections.push(format!("### {entry}\n{}", truncate(&text, 2000))),
+                Err(e) => sections.push(format!("### {entry}\n[unavailable: {e}]")),
             }
         };
     }
@@ -141,19 +136,16 @@ pub(crate) async fn pre_resolve_docs_for(test: &TestGoal) {
             Ok(Some(text)) => {
                 record_kb_hit(&test.id, entry);
                 sections.push(format!(
-                    "### KB:{project}/{entry}\n{}", truncate(&text, 2000)
+                    "### KB:{project}/{entry}\n{}",
+                    truncate(&text, 2000)
                 ));
             }
             Ok(None) => {
                 if crate::kb_client::enabled() {
-                    tracing::debug!(
-                        "[test_runner] kb_refs '{entry}' missing in KB — skipping"
-                    );
+                    tracing::debug!("[test_runner] kb_refs '{entry}' missing in KB — skipping");
                 }
             }
-            Err(e) => sections.push(format!(
-                "### KB:{project}/{entry}\n[unavailable: {e}]"
-            )),
+            Err(e) => sections.push(format!("### KB:{project}/{entry}\n[unavailable: {e}]")),
         }
     }
 
@@ -168,9 +160,9 @@ pub(crate) async fn pre_resolve_docs_for(test: &TestGoal) {
 /// string when no docs were resolved (so the prompt template stays clean).
 fn docs_prompt_block(test_id: &str) -> String {
     match cached_docs(test_id) {
-        Some(s) if !s.is_empty() => format!(
-            "\n## Required reading (from docs_refs — read BEFORE acting)\n{s}\n"
-        ),
+        Some(s) if !s.is_empty() => {
+            format!("\n## Required reading (from docs_refs — read BEFORE acting)\n{s}\n")
+        }
         _ => String::new(),
     }
 }
@@ -241,14 +233,9 @@ fn record_guard_fire_to_kb(
     let file_refs = format!("config/tests/{test_id}.yaml");
     let tags = format!("stuck-loop,{guard_kind},guard,test-flake");
     tokio::spawn(async move {
-        let _ = crate::kb_client::write_raw(
-            &topic_key,
-            &title,
-            &content,
-            "testing",
-            &tags,
-            &file_refs,
-        ).await;
+        let _ =
+            crate::kb_client::write_raw(&topic_key, &title, &content, "testing", &tags, &file_refs)
+                .await;
     });
 }
 
@@ -278,7 +265,10 @@ fn handle_dispute_yaml(
             slugify_for_topic(test_id, 40),
             slugify_for_topic(rid, 20),
         );
-        let title = format!("yaml-dispute({test_id}): iter {iteration} — {}", truncate(&dispute.reason, 60));
+        let title = format!(
+            "yaml-dispute({test_id}): iter {iteration} — {}",
+            truncate(&dispute.reason, 60)
+        );
         let step_note = dispute
             .suspected_step
             .map(|n| format!("Suspected step: {n}"))
@@ -315,7 +305,8 @@ fn handle_dispute_yaml(
                 "test-yaml-dispute",
                 &tags,
                 &format!("config/tests/{tid}.yaml"),
-            ).await;
+            )
+            .await;
         });
     }
 
@@ -342,7 +333,7 @@ fn handle_dispute_yaml(
             "(unspecified)".into()
         };
         let slug_test = slugify_for_topic(test_id, 40);
-        let slug_rid  = slugify_for_topic(rid, 20);
+        let slug_rid = slugify_for_topic(rid, 20);
         let gh_body = format!(
             "## LLM Dispute Report\n\n\
              **Test**: {test_id}\n\
@@ -363,13 +354,20 @@ fn handle_dispute_yaml(
             reason = dispute.reason,
         );
         let labels = "yaml-dispute,bot-flagged,triage";
+        use crate::platform::NoWindow;
         match std::process::Command::new("gh")
+            .no_window()
             .args([
-                "issue", "create",
-                "--repo", "Redandan/Sirin",
-                "--title", &gh_title,
-                "--body", &gh_body,
-                "--label", labels,
+                "issue",
+                "create",
+                "--repo",
+                "Redandan/Sirin",
+                "--title",
+                &gh_title,
+                "--body",
+                &gh_body,
+                "--label",
+                labels,
             ])
             .output()
         {
@@ -406,8 +404,8 @@ fn handle_dispute_yaml(
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TestStep {
     pub thought: String,
-    pub action: Value,        // {"action":"click","target":"#btn"}
-    pub observation: String,  // truncated tool result or ERROR:...
+    pub action: Value,       // {"action":"click","target":"#btn"}
+    pub observation: String, // truncated tool result or ERROR:...
     // ── Per-step trace metadata (Issue #39) ──────────────────────────────────
     // All fields are Option / default-empty so old `history_json` blobs in
     // SQLite deserialize cleanly when these columns are absent.
@@ -510,7 +508,10 @@ fn is_all_black_screenshot(ss_val: &Value) -> bool {
         return false;
     }
 
-    let size_bytes = ss_val.get("size_bytes").and_then(|v| v.as_u64()).unwrap_or(u64::MAX);
+    let size_bytes = ss_val
+        .get("size_bytes")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(u64::MAX);
     let url = ss_val.get("url").and_then(|v| v.as_str()).unwrap_or("");
 
     if url == "about:blank" {
@@ -537,8 +538,10 @@ fn inject_session(args: &mut Value, session_id: Option<&str>) {
 /// e.g. `https://redandan.github.io/#/login` → `https://redandan.github.io`
 fn extract_origin(url: &str) -> String {
     if let Some(after_scheme) = url.find("://").map(|p| &url[p + 3..]) {
-        let host_end = after_scheme.find(['/', '?', '#']).unwrap_or(after_scheme.len());
-        let scheme   = &url[..url.find("://").unwrap()];
+        let host_end = after_scheme
+            .find(['/', '?', '#'])
+            .unwrap_or(after_scheme.len());
+        let scheme = &url[..url.find("://").unwrap()];
         format!("{scheme}://{}", &after_scheme[..host_end])
     } else {
         url.to_string()
@@ -564,7 +567,8 @@ async fn run_fixture_step(
         args[k] = v.clone();
     }
     inject_session(&mut args, session_id);
-    ctx.call_tool("web_navigate", args).await
+    ctx.call_tool("web_navigate", args)
+        .await
         .map(|_| ())
         .map_err(|e| format!("fixture step '{}' failed: {}", step.action, e))
 }
@@ -596,7 +600,8 @@ async fn try_replay_script(
 
     tracing::info!(
         "[scripts] '{}' — trying deterministic replay ({} actions)",
-        test.id, actions.len()
+        test.id,
+        actions.len()
     );
 
     let started = std::time::Instant::now();
@@ -624,7 +629,10 @@ async fn try_replay_script(
     let mut nav_input = json!({ "action": "goto", "target": &nav_url });
     inject_session(&mut nav_input, session_id);
     if ctx.call_tool("web_navigate", nav_input).await.is_err() {
-        tracing::warn!("[scripts] '{}' replay: goto failed, falling back to LLM", test.id);
+        tracing::warn!(
+            "[scripts] '{}' replay: goto failed, falling back to LLM",
+            test.id
+        );
         return None;
     }
     // install_capture keeps CDP alive (same as normal path).
@@ -633,11 +641,15 @@ async fn try_replay_script(
     let _ = ctx.call_tool("web_navigate", cap_input).await;
 
     // Use index-based loop so ax_find can patch subsequent backend_ids in-place.
-    let mut actions = actions;  // make mutable for backend_id patching
+    let mut actions = actions; // make mutable for backend_id patching
     let n = actions.len();
     let mut i = 0;
     while i < n {
-        let label = actions[i].get("action").and_then(Value::as_str).unwrap_or("?").to_string();
+        let label = actions[i]
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or("?")
+            .to_string();
 
         // Skip LLM-dependent and meta actions.
         match label.as_str() {
@@ -656,16 +668,25 @@ async fn try_replay_script(
                 inject_session(&mut action, session_id);
                 match ctx.call_tool("web_navigate", action).await {
                     Ok(v) => {
-                        if let Some(bid) = v.get("node")
+                        if let Some(bid) = v
+                            .get("node")
                             .and_then(|n| n.get("backend_id"))
                             .and_then(|b| b.as_u64())
                         {
                             for action in actions[(i + 1)..n].iter_mut() {
-                                let is_target = action.get("action")
+                                let is_target = action
+                                    .get("action")
                                     .and_then(Value::as_str)
-                                    .map(|fa| matches!(fa,
-                                        "ax_focus"|"ax_click"|"ax_value"|"ax_type"|"ax_type_verified"
-                                    ))
+                                    .map(|fa| {
+                                        matches!(
+                                            fa,
+                                            "ax_focus"
+                                                | "ax_click"
+                                                | "ax_value"
+                                                | "ax_type"
+                                                | "ax_type_verified"
+                                        )
+                                    })
                                     .unwrap_or(false)
                                     && action.get("backend_id").is_some();
                                 if is_target {
@@ -675,7 +696,11 @@ async fn try_replay_script(
                         }
                     }
                     Err(e) => {
-                        tracing::warn!("[scripts] '{}' replay step {} ('ax_find') error: {e}", test.id, i + 1);
+                        tracing::warn!(
+                            "[scripts] '{}' replay step {} ('ax_find') error: {e}",
+                            test.id,
+                            i + 1
+                        );
                         crate::test_runner::store::record_script_fail(&test.id);
                         return None;
                     }
@@ -689,10 +714,13 @@ async fn try_replay_script(
         let mut action = actions[i].clone();
         inject_session(&mut action, session_id);
         if let Some(rid) = run_id {
-            runs::set_phase(rid, runs::RunPhase::Running {
-                step: (i + 1) as u32,
-                current_action: label.clone(),
-            });
+            runs::set_phase(
+                rid,
+                runs::RunPhase::Running {
+                    step: (i + 1) as u32,
+                    current_action: label.clone(),
+                },
+            );
         }
 
         let result = ctx.call_tool("web_navigate", action).await;
@@ -702,7 +730,10 @@ async fn try_replay_script(
                 if obs.contains("ERROR:") {
                     tracing::warn!(
                         "[scripts] '{}' replay step {} ('{}') returned error: {}",
-                        test.id, i + 1, label, &obs[..obs.len().min(120)]
+                        test.id,
+                        i + 1,
+                        label,
+                        &obs[..obs.len().min(120)]
                     );
                     crate::test_runner::store::record_script_fail(&test.id);
                     return None;
@@ -711,7 +742,9 @@ async fn try_replay_script(
             Err(e) => {
                 tracing::warn!(
                     "[scripts] '{}' replay step {} ('{}') tool error: {e}",
-                    test.id, i + 1, label
+                    test.id,
+                    i + 1,
+                    label
                 );
                 crate::test_runner::store::record_script_fail(&test.id);
                 return None;
@@ -723,12 +756,13 @@ async fn try_replay_script(
     // All actions succeeded — mark as passed.
     tracing::info!(
         "[scripts] '{}' deterministic replay succeeded in {:.1}s (0 LLM calls)",
-        test.id, started.elapsed().as_secs_f64()
+        test.id,
+        started.elapsed().as_secs_f64()
     );
     Some(TestResult {
         test_id: test.id.clone(),
         status: TestStatus::Passed,
-        iterations: 0,  // 0 = no LLM iterations
+        iterations: 0, // 0 = no LLM iterations
         duration_ms: started.elapsed().as_millis() as u64,
         error_message: None,
         screenshot_path: None,
@@ -742,7 +776,8 @@ async fn try_replay_script(
 /// Extract saveable browser actions from a completed history.
 /// Strips meta-actions (dispute_yaml, expand_observation) and LLM-only fields.
 fn extract_script_actions(history: &[TestStep]) -> Vec<serde_json::Value> {
-    history.iter()
+    history
+        .iter()
         .filter_map(|step| {
             let label = step.action.get("action").and_then(Value::as_str)?;
             match label {
@@ -754,10 +789,7 @@ fn extract_script_actions(history: &[TestStep]) -> Vec<serde_json::Value> {
 }
 
 /// Execute a test goal by driving the browser via the `web_navigate` tool.
-pub async fn execute_test(
-    ctx: &crate::adk::context::AgentContext,
-    test: &TestGoal,
-) -> TestResult {
+pub async fn execute_test(ctx: &crate::adk::context::AgentContext, test: &TestGoal) -> TestResult {
     execute_test_tracked(ctx, test, None, None).await
 }
 
@@ -779,15 +811,26 @@ pub async fn execute_test_tracked(
     // try to replay it without calling the LLM.  Fall through on any failure.
     'replay: {
         // Build current viewport string for mismatch detection.
-        let current_vp = test.viewport.as_ref()
-            .map(|v| format!("{}x{}:{:.1}:{}", v.width, v.height, v.scale,
-                             if v.mobile { "mobile" } else { "desktop" }))
+        let current_vp = test
+            .viewport
+            .as_ref()
+            .map(|v| {
+                format!(
+                    "{}x{}:{:.1}:{}",
+                    v.width,
+                    v.height,
+                    v.scale,
+                    if v.mobile { "mobile" } else { "desktop" }
+                )
+            })
             .unwrap_or_default();
 
         // Use viewport-checked load: auto-deletes and returns None on mismatch.
-        let Some(saved_actions) = crate::test_runner::store::load_script_checked(
-            &test.id, 7, &current_vp,
-        ) else { break 'replay; };
+        let Some(saved_actions) =
+            crate::test_runner::store::load_script_checked(&test.id, 7, &current_vp)
+        else {
+            break 'replay;
+        };
 
         // Auto-delete stale scripts: ≥4 of the LAST 5 runs failed.
         //
@@ -816,8 +859,12 @@ pub async fn execute_test_tracked(
             runs::set_subphase(rid, "replay");
         }
 
-        let Some(result) = try_replay_script(ctx, test, run_id, session_id, saved_actions).await else {
-            tracing::info!("[scripts] '{}' replay failed — falling back to LLM ReAct loop", test.id);
+        let Some(result) = try_replay_script(ctx, test, run_id, session_id, saved_actions).await
+        else {
+            tracing::info!(
+                "[scripts] '{}' replay failed — falling back to LLM ReAct loop",
+                test.id
+            );
             // Reset to llm mode on fallback (#192)
             if let Some(rid) = run_id {
                 runs::set_replay_mode(rid, "llm");
@@ -866,7 +913,13 @@ pub async fn execute_test_tracked(
     let record_timeline = test.record_timeline_gif;
 
     if let Some(rid) = run_id {
-        runs::set_phase(rid, runs::RunPhase::Running { step: 0, current_action: "goto".into() });
+        runs::set_phase(
+            rid,
+            runs::RunPhase::Running {
+                step: 0,
+                current_action: "goto".into(),
+            },
+        );
     }
 
     // Vision specialist startup log (once per test, not per iteration).
@@ -894,7 +947,11 @@ pub async fn execute_test_tracked(
             "[test_runner] ⚠️  '{}' has {} required doc(s) — auto-injected into prompt:\n{}",
             test.id,
             test.docs_refs.len(),
-            test.docs_refs.iter().map(|d| format!("  • {d}")).collect::<Vec<_>>().join("\n")
+            test.docs_refs
+                .iter()
+                .map(|d| format!("  • {d}"))
+                .collect::<Vec<_>>()
+                .join("\n")
         );
     }
 
@@ -933,7 +990,9 @@ pub async fn execute_test_tracked(
 
     // 0) Ensure browser launched in the right headless mode.
     // Flutter CanvasKit/WebGL needs headless=false to actually paint.
-    let want_headless = test.browser_headless.unwrap_or_else(crate::browser::default_headless);
+    let want_headless = test
+        .browser_headless
+        .unwrap_or_else(crate::browser::default_headless);
     if let Err(e) = tokio::task::spawn_blocking(move || {
         // Register the desired mode BEFORE ensure_open so that mid-call
         // recovery in with_tab() can re-launch in the same mode, not
@@ -941,11 +1000,18 @@ pub async fn execute_test_tracked(
         crate::browser::set_test_headless_mode(want_headless);
         crate::browser::ensure_open(want_headless)
     })
-        .await
-        .map_err(|e| format!("spawn_blocking: {e}"))
-        .and_then(|r| r)
+    .await
+    .map_err(|e| format!("spawn_blocking: {e}"))
+    .and_then(|r| r)
     {
-        return finalize_early(ctx, run_id, test, &history, format!("browser launch failed: {e}")).await;
+        return finalize_early(
+            ctx,
+            run_id,
+            test,
+            &history,
+            format!("browser launch failed: {e}"),
+        )
+        .await;
     }
 
     // 0) Apply per-test viewport override before any navigation.
@@ -961,11 +1027,18 @@ pub async fn execute_test_tracked(
         });
         inject_session(&mut vp_input, session_id);
         if let Err(e) = ctx.call_tool("web_navigate", vp_input).await {
-            tracing::warn!("[test_runner] '{}' set_viewport failed (non-fatal): {e}", test.id);
+            tracing::warn!(
+                "[test_runner] '{}' set_viewport failed (non-fatal): {e}",
+                test.id
+            );
         } else {
             tracing::info!(
                 "[test_runner] '{}' viewport → {}×{} scale={:.1} mobile={}",
-                test.id, vp.width, vp.height, vp.scale, vp.mobile
+                test.id,
+                vp.width,
+                vp.height,
+                vp.scale,
+                vp.mobile
             );
         }
     }
@@ -982,6 +1055,10 @@ pub async fn execute_test_tracked(
     //        b) `?__test_role=` URL tests — Flutter auto-logs in from the URL
     //           param; we must start with a clean profile for the same reason.
     //
+    //        Operations dry-runs can opt out with `preserve_origin_state: true`
+    //        when the subject under test is deliberately pre-seeded browser or
+    //        user state, such as a first-order cart.
+    //
     //        Why here and not after load: clear_browser_state() runs JS on the
     //        already-loaded page, but Flutter has already read localStorage into
     //        memory by then — clearing storage does not un-authenticate the live
@@ -990,7 +1067,7 @@ pub async fn execute_test_tracked(
     //
     //        The tab is created here (session_switch) so CDP has a target to
     //        send the command to; it does NOT need to be on that origin yet.
-    if test.fixture.is_some() || nav_url.contains("__test_role=") {
+    if !test.preserve_origin_state && (test.fixture.is_some() || nav_url.contains("__test_role=")) {
         let origin = extract_origin(&nav_url);
         let sid_pre = session_id.map(|s| s.to_string());
         let clear_result = tokio::task::spawn_blocking(move || {
@@ -998,11 +1075,20 @@ pub async fn execute_test_tracked(
                 let _ = crate::browser::session_switch(s);
             }
             crate::browser::clear_origin_data(&origin)
-        }).await;
+        })
+        .await;
         match clear_result {
-            Ok(Ok(())) => tracing::debug!("[test_runner] '{}' — pre-navigate origin clear OK", test.id),
-            Ok(Err(e)) => tracing::warn!("[test_runner] '{}' — pre-navigate origin clear failed (non-fatal): {e}", test.id),
-            Err(e)     => tracing::warn!("[test_runner] '{}' — pre-navigate clear spawn error: {e}", test.id),
+            Ok(Ok(())) => {
+                tracing::debug!("[test_runner] '{}' — pre-navigate origin clear OK", test.id)
+            }
+            Ok(Err(e)) => tracing::warn!(
+                "[test_runner] '{}' — pre-navigate origin clear failed (non-fatal): {e}",
+                test.id
+            ),
+            Err(e) => tracing::warn!(
+                "[test_runner] '{}' — pre-navigate clear spawn error: {e}",
+                test.id
+            ),
         }
     }
 
@@ -1061,7 +1147,8 @@ pub async fn execute_test_tracked(
                     crate::browser::close();
                     crate::browser::set_test_headless_mode(want_headless);
                     crate::browser::ensure_open(want_headless)
-                }).await;
+                })
+                .await;
                 // Re-subscribe to events on the new Chrome instance.
                 let mut cap2 = json!({ "action": "install_capture" });
                 inject_session(&mut cap2, session_id);
@@ -1070,8 +1157,14 @@ pub async fn execute_test_tracked(
                 let mut nav2 = json!({ "action": "goto", "target": &nav_url });
                 inject_session(&mut nav2, session_id);
                 if let Err(e) = ctx.call_tool("web_navigate", nav2).await {
-                    return finalize_early(ctx, run_id, test, &history,
-                        format!("navigate retry after black-screen reset failed: {e}")).await;
+                    return finalize_early(
+                        ctx,
+                        run_id,
+                        test,
+                        &history,
+                        format!("navigate retry after black-screen reset failed: {e}"),
+                    )
+                    .await;
                 }
             }
         }
@@ -1086,7 +1179,10 @@ pub async fn execute_test_tracked(
         let mut ea = json!({"action": "enable_a11y"});
         inject_session(&mut ea, session_id);
         let _ = ctx.call_tool("web_navigate", ea).await;
-        tracing::debug!("[test_runner] '{}' — post-auto-login enable_a11y OK", test.id);
+        tracing::debug!(
+            "[test_runner] '{}' — post-auto-login enable_a11y OK",
+            test.id
+        );
     }
 
     // Issue #75: inject the action indicator now that the page is ready
@@ -1095,14 +1191,22 @@ pub async fn execute_test_tracked(
     if test.show_action_indicator {
         let _ = tokio::task::spawn_blocking(|| {
             crate::browser::show_action_indicator("starting");
-        }).await;
+        })
+        .await;
     }
 
     // 2c) Run fixture setup steps (failure aborts the test before the ReAct loop).
     if let Some(fixture) = &test.fixture {
         for step in &fixture.setup {
             if let Err(e) = run_fixture_step(ctx, step, session_id).await {
-                let result = finalize_early(ctx, run_id, test, &history, format!("fixture setup failed: {e}")).await;
+                let result = finalize_early(
+                    ctx,
+                    run_id,
+                    test,
+                    &history,
+                    format!("fixture setup failed: {e}"),
+                )
+                .await;
                 // Still run cleanup even when setup fails.
                 if let Some(fix) = &test.fixture {
                     for cs in &fix.cleanup {
@@ -1114,6 +1218,33 @@ pub async fn execute_test_tracked(
                 return result;
             }
         }
+    }
+
+    if test.fixture_only {
+        if let Some(rid) = run_id {
+            runs::set_replay_mode(rid, "fixture_only");
+        }
+        if let Some(fixture) = &test.fixture {
+            for step in &fixture.cleanup {
+                if let Err(e) = run_fixture_step(ctx, step, session_id).await {
+                    tracing::warn!("[fixture] cleanup step '{}' failed: {e}", step.action);
+                }
+            }
+        }
+        return TestResult {
+            test_id: test.id.clone(),
+            status: TestStatus::Passed,
+            iterations: 0,
+            duration_ms: started.elapsed().as_millis() as u64,
+            error_message: None,
+            screenshot_path: None,
+            screenshot_error: None,
+            history,
+            final_analysis: Some(
+                "fixture_only passed: all deterministic fixture steps succeeded".to_string(),
+            ),
+            dispute: None,
+        };
     }
 
     // 3) ReAct loop
@@ -1135,7 +1266,7 @@ pub async fn execute_test_tracked(
     // errors, abort — the LLM is varying actions but nothing is working.
     let mut recent_obs_was_error: std::collections::VecDeque<bool> =
         std::collections::VecDeque::with_capacity(8);
-    const ERROR_RATIO_NUM: usize = 6;  // 6 of last 8 = 75%
+    const ERROR_RATIO_NUM: usize = 6; // 6 of last 8 = 75%
 
     // Collect the loop result into a variable so cleanup always runs afterward.
     let run_result: TestResult = 'react: {
@@ -1170,7 +1301,8 @@ pub async fn execute_test_tracked(
                      output `{{\"thought\":\"...\",\"done\":true,\"final_answer\":\"<summary>\"}}` \
                      NOW.  Don't burn iterations on extra verification screenshots — \
                      trust what you've already seen.",
-                    iter = iteration, max = max_iter
+                    iter = iteration,
+                    max = max_iter
                 )),
                 None => None,
             };
@@ -1210,7 +1342,9 @@ pub async fn execute_test_tracked(
 
                 // Phase B — mark sub-phase so `live_trace` / `get_test_result`
                 // can show "in llm_call for 84s" vs "in browser_action for 12s".
-                if let Some(rid) = run_id { runs::set_subphase(rid, "llm_call"); }
+                if let Some(rid) = run_id {
+                    runs::set_subphase(rid, "llm_call");
+                }
 
                 let mut last_err = String::new();
                 let mut raw_opt: Option<(String, LlmCallMeta)> = None;
@@ -1221,15 +1355,23 @@ pub async fn execute_test_tracked(
                     // Re-check deadline before each attempt (previous attempt's
                     // retry backoff may have consumed significant time).
                     let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-                    if remaining.is_zero() { break; }
+                    if remaining.is_zero() {
+                        break;
+                    }
 
-                    let llm_future = call_test_llm(ctx, test, &history, hint_for_llm.as_deref(), &perception);
+                    let llm_future =
+                        call_test_llm(ctx, test, &history, hint_for_llm.as_deref(), &perception);
                     match tokio::time::timeout(remaining, llm_future).await {
-                        Ok(Ok(pair)) => { raw_opt = Some(pair); break; }
+                        Ok(Ok(pair)) => {
+                            raw_opt = Some(pair);
+                            break;
+                        }
                         Ok(Err(e)) => {
                             tracing::warn!(
                                 "[test_runner] '{}' iter {} LLM error (attempt {}/3): {e}",
-                                test.id, iteration, attempt + 1
+                                test.id,
+                                iteration,
+                                attempt + 1
                             );
                             last_err = e;
                         }
@@ -1237,10 +1379,14 @@ pub async fn execute_test_tracked(
                             // Deadline expired while waiting for LLM (e.g. inside
                             // token-bucket sleep or API retry).  Break out of
                             // retry loop so the timeout branch below fires.
-                            last_err = format!("LLM call aborted: deadline exceeded ({}s)", test.timeout_secs);
+                            last_err = format!(
+                                "LLM call aborted: deadline exceeded ({}s)",
+                                test.timeout_secs
+                            );
                             tracing::warn!(
                                 "[test_runner] '{}' iter {} LLM timed out (deadline exceeded)",
-                                test.id, iteration
+                                test.id,
+                                iteration
                             );
                             break;
                         }
@@ -1258,7 +1404,10 @@ pub async fn execute_test_tracked(
                                 status: TestStatus::Timeout,
                                 iterations: iteration,
                                 duration_ms: started.elapsed().as_millis() as u64,
-                                error_message: Some(format!("timed out after {}s", test.timeout_secs)),
+                                error_message: Some(format!(
+                                    "timed out after {}s",
+                                    test.timeout_secs
+                                )),
                                 screenshot_path: cap.path,
                                 screenshot_error: cap.error,
                                 history,
@@ -1267,9 +1416,13 @@ pub async fn execute_test_tracked(
                             };
                         }
                         break 'react finalize_early(
-                            ctx, run_id, test, &history,
-                            format!("LLM error after 3 attempts: {last_err}")
-                        ).await
+                            ctx,
+                            run_id,
+                            test,
+                            &history,
+                            format!("LLM error after 3 attempts: {last_err}"),
+                        )
+                        .await;
                     }
                 }
             };
@@ -1303,14 +1456,19 @@ pub async fn execute_test_tracked(
                         ..Default::default()
                     };
                     trace_stamp(&mut s, parse_error_count);
-                    mirror_step(&s); history.push(s);
+                    mirror_step(&s);
+                    history.push(s);
                     if let Some(rid) = run_id {
                         runs::push_observation(rid, format!("ERROR (parse): {err}\nRaw: {raw}"));
                     }
                     break 'react finalize_early(
-                        ctx, run_id, test, &history,
+                        ctx,
+                        run_id,
+                        test,
+                        &history,
                         format!("too many invalid LLM responses ({max_parse_errors})"),
-                    ).await;
+                    )
+                    .await;
                 }
                 // Reprompt — save hint for next iteration.  The schema example
                 // is critical: empirically Gemini drifts into "thought: ...\n
@@ -1333,7 +1491,7 @@ pub async fn execute_test_tracked(
                 if let Some(rid) = run_id {
                     runs::push_observation(rid, format!("PARSE_RETRY ({parse_error_count}/{max_parse_errors}): {err}\nRaw: {raw}"));
                 }
-                continue;  // don't push anything to visible history — LLM just retries
+                continue; // don't push anything to visible history — LLM just retries
             }
 
             if step.done {
@@ -1345,7 +1503,10 @@ pub async fn execute_test_tracked(
                 )
                 .await
                 .unwrap_or_else(|_| {
-                    tracing::warn!("[test_runner] '{}' evaluate_success timed out (30s)", test.id);
+                    tracing::warn!(
+                        "[test_runner] '{}' evaluate_success timed out (30s)",
+                        test.id
+                    );
                     crate::test_runner::executor::SuccessAnalysis {
                         passed: false,
                         reason: "evaluate_success timed out — LLM took > 30 s".to_string(),
@@ -1356,22 +1517,42 @@ pub async fn execute_test_tracked(
                     // deterministically without LLM (script replay POC).
                     let script_actions = extract_script_actions(&history);
                     if script_actions.len() >= 3 {
-                        let vp = test.viewport.as_ref()
-                            .map(|v| format!("{}x{}:{:.1}:{}", v.width, v.height, v.scale,
-                                             if v.mobile { "mobile" } else { "desktop" }))
+                        let vp = test
+                            .viewport
+                            .as_ref()
+                            .map(|v| {
+                                format!(
+                                    "{}x{}:{:.1}:{}",
+                                    v.width,
+                                    v.height,
+                                    v.scale,
+                                    if v.mobile { "mobile" } else { "desktop" }
+                                )
+                            })
                             .unwrap_or_else(|| "default".to_string());
                         crate::test_runner::store::save_script(&test.id, &script_actions, &vp);
                     }
-                    ScreenshotCapture { path: None, error: None }
+                    ScreenshotCapture {
+                        path: None,
+                        error: None,
+                    }
                 } else {
                     capture_screenshot(ctx, &test.id, run_id).await
                 };
                 break 'react TestResult {
                     test_id: test.id.clone(),
-                    status: if analysis.passed { TestStatus::Passed } else { TestStatus::Failed },
+                    status: if analysis.passed {
+                        TestStatus::Passed
+                    } else {
+                        TestStatus::Failed
+                    },
                     iterations: iteration + 1,
                     duration_ms: started.elapsed().as_millis() as u64,
-                    error_message: if analysis.passed { None } else { Some(analysis.reason.clone()) },
+                    error_message: if analysis.passed {
+                        None
+                    } else {
+                        Some(analysis.reason.clone())
+                    },
                     screenshot_path: cap.path,
                     screenshot_error: cap.error,
                     history,
@@ -1383,12 +1564,19 @@ pub async fn execute_test_tracked(
             // Execute the browser tool call
             let mut action_input = step.action_input.clone();
             inject_session(&mut action_input, session_id);
-            let action_label = action_input.get("action").and_then(Value::as_str).unwrap_or("?").to_string();
+            let action_label = action_input
+                .get("action")
+                .and_then(Value::as_str)
+                .unwrap_or("?")
+                .to_string();
             if let Some(rid) = run_id {
-                runs::set_phase(rid, runs::RunPhase::Running {
-                    step: (iteration + 1),
-                    current_action: action_label.clone(),
-                });
+                runs::set_phase(
+                    rid,
+                    runs::RunPhase::Running {
+                        step: (iteration + 1),
+                        current_action: action_label.clone(),
+                    },
+                );
             }
             // Issue #75: refresh the in-page action indicator with the
             // current action.  No-op when `show_action_indicator` is false.
@@ -1397,7 +1585,8 @@ pub async fn execute_test_tracked(
                 let label = format!("{} ({}/{})", action_label, iteration + 1, max_iter);
                 let _ = tokio::task::spawn_blocking(move || {
                     crate::browser::show_action_indicator(&label);
-                }).await;
+                })
+                .await;
             }
             // Issue #103: `dispute_yaml` — LLM signals that the YAML spec has
             // a bug.  Terminate the loop immediately with Disputed status.
@@ -1408,17 +1597,21 @@ pub async fn execute_test_tracked(
                     .and_then(Value::as_str)
                     .unwrap_or("(no reason provided)")
                     .to_string();
-                let suspected_step = action_input
-                    .get("suspected_step")
-                    .and_then(Value::as_i64);
+                let suspected_step = action_input.get("suspected_step").and_then(Value::as_i64);
                 let suggested_fix = action_input
                     .get("suggested_fix")
                     .and_then(Value::as_str)
                     .map(String::from);
-                let dispute_info = DisputeInfo { reason: reason.clone(), suspected_step, suggested_fix };
+                let dispute_info = DisputeInfo {
+                    reason: reason.clone(),
+                    suspected_step,
+                    suggested_fix,
+                };
 
                 // Capture URL for context (best-effort; ignore errors).
-                let final_url = ctx.call_tool("web_navigate", json!({"action":"url"})).await
+                let final_url = ctx
+                    .call_tool("web_navigate", json!({"action":"url"}))
+                    .await
                     .ok()
                     .and_then(|v| v.get("url").and_then(Value::as_str).map(String::from))
                     .unwrap_or_default();
@@ -1444,7 +1637,8 @@ pub async fn execute_test_tracked(
                     ..Default::default()
                 };
                 trace_stamp(&mut s, parse_error_count);
-                mirror_step(&s); history.push(s);
+                mirror_step(&s);
+                history.push(s);
 
                 let cap = capture_screenshot(ctx, &test.id, run_id).await;
                 break 'react TestResult {
@@ -1456,7 +1650,9 @@ pub async fn execute_test_tracked(
                     screenshot_path: cap.path,
                     screenshot_error: cap.error,
                     history,
-                    final_analysis: Some(format!("LLM disputed YAML spec at iteration {iteration}")),
+                    final_analysis: Some(format!(
+                        "LLM disputed YAML spec at iteration {iteration}"
+                    )),
                     dispute: Some(dispute_out),
                 };
             }
@@ -1467,16 +1663,21 @@ pub async fn execute_test_tracked(
             //
             // Phase B — sub-phase flip from "llm_call" → "browser_action" so
             // `live_trace` can show "in browser_action for 12s" cleanly.
-            if let Some(rid) = run_id { runs::set_subphase(rid, "browser_action"); }
+            if let Some(rid) = run_id {
+                runs::set_subphase(rid, "browser_action");
+            }
             let raw_result = if action_label == "expand_observation" {
-                ctx.call_tool("expand_observation", action_input.clone()).await
+                ctx.call_tool("expand_observation", action_input.clone())
+                    .await
             } else {
                 ctx.call_tool("web_navigate", action_input.clone()).await
             };
             // Clear the sub-phase as soon as the action returns — between
             // here and the next loop iteration we're processing observations,
             // not waiting on any external resource.
-            if let Some(rid) = run_id { runs::clear_subphase(rid); }
+            if let Some(rid) = run_id {
+                runs::clear_subphase(rid);
+            }
             let full_obs = match &raw_result {
                 Ok(v) => v.to_string(),
                 Err(e) => format!("ERROR: {e}"),
@@ -1491,7 +1692,8 @@ pub async fn execute_test_tracked(
                         tracing::warn!(
                             "[test_runner] ⚠️  '{}' iter {} — mid-loop black screen. \
                              Chrome crashed again; resetting + re-navigating.",
-                            test.id, iteration
+                            test.id,
+                            iteration
                         );
                         let wh = want_headless;
                         let nav_clone = nav_url.clone();
@@ -1499,10 +1701,13 @@ pub async fn execute_test_tracked(
                             crate::browser::close();
                             crate::browser::set_test_headless_mode(wh);
                             crate::browser::ensure_open(wh)
-                        }).await;
+                        })
+                        .await;
                         let mut nav_retry = json!({"action": "goto", "target": &nav_clone});
                         inject_session(&mut nav_retry, session_id);
-                        let re_obs = ctx.call_tool("web_navigate", nav_retry).await
+                        let re_obs = ctx
+                            .call_tool("web_navigate", nav_retry)
+                            .await
                             .map(|v| v.to_string())
                             .unwrap_or_else(|e| format!("re-navigate error: {e}"));
                         let recovery_obs = format!(
@@ -1522,8 +1727,9 @@ pub async fn execute_test_tracked(
                             ..Default::default()
                         };
                         trace_stamp(&mut s, parse_error_count);
-                        mirror_step(&s); history.push(s);
-                        continue;  // next iteration — LLM will see recovery message
+                        mirror_step(&s);
+                        history.push(s);
+                        continue; // next iteration — LLM will see recovery message
                     }
                 }
             }
@@ -1551,7 +1757,11 @@ pub async fn execute_test_tracked(
                     tracing::warn!(
                         "[test_runner] '{}' iter {}: convergence guard tripped — \
                          action `{}` repeated {}× in last {} non-noise steps; aborting early",
-                        test.id, iteration, sig, same_count, recent_action_sigs.len()
+                        test.id,
+                        iteration,
+                        sig,
+                        same_count,
+                        recent_action_sigs.len()
                     );
                     // Best-effort KB raw note (fire-and-forget; never blocks).
                     record_guard_fire_to_kb(
@@ -1568,7 +1778,8 @@ pub async fn execute_test_tracked(
                         ..Default::default()
                     };
                     trace_stamp(&mut s, parse_error_count);
-                    mirror_step(&s); history.push(s);
+                    mirror_step(&s);
+                    history.push(s);
                     break 'react finalize_early(
                         ctx, run_id, test, &history,
                         format!(
@@ -1593,13 +1804,14 @@ pub async fn execute_test_tracked(
                     recent_obs_was_error.pop_front();
                 }
                 let err_count = recent_obs_was_error.iter().filter(|x| **x).count();
-                if recent_obs_was_error.len() >= LOOP_WINDOW
-                    && err_count >= ERROR_RATIO_NUM
-                {
+                if recent_obs_was_error.len() >= LOOP_WINDOW && err_count >= ERROR_RATIO_NUM {
                     tracing::warn!(
                         "[test_runner] '{}' iter {}: error-ratio guard tripped — \
                          {}/{} of last actions failed; aborting early",
-                        test.id, iteration, err_count, recent_obs_was_error.len()
+                        test.id,
+                        iteration,
+                        err_count,
+                        recent_obs_was_error.len()
                     );
                     // Best-effort KB raw note (fire-and-forget; never blocks).
                     record_guard_fire_to_kb(
@@ -1616,7 +1828,8 @@ pub async fn execute_test_tracked(
                         ..Default::default()
                     };
                     trace_stamp(&mut s, parse_error_count);
-                    mirror_step(&s); history.push(s);
+                    mirror_step(&s);
+                    history.push(s);
                     break 'react finalize_early(
                         ctx, run_id, test, &history,
                         format!(
@@ -1634,7 +1847,8 @@ pub async fn execute_test_tracked(
                 ..Default::default()
             };
             trace_stamp(&mut s, parse_error_count);
-            mirror_step(&s); history.push(s);
+            mirror_step(&s);
+            history.push(s);
 
             // Issue #78: capture a timeline frame after each successful step.
             // Reuses crate::browser::screenshot which auto-applies the privacy
@@ -1648,7 +1862,8 @@ pub async fn execute_test_tracked(
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                if let Ok(Ok(bytes)) = tokio::task::spawn_blocking(crate::browser::screenshot).await {
+                if let Ok(Ok(bytes)) = tokio::task::spawn_blocking(crate::browser::screenshot).await
+                {
                     timeline.push(crate::test_runner::gif_recorder::TimelineFrame {
                         step: iteration + 1,
                         action: action_label.clone(),
@@ -1673,7 +1888,7 @@ pub async fn execute_test_tracked(
             final_analysis: None,
             dispute: None,
         }
-    };  // end 'react block
+    }; // end 'react block
 
     // 4) Fixture cleanup — always runs regardless of test pass/fail/timeout/error.
     if let Some(fixture) = &test.fixture {
@@ -1686,16 +1901,14 @@ pub async fn execute_test_tracked(
 
     // Issue #78: on failure, encode the buffered frames into timeline.gif.
     // Soft-fail — never blocks triage.  Single-frame screenshot path stays.
-    if record_timeline
-        && !matches!(run_result.status, TestStatus::Passed)
-        && !timeline.is_empty()
-    {
+    if record_timeline && !matches!(run_result.status, TestStatus::Passed) && !timeline.is_empty() {
         if let Some(rid) = run_id {
             let path = crate::test_runner::gif_recorder::timeline_gif_path(rid);
             match timeline.encode_to_gif(&path) {
                 Ok(_) => tracing::info!(
                     "[test_runner] timeline GIF saved: {} ({} frames)",
-                    path.display(), timeline.len()
+                    path.display(),
+                    timeline.len()
                 ),
                 Err(e) => tracing::warn!("[test_runner] timeline GIF encode failed: {e}"),
             }
@@ -1741,13 +1954,15 @@ async fn capture_screenshot(
     run_id: Option<&str>,
 ) -> ScreenshotCapture {
     // Tell the tool (publishes event for UI)
-    let _ = ctx.call_tool("web_navigate", json!({"action": "screenshot"})).await;
+    let _ = ctx
+        .call_tool("web_navigate", json!({"action": "screenshot"}))
+        .await;
 
-    let bytes_result: Result<Vec<u8>, String> = tokio::task::spawn_blocking(
-        crate::browser::screenshot
-    ).await
-    .map_err(|e| format!("spawn_blocking failed: {e}"))
-    .and_then(|r| r);
+    let bytes_result: Result<Vec<u8>, String> =
+        tokio::task::spawn_blocking(crate::browser::screenshot)
+            .await
+            .map_err(|e| format!("spawn_blocking failed: {e}"))
+            .and_then(|r| r);
 
     match bytes_result {
         Ok(bytes) => {
@@ -1755,23 +1970,37 @@ async fn capture_screenshot(
                 crate::test_runner::runs::set_screenshot(rid, Ok(bytes.clone()));
             }
             let failures_dir = crate::platform::app_data_dir().join("test_failures");
-            let path = failures_dir.join(format!("{test_id}_{}.png",
-                chrono::Local::now().format("%Y%m%d_%H%M%S")));
+            let path = failures_dir.join(format!(
+                "{test_id}_{}.png",
+                chrono::Local::now().format("%Y%m%d_%H%M%S")
+            ));
             if let Err(e) = std::fs::create_dir_all(&failures_dir) {
                 let msg = format!("mkdir failed: {e}");
-                return ScreenshotCapture { path: None, error: Some(msg) };
+                return ScreenshotCapture {
+                    path: None,
+                    error: Some(msg),
+                };
             }
             if let Err(e) = std::fs::write(&path, &bytes) {
                 let msg = format!("write {:?} failed: {e}", path);
-                return ScreenshotCapture { path: None, error: Some(msg) };
+                return ScreenshotCapture {
+                    path: None,
+                    error: Some(msg),
+                };
             }
-            ScreenshotCapture { path: Some(path.to_string_lossy().to_string()), error: None }
+            ScreenshotCapture {
+                path: Some(path.to_string_lossy().to_string()),
+                error: None,
+            }
         }
         Err(e) => {
             if let Some(rid) = run_id {
                 crate::test_runner::runs::set_screenshot(rid, Err(e.clone()));
             }
-            ScreenshotCapture { path: None, error: Some(e) }
+            ScreenshotCapture {
+                path: None,
+                error: Some(e),
+            }
         }
     }
 }
@@ -1779,7 +2008,9 @@ async fn capture_screenshot(
 /// Truncate observation for LLM history, appending a retrieval hint if cut.
 fn truncate_with_hint(full: &str, step_idx: usize) -> String {
     let char_count = full.chars().count();
-    if char_count <= OBS_TRUNCATE_CHARS { return full.to_string(); }
+    if char_count <= OBS_TRUNCATE_CHARS {
+        return full.to_string();
+    }
     let head: String = full.chars().take(OBS_TRUNCATE_CHARS).collect();
     format!(
         "{head}... [truncated: full length {char_count} chars. \
@@ -1798,12 +2029,15 @@ fn build_prompt(test: &TestGoal, history: &[TestStep], parse_error_hint: Option<
     let vision_call_count = history
         .iter()
         .filter(|step| {
-            step.observation.contains("__vision") || 
-            (step.action.get("action").is_some_and(|a| a.as_str() == Some("screenshot_analyze")))
+            step.observation.contains("__vision")
+                || (step
+                    .action
+                    .get("action")
+                    .is_some_and(|a| a.as_str() == Some("screenshot_analyze")))
         })
         .count();
     let is_vision_heavy = vision_call_count >= 3; // 3+ vision calls → aggressive truncation
-    
+
     let obs_limit = if is_vision_heavy {
         OBS_TRUNCATE_CHARS_VISION_HEAVY
     } else {
@@ -1937,7 +2171,11 @@ Never inline multiple parameters as one quoted string with `"` chars
 /// preventing the 10-20 KB prompt that causes `claude -p` to hang on iteration 2+
 /// (observed 2026-04-20: full prompt with screenshot-analysis history reliably
 /// hit the 600 s subprocess watchdog; compact prompt completes in ~6 s).
-fn build_prompt_compact(test: &TestGoal, history: &[TestStep], parse_error_hint: Option<&str>) -> String {
+fn build_prompt_compact(
+    test: &TestGoal,
+    history: &[TestStep],
+    parse_error_hint: Option<&str>,
+) -> String {
     build_prompt_with_limits(test, history, parse_error_hint, 3, 200)
 }
 
@@ -1956,7 +2194,9 @@ fn build_prompt_with_limits(
     // These are the most semantically dense observations — a multi-round test needs
     // round-1 screenshot descriptions to be visible when the LLM evaluates round-2.
     let pinned_screenshots: Vec<String> = if skipped > 0 {
-        history[..skipped].iter().enumerate()
+        history[..skipped]
+            .iter()
+            .enumerate()
             .filter(|(_, s)| {
                 s.action.get("action").and_then(|v| v.as_str()) == Some("screenshot_analyze")
             })
@@ -1988,12 +2228,19 @@ fn build_prompt_with_limits(
         } else {
             String::new()
         };
-        let steps: String = visible.iter().enumerate().map(|(i, s)| {
-            let obs = truncate(&s.observation, obs_max_chars);
-            let step_n = skipped + i + 1;
-            format!("[Step {step_n}]\nThought: {}\nAction: {}\nObservation: {obs}\n",
-                s.thought, s.action)
-        }).collect::<Vec<_>>().join("---\n");
+        let steps: String = visible
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let obs = truncate(&s.observation, obs_max_chars);
+                let step_n = skipped + i + 1;
+                format!(
+                    "[Step {step_n}]\nThought: {}\nAction: {}\nObservation: {obs}\n",
+                    s.thought, s.action
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("---\n");
         format!("{pin_block}{prefix}{steps}")
     };
 
@@ -2005,12 +2252,17 @@ fn build_prompt_with_limits(
     let criteria = if test.success_criteria.is_empty() {
         locale.default_criteria().to_string()
     } else {
-        test.success_criteria.iter().map(|c| format!("- {c}")).collect::<Vec<_>>().join("\n")
+        test.success_criteria
+            .iter()
+            .map(|c| format!("- {c}"))
+            .collect::<Vec<_>>()
+            .join("\n")
     };
 
     let docs_block = docs_prompt_block(&test.id);
 
-    format!(r##"You are a browser-testing agent.  Your job is to achieve the test goal by driving the browser.
+    format!(
+        r##"You are a browser-testing agent.  Your job is to achieve the test goal by driving the browser.
 
 ## Goal
 {goal}
@@ -2051,6 +2303,8 @@ For Flutter/CanvasKit canvas apps AND exact-string assertions:
 - enable_a11y       — ⚠️ MUST call first on Flutter/CanvasKit apps; without it ax_find/shadow_find
                        return empty because the semantics bridge is inactive. Call again after
                        any route change (tree collapses temporarily after navigation).
+- wait_for_flutter_semantics — deterministic Flutter boot wait. Repeatedly triggers semantics until
+                       flt-semantics-host has min_roles role nodes; safer than fixed wait+enable_a11y.
 - ax_tree           — list all a11y nodes (role + literal name + value + backend_id)
 - ax_find           — role and/or name (substring, case-insensitive); optional name_regex for EXACT match
                        (e.g. name_regex="^登入$" to match only "登入" and not "使用 Google 登入");
@@ -2069,6 +2323,10 @@ These query Flutter's `flt-semantics-host` directly via JS, avoiding AX tree col
 - shadow_find           — role and/or name_regex → {{found, x, y, label}}; params: role, name_regex (or name)
 - shadow_click          — same params as shadow_find; clicks via JS PointerEvent dispatch
                           (NOT CDP Input.dispatchMouseEvent — that causes about:blank on Flutter nav buttons)
+- dismiss_passkey_prompt — no-op helper for AgoraMarket/Flutter onboarding; dismisses "稍後再說"/Later/Skip
+                          if visible, returns skipped when absent. Safe in fixtures after goto + wait.
+- agora_nav_click       — AgoraMarket bottom nav helper. target/name_regex is matched against button OR tab only,
+                          avoiding accidental clicks on large group labels that mention 商品/訂單/錢包.
 - shadow_type           — role + name_regex + text; clicks to focus then inserts text via CDP InsertText
 - flutter_type          — Supports ASCII AND CJK/Unicode (你好、日本語、ภาษาไทย etc).
                           ASCII: fires CDP keydown per character. CJK/non-ASCII: auto-switches to
@@ -2320,8 +2578,7 @@ async fn call_test_llm(
             // call using the main LLM (which must be multimodal, e.g. Gemini Flash).
             if let Some(vision_cfg) = crate::llm::vision_llm_config() {
                 // Stage 1: get a brief visual description of the current page.
-                let vision_desc_prompt =
-                    "簡短描述截圖（50字以內）：頁面類型、主要元素、當前狀態。";
+                let vision_desc_prompt = "簡短描述截圖（50字以內）：頁面類型、主要元素、當前狀態。";
                 let visual_desc = crate::llm::call_vision(
                     ctx.http.as_ref(),
                     &std::sync::Arc::new(vision_cfg),
@@ -2339,17 +2596,21 @@ async fn call_test_llm(
                 );
                 let model = ctx.llm.effective_coding_model().to_string();
                 let prompt_bytes = augmented.len();
-                let res = crate::llm::call_coding_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), augmented)
-                    .await
-                    .map_err(|e| e.to_string());
+                let res =
+                    crate::llm::call_coding_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), augmented)
+                        .await
+                        .map_err(|e| e.to_string());
                 return res.map(|s| {
                     let response_bytes = s.len();
-                    (s, LlmCallMeta {
-                        model,
-                        latency_ms: started.elapsed().as_millis() as u64,
-                        prompt_bytes,
-                        response_bytes,
-                    })
+                    (
+                        s,
+                        LlmCallMeta {
+                            model,
+                            latency_ms: started.elapsed().as_millis() as u64,
+                            prompt_bytes,
+                            response_bytes,
+                        },
+                    )
                 });
             }
 
@@ -2368,12 +2629,15 @@ async fn call_test_llm(
             .map_err(|e| e.to_string());
             return res.map(|s| {
                 let response_bytes = s.len();
-                (s, LlmCallMeta {
-                    model,
-                    latency_ms: started.elapsed().as_millis() as u64,
-                    prompt_bytes,
-                    response_bytes,
-                })
+                (
+                    s,
+                    LlmCallMeta {
+                        model,
+                        latency_ms: started.elapsed().as_millis() as u64,
+                        prompt_bytes,
+                        response_bytes,
+                    },
+                )
             });
         }
         tracing::warn!(
@@ -2390,12 +2654,15 @@ async fn call_test_llm(
             let prompt_bytes = prompt.len();
             call_claude_cli(prompt).await.map(|s| {
                 let response_bytes = s.len();
-                (s, LlmCallMeta {
-                    model: "claude_cli".into(),
-                    latency_ms: started.elapsed().as_millis() as u64,
-                    prompt_bytes,
-                    response_bytes,
-                })
+                (
+                    s,
+                    LlmCallMeta {
+                        model: "claude_cli".into(),
+                        latency_ms: started.elapsed().as_millis() as u64,
+                        prompt_bytes,
+                        response_bytes,
+                    },
+                )
             })
         }
         _ => {
@@ -2434,12 +2701,15 @@ async fn call_test_llm(
                 .map_err(|e| e.to_string())
                 .map(|s| {
                     let response_bytes = s.len();
-                    (s, LlmCallMeta {
-                        model,
-                        latency_ms: started.elapsed().as_millis() as u64,
-                        prompt_bytes,
-                        response_bytes,
-                    })
+                    (
+                        s,
+                        LlmCallMeta {
+                            model,
+                            latency_ms: started.elapsed().as_millis() as u64,
+                            prompt_bytes,
+                            response_bytes,
+                        },
+                    )
                 })
         }
     }
@@ -2472,10 +2742,18 @@ fn parse_step(raw: &str) -> ParsedStep {
     let cleaned = strip_fences(raw);
     match serde_json::from_str::<Value>(&cleaned) {
         Ok(v) => {
-            let thought = v.get("thought").and_then(Value::as_str).unwrap_or_default().to_string();
+            let thought = v
+                .get("thought")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
             let mut action_input = v.get("action_input").cloned().unwrap_or(json!({}));
             let mut done = v.get("done").and_then(Value::as_bool).unwrap_or(false);
-            let final_answer = v.get("final_answer").and_then(Value::as_str).map(String::from).filter(|s| !s.is_empty());
+            let final_answer = v
+                .get("final_answer")
+                .and_then(Value::as_str)
+                .map(String::from)
+                .filter(|s| !s.is_empty());
 
             // Recovery: when the LLM omits the {thought, action_input, done} wrapper
             // and writes the action JSON directly (or strip_fences extracted only the
@@ -2500,11 +2778,20 @@ fn parse_step(raw: &str) -> ParsedStep {
             // Require action_input to include an "action" field unless done
             if !done && action_input.get("action").and_then(Value::as_str).is_none() {
                 return ParsedStep {
-                    thought, action_input, done, final_answer,
+                    thought,
+                    action_input,
+                    done,
+                    final_answer,
                     parse_error: Some("action_input missing 'action' field".into()),
                 };
             }
-            ParsedStep { thought, action_input, done, final_answer, parse_error: None }
+            ParsedStep {
+                thought,
+                action_input,
+                done,
+                final_answer,
+                parse_error: None,
+            }
         }
         Err(e) => {
             // Last-ditch: try the plain-text "thought: ...\naction_input: {...}\ndone: ..."
@@ -2583,7 +2870,7 @@ fn action_signature(action_input: &Value) -> String {
         .or_else(|| action_input.get("backend_id"))
         .map(|v| match v {
             Value::String(s) => s.clone(),
-            other            => other.to_string(),
+            other => other.to_string(),
         })
         .unwrap_or_default();
     let tertiary = action_input
@@ -2645,14 +2932,20 @@ fn parse_plaintext_step(raw: &str) -> Option<ParsedStep> {
     let mut escape = false;
     let mut end_off: Option<usize> = None;
     for (i, &b) in bytes.iter().enumerate().skip(brace_start) {
-        if escape { escape = false; continue; }
+        if escape {
+            escape = false;
+            continue;
+        }
         match b {
             b'\\' if in_string => escape = true,
             b'"' => in_string = !in_string,
             b'{' if !in_string => depth += 1,
             b'}' if !in_string => {
                 depth -= 1;
-                if depth == 0 { end_off = Some(i); break; }
+                if depth == 0 {
+                    end_off = Some(i);
+                    break;
+                }
             }
             _ => {}
         }
@@ -2681,7 +2974,9 @@ fn strip_fences(raw: &str) -> String {
         }
     }
     if let (Some(s), Some(e)) = (t.find('{'), t.rfind('}')) {
-        if e > s { return t[s..=e].to_string(); }
+        if e > s {
+            return t[s..=e].to_string();
+        }
     }
     t.to_string()
 }
@@ -2691,8 +2986,9 @@ fn format_observation(v: &Value) -> String {
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max { s.to_string() }
-    else {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
         let head: String = s.chars().take(max).collect();
         format!("{head}... [truncated]")
     }
@@ -2716,21 +3012,37 @@ async fn evaluate_success(
     let criteria = if test.success_criteria.is_empty() {
         locale.evaluate_default_criteria().to_string()
     } else {
-        test.success_criteria.iter().map(|c| format!("- {c}")).collect::<Vec<_>>().join("\n")
+        test.success_criteria
+            .iter()
+            .map(|c| format!("- {c}"))
+            .collect::<Vec<_>>()
+            .join("\n")
     };
 
-    let history_summary = history.iter().enumerate()
-        .map(|(i, s)| format!("{}. {} → {}", i + 1,
-            s.action.to_string().chars().take(80).collect::<String>(),
-            truncate(&s.observation, 120)))
+    let history_summary = history
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            format!(
+                "{}. {} → {}",
+                i + 1,
+                s.action.to_string().chars().take(80).collect::<String>(),
+                truncate(&s.observation, 120)
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n");
 
     // Grab current URL + page text hint
-    let url = ctx.call_tool("web_navigate", json!({"action":"url"})).await
-        .ok().and_then(|v| v.get("url").and_then(Value::as_str).map(String::from)).unwrap_or_default();
+    let url = ctx
+        .call_tool("web_navigate", json!({"action":"url"}))
+        .await
+        .ok()
+        .and_then(|v| v.get("url").and_then(Value::as_str).map(String::from))
+        .unwrap_or_default();
 
-    let prompt = format!(r#"{header}
+    let prompt = format!(
+        r#"{header}
 
 Goal: {goal}
 Success criteria:
@@ -2758,16 +3070,28 @@ Agent final message: {agent_final}
 
     let raw = match crate::llm::call_prompt(ctx.http.as_ref(), ctx.llm.as_ref(), prompt).await {
         Ok(s) => s,
-        Err(e) => return SuccessAnalysis { passed: false, reason: format!("evaluate LLM error: {e}") },
+        Err(e) => {
+            return SuccessAnalysis {
+                passed: false,
+                reason: format!("evaluate LLM error: {e}"),
+            }
+        }
     };
 
     let cleaned = strip_fences(&raw);
     match serde_json::from_str::<Value>(&cleaned) {
         Ok(v) => SuccessAnalysis {
             passed: v.get("passed").and_then(Value::as_bool).unwrap_or(false),
-            reason: v.get("reason").and_then(Value::as_str).unwrap_or("no reason").to_string(),
+            reason: v
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or("no reason")
+                .to_string(),
         },
-        Err(_) => SuccessAnalysis { passed: false, reason: format!("unparseable judgment: {raw}") },
+        Err(_) => SuccessAnalysis {
+            passed: false,
+            reason: format!("unparseable judgment: {raw}"),
+        },
     }
 }
 
@@ -2777,7 +3101,8 @@ mod tests {
 
     #[test]
     fn parse_valid_step() {
-        let raw = r##"{"thought":"go","action_input":{"action":"click","target":"#x"},"done":false}"##;
+        let raw =
+            r##"{"thought":"go","action_input":{"action":"click","target":"#x"},"done":false}"##;
         let s = parse_step(raw);
         assert!(s.parse_error.is_none());
         assert_eq!(s.action_input["action"], "click");
@@ -2816,7 +3141,11 @@ mod tests {
     fn parse_recovers_root_action() {
         let raw = r#"{"action":"wait","target":1500}"#;
         let s = parse_step(raw);
-        assert!(s.parse_error.is_none(), "got parse_error: {:?}", s.parse_error);
+        assert!(
+            s.parse_error.is_none(),
+            "got parse_error: {:?}",
+            s.parse_error
+        );
         assert_eq!(s.action_input["action"], "wait");
         assert_eq!(s.action_input["target"], 1500);
         assert!(!s.done);
@@ -2830,7 +3159,11 @@ mod tests {
     fn parse_recovers_inner_action_extracted_by_strip_fences() {
         let raw = "thought: explain step\naction_input: {\"action\":\"click\",\"target\":\"#submit\"}\ndone: false";
         let s = parse_step(raw);
-        assert!(s.parse_error.is_none(), "got parse_error: {:?}", s.parse_error);
+        assert!(
+            s.parse_error.is_none(),
+            "got parse_error: {:?}",
+            s.parse_error
+        );
         assert_eq!(s.action_input["action"], "click");
     }
 
@@ -2843,7 +3176,11 @@ mod tests {
                    action_input: {\"action\":\"shadow_click\",\"role\":\"tab\",\"name_regex\":\"^商品$\"}\n\
                    done: false";
         let s = parse_step(raw);
-        assert!(s.parse_error.is_none(), "got parse_error: {:?}", s.parse_error);
+        assert!(
+            s.parse_error.is_none(),
+            "got parse_error: {:?}",
+            s.parse_error
+        );
         assert_eq!(s.action_input["action"], "shadow_click");
         assert_eq!(s.action_input["name_regex"], "^商品$");
         assert!(!s.done);
@@ -2872,7 +3209,10 @@ mod tests {
 
     #[test]
     fn slugify_replaces_non_alnum_with_hyphens_and_dedups() {
-        assert_eq!(slugify_for_topic("shadow_click:tab:^商品$", 40), "shadow-click-tab");
+        assert_eq!(
+            slugify_for_topic("shadow_click:tab:^商品$", 40),
+            "shadow-click-tab"
+        );
         // CJK is not ASCII-alphanumeric so it's stripped — that's by design;
         // topicKeys must be ASCII-safe for KB MCP.
         assert_eq!(slugify_for_topic("foo / bar // baz", 40), "foo-bar-baz");
@@ -2880,16 +3220,22 @@ mod tests {
 
     #[test]
     fn slugify_preserves_existing_hyphens_and_underscores() {
-        assert_eq!(slugify_for_topic("agora_pickup_checkboxes_restore", 40),
-                   "agora-pickup-checkboxes-restore");
-        assert_eq!(slugify_for_topic("test-id-with-dashes", 40),
-                   "test-id-with-dashes");
+        assert_eq!(
+            slugify_for_topic("agora_pickup_checkboxes_restore", 40),
+            "agora-pickup-checkboxes-restore"
+        );
+        assert_eq!(
+            slugify_for_topic("test-id-with-dashes", 40),
+            "test-id-with-dashes"
+        );
     }
 
     #[test]
     fn slugify_lowercases_uppercase() {
-        assert_eq!(slugify_for_topic("Agora_Market_Smoke", 40),
-                   "agora-market-smoke");
+        assert_eq!(
+            slugify_for_topic("Agora_Market_Smoke", 40),
+            "agora-market-smoke"
+        );
     }
 
     #[test]
@@ -2957,7 +3303,7 @@ mod tests {
     #[test]
     fn signature_distinguishes_action_families() {
         let click = json!({"action":"click","target":"#submit"});
-        let goto  = json!({"action":"goto","target":"#submit"});
+        let goto = json!({"action":"goto","target":"#submit"});
         assert_ne!(action_signature(&click), action_signature(&goto));
     }
 
@@ -2965,7 +3311,15 @@ mod tests {
 
     #[test]
     fn noise_actions_recognized() {
-        for a in ["wait", "sleep", "enable_a11y", "screenshot", "page_state", "url", "title"] {
+        for a in [
+            "wait",
+            "sleep",
+            "enable_a11y",
+            "screenshot",
+            "page_state",
+            "url",
+            "title",
+        ] {
             assert!(
                 is_noise_action(&json!({"action": a})),
                 "expected {a} to be noise"
@@ -2976,8 +3330,14 @@ mod tests {
     #[test]
     fn substantive_actions_are_not_noise() {
         for a in [
-            "click", "shadow_click", "ax_click", "type", "ax_type", "goto",
-            "screenshot_analyze", "go_back",
+            "click",
+            "shadow_click",
+            "ax_click",
+            "type",
+            "ax_type",
+            "goto",
+            "screenshot_analyze",
+            "go_back",
         ] {
             assert!(
                 !is_noise_action(&json!({"action": a})),
@@ -3032,10 +3392,17 @@ mod tests {
             "done": false
         }"#;
         let s = parse_step(raw);
-        assert!(s.parse_error.is_none(), "dispute_yaml should parse cleanly: {:?}", s.parse_error);
+        assert!(
+            s.parse_error.is_none(),
+            "dispute_yaml should parse cleanly: {:?}",
+            s.parse_error
+        );
         assert_eq!(s.action_input["action"], "dispute_yaml");
         assert_eq!(s.action_input["suspected_step"], 2);
-        assert!(!s.done, "dispute_yaml should not set done=true via parse_step");
+        assert!(
+            !s.done,
+            "dispute_yaml should not set done=true via parse_step"
+        );
     }
 
     /// `dispute_yaml` without optional fields (reason only) must also parse.
@@ -3046,7 +3413,10 @@ mod tests {
         assert!(s.parse_error.is_none());
         assert_eq!(s.action_input["action"], "dispute_yaml");
         // suspected_step absent → Value::Null
-        assert!(s.action_input.get("suspected_step").map_or(true, |v| v.is_null()));
+        assert!(s
+            .action_input
+            .get("suspected_step")
+            .map_or(true, |v| v.is_null()));
     }
 
     /// `DisputeInfo` deserialized from `action_input` must carry the correct fields.
@@ -3058,16 +3428,28 @@ mod tests {
             "suspected_step": 3,
             "suggested_fix": "remove step 3 or add condition"
         });
-        let reason = action_input.get("reason").and_then(Value::as_str)
-            .unwrap_or("").to_string();
+        let reason = action_input
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
         let suspected_step = action_input.get("suspected_step").and_then(Value::as_i64);
-        let suggested_fix = action_input.get("suggested_fix").and_then(Value::as_str)
+        let suggested_fix = action_input
+            .get("suggested_fix")
+            .and_then(Value::as_str)
             .map(String::from);
-        let di = DisputeInfo { reason: reason.clone(), suspected_step, suggested_fix };
+        let di = DisputeInfo {
+            reason: reason.clone(),
+            suspected_step,
+            suggested_fix,
+        };
 
         assert_eq!(di.reason, "step 3 already on destination");
         assert_eq!(di.suspected_step, Some(3));
-        assert_eq!(di.suggested_fix.as_deref(), Some("remove step 3 or add condition"));
+        assert_eq!(
+            di.suggested_fix.as_deref(),
+            Some("remove step 3 or add condition")
+        );
     }
 
     /// `handle_dispute_yaml` returns a `DisputeInfo` with the reason intact

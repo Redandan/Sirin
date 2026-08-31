@@ -35,6 +35,38 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
+      # ── Sirin-owned physical-iPhone driver tests ──────────────────────────
+      - name: Install Python for iOS Driver tests
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            integrations/ios-driver/requirements.txt
+            integrations/ios-driver/requirements-dev.txt
+
+      - name: Install Sirin iOS Driver test dependencies
+        run: |
+          python -m pip install --disable-pip-version-check -r integrations/ios-driver/requirements-dev.txt
+        shell: pwsh
+
+      - name: Verify Sirin iPhone source safety contracts
+        run: |
+          ./scripts/verify-sirin-ios-source.ps1 -OutputPath sirin-ios-source-verification.json
+        shell: pwsh
+
+      - name: Upload Sirin iPhone source verification
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sirin-ios-source-verification
+          path: sirin-ios-source-verification.json
+          if-no-files-found: warn
+
+      - name: Test Sirin KB MCP safety contracts
+        run: cargo test --bin sirin mcp_server::test_runner_mcp_tests::kb_ -- --nocapture
+        shell: pwsh
+
       # ── Build release binary ────────────────────────────────────────────────
       - name: cargo build --release
         run: cargo build --release --target x86_64-pc-windows-msvc
@@ -74,7 +106,138 @@ jobs:
           mkdir portable
           copy target\release\sirin.exe portable\sirin.exe
           copy .env.example portable\.env.example
+          New-Item -ItemType Directory -Force portable\defaults\config | Out-Null
+          Copy-Item .env.example portable\defaults\.env.example
+          Copy-Item config\agents.yaml,config\persona.yaml portable\defaults\config
+          New-Item -ItemType Directory -Force portable\scripts | Out-Null
+          Copy-Item scripts\install-sirin-ios.ps1,scripts\install-ios-driver-runtime.ps1,scripts\install-ios-driver-task.ps1,scripts\install-sirin-daemon-task.ps1,scripts\install-codex-ios-integration.ps1,scripts\soak-ios-device.ps1,scripts\switch-sirin-daemon.ps1,scripts\verify-sirin-ios-physical.ps1 portable\scripts
+          New-Item -ItemType Directory -Force portable\integrations\ios-driver\scripts,portable\integrations\ios-driver\src\phone_harness | Out-Null
+          Copy-Item integrations\ios-driver\README.md,integrations\ios-driver\THIRD_PARTY_LICENSE,integrations\ios-driver\requirements.txt portable\integrations\ios-driver
+          Copy-Item integrations\ios-driver\scripts\unattended_host.py portable\integrations\ios-driver\scripts
+          Copy-Item integrations\ios-driver\src\phone_harness\*.py portable\integrations\ios-driver\src\phone_harness
+          New-Item -ItemType Directory -Force portable\integrations\codex\skills | Out-Null
+          Copy-Item integrations\codex\skills\iphone-usb-validation portable\integrations\codex\skills -Recurse
           Compress-Archive -Path portable\* -DestinationPath Output\sirin-windows-x86_64.zip
+        shell: pwsh
+
+      - name: Verify unified Windows artifacts
+        run: |
+          $installer = "Output\SirinSetup-${{ steps.version.outputs.VERSION }}.exe"
+          $archive = 'Output\sirin-windows-x86_64.zip'
+          if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
+            throw "Installer is missing: $installer"
+          }
+          if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) {
+            throw "Portable archive is missing: $archive"
+          }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path -LiteralPath $archive))
+          try {
+            $entries = @($zip.Entries | ForEach-Object { $_.FullName.Replace('\', '/') })
+            $required = @(
+              'sirin.exe',
+              'defaults/.env.example',
+              'defaults/config/agents.yaml',
+              'defaults/config/persona.yaml',
+              'scripts/install-sirin-ios.ps1',
+              'scripts/install-ios-driver-runtime.ps1',
+              'scripts/install-ios-driver-task.ps1',
+              'scripts/install-sirin-daemon-task.ps1',
+              'scripts/install-codex-ios-integration.ps1',
+              'scripts/soak-ios-device.ps1',
+              'scripts/switch-sirin-daemon.ps1',
+              'scripts/verify-sirin-ios-physical.ps1',
+              'integrations/ios-driver/scripts/unattended_host.py',
+              'integrations/ios-driver/src/phone_harness/__init__.py',
+              'integrations/codex/skills/iphone-usb-validation/SKILL.md'
+            )
+            $missing = @($required | Where-Object { $_ -notin $entries })
+            if ($missing.Count -gt 0) {
+              throw "Portable archive is incomplete: $($missing -join ', ')"
+            }
+            $forbidden = @($entries | Where-Object { $_ -match '(^|/)(__pycache__/|.*\.pyc$)' })
+            if ($forbidden.Count -gt 0) {
+              throw "Portable archive contains generated Python files: $($forbidden -join ', ')"
+            }
+          }
+          finally {
+            $zip.Dispose()
+          }
+          $parseFailures = @()
+          foreach ($script in Get-ChildItem -LiteralPath portable\scripts -Filter '*.ps1' -File) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $script.FullName,
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+            if (@($errors).Count -gt 0) {
+              $parseFailures += "$($script.Name): $($errors[0].Message)"
+            }
+          }
+          if ($parseFailures.Count -gt 0) {
+            throw "Portable PowerShell syntax failed: $($parseFailures -join '; ')"
+          }
+          if ((Get-Content -LiteralPath portable\scripts\install-sirin-ios.ps1 -Raw) -notmatch "RecordCapabilityProof") {
+            throw 'Portable public entry is missing the capture/control retirement gate'
+          }
+          $daemonPlan = & portable\scripts\install-sirin-daemon-task.ps1 `
+            -Action Plan -Repo (Resolve-Path portable) `
+            -Binary (Resolve-Path portable\sirin.exe) | ConvertFrom-Json
+          $driverPlan = & portable\scripts\install-ios-driver-task.ps1 `
+            -Action Plan -Repo (Resolve-Path portable) | ConvertFrom-Json
+          $runtimeContractRoot = Join-Path $env:LOCALAPPDATA 'Sirin\release-contract-validation'
+          $runtimeStatus = & portable\scripts\install-ios-driver-runtime.ps1 `
+            -Action Status `
+            -Repo (Resolve-Path portable) `
+            -RuntimeRoot $runtimeContractRoot | ConvertFrom-Json
+          $daemonContract = (
+            $daemonPlan.status -eq 'PLANNED' -and
+            $daemonPlan.settings.execution_time_limit -eq 'PT0S' -and
+            $daemonPlan.settings.restart_count -ge 3 -and
+            $daemonPlan.settings.restart_interval -eq 'PT1M' -and
+            $daemonPlan.settings.start_when_available -and
+            $daemonPlan.settings.multiple_instances -eq 'IgnoreNew' -and
+            @($daemonPlan.triggers).Count -eq 2 -and
+            @($daemonPlan.triggers | Where-Object { $_.repetition_interval -eq 'PT5M' }).Count -eq 1
+          )
+          $driverContract = (
+            $driverPlan.status -eq 'PLANNED' -and
+            $driverPlan.settings.execution_time_limit -eq 'PT0S' -and
+            $driverPlan.settings.restart_count -ge 3 -and
+            $driverPlan.settings.restart_interval -eq 'PT1M' -and
+            $driverPlan.settings.start_when_available -and
+            $driverPlan.settings.multiple_instances -eq 'IgnoreNew' -and
+            @($driverPlan.triggers).Count -eq 0 -and
+            -not $driverPlan.safety.has_trigger -and
+            $driverPlan.safety.acceptance_only_default -and
+            -not $driverPlan.safety.signing_supported -and
+            -not $driverPlan.safety.trust_or_unlock_supported
+          )
+          $wdaOperatorPath = Join-Path $runtimeContractRoot `
+            'operator-assets\WebDriverAgent-v16.5.1-unsigned.ipa'
+          $wdaContract = (
+            $runtimeStatus.owner -eq 'sirin' -and
+            $runtimeStatus.source_ready -and
+            $runtimeStatus.runtime_within_sirin -and
+            $runtimeStatus.wda_release_tag -eq 'v16.5.1' -and
+            $runtimeStatus.wda_official_runner_zip_url -eq `
+              'https://github.com/appium/WebDriverAgent/releases/download/v16.5.1/WebDriverAgentRunner-Runner.zip' -and
+            $runtimeStatus.wda_official_runner_zip_sha256 -eq `
+              '6aa026a7938ec66d7d0452b12e210ac5c3a99b5b1528111cee1b690285f6efe9' -and
+            [string]::Equals(
+              [System.IO.Path]::GetFullPath([string]$runtimeStatus.operator_handoff.ipa),
+              [System.IO.Path]::GetFullPath($wdaOperatorPath),
+              [System.StringComparison]::OrdinalIgnoreCase
+            ) -and
+            $runtimeStatus.operator_handoff.human_only -and
+            -not $runtimeStatus.signing_supported -and
+            -not $runtimeStatus.install_to_phone_supported
+          )
+          if (-not $daemonContract -or -not $driverContract -or -not $wdaContract) {
+            throw 'Portable daemon, Driver, or unsigned-WDA operator contract failed'
+          }
         shell: pwsh
 
       # ── Create GitHub Release ───────────────────────────────────────────────

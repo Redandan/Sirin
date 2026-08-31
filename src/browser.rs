@@ -13,15 +13,15 @@
 //! - **Tier 3** — multi-tab, cookies, network intercept, file upload,
 //!   iframe, PDF export, HTTP auth, drag-and-drop.
 
-use headless_chrome::browser::tab::ModifierKey;
 use headless_chrome::browser::tab::point::Point;
+use headless_chrome::browser::tab::ModifierKey;
 use headless_chrome::protocol::cdp::Input;
 use headless_chrome::protocol::cdp::Page::CaptureScreenshotFormatOption;
 use headless_chrome::protocol::cdp::{Emulation, Network, Page};
 use headless_chrome::{Browser, LaunchOptions, Tab};
 use serde_json::json;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 // ── Companion extension discovery (stub — see DESIGN_BROWSER_AUTHORITY.md) ──
@@ -40,7 +40,9 @@ fn locate_companion_ext() -> Option<std::path::PathBuf> {
     // ours. Always pass an absolute path; otherwise the extension silently
     // fails to load (no error, no SW, no diagnostic — just nothing).
     let candidates = [
-        std::env::current_exe().ok().and_then(|p| p.parent().map(|p| p.join("ext"))),
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.join("ext"))),
         std::env::current_dir().ok().map(|p| p.join("ext")),
     ];
     for cand in candidates.into_iter().flatten() {
@@ -67,6 +69,22 @@ fn locate_companion_ext() -> Option<std::path::PathBuf> {
 // ── Singleton ────────────────────────────────────────────────────────────────
 
 static SESSION: OnceLock<Arc<Mutex<Option<BrowserInner>>>> = OnceLock::new();
+
+/// Monotonic identity for browser sessions.  A timed-out operation may finish
+/// after a replacement Chrome has already launched; carrying the generation
+/// alongside its tab prevents that stale timeout from clearing the new session.
+static NEXT_SESSION_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+/// Sirin-side deadline for one synchronous `with_tab` operation.  This is
+/// intentionally separate from headless_chrome's `idle_browser_timeout`, which
+/// also controls two background event loops and therefore cannot safely serve
+/// as a per-command timeout.
+const DEFAULT_BROWSER_OPERATION_TIMEOUT_SECS: u64 = 120;
+const MIN_BROWSER_OPERATION_TIMEOUT_SECS: u64 = 10;
+const MAX_BROWSER_OPERATION_TIMEOUT_SECS: u64 = 600;
+const BROWSER_OPERATION_TIMEOUT_ENV: &str = "SIRIN_BROWSER_OPERATION_TIMEOUT_SECS";
+const BROWSER_OPERATION_TIMEOUT_PREFIX: &str = "browser CDP operation timed out";
+static BROWSER_OPERATION_TIMEOUT: OnceLock<std::time::Duration> = OnceLock::new();
 
 /// Tracks the headless mode desired by the currently-running test.
 /// Set by `set_test_headless_mode()` at test start so that mid-call
@@ -125,9 +143,7 @@ pub fn set_test_headless_mode(headless: bool) {
 pub fn init_headless_mode_from_env() {
     let h = default_headless();
     TEST_DESIRED_HEADLESS.store(h, Ordering::Relaxed);
-    tracing::info!(
-        "[browser] TEST_DESIRED_HEADLESS seeded from SIRIN_BROWSER_HEADLESS env: {h}"
-    );
+    tracing::info!("[browser] TEST_DESIRED_HEADLESS seeded from SIRIN_BROWSER_HEADLESS env: {h}");
 }
 
 /// Initialise the global privacy-mask toggle from `SIRIN_PRIVACY_MASK`.
@@ -162,6 +178,7 @@ struct BrowserInner {
     browser: Browser,
     tabs: Vec<Arc<Tab>>,
     active: usize,
+    generation: u64,
     #[allow(dead_code)]
     headless: bool,
     /// Named sessions: session_id → tab index.
@@ -190,8 +207,8 @@ impl BrowserInner {
 pub fn default_headless() -> bool {
     match std::env::var("SIRIN_BROWSER_HEADLESS").ok().as_deref() {
         Some("false") | Some("0") | Some("FALSE") | Some("no") | Some("NO") => false,
-        Some("true")  | Some("1") | Some("TRUE")  | Some("yes") | Some("YES") => true,
-        _ => true,  // default
+        Some("true") | Some("1") | Some("TRUE") | Some("yes") | Some("YES") => true,
+        _ => true, // default
     }
 }
 
@@ -212,13 +229,16 @@ pub fn ensure_open(headless: bool) -> Result<bool, String> {
         if inner.headless != headless {
             tracing::info!(
                 "[browser] headless mode mismatch (current={}, requested={}) — re-launching",
-                inner.headless, headless
+                inner.headless,
+                headless
             );
             *guard = None;
         } else if inner.tab().get_target_info().is_ok() {
-            return Ok(false);  // still alive, correct mode
+            return Ok(false); // still alive, correct mode
         } else {
-            tracing::warn!("[browser] existing Chrome session dead (connection closed) — re-launching");
+            tracing::warn!(
+                "[browser] existing Chrome session dead (connection closed) — re-launching"
+            );
             *guard = None;
         }
     }
@@ -288,8 +308,8 @@ pub fn ensure_open(headless: bool) -> Result<bool, String> {
     // pin the Chrome test window to a non-primary screen — see
     // `resolve_window_position` for the env-var contract.  Built outside the
     // vec so its lifetime survives the &str push below.
-    let window_position_arg = resolve_window_position()
-        .map(|(x, y)| format!("--window-position={x},{y}"));
+    let window_position_arg =
+        resolve_window_position().map(|(x, y)| format!("--window-position={x},{y}"));
 
     let mut stability_args: Vec<&str> = vec![
         "--disable-dev-shm-usage",
@@ -356,9 +376,7 @@ pub fn ensure_open(headless: bool) -> Result<bool, String> {
             });
             match win {
                 Ok(resp) => {
-                    let window_id = resp
-                        .get("windowId")
-                        .and_then(|v| v.as_i64());
+                    let window_id = resp.get("windowId").and_then(|v| v.as_i64());
                     if let Some(id) = window_id {
                         // 2. Apply the bounds.  Width/Height left to Chrome's
                         // saved values — only repositioning, not resizing.
@@ -422,10 +440,12 @@ pub fn ensure_open(headless: bool) -> Result<bool, String> {
     }
 
     let tab_arc = tab.clone();
+    let generation = NEXT_SESSION_GENERATION.fetch_add(1, Ordering::Relaxed);
     *guard = Some(BrowserInner {
         browser,
         tabs: vec![tab],
         active: 0,
+        generation,
         headless,
         sessions: HashMap::new(),
         // Seed the cached viewport so re-apply-after-goto picks up the default.
@@ -447,7 +467,11 @@ pub fn is_open() -> bool {
 
 #[allow(dead_code)]
 pub fn is_headless() -> Option<bool> {
-    global().lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|s| s.headless)
+    global()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .map(|s| s.headless)
 }
 
 pub fn close() {
@@ -557,7 +581,10 @@ fn resolve_window_position() -> Option<(i32, i32)> {
         return None;
     }
     // Accept both `X,Y` and `X Y` for robustness.
-    let parts: Vec<&str> = trimmed.split([',', ' ']).filter(|s| !s.is_empty()).collect();
+    let parts: Vec<&str> = trimmed
+        .split([',', ' '])
+        .filter(|s| !s.is_empty())
+        .collect();
     if parts.len() != 2 {
         tracing::warn!(
             "[browser] SIRIN_BROWSER_WINDOW_POSITION='{raw}' not in 'X,Y' form; ignoring"
@@ -569,7 +596,9 @@ fn resolve_window_position() -> Option<(i32, i32)> {
         parts[1].trim().parse::<i32>(),
     ) {
         (Ok(x), Ok(y)) => {
-            tracing::info!("[browser] pinning window to ({x}, {y}) per SIRIN_BROWSER_WINDOW_POSITION");
+            tracing::info!(
+                "[browser] pinning window to ({x}, {y}) per SIRIN_BROWSER_WINDOW_POSITION"
+            );
             Some((x, y))
         }
         _ => {
@@ -716,7 +745,7 @@ fn navigate_with_retry(url: &str, attempts: u32) -> Result<(), String> {
             "location.hash = {};",
             serde_json::to_string(&format!("#{hash}")).unwrap()
         );
-        with_tab(|tab| {
+        with_tab(move |tab| {
             tab.evaluate(&js, false)
                 .map_err(|e| format!("hash-nav: {e}"))?;
             Ok(())
@@ -726,9 +755,12 @@ fn navigate_with_retry(url: &str, attempts: u32) -> Result<(), String> {
         return Ok(());
     }
 
-    let result = with_tab(|tab| {
-        tab.navigate_to(url).map_err(|e| format!("navigate: {e}"))?
-            .wait_until_navigated().map_err(|e| format!("wait: {e}"))?;
+    let target_url = url.to_string();
+    let result = with_tab(move |tab| {
+        tab.navigate_to(&target_url)
+            .map_err(|e| format!("navigate: {e}"))?
+            .wait_until_navigated()
+            .map_err(|e| format!("wait: {e}"))?;
         Ok(())
     });
 
@@ -929,8 +961,8 @@ fn remove_privacy_mask(tab: &Tab) {
 // compose cleanly — no inject/remove interlock required.
 
 const ACTION_INDICATOR_BORDER_ID: &str = "__sirin_indicator_border__";
-const ACTION_INDICATOR_BADGE_ID:  &str = "__sirin_indicator_badge__";
-const ACTION_INDICATOR_STYLE_ID:  &str = "__sirin_indicator_style__";
+const ACTION_INDICATOR_BADGE_ID: &str = "__sirin_indicator_badge__";
+const ACTION_INDICATOR_STYLE_ID: &str = "__sirin_indicator_style__";
 const HIDE_FOR_TOOL_USE_STYLE_ID: &str = "__sirin_hide_for_tool_use__";
 
 /// CSS that hides any element annotated with `data-sirin-hide` or
@@ -1001,9 +1033,9 @@ fn build_indicator_inject_js(action: &str) -> String {
   }} catch (e) {{ return 0; }}
 }})()"#,
         border = ACTION_INDICATOR_BORDER_ID,
-        badge  = ACTION_INDICATOR_BADGE_ID,
-        style  = ACTION_INDICATOR_STYLE_ID,
-        safe   = safe,
+        badge = ACTION_INDICATOR_BADGE_ID,
+        style = ACTION_INDICATOR_STYLE_ID,
+        safe = safe,
     )
 }
 
@@ -1020,8 +1052,8 @@ fn build_indicator_remove_js() -> String {
   }} catch (e) {{ return 0; }}
 }})()"#,
         border = ACTION_INDICATOR_BORDER_ID,
-        badge  = ACTION_INDICATOR_BADGE_ID,
-        style  = ACTION_INDICATOR_STYLE_ID,
+        badge = ACTION_INDICATOR_BADGE_ID,
+        style = ACTION_INDICATOR_STYLE_ID,
     )
 }
 
@@ -1033,7 +1065,7 @@ pub fn show_action_indicator(action: &str) {
         return;
     }
     let js = build_indicator_inject_js(action);
-    let _ = with_tab(|tab| {
+    let _ = with_tab(move |tab| {
         if let Err(e) = tab.evaluate(&js, false) {
             tracing::debug!("[indicator] inject failed (non-fatal): {e}");
         }
@@ -1045,7 +1077,7 @@ pub fn show_action_indicator(action: &str) {
 /// Best-effort.
 pub fn hide_action_indicator() {
     let js = build_indicator_remove_js();
-    let _ = with_tab(|tab| {
+    let _ = with_tab(move |tab| {
         if let Err(e) = tab.evaluate(&js, false) {
             tracing::debug!("[indicator] remove failed (non-fatal): {e}");
         }
@@ -1068,7 +1100,7 @@ fn build_hide_for_tool_use_inject_js() -> String {
     return 1;
   }} catch (e) {{ return 0; }}
 }})()"#,
-        id  = HIDE_FOR_TOOL_USE_STYLE_ID,
+        id = HIDE_FOR_TOOL_USE_STYLE_ID,
         css = css,
     )
 }
@@ -1128,7 +1160,7 @@ pub fn screenshot() -> Result<Vec<u8>, String> {
             );
             std::thread::sleep(std::time::Duration::from_secs(2));
         }
-        let (bytes, url) = with_tab(|tab| {
+        let (bytes, url) = with_tab(move |tab| {
             inject_privacy_mask(tab);
             inject_hide_for_tool_use(tab);
             let res = tab
@@ -1154,24 +1186,20 @@ pub fn screenshot() -> Result<Vec<u8>, String> {
 
 /// Returns the current tab's URL, or an empty string if the browser is not open.
 pub fn get_current_url() -> Result<String, String> {
-    with_tab(|tab| Ok(tab.get_url()))
+    with_tab(move |tab| Ok(tab.get_url()))
 }
 
 /// Capture current tab as JPEG with the given quality (1-100).
 /// Prefer over `screenshot()` when streaming (e.g. Monitor view) — JPEG 80
 /// compresses Flutter / typical UI screens to ~50 KB vs 500 KB for PNG.
 pub fn screenshot_jpeg(quality: u8) -> Result<Vec<u8>, String> {
-    with_tab(|tab| {
+    with_tab(move |tab| {
         let q = quality.clamp(1, 100) as u32;
         inject_privacy_mask(tab);
         inject_hide_for_tool_use(tab);
-        let res = tab.capture_screenshot(
-            CaptureScreenshotFormatOption::Jpeg,
-            Some(q),
-            None,
-            true,
-        )
-        .map_err(|e| format!("screenshot_jpeg: {e}"));
+        let res = tab
+            .capture_screenshot(CaptureScreenshotFormatOption::Jpeg, Some(q), None, true)
+            .map_err(|e| format!("screenshot_jpeg: {e}"));
         remove_hide_for_tool_use(tab);
         remove_privacy_mask(tab);
         res
@@ -1210,7 +1238,7 @@ pub fn current_url() -> Result<String, String> {
     if !is_open() {
         return Err("browser not open".into());
     }
-    with_tab(|tab| {
+    with_tab(move |tab| {
         match tab.evaluate("window.location.href", false) {
             Ok(obj) => match obj.value {
                 Some(serde_json::Value::String(s)) => Ok(s),
@@ -1229,14 +1257,12 @@ pub fn page_title() -> Result<String, String> {
     if !is_open() {
         return Err("browser not open".into());
     }
-    with_tab(|tab| {
-        match tab.evaluate("document.title", false) {
-            Ok(obj) => match obj.value {
-                Some(serde_json::Value::String(s)) => Ok(s),
-                _ => tab.get_title().map_err(|e| format!("title: {e}")),
-            },
-            Err(_) => tab.get_title().map_err(|e| format!("title: {e}")),
-        }
+    with_tab(move |tab| match tab.evaluate("document.title", false) {
+        Ok(obj) => match obj.value {
+            Some(serde_json::Value::String(s)) => Ok(s),
+            _ => tab.get_title().map_err(|e| format!("title: {e}")),
+        },
+        Err(_) => tab.get_title().map_err(|e| format!("title: {e}")),
     })
 }
 
@@ -1248,7 +1274,9 @@ pub fn page_title() -> Result<String, String> {
 /// error from a diagnostic perspective).
 pub fn diagnostic_snapshot() -> Result<Option<DiagnosticSnapshot>, String> {
     let guard = global().lock().unwrap_or_else(|e| e.into_inner());
-    let Some(inner) = guard.as_ref() else { return Ok(None); };
+    let Some(inner) = guard.as_ref() else {
+        return Ok(None);
+    };
 
     // Browser.getVersion is best-effort — a stale/dead transport returns Err
     // and we still want to report `tabs` + `headless`, so we fall back to None.
@@ -1272,10 +1300,10 @@ pub fn diagnostic_snapshot() -> Result<Option<DiagnosticSnapshot>, String> {
 pub struct DiagnosticSnapshot {
     /// e.g. "Chrome/124.0.6367.92" — None if `Browser.getVersion` failed.
     pub chrome_version: Option<String>,
-    pub user_agent:     Option<String>,
-    pub headless:       bool,
+    pub user_agent: Option<String>,
+    pub headless: bool,
     pub active_tab_index: usize,
-    pub tab_count:      usize,
+    pub tab_count: usize,
     pub named_sessions: Vec<String>,
 }
 
@@ -1284,9 +1312,14 @@ pub struct DiagnosticSnapshot {
 /// Plain-text labels (e.g. Chinese menu items) return false → JS text-click.
 fn looks_like_css_selector(s: &str) -> bool {
     let s = s.trim();
-    if s.is_empty() { return false; }
+    if s.is_empty() {
+        return false;
+    }
     // Explicit CSS sigils
-    if matches!(s.chars().next(), Some('#') | Some('.') | Some('[') | Some(':') | Some('*')) {
+    if matches!(
+        s.chars().next(),
+        Some('#') | Some('.') | Some('[') | Some(':') | Some('*')
+    ) {
         return true;
     }
     // If it contains non-ASCII characters it is almost certainly text content, not CSS
@@ -1300,8 +1333,9 @@ fn looks_like_css_selector(s: &str) -> bool {
 pub fn click(selector: &str) -> Result<(), String> {
     if looks_like_css_selector(selector) {
         // Standard CSS selector path
-        return with_tab(|tab| {
-            tab.wait_for_element(selector)
+        let selector = selector.to_string();
+        return with_tab(move |tab| {
+            tab.wait_for_element(&selector)
                 .map_err(|e| format!("click – find '{selector}': {e}"))?
                 .click()
                 .map(|_| ())
@@ -1320,9 +1354,7 @@ pub fn click(selector: &str) -> Result<(), String> {
     // so the last element with matching innerText is the innermost (most-clickable) one.
     //
     // Retry up to 10 times × 1 s so dynamic content has time to appear.
-    let safe = selector
-        .replace('\\', "\\\\")
-        .replace('`', "\\`");
+    let safe = selector.replace('\\', "\\\\").replace('`', "\\`");
     let js = format!(
         r#"(function(){{
             var target=`{safe}`;
@@ -1345,22 +1377,30 @@ pub fn click(selector: &str) -> Result<(), String> {
             std::thread::sleep(std::time::Duration::from_millis(1000));
         }
     }
-    Err(format!("click – text-find '{selector}': element not found after 10s"))
+    Err(format!(
+        "click – text-find '{selector}': element not found after 10s"
+    ))
 }
 
 pub fn type_text(selector: &str, text: &str) -> Result<(), String> {
-    with_tab(|tab| {
-        let el = tab.wait_for_element(selector)
+    let selector = selector.to_string();
+    let text = text.to_string();
+    with_tab(move |tab| {
+        let el = tab
+            .wait_for_element(&selector)
             .map_err(|e| format!("type – find '{selector}': {e}"))?;
-        el.click().map_err(|e| format!("type – focus '{selector}': {e}"))?;
-        el.type_into(text).map_err(|e| format!("type_into '{selector}': {e}"))?;
+        el.click()
+            .map_err(|e| format!("type – focus '{selector}': {e}"))?;
+        el.type_into(&text)
+            .map_err(|e| format!("type_into '{selector}': {e}"))?;
         Ok(())
     })
 }
 
 pub fn get_text(selector: &str) -> Result<String, String> {
-    with_tab(|tab| {
-        tab.wait_for_element(selector)
+    let selector = selector.to_string();
+    with_tab(move |tab| {
+        tab.wait_for_element(&selector)
             .map_err(|e| format!("get_text – find '{selector}': {e}"))?
             .get_inner_text()
             .map_err(|e| format!("get_inner_text '{selector}': {e}"))
@@ -1368,8 +1408,11 @@ pub fn get_text(selector: &str) -> Result<String, String> {
 }
 
 pub fn evaluate_js(expression: &str) -> Result<String, String> {
-    with_tab(|tab| {
-        let obj = tab.evaluate(expression, true).map_err(|e| format!("evaluate: {e}"))?;
+    let expression = expression.to_string();
+    with_tab(move |tab| {
+        let obj = tab
+            .evaluate(&expression, true)
+            .map_err(|e| format!("evaluate: {e}"))?;
         match obj.value {
             Some(serde_json::Value::String(s)) => Ok(s),
             Some(other) => Ok(other.to_string()),
@@ -1380,7 +1423,7 @@ pub fn evaluate_js(expression: &str) -> Result<String, String> {
 
 #[allow(dead_code)]
 pub fn get_content() -> Result<String, String> {
-    with_tab(|tab| tab.get_content().map_err(|e| format!("get_content: {e}")))
+    with_tab(move |tab| tab.get_content().map_err(|e| format!("get_content: {e}")))
 }
 
 // ── DOM snapshot + ref_id (Issue #74) ────────────────────────────────────────
@@ -1506,7 +1549,11 @@ fn dom_snapshot_js(max: usize) -> String {
 /// Caps at `max` (default `DOM_SNAPSHOT_DEFAULT_MAX`); when exceeded the
 /// returned object includes `truncated: true`.
 pub fn dom_snapshot(max: usize) -> Result<serde_json::Value, String> {
-    let cap = if max == 0 { DOM_SNAPSHOT_DEFAULT_MAX } else { max };
+    let cap = if max == 0 {
+        DOM_SNAPSHOT_DEFAULT_MAX
+    } else {
+        max
+    };
     let raw = evaluate_js(&dom_snapshot_js(cap))?;
     serde_json::from_str::<serde_json::Value>(&raw).map_err(|e| {
         let preview: String = raw.chars().take(200).collect();
@@ -1548,8 +1595,12 @@ pub fn resolve_ref(ref_id: &str) -> Result<String, String> {
 /// Pure helper: validate a ref_id against the `eN` schema (e1, e42, …).
 pub fn is_valid_ref_id(ref_id: &str) -> bool {
     let bytes = ref_id.as_bytes();
-    if bytes.len() < 2 { return false; }
-    if bytes[0] != b'e' { return false; }
+    if bytes.len() < 2 {
+        return false;
+    }
+    if bytes[0] != b'e' {
+        return false;
+    }
     bytes[1..].iter().all(|b| b.is_ascii_digit())
 }
 
@@ -1563,8 +1614,9 @@ pub fn ref_selector(ref_id: &str) -> String {
 
 /// Wait for a CSS selector to appear in the DOM (default timeout from Tab).
 pub fn wait_for(selector: &str) -> Result<(), String> {
-    with_tab(|tab| {
-        tab.wait_for_element(selector)
+    let selector = selector.to_string();
+    with_tab(move |tab| {
+        tab.wait_for_element(&selector)
             .map_err(|e| format!("wait_for '{selector}': {e}"))?;
         Ok(())
     })
@@ -1572,8 +1624,9 @@ pub fn wait_for(selector: &str) -> Result<(), String> {
 
 /// Wait for a selector with a custom timeout in milliseconds.
 pub fn wait_for_ms(selector: &str, ms: u64) -> Result<(), String> {
-    with_tab(|tab| {
-        tab.wait_for_element_with_custom_timeout(selector, std::time::Duration::from_millis(ms))
+    let selector = selector.to_string();
+    with_tab(move |tab| {
+        tab.wait_for_element_with_custom_timeout(&selector, std::time::Duration::from_millis(ms))
             .map_err(|e| format!("wait_for '{selector}' ({ms}ms): {e}"))?;
         Ok(())
     })
@@ -1581,8 +1634,9 @@ pub fn wait_for_ms(selector: &str, ms: u64) -> Result<(), String> {
 
 /// Wait for navigation to complete after a click or JS redirect.
 pub fn wait_for_navigation() -> Result<(), String> {
-    with_tab(|tab| {
-        tab.wait_until_navigated().map_err(|e| format!("wait_nav: {e}"))?;
+    with_tab(move |tab| {
+        tab.wait_until_navigated()
+            .map_err(|e| format!("wait_nav: {e}"))?;
         Ok(())
     })
 }
@@ -1591,16 +1645,14 @@ pub fn wait_for_navigation() -> Result<(), String> {
 
 /// Check if an element matching the selector exists (no error if absent).
 pub fn element_exists(selector: &str) -> Result<bool, String> {
-    with_tab(|tab| {
-        Ok(tab.find_element(selector).is_ok())
-    })
+    let selector = selector.to_string();
+    with_tab(move |tab| Ok(tab.find_element(&selector).is_ok()))
 }
 
 /// Count elements matching a selector.
 pub fn element_count(selector: &str) -> Result<usize, String> {
-    with_tab(|tab| {
-        Ok(tab.find_elements(selector).map(|v| v.len()).unwrap_or(0))
-    })
+    let selector = selector.to_string();
+    with_tab(move |tab| Ok(tab.find_elements(&selector).map(|v| v.len()).unwrap_or(0)))
 }
 
 /// Get an attribute value from the first matching element.
@@ -1626,8 +1678,10 @@ pub fn get_value(selector: &str) -> Result<String, String> {
 
 /// Press a single key (e.g. "Enter", "Tab", "Escape", "ArrowDown").
 pub fn press_key(key: &str) -> Result<(), String> {
-    with_tab(|tab| {
-        tab.press_key(key).map_err(|e| format!("press_key '{key}': {e}"))?;
+    let key = key.to_string();
+    with_tab(move |tab| {
+        tab.press_key(&key)
+            .map_err(|e| format!("press_key '{key}': {e}"))?;
         Ok(())
     })
 }
@@ -1635,15 +1689,19 @@ pub fn press_key(key: &str) -> Result<(), String> {
 /// Press a key with modifiers (e.g. ctrl+a, shift+Enter).
 /// Accepts modifier names: "alt", "ctrl", "meta", "shift".
 pub fn press_key_combo(key: &str, modifier_names: &[&str]) -> Result<(), String> {
-    let mods: Vec<ModifierKey> = modifier_names.iter().filter_map(|m| match m.to_lowercase().as_str() {
-        "alt" => Some(ModifierKey::Alt),
-        "ctrl" | "control" => Some(ModifierKey::Ctrl),
-        "meta" | "cmd" => Some(ModifierKey::Meta),
-        "shift" => Some(ModifierKey::Shift),
-        _ => None,
-    }).collect();
-    with_tab(|tab| {
-        tab.press_key_with_modifiers(key, Some(&mods))
+    let key = key.to_string();
+    let mods: Vec<ModifierKey> = modifier_names
+        .iter()
+        .filter_map(|m| match m.to_lowercase().as_str() {
+            "alt" => Some(ModifierKey::Alt),
+            "ctrl" | "control" => Some(ModifierKey::Ctrl),
+            "meta" | "cmd" => Some(ModifierKey::Meta),
+            "shift" => Some(ModifierKey::Shift),
+            _ => None,
+        })
+        .collect();
+    with_tab(move |tab| {
+        tab.press_key_with_modifiers(&key, Some(&mods))
             .map_err(|e| format!("press_key_combo '{key}': {e}"))?;
         Ok(())
     })
@@ -1659,7 +1717,9 @@ pub fn select_option(selector: &str, value: &str) -> Result<(), String> {
         serde_json::to_string(value).unwrap(),
     );
     let result = evaluate_js(&js)?;
-    if result == "not found" { return Err(format!("select '{selector}' not found")); }
+    if result == "not found" {
+        return Err(format!("select '{selector}' not found"));
+    }
     Ok(())
 }
 
@@ -1686,8 +1746,13 @@ pub fn scroll_into_view(selector: &str) -> Result<(), String> {
 /// re-applied after `navigate`, `clear_browser_state`, and `wait_for_new_tab`
 /// because CDP `Emulation.setDeviceMetricsOverride` does not persist across
 /// full navigations or new-tab creation (Issue #27).
-pub fn set_viewport(width: u32, height: u32, device_scale: f64, mobile: bool) -> Result<(), String> {
-    with_tab(|tab| {
+pub fn set_viewport(
+    width: u32,
+    height: u32,
+    device_scale: f64,
+    mobile: bool,
+) -> Result<(), String> {
+    with_tab(move |tab| {
         tab.call_method(Emulation::SetDeviceMetricsOverride {
             width,
             height,
@@ -1703,7 +1768,8 @@ pub fn set_viewport(width: u32, height: u32, device_scale: f64, mobile: bool) ->
             viewport: None,
             display_feature: None,
             device_posture: None,
-        }).map_err(|e| format!("set_viewport: {e}"))?;
+        })
+        .map_err(|e| format!("set_viewport: {e}"))?;
         Ok(())
     })?;
     // Cache for automatic re-application after navigation / new-tab.
@@ -1725,7 +1791,7 @@ fn reapply_viewport() {
         guard.as_ref().and_then(|i| i.viewport)
     };
     if let Some((w, h, scale, mobile)) = cached {
-        let r = with_tab(|tab| {
+        let r = with_tab(move |tab| {
             tab.call_method(Emulation::SetDeviceMetricsOverride {
                 width: w,
                 height: h,
@@ -1741,7 +1807,8 @@ fn reapply_viewport() {
                 viewport: None,
                 display_feature: None,
                 device_posture: None,
-            }).map_err(|e| format!("reapply_viewport: {e}"))?;
+            })
+            .map_err(|e| format!("reapply_viewport: {e}"))?;
             Ok(())
         });
         if let Err(e) = r {
@@ -1767,7 +1834,8 @@ pub fn console_messages(limit: usize) -> Result<String, String> {
 /// Install a console interceptor that buffers messages.
 /// Call once after navigation to start capturing.
 pub fn install_console_capture() -> Result<(), String> {
-    evaluate_js(r#"(() => {
+    evaluate_js(
+        r#"(() => {
         if (window.__sirin_console) return;
         window.__sirin_console = [];
         const orig = {};
@@ -1779,7 +1847,8 @@ pub fn install_console_capture() -> Result<(), String> {
                 orig[level].apply(console, args);
             };
         });
-    })()"#)?;
+    })()"#,
+    )?;
     Ok(())
 }
 
@@ -1831,8 +1900,8 @@ pub fn viewport_context() -> Result<ViewportContext, String> {
         vh: f64,
         dpr: f64,
     }
-    let p: Probe = serde_json::from_str(&raw)
-        .map_err(|e| format!("viewport_context parse '{raw}': {e}"))?;
+    let p: Probe =
+        serde_json::from_str(&raw).map_err(|e| format!("viewport_context parse '{raw}': {e}"))?;
     Ok(ViewportContext {
         viewport_width: p.vw,
         viewport_height: p.vh,
@@ -1848,7 +1917,7 @@ pub fn viewport_context() -> Result<ViewportContext, String> {
 /// instead — on HiDPI monitors the two coord systems differ by
 /// `devicePixelRatio` and this entry point will click the wrong place.
 pub fn click_point(x: f64, y: f64) -> Result<(), String> {
-    with_tab(|tab| {
+    with_tab(move |tab| {
         // Point imported at module level
         tab.click_point(Point { x, y })
             .map_err(|e| format!("click_point({x},{y}): {e}"))?;
@@ -1881,7 +1950,10 @@ pub fn click_point_screenshot(px: f64, py: f64) -> Result<(), String> {
 ///
 /// Retries up to 5× (600 ms apart) if `flt-semantics-host` is still empty —
 /// Flutter populates it asynchronously after `enable_a11y` / placeholder click.
-pub fn shadow_find(role: Option<&str>, name_regex: Option<&str>) -> Result<(f64, f64, String), String> {
+pub fn shadow_find(
+    role: Option<&str>,
+    name_regex: Option<&str>,
+) -> Result<(f64, f64, String), String> {
     // Recovery ladder for the "flt-semantics-host is empty" case (i.e. Flutter
     // hasn't built its a11y bridge yet — common right after a route change):
     //
@@ -1910,7 +1982,10 @@ pub fn shadow_find(role: Option<&str>, name_regex: Option<&str>) -> Result<(f64,
                     continue;
                 }
                 if attempt < 4 {
-                    tracing::debug!("[shadow_find] host still empty, poll {}/4 in 400ms", attempt + 1);
+                    tracing::debug!(
+                        "[shadow_find] host still empty, poll {}/4 in 400ms",
+                        attempt + 1
+                    );
                     std::thread::sleep(std::time::Duration::from_millis(400));
                     continue;
                 }
@@ -1922,14 +1997,18 @@ pub fn shadow_find(role: Option<&str>, name_regex: Option<&str>) -> Result<(f64,
     shadow_find_once(role, name_regex)
 }
 
-fn shadow_find_once(role: Option<&str>, name_regex: Option<&str>) -> Result<(f64, f64, String), String> {
+fn shadow_find_once(
+    role: Option<&str>,
+    name_regex: Option<&str>,
+) -> Result<(f64, f64, String), String> {
     if role.is_none() && name_regex.is_none() {
         return Err("shadow_find: need at least one of 'role' or 'name_regex'".into());
     }
-    let role_val  = role.unwrap_or("").replace('\'', "\\'");
-    let name_val  = name_regex.unwrap_or("").replace('\'', "\\'");
+    let role_val = role.unwrap_or("").replace('\'', "\\'");
+    let name_val = name_regex.unwrap_or("").replace('\'', "\\'");
 
-    let js = format!(r#"(() => {{
+    let js = format!(
+        r#"(() => {{
   // flt-semantics-host is a direct child of flutter-view, NOT inside flt-glass-pane shadow root.
   // Structure: body > flutter-view > flt-semantics-host > flt-semantics[role=...]
   const host = document.querySelector('flt-semantics-host');
@@ -1970,7 +2049,10 @@ fn shadow_find_once(role: Option<&str>, name_regex: Option<&str>) -> Result<(f64
     .slice(0, 30);
   return JSON.stringify({{ found: false, reason: 'no matching element', available: avail }});
 }})()
-"#, role_val = role_val, name_val = name_val);
+"#,
+        role_val = role_val,
+        name_val = name_val
+    );
 
     let raw = evaluate_js(&js)?;
     let v: serde_json::Value = serde_json::from_str(&raw)
@@ -1996,8 +2078,8 @@ fn shadow_find_once(role: Option<&str>, name_regex: Option<&str>) -> Result<(f64
         return Err(format!("shadow_find: {reason}{suggestion}{avail_str}"));
     }
 
-    let x     = v["x"].as_f64().ok_or("shadow_find: missing x")?;
-    let y     = v["y"].as_f64().ok_or("shadow_find: missing y")?;
+    let x = v["x"].as_f64().ok_or("shadow_find: missing x")?;
+    let y = v["y"].as_f64().ok_or("shadow_find: missing y")?;
     let label = v["label"].as_str().unwrap_or("").to_string();
     Ok((x, y, label))
 }
@@ -2082,8 +2164,8 @@ pub fn shadow_dump() -> Result<Vec<String>, String> {
 })()
 "#;
     let raw = evaluate_js(js)?;
-    let v: Vec<String> = serde_json::from_str(&raw)
-        .unwrap_or_else(|_| vec![format!("parse_error:{raw}")]);
+    let v: Vec<String> =
+        serde_json::from_str(&raw).unwrap_or_else(|_| vec![format!("parse_error:{raw}")]);
     Ok(v)
 }
 
@@ -2101,7 +2183,8 @@ pub fn shadow_click(role: Option<&str>, name_regex: Option<&str>) -> Result<Stri
     let role_val = role.unwrap_or("").replace('\'', "\\'");
     let name_val = name_regex.unwrap_or("").replace('\'', "\\'");
 
-    let js = format!(r#"(() => {{
+    let js = format!(
+        r#"(() => {{
   const host = document.querySelector('flt-semantics-host');
   if (!host) return JSON.stringify({{ found: false, reason: 'no flt-semantics-host' }});
   if (host.childElementCount === 0) return JSON.stringify({{ found: false, reason: 'host empty' }});
@@ -2133,7 +2216,10 @@ pub fn shadow_click(role: Option<&str>, name_regex: Option<&str>) -> Result<Stri
     .slice(0, 30);
   return JSON.stringify({{ found: false, reason: 'no matching element', available: avail }});
 }})()
-"#, role_val = role_val, name_val = name_val);
+"#,
+        role_val = role_val,
+        name_val = name_val
+    );
 
     let raw = evaluate_js(&js)?;
     let v: serde_json::Value = serde_json::from_str(&raw)
@@ -2141,7 +2227,8 @@ pub fn shadow_click(role: Option<&str>, name_regex: Option<&str>) -> Result<Stri
 
     if v.get("found").and_then(|f| f.as_bool()) != Some(true) {
         let reason = v["reason"].as_str().unwrap_or("unknown");
-        let avail  = v.get("available")
+        let avail = v
+            .get("available")
             .map(|a| format!(", available: {a}"))
             .unwrap_or_default();
         return Err(format!("shadow_click: {reason}{avail}"));
@@ -2150,14 +2237,82 @@ pub fn shadow_click(role: Option<&str>, name_regex: Option<&str>) -> Result<Stri
     Ok(v["label"].as_str().unwrap_or("").to_string())
 }
 
+/// Dismiss AgoraMarket's passkey onboarding prompt if it is currently visible.
+///
+/// This is intentionally a no-op when the prompt is absent so test fixtures can
+/// call it on every boot path without making the run fragile.
+pub fn dismiss_passkey_prompt() -> Result<(String, Option<String>), String> {
+    let _ = crate::browser_ax::enable_flutter_semantics();
+    std::thread::sleep(std::time::Duration::from_millis(250));
+
+    let js = r#"(() => {
+  const host = document.querySelector('flt-semantics-host');
+  if (!host) return JSON.stringify({ status: 'skipped', reason: 'no flt-semantics-host' });
+  if (host.childElementCount === 0) return JSON.stringify({ status: 'skipped', reason: 'host empty' });
+  const re = /(稍後再說|稍後|略過|跳過|Not now|Later|Skip)/iu;
+  const candidates = Array.from(host.querySelectorAll('[role]'));
+  for (const el of candidates) {
+    const label = el.getAttribute('aria-label') || el.textContent.trim() || '';
+    if (!re.test(label)) continue;
+    const r = el.getBoundingClientRect();
+    if (r.width < 1 && r.height < 1) continue;
+    const cx = r.left + r.width / 2;
+    const cy = r.top  + r.height / 2;
+    el.dispatchEvent(new PointerEvent('pointerdown', {bubbles:true, cancelable:true, clientX:cx, clientY:cy, pointerId:1}));
+    el.dispatchEvent(new PointerEvent('pointerup',   {bubbles:true, cancelable:true, clientX:cx, clientY:cy, pointerId:1}));
+    el.dispatchEvent(new PointerEvent('click',       {bubbles:true, cancelable:true, clientX:cx, clientY:cy}));
+    return JSON.stringify({ status: 'dismissed', label });
+  }
+  return JSON.stringify({ status: 'skipped', reason: 'prompt not visible' });
+})()
+"#;
+    let raw = evaluate_js(js)?;
+    let v: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| format!("dismiss_passkey_prompt: JSON parse: {e} — raw={raw}"))?;
+    let status = v["status"].as_str().unwrap_or("skipped").to_string();
+    let label = v.get("label").and_then(|s| s.as_str()).map(str::to_string);
+    Ok((status, label))
+}
+
+/// Wait until Flutter's semantics shadow DOM is present and populated.
+///
+/// `enable_a11y` is a trigger, not a guarantee: Flutter may still be booting or
+/// rebuilding the route tree.  This helper combines repeated trigger attempts
+/// with a concrete shadow-DOM role count check for deterministic fixtures.
+pub fn wait_for_flutter_semantics(
+    min_roles: usize,
+    timeout_ms: u64,
+) -> Result<(u64, usize), String> {
+    let started = std::time::Instant::now();
+    let timeout = std::time::Duration::from_millis(timeout_ms);
+    loop {
+        let _ = crate::browser_ax::enable_flutter_semantics();
+        let raw = evaluate_js(
+            "(() => { const host = document.querySelector('flt-semantics-host'); return host ? host.querySelectorAll('[role]').length : 0; })()",
+        ).unwrap_or_default();
+        let count = raw.trim().parse::<usize>().unwrap_or(0);
+        if count >= min_roles {
+            return Ok((started.elapsed().as_millis() as u64, count));
+        }
+        if started.elapsed() >= timeout {
+            let url = current_url().unwrap_or_default();
+            return Err(format!(
+                "wait_for_flutter_semantics: only {count} role nodes after {timeout_ms}ms at {url}"
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+}
+
 /// Focus + type into a Flutter shadow DOM element.
 /// Uses JS pointer dispatch (same as shadow_click) to focus, then `Input.InsertText`.
 pub fn shadow_type(role: Option<&str>, name_regex: Option<&str>, text: &str) -> Result<(), String> {
     // Use shadow_click (JS dispatch) to focus — click_point causes about:blank on Flutter
     shadow_click(role, name_regex)?;
     std::thread::sleep(std::time::Duration::from_millis(300));
-    with_tab(|tab| {
-        tab.call_method(Input::InsertText { text: text.to_string() })
+    let text = text.to_string();
+    with_tab(move |tab| {
+        tab.call_method(Input::InsertText { text })
             .map_err(|e| format!("shadow_type InsertText: {e}"))
     })?;
     Ok(())
@@ -2200,8 +2355,7 @@ pub fn flutter_type(text: &str) -> Result<(), String> {
     // ASCII fast path: fire CDP keydown per character so Flutter's keydown handler fires.
     for ch in text.chars() {
         let key_str = ch.to_string();
-        press_key(&key_str)
-            .map_err(|e| format!("flutter_type '{key_str}': {e}"))?;
+        press_key(&key_str).map_err(|e| format!("flutter_type '{key_str}': {e}"))?;
         std::thread::sleep(std::time::Duration::from_millis(30));
     }
     Ok(())
@@ -2264,8 +2418,7 @@ pub fn flutter_type_unicode(text: &str) -> Result<(), String> {
         }})()"#
     );
 
-    let result = evaluate_js(&js)
-        .unwrap_or_else(|e| format!("js_err:{e}"));
+    let result = evaluate_js(&js).unwrap_or_else(|e| format!("js_err:{e}"));
 
     if result.contains("paste_ok") || result.contains("input_event_ok") {
         // Give Flutter a tick to process the event
@@ -2274,8 +2427,9 @@ pub fn flutter_type_unicode(text: &str) -> Result<(), String> {
     }
 
     // --- Stage 2: CDP Input.InsertText fallback ---
-    with_tab(|tab| {
-        tab.call_method(Input::InsertText { text: text.to_string() })
+    let text = text.to_string();
+    with_tab(move |tab| {
+        tab.call_method(Input::InsertText { text })
             .map_err(|e| format!("flutter_type_unicode InsertText: {e}"))
     })?;
     std::thread::sleep(std::time::Duration::from_millis(80));
@@ -2328,7 +2482,8 @@ pub fn flutter_enter() -> Result<String, String> {
 /// scrollable widget receives the event.
 pub fn flutter_scroll(delta_y: f64) -> Result<(), String> {
     // Strategy 1: WheelEvent — preferred, lowest latency
-    let js_wheel = format!(r#"(function() {{
+    let js_wheel = format!(
+        r#"(function() {{
     const target = document.querySelector('flt-glass-pane')
                 || document.querySelector('canvas')
                 || document.body;
@@ -2343,13 +2498,15 @@ pub fn flutter_scroll(delta_y: f64) -> Result<(), String> {
         }}));
     }}
     return 'wheel';
-}})()"#);
+}})()"#
+    );
     let _ = evaluate_js(&js_wheel);
 
     // Strategy 2: Touch-drag (8 pointermove steps for velocity tracking)
     let steps = 8i32;
     let step_y = delta_y / steps as f64;
-    let js_touch = format!(r#"(function() {{
+    let js_touch = format!(
+        r#"(function() {{
     const pane = document.querySelector('flt-glass-pane')
               || document.querySelector('canvas')
               || document.body;
@@ -2366,7 +2523,8 @@ pub fn flutter_scroll(delta_y: f64) -> Result<(), String> {
     }}
     pane.dispatchEvent(mk('pointerup', cy - {delta_y}));
     return 'touch';
-}})()"#);
+}})()"#
+    );
     evaluate_js(&js_touch).map(|_| ())
 }
 
@@ -2394,7 +2552,11 @@ pub fn flutter_scroll_until_visible(
     }
 
     let step = if step_px <= 0.0 { 300.0 } else { step_px };
-    let max  = if max_scroll_px <= 0.0 { 2000.0 } else { max_scroll_px };
+    let max = if max_scroll_px <= 0.0 {
+        2000.0
+    } else {
+        max_scroll_px
+    };
     let mut scrolled = 0.0;
 
     while scrolled < max {
@@ -2424,7 +2586,8 @@ fn shadow_find_in_viewport(
     }
     let role_val = role.unwrap_or("").replace('\'', "\\'");
     let name_val = name_regex.unwrap_or("").replace('\'', "\\'");
-    let js = format!(r#"(() => {{
+    let js = format!(
+        r#"(() => {{
   const host = document.querySelector('flt-semantics-host');
   if (!host || host.childElementCount === 0)
     return JSON.stringify({{ found: false, reason: 'host empty' }});
@@ -2439,10 +2602,11 @@ fn shadow_find_in_viewport(
     return JSON.stringify({{ found: true, x: r.left + r.width/2, y: r.top + r.height/2, label: lbl }});
   }}
   return JSON.stringify({{ found: false, reason: 'not in viewport' }});
-}})()"#);
+}})()"#
+    );
     let raw = evaluate_js(&js)?;
-    let v: serde_json::Value = serde_json::from_str(&raw)
-        .map_err(|e| format!("shadow_find_in_viewport parse: {e}"))?;
+    let v: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| format!("shadow_find_in_viewport parse: {e}"))?;
     if v["found"].as_bool() != Some(true) {
         return Err(v["reason"].as_str().unwrap_or("not found").to_string());
     }
@@ -2455,7 +2619,7 @@ fn shadow_find_in_viewport(
 /// Move the mouse to (x, y) **in CSS pixels** without clicking — triggers
 /// hover effects.  See `click_point` for the CSS-vs-screenshot pixel caveat.
 pub fn hover_point(x: f64, y: f64) -> Result<(), String> {
-    with_tab(|tab| {
+    with_tab(move |tab| {
         // Point imported at module level
         tab.move_mouse_to_point(Point { x, y })
             .map_err(|e| format!("hover({x},{y}): {e}"))?;
@@ -2477,8 +2641,9 @@ pub fn hover_point_screenshot(px: f64, py: f64) -> Result<(), String> {
 
 /// Hover over the first element matching a CSS selector.
 pub fn hover(selector: &str) -> Result<(), String> {
-    with_tab(|tab| {
-        tab.wait_for_element(selector)
+    let selector = selector.to_string();
+    with_tab(move |tab| {
+        tab.wait_for_element(&selector)
             .map_err(|e| format!("hover – find '{selector}': {e}"))?
             .move_mouse_over()
             .map_err(|e| format!("hover '{selector}': {e}"))?;
@@ -2488,26 +2653,31 @@ pub fn hover(selector: &str) -> Result<(), String> {
 
 /// Screenshot a specific element (returns PNG bytes cropped to the element).
 pub fn screenshot_element(selector: &str) -> Result<Vec<u8>, String> {
-    with_tab(|tab| {
-        let el = tab.wait_for_element(selector)
+    let selector = selector.to_string();
+    with_tab(move |tab| {
+        let el = tab
+            .wait_for_element(&selector)
             .map_err(|e| format!("screenshot_element – find '{selector}': {e}"))?;
-        let model = el.get_box_model()
+        let model = el
+            .get_box_model()
             .map_err(|e| format!("get_box_model '{selector}': {e}"))?;
         let vp = model.content_viewport();
         inject_privacy_mask(tab);
         inject_hide_for_tool_use(tab);
-        let res = tab.capture_screenshot(
-            CaptureScreenshotFormatOption::Png,
-            None,
-            Some(Page::Viewport {
-                x: vp.x,
-                y: vp.y,
-                width: vp.width,
-                height: vp.height,
-                scale: vp.scale,
-            }),
-            true,
-        ).map_err(|e| format!("screenshot_element '{selector}': {e}"));
+        let res = tab
+            .capture_screenshot(
+                CaptureScreenshotFormatOption::Png,
+                None,
+                Some(Page::Viewport {
+                    x: vp.x,
+                    y: vp.y,
+                    width: vp.width,
+                    height: vp.height,
+                    scale: vp.scale,
+                }),
+                true,
+            )
+            .map_err(|e| format!("screenshot_element '{selector}': {e}"));
         remove_hide_for_tool_use(tab);
         remove_privacy_mask(tab);
         res
@@ -2524,7 +2694,10 @@ pub fn screenshot_element(selector: &str) -> Result<Vec<u8>, String> {
 pub fn new_tab() -> Result<usize, String> {
     let mut guard = global().lock().unwrap_or_else(|e| e.into_inner());
     let inner = guard.as_mut().ok_or("browser not open")?;
-    let tab = inner.browser.new_tab().map_err(|e| format!("new_tab: {e}"))?;
+    let tab = inner
+        .browser
+        .new_tab()
+        .map_err(|e| format!("new_tab: {e}"))?;
     inner.tabs.push(tab);
     let idx = inner.tabs.len() - 1;
     inner.active = idx;
@@ -2536,7 +2709,10 @@ pub fn switch_tab(index: usize) -> Result<(), String> {
     let mut guard = global().lock().unwrap_or_else(|e| e.into_inner());
     let inner = guard.as_mut().ok_or("browser not open")?;
     if index >= inner.tabs.len() {
-        return Err(format!("tab index {index} out of range (have {})", inner.tabs.len()));
+        return Err(format!(
+            "tab index {index} out of range (have {})",
+            inner.tabs.len()
+        ));
     }
     inner.active = index;
     Ok(())
@@ -2618,7 +2794,9 @@ pub fn wait_for_new_tab(baseline_count: Option<usize>, timeout_ms: u64) -> Resul
                 let mut guard = global().lock().unwrap_or_else(|e| e.into_inner());
                 let inner = guard.as_mut().ok_or("browser not open")?;
                 // Add any browser tab not already in inner.tabs.
-                let existing_ids: std::collections::HashSet<String> = inner.tabs.iter()
+                let existing_ids: std::collections::HashSet<String> = inner
+                    .tabs
+                    .iter()
                     .map(|t| t.get_target_id().to_string())
                     .collect();
                 for t in &browser_tabs {
@@ -2650,7 +2828,12 @@ pub fn wait_for_new_tab(baseline_count: Option<usize>, timeout_ms: u64) -> Resul
 pub fn list_tabs() -> Result<Vec<(usize, String)>, String> {
     let guard = global().lock().unwrap_or_else(|e| e.into_inner());
     let inner = guard.as_ref().ok_or("browser not open")?;
-    Ok(inner.tabs.iter().enumerate().map(|(i, t)| (i, t.get_url())).collect())
+    Ok(inner
+        .tabs
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (i, t.get_url()))
+        .collect())
 }
 
 /// Get the active tab index.
@@ -2663,23 +2846,30 @@ pub fn active_tab() -> Result<usize, String> {
 
 /// Get all cookies as a JSON string.
 pub fn get_cookies() -> Result<String, String> {
-    with_tab(|tab| {
+    with_tab(move |tab| {
         let cookies = tab.get_cookies().map_err(|e| format!("get_cookies: {e}"))?;
-        let vals: Vec<serde_json::Value> = cookies.into_iter().map(|c| {
-            json!({ "name": c.name, "value": c.value, "domain": c.domain, "path": c.path })
-        }).collect();
+        let vals: Vec<serde_json::Value> = cookies
+            .into_iter()
+            .map(
+                |c| json!({ "name": c.name, "value": c.value, "domain": c.domain, "path": c.path }),
+            )
+            .collect();
         Ok(serde_json::to_string(&vals).unwrap())
     })
 }
 
 /// Set a cookie.
 pub fn set_cookie(name: &str, value: &str, domain: &str, path: &str) -> Result<(), String> {
-    with_tab(|tab| {
+    let name = name.to_string();
+    let value = value.to_string();
+    let domain = domain.to_string();
+    let path = path.to_string();
+    with_tab(move |tab| {
         tab.set_cookies(vec![Network::CookieParam {
-            name: name.to_string(),
-            value: value.to_string(),
-            domain: Some(domain.to_string()),
-            path: Some(path.to_string()),
+            name,
+            value,
+            domain: Some(domain),
+            path: Some(path),
             url: None,
             secure: None,
             http_only: None,
@@ -2690,22 +2880,25 @@ pub fn set_cookie(name: &str, value: &str, domain: &str, path: &str) -> Result<(
             source_scheme: None,
             source_port: None,
             partition_key: None,
-        }]).map_err(|e| format!("set_cookie: {e}"))?;
+        }])
+        .map_err(|e| format!("set_cookie: {e}"))?;
         Ok(())
     })
 }
 
 /// Delete cookies matching a name (on current domain).
 pub fn delete_cookie(name: &str) -> Result<(), String> {
-    with_tab(|tab| {
+    let name = name.to_string();
+    with_tab(move |tab| {
         let url = tab.get_url();
         tab.delete_cookies(vec![Network::DeleteCookies {
-            name: name.to_string(),
+            name,
             url: Some(url),
             domain: None,
             path: None,
             partition_key: None,
-        }]).map_err(|e| format!("delete_cookie: {e}"))?;
+        }])
+        .map_err(|e| format!("delete_cookie: {e}"))?;
         Ok(())
     })
 }
@@ -2734,7 +2927,8 @@ pub fn install_network_capture() -> Result<(), String> {
     // Captures both request body (req_body) and response body (body) for fetch + XHR.
     // Request body matters for K14-style "did the user actually send amount=99.30"
     // assertions — without it, you can only see the response.
-    evaluate_js(r#"(() => {
+    evaluate_js(
+        r#"(() => {
         if (window.__sirin_net) return;
         window.__sirin_net = [];
         const reqBodyToString = (b) => {
@@ -2786,7 +2980,8 @@ pub fn install_network_capture() -> Result<(), String> {
             });
             return origXhrSend.apply(this, arguments);
         };
-    })()"#)?;
+    })()"#,
+    )?;
     Ok(())
 }
 
@@ -2810,8 +3005,8 @@ pub fn wait_for_request(url_substring: &str, timeout_ms: u64) -> Result<String, 
     install_network_capture()?;
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
-    let needle = serde_json::to_string(url_substring)
-        .map_err(|e| format!("escape pattern: {e}"))?;
+    let needle =
+        serde_json::to_string(url_substring).map_err(|e| format!("escape pattern: {e}"))?;
 
     loop {
         // Look for a matching entry without holding any lock between polls.
@@ -2840,19 +3035,23 @@ pub fn wait_for_request(url_substring: &str, timeout_ms: u64) -> Result<String, 
 
 /// Upload file(s) to a file input element.
 pub fn file_upload(selector: &str, paths: &[&str]) -> Result<(), String> {
-    with_tab(|tab| {
-        let el = tab.wait_for_element(selector)
+    let selector = selector.to_string();
+    let files: Vec<String> = paths.iter().map(|p| p.to_string()).collect();
+    with_tab(move |tab| {
+        let el = tab
+            .wait_for_element(&selector)
             .map_err(|e| format!("file_upload – find '{selector}': {e}"))?;
-        let node = el.get_description()
+        let node = el
+            .get_description()
             .map_err(|e| format!("file_upload – describe '{selector}': {e}"))?;
         let node_id = node.backend_node_id;
-        let files: Vec<String> = paths.iter().map(|p| p.to_string()).collect();
         tab.call_method(headless_chrome::protocol::cdp::DOM::SetFileInputFiles {
             files,
             node_id: Some(node_id),
             backend_node_id: Some(node_id),
             object_id: None,
-        }).map_err(|e| format!("file_upload: {e}"))?;
+        })
+        .map_err(|e| format!("file_upload: {e}"))?;
         Ok(())
     })
 }
@@ -2880,28 +3079,59 @@ pub fn iframe_eval(iframe_selector: &str, expression: &str) -> Result<String, St
 
 /// Drag from one point to another.
 pub fn drag(from_x: f64, from_y: f64, to_x: f64, to_y: f64) -> Result<(), String> {
-    with_tab(|tab| {
-        tab.move_mouse_to_point(Point { x: from_x, y: from_y })
-            .map_err(|e| format!("drag move_to_start: {e}"))?;
+    with_tab(move |tab| {
+        tab.move_mouse_to_point(Point {
+            x: from_x,
+            y: from_y,
+        })
+        .map_err(|e| format!("drag move_to_start: {e}"))?;
         let mouse = |t, x, y, btn: Option<Input::MouseButton>, bc, cc| {
             tab.call_method(Input::DispatchMouseEvent {
-                Type: t, x, y,
-                button: btn, buttons: bc, click_count: cc,
-                modifiers: None, timestamp: None,
-                delta_x: None, delta_y: None, pointer_Type: None,
-                force: None, tangential_pressure: None,
-                tilt_x: None, tilt_y: None, twist: None,
+                Type: t,
+                x,
+                y,
+                button: btn,
+                buttons: bc,
+                click_count: cc,
+                modifiers: None,
+                timestamp: None,
+                delta_x: None,
+                delta_y: None,
+                pointer_Type: None,
+                force: None,
+                tangential_pressure: None,
+                tilt_x: None,
+                tilt_y: None,
+                twist: None,
             })
         };
-        mouse(Input::DispatchMouseEventTypeOption::MousePressed,
-            from_x, from_y, Some(Input::MouseButton::Left), Some(1), Some(1))
-            .map_err(|e| format!("drag press: {e}"))?;
-        mouse(Input::DispatchMouseEventTypeOption::MouseMoved,
-            to_x, to_y, Some(Input::MouseButton::Left), Some(1), None)
-            .map_err(|e| format!("drag move: {e}"))?;
-        mouse(Input::DispatchMouseEventTypeOption::MouseReleased,
-            to_x, to_y, Some(Input::MouseButton::Left), Some(0), Some(1))
-            .map_err(|e| format!("drag release: {e}"))?;
+        mouse(
+            Input::DispatchMouseEventTypeOption::MousePressed,
+            from_x,
+            from_y,
+            Some(Input::MouseButton::Left),
+            Some(1),
+            Some(1),
+        )
+        .map_err(|e| format!("drag press: {e}"))?;
+        mouse(
+            Input::DispatchMouseEventTypeOption::MouseMoved,
+            to_x,
+            to_y,
+            Some(Input::MouseButton::Left),
+            Some(1),
+            None,
+        )
+        .map_err(|e| format!("drag move: {e}"))?;
+        mouse(
+            Input::DispatchMouseEventTypeOption::MouseReleased,
+            to_x,
+            to_y,
+            Some(Input::MouseButton::Left),
+            Some(0),
+            Some(1),
+        )
+        .map_err(|e| format!("drag release: {e}"))?;
         Ok(())
     })
 }
@@ -2910,8 +3140,9 @@ pub fn drag(from_x: f64, from_y: f64, to_x: f64, to_y: f64) -> Result<(), String
 
 /// Export current page as PDF (headless only). Returns raw PDF bytes.
 pub fn pdf() -> Result<Vec<u8>, String> {
-    with_tab(|tab| {
-        tab.print_to_pdf(None).map_err(|e| format!("print_to_pdf: {e}"))
+    with_tab(move |tab| {
+        tab.print_to_pdf(None)
+            .map_err(|e| format!("print_to_pdf: {e}"))
     })
 }
 
@@ -2931,12 +3162,13 @@ pub fn set_http_auth(username: &str, password: &str) -> Result<(), String> {
     // Also set via CDP Network.setExtraHTTPHeaders with Authorization
     let encoded = base64_encode(&format!("{username}:{password}"));
     let auth_header = format!("Basic {encoded}");
-    with_tab(|tab| {
+    with_tab(move |tab| {
         tab.call_method(Network::SetExtraHTTPHeaders {
             headers: Network::Headers(Some(json!({
                 "Authorization": auth_header
             }))),
-        }).map_err(|e| format!("set_http_auth: {e}"))?;
+        })
+        .map_err(|e| format!("set_http_auth: {e}"))?;
         Ok(())
     })
 }
@@ -2951,7 +3183,7 @@ pub fn set_http_auth(username: &str, password: &str) -> Result<(), String> {
 /// reused for speed.
 pub fn clear_browser_state() -> Result<(), String> {
     use headless_chrome::protocol::cdp::Network;
-    with_tab(|tab| {
+    with_tab(move |tab| {
         // Clear ALL cookies via CDP (covers all domains, not just current).
         tab.call_method(Network::ClearBrowserCookies(None))
             .map_err(|e| format!("clear cookies: {e}"))?;
@@ -2960,7 +3192,8 @@ pub fn clear_browser_state() -> Result<(), String> {
 
     // Clear page-side storage via JS (localStorage, sessionStorage, IndexedDB).
     // Best-effort — some origins block storage access (sandboxed iframes).
-    let _ = evaluate_js(r#"(async () => {
+    let _ = evaluate_js(
+        r#"(async () => {
         try { localStorage.clear(); } catch(e) {}
         try { sessionStorage.clear(); } catch(e) {}
         try {
@@ -2978,7 +3211,8 @@ pub fn clear_browser_state() -> Result<(), String> {
             }
         } catch(e) {}
         return 'cleared';
-    })()"#);
+    })()"#,
+    );
 
     // Re-apply cached viewport — clear_state may have reloaded the page which
     // resets Emulation.setDeviceMetricsOverride (Issue #27).
@@ -3052,9 +3286,10 @@ impl headless_chrome::protocol::cdp::types::Method for RawBrowserClose {
 /// Call this from the executor **before** `goto` so that Flutter sees empty
 /// storage from frame zero and shows the login page instead of auto-logging in.
 pub fn clear_origin_data(origin: &str) -> Result<(), String> {
-    with_tab(|tab| {
+    let origin = origin.to_string();
+    with_tab(move |tab| {
         tab.call_method(RawClearDataForOrigin {
-            origin: origin.to_string(),
+            origin: origin.clone(),
             storage_types: "all".to_string(),
         })
         .map_err(|e| format!("Storage.clearDataForOrigin({origin}): {e}"))?;
@@ -3064,7 +3299,10 @@ pub fn clear_origin_data(origin: &str) -> Result<(), String> {
 
 /// Get a localStorage value.
 pub fn local_storage_get(key: &str) -> Result<String, String> {
-    evaluate_js(&format!("localStorage.getItem({}) || ''", serde_json::to_string(key).unwrap()))
+    evaluate_js(&format!(
+        "localStorage.getItem({}) || ''",
+        serde_json::to_string(key).unwrap()
+    ))
 }
 
 /// Set a localStorage value.
@@ -3101,7 +3339,11 @@ pub fn wait_for_url(target: &str, timeout_ms: u64) -> Result<u64, String> {
     let t0 = std::time::Instant::now();
     loop {
         let url = current_url().unwrap_or_default();
-        let matched = if let Some(ref re) = re { re.is_match(&url) } else { url.contains(target) };
+        let matched = if let Some(ref re) = re {
+            re.is_match(&url)
+        } else {
+            url.contains(target)
+        };
         if matched {
             return Ok(t0.elapsed().as_millis() as u64);
         }
@@ -3140,7 +3382,9 @@ pub fn wait_for_network_idle(idle_ms: u64, timeout_ms: u64) -> Result<u64, Strin
             return Ok(t0.elapsed().as_millis() as u64);
         }
         if std::time::Instant::now() >= deadline {
-            return Err(format!("wait_for_network_idle: timeout after {timeout_ms}ms"));
+            return Err(format!(
+                "wait_for_network_idle: timeout after {timeout_ms}ms"
+            ));
         }
     }
 }
@@ -3182,7 +3426,10 @@ pub fn session_switch(session_id: &str) -> Result<usize, String> {
     }
 
     // Create a new tab for this session
-    let tab = inner.browser.new_tab().map_err(|e| format!("session_switch new_tab: {e}"))?;
+    let tab = inner
+        .browser
+        .new_tab()
+        .map_err(|e| format!("session_switch new_tab: {e}"))?;
     inner.tabs.push(tab);
     let idx = inner.tabs.len() - 1;
     inner.active = idx;
@@ -3194,13 +3441,13 @@ pub fn session_switch(session_id: &str) -> Result<usize, String> {
 
 /// Snapshot of the current Chrome browser state for MCP `browser_status`.
 pub struct BrowserStatus {
-    pub is_open:           bool,
-    pub tab_count:         usize,
-    pub active_tab_index:  usize,
+    pub is_open: bool,
+    pub tab_count: usize,
+    pub active_tab_index: usize,
     /// All tabs as (url) indexed by position.
-    pub tabs:              Vec<String>,
+    pub tabs: Vec<String>,
     /// Named sessions: (session_id, tab_index, url).
-    pub named_sessions:    Vec<(String, usize, String)>,
+    pub named_sessions: Vec<(String, usize, String)>,
 }
 
 /// Return a non-failing snapshot of the browser state.
@@ -3216,10 +3463,10 @@ pub fn browser_status() -> BrowserStatus {
             named_sessions: vec![],
         },
         Some(inner) => {
-            let tabs: Vec<String> = inner.tabs.iter()
-                .map(|t| t.get_url())
-                .collect();
-            let mut named: Vec<(String, usize, String)> = inner.sessions.iter()
+            let tabs: Vec<String> = inner.tabs.iter().map(|t| t.get_url()).collect();
+            let mut named: Vec<(String, usize, String)> = inner
+                .sessions
+                .iter()
                 .map(|(id, &idx)| {
                     let url = inner.tabs.get(idx).map(|t| t.get_url()).unwrap_or_default();
                     (id.clone(), idx, url)
@@ -3258,7 +3505,9 @@ pub fn list_sessions() -> Result<Vec<(String, usize, String)>, String> {
 pub fn close_session(session_id: &str) -> Result<(), String> {
     let mut guard = global().lock().unwrap_or_else(|e| e.into_inner());
     let inner = guard.as_mut().ok_or("browser not open")?;
-    let idx = inner.sessions.remove(session_id)
+    let idx = inner
+        .sessions
+        .remove(session_id)
         .ok_or_else(|| format!("session '{session_id}' not found"))?;
     if inner.tabs.len() <= 1 {
         return Err("cannot close the last tab".into());
@@ -3272,7 +3521,9 @@ pub fn close_session(session_id: &str) -> Result<(), String> {
         }
         // Shift down any session indices pointing past the removed tab
         for idx_ref in inner.sessions.values_mut() {
-            if *idx_ref > idx { *idx_ref -= 1; }
+            if *idx_ref > idx {
+                *idx_ref -= 1;
+            }
         }
         // Mirror the reindex in the a11y enabled-tab tracker.
         crate::browser_ax::remove_a11y_tab(idx);
@@ -3284,9 +3535,123 @@ pub fn close_session(session_id: &str) -> Result<(), String> {
 //  INTERNALS
 // ══════════════════════════════════════════════════════════════════════════════
 
+fn resolve_browser_operation_timeout_secs(raw: Option<&str>) -> u64 {
+    raw.and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_BROWSER_OPERATION_TIMEOUT_SECS)
+        .clamp(
+            MIN_BROWSER_OPERATION_TIMEOUT_SECS,
+            MAX_BROWSER_OPERATION_TIMEOUT_SECS,
+        )
+}
+
+fn browser_operation_timeout() -> std::time::Duration {
+    *BROWSER_OPERATION_TIMEOUT.get_or_init(|| {
+        let raw = std::env::var(BROWSER_OPERATION_TIMEOUT_ENV).ok();
+        std::time::Duration::from_secs(resolve_browser_operation_timeout_secs(raw.as_deref()))
+    })
+}
+
+/// Run a blocking operation behind a hard caller-side deadline.
+///
+/// Rust cannot cancel a blocked native thread safely.  On timeout the caller
+/// returns immediately and `on_timeout` invalidates the owning browser session;
+/// dropping that session closes Chrome/transport so the detached worker can
+/// unwind.  The result channel is bounded to avoid retaining a late result.
+fn run_with_deadline<F, R, I>(
+    operation: &str,
+    timeout: std::time::Duration,
+    on_timeout: I,
+    task: F,
+) -> Result<R, String>
+where
+    F: FnOnce() -> Result<R, String> + Send + 'static,
+    R: Send + 'static,
+    I: FnOnce(),
+{
+    let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
+    std::thread::Builder::new()
+        .name("sirin-cdp-operation".into())
+        .spawn(move || {
+            let _ = result_tx.send(task());
+        })
+        .map_err(|e| format!("failed to start {operation} worker: {e}"))?;
+
+    match result_rx.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            on_timeout();
+            Err(format!(
+                "{BROWSER_OPERATION_TIMEOUT_PREFIX} after {}s; stale browser session invalidated",
+                timeout.as_secs()
+            ))
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(format!(
+            "{operation} worker stopped before returning a result"
+        )),
+    }
+}
+
+/// Remove only the session that produced a timed-out/error result.  Cleanup is
+/// detached because headless_chrome's `Browser::drop` sends `Browser.close`
+/// using the same transport that may be wedged; running Drop on the caller
+/// would otherwise reintroduce the very 30-minute block this path prevents.
+fn invalidate_session_generation(generation: u64) -> bool {
+    let retired = {
+        let mut guard = global().lock().unwrap_or_else(|e| e.into_inner());
+        if guard.as_ref().map(|inner| inner.generation) == Some(generation) {
+            guard.take()
+        } else {
+            None
+        }
+    };
+    let Some(retired) = retired else {
+        return false;
+    };
+
+    tracing::warn!("[browser] invalidated stale session generation {generation}; cleanup detached");
+    let (retire_tx, retire_rx) = std::sync::mpsc::sync_channel(1);
+    match std::thread::Builder::new()
+        .name("sirin-browser-retire".into())
+        .spawn(move || {
+            if let Ok(retired) = retire_rx.recv() {
+                drop(retired);
+            }
+        }) {
+        Ok(_) => {
+            if let Err(std::sync::mpsc::SendError(retired)) = retire_tx.send(retired) {
+                // The cleanup worker died before receiving the browser.  Leak
+                // this already-invalid session rather than synchronously run a
+                // potentially wedged Browser::drop on the timed-out caller.
+                std::mem::forget(retired);
+            }
+        }
+        Err(e) => {
+            tracing::error!("[browser] failed to start stale-session cleanup thread: {e}");
+            std::mem::forget(retired);
+        }
+    }
+    true
+}
+
+fn run_tab_operation<F, R>(tab: Arc<Tab>, generation: u64, f: F) -> Result<R, String>
+where
+    F: FnOnce(&Arc<Tab>) -> Result<R, String> + Send + 'static,
+    R: Send + 'static,
+{
+    run_with_deadline(
+        "browser CDP operation",
+        browser_operation_timeout(),
+        || {
+            invalidate_session_generation(generation);
+        },
+        move || f(&tab),
+    )
+}
+
 pub(crate) fn with_tab<F, R>(f: F) -> Result<R, String>
 where
-    F: FnOnce(&Arc<Tab>) -> Result<R, String> + Clone,
+    F: FnOnce(&Arc<Tab>) -> Result<R, String> + Clone + Send + 'static,
+    R: Send + 'static,
 {
     ensure_open_reusing()?;
 
@@ -3302,20 +3667,31 @@ where
     // Thread-local tab index: `session_switch` writes THREAD_ACTIVE_TAB so
     // each concurrent test thread always reads its own tab, not the shared
     // `inner.active` pointer that any other thread may have clobbered.
-    let tab: Arc<Tab> = {
+    let (tab, mut generation): (Arc<Tab>, u64) = {
         let guard = global().lock().unwrap_or_else(|e| e.into_inner());
         match guard.as_ref() {
             Some(inner) => {
-                let idx = THREAD_ACTIVE_TAB.with(|c| c.get())
+                let idx = THREAD_ACTIVE_TAB
+                    .with(|c| c.get())
                     .unwrap_or(inner.active)
                     .min(inner.tabs.len().saturating_sub(1));
-                Arc::clone(&inner.tabs[idx])
+                (Arc::clone(&inner.tabs[idx]), inner.generation)
             }
             None => return Err("browser session lost".into()),
         }
     }; // mutex released here — NOT held during the CDP call
 
-    let mut result = f.clone()(&tab);
+    let mut result = run_tab_operation(tab, generation, f.clone());
+
+    // A hard deadline already invalidated the precise session generation that
+    // owned this call.  Return the explicit timeout now; retrying the same
+    // action automatically could duplicate a click/type/navigation side effect.
+    if result
+        .as_ref()
+        .is_err_and(|e| e.starts_with(BROWSER_OPERATION_TIMEOUT_PREFIX))
+    {
+        return result;
+    }
 
     // If the call failed with a connection-closed error, retry up to
     // `MAX_RECOVERIES` times.  Pilot #003-rerun (Issue #97) showed
@@ -3329,10 +3705,11 @@ where
             Err(e) if is_connection_closed(e) => {
                 tracing::warn!(
                     "[browser] mid-call connection closed (attempt {}/{}) — recovering",
-                    attempt, MAX_RECOVERIES
+                    attempt,
+                    MAX_RECOVERIES
                 );
                 // Clear singleton so the next ensure_open spawns a fresh Chrome.
-                *global().lock().unwrap_or_else(|e| e.into_inner()) = None;
+                invalidate_session_generation(generation);
                 // Brief settle delay between recoveries — empirically the second+
                 // recovery succeeds when Chrome had a moment to release its locks.
                 std::thread::sleep(std::time::Duration::from_millis(500));
@@ -3344,7 +3721,8 @@ where
                 if let Err(launch_err) = ensure_open(recovery_headless) {
                     tracing::error!(
                         "[browser] recovery attempt {} failed at ensure_open: {}",
-                        attempt, launch_err
+                        attempt,
+                        launch_err
                     );
                     if attempt == MAX_RECOVERIES {
                         return Err(format!(
@@ -3357,14 +3735,15 @@ where
                 // Get a fresh tab from the new session.  After recovery the
                 // browser has only one tab (index 0) — clamp THREAD_ACTIVE_TAB
                 // so we don't panic on out-of-bounds.
-                let tab: Arc<Tab> = {
+                let (tab, recovered_generation): (Arc<Tab>, u64) = {
                     let guard = global().lock().unwrap_or_else(|e| e.into_inner());
                     match guard.as_ref() {
                         Some(inner) => {
-                            let idx = THREAD_ACTIVE_TAB.with(|c| c.get())
+                            let idx = THREAD_ACTIVE_TAB
+                                .with(|c| c.get())
                                 .unwrap_or(inner.active)
                                 .min(inner.tabs.len().saturating_sub(1));
-                            Arc::clone(&inner.tabs[idx])
+                            (Arc::clone(&inner.tabs[idx]), inner.generation)
                         }
                         None => {
                             if attempt == MAX_RECOVERIES {
@@ -3374,7 +3753,14 @@ where
                         }
                     }
                 };
-                result = f.clone()(&tab);
+                generation = recovered_generation;
+                result = run_tab_operation(tab, generation, f.clone());
+                if result
+                    .as_ref()
+                    .is_err_and(|e| e.starts_with(BROWSER_OPERATION_TIMEOUT_PREFIX))
+                {
+                    return result;
+                }
             }
             _ => break, // Ok, or non-connection-closed Err — stop retrying.
         }
@@ -3390,7 +3776,7 @@ fn is_connection_closed(err: &str) -> bool {
         // CDP transport-layer timeouts (headless_chrome phrases):
         || err.contains("event waited for never came")   // wait_until_navigated / wait_for_element
         || err.contains("timed out")                     // generic CDP timeout
-        || err.contains("transport loop")                // WebSocket transport died
+        || err.contains("transport loop") // WebSocket transport died
 }
 
 fn base64_encode(input: &str) -> String {
@@ -3404,10 +3790,16 @@ fn base64_encode(input: &str) -> String {
         let triple = (b0 << 16) | (b1 << 8) | b2;
         out.push(CHARS[((triple >> 18) & 0x3F) as usize] as char);
         out.push(CHARS[((triple >> 12) & 0x3F) as usize] as char);
-        if chunk.len() > 1 { out.push(CHARS[((triple >> 6) & 0x3F) as usize] as char); }
-        else { out.push('='); }
-        if chunk.len() > 2 { out.push(CHARS[(triple & 0x3F) as usize] as char); }
-        else { out.push('='); }
+        if chunk.len() > 1 {
+            out.push(CHARS[((triple >> 6) & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(CHARS[(triple & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
     }
     out
 }
@@ -3417,6 +3809,61 @@ mod tests {
     use super::*;
 
     // ── Pure unit tests (no Chrome needed) ────────────────────────────────────
+
+    #[test]
+    fn deadline_returns_fast_result_without_invalidation() {
+        let invalidated = Arc::new(AtomicBool::new(false));
+        let invalidated_on_timeout = Arc::clone(&invalidated);
+        let result = run_with_deadline(
+            "test operation",
+            std::time::Duration::from_millis(100),
+            move || invalidated_on_timeout.store(true, Ordering::Relaxed),
+            || Ok::<_, String>(42),
+        );
+
+        assert_eq!(result, Ok(42));
+        assert!(!invalidated.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn deadline_returns_explicit_timeout_and_invalidates() {
+        let invalidated = Arc::new(AtomicBool::new(false));
+        let invalidated_on_timeout = Arc::clone(&invalidated);
+        let result = run_with_deadline(
+            "test operation",
+            std::time::Duration::from_millis(10),
+            move || invalidated_on_timeout.store(true, Ordering::Relaxed),
+            || {
+                std::thread::sleep(std::time::Duration::from_millis(80));
+                Ok::<_, String>(())
+            },
+        );
+
+        let error = result.expect_err("slow operation must hit the hard deadline");
+        assert!(error.starts_with(BROWSER_OPERATION_TIMEOUT_PREFIX));
+        assert!(error.contains("stale browser session invalidated"));
+        assert!(invalidated.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn browser_operation_timeout_has_bounded_defaults() {
+        assert_eq!(
+            resolve_browser_operation_timeout_secs(None),
+            DEFAULT_BROWSER_OPERATION_TIMEOUT_SECS
+        );
+        assert_eq!(
+            resolve_browser_operation_timeout_secs(Some("garbage")),
+            DEFAULT_BROWSER_OPERATION_TIMEOUT_SECS
+        );
+        assert_eq!(
+            resolve_browser_operation_timeout_secs(Some("1")),
+            MIN_BROWSER_OPERATION_TIMEOUT_SECS
+        );
+        assert_eq!(
+            resolve_browser_operation_timeout_secs(Some("9999")),
+            MAX_BROWSER_OPERATION_TIMEOUT_SECS
+        );
+    }
 
     // ── Issue #143: flutter_type_unicode JS escape helper ─────────────────────
 
@@ -3464,12 +3911,27 @@ mod tests {
         // has_non_ascii detection: any non-ASCII char triggers the unicode path.
         // Since we can't call flutter_type without a browser, we test the
         // detection predicate directly.
-        assert!("你好".chars().any(|c| !c.is_ascii()), "CJK should be non-ASCII");
-        assert!("สวัสดี".chars().any(|c| !c.is_ascii()), "Thai should be non-ASCII");
-        assert!(!"hello".chars().any(|c| !c.is_ascii()), "pure ASCII should NOT trigger");
-        assert!(!"abc123".chars().any(|c| !c.is_ascii()), "alphanum is ASCII");
+        assert!(
+            "你好".chars().any(|c| !c.is_ascii()),
+            "CJK should be non-ASCII"
+        );
+        assert!(
+            "สวัสดี".chars().any(|c| !c.is_ascii()),
+            "Thai should be non-ASCII"
+        );
+        assert!(
+            !"hello".chars().any(|c| !c.is_ascii()),
+            "pure ASCII should NOT trigger"
+        );
+        assert!(
+            !"abc123".chars().any(|c| !c.is_ascii()),
+            "alphanum is ASCII"
+        );
         // Mixed: even one CJK triggers the path
-        assert!("hello 你".chars().any(|c| !c.is_ascii()), "mixed should trigger");
+        assert!(
+            "hello 你".chars().any(|c| !c.is_ascii()),
+            "mixed should trigger"
+        );
     }
 
     // ── Issue #79: HiDPI screenshot↔CSS pixel conversion ──────────────────────
@@ -3477,16 +3939,16 @@ mod tests {
     // ── Issue #74: dom_snapshot + ref_id helpers ─────────────────────────────
 
     #[test]
-    fn ref_id_validates_eN_schema() {
+    fn ref_id_validates_en_schema() {
         assert!(is_valid_ref_id("e1"));
         assert!(is_valid_ref_id("e42"));
         assert!(is_valid_ref_id("e9999"));
         // Invalid forms
         assert!(!is_valid_ref_id(""));
         assert!(!is_valid_ref_id("e"));
-        assert!(!is_valid_ref_id("ref_1"));        // CiC-style not accepted
-        assert!(!is_valid_ref_id("E1"));           // case-sensitive
-        assert!(!is_valid_ref_id("e1a"));          // trailing non-digit
+        assert!(!is_valid_ref_id("ref_1")); // CiC-style not accepted
+        assert!(!is_valid_ref_id("E1")); // case-sensitive
+        assert!(!is_valid_ref_id("e1a")); // trailing non-digit
         assert!(!is_valid_ref_id("1e"));
         assert!(!is_valid_ref_id("e-1"));
         // Selector-injection attempts must NOT validate.
@@ -3511,12 +3973,18 @@ mod tests {
         let js = dom_snapshot_js(50);
         assert!(js.starts_with("(function(){"));
         assert!(js.trim_end().ends_with("})()"));
-        assert!(js.contains("var MAX = 50"), "MAX must be embedded literally");
+        assert!(
+            js.contains("var MAX = 50"),
+            "MAX must be embedded literally"
+        );
         assert!(js.contains("__sirinRefMap"));
         assert!(js.contains("data-sirin-ref"));
         // No leftover Rust-format placeholders.
         assert!(!js.contains("{max}"), "format placeholder leaked into JS");
-        assert!(!js.contains("{{") || js.contains("{{a:'link'"), "literal braces only inside object literals");
+        assert!(
+            !js.contains("{{") || js.contains("{{a:'link'"),
+            "literal braces only inside object literals"
+        );
 
         // Default cap.
         let big = dom_snapshot_js(DOM_SNAPSHOT_DEFAULT_MAX);
@@ -3764,7 +4232,7 @@ mod tests {
         // Restore
         match orig {
             Some(v) => std::env::set_var("SIRIN_PRIVACY_MASK", v),
-            None    => std::env::remove_var("SIRIN_PRIVACY_MASK"),
+            None => std::env::remove_var("SIRIN_PRIVACY_MASK"),
         }
         // Leave global in fail-secure state for subsequent tests
         let _ = set_privacy_mask(true);
@@ -3793,10 +4261,15 @@ mod tests {
 
         // true / unset / unrecognised → defaults to true (fail-headless,
         // matches current default_headless() contract)
-        for (env_val, label) in [(Some("true"), "true"), (Some("1"), "1"), (None, "unset"), (Some("garbage"), "garbage")] {
+        for (env_val, label) in [
+            (Some("true"), "true"),
+            (Some("1"), "1"),
+            (None, "unset"),
+            (Some("garbage"), "garbage"),
+        ] {
             match env_val {
                 Some(v) => std::env::set_var("SIRIN_BROWSER_HEADLESS", v),
-                None    => std::env::remove_var("SIRIN_BROWSER_HEADLESS"),
+                None => std::env::remove_var("SIRIN_BROWSER_HEADLESS"),
             }
             TEST_DESIRED_HEADLESS.store(false, Ordering::Relaxed);
             init_headless_mode_from_env();
@@ -3809,7 +4282,7 @@ mod tests {
         // Restore env
         match orig {
             Some(v) => std::env::set_var("SIRIN_BROWSER_HEADLESS", v),
-            None    => std::env::remove_var("SIRIN_BROWSER_HEADLESS"),
+            None => std::env::remove_var("SIRIN_BROWSER_HEADLESS"),
         }
         // Re-seed from restored env so we leave the process in the user's
         // intended state for any later tests in this binary.
@@ -3906,7 +4379,11 @@ mod tests {
 
         // Simulate what `with_tab()` does on every tool dispatch.
         ensure_open_reusing().expect("reuse");
-        assert_eq!(is_headless(), Some(false), "mode MUST stay false after reuse");
+        assert_eq!(
+            is_headless(),
+            Some(false),
+            "mode MUST stay false after reuse"
+        );
 
         close();
     }
@@ -3943,7 +4420,10 @@ mod tests {
 
         click("#msg").expect("click");
         type_text("#box", "Sirin").expect("type");
-        assert_eq!(evaluate_js("document.getElementById('box').value").expect("val"), "Sirin");
+        assert_eq!(
+            evaluate_js("document.getElementById('box').value").expect("val"),
+            "Sirin"
+        );
 
         close();
         assert!(!is_open());
@@ -4041,7 +4521,10 @@ mod tests {
         // JPEG magic: FF D8 FF
         assert_eq!(&jpg[..3], &[0xFF, 0xD8, 0xFF], "not a JPEG");
         assert!(jpg.len() > 100, "too small");
-        assert!(jpg.len() < 500_000, "unexpectedly large (quality too high?)");
+        assert!(
+            jpg.len() < 500_000,
+            "unexpectedly large (quality too high?)"
+        );
     }
 
     /// Regression test for #23 — `current_url()` and `page_title()` must
@@ -4127,7 +4610,7 @@ mod tests {
 
         // localStorage
         navigate("data:text/html,<title>Storage</title>").ok(); // data: URI might not support localStorage
-        // Skip localStorage test on data: URIs as they don't support it
+                                                                // Skip localStorage test on data: URIs as they don't support it
 
         // network_requests (performance API)
         navigate("data:text/html,<title>Net</title>").expect("nav net");
@@ -4205,7 +4688,10 @@ mod tests {
     fn suggest_role_empty_when_name_pattern_is_empty() {
         let avail = vec![vstr("button:商品")];
         assert_eq!(suggest_role_from_available(None, Some("tab"), &avail), "");
-        assert_eq!(suggest_role_from_available(Some(""), Some("tab"), &avail), "");
+        assert_eq!(
+            suggest_role_from_available(Some(""), Some("tab"), &avail),
+            ""
+        );
     }
 
     /// Anchors `^` and `$` are stripped so the substring fuzzy compare works
@@ -4227,6 +4713,10 @@ mod tests {
         // Label snippet should not exceed ~25 chars (20 + quotes + role).
         assert!(s.contains("role=group"), "got: {s}");
         let snippet = s.split('"').nth(1).unwrap_or("");
-        assert!(snippet.len() <= 20, "label snippet too long ({}): {s}", snippet.len());
+        assert!(
+            snippet.len() <= 20,
+            "label snippet too long ({}): {s}",
+            snippet.len()
+        );
     }
 }

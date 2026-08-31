@@ -113,6 +113,5 @@ success_criteria:
   - "reload 後重新進入通知中心，已刪通知不復現（驗證 server 端刪除，#70 #2）"
   - "SSE 接收與列表刷新無嚴重 console 錯誤（#67-68）"
 
-tags: [regression, notification, sse, agora, critical, issue-47, issue-70]
-
+tags: [regression, notification, sse, agora, critical, issue-47, issue-70, mutating, requires-operator-approval]
 

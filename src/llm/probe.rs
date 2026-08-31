@@ -99,6 +99,28 @@ async fn list_lmstudio_models(
     base_url: &str,
     api_key: Option<&str>,
 ) -> Vec<ModelInfo> {
+    if !super::local_service::is_local_lmstudio_url(base_url) {
+        return list_lmstudio_models_once(client, base_url, api_key).await;
+    }
+
+    let mut models = list_lmstudio_models_once(client, base_url, api_key).await;
+    if models.is_empty() {
+        if let Err(e) =
+            super::local_service::ensure_lmstudio_server(client, base_url, api_key).await
+        {
+            tracing::warn!(target: "sirin", "[fleet] LM Studio auto-start failed: {e}");
+        } else {
+            models = list_lmstudio_models_once(client, base_url, api_key).await;
+        }
+    }
+    models
+}
+
+async fn list_lmstudio_models_once(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: Option<&str>,
+) -> Vec<ModelInfo> {
     let url = format!("{}/models", base_url.trim_end_matches('/'));
     let mut req = client.get(&url).timeout(std::time::Duration::from_secs(5));
     if let Some(key) = api_key {
@@ -127,9 +149,7 @@ async fn list_lmstudio_models(
 pub async fn list_local_models(base_url: &str, provider: &str) -> Vec<String> {
     let client = shared_http();
     let infos = match provider {
-        "lmstudio" | "lm_studio" | "openai" => {
-            list_lmstudio_models(&client, base_url, None).await
-        }
+        "lmstudio" | "lm_studio" | "openai" => list_lmstudio_models(&client, base_url, None).await,
         _ => list_ollama_models(&client, base_url).await,
     };
     infos.into_iter().map(|m| m.name).collect()
@@ -510,7 +530,7 @@ fn assign_fleet_role(
 /// Candidate local LLM services tried in order when the configured backend
 /// returns no models.  Each entry is `(backend, base_url)`.
 const LOCAL_FALLBACK_BACKENDS: &[(LlmBackend, &str)] = &[
-    (LlmBackend::Ollama,   "http://localhost:11434"),
+    (LlmBackend::Ollama, "http://localhost:11434"),
     (LlmBackend::LmStudio, "http://localhost:1234/v1"),
 ];
 
@@ -570,32 +590,37 @@ pub async fn probe_and_build_fleet(client: &reqwest::Client) -> AgentFleet {
     };
 
     // If the configured backend is unreachable or empty, auto-probe local services.
-    let (active_backend, active_url, active_api_key) =
-        if raw_models.is_empty() && matches!(baseline.backend, LlmBackend::Ollama | LlmBackend::LmStudio) {
-            tracing::warn!(target: "sirin",
-                "[fleet] {} at '{}' returned no models — probing local services…",
-                baseline.backend_name(),
-                baseline.base_url,
-            );
-            if let Some((b, url, models)) = auto_probe_local_backends(client).await {
-                raw_models = models;
-                (b, url, None)
-            } else {
-                tracing::warn!(target: "sirin", "[fleet] No local LLM service found. Start Ollama or LM Studio to enable AI.");
-                return AgentFleet {
-                    backend:           baseline.backend,
-                    base_url:          baseline.base_url,
-                    api_key:           baseline.api_key,
-                    chat_model:        baseline.model,
-                    router_model:      baseline.router_model,
-                    coding_model:      baseline.coding_model,
-                    large_model:       baseline.large_model,
-                    classified_models: Vec::new(),
-                };
-            }
+    let (active_backend, active_url, active_api_key) = if raw_models.is_empty()
+        && matches!(baseline.backend, LlmBackend::Ollama | LlmBackend::LmStudio)
+    {
+        tracing::warn!(target: "sirin",
+            "[fleet] {} at '{}' returned no models — probing local services…",
+            baseline.backend_name(),
+            baseline.base_url,
+        );
+        if let Some((b, url, models)) = auto_probe_local_backends(client).await {
+            raw_models = models;
+            (b, url, None)
         } else {
-            (baseline.backend, baseline.base_url.clone(), baseline.api_key.clone())
-        };
+            tracing::warn!(target: "sirin", "[fleet] No local LLM service found. Start Ollama or LM Studio to enable AI.");
+            return AgentFleet {
+                backend: baseline.backend,
+                base_url: baseline.base_url,
+                api_key: baseline.api_key,
+                chat_model: baseline.model,
+                router_model: baseline.router_model,
+                coding_model: baseline.coding_model,
+                large_model: baseline.large_model,
+                classified_models: Vec::new(),
+            };
+        }
+    } else {
+        (
+            baseline.backend,
+            baseline.base_url.clone(),
+            baseline.api_key.clone(),
+        )
+    };
 
     if raw_models.is_empty() {
         tracing::warn!(target: "sirin",
@@ -604,13 +629,13 @@ pub async fn probe_and_build_fleet(client: &reqwest::Client) -> AgentFleet {
             active_url,
         );
         return AgentFleet {
-            backend:           active_backend,
-            base_url:          active_url,
-            api_key:           active_api_key,
-            chat_model:        baseline.model,
-            router_model:      baseline.router_model,
-            coding_model:      baseline.coding_model,
-            large_model:       baseline.large_model,
+            backend: active_backend,
+            base_url: active_url,
+            api_key: active_api_key,
+            chat_model: baseline.model,
+            router_model: baseline.router_model,
+            coding_model: baseline.coding_model,
+            large_model: baseline.large_model,
             classified_models: Vec::new(),
         };
     }
@@ -676,9 +701,9 @@ pub async fn probe_and_build_fleet(client: &reqwest::Client) -> AgentFleet {
     );
 
     AgentFleet {
-        backend:           active_backend,
-        base_url:          active_url,
-        api_key:           active_api_key,
+        backend: active_backend,
+        base_url: active_url,
+        api_key: active_api_key,
         chat_model,
         router_model,
         coding_model,

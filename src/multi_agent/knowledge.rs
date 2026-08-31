@@ -22,8 +22,8 @@
 //! returned.  If no words match, the most recent N lessons are returned as a
 //! generic fallback.
 
-use std::sync::{Mutex, OnceLock};
 use crate::platform::app_data_dir;
+use std::sync::{Mutex, OnceLock};
 
 // ── DB singleton ──────────────────────────────────────────────────────────────
 
@@ -34,8 +34,7 @@ fn db() -> &'static Mutex<rusqlite::Connection> {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let conn = rusqlite::Connection::open(&path)
-            .expect("open squad_knowledge.db");
+        let conn = rusqlite::Connection::open(&path).expect("open squad_knowledge.db");
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS squad_knowledge ( \
                 id          INTEGER PRIMARY KEY AUTOINCREMENT, \
@@ -46,7 +45,8 @@ fn db() -> &'static Mutex<rusqlite::Connection> {
             ); \
             CREATE INDEX IF NOT EXISTS idx_sk_learned \
                 ON squad_knowledge(learned_at DESC);",
-        ).expect("create squad_knowledge schema");
+        )
+        .expect("create squad_knowledge schema");
         Mutex::new(conn)
     })
 }
@@ -64,11 +64,10 @@ pub fn parse_lessons(review: &str) -> Vec<String> {
             // Accept both full-width and ASCII brackets, and optional trailing ']'
             let stripped = line
                 .strip_prefix("[📝 學到:")
-                .or_else(|| line.strip_prefix("[📝 學到："));  // full-width colon variant
-            stripped.map(|rest| {
-                rest.trim_end_matches(']').trim().to_string()
-            })
-            .filter(|s| !s.is_empty())
+                .or_else(|| line.strip_prefix("[📝 學到：")); // full-width colon variant
+            stripped
+                .map(|rest| rest.trim_end_matches(']').trim().to_string())
+                .filter(|s| !s.is_empty())
         })
         .collect()
 }
@@ -96,7 +95,8 @@ pub fn store_lessons(source_task: &str, lessons: &[String]) {
         // Key = first 80 chars (char-boundary safe)
         let key = {
             let max = text.len().min(80);
-            let b = (0..=max).rev()
+            let b = (0..=max)
+                .rev()
                 .find(|&i| text.is_char_boundary(i))
                 .unwrap_or(0);
             &text[..b]
@@ -143,9 +143,9 @@ pub fn relevant_lessons(task_description: &str, limit: usize) -> Vec<String> {
 
     // Fetch a pool of recent lessons to score in Rust (avoids dynamic SQL)
     let pool_size = (limit * 6).max(30);
-    let mut stmt = match conn.prepare(
-        "SELECT key, value FROM squad_knowledge ORDER BY learned_at DESC LIMIT ?1",
-    ) {
+    let mut stmt = match conn
+        .prepare("SELECT key, value FROM squad_knowledge ORDER BY learned_at DESC LIMIT ?1")
+    {
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };

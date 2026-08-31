@@ -53,5 +53,4 @@ success_criteria:
   - "若有可評價訂單：嘗試完成評價流程並記錄結果（提交成功或失敗均記錄）"
   - "若無可評價訂單：記錄頁面狀態即通過"
 
-tags: [c2c, buyer, rating, review, regression, issue-185]
-
+tags: [c2c, buyer, rating, review, regression, issue-185, mutating, requires-operator-approval]

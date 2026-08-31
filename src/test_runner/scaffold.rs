@@ -29,20 +29,20 @@ pub enum TestRole {
 impl TestRole {
     pub fn from_str(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
-            "buyer"    => Some(Self::Buyer),
-            "seller"   => Some(Self::Seller),
+            "buyer" => Some(Self::Buyer),
+            "seller" => Some(Self::Seller),
             "delivery" => Some(Self::Delivery),
-            "admin"    => Some(Self::Admin),
-            _          => None,
+            "admin" => Some(Self::Admin),
+            _ => None,
         }
     }
 
     fn as_str(self) -> &'static str {
         match self {
-            Self::Buyer    => "buyer",
-            Self::Seller   => "seller",
+            Self::Buyer => "buyer",
+            Self::Seller => "seller",
             Self::Delivery => "delivery",
-            Self::Admin    => "admin",
+            Self::Admin => "admin",
         }
     }
 
@@ -126,9 +126,9 @@ pub fn scaffold_yaml(role: TestRole, test_id: &str, name: Option<&str>) -> Strin
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::lint;
     use super::super::parser::TestGoal;
+    use super::*;
 
     fn parse(yaml: &str) -> TestGoal {
         serde_yaml::from_str::<TestGoal>(yaml)
@@ -137,37 +137,69 @@ mod tests {
 
     #[test]
     fn scaffold_buyer_passes_all_lints() {
-        let yaml = scaffold_yaml(TestRole::Buyer, "agora_smoke_buyer_xxx", Some("Buyer smoke"));
+        let yaml = scaffold_yaml(
+            TestRole::Buyer,
+            "agora_smoke_buyer_xxx",
+            Some("Buyer smoke"),
+        );
         let goal = parse(&yaml);
         let issues = lint::lint(&goal);
-        assert!(issues.is_empty(), "buyer scaffold must lint clean, got: {:?}", issues);
+        assert!(
+            issues.is_empty(),
+            "buyer scaffold must lint clean, got: {:?}",
+            issues
+        );
     }
 
     #[test]
     fn scaffold_seller_passes_all_lints() {
-        let yaml = scaffold_yaml(TestRole::Seller, "agora_smoke_seller_xxx", Some("Seller smoke"));
+        let yaml = scaffold_yaml(
+            TestRole::Seller,
+            "agora_smoke_seller_xxx",
+            Some("Seller smoke"),
+        );
         let goal = parse(&yaml);
         let issues = lint::lint(&goal);
-        assert!(issues.is_empty(), "seller scaffold must lint clean, got: {:?}", issues);
+        assert!(
+            issues.is_empty(),
+            "seller scaffold must lint clean, got: {:?}",
+            issues
+        );
     }
 
     #[test]
     fn scaffold_delivery_passes_all_lints() {
-        let yaml = scaffold_yaml(TestRole::Delivery, "agora_smoke_delivery_xxx", Some("Delivery smoke"));
+        let yaml = scaffold_yaml(
+            TestRole::Delivery,
+            "agora_smoke_delivery_xxx",
+            Some("Delivery smoke"),
+        );
         let goal = parse(&yaml);
         let issues = lint::lint(&goal);
-        assert!(issues.is_empty(), "delivery scaffold must lint clean, got: {:?}", issues);
+        assert!(
+            issues.is_empty(),
+            "delivery scaffold must lint clean, got: {:?}",
+            issues
+        );
     }
 
     #[test]
     fn scaffold_admin_uses_desktop_viewport() {
-        let yaml = scaffold_yaml(TestRole::Admin, "agora_smoke_admin_xxx", Some("Admin smoke"));
+        let yaml = scaffold_yaml(
+            TestRole::Admin,
+            "agora_smoke_admin_xxx",
+            Some("Admin smoke"),
+        );
         assert!(yaml.contains("width: 1280"));
         assert!(yaml.contains("height: 900"));
         assert!(yaml.contains("mobile: false"));
         let goal = parse(&yaml);
         let issues = lint::lint(&goal);
-        assert!(issues.is_empty(), "admin scaffold must lint clean, got: {:?}", issues);
+        assert!(
+            issues.is_empty(),
+            "admin scaffold must lint clean, got: {:?}",
+            issues
+        );
     }
 
     #[test]
@@ -179,20 +211,26 @@ mod tests {
 
     #[test]
     fn role_from_str_matches_lowercase_and_trim() {
-        assert_eq!(TestRole::from_str("buyer"),    Some(TestRole::Buyer));
-        assert_eq!(TestRole::from_str("Buyer"),    Some(TestRole::Buyer));
+        assert_eq!(TestRole::from_str("buyer"), Some(TestRole::Buyer));
+        assert_eq!(TestRole::from_str("Buyer"), Some(TestRole::Buyer));
         assert_eq!(TestRole::from_str("  ADMIN "), Some(TestRole::Admin));
-        assert_eq!(TestRole::from_str(""),         None);
-        assert_eq!(TestRole::from_str("manager"),  None);
+        assert_eq!(TestRole::from_str(""), None);
+        assert_eq!(TestRole::from_str("manager"), None);
     }
 
     #[test]
     fn scaffold_includes_required_role_query_param() {
-        for role in [TestRole::Buyer, TestRole::Seller, TestRole::Delivery, TestRole::Admin] {
+        for role in [
+            TestRole::Buyer,
+            TestRole::Seller,
+            TestRole::Delivery,
+            TestRole::Admin,
+        ] {
             let yaml = scaffold_yaml(role, "x", None);
             assert!(
                 yaml.contains(&format!("__test_role={}", role.as_str())),
-                "{:?} scaffold missing __test_role query param", role
+                "{:?} scaffold missing __test_role query param",
+                role
             );
         }
     }

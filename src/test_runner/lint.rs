@@ -30,13 +30,13 @@ use super::parser::TestGoal;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LintIssue {
-    pub rule:      &'static str,
-    pub severity:  Severity,
+    pub rule: &'static str,
+    pub severity: Severity,
     /// Human-readable message, suitable for log output or surfacing in UI.
-    pub message:   String,
+    pub message: String,
     /// 1-based step index when the issue is anchored to a specific step.
     /// `None` for whole-file issues (e.g., missing viewport).
-    pub step:      Option<usize>,
+    pub step: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,12 +67,12 @@ pub fn log_issues(goal: &TestGoal, issues: &[LintIssue]) {
         match it.step {
             Some(n) => tracing::warn!(
                 "[yaml_lint] '{}' step {} [{}] {}",
-                goal.id, n, it.rule, it.message
+                goal.id,
+                n,
+                it.rule,
+                it.message
             ),
-            None => tracing::warn!(
-                "[yaml_lint] '{}' [{}] {}",
-                goal.id, it.rule, it.message
-            ),
+            None => tracing::warn!("[yaml_lint] '{}' [{}] {}", goal.id, it.rule, it.message),
         }
     }
 }
@@ -82,10 +82,14 @@ pub fn log_issues(goal: &TestGoal, issues: &[LintIssue]) {
 /// Extract numbered steps "  N. action..." from `goal.goal`.  Same parser
 /// the existing #189 rule uses.
 fn extract_steps(goal: &TestGoal) -> Vec<&str> {
-    goal.goal.lines()
+    goal.goal
+        .lines()
         .filter(|l| {
             let t = l.trim_start();
-            t.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false)
+            t.chars()
+                .next()
+                .map(|c| c.is_ascii_digit())
+                .unwrap_or(false)
                 && t.contains(". ")
         })
         .collect()
@@ -101,8 +105,13 @@ fn step_has_action(step: &str, action_name: &str) -> bool {
 /// H5-mobile roles.  Admin is desktop, so it does NOT need viewport.
 fn is_h5_role_url(url: &str) -> bool {
     let lower = url.to_lowercase();
-    ["__test_role=buyer", "__test_role=seller", "__test_role=delivery"]
-        .iter().any(|p| lower.contains(p))
+    [
+        "__test_role=buyer",
+        "__test_role=seller",
+        "__test_role=delivery",
+    ]
+    .iter()
+    .any(|p| lower.contains(p))
 }
 
 // ── Rule 1: clear_state without re-auth ──────────────────────────────────────
@@ -123,9 +132,9 @@ pub fn lint_clear_state_reauth(goal: &TestGoal) -> Vec<LintIssue> {
             });
             if !has_reauth {
                 out.push(LintIssue {
-                    rule:     "clear_state_reauth",
+                    rule: "clear_state_reauth",
                     severity: Severity::Warn,
-                    step:     Some(i + 1),
+                    step: Some(i + 1),
                     message: "uses clear_state but no `goto target=\"URL?__test_role=X\"` \
                               within the next 5 steps — auto-login will not trigger \
                               after clear_state. Add the goto immediately after the \
@@ -151,9 +160,9 @@ pub fn lint_h5_viewport_missing(goal: &TestGoal) -> Vec<LintIssue> {
         // Has viewport but it's the wrong size — still warn, but with
         // diagnostic detail.
         return vec![LintIssue {
-            rule:     "h5_viewport_missing",
+            rule: "h5_viewport_missing",
             severity: Severity::Warn,
-            step:     None,
+            step: None,
             message: format!(
                 "URL targets a mobile role (buyer/seller/delivery) but viewport \
                  is {}×{} mobile={} — should be 390×844 mobile=true. \
@@ -163,14 +172,15 @@ pub fn lint_h5_viewport_missing(goal: &TestGoal) -> Vec<LintIssue> {
         }];
     }
     vec![LintIssue {
-        rule:     "h5_viewport_missing",
+        rule: "h5_viewport_missing",
         severity: Severity::Warn,
-        step:     None,
+        step: None,
         message: "URL targets a mobile role (buyer/seller/delivery) but no \
                   viewport block — symptoms: 800KB screenshots, two-column \
                   desktop layout. Add: viewport: {width: 390, height: 844, \
                   scale: 2.0, mobile: true}. \
-                  (KB: trap-agoramarket-buyer-h5-viewport)".into(),
+                  (KB: trap-agoramarket-buyer-h5-viewport)"
+            .into(),
     }]
 }
 
@@ -191,13 +201,14 @@ pub fn lint_double_enable_a11y(goal: &TestGoal) -> Vec<LintIssue> {
         let is_enable = step_has_action(&lower, "enable_a11y");
         if is_enable && prev_was_enable {
             out.push(LintIssue {
-                rule:     "double_enable_a11y",
+                rule: "double_enable_a11y",
                 severity: Severity::Warn,
-                step:     Some(i + 1),
+                step: Some(i + 1),
                 message: "two `enable_a11y` lines back-to-back without an \
                           intervening action — trips convergence-guard, LLM \
                           may stop early. Insert a `wait` line between them \
-                          (the standard init sequence is wait→enable→wait→enable→wait).".into(),
+                          (the standard init sequence is wait→enable→wait→enable→wait)."
+                    .into(),
             });
         }
         prev_was_enable = is_enable;
@@ -221,25 +232,41 @@ pub fn lint_success_criteria_positive(goal: &TestGoal) -> Vec<LintIssue> {
     // "已顯示" / "被顯示" if you want the displayed-form to count.
     const POSITIVE_TOKENS: &[&str] = &[
         // Chinese positive presence (each safe under common negation)
-        "看到", "出現", "進入", "成功", "可見",
-        "可正常", "正確", "被顯示", "已顯示",
+        "看到",
+        "出現",
+        "進入",
+        "成功",
+        "可見",
+        "可正常",
+        "正確",
+        "被顯示",
+        "已顯示",
         // English
-        "shown", "visible", "appears", "appear ", "enters",
-        "displayed", "loaded", "redirects to",
+        "shown",
+        "visible",
+        "appears",
+        "appear ",
+        "enters",
+        "displayed",
+        "loaded",
+        "redirects to",
     ];
-    let lower_all: String = goal.success_criteria
+    let lower_all: String = goal
+        .success_criteria
         .iter()
         .map(|c| c.to_lowercase())
         .collect::<Vec<_>>()
         .join(" | ");
-    let has_positive = POSITIVE_TOKENS.iter().any(|t| lower_all.contains(&t.to_lowercase()));
+    let has_positive = POSITIVE_TOKENS
+        .iter()
+        .any(|t| lower_all.contains(&t.to_lowercase()));
     if has_positive {
         return Vec::new();
     }
     vec![LintIssue {
-        rule:     "success_criteria_positive",
+        rule: "success_criteria_positive",
         severity: Severity::Warn,
-        step:     None,
+        step: None,
         message: format!(
             "success_criteria has {} item(s) but none contains a positive-presence \
              token (看到 / 顯示 / 成功 / 進入 / shown / visible / appears / etc.). \
@@ -272,15 +299,14 @@ pub fn lint_iterations_ratio(goal: &TestGoal) -> Vec<LintIssue> {
     }
     let recommended = ((step_count as f64) * 1.5).ceil() as u32;
     vec![LintIssue {
-        rule:     "iterations_ratio",
+        rule: "iterations_ratio",
         severity: Severity::Warn,
-        step:     None,
+        step: None,
         message: format!(
             "max_iterations={} but goal lists {} steps — guaranteed to hit \
              the iteration cap before finishing. Bump to ≥ {} (the {} floor) \
              or ideally {} (1.5× per MEMORY.md guidance).",
-            goal.max_iterations, step_count,
-            step_count, step_count, recommended,
+            goal.max_iterations, step_count, step_count, step_count, recommended,
         ),
     }]
 }
@@ -299,7 +325,8 @@ mod tests {
     // case here to verify the unified `lint()` entry point picks it up.
     #[test]
     fn rule_clear_state_reauth_fires_when_no_followup_goto() {
-        let g = parse(r#"
+        let g = parse(
+            r#"
 id: x
 name: x
 url: "https://app.example.com/?__test_role=buyer"
@@ -310,10 +337,13 @@ goal: |
   3. wait 1000
   4. enable_a11y
   5. done=true
-"#);
+"#,
+        );
         let issues = lint(&g);
-        let cs: Vec<&LintIssue> = issues.iter()
-            .filter(|i| i.rule == "clear_state_reauth").collect();
+        let cs: Vec<&LintIssue> = issues
+            .iter()
+            .filter(|i| i.rule == "clear_state_reauth")
+            .collect();
         assert_eq!(cs.len(), 1, "got {:?}", issues);
         assert_eq!(cs[0].step, Some(2));
     }
@@ -321,14 +351,18 @@ goal: |
     // Rule 2 — H5 viewport missing
     #[test]
     fn rule_h5_viewport_warns_when_buyer_url_has_no_viewport() {
-        let g = parse(r#"
+        let g = parse(
+            r#"
 id: x
 name: x
 url: "https://app.example.com/?__test_role=buyer"
 goal: "1. wait 3000"
-"#);
-        let issues: Vec<_> = lint(&g).into_iter()
-            .filter(|i| i.rule == "h5_viewport_missing").collect();
+"#,
+        );
+        let issues: Vec<_> = lint(&g)
+            .into_iter()
+            .filter(|i| i.rule == "h5_viewport_missing")
+            .collect();
         assert_eq!(issues.len(), 1);
         assert!(issues[0].message.contains("390"));
         assert!(issues[0].message.contains("844"));
@@ -336,20 +370,25 @@ goal: "1. wait 3000"
 
     #[test]
     fn rule_h5_viewport_silent_for_admin_role() {
-        let g = parse(r#"
+        let g = parse(
+            r#"
 id: x
 name: x
 url: "https://app.example.com/?__test_role=admin"
 goal: "1. wait 3000"
-"#);
-        let issues: Vec<_> = lint(&g).into_iter()
-            .filter(|i| i.rule == "h5_viewport_missing").collect();
+"#,
+        );
+        let issues: Vec<_> = lint(&g)
+            .into_iter()
+            .filter(|i| i.rule == "h5_viewport_missing")
+            .collect();
         assert!(issues.is_empty());
     }
 
     #[test]
     fn rule_h5_viewport_silent_when_correct_block_present() {
-        let g = parse(r#"
+        let g = parse(
+            r#"
 id: x
 name: x
 url: "https://app.example.com/?__test_role=buyer"
@@ -359,15 +398,19 @@ viewport:
   height: 844
   scale: 2.0
   mobile: true
-"#);
-        let issues: Vec<_> = lint(&g).into_iter()
-            .filter(|i| i.rule == "h5_viewport_missing").collect();
+"#,
+        );
+        let issues: Vec<_> = lint(&g)
+            .into_iter()
+            .filter(|i| i.rule == "h5_viewport_missing")
+            .collect();
         assert!(issues.is_empty(), "got: {:?}", issues);
     }
 
     #[test]
     fn rule_h5_viewport_warns_on_wrong_size() {
-        let g = parse(r#"
+        let g = parse(
+            r#"
 id: x
 name: x
 url: "https://app.example.com/?__test_role=buyer"
@@ -377,9 +420,12 @@ viewport:
   height: 900
   scale: 1.0
   mobile: false
-"#);
-        let issues: Vec<_> = lint(&g).into_iter()
-            .filter(|i| i.rule == "h5_viewport_missing").collect();
+"#,
+        );
+        let issues: Vec<_> = lint(&g)
+            .into_iter()
+            .filter(|i| i.rule == "h5_viewport_missing")
+            .collect();
         assert_eq!(issues.len(), 1);
         assert!(issues[0].message.contains("1280×900"));
     }
@@ -387,7 +433,8 @@ viewport:
     // Rule 3 — back-to-back enable_a11y
     #[test]
     fn rule_double_enable_fires_when_no_intervening_action() {
-        let g = parse(r#"
+        let g = parse(
+            r#"
 id: x
 name: x
 url: "https://example.com"
@@ -396,16 +443,20 @@ goal: |
   2. enable_a11y
   3. enable_a11y
   4. done=true
-"#);
-        let issues: Vec<_> = lint(&g).into_iter()
-            .filter(|i| i.rule == "double_enable_a11y").collect();
+"#,
+        );
+        let issues: Vec<_> = lint(&g)
+            .into_iter()
+            .filter(|i| i.rule == "double_enable_a11y")
+            .collect();
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].step, Some(3));
     }
 
     #[test]
     fn rule_double_enable_silent_when_wait_intervenes() {
-        let g = parse(r#"
+        let g = parse(
+            r#"
 id: x
 name: x
 url: "https://example.com"
@@ -415,16 +466,20 @@ goal: |
   3. wait 2000
   4. enable_a11y
   5. done=true
-"#);
-        let issues: Vec<_> = lint(&g).into_iter()
-            .filter(|i| i.rule == "double_enable_a11y").collect();
+"#,
+        );
+        let issues: Vec<_> = lint(&g)
+            .into_iter()
+            .filter(|i| i.rule == "double_enable_a11y")
+            .collect();
         assert!(issues.is_empty());
     }
 
     // Rule 4 — success_criteria positive
     #[test]
     fn rule_success_criteria_warns_when_only_negative() {
-        let g = parse(r#"
+        let g = parse(
+            r#"
 id: x
 name: x
 url: "https://example.com"
@@ -432,15 +487,19 @@ goal: "1. wait 3000"
 success_criteria:
   - "no console errors"
   - "未顯示 404 page"
-"#);
-        let issues: Vec<_> = lint(&g).into_iter()
-            .filter(|i| i.rule == "success_criteria_positive").collect();
+"#,
+        );
+        let issues: Vec<_> = lint(&g)
+            .into_iter()
+            .filter(|i| i.rule == "success_criteria_positive")
+            .collect();
         assert_eq!(issues.len(), 1);
     }
 
     #[test]
     fn rule_success_criteria_silent_when_positive_token_present() {
-        let g = parse(r#"
+        let g = parse(
+            r#"
 id: x
 name: x
 url: "https://example.com"
@@ -448,9 +507,12 @@ goal: "1. wait 3000"
 success_criteria:
   - "看到首頁標題"
   - "no console errors"
-"#);
-        let issues: Vec<_> = lint(&g).into_iter()
-            .filter(|i| i.rule == "success_criteria_positive").collect();
+"#,
+        );
+        let issues: Vec<_> = lint(&g)
+            .into_iter()
+            .filter(|i| i.rule == "success_criteria_positive")
+            .collect();
         assert!(issues.is_empty());
     }
 
@@ -458,7 +520,8 @@ success_criteria:
     #[test]
     fn rule_iterations_warns_when_below_step_count() {
         // 10 steps, max_iterations=8 → guaranteed to hit cap → warn
-        let g = parse(r#"
+        let g = parse(
+            r#"
 id: x
 name: x
 url: "https://example.com"
@@ -474,9 +537,12 @@ goal: |
   9. i
   10. done=true
 max_iterations: 8
-"#);
-        let issues: Vec<_> = lint(&g).into_iter()
-            .filter(|i| i.rule == "iterations_ratio").collect();
+"#,
+        );
+        let issues: Vec<_> = lint(&g)
+            .into_iter()
+            .filter(|i| i.rule == "iterations_ratio")
+            .collect();
         assert_eq!(issues.len(), 1, "got: {:?}", issues);
         assert!(issues[0].message.contains("max_iterations=8"));
     }
@@ -484,7 +550,8 @@ max_iterations: 8
     #[test]
     fn rule_iterations_silent_when_at_floor() {
         // 5 steps, max=5 → exactly at floor → ok
-        let g = parse(r#"
+        let g = parse(
+            r#"
 id: x
 name: x
 url: "https://example.com"
@@ -495,9 +562,12 @@ goal: |
   4. d
   5. done=true
 max_iterations: 5
-"#);
-        let issues: Vec<_> = lint(&g).into_iter()
-            .filter(|i| i.rule == "iterations_ratio").collect();
+"#,
+        );
+        let issues: Vec<_> = lint(&g)
+            .into_iter()
+            .filter(|i| i.rule == "iterations_ratio")
+            .collect();
         assert!(issues.is_empty(), "got: {:?}", issues);
     }
 
@@ -505,7 +575,8 @@ max_iterations: 5
     fn rule_iterations_silent_when_above_floor_below_recommended() {
         // 10 steps, max=12 (1.2×) — above 1.0× floor, below 1.5× guideline.
         // We don't enforce 1.5×, so this should pass.
-        let g = parse(r#"
+        let g = parse(
+            r#"
 id: x
 name: x
 url: "https://example.com"
@@ -521,9 +592,12 @@ goal: |
   9. i
   10. done=true
 max_iterations: 12
-"#);
-        let issues: Vec<_> = lint(&g).into_iter()
-            .filter(|i| i.rule == "iterations_ratio").collect();
+"#,
+        );
+        let issues: Vec<_> = lint(&g)
+            .into_iter()
+            .filter(|i| i.rule == "iterations_ratio")
+            .collect();
         assert!(issues.is_empty(), "got: {:?}", issues);
     }
 
@@ -531,7 +605,9 @@ max_iterations: 12
 
     #[test]
     fn lint_all_regression_yamls_clean() {
-        let dir = std::path::Path::new("config").join("tests").join("agora_regression");
+        let dir = std::path::Path::new("config")
+            .join("tests")
+            .join("agora_regression");
         if !dir.exists() {
             // sub-crate / partial-checkout build; skip silently.
             return;
@@ -554,19 +630,28 @@ max_iterations: 12
             let issues = lint(&goal);
             if !issues.is_empty() {
                 failures.push((
-                    path.file_name().and_then(|s| s.to_str()).unwrap_or("?").to_string(),
+                    path.file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("?")
+                        .to_string(),
                     issues,
                 ));
             }
         }
         if !failures.is_empty() {
-            let lines: Vec<String> = failures.iter().map(|(name, issues)| {
-                let bullets: Vec<String> = issues.iter().map(|i| {
-                    let step = i.step.map(|n| format!(" step {}", n)).unwrap_or_default();
-                    format!("    - [{}]{} {}", i.rule, step, i.message)
-                }).collect();
-                format!("  {}:\n{}", name, bullets.join("\n"))
-            }).collect();
+            let lines: Vec<String> = failures
+                .iter()
+                .map(|(name, issues)| {
+                    let bullets: Vec<String> = issues
+                        .iter()
+                        .map(|i| {
+                            let step = i.step.map(|n| format!(" step {}", n)).unwrap_or_default();
+                            format!("    - [{}]{} {}", i.rule, step, i.message)
+                        })
+                        .collect();
+                    format!("  {}:\n{}", name, bullets.join("\n"))
+                })
+                .collect();
             panic!(
                 "{} regression YAML(s) failed lint:\n{}",
                 failures.len(),

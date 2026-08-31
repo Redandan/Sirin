@@ -120,7 +120,8 @@ feature_groups:
 
       - id: product_edit
         name: 編輯既有商品
-        status: missing
+        test_ids: [agora_product_form_pickup]
+        status: partial
 
       - id: product_delivery_settings
         name: 商品物流設定（宅配/超商/服務類型預設值）
@@ -159,7 +160,8 @@ feature_groups:
 
       - id: seller_withdraw
         name: 賣家提現
-        status: missing
+        test_ids: [agora_seller_wallet]
+        status: partial
 
   - id: seller_store
     name: "Seller：店鋪"
@@ -248,7 +250,8 @@ feature_groups:
 
       - id: admin_user_mgmt
         name: 用戶管理
-        status: missing
+        test_ids: [agora_role_health_admin]
+        status: partial
 
       - id: admin_order_mgmt
         name: 訂單管理（admin 視角）
@@ -276,7 +279,8 @@ feature_groups:
 
       - id: delivery_income
         name: 收入統計
-        status: missing
+        test_ids: [agora_c2c_delivery_dashboard, agora_c2c_delivery_orders]
+        status: partial
 
   # ─── 跨角色 / 基礎設施 ─────────────────────────────────────────────
   - id: cross_role
@@ -296,4 +300,5 @@ feature_groups:
 
       - id: staking
         name: Staking 功能
-        status: missing
+        test_ids: [agora_staking]
+        status: partial

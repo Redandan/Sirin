@@ -329,10 +329,11 @@ async fn llm_plan(
 ) -> Option<WorkflowPlan> {
     // Issue #256 — typed prompt args.  See `PlannerClassifierPromptArgs::render`.
     let prompt = PlannerClassifierPromptArgs {
-        user_text:          &request.user_text,
-        context_block:      request.context_block.as_deref(),
+        user_text: &request.user_text,
+        context_block: request.context_block.as_deref(),
         recommended_skills,
-    }.render();
+    }
+    .render();
 
     // #263 Phase 2 — go through ctx.llm_caller.call_router so tests can inject
     // a deterministic responder.  In production, RealLlmCaller::from_globals
@@ -411,14 +412,15 @@ pub async fn run_planner_via_adk(
 // ── Typed prompt args (Issue #256) ──────────────────────────────────────────
 
 pub(super) struct PlannerClassifierPromptArgs<'a> {
-    pub(super) user_text:          &'a str,
-    pub(super) context_block:      Option<&'a str>,
+    pub(super) user_text: &'a str,
+    pub(super) context_block: Option<&'a str>,
     pub(super) recommended_skills: &'a [String],
 }
 
 impl<'a> PlannerClassifierPromptArgs<'a> {
     pub(super) fn render(&self) -> String {
-        let context_hint = self.context_block
+        let context_hint = self
+            .context_block
             .map(|c| format!("\nRecent context:\n{c}"))
             .unwrap_or_default();
         let skill_hint = if self.recommended_skills.is_empty() {
@@ -451,9 +453,9 @@ Rules:
 - steps must be an ordered list of 2-5 concrete actions.
 
 Output only the JSON object, no explanation."#,
-            msg          = self.user_text,
+            msg = self.user_text,
             context_hint = context_hint,
-            skill_hint   = skill_hint,
+            skill_hint = skill_hint,
         )
     }
 }
@@ -533,7 +535,10 @@ mod tests {
         // Hardcoded skills removed; planner now recommends from YAML skills only.
         // Assert plan structure is valid, not specific (now YAML-driven) skill IDs.
         // Steps are now driven by intent family, not hardcoded skill IDs.
-        assert!(!plan.steps.is_empty(), "planner must produce at least one step");
+        assert!(
+            !plan.steps.is_empty(),
+            "planner must produce at least one step"
+        );
     }
 
     #[tokio::test]
@@ -564,10 +569,11 @@ mod tests {
     #[test]
     fn planner_classifier_prompt_contains_user_text_and_schema() {
         let p = super::PlannerClassifierPromptArgs {
-            user_text:          "分析這個 module",
-            context_block:      None,
+            user_text: "分析這個 module",
+            context_block: None,
             recommended_skills: &[],
-        }.render();
+        }
+        .render();
         assert!(p.contains("\"分析這個 module\""));
         assert!(p.contains("\"intent\": \"answer\" | \"research\""));
         assert!(p.contains("should_start_research"));
@@ -580,10 +586,11 @@ mod tests {
     #[test]
     fn planner_classifier_prompt_includes_recent_context_when_provided() {
         let p = super::PlannerClassifierPromptArgs {
-            user_text:          "繼續",
-            context_block:      Some("earlier turn"),
+            user_text: "繼續",
+            context_block: Some("earlier turn"),
             recommended_skills: &[],
-        }.render();
+        }
+        .render();
         assert!(p.contains("Recent context:"));
         assert!(p.contains("earlier turn"));
     }
@@ -592,10 +599,11 @@ mod tests {
     fn planner_classifier_prompt_includes_skills_when_provided() {
         let skills = vec!["grounded_fix".to_string(), "symbol_trace".into()];
         let p = super::PlannerClassifierPromptArgs {
-            user_text:          "fix it",
-            context_block:      None,
+            user_text: "fix it",
+            context_block: None,
             recommended_skills: &skills,
-        }.render();
+        }
+        .render();
         assert!(p.contains("Relevant local capabilities"));
         assert!(p.contains("grounded_fix"));
         assert!(p.contains("symbol_trace"));
@@ -604,10 +612,11 @@ mod tests {
     #[test]
     fn planner_classifier_prompt_omits_optional_sections_when_empty() {
         let p = super::PlannerClassifierPromptArgs {
-            user_text:          "hi",
-            context_block:      None,
+            user_text: "hi",
+            context_block: None,
             recommended_skills: &[],
-        }.render();
+        }
+        .render();
         assert!(!p.contains("Recent context:"));
         assert!(!p.contains("Relevant local capabilities"));
     }
@@ -617,10 +626,10 @@ mod tests {
     // Drives the LLM-backed classifier with deterministic responses so we can
     // pin its happy path + fallback behaviour without hitting a real provider.
 
-    use std::sync::Arc;
     use crate::adk::tool::ToolRegistry;
     use crate::adk::AgentContext;
     use crate::llm::{LlmKind, MockLlmCaller};
+    use std::sync::Arc;
 
     fn ctx_with_mock(mock: Arc<MockLlmCaller>) -> AgentContext {
         AgentContext::new("test-planner", ToolRegistry::new()).with_llm_caller(mock)
@@ -628,10 +637,10 @@ mod tests {
 
     fn req(user_text: &str) -> PlannerRequest {
         PlannerRequest {
-            user_text:        user_text.to_string(),
-            context_block:    None,
-            peer_id:          None,
-            fallback_reply:   None,
+            user_text: user_text.to_string(),
+            context_block: None,
+            peer_id: None,
+            fallback_reply: None,
             execution_result: None,
         }
     }
@@ -643,10 +652,12 @@ mod tests {
             "should_start_research": true,
             "steps": ["search", "summarise"],
             "summary": "research the topic"
-        }"#.to_string())]));
+        }"#
+        .to_string())]));
         let ctx = ctx_with_mock(Arc::clone(&mock));
 
-        let plan = llm_plan(&ctx, &req("research async runtimes"), &[]).await
+        let plan = llm_plan(&ctx, &req("research async runtimes"), &[])
+            .await
             .expect("llm_plan should succeed on valid JSON");
 
         assert_eq!(plan.intent, PlanIntent::Research);
@@ -666,10 +677,12 @@ mod tests {
             "should_start_research": false,
             "steps": ["one", "two"],
             "summary": "answer"
-        }"#.to_string())]));
+        }"#
+        .to_string())]));
         let ctx = ctx_with_mock(Arc::clone(&mock));
 
-        let plan = llm_plan(&ctx, &req("ping"), &[]).await
+        let plan = llm_plan(&ctx, &req("ping"), &[])
+            .await
             .expect("llm_plan should succeed");
 
         assert_eq!(plan.intent, PlanIntent::Answer);
@@ -680,11 +693,13 @@ mod tests {
         // Models often emit a "Sure, here's the plan: { ... }" prefix.  The
         // function must locate the JSON object and parse it.
         let mock = Arc::new(MockLlmCaller::with_responses(vec![Ok(
-            "Sure, here you go: {\"intent\":\"answer\",\"steps\":[\"x\"],\"summary\":\"s\"} -- end".to_string(),
+            "Sure, here you go: {\"intent\":\"answer\",\"steps\":[\"x\"],\"summary\":\"s\"} -- end"
+                .to_string(),
         )]));
         let ctx = ctx_with_mock(Arc::clone(&mock));
 
-        let plan = llm_plan(&ctx, &req("hi"), &[]).await
+        let plan = llm_plan(&ctx, &req("hi"), &[])
+            .await
             .expect("must extract JSON from prose-wrapped response");
 
         assert_eq!(plan.summary, "s");
@@ -705,12 +720,15 @@ mod tests {
     #[tokio::test]
     async fn llm_plan_returns_none_on_llm_error() {
         let mock = Arc::new(MockLlmCaller::with_responses(vec![Err(
-            "simulated 429".to_string(),
+            "simulated 429".to_string()
         )]));
         let ctx = ctx_with_mock(Arc::clone(&mock));
 
         let plan = llm_plan(&ctx, &req("hi"), &[]).await;
-        assert!(plan.is_none(), "LLM error path must return None for caller fallback");
+        assert!(
+            plan.is_none(),
+            "LLM error path must return None for caller fallback"
+        );
     }
 
     #[tokio::test]
@@ -718,10 +736,12 @@ mod tests {
         let mock = Arc::new(MockLlmCaller::with_responses(vec![Ok(r#"{
             "intent": "answer",
             "summary": "minimal"
-        }"#.to_string())]));
+        }"#
+        .to_string())]));
         let ctx = ctx_with_mock(Arc::clone(&mock));
 
-        let plan = llm_plan(&ctx, &req("hi"), &[]).await
+        let plan = llm_plan(&ctx, &req("hi"), &[])
+            .await
             .expect("missing steps + summary should still produce a plan");
 
         assert_eq!(plan.intent, PlanIntent::Answer);

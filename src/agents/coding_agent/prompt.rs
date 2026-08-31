@@ -63,7 +63,7 @@ pub(super) async fn gather_project_context(ctx: &AgentContext, task: &str) -> St
 
 // Issue #256 — typed prompt args for plan generation.
 pub(super) struct PlanPromptArgs<'a> {
-    pub(super) task:        &'a str,
+    pub(super) task: &'a str,
     pub(super) project_ctx: &'a str,
 }
 
@@ -108,12 +108,12 @@ pub(super) async fn make_plan(ctx: &AgentContext, task: &str, project_ctx: &str)
 // pinning.
 
 pub(super) struct ReactPromptArgs<'a> {
-    pub(super) task:        &'a str,
+    pub(super) task: &'a str,
     pub(super) project_ctx: &'a str,
-    pub(super) plan:        &'a str,
-    pub(super) history:     &'a [&'a HistoryEntry],
-    pub(super) tool_list:   &'a str,
-    pub(super) dry_run:     bool,
+    pub(super) plan: &'a str,
+    pub(super) history: &'a [&'a HistoryEntry],
+    pub(super) tool_list: &'a str,
+    pub(super) dry_run: bool,
 }
 
 impl<'a> ReactPromptArgs<'a> {
@@ -134,7 +134,8 @@ report what would change.\n"
         let history_block = if self.history.is_empty() {
             String::new()
         } else {
-            let entries: Vec<String> = self.history
+            let entries: Vec<String> = self
+                .history
                 .iter()
                 .map(|h| {
                     format!(
@@ -142,8 +143,7 @@ report what would change.\n"
                          Action Input: {action_input}\nObservation: {observation}",
                         thought = h.thought,
                         action = h.action,
-                        action_input =
-                            serde_json::to_string(&h.action_input).unwrap_or_default(),
+                        action_input = serde_json::to_string(&h.action_input).unwrap_or_default(),
                         observation = h.observation,
                     )
                 })
@@ -199,12 +199,12 @@ Respond with ONLY valid JSON in this exact format (no markdown fences):
 
 If you have finished ALL steps in the plan and the task is complete, set action to "DONE".
 "#,
-            dry_run_note       = dry_run_note,
-            task               = self.task,
-            plan               = self.plan,
+            dry_run_note = dry_run_note,
+            task = self.task,
+            plan = self.plan,
             project_ctx_trimmed = project_ctx_trimmed,
-            history_block      = history_block,
-            tool_list          = self.tool_list,
+            history_block = history_block,
+            tool_list = self.tool_list,
             analysis_mode_note = analysis_mode_note,
         )
     }
@@ -221,8 +221,14 @@ pub(super) fn build_react_prompt(
     dry_run: bool,
 ) -> String {
     ReactPromptArgs {
-        task, project_ctx, plan, history, tool_list, dry_run,
-    }.render()
+        task,
+        project_ctx,
+        plan,
+        history,
+        tool_list,
+        dry_run,
+    }
+    .render()
 }
 
 // ── Step parsing ─────────────────────────────────────────────────────────────
@@ -293,9 +299,10 @@ mod tests {
     #[test]
     fn plan_prompt_includes_task_and_project_ctx() {
         let p = PlanPromptArgs {
-            task:        "fix the auth bug",
+            task: "fix the auth bug",
             project_ctx: "axum + tower-http stack",
-        }.render();
+        }
+        .render();
         assert!(p.contains("Task: fix the auth bug"));
         assert!(p.contains("axum + tower-http stack"));
         assert!(p.contains("3-6 numbered steps"));
@@ -307,40 +314,58 @@ mod tests {
     #[test]
     fn react_prompt_dry_run_branches_correctly() {
         let dry = ReactPromptArgs {
-            task: "t", project_ctx: "ctx", plan: "p",
-            history: &[], tool_list: "tl",
+            task: "t",
+            project_ctx: "ctx",
+            plan: "p",
+            history: &[],
+            tool_list: "tl",
             dry_run: true,
-        }.render();
+        }
+        .render();
         assert!(dry.contains("DRY-RUN mode"));
 
         let live = ReactPromptArgs {
-            task: "t", project_ctx: "ctx", plan: "p",
-            history: &[], tool_list: "tl",
+            task: "t",
+            project_ctx: "ctx",
+            plan: "p",
+            history: &[],
+            tool_list: "tl",
             dry_run: false,
-        }.render();
+        }
+        .render();
         assert!(!live.contains("DRY-RUN mode"));
     }
 
     #[test]
     fn react_prompt_renders_history_block_only_when_nonempty() {
         let empty = ReactPromptArgs {
-            task: "t", project_ctx: "ctx", plan: "p",
-            history: &[], tool_list: "tl", dry_run: false,
-        }.render();
+            task: "t",
+            project_ctx: "ctx",
+            plan: "p",
+            history: &[],
+            tool_list: "tl",
+            dry_run: false,
+        }
+        .render();
         assert!(!empty.contains("Previous steps"));
 
         let h = HistoryEntry {
-            thought:      "looking around".into(),
-            action:       "local_file_read".into(),
+            thought: "looking around".into(),
+            action: "local_file_read".into(),
             action_input: json!({ "path": "src/main.rs" }),
-            observation:  "// fn main()".into(),
-            pinned:       false,
+            observation: "// fn main()".into(),
+            pinned: false,
         };
         let entries: Vec<&HistoryEntry> = vec![&h];
         let with_history = ReactPromptArgs {
-            task: "t", project_ctx: "ctx", plan: "p",
-            history: &entries, tool_list: "tl", dry_run: false,
-        }.render();
+            task: "t",
+            project_ctx: "ctx",
+            plan: "p",
+            history: &entries,
+            tool_list: "tl",
+            dry_run: false,
+        }
+        .render();
         assert!(with_history.contains("## Previous steps"));
         assert!(with_history.contains("looking around"));
         assert!(with_history.contains("local_file_read"));
@@ -354,12 +379,20 @@ mod tests {
         let huge_task = "x".repeat(MAX_PROMPT_CHARS - 500);
         let huge_ctx = "y".repeat(50_000);
         let rendered = ReactPromptArgs {
-            task: &huge_task, project_ctx: &huge_ctx, plan: "p",
-            history: &[], tool_list: "tl", dry_run: false,
-        }.render();
+            task: &huge_task,
+            project_ctx: &huge_ctx,
+            plan: "p",
+            history: &[],
+            tool_list: "tl",
+            dry_run: false,
+        }
+        .render();
         // project_ctx was trimmed — should not contain the full 50k 'y's.
         let y_count = rendered.matches('y').count();
-        assert!(y_count < 50_000, "got {y_count} y's — project_ctx not trimmed");
+        assert!(
+            y_count < 50_000,
+            "got {y_count} y's — project_ctx not trimmed"
+        );
         // But trimmed to ≥ 400 (the floor).
         assert!(y_count >= 400, "got {y_count} y's — trimmed below floor");
     }
@@ -370,17 +403,25 @@ mod tests {
         // and English "explain" / "summar" / "inspect" / "review" / "read ".
         let analysis = ReactPromptArgs {
             task: "分析 src/llm/mod.rs 的設計",
-            project_ctx: "ctx", plan: "p",
-            history: &[], tool_list: "tl", dry_run: false,
-        }.render();
+            project_ctx: "ctx",
+            plan: "p",
+            history: &[],
+            tool_list: "tl",
+            dry_run: false,
+        }
+        .render();
         assert!(analysis.contains("READ-ONLY ANALYSIS MODE"));
 
         // A modify-task does not trigger analysis mode.
         let modify = ReactPromptArgs {
             task: "修改 src/main.rs 加 hello world",
-            project_ctx: "ctx", plan: "p",
-            history: &[], tool_list: "tl", dry_run: false,
-        }.render();
+            project_ctx: "ctx",
+            plan: "p",
+            history: &[],
+            tool_list: "tl",
+            dry_run: false,
+        }
+        .render();
         assert!(!modify.contains("READ-ONLY ANALYSIS MODE"));
     }
 
@@ -410,16 +451,20 @@ mod tests {
     fn parse_react_step_defaults_action_to_done_when_missing() {
         let raw = r#"{"thought":"finished"}"#;
         let s = parse_react_step(raw);
-        assert_eq!(s.action, "DONE",
-            "missing action defaults to DONE per source contract");
+        assert_eq!(
+            s.action, "DONE",
+            "missing action defaults to DONE per source contract"
+        );
     }
 
     #[test]
     fn parse_react_step_filters_empty_final_answer() {
         let raw = r#"{"thought":"x","action":"file_read","final_answer":""}"#;
         let s = parse_react_step(raw);
-        assert!(s.final_answer.is_none(),
-            "empty final_answer string filtered to None");
+        assert!(
+            s.final_answer.is_none(),
+            "empty final_answer string filtered to None"
+        );
     }
 
     #[test]
@@ -473,10 +518,10 @@ mod tests {
     // Coding/Plain — because plan generation is a cheap classification-style
     // call and shouldn't burn the main/coding model's quota.
 
-    use std::sync::Arc;
     use crate::adk::tool::ToolRegistry;
     use crate::adk::AgentContext;
     use crate::llm::{LlmKind, MockLlmCaller};
+    use std::sync::Arc;
 
     fn ctx_with_mock(mock: Arc<MockLlmCaller>) -> AgentContext {
         AgentContext::new("test-make-plan", ToolRegistry::new()).with_llm_caller(mock)
@@ -485,7 +530,9 @@ mod tests {
     #[tokio::test]
     async fn make_plan_returns_llm_response_verbatim_on_success() {
         let plan_text = "1. Read src/foo.rs\n2. Patch the bug\n3. Run cargo test";
-        let mock = Arc::new(MockLlmCaller::with_responses(vec![Ok(plan_text.to_string())]));
+        let mock = Arc::new(MockLlmCaller::with_responses(vec![Ok(
+            plan_text.to_string()
+        )]));
         let ctx = ctx_with_mock(Arc::clone(&mock));
 
         let plan = make_plan(&ctx, "fix the foo bug", "axum + tower stack").await;
@@ -497,7 +544,9 @@ mod tests {
     async fn make_plan_falls_back_to_hardcoded_steps_on_llm_error() {
         // Provider error (e.g. 429 / network drop) → must not propagate; the
         // ReAct loop downstream can still operate on the fallback plan.
-        let mock = Arc::new(MockLlmCaller::with_responses(vec![Err("simulated 429".to_string())]));
+        let mock = Arc::new(MockLlmCaller::with_responses(vec![Err(
+            "simulated 429".to_string()
+        )]));
         let ctx = ctx_with_mock(Arc::clone(&mock));
 
         let plan = make_plan(&ctx, "fix the foo bug", "ctx").await;
@@ -508,14 +557,19 @@ mod tests {
     async fn make_plan_uses_router_endpoint_not_coding() {
         // Pin: planning is a router-tier task.  Routing it through the coding
         // model would silently double the per-task cost on remote backends.
-        let mock = Arc::new(MockLlmCaller::with_responses(vec![Ok("1. step".to_string())]));
+        let mock = Arc::new(MockLlmCaller::with_responses(vec![Ok(
+            "1. step".to_string()
+        )]));
         let ctx = ctx_with_mock(Arc::clone(&mock));
 
         make_plan(&ctx, "task", "ctx").await;
         let captured = mock.captured.lock().unwrap();
         assert_eq!(captured.len(), 1);
-        assert_eq!(captured[0].0, LlmKind::Router,
-            "make_plan must use router endpoint — coding/large/plain would waste quota");
+        assert_eq!(
+            captured[0].0,
+            LlmKind::Router,
+            "make_plan must use router endpoint — coding/large/plain would waste quota"
+        );
     }
 
     #[tokio::test]
@@ -531,6 +585,9 @@ mod tests {
         let prompt = &captured[0].1;
         assert!(prompt.contains("TASK_MARKER"), "prompt missing task body");
         assert!(prompt.contains("CTX_MARKER"), "prompt missing project_ctx");
-        assert!(prompt.contains("3-6 numbered steps"), "prompt missing instruction tail");
+        assert!(
+            prompt.contains("3-6 numbered steps"),
+            "prompt missing instruction tail"
+        );
     }
 }

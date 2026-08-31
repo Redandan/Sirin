@@ -119,7 +119,10 @@ pub fn new_run(test_id: &str) -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-    let run_id = format!("run_{}_{seq}", chrono::Local::now().format("%Y%m%d_%H%M%S_%3f"));
+    let run_id = format!(
+        "run_{}_{seq}",
+        chrono::Local::now().format("%Y%m%d_%H%M%S_%3f")
+    );
     let state = RunState {
         run_id: run_id.clone(),
         test_id: test_id.to_string(),
@@ -139,7 +142,9 @@ pub fn new_run(test_id: &str) -> String {
         current_subphase: None,
         subphase_started_at: std::time::Instant::now(),
     };
-    registry().lock().unwrap_or_else(|e| e.into_inner())
+    registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
         .insert(run_id.clone(), state);
     prune_old_runs();
     run_id
@@ -158,8 +163,12 @@ pub fn set_goal(run_id: &str, goal: TestGoal) {
 /// Get the TestGoal stored for `run_id`.  Returns `None` if the run
 /// has been pruned, was never started, or `set_goal` was not called.
 pub fn get_goal(run_id: &str) -> Option<TestGoal> {
-    registry().lock().unwrap_or_else(|e| e.into_inner())
-        .get(run_id)?.test_goal.clone()
+    registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(run_id)?
+        .test_goal
+        .clone()
 }
 
 /// Update phase (called by executor as it progresses).
@@ -186,21 +195,26 @@ pub fn set_phase(run_id: &str, phase: RunPhase) {
 
             // Write failure pattern to KB so future sessions can search by test_id.
             // Uses the existing tokio runtime — no-op if KB_ENABLED is not set.
-            let test_id   = r.test_id.clone();
+            let test_id = r.test_id.clone();
             let error_msg = r.error_message.clone().unwrap_or_default();
             let step_count = r.iterations;
-            let duration   = r.duration_ms;
+            let duration = r.duration_ms;
             if let Ok(handle) = tokio::runtime::Handle::try_current() {
                 handle.spawn(async move {
                     let topic_key = format!("sirin-failure-{test_id}");
-                    let title     = format!("[FAIL] {test_id}");
-                    let content   = format!(
-                        "step: {step_count}\nerror: {error_msg}\nduration_ms: {duration}"
-                    );
+                    let title = format!("[FAIL] {test_id}");
+                    let content =
+                        format!("step: {step_count}\nerror: {error_msg}\nduration_ms: {duration}");
                     let _ = crate::kb_client::write_raw_to_project(
-                        "sirin", &topic_key, &title, &content,
-                        "testing", "test-failure", "",
-                    ).await;
+                        "sirin",
+                        &topic_key,
+                        &title,
+                        &content,
+                        "testing",
+                        "test-failure",
+                        "",
+                    )
+                    .await;
                 });
             }
         } else {
@@ -208,24 +222,30 @@ pub fn set_phase(run_id: &str, phase: RunPhase) {
             // Same fire-and-forget shape as the failure path; KB upserts on
             // identical topicKey so repeated CI passes auto-version rather
             // than spamming new entries.
-            let test_id    = r.test_id.clone();
+            let test_id = r.test_id.clone();
             let step_count = r.iterations;
-            let duration   = r.duration_ms;
-            let summary    = summarise_success_actions(&r.history);
-            let analysis   = r.final_analysis.clone().unwrap_or_default();
+            let duration = r.duration_ms;
+            let summary = summarise_success_actions(&r.history);
+            let analysis = r.final_analysis.clone().unwrap_or_default();
             if let Ok(handle) = tokio::runtime::Handle::try_current() {
                 handle.spawn(async move {
                     let topic_key = format!("sirin-pass-{test_id}");
-                    let title     = format!("[PASS] {test_id}");
-                    let content   = format!(
+                    let title = format!("[PASS] {test_id}");
+                    let content = format!(
                         "step: {step_count}\nduration_ms: {duration}\n\
                          actions:\n{summary}\n\
                          analysis: {analysis}"
                     );
                     let _ = crate::kb_client::write_raw_to_project(
-                        "sirin", &topic_key, &title, &content,
-                        "testing", "test-pass,selector-pattern", "",
-                    ).await;
+                        "sirin",
+                        &topic_key,
+                        &title,
+                        &content,
+                        "testing",
+                        "test-pass,selector-pattern",
+                        "",
+                    )
+                    .await;
                 });
             }
         }
@@ -260,7 +280,9 @@ pub fn kill_run(run_id: &str) -> Result<(), String> {
                     s.phase = RunPhase::Error("killed by user".into());
                     Ok(())
                 }
-                _ => Err(format!("run '{run_id}' is already completed (phase is not Running/Queued)")),
+                _ => Err(format!(
+                    "run '{run_id}' is already completed (phase is not Running/Queued)"
+                )),
             }
         }
         None => Err(format!("run '{run_id}' not found in in-memory registry")),
@@ -321,7 +343,9 @@ pub fn clear_subphase(run_id: &str) {
 /// no steps yet.
 pub fn recent_steps(run_id: &str, n: usize) -> Vec<TestStep> {
     let reg = registry().lock().unwrap_or_else(|e| e.into_inner());
-    let Some(s) = reg.get(run_id) else { return Vec::new() };
+    let Some(s) = reg.get(run_id) else {
+        return Vec::new();
+    };
     let take = n.min(s.recent_steps.len());
     let skip = s.recent_steps.len() - take;
     s.recent_steps.iter().skip(skip).cloned().collect()
@@ -340,7 +364,11 @@ fn summarise_success_actions(history: &[super::executor::TestStep]) -> String {
     let mut out = String::new();
     let total = history.len();
     for (i, step) in history.iter().take(MAX_LINES).enumerate() {
-        let action = step.action.get("action").and_then(|v| v.as_str()).unwrap_or("?");
+        let action = step
+            .action
+            .get("action")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
         // Pull the most useful descriptor — try common arg keys in order.
         let target = ["target", "selector", "url", "name", "role", "text"]
             .iter()
@@ -381,20 +409,34 @@ pub fn set_screenshot(run_id: &str, result: Result<Vec<u8>, String>) {
     let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(s) = reg.get_mut(run_id) {
         match result {
-            Ok(bytes) => { s.screenshot_bytes = Some(bytes); s.screenshot_error = None; }
-            Err(e) => { s.screenshot_bytes = None; s.screenshot_error = Some(e); }
+            Ok(bytes) => {
+                s.screenshot_bytes = Some(bytes);
+                s.screenshot_error = None;
+            }
+            Err(e) => {
+                s.screenshot_bytes = None;
+                s.screenshot_error = Some(e);
+            }
         }
     }
 }
 
 pub fn get(run_id: &str) -> Option<RunState> {
-    registry().lock().unwrap_or_else(|e| e.into_inner())
-        .get(run_id).cloned()
+    registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(run_id)
+        .cloned()
 }
 
 pub fn get_full_observation(run_id: &str, step: usize) -> Option<String> {
-    registry().lock().unwrap_or_else(|e| e.into_inner())
-        .get(run_id)?.full_observations.get(step).cloned()
+    registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(run_id)?
+        .full_observations
+        .get(step)
+        .cloned()
 }
 
 pub fn get_screenshot(run_id: &str) -> Option<(Option<Vec<u8>>, Option<String>)> {
@@ -422,7 +464,9 @@ pub fn set_screenshot_cache(run_id: &str, png_hash: String, analysis: String) {
 
 /// Get the A11y diff context for a test run.
 /// Returns a clone of the context (safe for non-blocking reads).
-pub fn get_ax_diff_context(run_id: &str) -> Option<crate::test_runner::ax_diff_context::AxDiffContext> {
+pub fn get_ax_diff_context(
+    run_id: &str,
+) -> Option<crate::test_runner::ax_diff_context::AxDiffContext> {
     let reg = registry().lock().unwrap_or_else(|e| e.into_inner());
     reg.get(run_id).map(|s| s.ax_diff_context.clone())
 }
@@ -450,8 +494,12 @@ pub fn set_recent_ax_nodes(run_id: &str, nodes: Vec<serde_json::Value>) {
 
 /// Retrieve the most recent AX tree nodes for a test run (for SoM preparation).
 pub fn get_recent_ax_nodes(run_id: &str) -> Option<Vec<serde_json::Value>> {
-    registry().lock().unwrap_or_else(|e| e.into_inner())
-        .get(run_id)?.recent_ax_nodes.clone()
+    registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(run_id)?
+        .recent_ax_nodes
+        .clone()
 }
 
 /// Store the SoM (Set-of-Mark) label map for a test run.
@@ -465,15 +513,20 @@ pub fn set_som_label_map(run_id: &str, label_map: crate::test_runner::som_render
 
 /// Retrieve the SoM label map for a test run.
 pub fn get_som_label_map(run_id: &str) -> Option<crate::test_runner::som_renderer::SoMLabelMap> {
-    registry().lock().unwrap_or_else(|e| e.into_inner())
-        .get(run_id)?.som_label_map.clone()
+    registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(run_id)?
+        .som_label_map
+        .clone()
 }
 
-
 pub fn list_active() -> Vec<String> {
-    registry().lock().unwrap_or_else(|e| e.into_inner())
+    registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
         .iter()
-        .filter(|(_, s)| matches!(s.phase, RunPhase::Running{..} | RunPhase::Queued))
+        .filter(|(_, s)| matches!(s.phase, RunPhase::Running { .. } | RunPhase::Queued))
         .map(|(k, _)| k.clone())
         .collect()
 }
@@ -486,9 +539,11 @@ pub fn list_active() -> Vec<String> {
 /// active run count rarely exceeds the low hundreds, and `RunState` clone
 /// skips the heavy `screenshot_cache` / `ax_diff_context` fields.
 pub fn snapshot_active() -> Vec<RunState> {
-    registry().lock().unwrap_or_else(|e| e.into_inner())
+    registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
         .values()
-        .filter(|s| matches!(s.phase, RunPhase::Running{..} | RunPhase::Queued))
+        .filter(|s| matches!(s.phase, RunPhase::Running { .. } | RunPhase::Queued))
         .cloned()
         .collect()
 }
@@ -498,9 +553,12 @@ fn prune_old_runs() {
     let cutoff = chrono::Local::now() - chrono::Duration::hours(1);
     let cutoff_str = cutoff.to_rfc3339();
     let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
-    let stale: Vec<String> = reg.iter()
-        .filter(|(_, s)| s.started_at.as_str() < cutoff_str.as_str()
-            && matches!(s.phase, RunPhase::Complete(_) | RunPhase::Error(_)))
+    let stale: Vec<String> = reg
+        .iter()
+        .filter(|(_, s)| {
+            s.started_at.as_str() < cutoff_str.as_str()
+                && matches!(s.phase, RunPhase::Complete(_) | RunPhase::Error(_))
+        })
         .map(|(k, _)| k.clone())
         .collect();
     for key in stale {
@@ -515,16 +573,19 @@ pub fn to_json(s: &RunState) -> serde_json::Value {
     use serde_json::json;
     let (status, extra) = match &s.phase {
         RunPhase::Queued => ("queued", json!({})),
-        RunPhase::Running { step, current_action } => (
+        RunPhase::Running {
+            step,
+            current_action,
+        } => (
             "running",
             json!({ "step": step, "current_action": current_action }),
         ),
         RunPhase::Complete(r) => (
             match r.status {
-                TestStatus::Passed   => "passed",
-                TestStatus::Failed   => "failed",
-                TestStatus::Timeout  => "timeout",
-                TestStatus::Error    => "error",
+                TestStatus::Passed => "passed",
+                TestStatus::Failed => "failed",
+                TestStatus::Timeout => "timeout",
+                TestStatus::Error => "error",
                 TestStatus::Disputed => "disputed",
             },
             json!({
@@ -592,12 +653,24 @@ mod tests {
     #[test]
     fn set_phase_updates() {
         let id = new_run("t");
-        set_phase(&id, RunPhase::Running { step: 2, current_action: "click".into() });
+        set_phase(
+            &id,
+            RunPhase::Running {
+                step: 2,
+                current_action: "click".into(),
+            },
+        );
         let s = get(&id).unwrap();
-        if let RunPhase::Running { step, current_action } = s.phase {
+        if let RunPhase::Running {
+            step,
+            current_action,
+        } = s.phase
+        {
             assert_eq!(step, 2);
             assert_eq!(current_action, "click");
-        } else { panic!("expected running"); }
+        } else {
+            panic!("expected running");
+        }
     }
 
     #[test]
@@ -698,7 +771,7 @@ mod tests {
         ];
         let out = summarise_success_actions(&history);
         assert!(out.contains("step1: goto → https://x.test/"), "got: {out}");
-        assert!(out.contains("step2: click_text → Continue"),  "got: {out}");
+        assert!(out.contains("step2: click_text → Continue"), "got: {out}");
     }
 
     #[test]
@@ -713,7 +786,11 @@ mod tests {
         let out = summarise_success_actions(&history);
         // 120 chars + ellipsis
         assert!(out.contains('…'), "expected ellipsis, got: {out}");
-        assert!(out.len() < 200, "expected truncation, got len={}", out.len());
+        assert!(
+            out.len() < 200,
+            "expected truncation, got len={}",
+            out.len()
+        );
     }
 
     #[test]
@@ -748,6 +825,9 @@ mod tests {
         }];
         let out = summarise_success_actions(&history);
         assert!(out.contains("step1: wait_for_idle"), "got: {out}");
-        assert!(!out.contains(" → "), "should not render arrow w/o target: {out}");
+        assert!(
+            !out.contains(" → "),
+            "should not render arrow w/o target: {out}"
+        );
     }
 }

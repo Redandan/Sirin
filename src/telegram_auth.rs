@@ -18,9 +18,12 @@
 //!    Tauri command feeds it into the waiting receiver so the listener
 //!    can continue without ever touching stdin.
 
-use std::sync::Mutex;
 use serde::Serialize;
-use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
+use std::sync::Mutex;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use tokio::sync::{oneshot, Notify};
 
 // ── Public status type ────────────────────────────────────────────────────────
@@ -105,9 +108,10 @@ impl TelegramAuthState {
     }
 
     pub fn set_disconnected(&self, reason: impl Into<String>) {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).status = TelegramStatus::Disconnected {
-            reason: reason.into(),
-        };
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).status =
+            TelegramStatus::Disconnected {
+                reason: reason.into(),
+            };
     }
 
     pub fn set_error(&self, message: impl Into<String>) {
@@ -155,7 +159,11 @@ impl TelegramAuthState {
 
     /// Return the current status (serialisable snapshot).
     pub fn status(&self) -> TelegramStatus {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).status.clone()
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .status
+            .clone()
     }
 
     /// Feed a login code from the UI into the waiting listener.

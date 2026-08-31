@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 pub struct TokenUsage {
     /// Input tokens charged at the input rate.
     #[serde(default)]
-    pub prompt_tokens:     u32,
+    pub prompt_tokens: u32,
     /// Output / completion tokens charged at the output rate.
     #[serde(default)]
     pub completion_tokens: u32,
@@ -39,20 +39,22 @@ pub struct TokenUsage {
     /// OpenAI returns it as `prompt_tokens_details.cached_tokens`.
     /// Backends normalise into this single field.
     #[serde(default)]
-    pub cached_tokens:     u32,
+    pub cached_tokens: u32,
     /// Resolved model that produced this call (e.g. `claude-sonnet-4-6`,
     /// `gemini-2.0-flash`).  Used by [`cost_usd`] to look up the rate.
     #[serde(default)]
-    pub model:             String,
+    pub model: String,
 }
 
 impl TokenUsage {
     /// Sum two records into a single aggregate, choosing the most-specific
     /// model name (longer wins).
     pub fn add(mut self, other: &Self) -> Self {
-        self.prompt_tokens     = self.prompt_tokens.saturating_add(other.prompt_tokens);
-        self.completion_tokens = self.completion_tokens.saturating_add(other.completion_tokens);
-        self.cached_tokens     = self.cached_tokens.saturating_add(other.cached_tokens);
+        self.prompt_tokens = self.prompt_tokens.saturating_add(other.prompt_tokens);
+        self.completion_tokens = self
+            .completion_tokens
+            .saturating_add(other.completion_tokens);
+        self.cached_tokens = self.cached_tokens.saturating_add(other.cached_tokens);
         if other.model.len() > self.model.len() {
             self.model = other.model.clone();
         }
@@ -65,11 +67,10 @@ impl TokenUsage {
     pub fn cost_usd(&self) -> f64 {
         let rate = price_per_million(&self.model);
         let billed_input = self.prompt_tokens.saturating_sub(self.cached_tokens) as f64;
-        let cached       = self.cached_tokens as f64;
-        let output       = self.completion_tokens as f64;
-        (billed_input * rate.input
-            + cached     * rate.cached_input
-            + output     * rate.output) / 1_000_000.0
+        let cached = self.cached_tokens as f64;
+        let output = self.completion_tokens as f64;
+        (billed_input * rate.input + cached * rate.cached_input + output * rate.output)
+            / 1_000_000.0
     }
 }
 
@@ -77,12 +78,12 @@ impl TokenUsage {
 
 #[derive(Copy, Clone)]
 pub struct ModelRate {
-    pub input:        f64,
+    pub input: f64,
     /// Discounted rate for cache-hit input tokens.  Typically 10% of input
     /// for Anthropic; 50% for OpenAI prompt-cache; 25% for Gemini implicit
     /// cache.
     pub cached_input: f64,
-    pub output:       f64,
+    pub output: f64,
 }
 
 /// Look up the USD/1M rate for a model name.  Substring matching — first
@@ -96,52 +97,103 @@ pub fn price_per_million(model: &str) -> ModelRate {
 
     // Anthropic Claude family
     if m.contains("opus") {
-        return ModelRate { input: 15.0, cached_input: 1.50, output: 75.0 };
+        return ModelRate {
+            input: 15.0,
+            cached_input: 1.50,
+            output: 75.0,
+        };
     }
     if m.contains("sonnet") {
-        return ModelRate { input: 3.0,  cached_input: 0.30, output: 15.0 };
+        return ModelRate {
+            input: 3.0,
+            cached_input: 0.30,
+            output: 15.0,
+        };
     }
     if m.contains("haiku") {
-        return ModelRate { input: 0.80, cached_input: 0.08, output: 4.0  };
+        return ModelRate {
+            input: 0.80,
+            cached_input: 0.08,
+            output: 4.0,
+        };
     }
 
     // Google Gemini family
     if m.contains("gemini-2.5-pro") {
-        return ModelRate { input: 1.25, cached_input: 0.31, output: 10.0 };
+        return ModelRate {
+            input: 1.25,
+            cached_input: 0.31,
+            output: 10.0,
+        };
     }
     if m.contains("gemini-2.5-flash") {
-        return ModelRate { input: 0.30, cached_input: 0.075, output: 2.50 };
+        return ModelRate {
+            input: 0.30,
+            cached_input: 0.075,
+            output: 2.50,
+        };
     }
     if m.contains("gemini-2.0-flash") || m.contains("gemini-flash") {
-        return ModelRate { input: 0.10, cached_input: 0.025, output: 0.40 };
+        return ModelRate {
+            input: 0.10,
+            cached_input: 0.025,
+            output: 0.40,
+        };
     }
 
     // OpenAI family
     if m.contains("gpt-4o-mini") || m.contains("4o-mini") {
-        return ModelRate { input: 0.15, cached_input: 0.075, output: 0.60 };
+        return ModelRate {
+            input: 0.15,
+            cached_input: 0.075,
+            output: 0.60,
+        };
     }
     if m.contains("gpt-4o") || m.contains("4o") {
-        return ModelRate { input: 2.50, cached_input: 1.25, output: 10.0 };
+        return ModelRate {
+            input: 2.50,
+            cached_input: 1.25,
+            output: 10.0,
+        };
     }
     if m.contains("gpt-4") {
-        return ModelRate { input: 10.0, cached_input: 5.0, output: 30.0 };
+        return ModelRate {
+            input: 10.0,
+            cached_input: 5.0,
+            output: 30.0,
+        };
     }
 
     // DeepSeek (used as fallback)
     if m.contains("deepseek-chat") || m.contains("deepseek-v") {
-        return ModelRate { input: 0.27, cached_input: 0.07, output: 1.10 };
+        return ModelRate {
+            input: 0.27,
+            cached_input: 0.07,
+            output: 1.10,
+        };
     }
 
     // Local backends (Ollama / LM Studio) — free
-    if m.contains("llama") || m.contains("qwen") || m.contains("mistral")
-        || m.contains("gemma") || m.contains("phi")
+    if m.contains("llama")
+        || m.contains("qwen")
+        || m.contains("mistral")
+        || m.contains("gemma")
+        || m.contains("phi")
     {
-        return ModelRate { input: 0.0, cached_input: 0.0, output: 0.0 };
+        return ModelRate {
+            input: 0.0,
+            cached_input: 0.0,
+            output: 0.0,
+        };
     }
 
     // Unknown model — conservative default (Claude Sonnet ballpark) so we
     // don't understate cost in dashboards.
-    ModelRate { input: 3.0, cached_input: 0.30, output: 15.0 }
+    ModelRate {
+        input: 3.0,
+        cached_input: 0.30,
+        output: 15.0,
+    }
 }
 
 // ── Task-local collector ─────────────────────────────────────────────────────
@@ -163,9 +215,7 @@ where
 {
     let collector: Arc<Mutex<Vec<TokenUsage>>> = Arc::new(Mutex::new(Vec::new()));
     let result = USAGE_COLLECTOR.scope(collector.clone(), fut).await;
-    let drained = std::mem::take(
-        &mut *collector.lock().unwrap_or_else(|e| e.into_inner())
-    );
+    let drained = std::mem::take(&mut *collector.lock().unwrap_or_else(|e| e.into_inner()));
     (result, drained)
 }
 
@@ -181,7 +231,9 @@ pub fn record(usage: TokenUsage) {
 /// Sum a `Vec<TokenUsage>` into a single aggregate.  Empty input returns
 /// `TokenUsage::default()`.
 pub fn aggregate(records: &[TokenUsage]) -> TokenUsage {
-    records.iter().fold(TokenUsage::default(), |acc, u| acc.add(u))
+    records
+        .iter()
+        .fold(TokenUsage::default(), |acc, u| acc.add(u))
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -192,23 +244,33 @@ mod tests {
 
     #[test]
     fn add_sums_fields_and_picks_longer_model() {
-        let a = TokenUsage { prompt_tokens: 100, completion_tokens: 50, cached_tokens: 0,  model: "claude".into() };
-        let b = TokenUsage { prompt_tokens:  20, completion_tokens: 10, cached_tokens: 5,  model: "claude-sonnet-4-6".into() };
+        let a = TokenUsage {
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            cached_tokens: 0,
+            model: "claude".into(),
+        };
+        let b = TokenUsage {
+            prompt_tokens: 20,
+            completion_tokens: 10,
+            cached_tokens: 5,
+            model: "claude-sonnet-4-6".into(),
+        };
         let s = a.add(&b);
-        assert_eq!(s.prompt_tokens,     120);
+        assert_eq!(s.prompt_tokens, 120);
         assert_eq!(s.completion_tokens, 60);
-        assert_eq!(s.cached_tokens,     5);
-        assert_eq!(s.model,             "claude-sonnet-4-6");
+        assert_eq!(s.cached_tokens, 5);
+        assert_eq!(s.model, "claude-sonnet-4-6");
     }
 
     #[test]
     fn cost_uses_billed_minus_cached_for_input() {
         // 1M input tokens, 100k cached, 200k output, sonnet rates
         let u = TokenUsage {
-            prompt_tokens:     1_000_000,
-            completion_tokens:   200_000,
-            cached_tokens:       100_000,
-            model:               "claude-sonnet-4-6".into(),
+            prompt_tokens: 1_000_000,
+            completion_tokens: 200_000,
+            cached_tokens: 100_000,
+            model: "claude-sonnet-4-6".into(),
         };
         // billed_input = 900k * $3/M = $2.70
         // cached       = 100k * $0.30/M = $0.03
@@ -221,8 +283,10 @@ mod tests {
     #[test]
     fn cost_zero_for_local_backend() {
         let u = TokenUsage {
-            prompt_tokens: 500_000, completion_tokens: 100_000,
-            cached_tokens: 0, model: "llama3.2".into(),
+            prompt_tokens: 500_000,
+            completion_tokens: 100_000,
+            cached_tokens: 0,
+            model: "llama3.2".into(),
         };
         assert_eq!(u.cost_usd(), 0.0);
     }
@@ -230,8 +294,10 @@ mod tests {
     #[test]
     fn cost_unknown_model_uses_safe_default() {
         let u = TokenUsage {
-            prompt_tokens: 1_000_000, completion_tokens: 0,
-            cached_tokens: 0, model: "totally-made-up-vNext".into(),
+            prompt_tokens: 1_000_000,
+            completion_tokens: 0,
+            cached_tokens: 0,
+            model: "totally-made-up-vNext".into(),
         };
         // Default is sonnet rate ($3/M input)
         assert!((u.cost_usd() - 3.0).abs() < 0.001);
@@ -246,10 +312,18 @@ mod tests {
     #[tokio::test]
     async fn with_recording_collects_calls_inside_scope() {
         let (out, recs) = with_recording(async {
-            record(TokenUsage { prompt_tokens: 10, ..Default::default() });
-            record(TokenUsage { prompt_tokens: 20, completion_tokens: 5, ..Default::default() });
+            record(TokenUsage {
+                prompt_tokens: 10,
+                ..Default::default()
+            });
+            record(TokenUsage {
+                prompt_tokens: 20,
+                completion_tokens: 5,
+                ..Default::default()
+            });
             42
-        }).await;
+        })
+        .await;
         assert_eq!(out, 42);
         assert_eq!(recs.len(), 2);
         let total = aggregate(&recs);
@@ -261,16 +335,27 @@ mod tests {
     async fn record_after_scope_returns_does_not_leak_to_outer() {
         let (_inner_recs, _) = ((), 0);
         let (_, recs_outer) = with_recording(async {
-            record(TokenUsage { prompt_tokens: 1, ..Default::default() });
+            record(TokenUsage {
+                prompt_tokens: 1,
+                ..Default::default()
+            });
             with_recording(async {
-                record(TokenUsage { prompt_tokens: 2, ..Default::default() });
-            }).await;
+                record(TokenUsage {
+                    prompt_tokens: 2,
+                    ..Default::default()
+                });
+            })
+            .await;
             // The inner scope's record should not show up in the outer
             // collector here since the inner future already returned and
             // its task-local frame popped.  The outer scope only sees its
             // own direct record.
-            record(TokenUsage { prompt_tokens: 3, ..Default::default() });
-        }).await;
+            record(TokenUsage {
+                prompt_tokens: 3,
+                ..Default::default()
+            });
+        })
+        .await;
         let total = aggregate(&recs_outer);
         assert_eq!(total.prompt_tokens, 1 + 3); // not 6
     }

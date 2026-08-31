@@ -35,8 +35,10 @@
 //! // (handled by worker.rs reading ctx.issue_url)
 //! ```
 
-use std::process::Command;
 use super::queue::{self, ProjectContext};
+use std::process::Command;
+
+use crate::platform::NoWindow;
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -93,7 +95,7 @@ fn enqueue_from_issue_full(
     dry_run: bool,
 ) -> Result<String, String> {
     let issue = read_issue(gh_repo, issue_number)?;
-    let url   = format!("https://github.com/{gh_repo}/issues/{issue_number}");
+    let url = format!("https://github.com/{gh_repo}/issues/{issue_number}");
 
     let labels = if issue.labels.is_empty() {
         String::new()
@@ -118,19 +120,19 @@ fn enqueue_from_issue_full(
          \n\
          Goal: 分析這個 issue → 拆解步驟 → 在 cwd ({key}) 完成修改 → \
          驗證編譯/測試。{close_note}",
-        n     = issue_number,
+        n = issue_number,
         title = issue.title,
-        url   = url,
-        key   = project_key,
-        body  = trunc_for_prompt(&issue.body, 4_000),
+        url = url,
+        key = project_key,
+        body = trunc_for_prompt(&issue.body, 4_000),
     );
 
     let ctx = ProjectContext {
-        repo:         project_key.to_string(),
-        extra_tools:  vec!["Bash".to_string()],   // for gh + cargo/flutter/mvn
-        issue_url:    Some(url),
+        repo: project_key.to_string(),
+        extra_tools: vec!["Bash".to_string()], // for gh + cargo/flutter/mvn
+        issue_url: Some(url),
         dry_run,
-        yaml_test_id: None,  // GitHub issue tasks don't auto-trigger YAML tests
+        yaml_test_id: None, // GitHub issue tasks don't auto-trigger YAML tests
     };
 
     Ok(queue::enqueue_with_project(&description, priority, ctx))
@@ -140,23 +142,28 @@ fn enqueue_from_issue_full(
 ///
 /// Designed to be called from the worker after a task completes — keeps
 /// the human in the loop without anyone watching the Sirin UI.
-pub fn comment_on_issue(
-    gh_repo: &str,
-    issue_number: u32,
-    body: &str,
-) -> Result<(), String> {
+pub fn comment_on_issue(gh_repo: &str, issue_number: u32, body: &str) -> Result<(), String> {
     let out = Command::new(gh_bin())
+        .no_window()
         .args([
-            "issue", "comment", &issue_number.to_string(),
-            "--repo", gh_repo,
-            "--body", body,
+            "issue",
+            "comment",
+            &issue_number.to_string(),
+            "--repo",
+            gh_repo,
+            "--body",
+            body,
         ])
         .output()
         .map_err(|e| format!("gh issue comment spawn failed: {e}"))?;
 
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
-        return Err(format!("gh issue comment exit {}: {}", out.status, stderr.trim()));
+        return Err(format!(
+            "gh issue comment exit {}: {}",
+            out.status,
+            stderr.trim()
+        ));
     }
     Ok(())
 }
@@ -175,11 +182,11 @@ pub fn comment_on_issue_url(issue_url: &str, body: &str) -> Result<(), String> {
 /// One queued-but-unposted comment from a dry-run task.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct PreviewComment {
-    pub task_id:   String,
+    pub task_id: String,
     pub issue_url: String,
-    pub success:   bool,
-    pub body:      String,
-    pub saved_at:  String,
+    pub success: bool,
+    pub body: String,
+    pub saved_at: String,
 }
 
 /// Read all queued previews (chronological, oldest first).
@@ -188,11 +195,14 @@ pub struct PreviewComment {
 /// `Vec` if the file doesn't exist (no dry-run comments yet) — not an error.
 pub fn list_preview_comments() -> Vec<PreviewComment> {
     let path = crate::platform::app_data_dir()
-        .join("data").join("multi_agent").join("preview_comments.jsonl");
+        .join("data")
+        .join("multi_agent")
+        .join("preview_comments.jsonl");
     let Ok(contents) = std::fs::read_to_string(&path) else {
         return Vec::new();
     };
-    contents.lines()
+    contents
+        .lines()
         .filter(|l| !l.trim().is_empty())
         .filter_map(|l| serde_json::from_str::<PreviewComment>(l).ok())
         .collect()
@@ -212,7 +222,11 @@ pub fn latest_preview_for(task_id: &str) -> Option<PreviewComment> {
 /// post. Caller passes the preview returned by [`latest_preview_for`] or
 /// [`list_preview_comments`].
 pub fn replay_preview(preview: &PreviewComment) -> Result<(), String> {
-    let header = if preview.success { "✓ Done" } else { "✗ Failed" };
+    let header = if preview.success {
+        "✓ Done"
+    } else {
+        "✗ Failed"
+    };
     let comment = format!(
         "**[Sirin Dev Team {header} — replayed from dry-run]**\n\n{}\n\n\
          <sub>Posted manually after dry-run review · task `{}` · originally previewed at {}</sub>",
@@ -225,25 +239,34 @@ pub fn replay_preview(preview: &PreviewComment) -> Result<(), String> {
 
 #[derive(Debug, Clone)]
 pub struct IssueData {
-    pub title:  String,
-    pub body:   String,
+    pub title: String,
+    pub body: String,
     pub labels: Vec<String>,
 }
 
 /// Read a single issue's title/body/labels via `gh issue view ... --json`.
 pub fn read_issue(gh_repo: &str, issue_number: u32) -> Result<IssueData, String> {
     let out = Command::new(gh_bin())
+        .no_window()
         .args([
-            "issue", "view", &issue_number.to_string(),
-            "--repo", gh_repo,
-            "--json", "title,body,labels",
+            "issue",
+            "view",
+            &issue_number.to_string(),
+            "--repo",
+            gh_repo,
+            "--json",
+            "title,body,labels",
         ])
         .output()
         .map_err(|e| format!("gh issue view spawn failed (is gh installed?): {e}"))?;
 
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
-        return Err(format!("gh issue view exit {}: {}", out.status, stderr.trim()));
+        return Err(format!(
+            "gh issue view exit {}: {}",
+            out.status,
+            stderr.trim()
+        ));
     }
 
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -252,18 +275,23 @@ pub fn read_issue(gh_repo: &str, issue_number: u32) -> Result<IssueData, String>
 
 fn parse_gh_issue_json(json: &str) -> Result<IssueData, String> {
     #[derive(serde::Deserialize)]
-    struct Label { name: String }
+    struct Label {
+        name: String,
+    }
     #[derive(serde::Deserialize)]
     struct Raw {
-        #[serde(default)] title:  String,
-        #[serde(default)] body:   String,
-        #[serde(default)] labels: Vec<Label>,
+        #[serde(default)]
+        title: String,
+        #[serde(default)]
+        body: String,
+        #[serde(default)]
+        labels: Vec<Label>,
     }
     let raw: Raw = serde_json::from_str(json)
         .map_err(|e| format!("gh issue view returned non-JSON: {e}\n--\n{json}"))?;
     Ok(IssueData {
-        title:  raw.title,
-        body:   raw.body,
+        title: raw.title,
+        body: raw.body,
         labels: raw.labels.into_iter().map(|l| l.name).collect(),
     })
 }
@@ -279,7 +307,7 @@ fn gh_bin() -> String {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ParsedIssueUrl {
-    pub repo:   String,   // "owner/repo"
+    pub repo: String, // "owner/repo"
     pub number: u32,
 }
 
@@ -307,12 +335,15 @@ pub fn parse_issue_url(url: &str) -> Result<ParsedIssueUrl, String> {
     // Expect owner/repo/issues/N
     let parts: Vec<&str> = path.split('/').collect();
     if parts.len() < 4 || parts[2] != "issues" {
-        return Err(format!("not an issue URL (expected owner/repo/issues/N): {url}"));
+        return Err(format!(
+            "not an issue URL (expected owner/repo/issues/N): {url}"
+        ));
     }
-    let number: u32 = parts[3].parse()
+    let number: u32 = parts[3]
+        .parse()
         .map_err(|_| format!("issue number not numeric: {}", parts[3]))?;
     Ok(ParsedIssueUrl {
-        repo:   format!("{}/{}", parts[0], parts[1]),
+        repo: format!("{}/{}", parts[0], parts[1]),
         number,
     })
 }
@@ -324,7 +355,10 @@ fn trunc_for_prompt(s: &str, max_bytes: usize) -> String {
     if s.len() <= max_bytes {
         return s.to_string();
     }
-    let end = (0..=max_bytes).rev().find(|&i| s.is_char_boundary(i)).unwrap_or(0);
+    let end = (0..=max_bytes)
+        .rev()
+        .find(|&i| s.is_char_boundary(i))
+        .unwrap_or(0);
     let mut out = s[..end].to_string();
     out.push_str("\n…(truncated)");
     out
@@ -357,9 +391,8 @@ mod tests {
 
     #[test]
     fn parse_with_fragment() {
-        let p = parse_issue_url(
-            "https://github.com/owner/repo/issues/42#issuecomment-123",
-        ).unwrap();
+        let p =
+            parse_issue_url("https://github.com/owner/repo/issues/42#issuecomment-123").unwrap();
         assert_eq!(p.number, 42);
     }
 
@@ -458,27 +491,37 @@ mod tests {
 
         // Real-data sanity: title is non-empty, has the bug label
         assert!(!issue.title.is_empty(), "title must not be empty");
-        assert!(issue.labels.iter().any(|l| l == "bug"),
-            "issue #9 should carry 'bug' label");
+        assert!(
+            issue.labels.iter().any(|l| l == "bug"),
+            "issue #9 should carry 'bug' label"
+        );
 
         // Verify the routing the worker would take: project_key "agora_market"
         // must resolve to the actual Flutter repo on disk (post-rename).
         let cwd = crate::claude_session::repo_path("agora_market")
             .expect("repo_path('agora_market') should resolve");
         println!("\n── Resolved cwd ──\n{cwd}");
-        assert!(cwd.ends_with("AgoraMarket") && !cwd.ends_with("AgoraMarketAPI"),
-            "agora_market must map to the Flutter repo (was renamed from AgoraMarketFlutter)");
-        assert!(std::path::Path::new(&cwd).join("pubspec.yaml").exists(),
-            "resolved cwd must be a Flutter project (has pubspec.yaml)");
+        assert!(
+            cwd.ends_with("AgoraMarket") && !cwd.ends_with("AgoraMarketAPI"),
+            "agora_market must map to the Flutter repo (was renamed from AgoraMarketFlutter)"
+        );
+        assert!(
+            std::path::Path::new(&cwd).join("pubspec.yaml").exists(),
+            "resolved cwd must be a Flutter project (has pubspec.yaml)"
+        );
 
         // Verify the session-file naming the worker would create
         let pm_path = crate::platform::app_data_dir()
-            .join("data").join("multi_agent").join("pagora_market_pm.json");
+            .join("data")
+            .join("multi_agent")
+            .join("pagora_market_pm.json");
         println!("── Would create session file ──\n{}", pm_path.display());
         // We DON'T require this to exist (might be a fresh run); just confirm
         // the path is well-formed and lives under the Sirin data dir.
-        assert!(pm_path.to_string_lossy().contains("pagora_market_pm.json"),
-            "PM session file should use project namespace prefix");
+        assert!(
+            pm_path.to_string_lossy().contains("pagora_market_pm.json"),
+            "PM session file should use project namespace prefix"
+        );
 
         println!("\n✓ Live verification passed — dev team would route #9 correctly\n");
     }
@@ -496,42 +539,55 @@ mod tests {
     #[test]
     #[ignore]
     fn live_partial_dev_team_on_real_issue() {
-        use crate::multi_agent::{AgentTeam, queue};
+        use crate::multi_agent::{queue, AgentTeam};
 
         // ── Step 1: enqueue real issue #34 via github_adapter ────────────────
-        let task_id = enqueue_from_issue(
-            "agora_market", "Redandan/AgoraMarket", 34,
-        ).expect("enqueue_from_issue");
+        let task_id = enqueue_from_issue("agora_market", "Redandan/AgoraMarket", 34)
+            .expect("enqueue_from_issue");
         println!("\n[1/6] ✓ Enqueued issue #34 → task_id={task_id}");
 
         // ── Step 2: pull it back out of the queue ────────────────────────────
-        let task = queue::take_next_queued()
-            .expect("take_next_queued should return our task");
-        assert_eq!(task.id, task_id, "queue should hand back the task we just enqueued");
-        println!("[2/6] ✓ take_next_queued returned task {} ({} chars)",
-            task.id, task.description.len());
+        let task = queue::take_next_queued().expect("take_next_queued should return our task");
+        assert_eq!(
+            task.id, task_id,
+            "queue should hand back the task we just enqueued"
+        );
+        println!(
+            "[2/6] ✓ take_next_queued returned task {} ({} chars)",
+            task.id,
+            task.description.len()
+        );
 
         // ── Step 3: verify ProjectContext landed correctly ───────────────────
         let ctx = task.project.as_ref().expect("project ctx must be set");
         assert_eq!(ctx.repo, "agora_market");
-        assert!(ctx.extra_tools.iter().any(|t| t == "Bash"),
-            "Engineer needs Bash for gh / flutter");
-        assert!(ctx.issue_url.as_ref().map(|u|
-            u.contains("Redandan/AgoraMarket/issues/34")).unwrap_or(false));
-        println!("[3/6] ✓ ProjectContext: repo={}, extra_tools={:?}, issue_url set",
-            ctx.repo, ctx.extra_tools);
+        assert!(
+            ctx.extra_tools.iter().any(|t| t == "Bash"),
+            "Engineer needs Bash for gh / flutter"
+        );
+        assert!(ctx
+            .issue_url
+            .as_ref()
+            .map(|u| u.contains("Redandan/AgoraMarket/issues/34"))
+            .unwrap_or(false));
+        println!(
+            "[3/6] ✓ ProjectContext: repo={}, extra_tools={:?}, issue_url set",
+            ctx.repo, ctx.extra_tools
+        );
 
         // ── Step 4: routing — exactly what worker.rs::resolve_project does ───
         let cwd = crate::claude_session::repo_path(&ctx.repo)
             .expect("repo_path should resolve agora_market");
         println!("[4/6] ✓ Resolved cwd: {cwd}");
-        assert!(std::path::Path::new(&cwd).join("pubspec.yaml").exists(),
-            "cwd must be a Flutter project");
+        assert!(
+            std::path::Path::new(&cwd).join("pubspec.yaml").exists(),
+            "cwd must be a Flutter project"
+        );
 
         // ── Step 5: load cross-project AgentTeam + apply extra_tools ─────────
         let mut team = AgentTeam::load_for_worker_project(&cwd, 0, &ctx.repo);
         team.set_extra_tools(&ctx.extra_tools);
-        team.pm.reset();   // clean baseline (deletes any prior pagora_market_pm.json)
+        team.pm.reset(); // clean baseline (deletes any prior pagora_market_pm.json)
         println!("[5/6] ✓ Loaded AgentTeam(project=agora_market, worker=0)");
 
         // ── Step 6: ONE PM turn (no full assign_task loop) ───────────────────
@@ -554,24 +610,35 @@ mod tests {
 
         // ── Verifications ────────────────────────────────────────────────────
         assert!(!reply.is_empty(), "PM reply must not be empty");
-        assert!(team.pm.session_id().is_some(),
-            "session_id should be captured on first turn");
+        assert!(
+            team.pm.session_id().is_some(),
+            "session_id should be captured on first turn"
+        );
         assert_eq!(team.pm.turns(), 1, "exactly one turn should be recorded");
 
         let pm_state = crate::platform::app_data_dir()
-            .join("data").join("multi_agent")
+            .join("data")
+            .join("multi_agent")
             .join("pagora_market_pm.json");
-        assert!(pm_state.exists(),
-            "PM session state must persist at {}", pm_state.display());
+        assert!(
+            pm_state.exists(),
+            "PM session state must persist at {}",
+            pm_state.display()
+        );
 
         println!("✓ Live partial verification passed");
-        println!("  → resume PM via: claude --resume {}",
-            team.pm.session_id().unwrap_or("?"));
+        println!(
+            "  → resume PM via: claude --resume {}",
+            team.pm.session_id().unwrap_or("?")
+        );
         println!("  → session file: {}", pm_state.display());
 
         // Cleanup: mark the test task as Done so it doesn't linger in the queue
-        queue::update_status(&task.id, queue::TaskStatus::Done,
-            Some("[verification test — see github_adapter::tests]".into()));
+        queue::update_status(
+            &task.id,
+            queue::TaskStatus::Done,
+            Some("[verification test — see github_adapter::tests]".into()),
+        );
     }
 
     /// FULL end-to-end DRY-RUN: enqueue real issue → run actual 5-iter
@@ -605,21 +672,27 @@ mod tests {
     #[test]
     #[ignore]
     fn live_full_dry_run_on_real_issue() {
-        use crate::multi_agent::{AgentTeam, queue, worker};
+        use crate::multi_agent::{queue, worker, AgentTeam};
 
         // ── Step 1: enqueue with dry_run=true ────────────────────────────
-        let task_id = enqueue_from_issue_dry_run(
-            "agora_market", "Redandan/AgoraMarket", 34,
-        ).expect("enqueue_from_issue_dry_run");
+        let task_id = enqueue_from_issue_dry_run("agora_market", "Redandan/AgoraMarket", 34)
+            .expect("enqueue_from_issue_dry_run");
         println!("\n[1/8] ✓ Enqueued issue #34 (DRY-RUN) → task_id={task_id}");
 
         // ── Step 2: pull task back & verify ProjectContext flags ─────────
-        let task = queue::take_next_queued()
-            .expect("take_next_queued must return our task");
-        assert_eq!(task.id, task_id, "queue should hand back the task we enqueued");
+        let task = queue::take_next_queued().expect("take_next_queued must return our task");
+        assert_eq!(
+            task.id, task_id,
+            "queue should hand back the task we enqueued"
+        );
         let ctx = task.project.as_ref().expect("project ctx must be set");
-        assert!(ctx.dry_run, "ctx.dry_run must be true after enqueue_from_issue_dry_run");
-        let issue_url = ctx.issue_url.clone()
+        assert!(
+            ctx.dry_run,
+            "ctx.dry_run must be true after enqueue_from_issue_dry_run"
+        );
+        let issue_url = ctx
+            .issue_url
+            .clone()
             .expect("issue_url must be set by enqueue_from_issue_dry_run");
         println!(
             "[2/8] ✓ Task pulled: dry_run={}, repo={}, extra_tools={:?}",
@@ -629,8 +702,10 @@ mod tests {
         // ── Step 3: resolve cwd (mirrors worker::resolve_project) ────────
         let cwd = crate::claude_session::repo_path(&ctx.repo)
             .expect("repo_path('agora_market') must resolve to AgoraMarket repo");
-        assert!(std::path::Path::new(&cwd).join("pubspec.yaml").exists(),
-            "cwd must be the Flutter project (pubspec.yaml present)");
+        assert!(
+            std::path::Path::new(&cwd).join("pubspec.yaml").exists(),
+            "cwd must be the Flutter project (pubspec.yaml present)"
+        );
         println!("[3/8] ✓ Resolved cwd: {cwd}");
 
         // ── Step 4: load cross-project AgentTeam + apply per-task config ─
@@ -638,13 +713,15 @@ mod tests {
         // session_id, not the dry_run / extra_tools fields).
         let mut team = AgentTeam::load_for_worker_project(&cwd, 0, &ctx.repo);
         team.set_extra_tools(&ctx.extra_tools);
-        team.set_dry_run(true);   // CRITICAL — injects DRY_RUN_ADDENDUM
+        team.set_dry_run(true); // CRITICAL — injects DRY_RUN_ADDENDUM
         team.pm.reset();
         team.engineer.reset();
         team.tester.reset();
         // Sanity: confirm dry_run survived the resets
-        assert!(team.pm.dry_run && team.engineer.dry_run && team.tester.dry_run,
-            "dry_run must persist across reset() (only state is wiped)");
+        assert!(
+            team.pm.dry_run && team.engineer.dry_run && team.tester.dry_run,
+            "dry_run must persist across reset() (only state is wiped)"
+        );
         println!("[4/8] ✓ AgentTeam loaded (project=agora_market, dry_run=true)");
 
         // ── Step 5: full 5-iter assign_task loop ─────────────────────────
@@ -656,13 +733,16 @@ mod tests {
 
         // ── Step 6: divert to preview file (mirrors worker dry-run branch) ─
         let (review, success) = match assign_result {
-            Ok(r)  => {
+            Ok(r) => {
                 println!("[6/8] ✓ assign_task returned APPROVED ({} chars)", r.len());
                 (r, true)
             }
             Err(e) => {
-                println!("[6/8] ✗ assign_task returned ERR ({} chars): {:.120}",
-                    e.len(), e);
+                println!(
+                    "[6/8] ✗ assign_task returned ERR ({} chars): {:.120}",
+                    e.len(),
+                    e
+                );
                 (e, false)
             }
         };
@@ -671,14 +751,17 @@ mod tests {
         // ── Step 7: verify preview file written + round-trips correctly ──
         let preview = latest_preview_for(&task.id)
             .expect("latest_preview_for must find the preview we just saved");
-        assert_eq!(preview.task_id,   task.id,    "task_id must match");
-        assert_eq!(preview.issue_url, issue_url,  "issue_url must match");
-        assert_eq!(preview.success,   success,    "success flag must match");
-        assert_eq!(preview.body,      review,     "body must round-trip byte-for-byte");
-        assert!(!preview.saved_at.is_empty(),     "saved_at must be set");
-        assert!(!preview.body.is_empty(),         "body must be non-empty");
-        println!("[7/8] ✓ Preview round-trip OK: {} chars body, saved_at={}",
-            preview.body.len(), preview.saved_at);
+        assert_eq!(preview.task_id, task.id, "task_id must match");
+        assert_eq!(preview.issue_url, issue_url, "issue_url must match");
+        assert_eq!(preview.success, success, "success flag must match");
+        assert_eq!(preview.body, review, "body must round-trip byte-for-byte");
+        assert!(!preview.saved_at.is_empty(), "saved_at must be set");
+        assert!(!preview.body.is_empty(), "body must be non-empty");
+        println!(
+            "[7/8] ✓ Preview round-trip OK: {} chars body, saved_at={}",
+            preview.body.len(),
+            preview.saved_at
+        );
 
         // ── Step 8: confirm preview JSONL physically exists ──────────────
         // We can't directly assert "no GitHub comment was posted" from inside
@@ -687,9 +770,14 @@ mod tests {
         // construction (and by mirror of that branch above), no `gh issue
         // comment` was invoked during this test.
         let preview_path = crate::platform::app_data_dir()
-            .join("data").join("multi_agent").join("preview_comments.jsonl");
-        assert!(preview_path.exists(),
-            "preview JSONL must exist at {}", preview_path.display());
+            .join("data")
+            .join("multi_agent")
+            .join("preview_comments.jsonl");
+        assert!(
+            preview_path.exists(),
+            "preview JSONL must exist at {}",
+            preview_path.display()
+        );
         println!("[8/8] ✓ Preview JSONL: {}", preview_path.display());
 
         // ── Print preview body for human eyeballing ──────────────────────
@@ -747,8 +835,7 @@ mod tests {
              If you see this, github_adapter::comment_on_issue is working end-to-end.",
             chrono::Local::now().to_rfc3339(),
         );
-        comment_on_issue(&repo, num, &body)
-            .expect("comment_on_issue must succeed");
+        comment_on_issue(&repo, num, &body).expect("comment_on_issue must succeed");
         println!("\n✓ Posted verification comment to {repo}#{num}\n");
     }
 }

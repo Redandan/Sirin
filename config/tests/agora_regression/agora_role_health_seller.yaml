@@ -1,0 +1,44 @@
+id: agora_role_health_seller
+name: "AgoraMarket 角色健康檢查 — seller"
+url: "https://redandan.github.io/?__test_role=seller"
+
+max_iterations: 4
+timeout_secs: 120
+fixture_only: true
+
+viewport:
+  width: 390
+  height: 844
+  scale: 2.0
+  mobile: true
+
+locale: zh-TW
+
+fixture:
+  setup:
+    - {action: "clear_state"}
+    - {action: "goto", target: "https://redandan.github.io/?__test_role=seller"}
+    - {action: "wait_for_flutter_semantics", timeout: 15000, min_roles: 2}
+    - {action: "dismiss_passkey_prompt"}
+    - {action: "goto", target: "https://redandan.github.io/?__test_role=seller"}
+    - {action: "wait_for_flutter_semantics", timeout: 25000, min_roles: 8}
+    - {action: "assert_url_matches", target: "#/seller"}
+    - {action: "shadow_find", name_regex: "今天要做|待出貨|營運狀態"}
+    - {action: "shadow_find", name_regex: "^商品"}
+    - {action: "shadow_find", name_regex: "^訂單"}
+    - {action: "shadow_find", name_regex: "^錢包"}
+
+goal: |
+  目標：確認 seller 測試角色會落在新版賣家首頁，而不是登入頁或買家商城頁。
+
+  步驟：
+  1. url
+  2. shadow_dump
+  3. done=true
+
+success_criteria:
+  - "URL 包含 #/seller"
+  - "頁面顯示賣家首頁或營運任務內容（例如今日要做、待出貨、營運狀態）"
+  - "可見賣家底部入口（首頁/商品/訂單/錢包/我的）"
+
+tags: [regression, smoke, active-smoke, role-health, seller, agora]

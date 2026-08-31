@@ -1,9 +1,10 @@
 id: agora_login_vision
-name: "AgoraMarket 登入流程 — vision perception (Flutter Canvas)"
-url: "https://redandan.github.io/#/login"
+name: "AgoraMarket 測試買家登入健康檢查"
+url: "https://redandan.github.io/?__test_role=buyer"
 
 max_iterations: 20
 timeout_secs: 300
+fixture_only: true
 # H5 mobile viewport — AgoraMarket 會員端是手機版 App，必須用手機 viewport 測試
 viewport:
   width: 390
@@ -13,13 +14,19 @@ viewport:
 max_retries: 1  # H5 Flutter 偶發 Chrome 初始化延遲，自動重試一次
 retry_on_parse_error: 5
 
-perception: vision
-
 fixture:
   setup:
     - {action: "clear_state"}
-    - {action: "goto", target: "https://redandan.github.io/#/login"}
-    - {action: "wait", target: "4000"}
+    - {action: "goto", target: "https://redandan.github.io/?__test_role=buyer"}
+    - {action: "wait", target: "5000"}
+    - {action: "dismiss_passkey_prompt"}
+    - {action: "wait", target: "1000"}
+    - {action: "enable_a11y"}
+    - {action: "wait_for_ax_ready", min_nodes: 10, timeout_ms: 10000}
+    - {action: "assert_url_matches", target: "__test_role=buyer"}
+    - {action: "assert_ax_contains", target: "商品"}
+    - {action: "assert_ax_contains", target: "訂單"}
+    - {action: "assert_ax_contains", target: "錢包"}
   cleanup:
     - {action: "clear_state"}
 
@@ -27,32 +34,16 @@ fixture:
 # so the full login page — including the bottom test-account grid — is
 # in-frame on turn 1.  No set_viewport workaround needed.
 goal: |
-  Sign in as the Test Buyer.
+  Verify buyer test-role login reaches an authenticated buyer surface.
 
-  Look at the screenshot.  There is a grid of four buttons at the BOTTOM
-  of the login form:
-    [測試買家]  [測試賣家]
-    [測試送貨員] [測試管理員]
+  ⚠️ fixture_only=true；fixture.setup 全部成功即通過，不進 LLM ReAct loop。
 
-  Click the "測試買家" button (top-left of that grid).  It auto-fills a
-  test account via JavaScript and submits, so the URL hash will leave
-  #/login within ~2 seconds.
-
-  Emit: {"action": "click_point", "x": <center_x>, "y": <center_y>}
-  Coordinates come from the screenshot.  Set done=true once URL hash is
-  no longer #/login.
-
-  ⚠️ The correct button says exactly "測試買家".  Do NOT click any of:
-    - "使用 Google 帳戶登入"
-    - "使用 Telegram 登入"
-    - "連接錢包"
-    - "測試賣家" / "測試送貨員" / "測試管理員" (siblings, wrong role)
-
-  STRICT JSON output.  No markdown fences.
+  Historical note: this used to require vision/click_point on the "測試買家"
+  button. The supported deterministic path is now ?__test_role=buyer plus AX
+  assertions for the buyer tab surface.
 
 success_criteria:
-  - "URL hash leaves #/login (navigates to home / market / dashboard)"
+  - "URL contains __test_role=buyer and reaches the authenticated buyer surface"
+  - "Buyer tabs 商品/訂單/錢包 are visible via AX assertions"
 
-tags: [agora, login, flutter, canvas, vision, regression]
-
-
+tags: [agora, login, flutter, canvas, regression]

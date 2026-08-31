@@ -51,7 +51,9 @@ use crate::researcher;
 use crate::sirin_log;
 use crate::telegram_auth::TelegramAuthState;
 
-use config::{require_login, resolve_session_path, session_path, TelegramConfig, AUTH_INPUT_TIMEOUT_SECS};
+use config::{
+    require_login, resolve_session_path, session_path, TelegramConfig, AUTH_INPUT_TIMEOUT_SECS,
+};
 
 // ── Auth helper ───────────────────────────────────────────────────────────────
 
@@ -75,9 +77,7 @@ async fn ensure_user_authorized(
 
     // Skip auth flow unless explicitly requested (TG_REQUIRE_LOGIN=1 or manual trigger).
     if !require_login() && !force_login {
-        auth.set_disconnected(
-            "session not authorized; click 立即連線 or set TG_REQUIRE_LOGIN=1",
-        );
+        auth.set_disconnected("session not authorized; click 立即連線 or set TG_REQUIRE_LOGIN=1");
         return Ok(());
     }
 
@@ -220,17 +220,20 @@ async fn run_listener_once(
             );
         }
 
-        let (text, is_private, peer_bare_id) = match filter::filter_message(&message, &cfg, listener_started_at) {
-            filter::FilterDecision::Skip(reason) => {
-                if cfg.debug_updates {
-                    sirin_log!("[telegram] skip: {}", reason);
+        let (text, is_private, peer_bare_id) =
+            match filter::filter_message(&message, &cfg, listener_started_at) {
+                filter::FilterDecision::Skip(reason) => {
+                    if cfg.debug_updates {
+                        sirin_log!("[telegram] skip: {}", reason);
+                    }
+                    continue;
                 }
-                continue;
-            }
-            filter::FilterDecision::Handle { text, is_private, peer_bare_id } => {
-                (text, is_private, Some(peer_bare_id))
-            }
-        };
+                filter::FilterDecision::Handle {
+                    text,
+                    is_private,
+                    peer_bare_id,
+                } => (text, is_private, Some(peer_bare_id)),
+            };
 
         let persona = Persona::cached().ok();
         let persona_name = persona.as_ref().map(|p| p.name()).unwrap_or("Sirin");
@@ -352,10 +355,12 @@ async fn run_listener_once(
             .await;
 
             // Add a small random delay to appear more human-like.
-            let delay_ms = LEGACY_REPLY_DELAY_MIN_MS + (std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .subsec_millis() as u64 % LEGACY_REPLY_DELAY_JITTER_MS);
+            let delay_ms = LEGACY_REPLY_DELAY_MIN_MS
+                + (std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .subsec_millis() as u64
+                    % LEGACY_REPLY_DELAY_JITTER_MS);
             tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
 
             reply::send_final_reply(&client, &message, is_private, final_reply.as_str()).await;
@@ -401,7 +406,11 @@ async fn run_agent_listener_once(
         std::fs::create_dir_all(parent)?;
     }
     let session = Arc::new(SqliteSession::open(sess_path).await?);
-    let SenderPool { runner, updates, handle } = SenderPool::new(Arc::clone(&session), cfg.api_id);
+    let SenderPool {
+        runner,
+        updates,
+        handle,
+    } = SenderPool::new(Arc::clone(&session), cfg.api_id);
     let client = Client::new(handle.clone());
     let pool_task = tokio::spawn(runner.run());
 
@@ -419,12 +428,22 @@ async fn run_agent_listener_once(
     }
 
     let mut updates = client
-        .stream_updates(updates, UpdatesConfiguration { catch_up: false, ..Default::default() })
+        .stream_updates(
+            updates,
+            UpdatesConfiguration {
+                catch_up: false,
+                ..Default::default()
+            },
+        )
         .await;
 
     sirin_log!("[telegram/{agent_id}] Connected to Telegram");
     auth.set_connected();
-    sirin_log!("[telegram/{agent_id}] AI reply backend={} model='{}'", llm.backend_name(), llm.model);
+    sirin_log!(
+        "[telegram/{agent_id}] AI reply backend={} model='{}'",
+        llm.backend_name(),
+        llm.model
+    );
     let listener_started_at = Utc::now();
 
     reply::send_startup_message(&client, &cfg).await;
@@ -445,7 +464,9 @@ async fn run_agent_listener_once(
             }
         };
 
-        let Update::NewMessage(message) = update else { continue };
+        let Update::NewMessage(message) = update else {
+            continue;
+        };
 
         // Roll over frequency counters when the window expires.
         {
@@ -460,18 +481,21 @@ async fn run_agent_listener_once(
             }
         }
 
-        let (text, is_private, peer_bare_id) = match filter::filter_message(&message, &cfg, listener_started_at) {
-            filter::FilterDecision::Skip(_) => continue,
-            filter::FilterDecision::Handle { text, is_private, peer_bare_id } => {
-                (text, is_private, Some(peer_bare_id))
-            }
-        };
+        let (text, is_private, peer_bare_id) =
+            match filter::filter_message(&message, &cfg, listener_started_at) {
+                filter::FilterDecision::Skip(_) => continue,
+                filter::FilterDecision::Handle {
+                    text,
+                    is_private,
+                    peer_bare_id,
+                } => (text, is_private, Some(peer_bare_id)),
+            };
 
         // Use the agent's own identity — no longer falls back to persona.yaml.
         let persona_name = agent_cfg.identity.name.as_str();
-        let voice        = agent_cfg.response_style.voice.as_str();
-        let ack_prefix   = agent_cfg.response_style.ack_prefix.as_str();
-        let compliance   = agent_cfg.response_style.compliance_line.as_str();
+        let voice = agent_cfg.response_style.voice.as_str();
+        let ack_prefix = agent_cfg.response_style.ack_prefix.as_str();
+        let compliance = agent_cfg.response_style.compliance_line.as_str();
         let mut should_record_ai_decision = false;
 
         // ── Per-agent objective matching ──────────────────────────────────────
@@ -480,7 +504,9 @@ async fn run_agent_listener_once(
         // If no objectives are configured, all messages are treated equally.
         let objective_match: Option<String> = if !agent_cfg.objectives.is_empty() {
             let lower = text.to_lowercase();
-            agent_cfg.objectives.iter()
+            agent_cfg
+                .objectives
+                .iter()
                 .find(|obj| lower.contains(&obj.to_lowercase()))
                 .cloned()
         } else {
@@ -491,7 +517,6 @@ async fn run_agent_listener_once(
         }
 
         if cfg.auto_reply_enabled {
-
             let reply_plan = handler::prepare_reply_plan(
                 &text,
                 peer_bare_id,
@@ -502,7 +527,7 @@ async fn run_agent_listener_once(
                 tracker,
                 &cfg,
                 Some(agent_cfg.disabled_skills.as_slice()), // per-agent skill blacklist gating
-                Some(agent_cfg.id.as_str()), // per-agent memory isolation
+                Some(agent_cfg.id.as_str()),                // per-agent memory isolation
                 |topic, url| {
                     let adk_tracker = tracker.clone();
                     let notify_handle = handle.clone();
@@ -510,9 +535,17 @@ async fn run_agent_listener_once(
                     async move {
                         let notify_peer = notify_peer_fut.await;
                         tokio::spawn(async move {
-                            let task = crate::agents::research_agent::run_research_via_adk_with_tracker(topic, url, Some(adk_tracker)).await;
+                            let task =
+                                crate::agents::research_agent::run_research_via_adk_with_tracker(
+                                    topic,
+                                    url,
+                                    Some(adk_tracker),
+                                )
+                                .await;
                             if task.status == crate::researcher::ResearchStatus::Done {
-                                if let (Some(ref report), Some(peer)) = (&task.final_report, notify_peer) {
+                                if let (Some(ref report), Some(peer)) =
+                                    (&task.final_report, notify_peer)
+                                {
                                     let summary: String = report.chars().take(500).collect();
                                     let msg = format!("✅ 調研完成：{}\n\n{}", task.topic, summary);
                                     let notify_client = Client::new(notify_handle);
@@ -528,7 +561,9 @@ async fn run_agent_listener_once(
 
             let mut chat_request = reply_plan
                 .router_chat_request
-                .and_then(|v| serde_json::from_value::<crate::agents::chat_agent::ChatRequest>(v).ok())
+                .and_then(|v| {
+                    serde_json::from_value::<crate::agents::chat_agent::ChatRequest>(v).ok()
+                })
                 .unwrap_or_else(|| crate::agents::chat_agent::ChatRequest {
                     user_text: text.clone(),
                     execution_result: None,
@@ -601,15 +636,26 @@ async fn run_agent_listener_once(
                     });
                     sirin_log!("[telegram/{agent_id}] 草稿已保存，等待人工確認");
                 } else {
-                    reply::send_final_reply(&client, &message, is_private, final_reply.as_str()).await;
+                    reply::send_final_reply(&client, &message, is_private, final_reply.as_str())
+                        .await;
                     sent_this_hour += 1;
                     sent_this_day += 1;
                 }
-                reply::persist_reply_context(&text, &final_reply, peer_bare_id, Some(agent_cfg.id.as_str()));
+                reply::persist_reply_context(
+                    &text,
+                    &final_reply,
+                    peer_bare_id,
+                    Some(agent_cfg.id.as_str()),
+                );
             }
         }
 
-        reply::record_ai_decision_if_needed(tracker, persona_name, &text, should_record_ai_decision);
+        reply::record_ai_decision_if_needed(
+            tracker,
+            persona_name,
+            &text,
+            should_record_ai_decision,
+        );
         // Record objective match as a separate high-priority task entry.
         if let Some(ref obj) = objective_match {
             let entry = crate::persona::TaskEntry::system_event(
@@ -652,7 +698,9 @@ pub async fn run_agent_listener(
                 // Silent retry for unauthorized sessions — status visible in UI.
             }
             Err(e) => {
-                sirin_log!("[telegram/{agent_id}] Listener error: {e}; retrying in {backoff_secs}s");
+                sirin_log!(
+                    "[telegram/{agent_id}] Listener error: {e}; retrying in {backoff_secs}s"
+                );
                 auth.set_error(e.to_string());
             }
         }
@@ -668,7 +716,9 @@ pub async fn run_agent_listener(
         let jitter = (std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
-            .subsec_millis() % 5000) as u64 / 1000; // 0–4s jitter
+            .subsec_millis()
+            % 5000) as u64
+            / 1000; // 0–4s jitter
         backoff_secs = ((backoff_secs * 2) + jitter).min(300);
     }
 }
@@ -716,7 +766,9 @@ pub async fn run_listener(tracker: TaskTracker, auth: TelegramAuthState) {
         let jitter = (std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
-            .subsec_millis() % 5000) as u64 / 1000; // 0–4s jitter
+            .subsec_millis()
+            % 5000) as u64
+            / 1000; // 0–4s jitter
         backoff_secs = ((backoff_secs * 2) + jitter).min(300);
     }
 }

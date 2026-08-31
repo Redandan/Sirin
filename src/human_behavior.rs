@@ -26,7 +26,11 @@ pub struct DelayDecision {
 
 impl DelayDecision {
     fn skip(reason: impl Into<String>) -> Self {
-        Self { should_reply: false, delay_secs: 0, reason: reason.into() }
+        Self {
+            should_reply: false,
+            delay_secs: 0,
+            reason: reason.into(),
+        }
     }
     fn send_after(delay_secs: u64) -> Self {
         Self {
@@ -78,10 +82,7 @@ pub fn compute_delay(
         // Check work day (number_from_monday: Mon=1 … Sun=7).
         let weekday_num = local.weekday().number_from_monday() as u8;
         if !sched.work_days.contains(&weekday_num) {
-            return DelayDecision::skip(format!(
-                "非工作日（週{}）",
-                weekday_label(weekday_num)
-            ));
+            return DelayDecision::skip(format!("非工作日（週{}）", weekday_label(weekday_num)));
         }
 
         let current_hm = hhmm(local.hour(), local.minute());
@@ -140,7 +141,9 @@ fn format_hhmm(v: u32) -> String {
     format!("{:02}:{:02}", v / 100, v % 100)
 }
 
-fn hhmm(h: u32, m: u32) -> u32 { h * 100 + m }
+fn hhmm(h: u32, m: u32) -> u32 {
+    h * 100 + m
+}
 
 fn weekday_label(n: u8) -> &'static str {
     match n {

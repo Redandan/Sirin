@@ -21,8 +21,10 @@ blocked_url_patterns:
 fixture:
   setup:
     - {action: "wait", target: "3500"}
+    - {action: "dismiss_passkey_prompt"}
+    - {action: "wait", target: "1000"}
     - {action: "enable_a11y"}
-    - {action: "wait", target: "1500"}
+    - {action: "wait_for_ax_ready", min_nodes: 10, timeout_ms: 10000}
 
 goal: |
   目標：驗證買家「商品瀏覽→詳情返回→再次進詳情→購買到確認頁」流程，且不真的下單。
@@ -44,7 +46,7 @@ goal: |
   12. shadow_click role=button name_regex="^購買$|立即購買|確認購買"
   13. wait 2200
   14. eval target="window.location.href"（記錄 URL）
-  15. shadow_dump（確認有「確認購買 USDT」或「確認購買」按鈕）
+  15. shadow_dump（確認有「確認購買 THB/USDT」或「確認購買」按鈕）
   16. done=true
 
   強約束：
@@ -57,7 +59,7 @@ success_criteria:
   - "步驟 4 或步驟 10 的 URL 至少一次包含 #/products/"
   - "步驟 7 的 URL 回到 #/home 或商品列表路由"
   - "步驟 14 的 URL 包含 #/purchase-confirm"
-  - "步驟 15 可見『確認購買』按鈕（可含 USDT 字樣）"
+  - "步驟 15 可見『確認購買』按鈕（可含 THB 或 USDT 字樣）"
   - "流程未執行最終下單"
 
-tags: [agora, regression, c2c, buyer, navigation, checkout, dry-run]
+tags: [agora, regression, obsolete, c2c, buyer, navigation, checkout, dry-run]

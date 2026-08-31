@@ -214,22 +214,22 @@ mod tests {
 
     #[test]
     fn code_fence_language_maps_known_extensions() {
-        assert_eq!(code_fence_language("src/main.rs"),       "rust");
-        assert_eq!(code_fence_language("Cargo.toml"),         "toml");
-        assert_eq!(code_fence_language("build.ts"),           "ts");
-        assert_eq!(code_fence_language("App.tsx"),            "tsx");
-        assert_eq!(code_fence_language("index.js"),           "javascript");
-        assert_eq!(code_fence_language("App.jsx"),            "jsx");
-        assert_eq!(code_fence_language("config.json"),        "json");
-        assert_eq!(code_fence_language("doc.yaml"),           "yaml");
-        assert_eq!(code_fence_language("doc.yml"),            "yaml");
+        assert_eq!(code_fence_language("src/main.rs"), "rust");
+        assert_eq!(code_fence_language("Cargo.toml"), "toml");
+        assert_eq!(code_fence_language("build.ts"), "ts");
+        assert_eq!(code_fence_language("App.tsx"), "tsx");
+        assert_eq!(code_fence_language("index.js"), "javascript");
+        assert_eq!(code_fence_language("App.jsx"), "jsx");
+        assert_eq!(code_fence_language("config.json"), "json");
+        assert_eq!(code_fence_language("doc.yaml"), "yaml");
+        assert_eq!(code_fence_language("doc.yml"), "yaml");
     }
 
     #[test]
     fn code_fence_language_falls_back_to_text() {
-        assert_eq!(code_fence_language("README.md"),  "text");
-        assert_eq!(code_fence_language("LICENSE"),    "text");
-        assert_eq!(code_fence_language(""),           "text");
+        assert_eq!(code_fence_language("README.md"), "text");
+        assert_eq!(code_fence_language("LICENSE"), "text");
+        assert_eq!(code_fence_language(""), "text");
         assert_eq!(code_fence_language("file.unknown"), "text");
     }
 

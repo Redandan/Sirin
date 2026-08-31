@@ -19,7 +19,10 @@ use crate::persona::{TaskEntry, TaskTracker};
 use crate::researcher::{self, ResearchStatus};
 use crate::sirin_log;
 
-use candidates::{autonomous_max_concurrent, autonomous_max_per_cycle, derive_research_plan, self_assign_candidates};
+use candidates::{
+    autonomous_max_concurrent, autonomous_max_per_cycle, derive_research_plan,
+    self_assign_candidates,
+};
 
 // ── Constants / env ──────────────────────────────────────────────────────────
 

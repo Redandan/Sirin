@@ -60,7 +60,7 @@ impl AgentContext {
             tools,
             metadata: HashMap::new(),
             http: shared_http(),
-            llm:  shared_llm(),
+            llm: shared_llm(),
             llm_caller,
             tracker: None,
             trace: Arc::new(Mutex::new(ExecutionTrace::default())),

@@ -15,7 +15,6 @@ use super::{
     research_agent::ResearchRequest,
 };
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouterRequest {
     pub user_text: String,
@@ -383,7 +382,10 @@ mod tests {
             classify_route("幫我修改 src/llm.rs 的 error handling"),
             RouteTarget::LargeModel
         );
-        assert_eq!(classify_route("幫我重構 router_agent"), RouteTarget::LargeModel);
+        assert_eq!(
+            classify_route("幫我重構 router_agent"),
+            RouteTarget::LargeModel
+        );
         assert_eq!(
             classify_route("implement a new feature"),
             RouteTarget::LargeModel
@@ -427,7 +429,10 @@ mod tests {
         );
         // Hardcoded skills removed — recommended_skills now reflect YAML-defined skills only.
         // Assert the field exists and is an array; specific IDs are YAML-driven.
-        assert!(output.get("recommended_skills").and_then(Value::as_array).is_some());
+        assert!(output
+            .get("recommended_skills")
+            .and_then(Value::as_array)
+            .is_some());
     }
 
     #[tokio::test]
@@ -469,6 +474,9 @@ mod tests {
         .await
         .expect("router should succeed");
 
-        assert_eq!(output.get("route").and_then(Value::as_str), Some("large_model"));
+        assert_eq!(
+            output.get("route").and_then(Value::as_str),
+            Some("large_model")
+        );
     }
 }

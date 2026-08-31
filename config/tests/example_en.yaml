@@ -14,4 +14,4 @@ success_criteria:
   - "Page displays 'Example Domain' as a heading"
   - "URL is on example.com"
 
-tags: [smoke, docs, en]
+tags: [smoke, obsolete, docs, en]

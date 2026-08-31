@@ -59,8 +59,12 @@ fn check_and_mark(test_id: &str) -> bool {
 }
 
 fn telegram_creds() -> Option<(String, String)> {
-    let token = std::env::var("SIRIN_NOTIFY_BOT_TOKEN").ok().filter(|t| !t.is_empty())?;
-    let chat_id = std::env::var("SIRIN_NOTIFY_CHAT_ID").ok().filter(|c| !c.is_empty())?;
+    let token = std::env::var("SIRIN_NOTIFY_BOT_TOKEN")
+        .ok()
+        .filter(|t| !t.is_empty())?;
+    let chat_id = std::env::var("SIRIN_NOTIFY_CHAT_ID")
+        .ok()
+        .filter(|c| !c.is_empty())?;
     Some((token, chat_id))
 }
 
@@ -90,10 +94,10 @@ pub fn notify_failure(test_name: &str, reason: &str, duration_ms: u64) {
             "[notify] dedup: skipping repeat failure for '{test_name}'");
         return;
     }
-    let Some((token, chat_id)) = telegram_creds() else { return };
-    let msg = format!(
-        "Test FAILED: {test_name} | {reason} | Duration: {duration_ms}ms"
-    );
+    let Some((token, chat_id)) = telegram_creds() else {
+        return;
+    };
+    let msg = format!("Test FAILED: {test_name} | {reason} | Duration: {duration_ms}ms");
     spawn_send(token, chat_id, msg);
 }
 
@@ -112,8 +116,12 @@ pub struct BatchResultLine<'a> {
 /// of silence.  Does not consult the dedup map (the digest itself is
 /// strictly one-per-batch by construction).
 pub fn notify_batch_complete(results: &[BatchResultLine<'_>]) {
-    if results.is_empty() { return; }
-    let Some((token, chat_id)) = telegram_creds() else { return };
+    if results.is_empty() {
+        return;
+    }
+    let Some((token, chat_id)) = telegram_creds() else {
+        return;
+    };
 
     let total = results.len();
     let failed: Vec<&BatchResultLine<'_>> = results.iter().filter(|r| !r.passed).collect();
@@ -124,12 +132,14 @@ pub fn notify_batch_complete(results: &[BatchResultLine<'_>]) {
         fail = failed.len()
     );
     if !failed.is_empty() {
-        let names: Vec<String> = failed.iter().take(10).map(|r| {
-            match r.reason {
+        let names: Vec<String> = failed
+            .iter()
+            .take(10)
+            .map(|r| match r.reason {
                 Some(why) => format!("{} ({})", r.test_id, why),
-                None      => r.test_id.to_string(),
-            }
-        }).collect();
+                None => r.test_id.to_string(),
+            })
+            .collect();
         msg.push_str("\nFailed: ");
         msg.push_str(&names.join(", "));
         if failed.len() > 10 {
@@ -146,11 +156,14 @@ pub fn notify_batch_complete(results: &[BatchResultLine<'_>]) {
 /// at all, so callers can skip empty TG sends.
 pub fn format_weekly_digest() -> Option<String> {
     let stats = crate::test_runner::store::all_test_stats();
-    if stats.is_empty() { return None; }
+    if stats.is_empty() {
+        return None;
+    }
     let total = stats.len();
     let flaky_count = stats.iter().filter(|s| s.is_flaky).count();
     let avg_pass: f64 = stats.iter().map(|s| s.pass_rate_7d).sum::<f64>() / total as f64;
-    let worst: Vec<&crate::test_runner::store::TestStats> = stats.iter()
+    let worst: Vec<&crate::test_runner::store::TestStats> = stats
+        .iter()
         .filter(|s| s.pass_rate_7d < 0.7)
         .take(3)
         .collect();
@@ -178,7 +191,9 @@ pub fn format_weekly_digest() -> Option<String> {
 /// SIRIN_NOTIFY_CHAT_ID are unset.  Caller decides scheduling (no cron
 /// framework wired here yet — see Issue #35 follow-up).
 pub fn weekly_test_digest() {
-    let Some(msg) = format_weekly_digest() else { return; };
+    let Some(msg) = format_weekly_digest() else {
+        return;
+    };
     let token = match std::env::var("SIRIN_NOTIFY_BOT_TOKEN") {
         Ok(t) if !t.is_empty() => t,
         _ => return,
@@ -237,8 +252,16 @@ mod tests {
     #[test]
     fn test_batch_digest_no_creds_no_panic() {
         let lines = vec![
-            BatchResultLine { test_id: "a", passed: true,  reason: None },
-            BatchResultLine { test_id: "b", passed: false, reason: Some("UiBug") },
+            BatchResultLine {
+                test_id: "a",
+                passed: true,
+                reason: None,
+            },
+            BatchResultLine {
+                test_id: "b",
+                passed: false,
+                reason: Some("UiBug"),
+            },
         ];
         notify_batch_complete(&lines);
     }

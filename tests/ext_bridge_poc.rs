@@ -45,10 +45,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::{
-    Router,
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
     response::IntoResponse,
     routing::get,
+    Router,
 };
 use futures_util::SinkExt;
 use serde_json::{json, Value};
@@ -56,17 +56,14 @@ use tokio_tungstenite::tungstenite::protocol::Message as TMsg;
 
 #[derive(Default, Debug, Clone)]
 struct Counters {
-    events:        u64,
-    last_url:      Option<String>,
+    events: u64,
+    last_url: Option<String>,
     last_event_ms: Option<u128>,
 }
 
 type SharedCounters = Arc<Mutex<Counters>>;
 
-async fn ws_handler(
-    ws:       WebSocketUpgrade,
-    counters: SharedCounters,
-) -> impl IntoResponse {
+async fn ws_handler(ws: WebSocketUpgrade, counters: SharedCounters) -> impl IntoResponse {
     ws.on_upgrade(move |sock| handle_socket(sock, counters))
 }
 
@@ -130,7 +127,9 @@ async fn ext_bridge_smoke_protocol_roundtrip() {
 
     let t0 = Instant::now();
     for ev in &events {
-        ws.send(TMsg::Text(ev.to_string().into())).await.expect("send");
+        ws.send(TMsg::Text(ev.to_string().into()))
+            .await
+            .expect("send");
     }
     // Drain server-side.  100ms is generous on localhost.
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -144,9 +143,15 @@ async fn ext_bridge_smoke_protocol_roundtrip() {
     eprintln!("\n[POC METRICS — smoke]");
     eprintln!("  events_sent:    {}", events.len());
     eprintln!("  events_seen:    {}", c.events);
-    eprintln!("  miss_rate:      {:.0}%", 100.0 * (1.0 - c.events as f64 / events.len() as f64));
+    eprintln!(
+        "  miss_rate:      {:.0}%",
+        100.0 * (1.0 - c.events as f64 / events.len() as f64)
+    );
     eprintln!("  total_ms:       {total_ms}");
-    eprintln!("  per_event_ms:   ~{:.2}", total_ms as f64 / events.len() as f64);
+    eprintln!(
+        "  per_event_ms:   ~{:.2}",
+        total_ms as f64 / events.len() as f64
+    );
     eprintln!("  staleness_rate: n/a (smoke — no CDP comparison; future work)");
     eprintln!();
 
@@ -165,7 +170,9 @@ async fn ext_bridge_live_smoke() {
         return;
     }
     let port: u16 = std::env::var("SIRIN_RPC_PORT")
-        .ok().and_then(|s| s.parse().ok()).unwrap_or(7700);
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(7700);
     let url = format!("ws://127.0.0.1:{port}/ext/ws");
 
     let (mut ws, _resp) = match tokio_tungstenite::connect_async(&url).await {
@@ -181,7 +188,9 @@ async fn ext_bridge_live_smoke() {
         "url": "https://poc.example.com/issue-52",
         "ts": chrono::Utc::now().timestamp_millis(),
     });
-    ws.send(TMsg::Text(evt.to_string().into())).await.expect("live send");
+    ws.send(TMsg::Text(evt.to_string().into()))
+        .await
+        .expect("live send");
     let _ = ws.close(None).await;
     eprintln!("[live] sent synthetic nav to {url}; check `diagnose` MCP tool for ext_status.event_count++");
 }

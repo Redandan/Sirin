@@ -60,4 +60,4 @@ success_criteria:
   - "結帳確認頁有「確認購買 USDT X」按鈕"
   - "成功點擊確認購買（無論跳轉到哪個頁面都算成功）"
 
-tags: [c2c, buyer, order, place-order, regression, core-flow]
+tags: [c2c, buyer, order, place-order, regression, core-flow, mutating, requires-operator-approval]

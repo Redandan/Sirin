@@ -15,9 +15,10 @@
 //! instead of constructing a new one.
 
 use std::fs::{self, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::de::DeserializeOwned;
@@ -31,6 +32,53 @@ pub enum JsonlError {
     Json(#[from] serde_json::Error),
     #[error("lock poisoned")]
     Lock,
+}
+
+/// Persist a complete JSONL snapshot without exposing a partially-written file.
+///
+/// The temporary file lives beside the destination so the final rename stays
+/// on one filesystem. A unique name also prevents independent JSONL stores in
+/// the same process from contending on a shared `.tmp` path.
+pub(crate) fn atomic_write_jsonl<T: Serialize>(
+    path: &Path,
+    entries: &[T],
+) -> Result<(), JsonlError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+    let sequence = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("snapshot.jsonl");
+    let temp_path = path.with_file_name(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        sequence
+    ));
+
+    let result = (|| {
+        let file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp_path)?;
+        let mut output = BufWriter::new(file);
+        for entry in entries {
+            writeln!(output, "{}", serde_json::to_string(entry)?)?;
+        }
+        output.flush()?;
+        output.get_ref().sync_all()?;
+        drop(output);
+        fs::rename(&temp_path, path)?;
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    result
 }
 
 /// A typed JSONL log file.  Cheap to clone (shares inner mutex + path).
@@ -185,23 +233,7 @@ where
     }
 
     fn atomic_write_unlocked(&self, entries: &[T]) -> Result<(), JsonlError> {
-        if let Some(parent) = self.inner.path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let tmp = self.inner.path.with_extension("jsonl.tmp");
-        {
-            let mut file = OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(&tmp)?;
-            for entry in entries {
-                let line = serde_json::to_string(entry)?;
-                writeln!(file, "{line}")?;
-            }
-        }
-        fs::rename(&tmp, &self.inner.path)?;
-        Ok(())
+        atomic_write_jsonl(&self.inner.path, entries)
     }
 }
 
@@ -302,6 +334,49 @@ mod tests {
         let all = log.read_all().unwrap();
         assert_eq!(all[0].value, 10);
         assert_eq!(all[1].value, 20);
+        let parent = p.parent().unwrap();
+        let file_name = p.file_name().unwrap().to_string_lossy();
+        let temp_prefix = format!(".{file_name}.");
+        assert!(
+            fs::read_dir(parent).unwrap().all(|entry| {
+                !entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(&temp_prefix)
+            }),
+            "successful rewrite should not leave a temporary snapshot"
+        );
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn independent_snapshot_writers_use_distinct_temp_files() {
+        use std::sync::Barrier;
+
+        let p = tmp_path("parallel_snapshots");
+        let _ = fs::remove_file(&p);
+        let barrier = Arc::new(Barrier::new(2));
+        let mut workers = Vec::new();
+        for value in [1, 2] {
+            let path = p.clone();
+            let barrier = Arc::clone(&barrier);
+            workers.push(std::thread::spawn(move || {
+                let entries = vec![TestEntry {
+                    id: format!("writer-{value}"),
+                    value,
+                }];
+                barrier.wait();
+                atomic_write_jsonl(&path, &entries)
+            }));
+        }
+
+        for worker in workers {
+            worker.join().expect("snapshot writer panicked").unwrap();
+        }
+        let entries = JsonlLog::<TestEntry>::new(&p).read_all().unwrap();
+        assert_eq!(entries.len(), 1, "one complete snapshot should win");
+        assert!(matches!(entries[0].value, 1 | 2));
         let _ = fs::remove_file(&p);
     }
 

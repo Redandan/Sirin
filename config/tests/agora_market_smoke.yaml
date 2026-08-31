@@ -1,10 +1,12 @@
+# yaml-language-server: $schema=../test-schema.json
 id: agora_market_smoke
-name: "Agora Market — Flutter PWA smoke test v4"
+name: "Agora Market — deterministic Flutter PWA smoke test"
 url: "https://redandan.github.io/"
 
-max_iterations: 8
-timeout_secs: 180
+max_iterations: 4
+timeout_secs: 90
 max_retries: 1  # H5 Flutter 偶發 Chrome 初始化延遲，自動重試一次
+fixture_only: true
 
 # H5 mobile viewport — AgoraMarket 會員端是手機版 App，必須用手機 viewport 測試
 viewport:
@@ -13,25 +15,32 @@ viewport:
   scale: 2.0
   mobile: true
 
+fixture:
+  setup:
+    - {action: "clear_state"}
+    - {action: "goto", target: "https://redandan.github.io/"}
+    - {action: "wait", target: "8000"}
+    - {action: "dismiss_passkey_prompt"}
+    - {action: "enable_a11y"}
+    - {action: "wait_for_ax_ready", min_nodes: 10, timeout_ms: 10000}
+    - {action: "assert_url_matches", target: "/#\\/(home|login)/"}
+    - {action: "assert_ax_contains", target: "Agora Market"}
+  cleanup:
+    - {action: "clear_state"}
+
 goal: |
-  測試 Agora Market Flutter PWA 能正常載入並顯示頁面內容。
+  測試 Agora Market Flutter PWA 能正常載入並顯示首頁商城內容。
 
-  ⚠️ Flutter CanvasKit app：DOM 是空的（只有 <flt-glass-pane>）。
-  ⚠️ 必須用 screenshot_analyze 讓 vision LLM 看截圖判斷內容。
-  ⚠️ 禁止用 read/exists/eval 判斷文字（DOM 無內容）。
-  ⚠️ 這是 smoke test，僅需三步，禁止探索其他功能或做 enable_a11y、shadow_dump、ax_find。
+  ⚠️ fixture_only=true；fixture.setup 全部成功即通過，不進 LLM ReAct loop。
+  ⚠️ Flutter CanvasKit app：使用 enable_a11y + AX assertions 判斷首頁是否真的載入。
+  ⚠️ 這是 smoke test，只驗證 PWA 能從 root route 載入到 home 或 login surface，並有可見 Flutter/AX 內容。
 
-  步驟（只有這五步，不能加其他步驟）：
-  1. clear_state（清除 session 確保從一致的起始狀態開始）
-  2. wait 8000（等 Flutter bootstrap 完成 + 首次 paint）
-  3. screenshot_analyze "頁面是否顯示 Agora Market 商城內容？看到登入表單或商品列表或品牌標題任一即可。有實際內容（非全黑非全白）？"
-  4. 若步驟 3 截圖全黑或內容未載入：wait 4000 → screenshot_analyze "現在頁面有內容嗎？"
-  5. done=true
-
-  注意：不管 screenshot_analyze 的結果如何，都必須 done=true，讓 success_criteria 決定是否通過。
+  Historical note: the previous vision-only ReAct goal could see the page content
+  and still time out before emitting done=true. This deterministic fixture keeps
+  the same smoke boundary without spending LLM turns.
 
 success_criteria:
-  - "Vision 確認頁面有實際 Flutter 商城內容（登入表單、商品列表、或品牌標題均可）"
-  - "Vision 確認頁面有實際內容（不是全黑或全白）"
+  - "URL reaches #/home or #/login after root route load"
+  - "AX tree contains Agora Market"
 
-tags: [smoke, flutter, agora, vision, v4]
+tags: [smoke, flutter, agora, deterministic, fixture]
