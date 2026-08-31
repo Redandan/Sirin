@@ -173,7 +173,11 @@ function Get-ExpectedToolNames {
         throw "committed MCP tool baseline is missing: $toolBaseline"
     }
     try {
-        $names = @(Get-Content -Raw -LiteralPath $toolBaseline | ConvertFrom-Json)
+        $parsed = Get-Content -Raw -LiteralPath $toolBaseline | ConvertFrom-Json
+        # Windows PowerShell 5.1 emits a top-level JSON array as one array
+        # object. Re-emit its contents so both 5.1 and PowerShell 7 count the
+        # baseline names consistently.
+        $names = @($parsed | ForEach-Object { $_ })
     }
     catch {
         throw "committed MCP tool baseline is invalid JSON: $($_.Exception.Message)"
