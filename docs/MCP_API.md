@@ -985,7 +985,7 @@ titles, credentials, or command output. `latestUserTurnKey` and
 `unfinishedScopeKey` must be opaque hashes/cursors, not natural-language text.
 
 ```json
-{"name":"codex_supervisor_report","arguments":{"threadId":"01a...","hostId":"local","latestUserTurnKey":"turn-a1","unfinishedScopeKey":"scope-a1","latestTurnStatus":"INTERRUPTED","objectiveUnfinished":true,"contract":{"intent":"CHANGE","authorizedActions":["READ","EDIT","TEST"]},"coverage":[{"surface":"CODE","status":"PASS","required":true},{"surface":"WEB_UI","status":"MISSING_PROOF","required":true,"humanRequired":false}]}}
+{"name":"codex_supervisor_report","arguments":{"threadId":"01a...","hostId":"local","listingCursorKey":"list-1788135629","latestUserTurnKey":"turn-a1","unfinishedScopeKey":"scope-a1","latestTurnStatus":"INTERRUPTED","objectiveUnfinished":true,"contract":{"intent":"CHANGE","authorizedActions":["READ","EDIT","TEST"]},"coverage":[{"surface":"CODE","status":"PASS","required":true},{"surface":"WEB_UI","status":"MISSING_PROOF","required":true,"humanRequired":false}]}}
 ```
 
 Read the local dashboard state with:
@@ -994,22 +994,36 @@ Read the local dashboard state with:
 {"name":"codex_supervisor_snapshot","arguments":{}}
 ```
 
-Reports older than 15 minutes remain available to the local ledger for
-retention and dedupe, but are excluded from the current snapshot. With no
-fresh reports, the snapshot returns `WAITING_FOR_HEARTBEAT` instead of
-presenting stale classifications as current evidence.
+The expected cadence is 30 minutes plus a 15-minute jitter grace. Reports
+older than 45 minutes remain available to the local ledger for retention and
+dedupe, but are excluded from current evidence. With no fresh reports, the
+snapshot returns `WAITING_FOR_HEARTBEAT` instead of presenting stale
+classifications as current evidence. `nextExpectedScanAtMs`, `scanStaleAtMs`,
+and `scanFresh` make that boundary explicit.
+
+The snapshot also returns at most 20 privacy-safe `knownTasks`. Each entry is
+an unchanged-skip hint containing only a terminal `COMPLETED` or
+`WAITING_CORRECT_TIME` task's `threadId`, opaque `listingCursorKey`,
+classification, and report time. A heartbeat may skip a deep read only when
+the current `list_threads` cursor exactly matches that stored key.
 
 Every scan also reports through this same tool with the reserved
 `threadId=sirin-supervisor-scan`. A successful empty scan uses
 `latestTurnStatus=COMPLETED` and produces `HEALTHY_IDLE`; the scan record is
 freshness metadata only, is hidden from the task list, and can never be claimed.
 Failed scans use `FAILED` plus a stable `readErrorCode` and remain fail closed.
+Count-only `scanMetrics` can record `listedCount`, `strongCandidateCount`,
+`compactProbeCount`, `deepReadCount` (maximum 2), and
+`skippedUnchangedCount`. No task titles, summaries, prompts, messages, or tool
+output are accepted in these fields.
 
 ### `codex_supervisor_claim` / `codex_supervisor_complete_action`
 
 `codex_supervisor_claim` reserves at most one fresh, dedupe-safe
 `RECOVERABLE_INTERRUPTION` for ten minutes and returns a scope-preserving
 continuation prompt. It does not call Codex or grant approval.
+`NO_ACTION` and `CLAIM_ALREADY_ACTIVE` are read-only outcomes and do not
+rewrite the ledger.
 
 ```json
 {"name":"codex_supervisor_claim","arguments":{}}

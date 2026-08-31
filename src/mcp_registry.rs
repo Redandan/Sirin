@@ -195,7 +195,7 @@ pub fn is_populated() -> bool {
 fn seed_default(m: &mut RegistryMap) {
     m.insert("codex_supervisor_snapshot", ToolDef {
         name: "codex_supervisor_snapshot",
-        description: "讀取 Sirin 本機 Codex 工作督導快照。顯示證據分類、驗收面缺口、可安全續推候選與人工介入項；不讀 prompt/回覆全文、不傳送訊息、不授權、不 fork。",
+        description: "讀取 Sirin 本機 Codex 工作督導快照。顯示證據分類、驗收面缺口、掃描計數與可安全跳過的未變更終態 task key；不讀 prompt/回覆全文、不傳送訊息、不授權、不 fork。",
         input_schema: json!({"type": "object", "properties": {}}),
         handler: ToolHandler::SyncJson(crate::codex_supervisor::call_snapshot),
     });
@@ -208,6 +208,7 @@ fn seed_default(m: &mut RegistryMap) {
             "properties": {
                 "threadId": {"type": "string", "description": "Codex task/thread id；掃描心跳固定使用 sirin-supervisor-scan"},
                 "hostId": {"type": "string", "description": "可選：Codex host id"},
+                "listingCursorKey": {"type": "string", "description": "可選：由 list_threads updatedAt/cursor 產生的 opaque key，用於跳過未變更終態 task"},
                 "latestUserTurnKey": {"type": "string", "description": "最新 user turn 的 hash/cursor；禁止放原文"},
                 "unfinishedScopeKey": {"type": "string", "description": "未完成範圍的 hash/key；禁止放原文"},
                 "latestTurnStatus": {"type": "string", "enum": ["ACTIVE", "COMPLETED", "FAILED", "INTERRUPTED", "WAITING", "UNKNOWN"]},
@@ -249,6 +250,17 @@ fn seed_default(m: &mut RegistryMap) {
                             "observedAtMs": {"type": "integer"}
                         },
                         "required": ["surface", "status", "required"]
+                    }
+                },
+                "scanMetrics": {
+                    "type": "object",
+                    "description": "只供 sirin-supervisor-scan 使用的 count-only telemetry",
+                    "properties": {
+                        "listedCount": {"type": "integer", "minimum": 0, "maximum": 500},
+                        "strongCandidateCount": {"type": "integer", "minimum": 0, "maximum": 500},
+                        "compactProbeCount": {"type": "integer", "minimum": 0, "maximum": 500},
+                        "deepReadCount": {"type": "integer", "minimum": 0, "maximum": 2},
+                        "skippedUnchangedCount": {"type": "integer", "minimum": 0, "maximum": 500}
                     }
                 }
             },

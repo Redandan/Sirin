@@ -588,7 +588,7 @@
             <div class="monitor-callout monitor-callout-warning"
                  x-show="aiMonitor.codex_supervisor?.status === 'WAITING_FOR_HEARTBEAT'">
               <strong>等待 Codex heartbeat</strong>
-              <span class="dim small">分類核心已就緒；收到第一份最新回合證據前，不會用 Token 或時間戳猜測任務是否卡住。</span>
+              <span class="dim small">最近掃描已超過 freshness；舊分類仍留在本機 ledger，但不會冒充目前狀態。</span>
             </div>
             <div class="monitor-callout monitor-callout-error"
                  x-show="aiMonitor.codex_supervisor?.status === 'MISSING_PROOF'">
@@ -610,6 +610,7 @@
                   <span>可安全續推</span><span x-text="aiMonitor.codex_supervisor?.actionableCount || 0"></span>
                   <span>需要你</span><span x-text="aiMonitor.codex_supervisor?.userInterventionCount || 0"></span>
                   <span>last scan</span><span x-text="aiMonitor.codex_supervisor?.lastScanAtMs ? (aiMonitor.codex_supervisor.scanStatus + ' · ' + new Date(aiMonitor.codex_supervisor.lastScanAtMs).toLocaleString('zh-TW', { hour12: false })) : 'MISSING_PROOF'"></span>
+                  <span>next due</span><span x-text="aiMonitor.codex_supervisor?.nextExpectedScanAtMs ? new Date(aiMonitor.codex_supervisor.nextExpectedScanAtMs).toLocaleString('zh-TW', { hour12: false }) : 'MISSING_PROOF'"></span>
                   <span>last report</span><span x-text="aiMonitor.codex_supervisor?.lastReportedAtMs ? new Date(aiMonitor.codex_supervisor.lastReportedAtMs).toLocaleString('zh-TW', { hour12: false }) : 'MISSING_PROOF'"></span>
                 </div>
               </div>
@@ -619,9 +620,13 @@
                 <div class="token-hero mono" x-text="(aiMonitor.codex_supervisor?.policy?.scanIntervalSecs || 1800) / 60 + ' min'"></div>
                 <div class="dim small">每輪只深讀強候選，不掃完整歷史</div>
                 <div class="monitor-kv mono small mt-md">
-                  <span>deep reads</span><span x-text="aiMonitor.codex_supervisor?.policy?.deepReadCandidateLimit || 2"></span>
+                  <span>recent tasks</span><span x-text="aiMonitor.codex_supervisor?.policy?.recentThreadLimit || 20"></span>
+                  <span>compact read</span><span x-text="(aiMonitor.codex_supervisor?.policy?.compactReadTurnLimit || 1) + ' turn'"></span>
+                  <span>deep reads</span><span x-text="'max ' + (aiMonitor.codex_supervisor?.policy?.deepReadCandidateLimit || 2)"></span>
                   <span>max continue</span><span x-text="aiMonitor.codex_supervisor?.policy?.maxContinuationsPerScan || 1"></span>
-                  <span>dedupe</span><span x-text="Math.floor((aiMonitor.codex_supervisor?.policy?.dedupeWindowSecs || 21600) / 3600) + ' h'"></span>
+                  <span>freshness</span><span x-text="Math.floor((aiMonitor.codex_supervisor?.policy?.reportStaleSecs || 2700) / 60) + ' min'"></span>
+                  <span>last listed</span><span x-text="aiMonitor.codex_supervisor?.scanMetrics?.listedCount ?? '—'"></span>
+                  <span>skipped same</span><span x-text="aiMonitor.codex_supervisor?.scanMetrics?.skippedUnchangedCount ?? '—'"></span>
                 </div>
               </div>
 
@@ -662,7 +667,14 @@
                   <div class="dim tiny mono" x-show="task.claimActive">CONTINUATION CLAIM ACTIVE</div>
                 </div>
               </template>
-              <div class="card-empty" x-show="(aiMonitor.codex_supervisor?.tasks || []).length === 0">MISSING_PROOF — 尚未收到 Codex heartbeat 回報</div>
+              <div class="card-empty"
+                   x-show="(aiMonitor.codex_supervisor?.tasks || []).length === 0 && aiMonitor.codex_supervisor?.status === 'HEALTHY_IDLE'">
+                本輪有界掃描成功，沒有需要介入的工作
+              </div>
+              <div class="card-empty"
+                   x-show="(aiMonitor.codex_supervisor?.tasks || []).length === 0 && aiMonitor.codex_supervisor?.status !== 'HEALTHY_IDLE'">
+                MISSING_PROOF — 尚無新鮮的工作分類證據
+              </div>
             </div>
 
             <div class="monitor-section-title">

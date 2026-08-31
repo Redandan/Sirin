@@ -22,7 +22,17 @@ const MAX_RECORDS: usize = 100;
 const RECORD_RETENTION_SECS: i64 = 7 * 24 * 60 * 60;
 const DEDUPE_WINDOW_SECS: i64 = 6 * 60 * 60;
 const CLAIM_LEASE_SECS: i64 = 10 * 60;
-const REPORT_STALE_SECS: i64 = 15 * 60;
+const SCAN_INTERVAL_SECS: i64 = 30 * 60;
+const HEARTBEAT_GRACE_SECS: i64 = 15 * 60;
+const REPORT_STALE_SECS: i64 = SCAN_INTERVAL_SECS + HEARTBEAT_GRACE_SECS;
+const RECENT_THREAD_LIMIT: u32 = 20;
+const KNOWN_TASK_LIMIT: usize = 20;
+const COMPACT_READ_TURN_LIMIT: u32 = 1;
+const COMPACT_READ_MAX_CHARS_PER_ITEM: u32 = 1_200;
+const DEEP_READ_CANDIDATE_LIMIT: u32 = 2;
+const DEEP_READ_TURN_LIMIT: u32 = 3;
+const MAX_CONTINUATIONS_PER_SCAN: u32 = 1;
+const MAX_SCAN_COUNT: u32 = 500;
 const MAX_KEY_LEN: usize = 160;
 const SCAN_THREAD_ID: &str = "sirin-supervisor-scan";
 const CONTINUATION_PROMPT: &str = "先重新閱讀本任務的原始對話與最新回合。只延續仍未完成、且原本已獲使用者要求的範圍；不要重做已完成工作，也不得擴大權限。若工作其實已完成、正在等待正確時點，或下一步需要使用者決策、核准、憑證或新增權限，請立即停止並在本任務說明。否則請從最後一個已驗證的進度點繼續，完成必要驗證後交付結果。";
@@ -186,6 +196,21 @@ pub struct TaskContract {
     pub read_only: bool,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanMetrics {
+    #[serde(default)]
+    pub listed_count: u32,
+    #[serde(default)]
+    pub strong_candidate_count: u32,
+    #[serde(default)]
+    pub compact_probe_count: u32,
+    #[serde(default)]
+    pub deep_read_count: u32,
+    #[serde(default)]
+    pub skipped_unchanged_count: u32,
+}
+
 fn default_true() -> bool {
     true
 }
@@ -196,6 +221,11 @@ pub struct TaskEvidenceReport {
     pub thread_id: String,
     #[serde(default)]
     pub host_id: Option<String>,
+    /// Opaque cursor derived from list_threads metadata (normally updatedAt).
+    /// It lets later heartbeats skip unchanged terminal tasks without re-reading
+    /// conversation content.
+    #[serde(default)]
+    pub listing_cursor_key: Option<String>,
     /// Opaque digest/cursor for the latest user turn. Raw message text is rejected.
     pub latest_user_turn_key: String,
     /// Opaque digest for the unfinished scope. Raw task text is not stored.
@@ -240,6 +270,9 @@ pub struct TaskEvidenceReport {
     pub contract: TaskContract,
     #[serde(default)]
     pub coverage: Vec<CoverageEvidence>,
+    /// Count-only telemetry accepted only for the reserved scan heartbeat.
+    #[serde(default)]
+    pub scan_metrics: Option<ScanMetrics>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -297,6 +330,8 @@ struct ScanRecord {
     status: TurnStatus,
     #[serde(default)]
     error_code: Option<String>,
+    #[serde(default)]
+    metrics: ScanMetrics,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -326,7 +361,13 @@ impl Default for SupervisorState {
 #[serde(rename_all = "camelCase")]
 pub struct SupervisorPolicyView {
     pub scan_interval_secs: u64,
+    pub heartbeat_grace_secs: u64,
+    pub recent_thread_limit: u32,
+    pub known_task_limit: u32,
+    pub compact_read_turn_limit: u32,
+    pub compact_read_max_chars_per_item: u32,
     pub deep_read_candidate_limit: u32,
+    pub deep_read_turn_limit: u32,
     pub max_continuations_per_scan: u32,
     pub dedupe_window_secs: u64,
     pub report_stale_secs: u64,
@@ -335,9 +376,15 @@ pub struct SupervisorPolicyView {
 impl Default for SupervisorPolicyView {
     fn default() -> Self {
         Self {
-            scan_interval_secs: 1_800,
-            deep_read_candidate_limit: 2,
-            max_continuations_per_scan: 1,
+            scan_interval_secs: SCAN_INTERVAL_SECS as u64,
+            heartbeat_grace_secs: HEARTBEAT_GRACE_SECS as u64,
+            recent_thread_limit: RECENT_THREAD_LIMIT,
+            known_task_limit: KNOWN_TASK_LIMIT as u32,
+            compact_read_turn_limit: COMPACT_READ_TURN_LIMIT,
+            compact_read_max_chars_per_item: COMPACT_READ_MAX_CHARS_PER_ITEM,
+            deep_read_candidate_limit: DEEP_READ_CANDIDATE_LIMIT,
+            deep_read_turn_limit: DEEP_READ_TURN_LIMIT,
+            max_continuations_per_scan: MAX_CONTINUATIONS_PER_SCAN,
             dedupe_window_secs: DEDUPE_WINDOW_SECS as u64,
             report_stale_secs: REPORT_STALE_SECS as u64,
         }
@@ -387,6 +434,16 @@ pub struct SupervisorTaskView {
     pub last_dispatch_status: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SupervisorKnownTaskView {
+    pub thread_id: String,
+    pub listing_cursor_key: String,
+    pub classification: SupervisorClassification,
+    pub reported_at_ms: i64,
+    pub skip_eligible: bool,
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SupervisorSnapshot {
@@ -395,13 +452,19 @@ pub struct SupervisorSnapshot {
     pub captured_at: String,
     pub last_reported_at_ms: Option<i64>,
     pub last_scan_at_ms: Option<i64>,
+    pub next_expected_scan_at_ms: Option<i64>,
+    pub scan_stale_at_ms: Option<i64>,
+    pub scan_fresh: bool,
     pub scan_status: Option<String>,
     pub scan_error_code: Option<String>,
+    pub scan_metrics: Option<ScanMetrics>,
     pub task_count: usize,
     pub actionable_count: usize,
     pub user_intervention_count: usize,
     pub counts: BTreeMap<String, usize>,
     pub tasks: Vec<SupervisorTaskView>,
+    pub known_task_count: usize,
+    pub known_tasks: Vec<SupervisorKnownTaskView>,
     pub policy: SupervisorPolicyView,
     pub safety: SupervisorSafetyView,
     pub source_error: Option<String>,
@@ -667,6 +730,9 @@ fn validate_key(name: &str, value: &str, allow_empty: bool) -> Result<(), String
 
 fn validate_report(report: &TaskEvidenceReport) -> Result<(), String> {
     validate_key("threadId", &report.thread_id, false)?;
+    if let Some(key) = &report.listing_cursor_key {
+        validate_key("listingCursorKey", key, false)?;
+    }
     validate_key("latestUserTurnKey", &report.latest_user_turn_key, false)?;
     validate_key("unfinishedScopeKey", &report.unfinished_scope_key, true)?;
     if let Some(host_id) = &report.host_id {
@@ -680,6 +746,34 @@ fn validate_report(report: &TaskEvidenceReport) -> Result<(), String> {
     }
     if report.contract.authorized_actions.len() > 16 {
         return Err("authorizedActions accepts at most 16 entries".to_string());
+    }
+    if report.thread_id != SCAN_THREAD_ID && report.scan_metrics.is_some() {
+        return Err("scanMetrics is accepted only for sirin-supervisor-scan".to_string());
+    }
+    if let Some(metrics) = &report.scan_metrics {
+        let counts = [
+            ("listedCount", metrics.listed_count),
+            ("strongCandidateCount", metrics.strong_candidate_count),
+            ("compactProbeCount", metrics.compact_probe_count),
+            ("deepReadCount", metrics.deep_read_count),
+            ("skippedUnchangedCount", metrics.skipped_unchanged_count),
+        ];
+        if let Some((name, _)) = counts.iter().find(|(_, value)| *value > MAX_SCAN_COUNT) {
+            return Err(format!("scanMetrics.{name} must be <= {MAX_SCAN_COUNT}"));
+        }
+        if metrics.strong_candidate_count > metrics.listed_count
+            || metrics.compact_probe_count > metrics.listed_count
+            || metrics.skipped_unchanged_count > metrics.listed_count
+        {
+            return Err(
+                "scanMetrics candidate/probe/skip counts cannot exceed listedCount".to_string(),
+            );
+        }
+        if metrics.deep_read_count > DEEP_READ_CANDIDATE_LIMIT {
+            return Err(format!(
+                "scanMetrics.deepReadCount must be <= {DEEP_READ_CANDIDATE_LIMIT}"
+            ));
+        }
     }
     Ok(())
 }
@@ -762,25 +856,41 @@ fn save_state(path: &Path, state: &SupervisorState) -> Result<(), String> {
     result
 }
 
-fn with_state_mut<T>(
-    apply: impl FnOnce(&mut SupervisorState, i64) -> Result<T, String>,
+fn with_state_change_at<T>(
+    path: &Path,
+    apply: impl FnOnce(&mut SupervisorState, i64) -> Result<(T, bool), String>,
 ) -> Result<T, String> {
     let lock = FILE_LOCK.get_or_init(|| Mutex::new(()));
     let _guard = lock.lock().unwrap_or_else(|error| error.into_inner());
-    let path = state_path();
-    let mut state = load_state(&path)?;
+    let mut state = load_state(path)?;
     let now = now_ms();
+    let record_count_before_prune = state.records.len();
     state.records.retain(|record| {
         now.saturating_sub(record.reported_at_ms) <= RECORD_RETENTION_SECS * 1_000
     });
-    let output = apply(&mut state, now)?;
-    state.updated_at_ms = now;
-    state
-        .records
-        .sort_by_key(|record| Reverse(record.reported_at_ms));
-    state.records.truncate(MAX_RECORDS);
-    save_state(&path, &state)?;
+    let pruned = state.records.len() != record_count_before_prune;
+    let (output, changed) = apply(&mut state, now)?;
+    if changed || pruned {
+        state.updated_at_ms = now;
+        state
+            .records
+            .sort_by_key(|record| Reverse(record.reported_at_ms));
+        state.records.truncate(MAX_RECORDS);
+        save_state(path, &state)?;
+    }
     Ok(output)
+}
+
+fn with_state_change<T>(
+    apply: impl FnOnce(&mut SupervisorState, i64) -> Result<(T, bool), String>,
+) -> Result<T, String> {
+    with_state_change_at(&state_path(), apply)
+}
+
+fn with_state_mut<T>(
+    apply: impl FnOnce(&mut SupervisorState, i64) -> Result<T, String>,
+) -> Result<T, String> {
+    with_state_change(|state, now| apply(state, now).map(|output| (output, true)))
 }
 
 fn apply_dedupe(
@@ -825,6 +935,7 @@ pub(crate) fn call_report(args: Value) -> Result<Value, String> {
                 reported_at_ms: now,
                 status: report.latest_turn_status,
                 error_code: report.read_error_code,
+                metrics: report.scan_metrics.unwrap_or_default(),
             });
             return Ok(json!({
                 "status": "SCAN_RECORDED",
@@ -873,23 +984,26 @@ pub(crate) fn call_claim(args: Value) -> Result<Value, String> {
     if let Some(thread_id) = &requested_thread {
         validate_key("threadId", thread_id, false)?;
     }
-    with_state_mut(|state, now| {
+    with_state_change(|state, now| {
         if let Some(existing) = state
             .records
             .iter()
             .find(|record| record.continuation.has_active_claim(now))
         {
-            return Ok(serde_json::to_value(ContinuationClaimView {
-                status: "CLAIM_ALREADY_ACTIVE".to_string(),
-                claim_id: existing.continuation.claim_id.clone(),
-                thread_id: Some(existing.report.thread_id.clone()),
-                host_id: existing.report.host_id.clone(),
-                fingerprint: existing.continuation.claim_fingerprint.clone(),
-                prompt: None,
-                expires_at_ms: existing.continuation.claim_expires_at_ms,
-                boundary: "At most one continuation may be claimed at a time.".to_string(),
-            })
-            .map_err(|error| format!("encode existing claim: {error}"))?);
+            return Ok((
+                serde_json::to_value(ContinuationClaimView {
+                    status: "CLAIM_ALREADY_ACTIVE".to_string(),
+                    claim_id: existing.continuation.claim_id.clone(),
+                    thread_id: Some(existing.report.thread_id.clone()),
+                    host_id: existing.report.host_id.clone(),
+                    fingerprint: existing.continuation.claim_fingerprint.clone(),
+                    prompt: None,
+                    expires_at_ms: existing.continuation.claim_expires_at_ms,
+                    boundary: "At most one continuation may be claimed at a time.".to_string(),
+                })
+                .map_err(|error| format!("encode existing claim: {error}"))?,
+                false,
+            ));
         }
 
         let candidate = state.records.iter_mut().find(|record| {
@@ -902,18 +1016,21 @@ pub(crate) fn call_claim(args: Value) -> Result<Value, String> {
                 && report_is_fresh(record.reported_at_ms, now)
         });
         let Some(record) = candidate else {
-            return Ok(serde_json::to_value(ContinuationClaimView {
-                status: "NO_ACTION".to_string(),
-                claim_id: None,
-                thread_id: None,
-                host_id: None,
-                fingerprint: None,
-                prompt: None,
-                expires_at_ms: None,
-                boundary: "No fresh, dedupe-safe recoverable interruption is available."
-                    .to_string(),
-            })
-            .map_err(|error| format!("encode empty claim: {error}"))?);
+            return Ok((
+                serde_json::to_value(ContinuationClaimView {
+                    status: "NO_ACTION".to_string(),
+                    claim_id: None,
+                    thread_id: None,
+                    host_id: None,
+                    fingerprint: None,
+                    prompt: None,
+                    expires_at_ms: None,
+                    boundary: "No fresh, dedupe-safe recoverable interruption is available."
+                        .to_string(),
+                })
+                .map_err(|error| format!("encode empty claim: {error}"))?,
+                false,
+            ));
         };
         let claim_material = format!(
             "{}|{}|{now}",
@@ -925,7 +1042,7 @@ pub(crate) fn call_claim(args: Value) -> Result<Value, String> {
         record.continuation.claim_fingerprint = Some(record.decision.fingerprint.clone());
         record.continuation.claimed_at_ms = Some(now);
         record.continuation.claim_expires_at_ms = Some(expires);
-        Ok(serde_json::to_value(ContinuationClaimView {
+        Ok((serde_json::to_value(ContinuationClaimView {
             status: "CLAIMED".to_string(),
             claim_id: Some(claim_id),
             thread_id: Some(record.report.thread_id.clone()),
@@ -935,7 +1052,7 @@ pub(crate) fn call_claim(args: Value) -> Result<Value, String> {
             expires_at_ms: Some(expires),
             boundary: "The claim does not send a message or grant authority. The Codex heartbeat must re-check the target and dispatch with its task tool.".to_string(),
         })
-        .map_err(|error| format!("encode continuation claim: {error}"))?)
+        .map_err(|error| format!("encode continuation claim: {error}"))?, true))
     })
 }
 
@@ -990,6 +1107,32 @@ fn scan_status_label(status: TurnStatus) -> &'static str {
     }
 }
 
+fn unchanged_skip_eligible(classification: SupervisorClassification) -> bool {
+    matches!(
+        classification,
+        SupervisorClassification::Completed | SupervisorClassification::WaitingCorrectTime
+    )
+}
+
+fn known_task_views(records: &[TaskRecord]) -> Vec<SupervisorKnownTaskView> {
+    records
+        .iter()
+        .filter_map(|record| {
+            let listing_cursor_key = record.report.listing_cursor_key.clone()?;
+            unchanged_skip_eligible(record.decision.classification).then(|| {
+                SupervisorKnownTaskView {
+                    thread_id: record.report.thread_id.clone(),
+                    listing_cursor_key,
+                    classification: record.decision.classification,
+                    reported_at_ms: record.reported_at_ms,
+                    skip_eligible: true,
+                }
+            })
+        })
+        .take(KNOWN_TASK_LIMIT)
+        .collect()
+}
+
 fn summary_status(
     source_error: bool,
     intervention: usize,
@@ -1038,6 +1181,8 @@ pub fn snapshot() -> SupervisorSnapshot {
     let mut intervention = 0;
     let mut tasks = Vec::new();
     let last_scan = state.last_scan.clone();
+    let known_tasks = known_task_views(&state.records);
+    let known_task_count = known_tasks.len();
     for record in state.records {
         if !report_is_fresh(record.reported_at_ms, now) {
             continue;
@@ -1082,9 +1227,12 @@ pub fn snapshot() -> SupervisorSnapshot {
         });
     }
     tasks.sort_by_key(|task| Reverse(task.reported_at_ms));
+    let scan_fresh = last_scan
+        .as_ref()
+        .is_some_and(|scan| report_is_fresh(scan.reported_at_ms, now));
     let fresh_scan = last_scan
         .as_ref()
-        .and_then(|scan| report_is_fresh(scan.reported_at_ms, now).then_some(scan.status));
+        .and_then(|scan| scan_fresh.then_some(scan.status));
     let status = summary_status(
         source_error.is_some(),
         intervention,
@@ -1093,10 +1241,15 @@ pub fn snapshot() -> SupervisorSnapshot {
         fresh_scan,
     );
     let last_scan_at_ms = last_scan.as_ref().map(|scan| scan.reported_at_ms);
+    let next_expected_scan_at_ms =
+        last_scan_at_ms.map(|reported_at_ms| reported_at_ms + SCAN_INTERVAL_SECS * 1_000);
+    let scan_stale_at_ms =
+        last_scan_at_ms.map(|reported_at_ms| reported_at_ms + REPORT_STALE_SECS * 1_000);
     let scan_status = last_scan
         .as_ref()
         .map(|scan| scan_status_label(scan.status).to_string());
     let scan_error_code = last_scan.as_ref().and_then(|scan| scan.error_code.clone());
+    let scan_metrics = last_scan.as_ref().map(|scan| scan.metrics.clone());
     let last_reported_at_ms = tasks
         .iter()
         .map(|task| task.reported_at_ms)
@@ -1115,13 +1268,19 @@ pub fn snapshot() -> SupervisorSnapshot {
         captured_at: Utc::now().to_rfc3339(),
         last_reported_at_ms,
         last_scan_at_ms,
+        next_expected_scan_at_ms,
+        scan_stale_at_ms,
+        scan_fresh,
         scan_status,
         scan_error_code,
+        scan_metrics,
         task_count: tasks.len(),
         actionable_count: actionable,
         user_intervention_count: intervention,
         counts,
         tasks,
+        known_task_count,
+        known_tasks,
         policy: SupervisorPolicyView::default(),
         safety: SupervisorSafetyView::default(),
         source_error,
@@ -1136,6 +1295,7 @@ mod tests {
         TaskEvidenceReport {
             thread_id: "01a04100-cfc1-7622-8a6b-826b77bf9ade".to_string(),
             host_id: Some("local".to_string()),
+            listing_cursor_key: Some("list-1788135629".to_string()),
             latest_user_turn_key: "turn-a1".to_string(),
             unfinished_scope_key: "scope-a1".to_string(),
             latest_turn_status: TurnStatus::Active,
@@ -1157,6 +1317,7 @@ mod tests {
             read_error_code: None,
             contract: TaskContract::default(),
             coverage: Vec::new(),
+            scan_metrics: None,
         }
     }
 
@@ -1294,6 +1455,66 @@ mod tests {
         let now = 10_000_000;
         assert!(report_is_fresh(now - REPORT_STALE_SECS * 1_000, now));
         assert!(!report_is_fresh(now - REPORT_STALE_SECS * 1_000 - 1, now));
+        assert_eq!(REPORT_STALE_SECS, SCAN_INTERVAL_SECS + HEARTBEAT_GRACE_SECS);
+        assert!(REPORT_STALE_SECS > SCAN_INTERVAL_SECS);
+    }
+
+    #[test]
+    fn only_unchanged_terminal_tasks_are_skip_eligible() {
+        assert!(unchanged_skip_eligible(SupervisorClassification::Completed));
+        assert!(unchanged_skip_eligible(
+            SupervisorClassification::WaitingCorrectTime
+        ));
+        assert!(!unchanged_skip_eligible(
+            SupervisorClassification::HealthyRunning
+        ));
+        assert!(!unchanged_skip_eligible(
+            SupervisorClassification::UserDecisionRequired
+        ));
+
+        let mut report = base_report();
+        report.latest_turn_status = TurnStatus::Completed;
+        report.objective_unfinished = false;
+        report.final_answer_fulfills = true;
+        let completed = TaskRecord {
+            decision: classify(&report),
+            report,
+            reported_at_ms: 1_000,
+            continuation: ContinuationState::default(),
+        };
+        let known = known_task_views(&[completed]);
+        assert_eq!(known.len(), 1);
+        assert_eq!(known[0].listing_cursor_key, "list-1788135629");
+        assert!(known[0].skip_eligible);
+    }
+
+    #[test]
+    fn scan_metrics_are_bounded_and_scan_only() {
+        let mut report = base_report();
+        report.thread_id = SCAN_THREAD_ID.to_string();
+        report.scan_metrics = Some(ScanMetrics {
+            listed_count: 30,
+            strong_candidate_count: 2,
+            compact_probe_count: 2,
+            deep_read_count: 1,
+            skipped_unchanged_count: 8,
+        });
+        assert!(validate_report(&report).is_ok());
+
+        report
+            .scan_metrics
+            .as_mut()
+            .expect("scan metrics")
+            .deep_read_count = 3;
+        assert!(validate_report(&report).is_err());
+
+        report.thread_id = "01a04100-cfc1-7622-8a6b-826b77bf9ade".to_string();
+        report
+            .scan_metrics
+            .as_mut()
+            .expect("scan metrics")
+            .deep_read_count = 1;
+        assert!(validate_report(&report).is_err());
     }
 
     #[test]
@@ -1377,6 +1598,30 @@ mod tests {
 
         let restored = load_state(&path).expect("load replaced supervisor snapshot");
         assert_eq!(restored.updated_at_ms, 2);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn unchanged_state_does_not_rewrite_the_ledger() {
+        let path = std::env::temp_dir().join(format!(
+            "sirin_codex_supervisor_noop_{}.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let state = SupervisorState {
+            updated_at_ms: 123,
+            ..SupervisorState::default()
+        };
+        save_state(&path, &state).expect("write supervisor state");
+        let before = std::fs::read(&path).expect("read state before no-op");
+
+        let result =
+            with_state_change_at(&path, |_state, _now| Ok(("NO_ACTION".to_string(), false)))
+                .expect("read ledger without mutation");
+
+        let after = std::fs::read(&path).expect("read state after no-op");
+        assert_eq!(result, "NO_ACTION");
+        assert_eq!(before, after);
         let _ = std::fs::remove_file(path);
     }
 

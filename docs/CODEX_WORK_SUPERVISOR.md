@@ -8,7 +8,9 @@ Sirin 的低開銷、證據導向 Codex 工作督導器。它解決的是「任�
 
 ```text
 Codex heartbeat（預設每 30 分鐘）
-  list_threads → cheap filter → read_thread（最多 2 個）
+  snapshot knownTasks → list_threads（20 + pinned）→ unchanged skip
+        │
+        └─ 1-turn compact probe → 必要時 read_thread（最多 2 個）
         │
         ├─ 結構化證據 → codex_supervisor_report
         │                    │
@@ -73,15 +75,15 @@ Heartbeat 從最新使用者要求建立最小任務契約：
 
 Codex heartbeat 回報一個任務的結構證據。`latestUserTurnKey` 與 `unfinishedScopeKey` 必須是 hash、cursor 或 opaque key，只允許安全鍵字元；放入自然語言會被拒絕。
 
-每輪掃描結束後，即使沒有強候選，也必須用保留的 `threadId=sirin-supervisor-scan` 回報一次掃描心跳。成功掃描使用 `latestTurnStatus=COMPLETED`，掃描失敗使用 `FAILED` 並只附穩定的 `readErrorCode`。掃描心跳只更新 freshness，不會出現在任務清單，也不會被 claim；成功且沒有任務證據時快照為 `HEALTHY_IDLE`，超過 15 分鐘未更新才回到 `WAITING_FOR_HEARTBEAT`。
+每輪掃描結束後，即使沒有強候選，也必須用保留的 `threadId=sirin-supervisor-scan` 回報一次掃描心跳。成功掃描使用 `latestTurnStatus=COMPLETED`，掃描失敗使用 `FAILED` 並只附穩定的 `readErrorCode`。`scanMetrics` 只保存列出、強候選、compact probe、deep read 與 unchanged skip 的數量，不保存 task 內容。掃描心跳不會出現在任務清單，也不會被 claim；成功且沒有任務證據時快照為 `HEALTHY_IDLE`。
 
 ### `codex_supervisor_snapshot`
 
-讀取分類、驗收缺口、介入數量、可續推數量、最近派送結果與安全邊界。超過 15 分鐘的舊回報仍可保留在 ledger 供歷史與去重使用，但不再算作目前快照證據；若沒有新鮮回報，UI 回到 `WAITING_FOR_HEARTBEAT`。
+讀取分類、驗收缺口、介入數量、可續推數量、最近派送結果與安全邊界。30 分鐘 cadence 加 15 分鐘 jitter grace，因此超過 45 分鐘的舊回報仍保留在 ledger，卻不再算作目前證據。快照同時提供 `nextExpectedScanAtMs`、`scanStaleAtMs`、`scanFresh`、count-only `scanMetrics`，以及最多 20 筆 `knownTasks`。`knownTasks` 只包含 `COMPLETED`／`WAITING_CORRECT_TIME` 的 `threadId + listingCursorKey`；heartbeat 只有在列表 cursor 完全相同時才能跳過深讀。
 
 ### `codex_supervisor_claim`
 
-每次最多領取一筆新鮮的 `RECOVERABLE_INTERRUPTION`。claim 有 10 分鐘 lease，只回傳 scope-preserving continuation prompt，不會傳送訊息或授權。
+每次最多領取一筆新鮮的 `RECOVERABLE_INTERRUPTION`。claim 有 10 分鐘 lease，只回傳 scope-preserving continuation prompt，不會傳送訊息或授權。`NO_ACTION` 與 `CLAIM_ALREADY_ACTIVE` 是唯讀結果，不重寫本機 ledger；只有建立 claim、回報或完成 claim 才寫檔。
 
 ### `codex_supervisor_complete_action`
 
@@ -97,12 +99,14 @@ Codex 端嘗試 `send_message_to_thread` 後回寫：
 ## Heartbeat 執行預算
 
 - 建議週期：30 分鐘，不跟目前 60 秒 Token sampler 綁在一起。這使例行模型喚醒從每天 288 次降為 48 次；若實際漏接中斷，再以證據調短，而不是先提高頻率。
-- 每輪列出最多 50 個近期非 pinned 任務，加上全部 pinned。
-- routine mode 最多深讀 2 個強候選。
-- 每個候選先讀最近 3 回合；只有授權／完成狀態不清楚時才擴到 6 回合。
+- 每輪列出最多 20 個近期非 pinned 任務，加上全部 pinned。
+- 先讀 `codex_supervisor_snapshot.knownTasks`；`threadId + listingCursorKey` 都相同且 `skipEligible=true` 才能跳過。
+- 可疑候選先做最近 1 回合、每項最多 1,200 字元的 compact probe。
+- compact probe 不足以判斷時，routine mode 最多深讀 2 個強候選、通常 3 回合；只有授權／完成狀態不清楚時才擴到 6 回合。
 - 活躍但不明的任務只做一次 bounded wait snapshot。
 - 每輪最多 claim／續推 1 個任務。
-- 每輪結束固定回報一次 `sirin-supervisor-scan`；沒有候選不等於沒有 heartbeat。
+- 每輪結束固定回報一次 `sirin-supervisor-scan` 與 `scanMetrics`；沒有候選不等於沒有 heartbeat。
+- freshness 是 45 分鐘（30 分鐘 cadence + 15 分鐘 grace），避免每輪後半段固定誤報 stale。
 - 沒有恢復、人工介入或掃描錯誤時保持靜默。
 - 不自動 fork，不建立平行任務，不讓兩個任務同時修改同一工作樹。
 
