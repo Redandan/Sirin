@@ -1,6 +1,6 @@
 # Sirin
 
-> AI-driven browser test daemon — local-only MCP server exposing 65+ tools for browser automation, E2E tests, knowledge-base search, and multi-agent squad orchestration.
+> AI-driven browser test daemon — local-only MCP server exposing exactly 190 tools for browser automation, E2E tests, knowledge-base search, physical-device validation, and multi-agent squad orchestration.
 
 This file follows the [llms.txt](https://llmstxt.org/) convention so AI clients
 can discover the API surface in one fetch.  Humans should open `/ui/` instead.
@@ -29,7 +29,7 @@ Claude Desktop / Cline / Cursor, top-level tool categories, caveats, and a
 ## Quick start (3 steps)
 
 ```sh
-# 1. List all 65+ tools
+# 1. List all 190 tools
 curl -X POST http://127.0.0.1:7700/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"tools/list","id":1}'

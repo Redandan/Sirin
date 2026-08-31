@@ -98,7 +98,7 @@ Token 趨勢會以單一、原子替換的 JSONL 快照保存在 `platform::app_
 
 ## 安全更新 Sirin daemon
 
-`scripts/switch-sirin-daemon.ps1` 不會直接啟動第二個正式 Sirin。它先在替代 loopback port 以 `--ai-monitor-only` 驗證候選檔、要求明確 SHA-256，並拒絕 MCP tool 數量倒退；正式切換前保存執行檔與完整排程 action，失敗會自動還原。
+`scripts/switch-sirin-daemon.ps1` 不會直接啟動第二個正式 Sirin。它先在替代 loopback port 以 `--mcp-only` 驗證候選檔、要求明確 SHA-256，並拒絕 MCP tool inventory 偏離已提交的 190-tool baseline。`Verify` 不改正式服務；`Deploy` 只接受乾淨且已推送的 Git HEAD，將候選放入 `%LOCALAPPDATA%\Sirin\deployments\sirin-<sha12>\sirin.exe`，再切換排程 action。
 
 ```powershell
 .\scripts\switch-sirin-daemon.ps1 -Action Status
@@ -106,4 +106,4 @@ Token 趨勢會以單一、原子替換的 JSONL 快照保存在 `platform::app_
 .\scripts\switch-sirin-daemon.ps1 -Action Deploy -CandidateBinary <path> -ExpectedCandidateSha256 <sha256>
 ```
 
-排程原有參數與 working directory 會原樣保留；工具不會擅自移除其他 Sirin supervisor 功能。Windows PowerShell 5.1 的 repo 預設路徑會在參數完成綁定後解析，避免 `$PSScriptRoot` 在預設參數表達式中為空。
+部署前保存現行 binary 與完整排程 action；切換後必須同時證明 listener 是新檔、SHA-256 相同、MCP inventory 精確為 190、UI 回傳 200，才寫入同目錄的 `deployment-manifest.json`。任一步失敗會自動恢復舊 action。既有不可變檔不覆寫，repo 的 `target\release\sirin.exe` 只可作候選，不再是正式 live path。排程原有參數會保留，working directory 則切到新 deployment directory。

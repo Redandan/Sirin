@@ -7,7 +7,7 @@
 > ## 📖 看完整使用說明
 > Sirin 跑起來後直接打開 **<http://127.0.0.1:7700/help>** —
 > 連線 config（Claude Desktop / Cline / Cursor / curl / Python）、
-> 65+ MCP tools 分類、用法範例、注意事項、常見問題，全部在那。
+> 190 MCP tools 分類、用法範例、注意事項、常見問題，全部在那。
 >
 > 給 AI 看的快速版：`curl http://127.0.0.1:7700/llms.txt`
 > 或 MCP `tools/call name=help` 拿結構化 JSON。
@@ -21,7 +21,7 @@ Sirin 跑起來後（`./target/release/sirin.exe --headless`），在 `http://12
 | 路徑 | 適合 | 內容 |
 |---|---|---|
 | `/welcome` | 人類 + AI 落地 | 4 卡片導引（dashboard / help / llms.txt / snapshot） |
-| **`/help`** | **人類 fetch** | **完整中文 HTML 文檔（連線 config / 65+ tool 清單 / 範例 / 注意事項）— 推薦先看這個** |
+| **`/help`** | **人類 fetch** | **完整中文 HTML 文檔（連線 config / 190-tool 清單 / 範例 / 注意事項）— 推薦先看這個** |
 | `/llms.txt` | LLM crawler ([llmstxt.org](https://llmstxt.org/) 慣例) | Plain markdown，one-fetch 全 API surface |
 | `/mcp` + `tools/call name=help` | MCP-aware AI | 結構化 JSON envelope（連線 config / 8 tool 類別 / 5 caveats / 3-step quickstart） |
 
@@ -29,7 +29,7 @@ Sirin 跑起來後（`./target/release/sirin.exe --headless`），在 `http://12
 ```json
 { "mcpServers": { "sirin": { "url": "http://127.0.0.1:7700/mcp" } } }
 ```
-重啟 Claude → 看到 65+ 個 `mcp__sirin__*` tools，第一個叫 `help` — 直接 call 它就有完整說明。
+重啟 Claude → 看到 190 個 `mcp__sirin__*` tools，第一個叫 `help` — 直接 call 它就有完整說明。
 
 > 詳細用法、範例、troubleshooting 都在 **<http://127.0.0.1:7700/help>**，本 README 只放概觀。
 

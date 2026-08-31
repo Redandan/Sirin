@@ -56,8 +56,16 @@ function Resolve-PythonWithPytest([string]$ExplicitPath = '') {
     }
     foreach ($candidate in @($candidates | Select-Object -Unique)) {
         if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
-        & $candidate -c 'import pytest' 1>$null 2>$null
-        if ($LASTEXITCODE -eq 0) { return [System.IO.Path]::GetFullPath($candidate) }
+        $previousErrorActionPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            & $candidate -c 'import pytest' 1>$null 2>$null
+            $probeExitCode = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+        }
+        if ($probeExitCode -eq 0) { return [System.IO.Path]::GetFullPath($candidate) }
     }
     throw ('No existing Python environment with pytest was found. ' +
         'Install integrations/ios-driver/requirements-dev.txt in an isolated environment ' +
@@ -83,8 +91,20 @@ function Invoke-NativeVerification(
     try {
         Push-Location $Repo
         try {
-            & $FilePath @Arguments 1> $stdoutPath 2> $stderrPath
-            $exitCode = $LASTEXITCODE
+            # Windows PowerShell 5.1 promotes redirected native stderr to a
+            # NativeCommandError record. Start-Process keeps cargo/pytest
+            # progress as ordinary file output and makes the real process exit
+            # code the only pass/fail contract.
+            $process = Start-Process `
+                -FilePath $FilePath `
+                -ArgumentList $Arguments `
+                -WorkingDirectory $Repo `
+                -RedirectStandardOutput $stdoutPath `
+                -RedirectStandardError $stderrPath `
+                -WindowStyle Hidden `
+                -Wait `
+                -PassThru
+            $exitCode = [int]$process.ExitCode
         }
         finally {
             Pop-Location
@@ -380,6 +400,28 @@ $contracts = @(
             'Driver autostart disabled',
             'iPhone unavailable-provider fail-closed contract',
             'tool regression blocks deployment'
+        )
+    },
+    [pscustomobject]@{
+        id = 'immutable_daemon_deployment'
+        ok = (
+            $switcherSource -match [Regex]::Escape('Stage-ImmutableCandidate') -and
+            $switcherSource -match [Regex]::Escape('"sirin-$($Sha256.Substring(0, 12))"') -and
+            $switcherSource -match [Regex]::Escape('$liveBinary = Get-TaskBinary $taskAction') -and
+            $switcherSource -match [Regex]::Escape('Set-TaskActionFromSnapshot $newTaskAction') -and
+            $switcherSource -match [Regex]::Escape('Write-DeploymentManifest') -and
+            $switcherSource -match [Regex]::Escape('Restore-Backup $backup') -and
+            $switcherSource -match [Regex]::Escape('listener_path_matches_task = $true') -and
+            $switcherSource -notmatch [Regex]::Escape("`$liveBinary = Join-Path `$Repo 'target\release\sirin.exe'")
+        )
+        evidence = @(
+            'reviewed-SHA deployment directory',
+            'task-owned live path discovery',
+            'single scheduled-task action switch',
+            'deployment manifest',
+            'automatic rollback',
+            'listener path and artifact hash verification',
+            'repository build output is not the live path'
         )
     },
     [pscustomobject]@{

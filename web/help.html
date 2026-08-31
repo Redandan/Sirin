@@ -153,7 +153,7 @@
 
   <h1>Sirin · 使用說明</h1>
   <p class="tagline">
-    Sirin 是 AI 驅動的瀏覽器測試 daemon。本頁說明 <strong>如何讓任何 AI client(Claude / Cline / Cursor / 自寫 script)接它</strong>，以及對外暴露的 65+ MCP tools。
+    Sirin 是 AI 驅動的瀏覽器測試 daemon。本頁說明 <strong>如何讓任何 AI client(Claude / Cline / Cursor / 自寫 script)接它</strong>，以及對外暴露的 190 MCP tools。
   </p>
 
   <div class="toc">
@@ -197,7 +197,7 @@
   }
 }</code></pre>
   <p>
-    重啟 Claude 後，新 chat 會看到 65+ 個 <code>mcp__sirin__*</code> tools。
+    重啟 Claude 後，新 chat 會看到 190 個 <code>mcp__sirin__*</code> tools。
   </p>
 
   <h3>2. Cline / Cursor / Roo Code（VS Code MCP）</h3>
@@ -243,7 +243,7 @@ print(r.json())</code></pre>
 sirin_call run_test_async test_id=agora_buyer_wallet    # key=value 語法
 echo '{"test_id":"x"}' | sirin_call run_test_async      # stdin JSON</code></pre>
 
-  <h2 id="tools">🛠️ 對外暴露的能力（65+ tools）</h2>
+  <h2 id="tools">🛠️ 對外暴露的能力（190 tools）</h2>
   <table>
     <thead><tr><th>類別</th><th>主要 tools</th><th>用途</th></tr></thead>
     <tbody>

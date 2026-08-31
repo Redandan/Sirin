@@ -3,9 +3,11 @@
 Inspect, verify, deploy, or explicitly roll back the Sirin Windows daemon.
 
 Deploy verifies an exact candidate SHA-256, starts the candidate in the
-side-effect-minimized --mcp-only mode on an alternate loopback port,
-backs up the current binary and scheduled-task action, then replaces only the
-task-owned executable. A failed live contract check restores both automatically.
+side-effect-minimized --mcp-only mode on an alternate loopback port, stages it
+under an immutable per-hash deployment directory, and switches only the
+scheduled-task action. A failed live contract check restores the previous task
+action automatically. The repository build output is never used as the live
+runtime path.
 #>
 
 [CmdletBinding()]
@@ -17,6 +19,7 @@ param(
     [string]$CandidateBinary = '',
     [string]$ExpectedCandidateSha256 = '',
     [string]$BackupBinary = '',
+    [string]$DeploymentRoot = '',
     [int]$LivePort = 7700,
     [int]$SmokePort = 17700,
     [int]$IosDriverSmokePort = 18770,
@@ -31,9 +34,12 @@ if ([string]::IsNullOrWhiteSpace($Repo)) {
     $Repo = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 }
 $Repo = [System.IO.Path]::GetFullPath($Repo)
-$liveBinary = Join-Path $Repo 'target\release\sirin.exe'
 $toolBaseline = Join-Path $Repo 'config\mcp_tool_baseline.json'
 $backupDir = Join-Path $env:LOCALAPPDATA 'Sirin\releases\backups'
+if ([string]::IsNullOrWhiteSpace($DeploymentRoot)) {
+    $DeploymentRoot = Join-Path $env:LOCALAPPDATA 'Sirin\deployments'
+}
+$deploymentRoot = [System.IO.Path]::GetFullPath($DeploymentRoot)
 $liveBase = "http://127.0.0.1:$LivePort"
 
 if (-not ('SirinFileIdentity' -as [type])) {
@@ -113,6 +119,94 @@ function Test-SameFilePath([string]$Left, [string]$Right) {
     catch {
         return $false
     }
+}
+
+function Test-PathUnderRoot([string]$Path, [string]$Root) {
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $fullRoot = [System.IO.Path]::GetFullPath($Root).TrimEnd(
+        [System.IO.Path]::DirectorySeparatorChar,
+        [System.IO.Path]::AltDirectorySeparatorChar
+    )
+    $fullPath.StartsWith(
+        $fullRoot + [System.IO.Path]::DirectorySeparatorChar,
+        [System.StringComparison]::OrdinalIgnoreCase
+    )
+}
+
+function Get-TaskBinary($Snapshot) {
+    if ($null -eq $Snapshot -or [string]::IsNullOrWhiteSpace([string]$Snapshot.execute)) {
+        throw 'scheduled-task action does not identify a live executable'
+    }
+    [System.IO.Path]::GetFullPath([string]$Snapshot.execute)
+}
+
+function Get-SourceProvenance {
+    Push-Location $Repo
+    try {
+        $head = (& git rev-parse HEAD 2>$null | Select-Object -First 1)
+        $branch = (& git branch --show-current 2>$null | Select-Object -First 1)
+        $remote = (& git config --get remote.origin.url 2>$null | Select-Object -First 1)
+        $upstream = (& git rev-parse '@{u}' 2>$null | Select-Object -First 1)
+        $dirty = @(& git status --porcelain 2>$null)
+        if ([string]::IsNullOrWhiteSpace([string]$head) -or
+            [string]::IsNullOrWhiteSpace([string]$branch)) {
+            throw 'deployment requires a named Git branch and commit'
+        }
+        if ($dirty.Count -ne 0) {
+            throw "deployment requires a clean worktree; dirty entries=$($dirty.Count)"
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$upstream) -or $upstream -ne $head) {
+            throw "deployment requires HEAD to equal its pushed upstream; head=$head upstream=$upstream"
+        }
+        [pscustomobject]@{
+            repository = [string]$remote
+            branch = [string]$branch
+            commit = [string]$head
+            remoteCommit = [string]$upstream
+            sourceMode = 'cleanPushedHeadWithReviewedArtifactSha'
+            snapshotOverlayRequired = $false
+        }
+    }
+    finally {
+        Pop-Location
+    }
+}
+
+function Stage-ImmutableCandidate([string]$Path, [string]$Sha256) {
+    New-Item -ItemType Directory -Force -Path $deploymentRoot | Out-Null
+    $deploymentDir = Join-Path $deploymentRoot "sirin-$($Sha256.Substring(0, 12))"
+    if (-not (Test-PathUnderRoot $deploymentDir $deploymentRoot)) {
+        throw "deployment path escaped the configured root: $deploymentDir"
+    }
+    New-Item -ItemType Directory -Force -Path $deploymentDir | Out-Null
+    $target = Join-Path $deploymentDir 'sirin.exe'
+    if (Test-Path -LiteralPath $target -PathType Leaf) {
+        $existingHash = Get-Hash $target
+        if ($existingHash -ne $Sha256) {
+            throw "immutable deployment collision: $target has SHA-256 $existingHash"
+        }
+        return [pscustomobject]@{ directory = $deploymentDir; binary = $target; reused = $true }
+    }
+    $unexpected = @(Get-ChildItem -LiteralPath $deploymentDir -Force -ErrorAction Stop)
+    if ($unexpected.Count -ne 0) {
+        throw "immutable deployment directory already contains unexpected files: $deploymentDir"
+    }
+
+    $stage = Join-Path $deploymentDir ("sirin.exe.stage-" + [Guid]::NewGuid().ToString('N'))
+    try {
+        Copy-Item -LiteralPath $Path -Destination $stage
+        $stageHash = Get-Hash $stage
+        if ($stageHash -ne $Sha256) {
+            throw "staged candidate hash mismatch: expected $Sha256, got $stageHash"
+        }
+        Move-Item -LiteralPath $stage -Destination $target
+    }
+    finally {
+        if (Test-Path -LiteralPath $stage -PathType Leaf) {
+            Remove-Item -LiteralPath $stage -Force
+        }
+    }
+    [pscustomobject]@{ directory = $deploymentDir; binary = $target; reused = $false }
 }
 
 function Get-TaskActionSnapshot {
@@ -381,12 +475,17 @@ function Test-Candidate([string]$Path) {
 
 function Get-LiveStatus {
     $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    $taskSnapshot = if ($task) { Get-TaskActionSnapshot } else { $null }
+    $taskBinary = $null
+    try {
+        if ($taskSnapshot) { $taskBinary = Get-TaskBinary $taskSnapshot }
+    }
+    catch {}
     $listener = Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort $LivePort -State Listen `
         -ErrorAction SilentlyContinue | Select-Object -First 1
     $process = if ($listener) {
         Get-Process -Id $listener.OwningProcess -ErrorAction SilentlyContinue
     } else { $null }
-    $taskAction = if ($task) { @($task.Actions) | Select-Object -First 1 } else { $null }
     $proof = $null
     $toolCount = $null
     try {
@@ -401,18 +500,23 @@ function Get-LiveStatus {
     [pscustomobject]@{
         task_installed = $null -ne $task
         task_state = if ($task) { [string]$task.State } else { 'MISSING' }
-        binary = $liveBinary
-        binary_exists = Test-Path -LiteralPath $liveBinary -PathType Leaf
-        binary_sha256 = if (Test-Path -LiteralPath $liveBinary -PathType Leaf) {
-            Get-Hash $liveBinary
+        task_action = $taskSnapshot
+        binary = $taskBinary
+        binary_exists = $null -ne $taskBinary -and (Test-Path -LiteralPath $taskBinary -PathType Leaf)
+        binary_sha256 = if ($null -ne $taskBinary -and (Test-Path -LiteralPath $taskBinary -PathType Leaf)) {
+            Get-Hash $taskBinary
+        } else { $null }
+        immutable_deployment = $null -ne $taskBinary -and (Test-PathUnderRoot $taskBinary $deploymentRoot)
+        deployment_manifest = if ($null -ne $taskBinary) {
+            $manifest = Join-Path (Split-Path -Parent $taskBinary) 'deployment-manifest.json'
+            if (Test-Path -LiteralPath $manifest -PathType Leaf) { $manifest } else { $null }
         } else { $null }
         listener_pid = if ($listener) { $listener.OwningProcess } else { $null }
         listener_path = if ($process) { $process.Path } else { $null }
-        task_binary_same_file = if ($taskAction) {
-            Test-SameFilePath ([string]$taskAction.Execute) $liveBinary
-        } else { $false }
+        task_binary_same_file = $null -ne $taskBinary -and
+            (Test-Path -LiteralPath $taskBinary -PathType Leaf)
         listener_binary_same_file = if ($process) {
-            Test-SameFilePath ([string]$process.Path) $liveBinary
+            $null -ne $taskBinary -and (Test-SameFilePath ([string]$process.Path) $taskBinary)
         } else { $false }
         tool_count = $toolCount
         mcp_ready = $null -ne $proof
@@ -420,26 +524,59 @@ function Get-LiveStatus {
     }
 }
 
-function Stop-LiveTask {
+function Stop-LiveTask([string]$ExpectedBinary) {
     Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop | Out-Null
     Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
     $deadline = (Get-Date).AddSeconds(10)
     do {
         $processes = @(Get-Process sirin -ErrorAction SilentlyContinue | Where-Object {
-            try { Test-SameFilePath $_.Path $liveBinary } catch { $false }
+            try { Test-SameFilePath $_.Path $ExpectedBinary } catch { $false }
         })
         if ($processes.Count -eq 0) {
-            return
+            $listener = Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort $LivePort -State Listen `
+                -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $listener) { return }
+            $listenerProcess = Get-Process -Id $listener.OwningProcess -ErrorAction SilentlyContinue
+            if ($listenerProcess -and -not (Test-SameFilePath $listenerProcess.Path $ExpectedBinary)) {
+                throw "live port is owned by a different executable: $($listenerProcess.Path)"
+            }
         }
         Start-Sleep -Milliseconds 250
     } while ((Get-Date) -lt $deadline)
-    throw "scheduled task did not stop the exact Sirin binary: $liveBinary"
+    throw "scheduled task did not stop the exact Sirin binary: $ExpectedBinary"
 }
 
-function Start-And-VerifyLive {
+function Start-And-VerifyLive([string]$ExpectedBinary, [string]$ExpectedSha256) {
     Start-ScheduledTask -TaskName $TaskName
     Wait-Mcp $liveBase $TimeoutSeconds | Out-Null
-    Test-McpContract $liveBase
+    $proof = Test-McpContract $liveBase
+    $taskAction = Get-TaskActionSnapshot
+    if (-not (Test-SameFilePath (Get-TaskBinary $taskAction) $ExpectedBinary)) {
+        throw "scheduled-task action does not match deployed binary: $($taskAction.execute)"
+    }
+    $actualHash = Get-Hash $ExpectedBinary
+    if ($actualHash -ne $ExpectedSha256) {
+        throw "live binary hash mismatch: expected $ExpectedSha256, got $actualHash"
+    }
+    $listener = Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort $LivePort -State Listen `
+        -ErrorAction Stop | Select-Object -First 1
+    $process = Get-Process -Id $listener.OwningProcess -ErrorAction Stop
+    if (-not (Test-SameFilePath $process.Path $ExpectedBinary)) {
+        throw "live listener path mismatch: expected $ExpectedBinary, got $($process.Path)"
+    }
+    $ui = Invoke-WebRequest -UseBasicParsing -Uri "$liveBase/ui/" -TimeoutSec 15
+    if ([int]$ui.StatusCode -ne 200) {
+        throw "live UI returned HTTP $($ui.StatusCode)"
+    }
+    [pscustomobject]@{
+        mcp = $proof
+        listener_pid = [int]$listener.OwningProcess
+        listener_path = [string]$process.Path
+        listener_path_matches_task = $true
+        binary_sha256 = $actualHash
+        binary_sha_matches_candidate = $true
+        ui_http_status = [int]$ui.StatusCode
+    }
 }
 
 function Restore-Backup([string]$Path) {
@@ -456,11 +593,85 @@ function Restore-Backup([string]$Path) {
         throw "scheduled-task action snapshot is missing: $actionSnapshotPath"
     }
     $actionSnapshot = Get-Content -LiteralPath $actionSnapshotPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    Stop-LiveTask
-    Copy-Item -LiteralPath $resolvedBackup -Destination $liveBinary -Force
+    $restoreTarget = Get-TaskBinary $actionSnapshot
+    if (-not (Test-PathUnderRoot $restoreTarget $deploymentRoot) -or
+        -not [string]::Equals(
+            [System.IO.Path]::GetFileName($restoreTarget),
+            'sirin.exe',
+            [System.StringComparison]::OrdinalIgnoreCase
+        )) {
+        throw "rollback action must target an immutable Sirin deployment: $restoreTarget"
+    }
+    $backupHash = Get-Hash $resolvedBackup
+    if (Test-Path -LiteralPath $restoreTarget -PathType Leaf) {
+        $restoreHash = Get-Hash $restoreTarget
+        if ($restoreHash -ne $backupHash) {
+            throw "rollback target exists with a different SHA-256: $restoreTarget"
+        }
+    }
+    else {
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $restoreTarget) | Out-Null
+        Copy-Item -LiteralPath $resolvedBackup -Destination $restoreTarget
+    }
+    $currentAction = Get-TaskActionSnapshot
+    Stop-LiveTask (Get-TaskBinary $currentAction)
     Set-TaskActionFromSnapshot $actionSnapshot
-    Start-ScheduledTask -TaskName $TaskName
-    Wait-Mcp $liveBase $TimeoutSeconds | Out-Null
+    Start-And-VerifyLive $restoreTarget $backupHash | Out-Null
+}
+
+function Write-DeploymentManifest(
+    $Stage,
+    $Source,
+    [string]$CandidateSha256,
+    [string]$PreviousBinary,
+    [string]$PreviousSha256,
+    [string]$Backup,
+    [string]$TaskActionBackup,
+    $CandidateProof,
+    $LiveProof,
+    $TaskAction
+) {
+    $manifestPath = Join-Path ([string]$Stage.directory) 'deployment-manifest.json'
+    if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
+        $existing = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ([string]$existing.artifact.sha256 -ne $CandidateSha256) {
+            throw "immutable deployment manifest does not match candidate SHA-256: $manifestPath"
+        }
+        return $manifestPath
+    }
+
+    $manifest = [ordered]@{
+        schemaVersion = 2
+        deployedAt = [DateTimeOffset]::Now.ToString('o')
+        source = $Source
+        artifact = [ordered]@{
+            binary = [string]$Stage.binary
+            sha256 = $CandidateSha256
+            profile = 'release'
+            reviewedSha256Required = $true
+            immutableDirectory = $true
+        }
+        scheduledTask = [ordered]@{
+            name = $TaskName
+            arguments = [string]$TaskAction.arguments
+            workingDirectory = [string]$TaskAction.working_directory
+        }
+        validation = [ordered]@{
+            candidateSmoke = $CandidateProof
+            live = $LiveProof
+            exactToolInventory = $true
+            expectedToolCount = 190
+        }
+        rollback = [ordered]@{
+            previousBinary = $PreviousBinary
+            previousSha256 = $PreviousSha256
+            backupBinary = $Backup
+            backupTaskAction = $TaskActionBackup
+            automaticOnDeployFailure = $true
+        }
+    }
+    $manifest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+    $manifestPath
 }
 
 if ($Action -eq 'Status') {
@@ -511,14 +722,29 @@ if ($Action -eq 'Verify') {
 if ($toolRegression) {
     throw "candidate MCP tool regression: live=$liveToolCount, candidate=$($candidateProof.tool_count)"
 }
-if (-not (Test-Path -LiteralPath $liveBinary -PathType Leaf)) {
-    throw "live Sirin binary is missing: $liveBinary"
-}
 $taskAction = Get-TaskActionSnapshot
-if (-not (Test-SameFilePath ([string]$taskAction.execute) $liveBinary)) {
-    throw "scheduled task does not own the expected live binary: $($taskAction.execute)"
+$liveBinary = Get-TaskBinary $taskAction
+if (-not (Test-Path -LiteralPath $liveBinary -PathType Leaf)) {
+    throw "scheduled-task Sirin binary is missing: $liveBinary"
+}
+if (-not [string]::Equals(
+    [System.IO.Path]::GetExtension($liveBinary),
+    '.exe',
+    [System.StringComparison]::OrdinalIgnoreCase
+)) {
+    throw "scheduled task must execute sirin.exe directly before immutable deployment: $liveBinary"
+}
+if ($liveBefore.listener_pid -and -not [bool]$liveBefore.listener_binary_same_file) {
+    throw "live listener does not match the scheduled-task executable: $($liveBefore.listener_path)"
 }
 
+$source = Get-SourceProvenance
+$stage = Stage-ImmutableCandidate $CandidateBinary $candidateHash
+$newTaskAction = [pscustomobject]@{
+    execute = [string]$stage.binary
+    arguments = [string]$taskAction.arguments
+    working_directory = [string]$stage.directory
+}
 New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
 $liveHash = Get-Hash $liveBinary
 $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -528,12 +754,27 @@ $taskActionBackup = "$backup.task-action.json"
 $taskAction | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $taskActionBackup -Encoding UTF8
 
 try {
-    Stop-LiveTask
-    Copy-Item -LiteralPath $CandidateBinary -Destination $liveBinary -Force
-    $liveProof = Start-And-VerifyLive
+    Stop-LiveTask $liveBinary
+    Set-TaskActionFromSnapshot $newTaskAction
+    $liveProof = Start-And-VerifyLive ([string]$stage.binary) $candidateHash
+    $manifest = Write-DeploymentManifest `
+        $stage `
+        $source `
+        $candidateHash `
+        $liveBinary `
+        $liveHash `
+        $backup `
+        $taskActionBackup `
+        $candidateProof `
+        $liveProof `
+        $newTaskAction
     [pscustomobject]@{
         status = 'DEPLOYED'
         candidate_sha256 = $candidateHash
+        deployment_directory = [string]$stage.directory
+        live_binary = [string]$stage.binary
+        immutable_binary_reused = [bool]$stage.reused
+        deployment_manifest = $manifest
         backup = $backup
         task_action_backup = $taskActionBackup
         task_action = Get-TaskActionSnapshot

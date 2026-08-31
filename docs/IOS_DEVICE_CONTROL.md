@@ -201,7 +201,8 @@ alternate-port passive Driver/MCP 並呼叫 `ios_device_status`；不接觸目�
 ownership evidence，並以非零狀態結束。
 
 正式候選通過完整測試與 SHA-256 審查後，使用 Sirin 自己的切換腳本；部署
-前會再次執行隔離 MCP smoke，失敗時自動恢復舊 binary：
+前會再次執行隔離 MCP smoke。候選會先放進按 SHA 命名的不可變 deployment
+directory，再原子更新排程 action；失敗時自動恢復舊 action：
 
 ```powershell
 .\scripts\switch-sirin-daemon.ps1 -Action Deploy `
@@ -209,11 +210,14 @@ ownership evidence，並以非零狀態結束。
   -ExpectedCandidateSha256 <sha256>
 ```
 
-若排程透過 Windows Junction 指向同一份 Sirin binary，切換器以磁碟序號與
-檔案 ID 驗證實體檔案身分，不以路徑字串或相同雜湊冒充所有權；不同實體檔案
-仍會 fail closed。
+切換後會驗證排程、listener 與 immutable binary 是同一實體檔案，並再次驗證
+候選 SHA-256、精確 190-tool inventory 與 UI HTTP 200。若排程透過 Windows
+Junction 指向同一份 Sirin binary，切換器以磁碟序號與檔案 ID 驗證實體身分，
+不以路徑字串或相同雜湊冒充所有權；不同實體檔案仍會 fail closed。
 
-`Rollback` 必須指定確切的備份檔，不會猜測「最新」版本。
+成功後同目錄會寫入 `deployment-manifest.json`，包含乾淨／已推送的來源 HEAD、
+artifact SHA、排程 action、候選與 live 驗證及明確 rollback evidence。`Rollback`
+必須指定確切的備份檔，不會猜測「最新」版本，也不會覆寫不同雜湊的既有檔案。
 
 Sirin 內的 Codex Skill 是唯一來源，安裝到共用 Codex 設定：
 
