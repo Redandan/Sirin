@@ -3026,6 +3026,49 @@ button { font-family: inherit; cursor: pointer; }
     min-width: 0;
     padding: var(--sp-md);
   }
+  .testing-view .launcher-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+  .testing-view .launcher-row .select {
+    width: 100%;
+    min-width: 0;
+  }
+  .testing-view .launcher-row .btn-primary {
+    width: 100%;
+  }
+  .testing-view .launcher-row .row-spacer {
+    display: none;
+  }
+  .testing-view .filter-row {
+    flex-wrap: wrap;
+  }
+  .testing-view .filter-input {
+    flex: 1 0 100%;
+    min-width: 0;
+  }
+  .testing-view .run-row {
+    width: 100%;
+    min-width: 0;
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+  .testing-view .run-name {
+    flex: 1 1 120px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .testing-view .run-row .row-spacer {
+    display: none;
+  }
+  .testing-view .run-row .ml-md {
+    margin-left: 0;
+  }
+  .testing-view .run-row .badge-soft {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
   .ai-monitor-header { flex-direction: column; gap: var(--sp-md); }
   .process-grid { grid-template-columns: 1fr; }
   .token-hero { overflow-wrap: anywhere; }
